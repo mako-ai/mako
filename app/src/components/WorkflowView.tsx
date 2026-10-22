@@ -40,6 +40,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import {
   fetchWorkflowFile,
+  fetchWorkflowCost,
   fetchWorkflowFlow,
   isActiveRun,
   useWorkflowsStore,
@@ -48,7 +49,7 @@ import {
   type WorkflowRunSummary,
 } from "../store/workflowsStore";
 import { useUIStore } from "../store/uiStore";
-import { formatDuration } from "../utils/format";
+import { formatDuration, formatUsd } from "../utils/format";
 import { formatRelativeTimeCompact } from "../utils/relative-time";
 import { describeCron, inTime, nextRunOf } from "../lib/cronText";
 import WorkflowRunDetail from "./WorkflowRunDetail";
@@ -454,6 +455,20 @@ function RunsView({
                   selectedRun?.durationMs ?? selectedSummary.durationMs,
                 )}
           </Dim>
+          {(selectedRun?.costUsd ?? selectedSummary.costUsd) !== undefined && (
+            <Tooltip
+              title={
+                selectedRun?.costBackfilled
+                  ? "AI cost of its model calls, partly matched to this run afterwards by time"
+                  : "AI cost of its model calls"
+              }
+            >
+              <Typography variant="caption" color="text.secondary">
+                {selectedRun?.costBackfilled ? "≈ " : ""}
+                {formatUsd(selectedRun?.costUsd ?? selectedSummary.costUsd)}
+              </Typography>
+            </Tooltip>
+          )}
           {(selectedStatus === "FAILED" || selectedStatus === "CANCELLED") && (
             <Box sx={{ ml: "auto", display: "flex", gap: 1 }}>
               <RetryMenu
@@ -531,11 +546,17 @@ function RunsView({
             <Tab value="flow" label="Flow" />
           </Tabs>
           {homeTab === "runs" ? (
-            <RunsTable
-              runs={runs}
-              onSelect={select}
-              unreadable={overview?.hatchetError}
-            />
+            <>
+              <WorkflowCostLine
+                workspaceId={workspaceId}
+                workflowId={workflowId}
+              />
+              <RunsTable
+                runs={runs}
+                onSelect={select}
+                unreadable={overview?.hatchetError}
+              />
+            </>
           ) : (
             <WorkflowFlowView
               workspaceId={workspaceId}
@@ -774,6 +795,41 @@ function WorkflowFlowView({
   );
 }
 
+/** What the workflow's runs cost in AI over the last 30 days, once any did. */
+function WorkflowCostLine({
+  workspaceId,
+  workflowId,
+}: {
+  workspaceId: string;
+  workflowId: string;
+}) {
+  const [cost, setCost] = useState<{ costUsd: number; runs: number } | null>(
+    null,
+  );
+  useEffect(() => {
+    let current = true;
+    void fetchWorkflowCost(workspaceId, workflowId).then(result => {
+      if (current) setCost(result);
+    });
+    return () => {
+      current = false;
+    };
+  }, [workspaceId, workflowId]);
+  if (!cost || cost.runs === 0) return null;
+  return (
+    <Box sx={{ ...BAR_SX, gap: 1 }}>
+      <Typography variant="caption" sx={{ fontWeight: 600 }}>
+        AI cost
+      </Typography>
+      <Dim>
+        {formatUsd(cost.costUsd)} in the last 30 days · {cost.runs} run
+        {cost.runs === 1 ? "" : "s"} · {formatUsd(cost.costUsd / cost.runs)} per
+        run
+      </Dim>
+    </Box>
+  );
+}
+
 /** The workflow's runs, newest first; a row opens that run. */
 function RunsTable({
   runs,
@@ -826,6 +882,7 @@ function RunsTable({
           <col style={{ width: 120 }} />
           <col style={{ width: 130 }} />
           <col style={{ width: 90 }} />
+          <col style={{ width: 80 }} />
           <col style={{ width: 90 }} />
           <col />
         </colgroup>
@@ -834,6 +891,7 @@ function RunsTable({
             <th>Status</th>
             <th>Started</th>
             <th>Duration</th>
+            <th>AI cost</th>
             <th>Trigger</th>
             <th>Error</th>
           </tr>
@@ -874,6 +932,9 @@ function RunsTable({
                     {formatRelativeTimeCompact(run.startedAt)}
                   </td>
                   <td>{formatDuration(run.durationMs)}</td>
+                  <td>
+                    {run.costUsd === undefined ? "" : formatUsd(run.costUsd)}
+                  </td>
                   <td>{run.trigger ?? "schedule"}</td>
                   <Box
                     component="td"

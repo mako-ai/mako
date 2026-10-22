@@ -19,6 +19,7 @@ import { getDefaultModelId } from "../agent-lib/ai-models";
 import { withToolOutputBackstop } from "../agent-lib/tools/shared/output-cap";
 import { buildUnifiedModeRuntime } from "../agents/modes/runtime";
 import { checkBillingLimits } from "../billing/usage-limit.middleware";
+import { type IWorkflowRunRef } from "../database/schema";
 import { Chat } from "../database/workspace-schema";
 import { saveChat } from "../services/agent-thread.service";
 import { trackUsage } from "../services/llm-usage.service";
@@ -37,6 +38,8 @@ export async function runStepAgent(params: {
   goal: string;
   modelId?: string;
   maxSteps?: number;
+  /** The run and step it was asked from, for its cost. */
+  workflowRun?: IWorkflowRunRef;
 }): Promise<{ text: string; toolCalls: string[]; chatId: string }> {
   const { workspaceId, userId, goal } = params;
   const modelId = params.modelId ?? (await getDefaultModelId());
@@ -126,6 +129,7 @@ export async function runStepAgent(params: {
       outputTokens,
       totalTokens: inputTokens + outputTokens,
       durationMs: Date.now() - startedAt,
+      workflowRun: params.workflowRun,
     });
   }
   if (failure) {

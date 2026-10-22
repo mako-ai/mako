@@ -19,6 +19,7 @@ import {
   tenantOfToken,
   type WorkspaceTenant,
 } from "./hatchet";
+import { type RunCost, readRunCosts } from "./costs";
 import { webhookUrls } from "./webhook";
 
 const RECENT_RUNS_DAYS = 30;
@@ -177,8 +178,26 @@ export async function readWorkflowsOverview(
       workflowId: c.workflowName,
       cron: c.cron,
     })),
-    recentRuns: (runs.rows ?? []).map(run => runSummary(run)),
+    recentRuns: await withRunCosts(
+      workspaceId,
+      (runs.rows ?? []).map(run => runSummary(run)),
+    ),
   };
+}
+
+/** Each run's AI cost beside it, for the runs that have one. */
+async function withRunCosts<T extends { runId?: string }>(
+  workspaceId: string,
+  runs: T[],
+): Promise<Array<T & { costUsd?: number }>> {
+  const ids = runs.map(run => run.runId).filter((id): id is string => !!id);
+  const costs = await readRunCosts(workspaceId, ids).catch(
+    (): Record<string, RunCost> => ({}),
+  );
+  return runs.map(run => {
+    const cost = run.runId ? costs[run.runId] : undefined;
+    return cost ? { ...run, costUsd: cost.costUsd } : run;
+  });
 }
 
 /**

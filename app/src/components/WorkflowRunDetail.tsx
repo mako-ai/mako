@@ -23,7 +23,7 @@ import {
   type WorkflowRun,
   type WorkflowRunStep,
 } from "../store/workflowsStore";
-import { formatDuration } from "../utils/format";
+import { formatDuration, formatUsd } from "../utils/format";
 import FlowPanel from "./WorkflowRunFlow";
 import StatusDot from "./WorkflowStatusDot";
 
@@ -292,6 +292,7 @@ function StepList({
               {step.step}
             </Box>
             {(step.attempt ?? 1) > 1 && <Dim>×{step.attempt}</Dim>}
+            {step.costUsd !== undefined && <Dim>{formatUsd(step.costUsd)}</Dim>}
             <Dim>
               {waiting
                 ? "waiting"

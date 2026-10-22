@@ -6,7 +6,7 @@
  */
 
 import { ObjectId } from "mongodb";
-import { LlmUsage } from "../database/schema";
+import { type IWorkflowRunRef, LlmUsage } from "../database/schema";
 import { computeInvocationCost } from "./cost-calculator";
 import { loggers } from "../logging";
 
@@ -44,6 +44,8 @@ export interface TrackUsageParams {
   tags?: string[];
   durationMs?: number;
   costUsd?: number;
+  /** The workflow run and step the call was made from. */
+  workflowRun?: IWorkflowRunRef;
 }
 
 /**
@@ -89,6 +91,7 @@ export async function trackUsage(params: TrackUsageParams): Promise<void> {
       agentId: params.agentId,
       tags: params.tags,
       durationMs: params.durationMs,
+      workflowRun: params.workflowRun,
     });
   } catch (err) {
     logger.warn("Failed to persist LLM usage record", { error: err });

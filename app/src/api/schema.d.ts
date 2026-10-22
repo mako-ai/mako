@@ -5185,6 +5185,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/workflows/{name}/cost": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A workflow's AI cost (its runs' model calls) over the last `days` days (default 30), in total and by day */
+        get: operations["get_api_workspaces_workspaceId_workflows_name_cost"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/workflows/runs/{id}/retry": {
         parameters: {
             query?: never;
@@ -21902,6 +21919,49 @@ export interface operations {
     get_api_workspaces_workspaceId_workflows_name_flow: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_workflows_name_cost: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
             header?: never;
             path: {
                 workspaceId: string;

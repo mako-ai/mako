@@ -24,6 +24,8 @@ export interface WorkflowRunSummary {
   durationMs?: number;
   error?: string;
   trigger?: string;
+  /** What its steps' model calls cost, in USD; absent before costs were kept. */
+  costUsd?: number;
 }
 
 export interface WorkflowRunStep {
@@ -32,6 +34,8 @@ export interface WorkflowRunStep {
   parents?: string[];
   /** A line about a step not taken from a run (its retries, its timeout). */
   note?: string;
+  /** What the step's model calls cost, in USD. */
+  costUsd?: number;
   status?: string;
   attempt?: number;
   durationMs?: number;
@@ -41,6 +45,8 @@ export interface WorkflowRunStep {
 }
 
 export interface WorkflowRun extends WorkflowRunSummary {
+  /** Part of its cost was matched to it afterwards, by time. */
+  costBackfilled?: boolean;
   input?: string;
   output?: string;
   steps: WorkflowRunStep[];
@@ -111,6 +117,22 @@ export interface WorkflowFlow {
     retries: number;
     timeout?: string;
   }>;
+}
+
+/** A workflow's AI cost over the last 30 days, or null when it cannot be read. */
+export async function fetchWorkflowCost(
+  workspaceId: string,
+  workflowId: string,
+): Promise<{ costUsd: number; runs: number } | null> {
+  try {
+    return unwrapBody(
+      await api.GET("/api/workspaces/{workspaceId}/workflows/{name}/cost", {
+        params: { path: { workspaceId, name: workflowId }, query: {} },
+      }),
+    ) as { costUsd: number; runs: number };
+  } catch {
+    return null;
+  }
 }
 
 /** A deployed workflow's flow, or an error saying why there is none. */
