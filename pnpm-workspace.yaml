@@ -24,3 +24,8 @@ ignoredBuiltDependencies:
 # default; declaring it here makes local resolution match CI so a fresh
 # install can't pin hours-old releases into the lockfile.
 minimumReleaseAge: 1440
+# DuckDB 2.0.0-r.1 (2026-10-21) is the requested LTS bump and was published
+# inside the 24h window. Drop this exclude once the release is older than
+# minimumReleaseAge.
+minimumReleaseAgeExclude:
+  - "@duckdb/node-api"

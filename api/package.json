@@ -34,7 +34,7 @@
     "@ai-sdk/otel": "1.0.137",
     "@clickhouse/client": "^1.24.1",
     "@deepnote/blocks": "4.8.0",
-    "@duckdb/node-api": "1.5.6-r.1",
+    "@duckdb/node-api": "2.0.0-r.1",
     "@google-cloud/bigquery": "^9.2.0",
     "@google-cloud/cloud-sql-connector": "^1.12.0",
     "@google-cloud/storage": "^8.4.0",
