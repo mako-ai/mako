@@ -67,6 +67,17 @@ vi.mock("../services/artifact-delivery.service", () => ({
     async (store, key) =>
       new Response(`${store === stores.source}:${key}`, { status: 200 }),
   ),
+  serveParquetArtifactMeta: vi.fn(
+    async (store, key) =>
+      new Response(
+        JSON.stringify({
+          url: `https://bucket.example/signed?from=${store === stores.source ? "source" : "primary"}&key=${key}`,
+          size: 99,
+          expiresAt: "2026-10-22T00:10:00.000Z",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+  ),
 }));
 
 vi.mock("./box", () => ({
@@ -163,6 +174,25 @@ describe("published deployment artifact source", () => {
     expect(await response?.text()).toBe(`true:${bindingKey}`);
     expect(stores.primary.exists).toHaveBeenCalledWith(bindingKey);
     expect(stores.source.exists).toHaveBeenCalledWith(bindingKey);
+  });
+
+  it("answers __data/<name>.meta.json from the same store as the parquet", async () => {
+    const bindingKey = "apps/bindings/connection/binding.parquet";
+    stores.source = mockStore([bindingKey]);
+
+    const response = await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "__data/icp_customers.meta.json",
+    });
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("content-type")).toBe("application/json");
+    expect(await response?.json()).toEqual({
+      url: `https://bucket.example/signed?from=source&key=${bindingKey}`,
+      size: 99,
+      expiresAt: "2026-10-22T00:10:00.000Z",
+    });
   });
 
   it("answers __data/viewer.json for the signed-in viewer, and null when nobody is known", async () => {

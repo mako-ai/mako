@@ -2640,6 +2640,17 @@ one existence probe plus a locally-computed signature. Streaming remains as
 the fallback — the filesystem store has no URLs to sign, and any store that
 cannot _prove_ redirects are safe keeps proxying exactly as before.
 
+The SDK no longer has to follow that 302 blindly. A sibling
+`__data/<name>.meta.json` (same auth as the parquet, on the viewer / preview
+/ share / sandbox / laptop Vite paths) returns `{url, size, expiresAt}`.
+Files at least 8 MB (`window.__MAKO_RANGE_THRESHOLD_BYTES`, or force
+`?mako_parquet=buffer|range`) register the signed URL with DuckDB-WASM
+(`registerFileURL` + `DuckDBDataProtocol.HTTP`) so only the footer and
+needed columns/row groups are fetched; a 403/expired signature re-fetches
+meta and retries once; a missing meta endpoint or a store that cannot sign
+keeps the whole-file path. The parquet GET itself is unchanged (still 302)
+so older clients and the caching PR keep working.
+
 "Prove safe" is CORS, and it is why the last attempt at this retreated to
 proxying (the comment lives in `dashboard-materialization.ts`): the request
 a browser makes after following a cross-origin redirect carries `Origin`,

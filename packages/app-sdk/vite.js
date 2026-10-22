@@ -498,10 +498,11 @@ export function makoData(options = {}) {
           return json(res, 200, listBindings(ctx.bindingsDir));
         }
         if (pathname === "/__data/viewer.json") return serveViewer(res);
-        const match = /^\/__data\/([^/]+)(\.parquet|\/refresh)$/.exec(pathname);
+        const match = /^\/__data\/([^/]+)(\.parquet|\.meta\.json|\/refresh)$/.exec(pathname);
         if (!match) return next();
         const name = decodeURIComponent(match[1]);
         const isRefresh = match[2] === "/refresh";
+        const isMeta = match[2] === ".meta.json";
         if (!BINDING_NAME.test(name)) return json(res, 400, { error: "invalid binding name" });
         if (isRefresh && req.method !== "POST") {
           return json(res, 405, { error: "POST to refresh a binding" });
@@ -522,7 +523,13 @@ export function makoData(options = {}) {
         // this binding's data, however fresh — serving it is how an edited
         // query ended up read with the old query's columns.
         const cacheMatches = () => fingerprint === null || cachedFingerprint(name) === fingerprint;
+        // Laptop cache is a local file: no GCS signed URL to hand to DuckDB.
+        const serveMeta = (size, how) => {
+          res.setHeader("x-mako-data", how);
+          return json(res, 200, { url: null, size, expiresAt: null });
+        };
         const serveCached = (how) => {
+          if (isMeta) return serveMeta(fs.statSync(cached).size, how);
           res.setHeader("content-type", "application/vnd.apache.parquet");
           res.setHeader("x-mako-data", how);
           return fs.createReadStream(cached).pipe(res);
@@ -537,6 +544,7 @@ export function makoData(options = {}) {
             buf = await fetchArtifact(name);
             writeCache(name, buf, null);
           }
+          if (isMeta) return serveMeta(buf.length, "api");
           res.setHeader("content-type", "application/vnd.apache.parquet");
           res.setHeader("content-length", String(buf.length));
           res.setHeader("x-mako-data", "api");

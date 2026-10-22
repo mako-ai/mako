@@ -32,7 +32,7 @@ Bindings are how apps reach workspace data. A binding is one file — `bindings/
 SELECT category, amount, created_at FROM orders
 ```
 
-Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**. The query is materialized into a Parquet artifact (same pipeline as dashboards); at runtime the preview serves each artifact at the app-relative URL `__data/<name>.parquet`, ready for hyparquet or DuckDB-WASM. In app code, read bindings through `@mako/app-sdk` — a real package committed into the workspace repo:
+Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**. The query is materialized into a Parquet artifact (same pipeline as dashboards); at runtime the preview serves each artifact at the app-relative URL `__data/<name>.parquet`, ready for hyparquet or DuckDB-WASM. The SDK range-reads large files via `__data/<name>.meta.json` (signed URL + size) and DuckDB-WASM HTTP; a plain GET of the parquet still 302s for older clients. In app code, read bindings through `@mako/app-sdk` — a real package committed into the workspace repo:
 
 ```tsx
 import { useQuery, useDuckDB } from "@makoai/app-sdk"; // apps created before 2026-09: "@mako/app-sdk" (older alias, same package)

@@ -75,8 +75,9 @@ export function normalizeBindingSource(source: string): string;
 export function bindingFingerprint(source: string, dbtEnvironment?: string): string;
 
 /**
- * Serve the app's data bindings (`__data/index.json`, `__data/<name>.parquet`)
- * during a local `vite dev`, built by Mako from the local binding files.
+ * Serve the app's data bindings (`__data/index.json`, `__data/<name>.parquet`,
+ * `__data/<name>.meta.json`) during a local `vite dev`, built by Mako from
+ * the local binding files.
  */
 export function makoData(options?: MakoDataOptions): Plugin;
 export default makoData;

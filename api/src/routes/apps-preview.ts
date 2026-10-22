@@ -20,7 +20,10 @@ import { AppProject } from "../database/workspace-schema";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { resolveAppViewerById } from "../apps/app-viewer.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  serveParquetArtifact,
+  serveParquetArtifactMeta,
+} from "../services/artifact-delivery.service";
 import { readPreviewAsset, resolvePreviewGrant } from "../apps/preview.service";
 import { createRouter } from "../openapi/core";
 
@@ -136,6 +139,31 @@ async function serveAsset(c: Context): Promise<Response> {
     if (!response) {
       return c.json(
         { success: false, error: `Binding "${dataMatch[1]}" not materialized` },
+        404,
+      );
+    }
+    return response;
+  }
+
+  // Sibling of the parquet GET (which stays a 302): signed URL + size for
+  // DuckDB-WASM ranged reads. Same token, same key resolution.
+  const metaMatch = assetPathFor(c, token).match(
+    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.meta\.json$/,
+  );
+  if (metaMatch) {
+    const project = await AppProject.findById(grant.projectId);
+    const key = project
+      ? await bindingArtifactKeyByName(project, metaMatch[1], "")
+      : null;
+    const response = key
+      ? await serveParquetArtifactMeta(getDashboardArtifactStore(), key, {
+          cacheControl: "no-store",
+          extraHeaders: { "Access-Control-Allow-Origin": "*" },
+        })
+      : null;
+    if (!response) {
+      return c.json(
+        { success: false, error: `Binding "${metaMatch[1]}" not materialized` },
         404,
       );
     }

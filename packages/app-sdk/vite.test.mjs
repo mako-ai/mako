@@ -83,6 +83,7 @@ test("index.json lists valid bindings from disk; other paths fall through", asyn
   assert.deepEqual(JSON.parse(r.body.toString()), ["sales"]);
   assert.equal((await request(handlers[0], "/src/App.tsx")).status, "next");
   assert.equal((await request(handlers[0], "/__data/..%2Fetc.parquet")).status, 400);
+  assert.equal((await request(handlers[0], "/__data/..%2Fetc.meta.json")).status, 400);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -493,6 +494,31 @@ test("bindingFingerprint depends on the text and the dbt environment", () => {
   assert.equal(bindingFingerprint("select 1"), bindingFingerprint("select 1", ""));
   assert.notEqual(bindingFingerprint("select 1"), bindingFingerprint("select 2"));
   assert.notEqual(bindingFingerprint("select 1", "joan"), bindingFingerprint("select 1"));
+});
+
+test("meta.json reports the cached parquet size and never a signed URL", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = devBuildApi(calls);
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ revalidateMs: Infinity }).configureServer(server);
+    const built = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(built.status, 200);
+    const meta = await request(handlers[0], "/__data/sales.meta.json");
+    assert.equal(meta.status, 200);
+    assert.equal(meta.headers["content-type"], "application/json");
+    assert.deepEqual(JSON.parse(meta.body.toString()), {
+      url: null,
+      size: built.body.length,
+      expiresAt: null,
+    });
+    // Size comes from the cache — no extra API round-trip.
+    assert.equal(calls.length, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test("no credentials → 503 with a hint, never index.html", async () => {

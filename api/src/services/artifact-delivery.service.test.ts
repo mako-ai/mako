@@ -14,7 +14,9 @@ import { Readable } from "node:stream";
 import type { DashboardArtifactStore } from "./dashboard-artifact-store.service";
 import {
   artifactDeliveryMode,
+  parquetArtifactMeta,
   serveParquetArtifact,
+  serveParquetArtifactMeta,
   SIGNED_URL_TTL_SECONDS,
 } from "./artifact-delivery.service";
 
@@ -159,6 +161,78 @@ async function testEnvOverrides() {
   }
 }
 
+async function testMetaReturnsSignedUrlAndSizeInRedirectMode() {
+  const store = fakeStore({
+    type: "gcs",
+    ensureBrowserCors: async () => true,
+    getSize: async () => 12_345_678,
+    getSignedUrl: async () => "https://bucket.example/signed?sig=abc",
+  });
+  const before = Date.now();
+  const meta = await parquetArtifactMeta(store, "apps/k.parquet");
+  assert.ok(meta);
+  assert.equal(meta.url, "https://bucket.example/signed?sig=abc");
+  assert.equal(meta.size, 12_345_678);
+  assert.ok(meta.expiresAt);
+  const expires = Date.parse(meta.expiresAt);
+  assert.ok(
+    expires >= before + SIGNED_URL_TTL_SECONDS * 1000 - 1000 &&
+      expires <= Date.now() + SIGNED_URL_TTL_SECONDS * 1000 + 1000,
+  );
+
+  const res = await serveParquetArtifactMeta(store, "apps/k.parquet", {
+    cacheControl: "no-store",
+    extraHeaders: { "Access-Control-Allow-Origin": "*" },
+  });
+  assert.ok(res);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("Content-Type"), "application/json");
+  assert.equal(res.headers.get("Cache-Control"), "no-store");
+  assert.equal(res.headers.get("Access-Control-Allow-Origin"), "*");
+  assert.equal((await res.json()).url, "https://bucket.example/signed?sig=abc");
+}
+
+async function testMetaOmitsUrlWhenStreaming() {
+  const store = fakeStore({
+    type: "filesystem",
+    getSignedUrl: async () => null,
+    getSize: async () => 42,
+  });
+  const meta = await parquetArtifactMeta(store, "apps/k.parquet");
+  assert.deepEqual(meta, { url: null, size: 42, expiresAt: null });
+}
+
+async function testMetaMissingArtifactIsNull() {
+  const store = fakeStore({
+    type: "gcs",
+    ensureBrowserCors: async () => true,
+    exists: async () => false,
+  });
+  assert.equal(await parquetArtifactMeta(store, "apps/missing.parquet"), null);
+  assert.equal(
+    await serveParquetArtifactMeta(store, "apps/missing.parquet", {
+      cacheControl: "no-store",
+    }),
+    null,
+  );
+}
+
+async function testMetaSigningFailureOmitsUrl() {
+  const store = fakeStore({
+    type: "gcs",
+    ensureBrowserCors: async () => true,
+    getSize: async () => 99,
+    getSignedUrl: async () => {
+      throw new Error("signBlob permission missing");
+    },
+  });
+  assert.deepEqual(await parquetArtifactMeta(store, "apps/k.parquet"), {
+    url: null,
+    size: 99,
+    expiresAt: null,
+  });
+}
+
 async function testModeIsResolvedOncePerStore() {
   let probes = 0;
   const store = fakeStore({
@@ -182,6 +256,10 @@ async function main() {
   await testSigningFailureDegradesToStream();
   await testEnvOverrides();
   await testModeIsResolvedOncePerStore();
+  await testMetaReturnsSignedUrlAndSizeInRedirectMode();
+  await testMetaOmitsUrlWhenStreaming();
+  await testMetaMissingArtifactIsNull();
+  await testMetaSigningFailureOmitsUrl();
   console.log("artifact-delivery.service tests passed");
 }
 

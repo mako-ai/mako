@@ -4,6 +4,8 @@ import * as React from "react";
 const DEFAULT_ROW_LIMIT = 500000;
 const DUCKDB_ESM =
   "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
+/** Whole-file fetch below this; ranged HTTP reads at or above. */
+const DEFAULT_RANGE_THRESHOLD_BYTES = 8 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // DuckDB: one lazy instance per page, bindings registered on first use. The
@@ -11,9 +13,12 @@ const DUCKDB_ESM =
 // step and no dependencies of its own.
 // ---------------------------------------------------------------------------
 let dbPromise = null;
+/** Set when getDb() first resolves — needed for DuckDBDataProtocol.HTTP. */
+let duckdbApi = null;
 function getDb() {
   dbPromise ??= (async () => {
     const duckdb = await import(/* @vite-ignore */ DUCKDB_ESM);
+    duckdbApi = duckdb;
     const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
     const worker = await duckdb.createWorker(bundle.mainWorker);
     const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker);
@@ -40,17 +45,77 @@ async function responseError(res, what) {
   return error;
 }
 
-async function loadBinding(name, bust) {
-  const res = await fetch(
-    "__data/" + encodeURIComponent(name) + ".parquet" + (bust ? "?refresh=" + Date.now() : ""),
-  );
-  if (!res.ok) {
-    throw await responseError(res, 'Data for binding "' + name + '" could not be loaded');
+function nowMs() {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function parquetForceMode() {
+  try {
+    if (typeof window === "undefined") return null;
+    const q = new URLSearchParams(window.location.search).get("mako_parquet");
+    if (q === "buffer" || q === "range") return q;
+    const stored = window.localStorage && window.localStorage.getItem("mako_parquet");
+    if (stored === "buffer" || stored === "range") return stored;
+  } catch {
+    /* opaque origin / disabled storage */
   }
-  const buf = new Uint8Array(await res.arrayBuffer());
-  const db = await getDb();
-  if (bust) await db.dropFile(name + ".parquet").catch(() => {});
-  await db.registerFileBuffer(name + ".parquet", buf);
+  return null;
+}
+
+function rangeThresholdBytes() {
+  try {
+    if (typeof window !== "undefined") {
+      const override = window.__MAKO_RANGE_THRESHOLD_BYTES;
+      if (typeof override === "number" && Number.isFinite(override) && override >= 0) {
+        return override;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_RANGE_THRESHOLD_BYTES;
+}
+
+function chooseParquetLoad(meta, force, threshold) {
+  if (force === "buffer") return "buffer";
+  if (!meta || typeof meta.url !== "string" || !meta.url) return "buffer";
+  if (force === "range") return "range";
+  const gate = threshold ?? rangeThresholdBytes();
+  if (typeof meta.size !== "number" || meta.size < gate) return "buffer";
+  return "range";
+}
+
+function isExpiredUrlError(error) {
+  const status = error && typeof error === "object" ? error.status : undefined;
+  if (status === 403) return true;
+  const msg = error instanceof Error ? error.message : String(error);
+  return /(?:^|\D)403(?:\D|$)|forbidden|expired|signaturedoesnotmatch|accessdenied|invalid[_\s]?token/i.test(
+    msg,
+  );
+}
+
+async function fetchBindingMeta(name, bust) {
+  try {
+    const res = await fetch(
+      "__data/" + encodeURIComponent(name) + ".meta.json" + (bust ? "?refresh=" + Date.now() : ""),
+    );
+    if (!res.ok) return null;
+    const type = res.headers.get("content-type") || "";
+    if (!type.includes("json")) return null;
+    const body = await res.json();
+    if (!body || typeof body !== "object") return null;
+    const url =
+      typeof body.url === "string" && /^https?:\/\//i.test(body.url) ? body.url : null;
+    const size =
+      typeof body.size === "number" && Number.isFinite(body.size) ? body.size : null;
+    const expiresAt = typeof body.expiresAt === "string" ? body.expiresAt : null;
+    return { url, size, expiresAt };
+  } catch {
+    return null;
+  }
+}
+
+async function createBindingView(db, name) {
   const conn = await db.connect();
   try {
     // A view per binding so SQL can name tables by binding name.
@@ -62,6 +127,84 @@ async function loadBinding(name, bust) {
     await conn.close();
   }
 }
+
+async function registerBuffer(name, bust) {
+  const res = await fetch(
+    "__data/" + encodeURIComponent(name) + ".parquet" + (bust ? "?refresh=" + Date.now() : ""),
+  );
+  if (!res.ok) {
+    throw await responseError(res, 'Data for binding "' + name + '" could not be loaded');
+  }
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const db = await getDb();
+  if (bust) await db.dropFile(name + ".parquet").catch(() => {});
+  await db.registerFileBuffer(name + ".parquet", buf);
+  await createBindingView(db, name);
+}
+
+async function registerRange(name, url, drop) {
+  const db = await getDb();
+  const protocol = duckdbApi && duckdbApi.DuckDBDataProtocol;
+  if (!protocol || protocol.HTTP == null) {
+    throw new Error("DuckDB HTTP protocol unavailable");
+  }
+  if (drop) await db.dropFile(name + ".parquet").catch(() => {});
+  await db.registerFileURL(name + ".parquet", url, protocol.HTTP, false);
+  await createBindingView(db, name);
+}
+
+const rangeBindings = new Set(); // names currently registered via HTTP range
+
+async function loadBinding(name, bust) {
+  const t0 = nowMs();
+  const force = parquetForceMode();
+  let meta = await fetchBindingMeta(name, bust);
+  let mode = chooseParquetLoad(meta, force);
+  let used = mode;
+  try {
+    if (mode === "range") {
+      try {
+        await registerRange(name, meta.url, bust);
+        rangeBindings.add(name);
+      } catch (error) {
+        if (isExpiredUrlError(error)) {
+          meta = await fetchBindingMeta(name, true);
+          if (!meta || !meta.url) throw error;
+          await registerRange(name, meta.url, true);
+          rangeBindings.add(name);
+        } else if (force === "range") {
+          throw error;
+        } else {
+          used = "buffer";
+          const db = await getDb().catch(() => null);
+          if (db) await db.dropFile(name + ".parquet").catch(() => {});
+          await registerBuffer(name, bust);
+          rangeBindings.delete(name);
+        }
+      }
+    } else {
+      await registerBuffer(name, bust);
+      rangeBindings.delete(name);
+    }
+  } finally {
+    console.debug("[mako parquet]", {
+      binding: name,
+      mode: used,
+      size: meta && typeof meta.size === "number" ? meta.size : null,
+      ms: Math.round(nowMs() - t0),
+    });
+  }
+}
+
+/** @internal test hooks — not part of the documented app API. */
+export const __parquet = {
+  DEFAULT_RANGE_THRESHOLD_BYTES,
+  chooseParquetLoad,
+  isExpiredUrlError,
+  parquetForceMode,
+  rangeThresholdBytes,
+  fetchBindingMeta,
+};
 
 const registered = new Map(); // name -> Promise<void>
 function registerBinding(name) {
@@ -94,9 +237,12 @@ async function reloadBinding(name) {
 // data URL's sibling, `__data/<name>/refresh`, and every server that answers
 // `__data/<name>.parquet` (Mako's viewer, preview and share routes, the
 // sandbox dev server, the laptop Vite plugin) rebuilds the binding behind
-// it, with its own authorization. The runtime then reloads the bytes and
-// bumps a version every query hook depends on, so the page re-renders with
-// the new rows — and keeps the old ones on screen until they arrive.
+// it, with its own authorization — those same servers also answer
+// `__data/<name>.meta.json` `{url, size, expiresAt}` so a large binding can
+// be range-read from the signed URL instead of downloaded whole. The runtime
+// then reloads the bytes (or re-registers the URL) and bumps a version every
+// query hook depends on, so the page re-renders with the new rows — and
+// keeps the old ones on screen until they arrive.
 // ---------------------------------------------------------------------------
 const bindingListeners = new Set();
 let bindingState = { version: 0, refreshing: new Set() };
@@ -274,7 +420,7 @@ function toPlainRows(table, cap) {
   return { rows, fields };
 }
 
-async function runSql(sql, rowLimit) {
+async function runSqlOnce(sql, rowLimit) {
   const cap = rowLimit === null ? Infinity : (rowLimit ?? DEFAULT_ROW_LIMIT);
   const db = await getDb();
   const conn = await db.connect();
@@ -285,6 +431,18 @@ async function runSql(sql, rowLimit) {
     return { rows, fields, rowCount, truncated: rowCount > rows.length };
   } finally {
     await conn.close();
+  }
+}
+
+async function runSql(sql, rowLimit) {
+  try {
+    return await runSqlOnce(sql, rowLimit);
+  } catch (error) {
+    // Signed URLs last 10 minutes; a dashboard left open can miss the TTL
+    // on a later query. Refresh each ranged binding's URL and retry once.
+    if (!isExpiredUrlError(error) || rangeBindings.size === 0) throw error;
+    await Promise.all([...rangeBindings].map(n => reloadBinding(n).catch(() => {})));
+    return await runSqlOnce(sql, rowLimit);
   }
 }
 

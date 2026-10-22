@@ -30,7 +30,10 @@ import {
   getDashboardArtifactStore,
   type DashboardArtifactStore,
 } from "../services/dashboard-artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  serveParquetArtifact,
+  serveParquetArtifactMeta,
+} from "../services/artifact-delivery.service";
 import {
   bindingArtifactKey,
   bindingArtifactKeyByName,
@@ -647,7 +650,8 @@ export async function deployBuild(
 
 /**
  * Serve one file of a published app: a build asset, or a materialized data
- * binding at `__data/<name>.parquet`.
+ * binding at `__data/<name>.parquet` (and its `__data/<name>.meta.json`
+ * sibling: signed URL + size for DuckDB-WASM ranged reads).
  *
  * The only difference between the signed-in viewer and an anonymous share is
  * WHO is allowed to call it; what gets served is identical — except
@@ -722,6 +726,24 @@ export async function serveDeploymentFile(input: {
     const store = await artifactStoreForRead(key);
     if (!store) return null;
     return await serveParquetArtifact(store, key, {
+      cacheControl: input.private ? "private, no-store" : "no-store",
+    });
+  }
+
+  // Sibling of the parquet: signed URL + size, so DuckDB-WASM can range-read
+  // without following the 302. Same auth and key resolution as `.parquet`.
+  const metaMatch = assetPath.match(
+    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.meta\.json$/,
+  );
+  if (metaMatch) {
+    const project = await AppProject.findById(projectId);
+    const key = project
+      ? await bindingArtifactKeyByName(project, metaMatch[1], "", sha)
+      : null;
+    if (!key) return null;
+    const store = await artifactStoreForRead(key);
+    if (!store) return null;
+    return await serveParquetArtifactMeta(store, key, {
       cacheControl: input.private ? "private, no-store" : "no-store",
     });
   }

@@ -1,5 +1,15 @@
 import type * as React from "react";
 
+declare global {
+  interface Window {
+    /**
+     * Override the size gate for DuckDB-WASM ranged parquet reads
+     * (default 8 MiB). `0` range-reads every binding that has a signed URL.
+     */
+    __MAKO_RANGE_THRESHOLD_BYTES?: number;
+  }
+}
+
 /** What a refresh built — the server's answer to `POST __data/<name>/refresh`. */
 export interface RefreshResult {
   binding: string;

@@ -55,7 +55,12 @@ or 502 with the query's error.
 `--chart-1`, …) match the ones the scaffold's `styles.css` declares.
 
 Data arrives from `__data/<name>.parquet`, relative to the page — the same
-path in Mako's sandbox, in a published app, and on a laptop.
+path in Mako's sandbox, in a published app, and on a laptop. Bindings at
+least 8 MB (override with `window.__MAKO_RANGE_THRESHOLD_BYTES`, or force
+`?mako_parquet=buffer|range` / `localStorage.mako_parquet`) are range-read
+from a short-lived signed URL advertised at `__data/<name>.meta.json`;
+smaller files, older servers, and stores that cannot sign still download
+the whole parquet.
 
 ### Who is looking: `useViewer()`
 
@@ -93,11 +98,12 @@ const board = useDuckDB(
 );
 ```
 
-Keep the roster binding to the columns the app needs for its logic: every
-binding the app can read is downloaded whole into the viewer's browser, so
-this shapes the UI rather than enforcing access. Who may *open* the app is
-the app's access setting in Mako; server-side row filtering is a follow-up
-on the same identity (apps.md §28).
+Keep the roster binding to the columns the app needs for its logic: a
+binding the app can read is visible to the viewer (large files are
+range-read, not downloaded whole), so this shapes the UI rather than
+enforcing access. Who may *open* the app is the app's access setting in
+Mako; server-side row filtering is a follow-up on the same identity
+(apps.md §28).
 
 ## In `vite.config.ts`
 

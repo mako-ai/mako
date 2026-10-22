@@ -307,34 +307,55 @@ class GcsDashboardArtifactStore implements DashboardArtifactStore {
     if (!this.bucketName) return false;
     const [metadata] = await bucket.getMetadata();
     const rules = metadata.cors ?? [];
-    const satisfied = rules.some(
-      rule =>
-        (rule.origin ?? []).includes("*") &&
-        (rule.method ?? []).includes("GET"),
-    );
-    if (satisfied) return true;
-    await bucket.setMetadata({
-      cors: [
-        ...rules,
-        {
-          origin: ["*"],
-          method: ["GET", "HEAD"],
-          responseHeader: [
-            "Content-Type",
-            "Content-Length",
-            "Content-Range",
-            "Accept-Ranges",
-            "ETag",
-            "Last-Modified",
-          ],
-          maxAgeSeconds: 3600,
-        },
-      ],
-    });
-    logger.info("Installed browser CORS rule on artifact bucket", {
-      bucket: this.bucketName,
-    });
-    return true;
+    // GCS maps `responseHeader` onto both Allow-Headers (preflight) and
+    // Expose-Headers. `Range` is not a CORS-safelisted request header, so
+    // DuckDB-WASM's footer/column reads need it listed or the preflight fails.
+    const rangeHeaders = [
+      "Content-Type",
+      "Content-Length",
+      "Content-Range",
+      "Accept-Ranges",
+      "ETag",
+      "Last-Modified",
+      "Range",
+    ];
+    const allowsGet = (rule: { origin?: string[]; method?: string[] }) =>
+      (rule.origin ?? []).includes("*") && (rule.method ?? []).includes("GET");
+    const allowsRange = (rule: {
+      origin?: string[];
+      method?: string[];
+      responseHeader?: string[];
+    }) => allowsGet(rule) && (rule.responseHeader ?? []).includes("Range");
+    if (rules.some(allowsRange)) return true;
+    try {
+      await bucket.setMetadata({
+        cors: [
+          ...rules,
+          {
+            origin: ["*"],
+            method: ["GET", "HEAD"],
+            responseHeader: rangeHeaders,
+            maxAgeSeconds: 3600,
+          },
+        ],
+      });
+      logger.info("Installed browser CORS rule on artifact bucket", {
+        bucket: this.bucketName,
+      });
+      return true;
+    } catch (error) {
+      // A GET * rule already lets whole-file redirects work. Missing Range
+      // only breaks ranged reads — do not fall back to proxying every byte.
+      if (rules.some(allowsGet)) {
+        logger.warn(
+          "Artifact bucket CORS allows GET but could not add Range; " +
+            "ranged parquet reads may fail until `pnpm artifacts:cors` runs.",
+          { bucket: this.bucketName, error },
+        );
+        return true;
+      }
+      throw error;
+    }
   }
 
   async openReadStream(key: string): Promise<NodeJS.ReadableStream | null> {

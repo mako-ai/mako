@@ -150,3 +150,70 @@ export async function serveParquetArtifact(
     },
   );
 }
+
+/**
+ * What DuckDB-WASM needs to range-read a parquet without downloading it:
+ * a short-lived signed URL, the object size (to decide buffer vs range),
+ * and when that URL expires. `url` is null when this store cannot sign
+ * (filesystem, CORS unproven, signing failed) — the SDK then keeps the
+ * whole-file path. Missing artifacts are null, same as serveParquetArtifact.
+ *
+ * Sibling of `__data/<name>.parquet` at `__data/<name>.meta.json`. The
+ * parquet GET itself stays a 302; this exists so the SDK can look at the
+ * URL and size without following the redirect blindly.
+ */
+export type ParquetArtifactMeta = {
+  url: string | null;
+  size: number | null;
+  expiresAt: string | null;
+};
+
+export async function parquetArtifactMeta(
+  store: DashboardArtifactStore,
+  key: string,
+): Promise<ParquetArtifactMeta | null> {
+  if (!(await store.exists(key))) return null;
+  const size = await store.getSize(key);
+  if ((await artifactDeliveryMode(store)) === "redirect") {
+    try {
+      const url = await store.getSignedUrl(key, SIGNED_URL_TTL_SECONDS);
+      if (url) {
+        return {
+          url,
+          size,
+          expiresAt: new Date(
+            Date.now() + SIGNED_URL_TTL_SECONDS * 1000,
+          ).toISOString(),
+        };
+      }
+    } catch (error) {
+      logger.warn(
+        "Artifact delivery: signing failed for meta; omitting url so the " +
+          "SDK falls back to a whole-file read",
+        { storeType: store.type, error },
+      );
+    }
+  }
+  return { url: null, size, expiresAt: null };
+}
+
+export async function serveParquetArtifactMeta(
+  store: DashboardArtifactStore,
+  key: string,
+  opts: {
+    cacheControl: string;
+    extraHeaders?: Record<string, string>;
+  },
+): Promise<Response | null> {
+  const meta = await parquetArtifactMeta(store, key);
+  if (!meta) return null;
+  return new Response(JSON.stringify(meta), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json",
+      // Signed URLs expire; never cache the body that contains one.
+      "Cache-Control": opts.cacheControl,
+      ...opts.extraHeaders,
+    },
+  });
+}

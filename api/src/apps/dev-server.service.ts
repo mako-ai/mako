@@ -361,6 +361,25 @@ const makoData = {
         })();
         return;
       }
+      const metaMatch = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\.meta\\.json$/.exec(url);
+      if (metaMatch) {
+        const name = metaMatch[1];
+        const file = path.join(${JSON.stringify(stagedDataDir)}, name + ".parquet");
+        res.setHeader("content-type", "application/json");
+        res.setHeader("cache-control", "no-store");
+        // Staged files are local to the box — no GCS signed URL. Live
+        // bindings have no artifact yet; the SDK then whole-file fetches
+        // __data/<name>.parquet, which runs the query.
+        if (existsSync(file)) {
+          res.end(JSON.stringify({ url: null, size: statSync(file).size, expiresAt: null }));
+        } else if (existsSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".live"))) {
+          res.end(JSON.stringify({ url: null, size: null, expiresAt: null }));
+        } else {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ error: "Binding not materialized", binding: name }));
+        }
+        return;
+      }
       const match = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\.parquet$/.exec(url);
       if (!match) return next();
       const name = match[1];
