@@ -99,6 +99,35 @@ function redirectCacheControl(remainingMs: number): string {
 }
 
 /**
+ * A signed read URL for `key`. Without `stable.windowMs`: valid for
+ * SIGNED_URL_TTL_SECONDS from now, a new string every call. With it: fixed
+ * for the window (see serveParquetArtifact's `stable`), so every call inside
+ * one window returns the same string and the browser cache can answer it.
+ * `expiresAt` is set only for a stable URL. Throws when signing fails.
+ */
+export async function signArtifactUrl(
+  store: ArtifactStore,
+  key: string,
+  stable?: { windowMs?: number; now?: number },
+): Promise<{ url: string | null; expiresAt: number | null }> {
+  if (!stable?.windowMs) {
+    return {
+      url: await store.getSignedUrl(key, SIGNED_URL_TTL_SECONDS),
+      expiresAt: null,
+    };
+  }
+  const window = stableWindow(stable.now ?? Date.now(), stable.windowMs);
+  // The window's own end plus the usual short TTL: a URL handed out in the
+  // window's last second still outlives the follow-up request.
+  const expiresAt = window.end + SIGNED_URL_TTL_SECONDS * 1000;
+  const url = await store.getSignedUrl(key, SIGNED_URL_TTL_SECONDS, {
+    accessibleAt: new Date(window.start),
+    expiresAt: new Date(expiresAt),
+  });
+  return { url, expiresAt };
+}
+
+/**
  * Serve one parquet artifact: a 302 to a signed bucket URL when the store
  * supports it, a proxied stream otherwise. Returns null when the artifact
  * does not exist — the route decides what a 404 looks like there.
@@ -136,24 +165,16 @@ export async function serveParquetArtifact(
       // as the bucket's XML 404, not the route's "not materialized".
       if (!(await store.exists(key))) return null;
       const now = opts.stable?.now ?? Date.now();
-      const window = opts.stable
-        ? stableWindow(now, opts.stable.windowMs)
-        : null;
-      // The window's own end plus the usual short TTL: a URL handed out in
-      // the window's last second still outlives the follow-up request.
-      const expiresAt = window ? window.end + SIGNED_URL_TTL_SECONDS * 1000 : 0;
-      const url = window
-        ? await store.getSignedUrl(key, SIGNED_URL_TTL_SECONDS, {
-            accessibleAt: new Date(window.start),
-            expiresAt: new Date(expiresAt),
-          })
-        : await store.getSignedUrl(key, SIGNED_URL_TTL_SECONDS);
+      const { url, expiresAt } = await signArtifactUrl(store, key, {
+        ...opts.stable,
+        now,
+      });
       if (url) {
         return new Response(null, {
           status: 302,
           headers: {
             Location: url,
-            "Cache-Control": window
+            "Cache-Control": expiresAt
               ? redirectCacheControl(expiresAt - now)
               : // Never cache the redirect itself: the signature inside expires.
                 "private, no-store",

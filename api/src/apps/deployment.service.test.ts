@@ -65,6 +65,15 @@ vi.mock("./app-viewer.service", () => ({
 vi.mock("../services/artifact-delivery.service", () => ({
   SIGNED_URL_TTL_SECONDS: 600,
   artifactDeliveryMode: vi.fn(async () => "redirect"),
+  signArtifactUrl: vi.fn(
+    async (
+      store: { getSignedUrl: (k: string, t: number) => unknown },
+      key,
+    ) => ({
+      url: await store.getSignedUrl(key, 600),
+      expiresAt: null,
+    }),
+  ),
   serveParquetArtifact: vi.fn(
     async (store, key) =>
       new Response(`${store === stores.source}:${key}`, { status: 200 }),

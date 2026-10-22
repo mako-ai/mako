@@ -39,6 +39,7 @@ import {
   requestHost,
   signedUrlWindowMs,
 } from "../apps/app-origin";
+import { sandboxAppDocument } from "../apps/app-document-sandbox";
 import { createRouter } from "../openapi/core";
 
 export const appsPreviewRoutes = createRouter();
@@ -132,7 +133,9 @@ async function serveAsset(c: Context): Promise<Response> {
     // static preview below sets, for the same reason.
     const headers = new Headers(response.headers);
     headers.set("Access-Control-Allow-Origin", "*");
-    if (!onAppHost) sandboxDocument(headers);
+    // On Mako's origin, a top-level open of this URL must not run app code
+    // as app.mako.ai (app-document-sandbox.ts). An app host is foreign.
+    if (!onAppHost) sandboxAppDocument(headers);
     return new Response(response.body, { status: response.status, headers });
   }
 
@@ -237,34 +240,9 @@ async function serveAsset(c: Context): Promise<Response> {
     // and cookie-free, so a wildcard is safe and required for modules to run.
     "Access-Control-Allow-Origin": "*",
   });
-  sandboxDocument(headers);
+  // The static preview is always on Mako's origin.
+  sandboxAppDocument(headers);
   return new Response(new Uint8Array(asset.contents), { status: 200, headers });
-}
-
-/**
- * The token URL is cookie-free, but it is still on Mako's origin: opened as
- * a top-level page (the "open in a new tab" button, a pasted link) it would
- * run app code AS app.mako.ai, with the visitor's session one same-origin
- * fetch away. A CSP sandbox gives that document the same opaque origin the
- * iframe gives it, wherever it is opened. Inside the iframe it changes
- * nothing: the two sandboxes intersect to the iframe's own flags.
- */
-export const MAKO_ORIGIN_APP_SANDBOX =
-  "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox";
-
-// Every type a browser renders as a scriptable document when navigated to.
-const DOCUMENT_TYPES = [
-  "text/html",
-  "image/svg+xml",
-  "application/xhtml+xml",
-  "text/xml",
-  "application/xml",
-];
-
-function sandboxDocument(headers: Headers): void {
-  const type = (headers.get("Content-Type") ?? "").toLowerCase();
-  if (!DOCUMENT_TYPES.some(t => type.startsWith(t))) return;
-  headers.set("Content-Security-Policy", MAKO_ORIGIN_APP_SANDBOX);
 }
 
 appsPreviewRoutes.get("/:token", serveAsset);

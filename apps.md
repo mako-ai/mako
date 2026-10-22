@@ -3504,7 +3504,8 @@ every use, and unchanged data is a bodiless 304.
 
 **Also fixed, flag or not.** A token URL opened as a top-level page ran app
 code as app.mako.ai. HTML and SVG from the token route on Mako's origin now
-carry `Content-Security-Policy: sandbox …`, the same flags the iframe sets.
+carry `Content-Security-Policy: sandbox …`, the one policy shares use too
+(`api/src/apps/app-document-sandbox.ts`, from #1146).
 
 **Rejected.** A parent-page broker (Mako fetches WASM and parquet, posts
 the bytes in) needs SDK changes, still leaves the bundle and DuckDB's worker

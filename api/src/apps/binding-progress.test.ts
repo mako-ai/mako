@@ -262,6 +262,34 @@ describe("parquetLinkOutcome", () => {
     expect(outcome.status).toBe(200);
     expect(outcome.body).not.toHaveProperty("url");
   });
+
+  it("signs for a fixed window when asked, so an app host gets one url per window", async () => {
+    const getSignedUrl = vi.fn(
+      async (_k: string, _ttl?: number, w?: { expiresAt: Date }) =>
+        `https://storage.test/signed?exp=${w ? w.expiresAt.getTime() : Date.now()}`,
+    );
+    const s = store({ getSignedUrl } as Partial<ArtifactStore>);
+    const windowMs = 6 * 60 * 60 * 1000;
+    const a = await parquetLinkOutcome(
+      "sales",
+      async () => ({ store: s, key: "k" }),
+      { windowMs },
+    );
+    const b = await parquetLinkOutcome(
+      "sales",
+      async () => ({ store: s, key: "k" }),
+      { windowMs },
+    );
+    expect(a.body).toHaveProperty("url");
+    expect((a.body as { url: string }).url).toBe(
+      (b.body as { url: string }).url,
+    );
+    const windowArg = getSignedUrl.mock.calls[0]?.[2];
+    expect(windowArg?.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    // Without a window: the usual "now"-based signature, no window argument.
+    await parquetLinkOutcome("sales", async () => ({ store: s, key: "k" }));
+    expect(getSignedUrl.mock.calls[2]?.[2]).toBeUndefined();
+  });
 });
 
 describe("serverTimingHeader", () => {

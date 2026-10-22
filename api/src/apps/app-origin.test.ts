@@ -36,10 +36,8 @@ import {
 } from "./app-origin";
 import { mintPublishedGrant } from "./preview.service";
 import { appsHostGate } from "../middleware/apps-host-gate";
-import {
-  appsPreviewRoutes,
-  MAKO_ORIGIN_APP_SANDBOX,
-} from "../routes/apps-preview";
+import { appsPreviewRoutes } from "../routes/apps-preview";
+import { APP_DOCUMENT_SANDBOX } from "./app-document-sandbox";
 
 const ws = "6846e6a01b05af0948070582";
 const appA = "23d9b603172c133a8427e812";
@@ -253,9 +251,9 @@ describe("token URLs on Mako's own origin", () => {
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Security-Policy")).toBe(
-      MAKO_ORIGIN_APP_SANDBOX,
+      APP_DOCUMENT_SANDBOX,
     );
-    expect(MAKO_ORIGIN_APP_SANDBOX).not.toContain("allow-same-origin");
+    expect(APP_DOCUMENT_SANDBOX).not.toContain("allow-same-origin");
     // And stay uncacheable: an opaque-origin frame caches nothing anyway.
     expect(served.calls[0]?.immutableUntil).toBeUndefined();
   });

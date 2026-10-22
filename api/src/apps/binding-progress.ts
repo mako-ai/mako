@@ -33,7 +33,7 @@ import { createReadStream } from "node:fs";
 import { rm, stat } from "node:fs/promises";
 import type { ArtifactStore } from "../services/artifact-store.service";
 import {
-  SIGNED_URL_TTL_SECONDS,
+  signArtifactUrl,
   artifactDeliveryMode,
 } from "../services/artifact-delivery.service";
 import { loggers } from "../logging";
@@ -315,11 +315,13 @@ export function bindingProgressResponse(
 export async function signedParquetUrl(
   store: ArtifactStore,
   key: string,
+  /** A URL fixed for this window (app-origin.ts), as serveParquetArtifact. */
+  stable?: { windowMs: number },
 ): Promise<string | null | undefined> {
   if (!(await store.exists(key))) return null;
   if ((await artifactDeliveryMode(store)) !== "redirect") return undefined;
   try {
-    return (await store.getSignedUrl(key, SIGNED_URL_TTL_SECONDS)) ?? undefined;
+    return (await signArtifactUrl(store, key, stable)).url ?? undefined;
   } catch (error) {
     logger.warn("Apps binding link: signing failed; client will stream", {
       storeType: store.type,
@@ -338,6 +340,7 @@ export async function signedParquetUrl(
 export async function parquetLinkOutcome(
   name: string,
   resolve: () => Promise<{ store: ArtifactStore; key: string } | null>,
+  stable?: { windowMs: number },
 ): Promise<BindingProgressOutcome> {
   reportBindingPhase("resolving");
   const resolveStart = Date.now();
@@ -350,7 +353,7 @@ export async function parquetLinkOutcome(
   if (!target) return missing;
   reportBindingPhase("signing");
   const signStart = Date.now();
-  const url = await signedParquetUrl(target.store, target.key);
+  const url = await signedParquetUrl(target.store, target.key, stable);
   const signMs = Date.now() - signStart;
   if (url === null) return missing;
   return {

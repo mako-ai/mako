@@ -33,6 +33,10 @@ import { wantsBindingProgress } from "../apps/binding-progress";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import {
+  APP_DOCUMENT_SANDBOX,
+  sandboxAppDocument,
+} from "../apps/app-document-sandbox";
+import {
   anonIdFromCookie,
   classifyUserAgent,
   recordServedOpen,
@@ -583,31 +587,8 @@ async function serveSharedApp(c: Context): Promise<Response> {
   return withShareAppHeaders(response);
 }
 
-/**
- * The sandbox every shared app document gets, top-level or framed.
- *
- * A share opens the app as a TOP-LEVEL page on Mako's origin. Without this,
- * app code (written by any workspace member, often by an agent) would run
- * as app.mako.ai: a signed-in visitor's session cookie rides on any
- * same-origin `fetch("/api/…")` it makes, across every workspace they
- * belong to. The CSP sandbox gives the document an opaque origin instead:
- * no Mako cookies, no Mako storage, and requests to /api are cross-origin
- * (no cookies, response unreadable). Never `allow-same-origin`.
- *
- * Beyond the in-Mako iframe's flags: downloads (CSV exports) and modals,
- * because a share is a whole page that used to have both.
- */
-export const SHARE_APP_SANDBOX =
-  "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals";
-
-// Every type a browser renders as a scriptable document when navigated to.
-const DOCUMENT_TYPES = [
-  "text/html",
-  "image/svg+xml",
-  "application/xhtml+xml",
-  "text/xml",
-  "application/xml",
-];
+/** The sandbox every shared app document gets (app-document-sandbox.ts). */
+export const SHARE_APP_SANDBOX = APP_DOCUMENT_SANDBOX;
 
 function isHtml(response: Response): boolean {
   return (response.headers.get("Content-Type") ?? "")
@@ -624,10 +605,7 @@ function isHtml(response: Response): boolean {
 function withShareAppHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("Access-Control-Allow-Origin", "*");
-  const type = (headers.get("Content-Type") ?? "").toLowerCase();
-  if (DOCUMENT_TYPES.some(t => type.startsWith(t))) {
-    headers.set("Content-Security-Policy", SHARE_APP_SANDBOX);
-  }
+  sandboxAppDocument(headers);
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

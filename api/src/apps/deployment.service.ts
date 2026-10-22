@@ -915,8 +915,11 @@ export async function serveDeploymentFile(input: {
       return store ? { store, key } : null;
     };
     if (input.progress) {
+      // The SDK (>= 2.7.4) takes its parquet URL from these events, so a
+      // stable window must reach the signing here too, or an app on its own
+      // origin would get a fresh URL (a cache miss) on every open.
       return bindingProgressResponse(() =>
-        parquetLinkOutcome(dataMatch[1], resolve),
+        parquetLinkOutcome(dataMatch[1], resolve, input.stableData),
       );
     }
     const resolveStart = Date.now();
