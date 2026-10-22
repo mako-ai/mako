@@ -21,7 +21,10 @@ import { AppProject } from "../database/workspace-schema";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { resolveAppViewerById } from "../apps/app-viewer.service";
 import { getArtifactStore } from "../services/artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  isArtifactMetaRequest,
+  serveBindingParquetWithRevalidate,
+} from "../apps/binding-freshness";
 import { readPreviewAsset, resolvePreviewGrant } from "../apps/preview.service";
 import { createRouter } from "../openapi/core";
 
@@ -91,6 +94,7 @@ async function serveAsset(c: Context): Promise<Response> {
       // (no cookie in the sandboxed iframe) — `__data/viewer.json` is
       // answered from it (apps.md §28).
       viewer: grant.viewer ?? null,
+      meta: isArtifactMetaRequest(c.req.url),
     });
     if (!response) {
       return c.json({ success: false, error: "Not found" }, 404);
@@ -131,11 +135,22 @@ async function serveAsset(c: Context): Promise<Response> {
       ? await bindingArtifactKeyByName(project, dataMatch[1], "")
       : null;
     const response = key
-      ? await serveParquetArtifact(getArtifactStore(), key, {
+      ? await serveBindingParquetWithRevalidate({
+          store: getArtifactStore(),
+          key,
           cacheControl: "no-store",
           // The preview page fetches cross-origin; without ACAO the browser
           // rejects both the stream and the redirect before following it.
           extraHeaders: { "Access-Control-Allow-Origin": "*" },
+          revalidate: project
+            ? {
+                projectId: grant.projectId,
+                project,
+                name: dataMatch[1],
+                actorId: grant.viewer?.id ?? "",
+              }
+            : undefined,
+          meta: isArtifactMetaRequest(c.req.url),
         })
       : null;
     if (!response) {

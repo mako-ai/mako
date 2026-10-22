@@ -16,6 +16,8 @@ import { Types } from "mongoose";
 import type { IAppProject } from "../database/workspace-schema";
 import {
   BindingRefreshError,
+  bindingRefreshInFlight,
+  kickoffBindingRevalidate,
   refreshAppBinding,
   refreshBindingHttp,
   refreshPathBinding,
@@ -166,6 +168,53 @@ describe("refreshAppBinding", () => {
       refreshAppBinding({ project, name: "broken", actorId: "u1" }, d),
     ).rejects.toMatchObject({ status: 502 });
     expect(d.materialize).toHaveBeenCalledTimes(2);
+  });
+
+  it("kickoffBindingRevalidate starts one build without waiting for it", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const d = deps({
+      materialize: vi.fn(async () => {
+        await gate;
+        return {
+          artifactKey: "apps/bindings/c/h.parquet",
+          rowCount: 1,
+          byteSize: 10,
+          materializedAt: new Date(),
+        };
+      }),
+    });
+    const result = await kickoffBindingRevalidate(
+      { project, name: "sales", actorId: "u1", at: "sha" },
+      d,
+    );
+    expect(result).toBe("started");
+    expect(bindingRefreshInFlight(project._id.toString(), "sales", "sha")).toBe(
+      true,
+    );
+    const second = await kickoffBindingRevalidate(
+      { project, name: "sales", actorId: "u2", at: "sha" },
+      d,
+    );
+    expect(second).toBe("running");
+    expect(d.materialize).toHaveBeenCalledTimes(1);
+    release();
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+
+  it("kickoffBindingRevalidate does not start a build when the cooldown is taken", async () => {
+    const d = deps({
+      claim: vi.fn(async () => ({
+        claimed: false as const,
+        retryAfterMs: 42_000,
+      })),
+    });
+    await expect(
+      kickoffBindingRevalidate({ project, name: "sales", actorId: "u1" }, d),
+    ).resolves.toBe("none");
+    expect(d.materialize).not.toHaveBeenCalled();
   });
 });
 

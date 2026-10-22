@@ -40,16 +40,35 @@ async function responseError(res, what) {
   return error;
 }
 
-async function loadBinding(name, bust) {
-  const res = await fetch(
-    "__data/" + encodeURIComponent(name) + ".parquet" + (bust ? "?refresh=" + Date.now() : ""),
-  );
-  if (!res.ok) {
-    throw await responseError(res, 'Data for binding "' + name + '" could not be loaded');
-  }
-  const buf = new Uint8Array(await res.arrayBuffer());
+/**
+ * Freshness headers on `__data/<name>.parquet` (and `?mako_meta=1`). A stale
+ * file is still the file — the server already served it — and `watch: true`
+ * means a background rebuild is running so the page can show "updating".
+ */
+export function interpretArtifactHeaders(headers) {
+  const get = n => {
+    if (!headers) return null;
+    if (typeof headers.get === "function") return headers.get(n);
+    const lower = n.toLowerCase();
+    if (headers[n] != null) return headers[n];
+    if (headers[lower] != null) return headers[lower];
+    const key = Object.keys(headers).find(k => k.toLowerCase() === lower);
+    return key ? headers[key] : null;
+  };
+  const rebuild = get("x-mako-rebuild");
+  const stale = get("x-mako-artifact-stale") === "1";
+  const known = rebuild === "started" || rebuild === "running" || rebuild === "none";
+  return {
+    builtAt: get("x-mako-artifact-built-at"),
+    stale,
+    rebuild: known ? rebuild : "none",
+    watch: stale && (rebuild === "started" || rebuild === "running"),
+  };
+}
+
+async function applyBindingBytes(name, buf, drop) {
   const db = await getDb();
-  if (bust) await db.dropFile(name + ".parquet").catch(() => {});
+  if (drop) await db.dropFile(name + ".parquet").catch(() => {});
   await db.registerFileBuffer(name + ".parquet", buf);
   const conn = await db.connect();
   try {
@@ -63,10 +82,28 @@ async function loadBinding(name, bust) {
   }
 }
 
+async function loadBinding(name, opts = {}) {
+  const query = opts.refresh
+    ? "?refresh=" + Date.now()
+    : opts.poll
+      ? "?v=" + Date.now()
+      : "";
+  const res = await fetch("__data/" + encodeURIComponent(name) + ".parquet" + query);
+  if (!res.ok) {
+    throw await responseError(res, 'Data for binding "' + name + '" could not be loaded');
+  }
+  const buf = new Uint8Array(await res.arrayBuffer());
+  await applyBindingBytes(name, buf, !!(opts.refresh || opts.poll));
+  if (!opts.refresh && !opts.poll) {
+    const info = interpretArtifactHeaders(res.headers);
+    if (info.watch) watchStaleBinding(name, info.builtAt);
+  }
+}
+
 const registered = new Map(); // name -> Promise<void>
 function registerBinding(name) {
   if (!registered.has(name)) {
-    const load = loadBinding(name, false);
+    const load = loadBinding(name);
     registered.set(name, load);
     load.catch(() => registered.delete(name));
   }
@@ -74,12 +111,12 @@ function registerBinding(name) {
 }
 
 /** Replace a binding's loaded bytes with what the server has now. */
-async function reloadBinding(name) {
+async function reloadBinding(name, opts) {
   // Let a load in flight settle first, or its (older) bytes could land after
   // the fresh ones and win.
   const previous = registered.get(name);
   if (previous) await previous.catch(() => {});
-  const load = loadBinding(name, true);
+  const load = loadBinding(name, opts ?? { refresh: true });
   registered.set(name, load);
   try {
     await load;
@@ -104,6 +141,12 @@ function setBindingState(next) {
   bindingState = next;
   for (const l of [...bindingListeners]) l();
 }
+function markRefreshing(name, on) {
+  const refreshing = new Set(bindingState.refreshing);
+  if (on) refreshing.add(name);
+  else refreshing.delete(name);
+  setBindingState({ ...bindingState, refreshing });
+}
 function subscribeBindings(l) {
   bindingListeners.add(l);
   return () => bindingListeners.delete(l);
@@ -116,6 +159,50 @@ function useBindingState() {
 }
 
 const refreshes = new Map(); // name -> Promise<RefreshResult>
+
+// A stale parquet GET already returned bytes and kicked a background
+// rebuild. Poll `?mako_meta=1` (headers only) until the file is current,
+// then swap it in. Explicit refresh() still POSTs and waits.
+const artifactWatches = new Map();
+function watchStaleBinding(name, builtAt) {
+  if (artifactWatches.has(name) || refreshes.has(name)) return;
+  artifactWatches.set(name, true);
+  markRefreshing(name, true);
+  const deadline = Date.now() + 3 * 60 * 1000;
+  (async () => {
+    try {
+      while (Date.now() < deadline) {
+        if (refreshes.has(name)) return;
+        await new Promise(resolve => setTimeout(resolve, 2500));
+        if (refreshes.has(name)) return;
+        let res;
+        try {
+          res = await fetch(
+            "__data/" + encodeURIComponent(name) + ".parquet?mako_meta=1",
+          );
+        } catch {
+          continue;
+        }
+        const info = interpretArtifactHeaders(res.headers);
+        if (info.watch) continue;
+        const builtChanged = !!(info.builtAt && builtAt && info.builtAt !== builtAt);
+        const fresh = !info.stale && info.rebuild === "none";
+        if (builtChanged || fresh) {
+          await reloadBinding(name, { poll: true });
+          setBindingState({ ...bindingState, version: bindingState.version + 1 });
+          return;
+        }
+        return;
+      }
+    } finally {
+      artifactWatches.delete(name);
+      if (!refreshes.has(name)) markRefreshing(name, false);
+    }
+  })().catch(() => {
+    artifactWatches.delete(name);
+    if (!refreshes.has(name)) markRefreshing(name, false);
+  });
+}
 
 /**
  * Rebuild one binding's data and reload it. Resolves with what the server
@@ -148,9 +235,11 @@ export function refreshBinding(name) {
   run
     .finally(() => {
       refreshes.delete(name);
-      const refreshing = new Set(bindingState.refreshing);
-      refreshing.delete(name);
-      setBindingState({ ...bindingState, refreshing });
+      if (!artifactWatches.has(name)) {
+        const refreshing = new Set(bindingState.refreshing);
+        refreshing.delete(name);
+        setBindingState({ ...bindingState, refreshing });
+      }
     })
     .catch(() => {
       /* the caller's copy of `run` carries the rejection */

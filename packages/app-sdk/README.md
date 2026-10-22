@@ -49,7 +49,11 @@ data (Mako, the sandbox dev server, the Vite plugin below) rebuilds it with
 its own authorization: a signed-in member can always refresh; a public share
 only when its owner enabled live queries, and at most once every few minutes
 per binding. A refused refresh rejects with `status` (403, 429 + `retryAfterMs`)
-or 502 with the query's error.
+or 502 with the query's error. Opening an app never waits on a rebuild when
+a parquet already exists: the stored file is served immediately, and if it is
+past the binding's `-- schedule:` (or a 1-hour default) the server rebuilds
+it in the background. `refreshing` is true while that update runs; the SDK
+swaps in the new bytes when they land. Explicit `refresh()` still waits.
 
 `useLocation` / `useSearchParams` / `navigate` keep filter state in the URL;
 `useTheme` follows the OS preference. Theme tokens (`--background`,
@@ -197,12 +201,13 @@ once, and polls it until the parquet is ready — so a query that runs for
 minutes is waited for instead of failing when a proxy cuts the request at
 100 s. `pollIntervalMs` / `buildTimeoutMs` tune the wait (1 s, 30 min).
 
-Results are cached under `node_modules/.mako-data/` for five minutes
-(`revalidateMs`; `?refresh` bypasses), next to a fingerprint of the text they
-were built from: after an edit the cache is never served, however long
-`revalidateMs` is, and while the API is unreachable a stale copy is served
-only if it was built from the same text. It is `apply: "serve"` only —
-production builds never load it.
+Results are cached under `node_modules/.mako-data/` next to a fingerprint of
+the text they were built from. After five minutes (`revalidateMs`) a matching
+cache is still served immediately and rebuilt in the background
+(stale-while-revalidate); `?refresh` waits for a rebuild. After an edit the
+cache is never served, however long `revalidateMs` is, and while the API is
+unreachable a stale copy is served only if it was built from the same text.
+It is `apply: "serve"` only — production builds never load it.
 
 ### dbt models you are still building
 

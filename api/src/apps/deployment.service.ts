@@ -30,7 +30,7 @@ import {
   getArtifactStore,
   type ArtifactStore,
 } from "../services/artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import { serveBindingParquetWithRevalidate } from "./binding-freshness";
 import {
   bindingArtifactKey,
   bindingArtifactKeyByName,
@@ -763,6 +763,10 @@ export async function serveDeploymentFile(input: {
    * nobody known (anonymous share, a token minted before viewers existed).
    */
   viewer?: ViewerIdentity | null;
+  /**
+   * SDK poll (`?mako_meta=1`): 204 with freshness headers, no parquet body.
+   */
+  meta?: boolean;
 }): Promise<Response | null> {
   const { projectId, sha, assetPath } = input;
   const cache = input.private ? "private, no-cache" : "no-cache";
@@ -828,8 +832,22 @@ export async function serveDeploymentFile(input: {
     if (!key) return null;
     const store = await artifactStoreForRead(key);
     if (!store) return null;
-    return await serveParquetArtifact(store, key, {
+    // Stored bytes first, always. If they are past the binding's freshness
+    // window a single background rematerialize runs (never one per viewer)
+    // and the SDK learns via X-Mako-Artifact-* / X-Mako-Rebuild.
+    return await serveBindingParquetWithRevalidate({
+      store,
+      key,
       cacheControl: input.private ? "private, no-store" : "no-store",
+      revalidate: {
+        projectId,
+        project,
+        name: dataMatch[1],
+        actorId: input.viewer?.id ?? "",
+        at: sha,
+        kickoff: !input.meta,
+      },
+      meta: input.meta,
     });
   }
 

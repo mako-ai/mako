@@ -210,6 +210,17 @@ serves the data). Public share links refuse it unless the owner enabled
 live queries for the link. Prefer this over a cron for "what is it now?"
 buttons; keep `-- schedule:` for data that must be fresh before anyone asks.
 
+**Stale-while-revalidate (SDK ≥ 2.7.4).** Opening an app never blocks on a
+warehouse query when a parquet already exists: `__data/<name>.parquet`
+returns the stored file immediately. If it is past `-- schedule:` (or a
+1-hour default, `APPS_BINDING_STALE_AFTER_MS`), the server starts ONE
+background rematerialize (de-duped across viewers) and sets
+`X-Mako-Artifact-Stale: 1` plus `X-Mako-Rebuild: started|running`. The SDK
+sets `refreshing` and swaps the new file in when `?mako_meta=1` says it is
+current. `-- materialization: live` is unchanged. Draft/uncommitted laptop
+SQL is still a throwaway build, never stored as the app's artifact.
+`refresh()` still waits.
+
 ## Who is looking: `useViewer()` (SDK ≥ 2.4)
 
 `const { viewer, loading } = useViewer()` — `null` on an anonymous share

@@ -214,6 +214,10 @@ import {
   readBindings,
 } from "../apps/bindings.service";
 import { refreshBindingHttp } from "../apps/binding-refresh";
+import {
+  isArtifactMetaRequest,
+  serveBindingParquetWithRevalidate,
+} from "../apps/binding-freshness";
 import { DevBuildError, planDevBuild } from "../apps/binding-dev-build";
 import {
   unregisteredDraftAccess,
@@ -2613,8 +2617,17 @@ appsRoutes.openapi(
         loaded.userId ?? "",
       );
       const response = key
-        ? await serveParquetArtifact(getArtifactStore(), key, {
+        ? await serveBindingParquetWithRevalidate({
+            store: getArtifactStore(),
+            key,
             cacheControl: "no-store",
+            revalidate: {
+              projectId: loaded.project._id.toString(),
+              project: loaded.project,
+              name,
+              actorId: loaded.userId ?? "",
+            },
+            meta: isArtifactMetaRequest(c.req.url),
           })
         : null;
       if (!response) {
@@ -2787,17 +2800,27 @@ appsRoutes.openapi(
       }
       const result = plan.kind === "build" ? await plan.run() : plan;
       if (result.kind === "artifact") {
-        const response = await serveParquetArtifact(
-          getArtifactStore(),
-          result.artifactKey,
-          {
-            cacheControl: "no-store",
-            extraHeaders: {
-              "x-mako-build":
-                result.source === "draft-cache" ? "draft-cache" : "artifact",
-            },
+        const response = await serveBindingParquetWithRevalidate({
+          store: getArtifactStore(),
+          key: result.artifactKey,
+          cacheControl: "no-store",
+          extraHeaders: {
+            "x-mako-build":
+              result.source === "draft-cache" ? "draft-cache" : "artifact",
           },
-        );
+          // Committed stored artifacts: serve even if outdated, rebuild
+          // in the background. Draft cache is a laptop-only throwaway.
+          revalidate:
+            result.source === "committed"
+              ? {
+                  projectId: loaded.project._id.toString(),
+                  project: loaded.project,
+                  name,
+                  actorId: request.actorId,
+                }
+              : undefined,
+          meta: isArtifactMetaRequest(c.req.url),
+        });
         if (response) return response;
         return c.json(
           { success: false, error: `Binding "${name}" is not materialized` },
@@ -3990,6 +4013,7 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
     sha,
     assetPath: rest.replace(/^\/+/, ""),
     viewer: viewerOf(c),
+    meta: isArtifactMetaRequest(c.req.url),
   });
   if (response && loaded.userId) {
     // A raw `/live/` page load or a frame on another site; the in-Mako views

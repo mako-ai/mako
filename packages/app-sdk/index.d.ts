@@ -1,5 +1,19 @@
 import type * as React from "react";
 
+/**
+ * Freshness headers on `__data/<name>.parquet`. A stale artifact is still
+ * served immediately; `watch` means a background rebuild is running.
+ */
+export interface ArtifactHeaders {
+  builtAt: string | null;
+  stale: boolean;
+  rebuild: "started" | "running" | "none";
+  watch: boolean;
+}
+export function interpretArtifactHeaders(
+  headers: Headers | Record<string, string | null | undefined>,
+): ArtifactHeaders;
+
 /** What a refresh built — the server's answer to `POST __data/<name>/refresh`. */
 export interface RefreshResult {
   binding: string;

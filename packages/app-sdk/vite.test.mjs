@@ -195,6 +195,53 @@ test("parquet: built from the LOCAL binding text, cached by that text", async ()
   }
 });
 
+test("an outdated matching cache is served immediately while a rebuild runs in the background", async () => {
+  const { app } = repo();
+  const cacheDir = path.join(app, "node_modules", ".mako-data");
+  fs.mkdirSync(cacheDir, { recursive: true });
+  fs.writeFileSync(path.join(cacheDir, "sales.parquet"), "PAR1:stale");
+  fs.writeFileSync(
+    path.join(cacheDir, "sales.parquet.json"),
+    JSON.stringify({ fingerprint: bindingFingerprint("select 1", ""), builtAt: "2026-01-01T00:00:00.000Z" }),
+  );
+  const old = new Date("2020-01-01T00:00:00Z");
+  fs.utimesSync(path.join(cacheDir, "sales.parquet"), old, old);
+
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), method: init.method ?? "GET" });
+    await gate;
+    return new Response(Buffer.from("PAR1:fresh"), {
+      status: 200,
+      headers: { "x-mako-build": "artifact" },
+    });
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ revalidateMs: 1 }).configureServer(server);
+    const r = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r.status, 200);
+    assert.equal(r.headers["x-mako-data"], "stale");
+    assert.equal(r.headers["x-mako-artifact-stale"], "1");
+    assert.equal(r.headers["x-mako-rebuild"], "started");
+    assert.equal(r.headers["x-mako-artifact-built-at"], "2026-01-01T00:00:00.000Z");
+    assert.equal(r.body.toString(), "PAR1:stale");
+    // The API was asked, but the response did not wait for it.
+    assert.equal(calls.length, 1);
+
+    const meta = await request(handlers[0], "/__data/sales.parquet?mako_meta=1");
+    assert.equal(meta.status, 204);
+    assert.equal(meta.headers["x-mako-artifact-stale"], "1");
+    assert.equal(meta.headers["x-mako-rebuild"], "running");
+    release();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("offline: stale data only when it was built from the same text", async () => {
   const { app } = repo();
   const calls = [];

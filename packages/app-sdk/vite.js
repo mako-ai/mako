@@ -515,6 +515,7 @@ export function makoData(options = {}) {
         if (isRefresh) return refreshBinding(name, res);
         const cached = cachePath(name);
         const refresh = /(^|&)refresh(=|&|$)/.test(query);
+        const metaOnly = /(^|&)mako_meta(=|&|$)/.test(query);
         const source = options.materialize === false || devBuildUnsupported ? null : readSource(name);
         // Null without a local file: the committed artifact, cached by age alone.
         const fingerprint = source === null ? null : bindingFingerprint(source, ctx.dbtEnvironment);
@@ -522,31 +523,87 @@ export function makoData(options = {}) {
         // this binding's data, however fresh — serving it is how an edited
         // query ended up read with the old query's columns.
         const cacheMatches = () => fingerprint === null || cachedFingerprint(name) === fingerprint;
-        const serveCached = (how) => {
+        const cacheBuiltAt = () => {
+          try {
+            const meta = JSON.parse(fs.readFileSync(metaPath(name), "utf8"));
+            if (meta.builtAt) return meta.builtAt;
+          } catch {
+            /* no sidecar */
+          }
+          try {
+            return fs.statSync(cached).mtime.toISOString();
+          } catch {
+            return null;
+          }
+        };
+        const setFreshnessHeaders = (stale, rebuild) => {
+          const builtAt = cacheBuiltAt();
+          if (builtAt) res.setHeader("x-mako-artifact-built-at", builtAt);
+          if (stale) res.setHeader("x-mako-artifact-stale", "1");
+          res.setHeader("x-mako-rebuild", rebuild);
+          res.setHeader(
+            "access-control-expose-headers",
+            "X-Mako-Artifact-Built-At, X-Mako-Artifact-Stale, X-Mako-Rebuild",
+          );
+        };
+        const serveCached = (how, stale, rebuild) => {
+          setFreshnessHeaders(stale, rebuild);
+          if (metaOnly) {
+            res.statusCode = 204;
+            return res.end();
+          }
           res.setHeader("content-type", "application/vnd.apache.parquet");
           res.setHeader("x-mako-data", how);
           return fs.createReadStream(cached).pipe(res);
         };
         try {
           const stat = fs.statSync(cached, { throwIfNoEntry: false });
-          const fresh = stat && Date.now() - stat.mtimeMs < revalidateMs;
-          if (!refresh && fresh && cacheMatches()) return serveCached("cache");
+          const cacheHit = !!(stat && cacheMatches());
+          const fresh = cacheHit && Date.now() - stat.mtimeMs < revalidateMs;
+          // Stale-while-revalidate: if THIS query's parquet is on disk, hand
+          // it over immediately even when it is older than revalidateMs, and
+          // rebuild in the background. Explicit `?refresh=` still waits.
+          if (!refresh && cacheHit) {
+            const inFlight = inflight.has(`${name}:${fingerprint}:0`);
+            let rebuild = "none";
+            if (!fresh) {
+              if (inFlight) rebuild = "running";
+              else if (!metaOnly) {
+                rebuild = "started";
+                void (source !== null ? devBuild(name, source, false) : fetchArtifact(name).then(buf => {
+                  writeCache(name, buf, null);
+                  return buf;
+                })).catch(error => {
+                  server.config.logger.error?.(
+                    `  mako-data: background revalidate ${name}: ${error instanceof Error ? error.message : String(error)}`,
+                  );
+                });
+              }
+            }
+            return serveCached(fresh ? "cache" : "stale", !fresh, rebuild);
+          }
           let buf = null;
           if (source !== null) buf = (await devBuild(name, source, false))?.buf ?? null;
           if (!buf) {
             buf = await fetchArtifact(name);
             writeCache(name, buf, null);
           }
+          if (metaOnly) {
+            setFreshnessHeaders(false, "none");
+            res.statusCode = 204;
+            return res.end();
+          }
           res.setHeader("content-type", "application/vnd.apache.parquet");
           res.setHeader("content-length", String(buf.length));
           res.setHeader("x-mako-data", "api");
+          setFreshnessHeaders(false, "none");
           res.end(buf);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           server.config.logger.error(`  mako-data: ${message}`);
           // Stale beats nothing while offline — but only data built from THIS
           // text; an old query's parquet is not a stale copy of a new one.
-          if (fs.existsSync(cached) && cacheMatches()) return serveCached("stale");
+          if (fs.existsSync(cached) && cacheMatches()) return serveCached("stale", true, "none");
           json(res, error?.status ?? 502, { error: message });
         }
       });

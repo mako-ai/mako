@@ -69,6 +69,23 @@ vi.mock("../services/artifact-delivery.service", () => ({
   ),
 }));
 
+vi.mock("./binding-freshness", () => ({
+  serveBindingParquetWithRevalidate: vi.fn(
+    async ({
+      store,
+      key,
+      meta,
+    }: {
+      store: ArtifactStore;
+      key: string;
+      meta?: boolean;
+    }) => {
+      if (meta) return new Response(null, { status: 204 });
+      return new Response(`${store === stores.source}:${key}`, { status: 200 });
+    },
+  ),
+}));
+
 vi.mock("./box", () => ({
   readBoxDir: vi.fn(async (_ctx, _source, destination: string) => {
     const fs = await import("node:fs/promises");
@@ -85,6 +102,7 @@ import {
   readDeploymentAsset,
   serveDeploymentFile,
 } from "./deployment.service";
+import { serveBindingParquetWithRevalidate } from "./binding-freshness";
 import {
   bindingArtifactKeyByName,
   materializeAppBinding,
@@ -165,6 +183,42 @@ describe("published deployment artifact source", () => {
     expect(await response?.text()).toBe(`true:${bindingKey}`);
     expect(stores.primary.exists).toHaveBeenCalledWith(bindingKey);
     expect(stores.source.exists).toHaveBeenCalledWith(bindingKey);
+    expect(serveBindingParquetWithRevalidate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: bindingKey,
+        revalidate: expect.objectContaining({
+          name: "icp_customers",
+          at: sha,
+          kickoff: true,
+        }),
+        meta: undefined,
+      }),
+    );
+  });
+
+  it("answers ?mako_meta=1 with headers only, without starting a rebuild", async () => {
+    const bindingKey = "apps/bindings/connection/binding.parquet";
+    stores.source = mockStore([bindingKey]);
+
+    const response = await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "__data/icp_customers.parquet",
+      viewer: { id: "u1", email: "sam@acme.com" },
+      meta: true,
+    });
+
+    expect(response?.status).toBe(204);
+    expect(serveBindingParquetWithRevalidate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: bindingKey,
+        meta: true,
+        revalidate: expect.objectContaining({
+          actorId: "u1",
+          kickoff: false,
+        }),
+      }),
+    );
   });
 
   it("answers __data/viewer.json for the signed-in viewer, and null when nobody is known", async () => {

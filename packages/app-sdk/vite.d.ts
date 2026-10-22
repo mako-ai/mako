@@ -12,9 +12,11 @@ export interface MakoDataOptions {
   /** Repo root. Default: the nearest ancestor holding .mako/ or .git. */
   repoRoot?: string;
   /**
-   * Re-fetch a cached parquet after this long (ms). Default: 5 minutes. A
-   * cache built from different binding text (or dbt environment) is never
-   * served, whatever this says — `Infinity` is safe while you edit SQL.
+   * After this long (ms), a matching local parquet is served immediately
+   * (stale-while-revalidate) and rebuilt in the background. Default: 5
+   * minutes. A cache built from different binding text (or dbt environment)
+   * is never served, whatever this says — `Infinity` is safe while you edit
+   * SQL. Explicit `refresh()` / `?refresh=` still waits for the rebuild.
    */
   revalidateMs?: number;
   /**

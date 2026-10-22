@@ -50,6 +50,8 @@ const { refresh, refreshing } = useQuery("recent_orders");
 
 `refresh()` POSTs to `__data/<name>/refresh`, the data URL's sibling, so the same server that serves the data rebuilds it — signed-in viewers can always refresh; a public share link only when its owner enabled live queries, throttled per binding. A refused refresh rejects with `status` 403/429 (with `retryAfterMs`), a failed query with 502 and its error message.
 
+Opening an app never waits on a rebuild when a parquet already exists. The stored file is served immediately; if it is older than the binding's `-- schedule:` (or a 1-hour default, `APPS_BINDING_STALE_AFTER_MS`) the server rematerializes it in the background — one warehouse query, not one per viewer — and the SDK shows `refreshing` until the new bytes land. Explicit `refresh()` still waits for the rebuild. Live bindings (`-- materialization: live`) still query on every read.
+
 A binding can pin a workspace [dbt project](/transforms/) via `-- dbt_project: <id>` front matter for environment-aware schemas.
 
 ## House Style: `@makoai/app-sdk/ui`

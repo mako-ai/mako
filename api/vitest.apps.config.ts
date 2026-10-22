@@ -33,6 +33,8 @@ export default defineConfig({
       "src/apps/box-state.service.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",
+      // Stale-while-revalidate: serve stored parquet, rebuild in background.
+      "src/apps/binding-freshness.test.ts",
       // Staged binding files are replaced whole, never written in place.
       "src/apps/dev-server-staging.test.ts",
       // Asynchronous binding builds (202 + poll): job rows in real Mongo.

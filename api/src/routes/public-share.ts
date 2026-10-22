@@ -27,7 +27,10 @@ import { getArtifactStore } from "../services/artifact-store.service";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
 import { refreshBindingHttp } from "../apps/binding-refresh";
 import { serveDeploymentFile } from "../apps/deployment.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  isArtifactMetaRequest,
+  serveBindingParquetWithRevalidate,
+} from "../apps/binding-freshness";
 import {
   anonIdFromCookie,
   classifyUserAgent,
@@ -376,11 +379,18 @@ app.openapi(
       // App bindings have no revision to pin caching to, so nothing is lost
       // by handing the browser a signed bucket URL instead of a proxied
       // stream.
-      const served = await serveParquetArtifact(
-        getArtifactStore(),
-        artifactKey,
-        { cacheControl: "private, no-store" },
-      );
+      const served = await serveBindingParquetWithRevalidate({
+        store: getArtifactStore(),
+        key: artifactKey,
+        cacheControl: "private, no-store",
+        revalidate: {
+          projectId: resource.doc._id.toString(),
+          project: resource.doc,
+          name: artifactId,
+          actorId: "",
+        },
+        meta: isArtifactMetaRequest(c.req.url),
+      });
       if (served) return served;
       return c.json({ success: false, error: "Artifact not found" }, 404);
     } catch (error) {
@@ -494,6 +504,7 @@ async function serveSharedApp(c: Context): Promise<Response> {
     private: true,
     // Anonymous: `__data/viewer.json` is null — there is nobody to describe.
     viewer: null,
+    meta: isArtifactMetaRequest(c.req.url),
   });
   if (response) {
     // The share page navigates straight here, so this page load IS the view.
