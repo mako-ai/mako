@@ -24,19 +24,3 @@ ignoredBuiltDependencies:
 # default; declaring it here makes local resolution match CI so a fresh
 # install can't pin hours-old releases into the lockfile.
 minimumReleaseAge: 1440
-# Temporary: @duckdb/node-api 2.0.0-r.1 and its bindings were published
-# 2026-10-21T17:11-17:14Z, inside the 24h window. Each entry names that exact
-# version, so any other @duckdb release still waits 24h. pnpm 11 checks lockfile
-# entries too, hence every platform binding. Delete this block after
-# 2026-10-22T17:15Z.
-minimumReleaseAgeExclude:
-  - "@duckdb/node-api@2.0.0-r.1"
-  - "@duckdb/node-bindings@2.0.0-r.1"
-  - "@duckdb/node-bindings-darwin-arm64@2.0.0-r.1"
-  - "@duckdb/node-bindings-darwin-x64@2.0.0-r.1"
-  - "@duckdb/node-bindings-linux-arm64@2.0.0-r.1"
-  - "@duckdb/node-bindings-linux-arm64-musl@2.0.0-r.1"
-  - "@duckdb/node-bindings-linux-x64@2.0.0-r.1"
-  - "@duckdb/node-bindings-linux-x64-musl@2.0.0-r.1"
-  - "@duckdb/node-bindings-win32-arm64@2.0.0-r.1"
-  - "@duckdb/node-bindings-win32-x64@2.0.0-r.1"
