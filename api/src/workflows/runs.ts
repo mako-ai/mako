@@ -131,31 +131,48 @@ export async function readWorkflowsOverview(
   const webhooks = asAdmin ? webhookUrls(workspaceId, state?.webhooks) : null;
   const base = `/api/v1/tenants/${tenant.tenantId}`;
   const since = new Date(Date.now() - RECENT_RUNS_DAYS * 864e5).toISOString();
-  const [crons, runs] = await Promise.all([
-    tenantJson<Rows>(tenant, `${base}/workflows/crons`),
-    tenantJson<Rows>(
-      tenant,
-      `/api/v1/stable/tenants/${tenant.tenantId}/workflow-runs`,
-      {
-        query: new URLSearchParams({
-          since,
-          only_tasks: "false",
-          limit: String(limit),
-        }),
-      },
-    ),
-  ]);
   const active = new Set(state?.active ?? []);
   // What is deployed is what the repository held at the deploy: a workflow
   // Hatchet still knows from an earlier commit is not one.
   const deployed = state?.live?.names ?? [];
+  const workflows = deployed.map(workflowId => ({
+    workflowId,
+    active: active.has(workflowId),
+    ...(webhooks ? { webhookUrl: webhooks[workflowId] ?? null } : {}),
+  }));
+  let crons: Rows;
+  let runs: Rows;
+  try {
+    [crons, runs] = await Promise.all([
+      tenantJson<Rows>(tenant, `${base}/workflows/crons`),
+      tenantJson<Rows>(
+        tenant,
+        `/api/v1/stable/tenants/${tenant.tenantId}/workflow-runs`,
+        {
+          query: new URLSearchParams({
+            since,
+            only_tasks: "false",
+            limit: String(limit),
+          }),
+        },
+      ),
+    ]);
+  } catch (error) {
+    // The workspace's tenant did not answer (unreachable, or a token for a
+    // tenant this Hatchet does not have): say so beside what is deployed,
+    // rather than failing the whole overview and hiding Workflows.
+    if (!(error instanceof HatchetError)) throw error;
+    return {
+      ...status,
+      hatchetError: `Mako could not read this workspace's Hatchet tenant: ${error.message.trim()}`,
+      workflows,
+      schedules: [],
+      recentRuns: [],
+    };
+  }
   return {
     ...status,
-    workflows: deployed.map(workflowId => ({
-      workflowId,
-      active: active.has(workflowId),
-      ...(webhooks ? { webhookUrl: webhooks[workflowId] ?? null } : {}),
-    })),
+    workflows,
     schedules: (crons.rows ?? []).map(c => ({
       workflowId: c.workflowName,
       cron: c.cron,

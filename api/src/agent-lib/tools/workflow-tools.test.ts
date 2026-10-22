@@ -204,6 +204,24 @@ async function main() {
     assert.equal(bad.success, false);
     assert.equal(requests.length, before);
 
+    // A tenant Hatchet does not have (a token from another Hatchet): the
+    // overview still lists what is deployed, and says why runs are missing.
+    const runsKey = `GET /api/v1/stable/tenants/${TENANT}/workflow-runs`;
+    const kept = responses[runsKey];
+    delete responses[runsKey];
+    const asked = requests.length;
+    const lost = await call(tools, "workflows_status", {});
+    responses[runsKey] = kept;
+    requests.splice(asked); // later checks count Hatchet calls
+    assert.equal(lost.success, true);
+    assert.equal(lost.configured, true);
+    assert.deepEqual(
+      lost.workflows.map((w: { workflowId: string }) => w.workflowId),
+      ["daily-digest", "weekly-report"],
+    );
+    assert.deepEqual(lost.recentRuns, []);
+    assert.match(lost.hatchetError, /could not read .*Hatchet tenant.*404/);
+
     // Viewers look, they do not start runs.
     const viewer = as("viewer");
     assert.equal((await call(viewer, "workflows_status", {})).success, true);

@@ -52,6 +52,9 @@ interface WorkflowsOverview {
   deployment: WorkflowDeployment;
   /** Where an admin opens the Hatchet dashboard, when the installation has one. */
   dashboardUrl: string | null;
+  /** Set when the workspace's Hatchet tenant did not answer: runs and
+   * schedules are missing, and this says why. */
+  hatchetError?: string;
   /** The viewer is an admin: the switches and webhook URLs are theirs. */
   mayChange?: boolean;
   /** `active`: its schedule and webhook are on. `webhookUrl`: for admins; null while off. */

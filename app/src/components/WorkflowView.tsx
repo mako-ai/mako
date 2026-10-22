@@ -504,7 +504,11 @@ function RunsView({
             webhookUrl={webhookUrl}
             onChange={change}
           />
-          <RunsTable runs={runs} onSelect={select} />
+          <RunsTable
+            runs={runs}
+            onSelect={select}
+            unreadable={overview?.hatchetError}
+          />
         </>
       )}
 
@@ -688,12 +692,19 @@ function TriggersStrip({
 function RunsTable({
   runs,
   onSelect,
+  unreadable,
 }: {
   runs: Array<WorkflowRunSummary & { runId: string }>;
   onSelect: (runId: string) => void;
+  /** Why the runs could not be read, when Hatchet did not answer. */
+  unreadable?: string;
 }) {
   if (runs.length === 0) {
-    return <Note>No runs yet. Start one, or wait for the schedule.</Note>;
+    return (
+      <Note>
+        {unreadable ?? "No runs yet. Start one, or wait for the schedule."}
+      </Note>
+    );
   }
   return (
     <Box sx={{ flex: 1, minHeight: 0, overflow: "auto" }}>
