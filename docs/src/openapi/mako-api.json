@@ -30921,67 +30921,6 @@
         "operationId": "get_api_share_token_og_image"
       }
     },
-    "/api/share/{token}/artifacts/{artifactId}": {
-      "get": {
-        "tags": [
-          "Public Shares"
-        ],
-        "summary": "Stream a share snapshot artifact",
-        "security": [],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "token",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "artifactId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Parquet snapshot bytes.",
-            "content": {
-              "application/vnd.apache.parquet": {
-                "schema": {
-                  "type": "string",
-                  "format": "binary"
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_share_token_artifacts_artifactId"
-      }
-    },
     "/api/og/app-image/{workspaceId}/{appId}": {
       "get": {
         "tags": [

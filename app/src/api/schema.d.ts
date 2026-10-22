@@ -5324,23 +5324,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/share/{token}/artifacts/{artifactId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Stream a share snapshot artifact */
-        get: operations["get_api_share_token_artifacts_artifactId"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/og/app-image/{workspaceId}/{appId}": {
         parameters: {
             query?: never;
@@ -22271,47 +22254,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    get_api_share_token_artifacts_artifactId: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                token: string;
-                artifactId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Parquet snapshot bytes. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/vnd.apache.parquet": string;
                 };
             };
             /** @description Invalid request */

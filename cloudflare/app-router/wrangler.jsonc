@@ -12,6 +12,12 @@
     {
       "pattern": "*.makousercontent.com/*",
       "zone_name": "makousercontent.com"
+    },
+    // The bare apex has DNS but no origin: without this route Cloudflare
+    // answers 522. The Worker answers it 404 (unsupported host).
+    {
+      "pattern": "makousercontent.com/*",
+      "zone_name": "makousercontent.com"
     }
   ],
   "vars": {

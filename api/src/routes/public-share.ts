@@ -9,8 +9,15 @@
  *   GET  /api/share/:token            — share metadata (+passwordRequired)
  *   POST /api/share/:token/unlock     — verify password, set signed cookie
  *   GET  /api/share/:token/content    — shared app entry metadata
- *   GET  /api/share/:token/artifacts/:artifactId — binding snapshot parquet
  *   GET  /api/share/:token/app/*      — the app's published deployment files
+ *
+ * With APPS_ORIGIN_BASE set, /content also hands out `appUrl`: the app on
+ * its own origin (`https://<appId>.makousercontent.com/api/apps-preview/
+ * pub.<token>/`), under a published token the SHARE minted. The share page
+ * frames that URL instead of navigating to /app/, so the browser cache
+ * works (apps.md §30-31). Everything the app then fetches goes to the app
+ * host's token route, which applies the share's rules to share tokens
+ * (`refreshForShareGrant`).
  */
 
 import { withQueryLabels } from "../services/bigquery-labels";
@@ -20,18 +27,14 @@ import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { OPEN_RESPONSES, createRouter } from "../openapi/core";
-import { type IAppProject } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { serverTiming, timed } from "../middleware/server-timing";
-import { getArtifactStore } from "../services/artifact-store.service";
-import { bindingArtifactKeyByName } from "../apps/bindings.service";
 import {
   refreshBindingHttp,
   refreshBindingProgress,
 } from "../apps/binding-refresh";
 import { wantsBindingProgress } from "../apps/binding-progress";
 import { serveDeploymentFile } from "../apps/deployment.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import {
   APP_DOCUMENT_SANDBOX,
   sandboxAppDocument,
@@ -42,6 +45,13 @@ import {
   recordServedOpen,
   servedOpenSource,
 } from "../apps/app-usage.service";
+import { appOriginFor, tokenWindowMs } from "../apps/app-origin";
+import {
+  mintPublishedGrant,
+  shareFingerprint,
+  type PreviewGrant,
+} from "../apps/preview.service";
+import { AppProject, type IAppProject } from "../database/workspace-schema";
 import {
   findShareByToken,
   isOpenShare,
@@ -54,9 +64,6 @@ const app = createRouter();
 
 const TokenParam = z.object({
   token: z.string().openapi({ param: { name: "token", in: "path" } }),
-});
-const ArtifactParam = TokenParam.extend({
-  artifactId: z.string().openapi({ param: { name: "artifactId", in: "path" } }),
 });
 const OptionalJsonBody = {
   required: false,
@@ -163,6 +170,45 @@ export function isValidUnlockGrant(token: string, grant: string): boolean {
     expected.length === actual.length &&
     crypto.timingSafeEqual(expected, actual)
   );
+}
+
+/**
+ * The shared app on its own origin, or null when per-app origins are off
+ * (then the share page navigates to /app/ exactly as before) or there is
+ * nothing to serve. Called only after the unlock gate.
+ *
+ * The token is a published grant scoped to this app and its published
+ * commit, carrying the share's fingerprint instead of a viewer. It is
+ * stable for a window (app-origin.ts), so every visit inside the window,
+ * by anyone, gets the same URLs and the browser cache can answer them. A
+ * password share's token never outlives the visitor's unlock (12 h).
+ */
+function shareAppUrl(
+  c: Context,
+  token: string,
+  resource: SharedResource,
+): string | null {
+  const project = resource.doc;
+  const sha = project.publishedSha;
+  if (!sha) return null;
+  const projectId = project._id.toString();
+  const origin = appOriginFor(projectId);
+  if (!origin) return null;
+  let notAfter: number | undefined;
+  if (passwordRequired(resource)) {
+    const unlockedUntil = unlockExpiry(c, token);
+    if (!unlockedUntil) return null;
+    notAfter = unlockedUntil;
+  }
+  const grant = mintPublishedGrant({
+    workspaceId: project.workspaceId.toString(),
+    projectId,
+    sha,
+    share: shareFingerprint(token),
+    stableWindowMs: tokenWindowMs(),
+    ...(notAfter !== undefined ? { notAfter } : {}),
+  });
+  return `${origin}/api/apps-preview/${encodeURIComponent(grant.token)}/`;
 }
 
 function passwordRequired(resource: SharedResource): boolean {
@@ -324,8 +370,11 @@ app.openapi(
       if (gate) return gate;
 
       // An app is a built bundle, not a definition the client renders: its
-      // content is served as files from /api/share/:token/app/*.
-      return c.json(
+      // content is served as files from /api/share/:token/app/*, or, with
+      // per-app origins on, from the app's own origin under a token this
+      // share mints (`appUrl`).
+      const appUrl = shareAppUrl(c, token, resource);
+      const response = c.json(
         {
           success: true,
           data: {
@@ -333,11 +382,26 @@ app.openapi(
             title: resource.doc.title,
             published: Boolean(resource.doc.publishedSha),
             entry: `/api/share/${token}/app/`,
+            ...(appUrl ? { appUrl } : {}),
           },
         },
         200,
         { "Cache-Control": "private, no-store" },
       );
+      // The share page frames `appUrl` instead of navigating to /app/, so
+      // the app's document never passes through this router: this call is
+      // the view. It is made by the top-level share page, so the anonymous
+      // id cookie sticks exactly as it did on the old document load.
+      if (appUrl) {
+        recordSharedAppOpen(
+          c,
+          response,
+          resource.doc.workspaceId.toString(),
+          resource.doc._id.toString(),
+          { fetchDest: "document", contentType: "text/html" },
+        );
+      }
+      return response;
     } catch (error) {
       logger.error("Error building share content", { error });
       return c.json({ success: false, error: "Failed to load content" }, 500);
@@ -388,63 +452,6 @@ app.openapi(
   },
 );
 
-// GET /:token/artifacts/:artifactId — stream snapshot parquet (post-unlock)
-app.openapi(
-  createRoute({
-    method: "get",
-    path: "/{token}/artifacts/{artifactId}",
-    tags: ["Public Shares"],
-    summary: "Stream a share snapshot artifact",
-    security: [],
-    request: { params: ArtifactParam },
-    responses: {
-      ...OPEN_RESPONSES,
-      200: {
-        description: "Parquet snapshot bytes.",
-        content: {
-          "application/vnd.apache.parquet": {
-            schema: z.string().openapi({ format: "binary" }),
-          },
-        },
-      },
-    },
-  }),
-  async c => {
-    try {
-      const token = c.req.param("token") as string;
-      const artifactId = c.req.param("artifactId");
-      const resource = await findByToken(token);
-      if (!resource) {
-        return c.json({ success: false, error: "Share link not found" }, 404);
-      }
-      const gate = requireUnlock(c, token, resource);
-      if (gate) return gate;
-
-      const artifactKey = await bindingArtifactKeyByName(
-        resource.doc,
-        artifactId,
-        "",
-      );
-      if (!artifactKey) {
-        return c.json({ success: false, error: "Artifact not found" }, 404);
-      }
-      // App bindings have no revision to pin caching to, so nothing is lost
-      // by handing the browser a signed bucket URL instead of a proxied
-      // stream.
-      const served = await serveParquetArtifact(
-        getArtifactStore(),
-        artifactKey,
-        { cacheControl: "private, no-store" },
-      );
-      if (served) return served;
-      return c.json({ success: false, error: "Artifact not found" }, 404);
-    } catch (error) {
-      logger.error("Error streaming share artifact", { error });
-      return c.json({ success: false, error: "Failed to serve artifact" }, 500);
-    }
-  },
-);
-
 // ── Anonymous viewer id (usage) ──
 //
 // A share link's viewers have no account, and an IP is neither one person
@@ -464,9 +471,16 @@ export function recordSharedAppOpen(
   response: Response,
   workspaceId: string,
   appId: string,
+  /**
+   * What the open counts as, when the request is not the app document
+   * itself (the share page's /content call, which frames the app from its
+   * own origin). Default: read from the request and response.
+   */
+  servedAs?: { fetchDest: string; contentType: string },
 ): void {
-  const fetchDest = c.req.header("sec-fetch-dest");
-  const contentType = response.headers.get("content-type");
+  const fetchDest = servedAs?.fetchDest ?? c.req.header("sec-fetch-dest");
+  const contentType =
+    servedAs?.contentType ?? response.headers.get("content-type");
   if (!servedOpenSource(fetchDest, contentType, "share")) return;
   const userAgent = c.req.header("user-agent");
   const isBot = classifyUserAgent(userAgent) === "bot";
@@ -689,6 +703,25 @@ async function refreshSharedBinding(c: Context): Promise<Response> {
       404,
     );
   }
+  return runSharedRefresh(
+    c,
+    project,
+    c.req.param("name") as string,
+    project.publishedSha,
+  );
+}
+
+/**
+ * The share's refresh policy, wherever the request arrives: off unless the
+ * owner turned on `allowLiveQueries`, throttled per binding, run as nobody
+ * under the owner's published query.
+ */
+async function runSharedRefresh(
+  c: Context,
+  project: IAppProject,
+  name: string,
+  at: string,
+): Promise<Response> {
   if (!project.publicShare?.allowLiveQueries) {
     return shareAppJson(
       {
@@ -701,9 +734,9 @@ async function refreshSharedBinding(c: Context): Promise<Response> {
   }
   const input = {
     project,
-    name: c.req.param("name") as string,
+    name,
     actorId: "",
-    at: project.publishedSha,
+    at,
     cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
   };
   if (wantsBindingProgress(c.req.header("accept"))) {
@@ -723,6 +756,39 @@ async function refreshSharedBinding(c: Context): Promise<Response> {
     logger.error("Error refreshing a shared app's binding", { error });
     return shareAppJson({ success: false, error: "Failed to refresh" }, 500);
   }
+}
+
+/**
+ * `POST __data/<name>/refresh` under a token a share minted (served by the
+ * token route, on the app's own origin). The token alone proves the visitor
+ * was let in; this re-checks that the share is STILL the app's enabled
+ * share, so disabling or rotating it stops live queries at once, then
+ * applies the share's policy, not a member's.
+ */
+export async function refreshForShareGrant(
+  c: Context,
+  grant: PreviewGrant,
+  name: string,
+): Promise<Response> {
+  const project = await AppProject.findById(grant.projectId);
+  const share = project?.publicShare;
+  const current = share?.enabled && share.token ? share.token : null;
+  if (
+    !project ||
+    !current ||
+    !grant.share ||
+    !sameString(shareFingerprint(current), grant.share) ||
+    !grant.publishedSha
+  ) {
+    return shareAppJson({ success: false, error: "Share link not found" }, 404);
+  }
+  return runSharedRefresh(c, project, name, grant.publishedSha);
+}
+
+function sameString(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
 // The opaque-origin app sends a bodiless POST (a simple request, no
