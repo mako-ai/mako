@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { api, unwrapBody } from "../api";
+import type { ConnectionWriters } from "./schemaStore";
 import { reconcileSourceConnectionTabs } from "../lib/source-connection-tabs";
 
 interface SourceConnectionEntity {
@@ -21,6 +22,14 @@ interface ApiResponse<T> {
   success: boolean;
   data: T;
   error?: string;
+}
+
+/** A source connection's Access tab: the writers list plus live reads. */
+export interface SourceConnectionWriters extends ConnectionWriters {
+  /** Off: the proxy refuses reads too. */
+  liveReads: boolean;
+  /** Whether Mako can call this connection's service yet. */
+  callable: boolean;
 }
 
 interface EntitiesState {
@@ -48,6 +57,17 @@ interface EntitiesState {
     workspaceId: string,
     connectorId: string,
   ) => Promise<{ success: boolean; error: string | null }>;
+  /** Who may write through the connection's proxy (its Access tab). */
+  getWriters: (
+    workspaceId: string,
+    connectorId: string,
+  ) => Promise<SourceConnectionWriters>;
+  setWriters: (
+    workspaceId: string,
+    connectorId: string,
+    writers: { principal: string; where?: string }[],
+    liveReads?: boolean,
+  ) => Promise<void>;
   /** Test the saved connection with its stored credential. */
   test: (
     workspaceId: string,
@@ -258,6 +278,33 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
           error: err?.message || "Failed to delete",
         };
       }
+    },
+    getWriters: async (workspaceId, connectorId) => {
+      const res = unwrapBody(
+        await api.GET(
+          "/api/workspaces/{workspaceId}/connections/sources/{id}/writers",
+          { params: { path: { workspaceId, id: connectorId } } },
+        ),
+      ) as ApiResponse<SourceConnectionWriters>;
+      if (!res.success || !res.data) {
+        throw new Error(res.error ?? "Couldn't load who can write.");
+      }
+      return res.data;
+    },
+    setWriters: async (workspaceId, connectorId, writers, liveReads) => {
+      const res = unwrapBody(
+        await api.PUT(
+          "/api/workspaces/{workspaceId}/connections/sources/{id}/writers",
+          {
+            params: { path: { workspaceId, id: connectorId } },
+            body: {
+              writers,
+              ...(liveReads === undefined ? {} : { liveReads }),
+            },
+          },
+        ),
+      ) as ApiResponse<null>;
+      if (!res.success) throw new Error(res.error ?? "Couldn't save.");
     },
     test: async (workspaceId, connectorId) => {
       try {
