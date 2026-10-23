@@ -1,0 +1,23 @@
+name: blockwatch
+
+# Checks every block tag and `[[block]]` entry in blockwatch.toml (code and
+# the docs/config that must agree with it), and enforces `affects` against the
+# PR or push diff. No path filter: a block's two sides usually live in
+# different directories.
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  blockwatch:
+    name: blockwatch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: mennanov/blockwatch-action@v1

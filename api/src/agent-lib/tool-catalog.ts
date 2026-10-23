@@ -44,8 +44,10 @@ export interface ToolCatalogEntry {
  * when individual schemas are heavy. Whichever binds first wins; loaded
  * deferred tools are evicted oldest-first, never core/mode tools.
  */
+// <block name="tool-budgets" affects="docs/src/content/docs/ai-agent.md:tool-budgets">
 export const MAX_ACTIVE_TOOLS = 110;
 export const MAX_ACTIVE_TOOL_TOKENS = 12_000;
+// </block>
 
 /**
  * Hard per-provider tool-count caps enforced by the AI gateway. Exceeding
@@ -54,8 +56,10 @@ export const MAX_ACTIVE_TOOL_TOKENS = 12_000;
  * soft budget — deferred tools are trimmed first, with a warning log.
  */
 const PROVIDER_TOOL_CAPS: Array<{ prefix: string; cap: number }> = [
+  // <block name="provider-tool-caps" affects="docs/src/content/docs/ai-agent.md:tool-budgets">
   { prefix: "xai/", cap: 250 },
   { prefix: "openai/", cap: 128 },
+  // </block>
 ];
 
 export function providerToolCap(modelId: string | undefined): number | null {

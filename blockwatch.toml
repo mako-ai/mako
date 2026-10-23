@@ -1,0 +1,27 @@
+# blockwatch: https://github.com/mennanov/blockwatch
+
+# The app router: production and canary read one KV namespace, and the
+# README's cutover commands write to it.
+[[block]]
+target = 'cloudflare/app-router/wrangler.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
+name = 'app-routing-kv-id'
+same-as = 'cloudflare/app-router/wrangler.canary.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id,cloudflare/app-router/README.md:cutover-namespace'
+
+[[block]]
+target = 'cloudflare/app-router/wrangler.canary.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
+same-as = 'cloudflare/app-router/wrangler.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
+
+# Canary exists to prove what production will run.
+[[block]]
+target = 'cloudflare/app-router/wrangler.jsonc#/compatibility_date'
+same-as = 'cloudflare/app-router/wrangler.canary.jsonc#/compatibility_date'
+
+[[block]]
+target = 'cloudflare/app-router/wrangler.canary.jsonc#/compatibility_date'
+same-as = 'cloudflare/app-router/wrangler.jsonc#/compatibility_date'
+
+# `mako_ai.__version__` must report the version that was published.
+[[block]]
+target = 'packages/mako-sdk-py/pyproject.toml#/project/version'
+name = 'mako-sdk-py-version'
+same-as = 'packages/mako-sdk-py/src/mako_ai/__init__.py:mako-sdk-py-version'

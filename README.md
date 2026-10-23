@@ -48,6 +48,8 @@ A modern SQL client built for the AI era, replacing slow desktop tools with a fa
 
 ### Databases
 
+<!-- <block name="supported-databases"> -->
+
 | Integration           | Status  | Description                                          |
 | --------------------- | ------- | ---------------------------------------------------- |
 | **PostgreSQL**        | ✅ Live | Connect to PostgreSQL for relational data queries    |
@@ -60,20 +62,29 @@ A modern SQL client built for the AI era, replacing slow desktop tools with a fa
 | **Cloudflare D1**     | ✅ Live | Query Cloudflare D1 SQLite databases                 |
 | **Cloudflare KV**     | ✅ Live | Browse and query Cloudflare Workers KV               |
 
+<!-- </block> -->
+
 ### Data Connectors
 
 Sync external SaaS data into Mako's data warehouse for querying and apps.
 
-| Integration    | Status  | Description                                      |
-| -------------- | ------- | ------------------------------------------------ |
-| **Stripe**     | ✅ Live | Track payments, subscriptions, and billing data  |
-| **PostHog**    | ✅ Live | Analyze product analytics and user behavior      |
-| **Close.com**  | ✅ Live | Sync CRM data (leads, opportunities, activities) |
-| **Claap**      | ✅ Live | Sync recordings and workspace data               |
-| **Calendly**   | ✅ Live | Sync events, invitees, and event types           |
-| **GraphQL**    | ✅ Live | Query any GraphQL API with custom endpoints      |
-| **REST**       | ✅ Live | Query any REST API with custom endpoints         |
-| **BigQuery**   | ✅ Live | Sync BigQuery datasets into the warehouse        |
+<!-- <block name="saas-connectors" same-as-paths="api/src/connectors/*/connector.ts" same-as-pattern="connectors/(?P<value>[a-z0-9-]+)/"> -->
+
+| Integration                                         | Status | Description                                          |
+| --------------------------------------------------- | ------ | ---------------------------------------------------- |
+| [**Stripe**](api/src/connectors/stripe/)            | ✅ Live | Track payments, subscriptions, and billing data      |
+| [**PostHog**](api/src/connectors/posthog/)          | ✅ Live | Analyze product analytics and user behavior          |
+| [**Close.com**](api/src/connectors/close/)          | ✅ Live | Sync CRM data (leads, opportunities, activities)     |
+| [**Claap**](api/src/connectors/claap/)              | ✅ Live | Sync recordings and workspace data                   |
+| [**Calendly**](api/src/connectors/calendly/)        | ✅ Live | Sync events, invitees, and event types               |
+| [**PandaDoc**](api/src/connectors/pandadoc/)        | ✅ Live | Sync documents, templates, contacts, and members     |
+| [**Wise**](api/src/connectors/wise/)                | ✅ Live | Sync balances, statements, transfers, and recipients |
+| [**Google Cloud Storage**](api/src/connectors/gcs/) | ✅ Live | Import CSV files from a bucket folder                |
+| [**GraphQL**](api/src/connectors/graphql/)          | ✅ Live | Query any GraphQL API with custom endpoints          |
+| [**REST**](api/src/connectors/rest/)                | ✅ Live | Query any REST API with custom endpoints             |
+| [**BigQuery**](api/src/connectors/bigquery/)        | ✅ Live | Sync BigQuery datasets into the warehouse            |
+
+<!-- </block> -->
 
 ## 🏗️ Architecture
 
