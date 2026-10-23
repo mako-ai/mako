@@ -3,7 +3,12 @@ import {
   covers,
   principalsOutsideWorkspace,
 } from "../access/connection-writes";
-import { ConnectionWriteEvent } from "../access/connection-write-event";
+import {
+  LISTABLE_PRINCIPAL,
+  nextWriters,
+  publicWriters,
+  recentWriters,
+} from "../access/connection-writers-list";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Db } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -976,10 +981,6 @@ const writersParams = z.object({
   id: z.string().openapi({ param: { name: "id", in: "path" } }),
 });
 
-/** A principal that can be put on a writers list. */
-const LISTABLE_PRINCIPAL =
-  /^(user:[A-Za-z0-9_-]+|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$/;
-
 const WriterSchema = z.object({
   principal: z
     .string()
@@ -991,8 +992,6 @@ const WriterSchema = z.object({
     .optional()
     .openapi({ example: "mako_out.issue_labels" }),
 });
-
-const RECENT_WRITES_DAYS = 30;
 
 workspaceDatabaseRoutes.openapi(
   createRoute({
@@ -1021,59 +1020,14 @@ workspaceDatabaseRoutes.openapi(
       return c.json({ success: false, error: "Database not found" }, 404);
     }
     const memberRole = c.get("memberRole");
-    // Who wrote or tried to write here lately, from the write log, and what
-    // the list does not cover (what it refuses), to allow in one click.
-    const since = new Date(Date.now() - RECENT_WRITES_DAYS * 86_400_000);
-    const recent = await ConnectionWriteEvent.aggregate<{
-      _id: string;
-      count: number;
-      lastAt: Date;
-      targets: (string | null)[];
-    }>([
-      {
-        $match: {
-          connectionId: new Types.ObjectId(databaseId),
-          at: { $gte: since },
-        },
-      },
-      {
-        $group: {
-          _id: "$principal",
-          count: { $sum: 1 },
-          lastAt: { $max: "$at" },
-          targets: { $addToSet: "$target" },
-        },
-      },
-      { $sort: { count: -1 } },
-      { $limit: 50 },
-    ]);
     return c.json({
       success: true,
       data: {
-        writers: (database.writers ?? []).map(w => ({
-          principal: w.principal,
-          where: w.where ?? null,
-          addedBy: w.addedBy ?? null,
-          addedAt: w.addedAt ?? null,
-        })),
+        writers: publicWriters(database.writers),
         canEdit: memberRole === "owner" || memberRole === "admin",
-        // Only who could be allowed: the worker writing as no workflow
-        // cannot be listed.
-        recent: recent
-          .filter(r => LISTABLE_PRINCIPAL.test(r._id))
-          .map(r => {
-            const targets = r.targets.filter((t): t is string => !!t);
-            return {
-              principal: r._id,
-              count: r.count,
-              lastAt: r.lastAt,
-              targets: targets.slice(0, 5),
-              // Against the list as it is now, not as it was then.
-              uncovered: targets
-                .filter(t => !covers(database.writers, r._id, t))
-                .slice(0, 5),
-            };
-          }),
+        recent: await recentWriters(databaseId, (principal, target) =>
+          covers(database.writers, principal, target),
+        ),
       },
     });
   },
@@ -1139,19 +1093,7 @@ workspaceDatabaseRoutes.openapi(
         400,
       );
     }
-    // One entry per principal and place; keep who added an entry first.
-    const now = new Date();
-    const previous = new Map(
-      (database.writers ?? []).map(w => [`${w.principal} ${w.where ?? ""}`, w]),
-    );
-    const next = new Map<string, (typeof writers)[number]>();
-    for (const w of writers) next.set(`${w.principal} ${w.where ?? ""}`, w);
-    database.writers = [...next].map(([key, w]) => ({
-      principal: w.principal,
-      ...(w.where ? { where: w.where } : {}),
-      addedBy: previous.get(key)?.addedBy ?? user.id,
-      addedAt: previous.get(key)?.addedAt ?? now,
-    }));
+    database.writers = nextWriters(database.writers, writers, user.id);
     await database.save();
     logger.info("Connection writers changed", {
       workspaceId: String(workspace._id),

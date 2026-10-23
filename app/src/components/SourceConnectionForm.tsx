@@ -39,6 +39,7 @@ import { connectorIconUrl } from "../lib/connector-icon";
 import { EntityHistoryButton } from "./EntityHistoryButton";
 import ConnectionEditorsPanel from "./ConnectionEditorsPanel";
 import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
+import ConnectionWritersPanel from "./ConnectionWritersPanel";
 
 /** `ws:acme` — a connector defined in the workspace repo (`connectors/acme/`). */
 const WORKSPACE_TYPE_PREFIX = "ws:";
@@ -163,6 +164,7 @@ function SourceConnectionForm({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [tab, setTab] = useState<"connection" | "access">("connection");
   const [testResult, setTestResult] = useState<{
     success: boolean;
     message: string;
@@ -1335,6 +1337,12 @@ function SourceConnectionForm({
       {tab === "access" && connector?._id ? (
         <Box sx={{ py: 2 }}>
           <ConnectionEditorsPanel connectionId={connector._id} />
+          <Box sx={{ my: 3, borderTop: 1, borderColor: "divider" }} />
+          <ConnectionWritersPanel
+            kind="source"
+            connectionId={connector._id}
+            connectionName={connector.name || "this connection"}
+          />
         </Box>
       ) : (
         formContent
