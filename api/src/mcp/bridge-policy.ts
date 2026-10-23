@@ -251,6 +251,10 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // reads external data, so it needs query access like sql_execute_query
   // does, and it reaches outside the workspace, hence openWorldHint.
   probe_connection: bridge({ requiresQueryAccess: true, openWorldHint: true }),
+  // A live read through a source connection's proxy: the credential stays in
+  // Mako, and every write is refused (connections/proxy.service.ts), so it
+  // sits with the probe: query access, outside the workspace.
+  call_connection: bridge({ requiresQueryAccess: true, openWorldHint: true }),
   // The one write in this group: stores a new SOURCE connection (credential)
   // and runs its credential check against the platform (openWorldHint).
   // Hidden from any key without connections:write (the connections-write
