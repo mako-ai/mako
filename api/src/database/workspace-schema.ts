@@ -380,6 +380,17 @@ export interface ISourceConnection extends Document {
     timezone?: string;
   };
   targetDatabases?: Types.ObjectId[];
+  /**
+   * Who may write through this connection's proxy (connections/proxy.service.ts):
+   * the same list as on a database connection. Absent or empty: no one.
+   * Everyone may read; syncs are not concerned.
+   */
+  writers?: IConnectionWriter[];
+  /**
+   * Off: the proxy refuses reads too, for a connection whose live data is
+   * more than its synced tables should show. Absent: on.
+   */
+  liveReads?: boolean;
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -1601,6 +1612,17 @@ const WorkspaceInviteSchema = new Schema<IWorkspaceInvite>({
 WorkspaceInviteSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 WorkspaceInviteSchema.index({ workspaceId: 1, email: 1 });
 
+/** One entry of a writers list, on database and source connections alike. */
+const ConnectionWriterSchema = new Schema<IConnectionWriter>(
+  {
+    principal: { type: String, required: true },
+    where: { type: String },
+    addedBy: { type: String },
+    addedAt: { type: Date },
+  },
+  { _id: false },
+);
+
 /**
  * DatabaseConnection Schema
  * Represents a saved connection to a database server
@@ -1649,17 +1671,7 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
       default: false,
     },
     writers: {
-      type: [
-        new Schema<IConnectionWriter>(
-          {
-            principal: { type: String, required: true },
-            where: { type: String },
-            addedBy: { type: String },
-            addedAt: { type: Date },
-          },
-          { _id: false },
-        ),
-      ],
+      type: [ConnectionWriterSchema],
       default: undefined,
     },
     createdBy: {
@@ -1738,6 +1750,11 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
         ref: "DatabaseConnection",
       },
     ],
+    writers: {
+      type: [ConnectionWriterSchema],
+      default: undefined,
+    },
+    liveReads: { type: Boolean },
     createdBy: {
       type: String,
       ref: "User",
