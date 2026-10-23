@@ -39,30 +39,30 @@ Create API keys in **Workspace settings → API Keys**. The same page surfaces y
 
 ## Workspaces
 
-| Method | Endpoint              | Description            |
-| ------ | --------------------- | ---------------------- |
-| `GET`  | `/api/workspaces`     | List user's workspaces |
-| `POST` | `/api/workspaces`     | Create a workspace     |
-| `GET`  | `/api/workspaces/:id` | Get workspace details  |
-| `GET`  | `/api/workspaces/:id/settings/limits` | Get refresh concurrency limits (`appBindingRefreshConcurrency`; default 2, clamped to the per-workspace max) |
-| `PUT`  | `/api/workspaces/:id/settings/limits` | Update refresh concurrency limits |
-| `GET`  | `/api/workspaces/:id/auto-join` | Get domain auto-join settings (email domains that auto-join on first sign-in, and the role granted: `member` \| `viewer`) |
-| `PUT`  | `/api/workspaces/:id/auto-join` | Set domain auto-join (`{ domains: string[] (max 20), role?: "member" \| "viewer" }`, default role `viewer`) |
+| Method | Endpoint                              | Description                                                                                                               |
+| ------ | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/workspaces`                     | List user's workspaces                                                                                                    |
+| `POST` | `/api/workspaces`                     | Create a workspace                                                                                                        |
+| `GET`  | `/api/workspaces/:id`                 | Get workspace details                                                                                                     |
+| `GET`  | `/api/workspaces/:id/settings/limits` | Get refresh concurrency limits (`appBindingRefreshConcurrency`; default 2, clamped to the per-workspace max)              |
+| `PUT`  | `/api/workspaces/:id/settings/limits` | Update refresh concurrency limits                                                                                         |
+| `GET`  | `/api/workspaces/:id/auto-join`       | Get domain auto-join settings (email domains that auto-join on first sign-in, and the role granted: `member` \| `viewer`) |
+| `PUT`  | `/api/workspaces/:id/auto-join`       | Set domain auto-join (`{ domains: string[] (max 20), role?: "member" \| "viewer" }`, default role `viewer`)               |
 
 ## Database Connections
 
 These endpoints manage connections to user databases (PostgreSQL, MySQL, MongoDB, BigQuery, ClickHouse, Redshift, SQLite, Cloudflare D1/KV) that Mako queries on the user's behalf. For SaaS connectors (Stripe, Close, PostHog, GraphQL, REST, BigQuery sync), see [SaaS Connectors](/connectors/).
 
-| Method   | Endpoint                                              | Description                                                                |
-| -------- | ----------------------------------------------------- | -------------------------------------------------------------------------- |
-| `GET`    | `/api/workspaces/:wid/databases`                      | List database connections                                                  |
-| `POST`   | `/api/workspaces/:wid/databases`                      | Add a database connection                                                  |
-| `GET`    | `/api/workspaces/:wid/databases/:id`                  | Get a single database connection (passwords masked)                        |
-| `PUT`    | `/api/workspaces/:wid/databases/:id`                  | Update a database connection                                               |
-| `DELETE` | `/api/workspaces/:wid/databases/:id`                  | Remove a database connection                                               |
-| `POST`   | `/api/workspaces/:wid/databases/test-connection`      | Test a candidate connection without saving                                 |
-| `POST`   | `/api/workspaces/:wid/databases/:id/test`             | Test an existing connection                                                |
-| `POST`   | `/api/workspaces/:wid/databases/demo`                 | Provision the demo Chinook database (onboarding)                           |
+| Method   | Endpoint                                         | Description                                         |
+| -------- | ------------------------------------------------ | --------------------------------------------------- |
+| `GET`    | `/api/workspaces/:wid/databases`                 | List database connections                           |
+| `POST`   | `/api/workspaces/:wid/databases`                 | Add a database connection                           |
+| `GET`    | `/api/workspaces/:wid/databases/:id`             | Get a single database connection (passwords masked) |
+| `PUT`    | `/api/workspaces/:wid/databases/:id`             | Update a database connection                        |
+| `DELETE` | `/api/workspaces/:wid/databases/:id`             | Remove a database connection                        |
+| `POST`   | `/api/workspaces/:wid/databases/test-connection` | Test a candidate connection without saving          |
+| `POST`   | `/api/workspaces/:wid/databases/:id/test`        | Test an existing connection                         |
+| `POST`   | `/api/workspaces/:wid/databases/demo`            | Provision the demo Chinook database (onboarding)    |
 
 Create and update accept an optional `verifyBeforeSave: true` flag: the connection is tested before persisting, a failing test refuses the write with a structured `connection_test_failed` result, and a passing test stamps `lastConnectedAt`. Without the flag the legacy save-without-testing behavior is kept for programmatic callers. The app UI always sets it (with a "Save anyways" escape hatch).
 
@@ -70,17 +70,17 @@ Create and update accept an optional `verifyBeforeSave: true` flag: the connecti
 
 For MongoDB connections, collection and view management is exposed under the same workspace-scoped database routes. The legacy unauthenticated `/api/database/*` routes were removed in [#408](https://github.com/mako-ai/mako/pull/408) — all callers must use the endpoints below.
 
-| Method   | Endpoint                                                              | Description                                  |
-| -------- | --------------------------------------------------------------------- | -------------------------------------------- |
-| `GET`    | `/api/workspaces/:wid/databases/:id/collections`                      | List collections                             |
-| `POST`   | `/api/workspaces/:wid/databases/:id/collections`                      | Create a collection                          |
-| `GET`    | `/api/workspaces/:wid/databases/:id/collections/:name`                | Get collection stats and indexes             |
-| `GET`    | `/api/workspaces/:wid/databases/:id/collections/:name/info`           | Get collection metadata only                 |
-| `DELETE` | `/api/workspaces/:wid/databases/:id/collections/:name`                | Drop a collection                            |
-| `GET`    | `/api/workspaces/:wid/databases/:id/views`                            | List views                                   |
-| `POST`   | `/api/workspaces/:wid/databases/:id/views`                            | Create a view (`viewOn`, `pipeline`)         |
-| `GET`    | `/api/workspaces/:wid/databases/:id/views/:name/info`                 | Get view metadata                            |
-| `DELETE` | `/api/workspaces/:wid/databases/:id/views/:name`                      | Drop a view                                  |
+| Method   | Endpoint                                                    | Description                          |
+| -------- | ----------------------------------------------------------- | ------------------------------------ |
+| `GET`    | `/api/workspaces/:wid/databases/:id/collections`            | List collections                     |
+| `POST`   | `/api/workspaces/:wid/databases/:id/collections`            | Create a collection                  |
+| `GET`    | `/api/workspaces/:wid/databases/:id/collections/:name`      | Get collection stats and indexes     |
+| `GET`    | `/api/workspaces/:wid/databases/:id/collections/:name/info` | Get collection metadata only         |
+| `DELETE` | `/api/workspaces/:wid/databases/:id/collections/:name`      | Drop a collection                    |
+| `GET`    | `/api/workspaces/:wid/databases/:id/views`                  | List views                           |
+| `POST`   | `/api/workspaces/:wid/databases/:id/views`                  | Create a view (`viewOn`, `pipeline`) |
+| `GET`    | `/api/workspaces/:wid/databases/:id/views/:name/info`       | Get view metadata                    |
+| `DELETE` | `/api/workspaces/:wid/databases/:id/views/:name`            | Drop a view                          |
 
 :::caution[Breaking change]
 The legacy `/api/database/collections`, `/api/database/views`, and related top-level routes were removed in [#408](https://github.com/mako-ai/mako/pull/408). Callers must use the workspace-scoped endpoints above and authenticate with a session cookie or `Bearer revops_*` API key.
@@ -90,57 +90,56 @@ The legacy `/api/database/collections`, `/api/database/views`, and related top-l
 
 Session cookie or `Authorization: Bearer revops_*` API key required. Use the database connection ID from `GET /api/workspaces/:wid/databases`.
 
-| Method | Endpoint                                               | Description                                                                                                          |
-| ------ | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `POST` | `/api/workspaces/:wid/databases/:databaseId/execute`   | Run a query against a specific connection (`body.query`)                                                             |
-| `POST` | `/api/workspaces/:wid/execute`                         | Execute with `query` or `queryDefinition`; supports pagination via `body.pagination`                                 |
-| `POST` | `/api/workspaces/:wid/execute/export`                  | Stream results as `format` = `arrow`, `parquet`, `ndjson`, or `csv`                                                  |
-| `POST` | `/api/workspaces/:wid/execute/cancel`                  | Cancel an in-flight query by `executionId`                                                                           |
+| Method | Endpoint                                             | Description                                                                          |
+| ------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `POST` | `/api/workspaces/:wid/databases/:databaseId/execute` | Run a query against a specific connection (`body.query`)                             |
+| `POST` | `/api/workspaces/:wid/execute`                       | Execute with `query` or `queryDefinition`; supports pagination via `body.pagination` |
+| `POST` | `/api/workspaces/:wid/execute/export`                | Stream results as `format` = `arrow`, `parquet`, `ndjson`, or `csv`                  |
+| `POST` | `/api/workspaces/:wid/execute/cancel`                | Cancel an in-flight query by `executionId`                                           |
 
 :::caution[Breaking change]
 The legacy unauthenticated `POST /api/execute` and `POST /api/run/:path` endpoints were removed in [#401](https://github.com/mako-ai/mako/pull/401) (they allowed unauthenticated RCE). Callers must move to the workspace-scoped endpoints above and authenticate with a session cookie or `Bearer revops_*` API key.
 :::
 
-
 ## Consoles
 
-| Method | Endpoint                                    | Description                |
-| ------ | ------------------------------------------- | -------------------------- |
-| `GET`  | `/api/workspaces/:wid/consoles/list`        | List all consoles          |
-| `GET`  | `/api/workspaces/:wid/consoles/:id/details` | Get console details + code |
-| `POST` | `/api/workspaces/:wid/consoles/:id/execute` | Execute a saved console    |
-| `GET`  | `/api/workspaces/:wid/consoles/:id/versions`                 | List version history (paginated, newest first) |
-| `GET`  | `/api/workspaces/:wid/consoles/:id/versions/:version`        | Get a specific version snapshot |
-| `POST` | `/api/workspaces/:wid/consoles/:id/versions/:version/restore` | Restore the console to a past version |
-| `PUT` | `/api/workspaces/:wid/consoles/:id/schedule` | Create or update a saved console schedule (admin only) |
-| `DELETE` | `/api/workspaces/:wid/consoles/:id/schedule` | Remove a saved console schedule (admin only) |
-| `POST` | `/api/workspaces/:wid/consoles/:id/schedule/run` | Trigger a scheduled console immediately (admin only) |
-| `GET` | `/api/workspaces/:wid/consoles/:id/schedule/runs` | List scheduled run history (admin only) |
-| `GET` | `/api/workspaces/:wid/consoles/:id/executions` | List recent query executions with trigger source (`?limit=`, ~90-day retention) |
-| `GET` | `/api/workspaces/:wid/scheduled-queries` | List scheduled consoles in the workspace (admin only) |
-| `GET`    | `/api/workspaces/:wid/consoles/:id/collaborators`           | List per-user collaborators                  |
-| `POST`   | `/api/workspaces/:wid/consoles/:id/collaborators`           | Add/update a collaborator (`{ userId, role }`; owner/admin only) |
-| `PATCH`  | `/api/workspaces/:wid/consoles/:id/collaborators/:userId`   | Change a collaborator's role (owner/admin only) |
-| `DELETE` | `/api/workspaces/:wid/consoles/:id/collaborators/:userId`   | Remove a collaborator (owner/admin only)     |
-| `PATCH`  | `/api/workspaces/:wid/consoles/:id/sharing`                 | Update general access (`{ access, workspaceRole }`; owner/admin only) |
+| Method   | Endpoint                                                      | Description                                                                     |
+| -------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `GET`    | `/api/workspaces/:wid/consoles/list`                          | List all consoles                                                               |
+| `GET`    | `/api/workspaces/:wid/consoles/:id/details`                   | Get console details + code                                                      |
+| `POST`   | `/api/workspaces/:wid/consoles/:id/execute`                   | Execute a saved console                                                         |
+| `GET`    | `/api/workspaces/:wid/consoles/:id/versions`                  | List version history (paginated, newest first)                                  |
+| `GET`    | `/api/workspaces/:wid/consoles/:id/versions/:version`         | Get a specific version snapshot                                                 |
+| `POST`   | `/api/workspaces/:wid/consoles/:id/versions/:version/restore` | Restore the console to a past version                                           |
+| `PUT`    | `/api/workspaces/:wid/consoles/:id/schedule`                  | Create or update a saved console schedule (admin only)                          |
+| `DELETE` | `/api/workspaces/:wid/consoles/:id/schedule`                  | Remove a saved console schedule (admin only)                                    |
+| `POST`   | `/api/workspaces/:wid/consoles/:id/schedule/run`              | Trigger a scheduled console immediately (admin only)                            |
+| `GET`    | `/api/workspaces/:wid/consoles/:id/schedule/runs`             | List scheduled run history (admin only)                                         |
+| `GET`    | `/api/workspaces/:wid/consoles/:id/executions`                | List recent query executions with trigger source (`?limit=`, ~90-day retention) |
+| `GET`    | `/api/workspaces/:wid/scheduled-queries`                      | List scheduled consoles in the workspace (admin only)                           |
+| `GET`    | `/api/workspaces/:wid/consoles/:id/collaborators`             | List per-user collaborators                                                     |
+| `POST`   | `/api/workspaces/:wid/consoles/:id/collaborators`             | Add/update a collaborator (`{ userId, role }`; owner/admin only)                |
+| `PATCH`  | `/api/workspaces/:wid/consoles/:id/collaborators/:userId`     | Change a collaborator's role (owner/admin only)                                 |
+| `DELETE` | `/api/workspaces/:wid/consoles/:id/collaborators/:userId`     | Remove a collaborator (owner/admin only)                                        |
+| `PATCH`  | `/api/workspaces/:wid/consoles/:id/sharing`                   | Update general access (`{ access, workspaceRole }`; owner/admin only)           |
 
 See [Console](/console/) for full API documentation with examples. Scheduled query endpoints require workspace admin access and use the same session/API-key authentication as other workspace endpoints. Version history is covered under [Version History](/version-history/).
 
 ## Source Connections
 
-A *connector* is code (Stripe, Close, PostHog, a workspace-authored `ws:` connector, …); a *source connection* is a credential configured with one — what a [flow](#flows) reads from. These routes manage source connections. The primary path is `/connections/sources`; `/connectors` is the pre-2026-09 alias and still works. Database connections are under [Database Connections](#database-connections). See [SaaS Connectors](/connectors/).
+A _connector_ is code (Stripe, Close, PostHog, a workspace-authored `ws:` connector, …); a _source connection_ is a credential configured with one — what a [flow](#flows) reads from. These routes manage source connections. The primary path is `/connections/sources`; `/connectors` is the pre-2026-09 alias and still works. Database connections are under [Database Connections](#database-connections). See [SaaS Connectors](/connectors/).
 
-| Method   | Endpoint                                              | Description                                                                |
-| -------- | ----------------------------------------------------- | -------------------------------------------------------------------------- |
-| `GET`    | `/api/workspaces/:wid/connections/sources`            | List source connections (credentials masked)                               |
-| `POST`   | `/api/workspaces/:wid/connections/sources`            | Add a source connection (secret fields encrypted per the connector's schema) |
-| `GET`    | `/api/workspaces/:wid/connections/sources/:id`        | Get one source connection                                                  |
-| `PUT`    | `/api/workspaces/:wid/connections/sources/:id`        | Update a source connection                                                 |
-| `DELETE` | `/api/workspaces/:wid/connections/sources/:id`        | Remove a source connection                                                 |
-| `POST`   | `/api/workspaces/:wid/connections/sources/:id/test`   | Test the credential                                                        |
-| `POST`   | `/api/workspaces/:wid/connections/sources/:id/probe`  | Probe live: test the credential and read one bounded page of an entity     |
-| `GET`    | `/api/workspaces/:wid/connections/sources/:id/entities` | Entities the connection's connector offers                               |
-| `PATCH`  | `/api/workspaces/:wid/connections/sources/:id/enable` | Enable or disable                                                          |
+| Method   | Endpoint                                                | Description                                                                  |
+| -------- | ------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `GET`    | `/api/workspaces/:wid/connections/sources`              | List source connections (credentials masked)                                 |
+| `POST`   | `/api/workspaces/:wid/connections/sources`              | Add a source connection (secret fields encrypted per the connector's schema) |
+| `GET`    | `/api/workspaces/:wid/connections/sources/:id`          | Get one source connection                                                    |
+| `PUT`    | `/api/workspaces/:wid/connections/sources/:id`          | Update a source connection                                                   |
+| `DELETE` | `/api/workspaces/:wid/connections/sources/:id`          | Remove a source connection                                                   |
+| `POST`   | `/api/workspaces/:wid/connections/sources/:id/test`     | Test the credential                                                          |
+| `POST`   | `/api/workspaces/:wid/connections/sources/:id/probe`    | Probe live: test the credential and read one bounded page of an entity       |
+| `GET`    | `/api/workspaces/:wid/connections/sources/:id/entities` | Entities the connection's connector offers                                   |
+| `PATCH`  | `/api/workspaces/:wid/connections/sources/:id/enable`   | Enable or disable                                                            |
 
 The same methods are also served at `/api/workspaces/:wid/connectors` (and `/connectors/:id/…`) as a deprecated alias.
 
@@ -152,15 +151,15 @@ Workspace-authored connector code has git history too: `GET /api/workspaces/:wid
 
 ## Flows
 
-| Method | Endpoint                                                           | Description                                                  |
-| ------ | ------------------------------------------------------------------ | ------------------------------------------------------------ |
-| `POST` | `/api/workspaces/:wid/flows`                                       | Create/trigger a flow                                        |
-| `GET`  | `/api/workspaces/:wid/flows/:id`                                   | Get flow status                                              |
-| `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/status`                   | Get CDC stream status                                        |
-| `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/schema-health`            | Compare live destination column types to the connector schema (BigQuery; detects drift) |
-| `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/destination-counts`       | Batched row counts per entity in the destination             |
-| `GET`  | `/api/workspaces/:wid/flows/:id/git/history` (also `/git/commit`, `/git/file-versions`) | Git history of the flow definition file |
-| `POST` | `/api/workspaces/:wid/flows/:id/git/restore`                       | Restore the flow to a previous commit (as a new commit)      |
+| Method | Endpoint                                                                                | Description                                                                             |
+| ------ | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `POST` | `/api/workspaces/:wid/flows`                                                            | Create/trigger a flow                                                                   |
+| `GET`  | `/api/workspaces/:wid/flows/:id`                                                        | Get flow status                                                                         |
+| `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/status`                                        | Get CDC stream status                                                                   |
+| `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/schema-health`                                 | Compare live destination column types to the connector schema (BigQuery; detects drift) |
+| `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/destination-counts`                            | Batched row counts per entity in the destination                                        |
+| `GET`  | `/api/workspaces/:wid/flows/:id/git/history` (also `/git/commit`, `/git/file-versions`) | Git history of the flow definition file                                                 |
+| `POST` | `/api/workspaces/:wid/flows/:id/git/restore`                                            | Restore the flow to a previous commit (as a new commit)                                 |
 
 ### Destination Counts Response
 
@@ -189,8 +188,18 @@ Returns a map of CDC entity name to destination row count. Mako batches BigQuery
         "entity": "customers",
         "hasDrift": true,
         "columns": [
-          { "column": "created_at", "liveType": "STRING", "expectedType": "TIMESTAMP", "status": "drift" },
-          { "column": "id",         "liveType": "STRING", "expectedType": "STRING",    "status": "match" }
+          {
+            "column": "created_at",
+            "liveType": "STRING",
+            "expectedType": "TIMESTAMP",
+            "status": "drift"
+          },
+          {
+            "column": "id",
+            "liveType": "STRING",
+            "expectedType": "STRING",
+            "status": "match"
+          }
         ]
       }
     ]
@@ -204,14 +213,14 @@ Accepts an optional `?entity=<name>` query parameter to scope the check to a sin
 
 Email, webhook, and Slack notifications for terminal scheduled-query and flow runs. See [Notifications](/notifications/) for the full guide and webhook payload shape.
 
-| Method | Endpoint | Description |
-| ------ | -------- | ----------- |
-| `GET`    | `/api/workspaces/:wid/notification-rules`                | List rules. Query: `resourceType`, `resourceId`. |
-| `GET`    | `/api/workspaces/:wid/notification-rules/deliveries`     | List recent deliveries. Query: `resourceType`, `resourceId`, optional `limit`. |
-| `POST`   | `/api/workspaces/:wid/notification-rules`                | Create a rule. Admin only. |
-| `PATCH`  | `/api/workspaces/:wid/notification-rules/:ruleId`        | Update triggers / channel / enabled flag. Admin only. |
-| `DELETE` | `/api/workspaces/:wid/notification-rules/:ruleId`        | Delete a rule. Admin only. |
-| `POST`   | `/api/workspaces/:wid/notification-rules/test`           | Send a test notification (saved rule by `ruleId` or ad-hoc channel). |
+| Method   | Endpoint                                             | Description                                                                    |
+| -------- | ---------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `GET`    | `/api/workspaces/:wid/notification-rules`            | List rules. Query: `resourceType`, `resourceId`.                               |
+| `GET`    | `/api/workspaces/:wid/notification-rules/deliveries` | List recent deliveries. Query: `resourceType`, `resourceId`, optional `limit`. |
+| `POST`   | `/api/workspaces/:wid/notification-rules`            | Create a rule. Admin only.                                                     |
+| `PATCH`  | `/api/workspaces/:wid/notification-rules/:ruleId`    | Update triggers / channel / enabled flag. Admin only.                          |
+| `DELETE` | `/api/workspaces/:wid/notification-rules/:ruleId`    | Delete a rule. Admin only.                                                     |
+| `POST`   | `/api/workspaces/:wid/notification-rules/test`       | Send a test notification (saved rule by `ruleId` or ad-hoc channel).           |
 
 Webhook deliveries include an `X-Mako-Signature` HMAC-SHA256 header. The signing secret is returned **once** as `signingSecretOnce` on create or rotation and is not retrievable later.
 
@@ -261,27 +270,26 @@ The response is a **Server-Sent Events (SSE)** stream:
 
 ## Chat History
 
-| Method   | Endpoint                         | Description        |
-| -------- | -------------------------------- | ------------------ |
-| `GET`    | `/api/workspaces/:wid/chats`     | List chat sessions |
-| `POST`   | `/api/workspaces/:wid/chats`     | Create a new chat  |
-| `GET`    | `/api/workspaces/:wid/chats/:id` | Get chat details   |
-| `PUT`    | `/api/workspaces/:wid/chats/:id` | Update chat title  |
-| `DELETE` | `/api/workspaces/:wid/chats/:id` | Delete a chat      |
+| Method   | Endpoint                                         | Description                                                |
+| -------- | ------------------------------------------------ | ---------------------------------------------------------- |
+| `GET`    | `/api/workspaces/:wid/chats`                     | List chat sessions                                         |
+| `POST`   | `/api/workspaces/:wid/chats`                     | Create a new chat                                          |
+| `GET`    | `/api/workspaces/:wid/chats/:id`                 | Get chat details                                           |
+| `PUT`    | `/api/workspaces/:wid/chats/:id`                 | Update chat title                                          |
+| `DELETE` | `/api/workspaces/:wid/chats/:id`                 | Delete a chat                                              |
 | `GET`    | `/api/workspaces/:wid/chat-images/:attachmentId` | Fetch a stored chat image attachment (authenticated proxy) |
-
 
 ## Skills
 
 Workspace skills — named playbooks the agent can author and load on demand. See [Skills](/skills/) for the conceptual model.
 
-| Method   | Endpoint                                            | Description                                   |
-| -------- | --------------------------------------------------- | --------------------------------------------- |
-| `GET`    | `/api/workspaces/:wid/skills`                       | List every skill in the workspace             |
-| `GET`    | `/api/workspaces/:wid/skills/:id`                   | Get a single skill with full body             |
-| `PUT`    | `/api/workspaces/:wid/skills/:id`                   | Edit `loadWhen`, `body`, or `entities`        |
-| `POST`   | `/api/workspaces/:wid/skills/:id/suppress`          | Toggle the `suppressed` flag                  |
-| `DELETE` | `/api/workspaces/:wid/skills/:id`                   | Permanently delete a skill                    |
+| Method   | Endpoint                                   | Description                            |
+| -------- | ------------------------------------------ | -------------------------------------- |
+| `GET`    | `/api/workspaces/:wid/skills`              | List every skill in the workspace      |
+| `GET`    | `/api/workspaces/:wid/skills/:id`          | Get a single skill with full body      |
+| `PUT`    | `/api/workspaces/:wid/skills/:id`          | Edit `loadWhen`, `body`, or `entities` |
+| `POST`   | `/api/workspaces/:wid/skills/:id/suppress` | Toggle the `suppressed` flag           |
+| `DELETE` | `/api/workspaces/:wid/skills/:id`          | Permanently delete a skill             |
 
 All endpoints require authentication and workspace access. Agent-side CRUD is available through the `save_skill`, `delete_skill`, `load_skill`, and `search_skills` tools — see [AI Agent](/ai-agent/#targeted-playbooks-skills).
 
@@ -309,28 +317,28 @@ All endpoints require authentication and workspace access. Agent-side CRUD is av
 
 Git-backed React apps built inside the workspace ([Apps](/apps/)). Private apps are owner-only — admins and API keys cannot access another member's private app. The workspace repo itself is served over git HTTP at `/api/apps-git/:workspaceId.git` (scoped git token).
 
-| Method   | Endpoint                                                     | Description                                                |
-| -------- | ------------------------------------------------------------ | ---------------------------------------------------------- |
-| `GET`    | `/api/workspaces/:wid/apps`                                   | List app projects visible to the caller                    |
-| `POST`   | `/api/workspaces/:wid/apps`                                   | Create an app (scaffolds a Vite + React project)           |
-| `GET`    | `/api/workspaces/:wid/apps/:id`                               | Get an app project (metadata, branch, publish state)       |
-| `DELETE` | `/api/workspaces/:wid/apps/:id`                               | Delete an app                                              |
-| `GET`    | `/api/workspaces/:wid/apps/:id/files` / `…/file`              | List / read files on the working branch                    |
-| `PUT`    | `/api/workspaces/:wid/apps/:id/file`                          | Write a file to the working branch                         |
-| `POST`   | `/api/workspaces/:wid/apps/:id/exec`                          | Run a shell command in the app's sandbox                   |
-| `GET`    | `/api/workspaces/:wid/apps/:id/status` / `…/history` / `…/branches` | Working-tree status, commit history, branches        |
-| `POST`   | `/api/workspaces/:wid/apps/:id/commit` / `…/merge` / `…/checkout` / `…/discard` | Git operations on the working branch    |
-| `GET`    | `/api/workspaces/:wid/apps/:id/bindings`                      | List data bindings (`bindings/*.sql`)                      |
-| `POST`   | `/api/workspaces/:wid/apps/:id/bindings/:name/materialize`    | Build/rebuild a binding's Parquet artifact                 |
-| `GET`    | `/api/workspaces/:wid/apps/:id/bindings/:name/artifact`       | Stream the materialized Parquet artifact                   |
-| `POST`   | `/api/workspaces/:wid/apps/:id/publish` / `…/rollback`        | Build & publish a `main` commit / repoint the deployment   |
-| `GET`    | `/api/workspaces/:wid/apps/:id/publish-state`                | Read the live commit, publication time, pending app commits, and last deploy error |
-| `POST`   | `/api/workspaces/:wid/apps/:id/preview` / `…/dev-preview`     | Published-build preview / live dev server preview          |
-| `POST`   | `/api/workspaces/:wid/apps/:id/public-share`                  | Manage the anonymous public link (also `PATCH`/`DELETE`)   |
-| `GET`    | `/api/workspaces/:wid/apps/:id/sandbox`                       | Sandbox status (also `POST …/sandbox/recycle`)             |
-| `GET`    | `/api/workspaces/:wid/apps/:id/viewer`                        | Resolve the caller's viewer identity (what `useViewer()` sees): id, email, workspace role, app role. Editors may pass `?as=<email>` to preview another member's resolution |
-| `PATCH`  | `/api/workspaces/:wid/apps/:id/chat`                          | Turn "chat with this app" on or off for live-link viewers (`{ enabled }`; owner or workspace admin). See [Chat with an app](/apps/#chat-with-an-app) |
-| `GET`    | `/api/workspaces/:wid/apps/:id/chats`                         | List the caller's chats with the published app (50 most recent) |
+| Method   | Endpoint                                                                        | Description                                                                                                                                                                |
+| -------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`    | `/api/workspaces/:wid/apps`                                                     | List app projects visible to the caller                                                                                                                                    |
+| `POST`   | `/api/workspaces/:wid/apps`                                                     | Create an app (scaffolds a Vite + React project)                                                                                                                           |
+| `GET`    | `/api/workspaces/:wid/apps/:id`                                                 | Get an app project (metadata, branch, publish state)                                                                                                                       |
+| `DELETE` | `/api/workspaces/:wid/apps/:id`                                                 | Delete an app                                                                                                                                                              |
+| `GET`    | `/api/workspaces/:wid/apps/:id/files` / `…/file`                                | List / read files on the working branch                                                                                                                                    |
+| `PUT`    | `/api/workspaces/:wid/apps/:id/file`                                            | Write a file to the working branch                                                                                                                                         |
+| `POST`   | `/api/workspaces/:wid/apps/:id/exec`                                            | Run a shell command in the app's sandbox                                                                                                                                   |
+| `GET`    | `/api/workspaces/:wid/apps/:id/status` / `…/history` / `…/branches`             | Working-tree status, commit history, branches                                                                                                                              |
+| `POST`   | `/api/workspaces/:wid/apps/:id/commit` / `…/merge` / `…/checkout` / `…/discard` | Git operations on the working branch                                                                                                                                       |
+| `GET`    | `/api/workspaces/:wid/apps/:id/bindings`                                        | List data bindings (`bindings/*.sql`)                                                                                                                                      |
+| `POST`   | `/api/workspaces/:wid/apps/:id/bindings/:name/materialize`                      | Build/rebuild a binding's Parquet artifact                                                                                                                                 |
+| `GET`    | `/api/workspaces/:wid/apps/:id/bindings/:name/artifact`                         | Stream the materialized Parquet artifact                                                                                                                                   |
+| `POST`   | `/api/workspaces/:wid/apps/:id/publish` / `…/rollback`                          | Build & publish a `main` commit / repoint the deployment                                                                                                                   |
+| `GET`    | `/api/workspaces/:wid/apps/:id/publish-state`                                   | Read the live commit, publication time, pending app commits, and last deploy error                                                                                         |
+| `POST`   | `/api/workspaces/:wid/apps/:id/preview` / `…/dev-preview`                       | Published-build preview / live dev server preview                                                                                                                          |
+| `POST`   | `/api/workspaces/:wid/apps/:id/public-share`                                    | Manage the anonymous public link (also `PATCH`/`DELETE`)                                                                                                                   |
+| `GET`    | `/api/workspaces/:wid/apps/:id/sandbox`                                         | Sandbox status (also `POST …/sandbox/recycle`)                                                                                                                             |
+| `GET`    | `/api/workspaces/:wid/apps/:id/viewer`                                          | Resolve the caller's viewer identity (what `useViewer()` sees): id, email, workspace role, app role. Editors may pass `?as=<email>` to preview another member's resolution |
+| `PATCH`  | `/api/workspaces/:wid/apps/:id/chat`                                            | Turn "chat with this app" on or off for live-link viewers (`{ enabled }`; owner or workspace admin). See [Chat with an app](/apps/#chat-with-an-app)                       |
+| `GET`    | `/api/workspaces/:wid/apps/:id/chats`                                           | List the caller's chats with the published app (50 most recent)                                                                                                            |
 
 ## Workflows (preview)
 
@@ -344,13 +352,13 @@ Notebook CRUD, kernel sessions, executions, versions, presence, and the kernel's
 
 Token-gated, **read-only** endpoints for published app links. These are intentionally unauthenticated (no session or API key) and serve only materialized snapshots.
 
-| Method | Endpoint                                  | Description                                              |
-| ------ | ----------------------------------------- | ------------------------------------------------------- |
-| `GET`  | `/api/share/:token`                       | Get public-share metadata (title, whether a password is required) |
-| `POST` | `/api/share/:token/unlock`                | Exchange a password for access to a protected link      |
-| `GET`  | `/api/share/:token/content`               | Get the shared resource's materialized content          |
-| `GET`  | `/api/share/:token/artifacts/:artifactId` | Stream a materialized Parquet artifact (supports range requests) |
-| `POST` | `/api/share/:token/refresh`               | Throttled anonymous re-materialization of the snapshot  |
+| Method | Endpoint                                     | Description                                                        |
+| ------ | -------------------------------------------- | ------------------------------------------------------------------ |
+| `GET`  | `/api/share/:token`                          | Get public-share metadata (title, whether a password is required)  |
+| `POST` | `/api/share/:token/unlock`                   | Exchange a password for access to a protected link                 |
+| `GET`  | `/api/share/:token/content`                  | Get the shared app's entry, and its own-origin URL when one is set |
+| `GET`  | `/api/share/:token/app/*`                    | The app's published files, including `__data/<name>.parquet`       |
+| `POST` | `/api/share/:token/app/__data/:name/refresh` | Throttled anonymous refresh, only when the owner allows live data  |
 
 ## Inngest
 
@@ -362,11 +370,11 @@ Token-gated, **read-only** endpoints for published app links. These are intentio
 
 Subscription management endpoints. All require workspace membership. When `BILLING_ENABLED` is `false` (self-hosted default), all endpoints return `{ "billingEnabled": false }`.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/workspaces/:wid/billing/status` | Get plan, usage quota, and subscription status |
-| `POST` | `/api/workspaces/:wid/billing/checkout` | Create a Stripe Checkout session (returns `{ url }`) |
-| `POST` | `/api/workspaces/:wid/billing/portal` | Create a Stripe Customer Portal session (returns `{ url }`) |
+| Method | Endpoint                                | Description                                                 |
+| ------ | --------------------------------------- | ----------------------------------------------------------- |
+| `GET`  | `/api/workspaces/:wid/billing/status`   | Get plan, usage quota, and subscription status              |
+| `POST` | `/api/workspaces/:wid/billing/checkout` | Create a Stripe Checkout session (returns `{ url }`)        |
+| `POST` | `/api/workspaces/:wid/billing/portal`   | Create a Stripe Customer Portal session (returns `{ url }`) |
 
 ### Billing Status Response
 
@@ -386,7 +394,7 @@ Subscription management endpoints. All require workspace membership. When `BILLI
 
 ### Error Codes
 
-| Status | Description |
-|--------|-------------|
-| 403 | Not a workspace owner or admin |
-| 409 | Active subscription already exists (on checkout) |
+| Status | Description                                      |
+| ------ | ------------------------------------------------ |
+| 403    | Not a workspace owner or admin                   |
+| 409    | Active subscription already exists (on checkout) |

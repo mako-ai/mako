@@ -41,6 +41,7 @@ import {
 } from "../apps/app-origin";
 import { sandboxAppDocument } from "../apps/app-document-sandbox";
 import { createRouter } from "../openapi/core";
+import { refreshForShareGrant } from "./public-share";
 
 export const appsPreviewRoutes = createRouter();
 
@@ -64,15 +65,23 @@ async function serveAsset(c: Context): Promise<Response> {
       404,
     );
   }
-  // `POST __data/<name>/refresh` — the SDK's `refresh()`. The token was
-  // minted by a workspace member who could see the app (a viewer's published
-  // grant, or a builder's preview grant), which is what a signed-in refresh
+  // `POST __data/<name>/refresh` — the SDK's `refresh()`. Unless a share
+  // minted it (below), the token was minted by a workspace member who could
+  // see the app (a viewer's published grant, or a builder's preview grant),
+  // which is what a signed-in refresh
   // needs too; a published grant rebuilds AT its commit, a preview grant what
   // the preview's data path serves. Answered with the same wildcard ACAO as
   // the data it refreshes — the iframe's origin is opaque, and a bodiless
   // POST needs no preflight.
   if (c.req.method === "POST") {
     const name = refreshPathBinding(assetPathFor(c, token));
+    // A share-minted token is an anonymous visitor, not a member: the
+    // share's own rules apply (enabled, allowLiveQueries, cooldown).
+    if (grant.share) {
+      return name
+        ? await refreshForShareGrant(c, grant, name)
+        : c.json({ success: false, error: "Not found" }, 404);
+    }
     const project = name ? await AppProject.findById(grant.projectId) : null;
     if (!name || !project) {
       return c.json({ success: false, error: "Not found" }, 404);
