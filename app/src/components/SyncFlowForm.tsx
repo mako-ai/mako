@@ -243,6 +243,17 @@ export function SyncFlowForm({
     return map;
   }, [connectorTypes]);
 
+  // Connection types that are not sync sources (an HTTP API credential).
+  const notSyncable = useMemo(
+    () =>
+      new Set(
+        (connectorTypes || [])
+          .filter(entry => entry.syncable === false)
+          .map(entry => entry.type),
+      ),
+    [connectorTypes],
+  );
+
   const flows = useMemo(
     () => (currentWorkspace ? flowsMap[currentWorkspace.id] || [] : []),
     [currentWorkspace, flowsMap],
@@ -1422,28 +1433,34 @@ export function SyncFlowForm({
                           }
                           disabled={isLoadingConnectors || !isNewMode}
                         >
-                          {connectors.map(source => (
-                            <MenuItem key={source._id} value={source._id}>
-                              <Box
-                                sx={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 1,
-                                }}
-                              >
-                                {source.name}
-                                <Chip label={source.type} size="small" />
-                                {webhookCapabilitiesByType[source.type]
-                                  ?.supported && (
-                                  <Chip
-                                    label="webhook"
-                                    size="small"
-                                    variant="outlined"
-                                  />
-                                )}
-                              </Box>
-                            </MenuItem>
-                          ))}
+                          {connectors
+                            .filter(
+                              source =>
+                                !notSyncable.has(source.type) ||
+                                source._id === field.value,
+                            )
+                            .map(source => (
+                              <MenuItem key={source._id} value={source._id}>
+                                <Box
+                                  sx={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 1,
+                                  }}
+                                >
+                                  {source.name}
+                                  <Chip label={source.type} size="small" />
+                                  {webhookCapabilitiesByType[source.type]
+                                    ?.supported && (
+                                    <Chip
+                                      label="webhook"
+                                      size="small"
+                                      variant="outlined"
+                                    />
+                                  )}
+                                </Box>
+                              </MenuItem>
+                            ))}
                         </Select>
                         {errors.dataSourceId && (
                           <FormHelperText>
