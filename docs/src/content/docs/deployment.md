@@ -91,6 +91,13 @@ Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`)
 | `API_RATE_LIMIT_PER_MINUTE`    | Optional    | Cost units per caller per minute (default `1200`) |
 | `EDGE_ORIGIN_SECRET`           | Optional    | When set, requests must carry `x-mako-edge: <secret>` (set by a Cloudflare Transform Rule) so the `*.run.app` URL cannot bypass Cloudflare. Logs only until `EDGE_ORIGIN_CHECK=enforce` |
 | `APPS_LIFECYCLE_ENFORCE`       | Optional    | Enforces the daily [app lifecycle job](/apps/#app-lifecycle-stale-and-archived-apps) (stale notices, archiving, paused schedules): `all` or a comma-separated list of workspace ids. Unset = dry run, the job only logs its plan |
+| `PARQUET_COMPRESSION`          | Optional    | Codec for app binding parquet: `ZSTD` (default, level 3) or `SNAPPY`. CDC and sync loads always write SNAPPY. An invalid value stops the API at boot; existing files stay readable |
+| `PARQUET_ZSTD_LEVEL`           | Optional    | ZSTD level for app binding parquet, 1–22 (default `3`) |
+| `PARQUET_ROW_GROUP_SIZE`       | Optional    | Row-group size override for app binding parquet (default DuckDB's `122880`, minimum `2048`) |
+| `APP_CHAT_PARQUET_DIRECT_GCS`  | Optional    | `1` lets chat-with-app read a binding's parquet straight from GCS through DuckDB httpfs instead of copying it locally first (default off). Prefers a short-lived signed URL; falls back to `gs://` with `GCS_HMAC_KEY_ID` + `GCS_HMAC_SECRET` or an OAuth token. Needs the httpfs extension baked into `DUCKDB_EXTENSION_DIRECTORY` (the Docker image does this) |
+| `APPS_ORIGIN_BASE`             | Optional    | Serves each published app from `https://<appId>.<domain>` so the browser cache works. Off unless set. Must be a registrable domain separate from `CLIENT_URL`'s (a `mako.ai` subdomain is refused) |
+| `APPS_ORIGIN_TOKEN_WINDOW_SECONDS` / `APPS_STABLE_SIGNED_URL_WINDOW_SECONDS` | Optional | How long one app view-token URL (default `3600`) and one signed parquet URL (default `21600`) stay identical. Longer = more cache hits, longer-lived bearer URLs |
+| `APPS_ORIGIN_FRAME_ANCESTORS`  | Optional    | Space-separated extra origins allowed to frame app hosts besides `CLIENT_URL` |
 
 ### API Protection
 
