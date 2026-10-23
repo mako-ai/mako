@@ -279,6 +279,7 @@ describe("wiring: registered, classified, deferred, read-only", () => {
       "inspect_connector",
       "inspect_connection",
       "probe_connection",
+      "call_connection",
     ]) {
       expect(collectLiveAgentToolNames()).toContain(name);
       expect(DEFERRED_BUILTIN_TOOL_NAMES).toContain(name);
@@ -306,8 +307,9 @@ describe("wiring: registered, classified, deferred, read-only", () => {
     }
   });
 
-  it("exposes exactly the four connector/connection tools from its factory", () => {
+  it("exposes exactly the five connector/connection tools from its factory", () => {
     expect(Object.keys(createConnectorTools(WS)).sort()).toEqual([
+      "call_connection",
       "inspect_connection",
       "inspect_connector",
       "list_connectors",

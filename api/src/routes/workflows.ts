@@ -7,6 +7,8 @@
  * runtime routes accept a workspace API key with the `workflows:runtime`
  * scope, which a person cannot put on a key; the key decides the workspace.
  */
+import { connectionRequest } from "../connections/proxy.service";
+import { ConnectionRequestError } from "../connections/forward";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -810,6 +812,57 @@ workflowRuntimeRoutes.post(
     } catch (error) {
       if (error instanceof WorkflowQueryError) {
         return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+  }),
+);
+
+// One request to a service through a source connection (lib/mako
+// `connection(id)`): Mako adds the stored credential, which workflow code
+// never sees. Reads are for everyone; a write needs this workflow (or, on a
+// person's own run, this person) on the connection's writers list
+// (connections/proxy.service.ts). The service's status comes back as is.
+workflowRuntimeRoutes.post(
+  "/connections/:connection/request",
+  asWorkerOrPerson(async (c, worker) => {
+    const body = (await c.req.json().catch(() => null)) as {
+      method?: unknown;
+      path?: unknown;
+      query?: unknown;
+      headers?: unknown;
+      body?: unknown;
+      idempotencyKey?: unknown;
+    } | null;
+    if (typeof body?.method !== "string" || typeof body.path !== "string") {
+      return c.json({ error: "A method and a path are required" }, 400);
+    }
+    const record = (value: unknown) =>
+      value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, never>)
+        : undefined;
+    try {
+      return c.json(
+        await connectionRequest({
+          workspaceId: worker.workspaceId,
+          connection: c.req.param("connection") ?? "",
+          request: {
+            method: body.method,
+            path: body.path,
+            query: record(body.query),
+            headers: record(body.headers),
+            body: body.body,
+            idempotencyKey:
+              typeof body.idempotencyKey === "string"
+                ? body.idempotencyKey.slice(0, 255)
+                : undefined,
+          },
+          signal: c.req.raw.signal,
+        }),
+      );
+    } catch (error) {
+      if (error instanceof ConnectionRequestError) {
+        return c.json({ error: error.message }, error.status);
       }
       throw error;
     }

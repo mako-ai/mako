@@ -12,7 +12,8 @@
  * `inspect_connection` describes one configured credential (of either kind);
  * `probe_connection` is the live half: it runs a source connection against
  * the platform behind it (credential check + one bounded page of an entity)
- * and writes nothing. It is a read of external data, so like
+ * and writes nothing; `call_connection` sends one read request through a
+ * source connection's proxy. Both read external data, so like
  * `sql_execute_query` it is hidden from credentials without query access.
  *
  * `create_connection` is the one write: it stores a new SOURCE connection
@@ -39,9 +40,7 @@ const EXTERNAL_MCP_ONLY = [
 ] as const satisfies readonly AgentSurface[];
 
 export type ConnectorCapabilityPack =
-  | "connector-discovery"
-  | "connector-probe"
-  | "connector-admin";
+  "connector-discovery" | "connector-probe" | "connector-admin";
 
 export type ConnectorCapabilityDefinition = AgentCapabilityDefinition<
   "connectors",
@@ -76,6 +75,16 @@ export const CONNECTOR_CAPABILITIES = [
   }),
   define({
     name: "probe_connection",
+    pack: "connector-probe",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+    requiresQueryAccess: true,
+  }),
+  // A live read through a source connection's proxy: the credential stays
+  // in Mako and every write is refused there, whoever asks.
+  define({
+    name: "call_connection",
     pack: "connector-probe",
     risk: "read",
     surfaces: ALL_AGENT_SURFACES,

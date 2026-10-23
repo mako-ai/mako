@@ -47,8 +47,13 @@ import {
 import { loggers } from "../../logging";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { summarizeConnectionForListing } from "./universal-tools";
+import { connectionRequest } from "../../connections/proxy.service";
+import { ConnectionRequestError } from "../../connections/forward";
 
 const logger = loggers.api("connector-tools");
+
+/** A live answer longer than this comes back cut, marked `truncated`. */
+const CALL_CONNECTION_MAX_CHARS = 40_000;
 
 /** Field names whose VALUES are never returned, whatever the schema says. */
 export interface ConnectorConfigField {
@@ -512,6 +517,78 @@ export function createConnectorTools(workspaceId: string) {
                 : `Probe failed: ${message}`,
             ...(error instanceof ProbeError ? { code: error.code } : {}),
           };
+        }
+      },
+    }),
+    call_connection: tool({
+      description: [
+        "Send one READ request to a service through a SOURCE connection (a Close account, a Stripe key, an HTTP API connection): Mako adds the stored credential, which you never see, and returns the service's status, headers and body.",
+        "Reads only: GET, and the POSTs that only read (a GraphQL query on an HTTP API connection with GraphQL on, a Close search or a Close POST with header x-http-method-override: GET). Any write is refused: writes belong to a workflow on the connection's writers list.",
+        "`path` is relative to the connection's base URL (Close: /lead/, Stripe: /v1/customers, an HTTP API: whatever its base URL serves) and cannot leave it. Prefer the synced tables for anything the warehouse already holds: this reads live.",
+      ].join("\n"),
+      inputSchema: z.object({
+        connectionId: z
+          .string()
+          .describe("Source connection id or name from list_connections."),
+        method: z.enum(["GET", "POST", "HEAD"]).default("GET"),
+        path: z
+          .string()
+          .describe('Path under the base URL, starting with "/".'),
+        query: z
+          .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+          .optional()
+          .describe("Query string parameters."),
+        headers: z.record(z.string(), z.string()).optional(),
+        body: z
+          .unknown()
+          .optional()
+          .describe("JSON body, for a read POST (a GraphQL query)."),
+      }),
+      execute: async ({
+        connectionId,
+        method,
+        path,
+        query,
+        headers,
+        body,
+      }: {
+        connectionId: string;
+        method: "GET" | "POST" | "HEAD";
+        path: string;
+        query?: Record<string, string | number | boolean>;
+        headers?: Record<string, string>;
+        body?: unknown;
+      }) => {
+        try {
+          const answer = await connectionRequest({
+            workspaceId,
+            connection: connectionId,
+            request: { method, path, query, headers, body },
+            readOnly: true,
+          });
+          const text = JSON.stringify(answer.body ?? null);
+          return {
+            status: answer.status,
+            headers: answer.headers,
+            ...(text.length > CALL_CONNECTION_MAX_CHARS
+              ? {
+                  body: text.slice(0, CALL_CONNECTION_MAX_CHARS),
+                  truncated: true,
+                }
+              : { body: answer.body }),
+          };
+        } catch (error) {
+          if (error instanceof ConnectionRequestError) {
+            return { error: error.message };
+          }
+          const message =
+            error instanceof Error ? error.message : "Unknown error";
+          logger.error("call_connection failed", {
+            workspaceId,
+            connectionId,
+            error: message,
+          });
+          return { error: `The request failed: ${message}` };
         }
       },
     }),
