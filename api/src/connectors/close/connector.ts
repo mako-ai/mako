@@ -26,6 +26,7 @@ import {
 import axios, { AxiosInstance } from "axios";
 import * as crypto from "crypto";
 import { loggers } from "../../logging";
+import { throttledRequest } from "../rate-gate";
 
 const logger = loggers.connector("close");
 
@@ -223,48 +224,6 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTOR_KEYS = new Set(
     selector => `${selector.object_type}:${selector.action}`,
   ),
 );
-
-/**
- * Per-API-key request gate shared across all CloseConnector instances.
- * Multiple flows may use the same Close API key concurrently; without
- * coordination they blast the shared rate-limit bucket and trigger 429s.
- * This gate serializes requests per key with a minimum inter-request delay.
- */
-const apiKeyGates = new Map<
-  string,
-  { chain: Promise<void>; minDelayMs: number }
->();
-
-function getApiKeyGate(apiKey: string, minDelayMs: number) {
-  let gate = apiKeyGates.get(apiKey);
-  if (!gate) {
-    gate = { chain: Promise.resolve(), minDelayMs };
-    apiKeyGates.set(apiKey, gate);
-  }
-  return gate;
-}
-
-function throttledRequest<T>(
-  apiKey: string,
-  fn: () => Promise<T>,
-  minDelayMs: number,
-): Promise<T> {
-  const gate = getApiKeyGate(apiKey, minDelayMs);
-  const result = gate.chain.then(async () => {
-    try {
-      return await fn();
-    } finally {
-      // Always wait minDelayMs AFTER each request completes before
-      // releasing the gate for the next one.
-      await new Promise(r => setTimeout(r, minDelayMs));
-    }
-  });
-  gate.chain = result.then(
-    () => {},
-    () => {},
-  );
-  return result;
-}
 
 export class CloseConnector extends BaseConnector {
   private customFieldSchemaCache = new Map<string, CloseCustomField[]>();

@@ -38,6 +38,7 @@ import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { connectorIconUrl } from "../lib/connector-icon";
 import { EntityHistoryButton } from "./EntityHistoryButton";
 import ConnectionEditorsPanel from "./ConnectionEditorsPanel";
+import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
 
 /** `ws:acme` — a connector defined in the workspace repo (`connectors/acme/`). */
 const WORKSPACE_TYPE_PREFIX = "ws:";
@@ -70,6 +71,29 @@ export interface ConnectorFieldSchema {
 
 export interface ConnectorSchemaResponse {
   fields: ConnectorFieldSchema[];
+}
+
+/**
+ * Whether a top-level field's `showIf` holds. A field not filled in yet
+ * counts as its schema default, so a cached schema (whose defaults were not
+ * applied to the form) shows the same fields as a fresh one.
+ */
+function isFieldShown(
+  field: ConnectorFieldSchema,
+  fields: ConnectorFieldSchema[],
+  watch: (name: string) => unknown,
+): boolean {
+  if (!field.showIf) return true;
+  const other = fields.find(f => f.name === field.showIf?.field);
+  const value = watch(field.showIf.field) ?? other?.default;
+  const { equals: eq, notEquals: ne } = field.showIf;
+  const eqOk = Array.isArray(eq)
+    ? eq.includes(value as string | number | boolean)
+    : eq === undefined || value === eq;
+  const neOk = Array.isArray(ne)
+    ? !ne.includes(value as string | number | boolean)
+    : ne === undefined || value !== ne;
+  return eqOk && neOk;
 }
 
 interface SourceConnectionFormProps {
@@ -138,6 +162,11 @@ function SourceConnectionForm({
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
   const [tab, setTab] = useState<"connection" | "access">("connection");
 
   const draftRef = useRef<Record<string, any> | undefined>(
@@ -482,6 +511,22 @@ function SourceConnectionForm({
       console.error("[SourceConnectionForm] onSubmit threw", err);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  // Test the saved connection: the server uses the stored credential.
+  const runTest = async () => {
+    if (!currentWorkspace || !connector?._id) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      setTestResult(
+        await useSourceConnectionEntitiesStore
+          .getState()
+          .test(currentWorkspace.id, connector._id),
+      );
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -990,7 +1035,10 @@ function SourceConnectionForm({
           {schemaError}
         </Alert>
       )}
-      {schema && schema.fields.map(f => renderDynamicField(f, form))}
+      {schema &&
+        schema.fields
+          .filter(f => isFieldShown(f, schema.fields, watch))
+          .map(f => renderDynamicField(f, form))}
       {!schemaLoading && !schema && (
         <Typography
           sx={{
@@ -1195,9 +1243,33 @@ function SourceConnectionForm({
           {basicInformationSection}
           {connectionConfigSection}
           {advancedSettingsSection}
+          {testResult && (
+            <Alert
+              severity={testResult.success ? "success" : "error"}
+              sx={{ mt: 2 }}
+              onClose={() => setTestResult(null)}
+            >
+              {testResult.message ||
+                (testResult.success ? "Connected" : "The test failed")}
+            </Alert>
+          )}
           <Box
             sx={{ display: "flex", justifyContent: "flex-end", gap: 1, mt: 2 }}
           >
+            {connector?._id && (
+              <Button
+                onClick={() => void runTest()}
+                disabled={testing || isSubmitting || isDirty}
+                sx={{ mr: "auto" }}
+                startIcon={
+                  testing ? (
+                    <CircularProgress size={16} color="inherit" />
+                  ) : undefined
+                }
+              >
+                {testing ? "Testing…" : "Test connection"}
+              </Button>
+            )}
             <Button onClick={onClose} disabled={isSubmitting}>
               Cancel
             </Button>

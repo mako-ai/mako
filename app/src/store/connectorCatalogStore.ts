@@ -34,6 +34,8 @@ export interface ConnectorType {
   version: string;
   description: string;
   supportedEntities: string[];
+  /** False: a credential for workflows and agents, never a flow source. */
+  syncable?: boolean;
   webhook: WebhookCapabilities;
   incremental: IncrementalCapabilities;
 }

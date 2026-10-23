@@ -71,6 +71,11 @@ interface EntitiesState {
     connectorId: string,
     editors: string[],
   ) => Promise<void>;
+  /** Test the saved connection with its stored credential. */
+  test: (
+    workspaceId: string,
+    connectorId: string,
+  ) => Promise<{ success: boolean; message: string }>;
 }
 
 function makeKey(workspaceId: string, connectorId: string) {
@@ -311,6 +316,28 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
         ),
       ) as ApiResponse<SourceConnectionEntity>;
       if (fresh.success && fresh.data) get().upsert(fresh.data);
+    },
+    test: async (workspaceId, connectorId) => {
+      try {
+        const body = unwrapBody(
+          await api.POST(
+            "/api/workspaces/{workspaceId}/connections/sources/{id}/test",
+            { params: { path: { workspaceId, id: connectorId } } },
+          ),
+        ) as ApiResponse<{ success?: boolean; message?: string }>;
+        if (body.success && body.data) {
+          return {
+            success: body.data.success === true,
+            message: body.data.message || "",
+          };
+        }
+        return { success: false, message: body.error || "The test failed" };
+      } catch (err: any) {
+        return {
+          success: false,
+          message: err?.message || "The test failed",
+        };
+      }
     },
   })),
 );
