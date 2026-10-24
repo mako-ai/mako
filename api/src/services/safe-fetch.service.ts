@@ -260,3 +260,60 @@ export async function safeFetch(
     }
   }
 }
+
+export interface SafeRequestOptions {
+  method: string;
+  headers: Record<string, string>;
+  body?: string;
+  maxBytes?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface SafeRequestResult {
+  status: number;
+  headers: Record<string, string>;
+  body: Buffer;
+}
+
+/**
+ * One SSRF-hardened request with any method, for the connection proxy
+ * (connections/proxy.service.ts): the same scheme, hostname and pinned-IP
+ * checks as `safeFetch`, but the caller's method, headers and body, every
+ * status returned as it is, and no redirect followed (a 3xx comes back to
+ * the caller, so credentials are never replayed to another host).
+ */
+export async function safeRequest(
+  rawUrl: string,
+  options: SafeRequestOptions,
+): Promise<SafeRequestResult> {
+  const url = new URL(rawUrl);
+  assertAllowedScheme(url);
+  const resolved = await resolveAndValidateHostname(url.hostname);
+  const { signal, cleanup } = mergeSignals(
+    options.timeoutMs ?? 30_000,
+    options.signal,
+  );
+  try {
+    const undici = await loadUndici();
+    const response = await undici.fetch(url.toString(), {
+      method: options.method,
+      redirect: "manual",
+      signal,
+      headers: options.headers,
+      body: options.body,
+      dispatcher: createPinnedAgent(undici, resolved.address, resolved.family),
+    });
+    const headers: Record<string, string> = {};
+    response.headers.forEach((value, name) => {
+      headers[name] = value;
+    });
+    return {
+      status: response.status,
+      headers,
+      body: await readBodyWithLimit(response, options.maxBytes ?? 10_000_000),
+    };
+  } finally {
+    cleanup();
+  }
+}

@@ -505,6 +505,9 @@
               "type": "string"
             }
           },
+          "syncable": {
+            "type": "boolean"
+          },
           "webhook": {
             "type": "object",
             "properties": {

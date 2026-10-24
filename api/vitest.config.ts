@@ -26,6 +26,8 @@ export default defineConfig({
       "src/routes/connector-probe.test.ts",
       "src/routes/connector-catalog-tenancy.test.ts",
       "src/agent-lib/tools/dbt-*.test.ts",
+      // Connections: credential types, the proxy, writers on source connections.
+      "src/connections/**/*.test.ts",
     ],
     exclude: [
       "**/node_modules/**",
