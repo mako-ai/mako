@@ -171,7 +171,7 @@ A run opens on where it failed: a failure card (step, error, the code line from 
 
 Every model call and `agent()` turn a deployed step makes is counted against its workflow, run and step. A run's cost is the sum of its calls. Queries and compute are not counted. The run page shows the cost per step, the runs table has an AI cost column, and the workflow page shows the last 30 days. `workflows_status` returns the same figures to an agent.
 
-The worker sends the run id and step name with each call (`X-Mako-Run`, `X-Mako-Step`). A person's own run (`mako workflow run`, or a sandbox run) sends none, so it is not counted. Runs from before costs were recorded show none. To attribute older calls, an operator can run `api/src/scripts/backfill-workflow-ai-costs.ts` (`--dry-run` first): it matches calls to the step they were made in by time and marks them as backfilled. Calls in overlapping runs are left alone.
+The worker sends the run id and step name with each call (`X-Mako-Run`, `X-Mako-Step`). A person's own run (`mako workflow run`, or a sandbox run) sends none, so it is not counted. Runs from before costs were recorded show none. To attribute older calls, a super admin can `POST /api/admin/workflows/cost-backfill` (body `{ workspaceId?, days?, dryRun? }`; `days` is 1–90, default 30). It is a dry run unless `dryRun: false`, and answers per workspace the calls matched, ambiguous and unmatched with their cost, and how many it saved. It matches calls to the step they were made in by time and marks them as backfilled. Calls in overlapping runs are left alone. The script `api/src/scripts/backfill-workflow-ai-costs.ts` (`--dry-run` first) runs the same function from a shell with production access.
 
 ## API
 
