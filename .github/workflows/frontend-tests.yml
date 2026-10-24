@@ -85,14 +85,16 @@ jobs:
       - name: App SDK tests
         run: pnpm --filter @makoai/app-sdk test
 
-      # The CLI supports Node 20 (`engines`): `mako workflow run` must load a
-      # workflow's TypeScript there too, where Node cannot strip types itself.
+      # The CLI supports Node 22 (`engines`): `mako workflow run` must load a
+      # workflow's TypeScript there too, including 22.12-22.17, where Node
+      # does not strip types by default. --no-experimental-strip-types stands
+      # in for those on a patched 22.x (Node 20 is end-of-life).
       # (`mako connector test` needs Node 22.18+ and says so; not run here.)
-      - name: Setup Node 20
+      - name: Setup Node 22
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
 
-      - name: mako workflow run tests on Node 20
+      - name: mako workflow run tests on Node 22 without type stripping
         working-directory: packages/cli
-        run: node --test src/workflow.test.mjs
+        run: node --no-experimental-strip-types --test src/workflow.test.mjs

@@ -25,7 +25,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "@ai-sdk/gateway": "3.0.210",

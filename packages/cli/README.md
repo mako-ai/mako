@@ -61,5 +61,5 @@ can), `mako logout`, `--api-url <host>` for self-hosted Mako
 (`MAKO_API_KEY`) is used instead of the login when present — that is the path
 for CI.
 
-Node 20+. Besides `@makoai/app-sdk`, the packages workflow code may import
+Node 22+. Besides `@makoai/app-sdk`, the packages workflow code may import
 (`ai`, `zod`, `@ai-sdk/gateway`, `@ai-sdk/mcp`) and `tsx`, for `mako workflow run`.
