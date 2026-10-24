@@ -161,6 +161,18 @@ A worker run this way serves one workspace and has **no sandbox**: workflow code
 
 With none of these set, Mako runs without workflows.
 
+## Runs, retries and cost
+
+A workflow opens on its **Runs** tab: a table of its runs, newest start first, with status, start, duration, trigger, error and AI cost. Its **Flow** tab draws the workflow's steps as the code defines them (each step, the steps it waits for, its retries and timeout), so it shows before any run. The triggers sit above the table: each schedule in plain words with its next run (the cron on hover; it is set in `workflow.ts`), the webhook, and one On/Off switch.
+
+A run opens on where it failed: a failure card (step, error, the code line from the stack), the steps in the order they ran with the selected step's log beside them, and **Log**, **Output**, **Input** and **Flow** tabs. **Retry** starts from the failed step (earlier steps keep their output), reruns the whole run, or starts a new run with other input.
+
+### AI cost
+
+Every model call and `agent()` turn a deployed step makes is counted against its workflow, run and step. A run's cost is the sum of its calls. Queries and compute are not counted. The run page shows the cost per step, the runs table has an AI cost column, and the workflow page shows the last 30 days. `workflows_status` returns the same figures to an agent.
+
+The worker sends the run id and step name with each call (`X-Mako-Run`, `X-Mako-Step`). A person's own run (`mako workflow run`, or a sandbox run) sends none, so it is not counted. Runs from before costs were recorded show none. To attribute older calls, a super admin can `POST /api/admin/workflows/cost-backfill` (body `{ workspaceId?, days?, dryRun? }`; `days` is 1–90, default 30). It is a dry run unless `dryRun: false`, and answers per workspace the calls matched, ambiguous and unmatched with their cost, and how many it saved. It matches calls to the step they were made in by time and marks them as backfilled. Calls in overlapping runs are left alone. The script `api/src/scripts/backfill-workflow-ai-costs.ts` (`--dry-run` first) runs the same function from a shell with production access.
+
 ## API
 
 All under `/api/workspaces/<workspaceId>/workflows`:
@@ -172,5 +184,8 @@ All under `/api/workspaces/<workspaceId>/workflows`:
 | `GET /files`, `GET /files?path=<file>` | The files under `workflows/`, or one file's contents                                                                                                                                |
 | `POST /<name>/run`                     | Start a run: `{ input }` answers `runId`; `{ input, sandbox: true }` starts the caller's checkout in their sandbox and answers its `runId`; `GET /runs/{id}?wait=90` follows either |
 | `PUT /<name>/triggers`                 | Change what starts it: `{ active }` (its schedule and webhook), `{ webhook }` (add: answers the new URL; remove). Admins                                                            |
+| `POST /runs/<id>/retry`                | Retry a deployed run in place: `{ step }` runs that step and the ones after it again, on what the earlier steps kept; without `step`, the whole run. Members who may run may retry |
+| `GET /<name>/flow`                     | The workflow's steps as its code defines them: each with the steps it waits for, its retries and timeout                                                                      |
+| `GET /<name>/cost`                     | The workflow's AI cost over the last `days` days (default 30, at most 365): the total and by day                                                                              |
 
 Over MCP, an API key needs the `workflows:run` scope to start runs or add webhooks; looking needs only `mcp`.

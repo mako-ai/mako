@@ -334,7 +334,7 @@ Git-backed React apps built inside the workspace ([Apps](/apps/)). Private apps 
 
 ## Workflows (preview)
 
-Workflows are TypeScript files in the workspace repo's `workflows/` folder, deployed from `main` and run by Hatchet. Routes live under `/api/workspaces/:wid/workflows`: `GET /` (deployed workflows, schedules, recent runs), `GET /runs/:id`, `GET /files`, `POST /:name/run` (`{ input, sandbox? }`) and `PUT /:name/triggers` (activate, add or remove a webhook). See [Workflows](/workflows/#api) for details.
+Workflows are TypeScript files in the workspace repo's `workflows/` folder, deployed from `main` and run by Hatchet. Routes live under `/api/workspaces/:wid/workflows`: `GET /` (deployed workflows, schedules, recent runs), `GET /runs/:id`, `GET /files`, `POST /:name/run` (`{ input, sandbox? }`) and `PUT /:name/triggers` (activate, add or remove a webhook), `POST /runs/:id/retry` (retry a run, optionally from one step), `GET /:name/flow` (the workflow's steps) and `GET /:name/cost` (AI cost over the last `days` days). See [Workflows](/workflows/#api) for details.
 
 ## Notebooks
 
