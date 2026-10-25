@@ -5,7 +5,7 @@ description: Set up Mako locally in 5 minutes.
 
 ## Prerequisites
 
-- **Node.js** v20+
+- **Node.js** v22.12+ (CI and production run Node 24)
 - **pnpm** v8+
 - **Docker** & Docker Compose (for MongoDB)
 
