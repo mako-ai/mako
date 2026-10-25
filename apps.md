@@ -3526,10 +3526,8 @@ Chrome run, which matches the 6060 kB × 2 measured in Joan's Chrome:
 | `<id>.makoapps.test` + allow-same-origin | 12.20 MiB | 0.00 MiB (2 × 304) | no |
 | `<id>.apps.mako.test` (same site) | 12.20 MiB | 0.00 MiB | **yes** |
 
-**Open.** Anonymous share links still run app code top-level on
-app.mako.ai (`PublicSharePage` navigates to `/api/share/<t>/app/`), with the
-visitor's session in reach. Moving shares to the app origin needs the
-password-unlock cookie to move with them.
+**Open → done in §31.** Share links still loaded from Mako's origin here.
+§31 moves them to the app origin.
 
 Code: `api/src/apps/app-origin.ts`, `api/src/middleware/apps-host-gate.ts`,
 `routes/apps-preview.ts`, `routes/apps.ts` (view-token),
@@ -3537,3 +3535,67 @@ Code: `api/src/apps/app-origin.ts`, `api/src/middleware/apps-host-gate.ts`,
 (`APPS_DOMAIN`). Tests: `app-origin.test.ts`,
 `artifact-delivery.service.test.ts`, `app/src/lib/app-frame.test.ts`,
 `worker.test.mjs`.
+
+## 31. Share links load from the app's own origin too (2026-10-22)
+
+A second visit to a share link downloaded 12.20 MiB again. On the app's
+own origin it downloads 0.00 MiB (two bodiless 304s). Headless Chrome for
+Testing 1248, real share, token and host-gate code, 6 MB WASM + 200 KB
+bundle + 2 × 3 MB parquet (`api/src/apps/share-app-origin.browser.test.ts`).
+
+| Setup | Visit 1 | Visit 2 | Session cookie on frame's fetch to Mako |
+| --- | --- | --- | --- |
+| Flag off (navigate to `/api/share/<t>/app/`, opaque origin) | 12.20 MiB | 12.20 MiB | no |
+| Flag on (share page frames `<appId>.<apps domain>`) | 12.20 MiB | 0.00 MiB | no |
+
+**Design.** With `APPS_ORIGIN_BASE` set, `GET /api/share/<t>/content`
+adds `appUrl`: `https://<appId>.makousercontent.com/api/apps-preview/pub.<token>/`.
+`PublicSharePage` frames it full screen with `appFrameSandbox` (the same
+rule as in Mako: `allow-same-origin` only because the URL is foreign). The
+visitor stays on `/share/<t>`. The share URL's query seeds the frame, and
+the app's `mako-app:navigate` messages are mirrored back onto it. Flag off,
+`/content` has no `appUrl` and the page navigates to `entry` as before.
+
+- **The share mints the token.** It is an ordinary published token for the
+  share's app and its published commit, with no viewer and a share
+  fingerprint (`sh`, an HMAC of the share token, so the token never reveals
+  the share link). It is stable for the token window, so every visit inside
+  one window, by anyone, gets identical URLs.
+- **Who gets one.** Only a request that passes the share's gate: the share
+  is enabled, its token is current, and a password share is unlocked. A
+  password share's token never outlives the visitor's 12 h unlock
+  (`notAfter`). Unpublished apps get none.
+- **Already-minted tokens.** Disabling or rotating a share stops new tokens
+  at once. A minted token keeps serving the app's files until its window
+  ends plus 30 min: at most 90 min with the default 1 h window. Files it
+  fetched may be served from the visitor's browser cache until then.
+- **Runtime calls.** The SDK only calls relative `__data/` URLs:
+  `index.json`, `viewer.json` (null for a share token), `<name>.parquet`,
+  `<name>.snapshot.json` and `POST <name>/refresh`. All of them land on the
+  token route, which the host gate already allows for the host's own app.
+  Nothing new is opened on app hosts. The share routes themselves 404 there.
+- **Live queries.** A share token's refresh goes through the share's policy
+  (`refreshForShareGrant`), not a member's. It re-reads the share on every
+  call: it must still be enabled, its fingerprint must match the current
+  token, and `allowLiveQueries` must be on. It runs as nobody, at the
+  token's commit, with the 5 min per-binding cooldown. Disabling a share or
+  turning live queries off stops refreshes at once.
+- **Usage.** The app document no longer passes through the share router,
+  so the `/content` call that hands out `appUrl` records the open and sets
+  the `mako_viewer` cookie, from the top-level share page as before.
+
+**Removed.** `GET /api/share/<t>/artifacts/<artifactId>` had no caller:
+apps read data through `__data/`. The old `/app/` and `/u/<grant>/` routes
+stay: they serve the flag-off path and embeds of `/api/share/<t>/app/` on
+other sites.
+
+**Edge.** `cloudflare/app-router/wrangler.jsonc` routes the bare apex
+`makousercontent.com/*` to the Worker, which answers it 404
+(`unsupported_host`) instead of Cloudflare's 522.
+
+Code: `routes/public-share.ts` (`shareAppUrl`, `refreshForShareGrant`),
+`apps/preview.service.ts` (`share`, `notAfter`, `shareFingerprint`),
+`routes/apps-preview.ts`, `app/src/pages/PublicSharePage.tsx`. Tests:
+`apps/share-app-origin.test.ts`, `apps/share-app-origin.browser.test.ts`
+(opt-in, headless), `app/src/pages/PublicSharePage.test.tsx`,
+`cloudflare/app-router/worker.test.mjs`.

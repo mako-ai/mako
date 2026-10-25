@@ -178,7 +178,7 @@ Workspace admins can mark a workspace app **verified** (context-menu toggle, `PU
 
 ## Usage and popularity
 
-Every view of a published app is recorded: the in-Mako app tab and the `/view/` page report an `open` plus a heartbeat every 60 seconds while the app is visible (the dev preview never reports), and share links, raw `/live/` links and embeds are counted server-side when their HTML entry is served. Viewers on share links and embeds are keyed by a first-party random cookie (`mako_viewer`), not their IP address; crawlers and link unfurlers are logged as bots and counted nowhere.
+Every view of a published app is recorded: the in-Mako app tab and the `/view/` page report an `open` plus a heartbeat every 60 seconds while the app is visible (the dev preview never reports), and share links, raw `/live/` links and embeds are counted server-side: a share link when its page opens the app, the others when their HTML entry is served. Viewers on share links and embeds are keyed by a first-party random cookie (`mako_viewer`), not their IP address; crawlers and link unfurlers are logged as bots and counted nowhere.
 
 Counts roll up per viewer per UTC day (`app_usage_daily`), and every event is also kept raw (`app_usage_events`, 13-month TTL). `GET /api/workspaces/:wid/apps/usage?days=28` returns per app the viewers, non-author viewers, visit-days, opens, active seconds, last opens and a **popularity score**: the sum over non-author viewers of their distinct active days, each weighted by `0.5^(age_days/14)`. `GET .../apps/recent` returns the caller's recently viewed apps. The Apps home cards show visit-days (person-days in the last 28 days, authors included, plus anonymous viewers) and "Data last refreshed" for the app's current bindings only.
 

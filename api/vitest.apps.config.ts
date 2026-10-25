@@ -16,6 +16,10 @@ export default defineConfig({
     environment: "node",
     include: [
       "src/apps/sharing-routes.test.ts",
+      // Share links on the app's own origin: token scope, unlock, host gate.
+      "src/apps/share-app-origin.test.ts",
+      // Its browser half: opt-in (SHARE_ORIGIN_PLAYWRIGHT), headless.
+      "src/apps/share-app-origin.browser.test.ts",
       "src/apps/worktree.service.test.ts",
       "src/apps/workspace-repo.test.ts",
       "src/apps/workspace-prompt.test.ts",
