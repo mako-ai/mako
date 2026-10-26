@@ -270,7 +270,10 @@ export default function AppViewerPage() {
             ref={frameRef}
             title={app?.title ?? "App"}
             src={src}
-            sandbox={appFrameSandbox(src, "allow-scripts allow-forms allow-downloads")}
+            sandbox={appFrameSandbox(
+              src,
+              "allow-scripts allow-forms allow-downloads",
+            )}
             onLoad={() => setFrameLoaded(true)}
             style={{
               border: 0,
