@@ -32,7 +32,7 @@ import {
  * in a page (or this export) says which SDK a deployed app actually runs.
  * Kept in step with package.json by snapshot.test.mjs.
  */
-export const SDK_VERSION = "2.9.0";
+export const SDK_VERSION = "2.9.1";
 if (typeof window !== "undefined") {
   try {
     window.__MAKO_APP_SDK__ = SDK_VERSION;
@@ -788,6 +788,41 @@ export function navigate(to, opts) {
       // A host that is not Mako, or a frame that forbids it: nothing to tell.
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Host shortcuts — keys that belong to Mako, not the app.
+//
+// On its own origin (<appId>.makousercontent.com) the app is a cross-origin
+// frame: a keydown while it has focus reaches only this document, so Mako's
+// Cmd/Ctrl+K never fired. Hand the shortcut to the host instead, the same
+// way navigate() hands over the query. Capture phase, so an app's own
+// handlers cannot swallow it first.
+// ---------------------------------------------------------------------------
+export function hostShortcutFor(event) {
+  if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) {
+    return null;
+  }
+  return typeof event.key === "string" && event.key.toLowerCase() === "k"
+    ? "mod+k"
+    : null;
+}
+
+if (typeof window !== "undefined" && window.parent !== window) {
+  window.addEventListener(
+    "keydown",
+    event => {
+      const key = hostShortcutFor(event);
+      if (!key) return;
+      event.preventDefault();
+      try {
+        window.parent.postMessage({ type: "mako-app:shortcut", key }, "*");
+      } catch {
+        // A host that is not Mako: nothing to tell.
+      }
+    },
+    true,
+  );
 }
 
 export function useLocation() {

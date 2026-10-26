@@ -365,3 +365,15 @@ export function useSearchParams(): [
   ) => void,
 ];
 export function navigate(to: string, opts?: { replace?: boolean }): void;
+/**
+ * The Mako shortcut a keydown stands for ("mod+k" for Cmd/Ctrl+K), or null.
+ * Inside Mako the SDK forwards these to the host, because a cross-origin
+ * app frame keeps its keystrokes from Mako's own listeners.
+ */
+export function hostShortcutFor(event: {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+}): "mod+k" | null;

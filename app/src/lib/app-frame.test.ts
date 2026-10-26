@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   APP_FRAME_SANDBOX,
+  appFrameForMessage,
   appFrameMessageOrigin,
   appFrameSandbox,
 } from "./app-frame";
@@ -49,5 +50,37 @@ describe("app iframe sandbox", () => {
         APP_FRAME_SANDBOX,
       );
     }
+  });
+});
+
+describe("appFrameForMessage", () => {
+  const src = `https://${appId}.makoapps.dev/api/apps-preview/pub.x.y/`;
+  const win = {} as Window;
+  const frame = {
+    contentWindow: win,
+    getAttribute: () => src,
+  } as unknown as HTMLIFrameElement;
+  const origin = `https://${appId}.makoapps.dev`;
+
+  it("finds the frame that sent the message from its own origin", () => {
+    expect(appFrameForMessage({ source: win, origin }, [frame], page)).toBe(
+      frame,
+    );
+  });
+
+  it("refuses a frame that navigated to another origin", () => {
+    expect(
+      appFrameForMessage(
+        { source: win, origin: "https://evil.example" },
+        [frame],
+        page,
+      ),
+    ).toBeNull();
+  });
+
+  it("refuses a window that is not a frame on this page", () => {
+    expect(
+      appFrameForMessage({ source: {} as Window, origin }, [frame], page),
+    ).toBeNull();
   });
 });

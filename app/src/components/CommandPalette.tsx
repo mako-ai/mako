@@ -46,6 +46,7 @@ import {
   recentlyViewedApps,
 } from "../lib/apps-discovery";
 import { focusAppsHomeTab } from "../apps-runtime/shell";
+import { appFrameForMessage } from "../lib/app-frame";
 import { useCommandPaletteStore } from "../store/commandPaletteStore";
 import {
   selectDiscovery,
@@ -119,8 +120,23 @@ export default function CommandPalette() {
         useCommandPaletteStore.getState().togglePalette();
       }
     };
+    // An app on its own origin is a cross-origin frame: while it has focus
+    // its keystrokes never reach this window, so the SDK forwards the
+    // shortcut instead. Only an app frame on this page is believed.
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: unknown; key?: unknown } | null;
+      if (data?.type !== "mako-app:shortcut" || data.key !== "mod+k") return;
+      if (!appFrameForMessage(event)) return;
+      // Take focus back from the frame, or the palette's input cannot.
+      window.focus();
+      useCommandPaletteStore.getState().togglePalette();
+    };
     window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
+    window.addEventListener("message", onMessage);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("message", onMessage);
+    };
   }, []);
 
   // Reset transient state and warm entity lists whenever the palette opens.

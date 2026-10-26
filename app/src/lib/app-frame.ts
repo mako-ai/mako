@@ -60,3 +60,25 @@ export function appFrameMessageOrigin(
     ? (originOf(src, pageHref) ?? "null")
     : "null";
 }
+
+/**
+ * The app iframe on this page that sent `event`, or null. The same two
+ * checks the per-frame listeners make (`event.source` is the frame's window,
+ * `event.origin` is the origin it was given), for a listener that does not
+ * own a frame ref: any app frame on the page may ask for a host shortcut.
+ */
+export function appFrameForMessage(
+  event: Pick<MessageEvent, "source" | "origin">,
+  frames: Iterable<HTMLIFrameElement> = document.querySelectorAll("iframe"),
+  pageHref: string = window.location.href,
+): HTMLIFrameElement | null {
+  if (!event.source) return null;
+  for (const frame of frames) {
+    if (frame.contentWindow !== event.source) continue;
+    const src = frame.getAttribute("src") ?? "";
+    return src && event.origin === appFrameMessageOrigin(src, pageHref)
+      ? frame
+      : null;
+  }
+  return null;
+}

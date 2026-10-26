@@ -191,3 +191,13 @@ test("fetchBindingBytes relays a failed build", opts, async () => {
     globalThis.fetch = realFetch;
   }
 });
+
+test("hostShortcutFor hands Cmd/Ctrl+K to the host and nothing else", opts, () => {
+  const key = (k, mods = {}) => sdk.hostShortcutFor({ key: k, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...mods });
+  assert.equal(key("k", { metaKey: true }), "mod+k");
+  assert.equal(key("K", { ctrlKey: true }), "mod+k");
+  assert.equal(key("k"), null);
+  assert.equal(key("k", { metaKey: true, shiftKey: true }), null);
+  assert.equal(key("k", { ctrlKey: true, altKey: true }), null);
+  assert.equal(key("j", { metaKey: true }), null);
+});
