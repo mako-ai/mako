@@ -13,9 +13,12 @@
  *
  * The rule is mechanical so it cannot be got wrong per call site: the flag
  * is added only when the frame URL is cross-origin to this page.
+ *
+ * `allow-downloads` lets an app save a file it built (an Excel export, a
+ * CSV) when the user clicks. Without it Chrome drops the download silently.
  */
 export const APP_FRAME_SANDBOX =
-  "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox";
+  "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
 
 function originOf(url: string, base: string): string | null {
   try {

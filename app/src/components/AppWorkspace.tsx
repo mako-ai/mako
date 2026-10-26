@@ -1491,8 +1491,8 @@ export default function AppWorkspace({
         // External record links open normal tabs. Keep the app itself isolated.
         sandbox={
           preview.mode === "dev"
-            ? "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"
-            : "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+            ? "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-same-origin"
+            : "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
         }
         style={{ border: 0, width: "100%", height: "100%" }}
       />

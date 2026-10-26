@@ -33,6 +33,10 @@ describe("app iframe sandbox", () => {
     );
   });
 
+  it("lets the app save files it builds", () => {
+    expect(APP_FRAME_SANDBOX.split(" ")).toContain("allow-downloads");
+  });
+
   it("keeps the caller's base flags", () => {
     const src = `https://${appId}.makoapps.dev/x/`;
     expect(appFrameSandbox(src, "allow-scripts allow-forms", page)).toBe(
