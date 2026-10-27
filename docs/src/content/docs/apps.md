@@ -251,6 +251,8 @@ preview the app as a specific workspace member during `pnpm dev`.
 - A binding is the app's whole data, so one past the 500,000-row Parquet limit **fails its build** (the run records the error, and the previously built artifact keeps being served) instead of being silently cut to 500,000 rows. Narrow or aggregate the binding's SQL.
 - The sandbox is an isolated microVM per workspace; app code and shell commands never run in Mako's API process.
 - The preview iframe is sandboxed; app code receives query *results* only — never credentials.
+- App frames are sandboxed but keep `allow-downloads`, so an app can save the files it builds (an Excel or CSV export).
+- Apps run on their own origin (`<appId>.makousercontent.com`), so their keystrokes never reach Mako's own listeners. The SDK forwards Cmd/Ctrl+K to Mako (a `mako-app:shortcut` message) so the command palette opens while an app has focus; it needs `@makoai/app-sdk` 2.9.1 or newer, which published apps pick up on their next deploy.
 
 ## API Surface
 
