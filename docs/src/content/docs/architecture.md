@@ -66,9 +66,13 @@ The agent inspects real database schemas before writing anything — the cross-e
 
 ### Query Runner (`api/src/databases/`)
 
+<!-- <block name="supported-databases"> -->
+
 Supports 9 database drivers through a unified interface:
 
 PostgreSQL, MongoDB, BigQuery, MySQL, ClickHouse, Redshift, Cloud SQL (Postgres), Cloudflare D1, Cloudflare KV.
+
+<!-- </block> -->
 
 Each driver implements `executeQuery()` and `inspectSchema()`. Connections are encrypted at rest and pooled per workspace.
 

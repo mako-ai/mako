@@ -64,8 +64,10 @@ export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
 
 /** Safe defaults for newly-created MCP keys. */
 export const DEFAULT_WORKSPACE_API_KEY_SCOPES: WorkspaceApiKeyScope[] = [
+  // <block name="default-api-key-scopes" affects="docs/src/content/docs/mcp-server.md:default-api-key-scopes">
   "mcp",
   "query:read",
+  // </block>
 ];
 
 const WORKSPACE_API_KEY_SCOPE_SET = new Set<string>(WORKSPACE_API_KEY_SCOPES);

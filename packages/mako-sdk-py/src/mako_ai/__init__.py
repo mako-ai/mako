@@ -25,7 +25,9 @@ from .errors import (
     MakoSourceNotFoundError,
 )
 
+# <block name="mako-sdk-py-version" same-as="packages/mako-sdk-py/pyproject.toml:mako-sdk-py-version" same-as-pattern="(?P<value>\d+(?:\.\d+)+[0-9A-Za-z.+-]*)">
 __version__ = "0.1.0"
+# </block>
 
 # The module-level entry point. Bound to the process-wide default client, which
 # is lazily built from env/`configure(...)` the first time it is used.

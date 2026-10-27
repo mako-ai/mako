@@ -38,11 +38,13 @@ const MAX_REDIRECT_URIS = 10;
 
 /** The scopes every browser OAuth grant carries (see parseMcpOAuthScopes). */
 export const MCP_OAUTH_SCOPES = [
+  // <block name="mcp-oauth-scopes" same-as-pattern='"(?P<value>[^"]+)"'>
   "mcp",
   "query:read",
   "warehouse:write",
   "connections:write",
   "workflows:run",
+  // </block>
 ] as const satisfies readonly WorkspaceApiKeyScope[];
 
 /**

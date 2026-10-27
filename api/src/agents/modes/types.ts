@@ -13,7 +13,9 @@ import type { CapabilityGrant } from "@mako/agent-tools";
 
 /** Dynamic expertise modes the model can enable via `enable_mode`. */
 export type ExpertiseModeId =
+  // <block name="expertise-mode-ids" affects="docs/src/content/docs/ai-agent.md:expertise-modes">
   "query" | "flow" | "app" | "transform" | "workflow" | "notebook" | "explore";
+// </block>
 
 /**
  * A registered expertise mode. Modes reference tools *by name* — the actual

@@ -117,7 +117,9 @@ function awaitCallback(server, expectedState, timeoutMs) {
  * scripts pass it) and changes nothing.
  */
 export function loginScopes(_flags = {}) {
+  // <block same-as="api/src/auth/mcp-oauth.service.ts:mcp-oauth-scopes" same-as-mode="subset" same-as-pattern='"(?P<value>mcp|[^"\s]+:[^"\s]+)"'>
   return ["mcp", "query:read", "warehouse:write", "connections:write"];
+  // </block>
 }
 
 /**
