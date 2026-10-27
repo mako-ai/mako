@@ -137,6 +137,78 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
 .mk-tip-total th, .mk-tip-total td { font-weight: 600; }
 .mk-tip-rule th, .mk-tip-rule td { border-top: 1px solid var(--border); padding-top: 3px; }
 
+/* ---- DataTable ----------------------------------------------------------- */
+/* A card whose table scrolls inside it: a sticky header, an optional pinned
+ * first column, hover on the cells (so a pinned cell follows its row), and a
+ * pager footer. `.mk-dt--fill` fills the parent's height (give the parent one,
+ * e.g. a 100dvh flex column); otherwise the body scrolls past 70vh. */
+.mk-dt { display: flex; flex-direction: column; padding: 0; overflow: hidden; min-width: 0; }
+.mk-dt > .mk-card-head { flex: none; flex-wrap: wrap; margin: 0; padding: 16px 16px 12px; }
+.mk-dt .mk-card-actions { flex-wrap: wrap; }
+.mk-dt--fill { flex: 1 1 auto; height: 100%; min-height: 320px; }
+.mk-dt-note { flex: none; margin: 0; padding: 0 16px 10px; font-size: 12px; color: var(--muted-foreground); }
+.mk-dt-scroll { overflow: auto; max-height: 70vh; border-top: 1px solid var(--border); scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.mk-dt > .mk-dt-scroll:first-child { border-top: 0; }
+.mk-dt--fill .mk-dt-scroll { flex: 1 1 auto; min-height: 0; max-height: none; }
+.mk-dt-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.mk-dt-table th, .mk-dt-table td {
+  padding: 7px 10px; text-align: left; white-space: nowrap; vertical-align: middle;
+  border-bottom: 1px solid var(--mk-row-line); background: var(--card);
+}
+.mk-dt-table thead th {
+  position: sticky; top: 0; z-index: 2; padding: 0; border-bottom: 0;
+  font-size: 12px; font-weight: 500; color: var(--muted-foreground);
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+.mk-dt-table thead th.mk-dt-sorted { color: var(--foreground); }
+.mk-dt-label { display: inline-block; padding: 8px 10px; }
+.mk-dt-sort {
+  appearance: none; display: inline-flex; align-items: center; gap: 4px; width: 100%; padding: 8px 10px;
+  font: inherit; color: inherit; background: none; border: 0; text-align: inherit; white-space: nowrap;
+}
+.mk-dt-sort:hover { color: var(--foreground); }
+.mk-dt-sort:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: var(--mk-radius-sm); }
+.mk-dt-sort svg { flex: none; }
+.mk-dt-faint { opacity: .35; }
+.mk-dt-table .mk-dt-num { text-align: right; font-variant-numeric: tabular-nums; }
+.mk-dt-table th.mk-dt-num .mk-dt-sort { justify-content: flex-end; }
+.mk-dt-table .mk-dt-center { text-align: center; }
+.mk-dt-table th.mk-dt-center .mk-dt-sort { justify-content: center; }
+/* The pinned column: solid background and a hairline on its right edge. */
+.mk-dt-table .mk-dt-pin { position: sticky; left: 0; z-index: 1; box-shadow: inset -1px 0 0 var(--border); }
+/* The corner cell is pinned both ways and keeps BOTH borders: one box-shadow
+ * would otherwise override the other and drop the header's bottom rule. */
+.mk-dt-table thead th.mk-dt-pin { z-index: 3; box-shadow: inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border); }
+.mk-dt-table tbody tr:hover > td { background: color-mix(in srgb, var(--muted) 50%, var(--card)); }
+.mk-dt-table tbody tr:last-child > td { border-bottom: 0; }
+.mk-dt-click { cursor: pointer; }
+.mk-dt-click:focus-visible { outline: none; }
+.mk-dt-click:focus-visible > td { background: color-mix(in srgb, var(--muted) 70%, var(--card)); }
+.mk-dt-trunc { display: inline-block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+/* A render() that returns blocks (a name over its links) ellipsizes each line. */
+.mk-dt-trunc :where(div, p) { overflow: hidden; text-overflow: ellipsis; }
+.mk-dt-table td.mk-dt-empty { text-align: center; color: var(--muted-foreground); padding: 48px 10px; white-space: normal; }
+.mk-dt-foot {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground);
+}
+.mk-dt-foot b { font-weight: 500; color: var(--foreground); font-variant-numeric: tabular-nums; }
+.mk-dt-nav { display: flex; align-items: center; gap: 4px; }
+.mk-dt-nav .mk-btn { width: 28px; padding: 0; }
+.mk-dt-size {
+  cursor: pointer; height: 28px; margin-right: 8px; padding: 0 8px; font-size: 12px; color: var(--foreground);
+  background: var(--background); border: 1px solid var(--border); border-radius: var(--mk-radius-md); box-shadow: var(--mk-shadow-xs);
+}
+.mk-dt-size:focus-visible { outline: none; border-color: var(--ring); box-shadow: var(--mk-ring-focus); }
+.mk-dt-page { padding: 0 6px; font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) {
+  /* Phones: the page scrolls as usual and the table keeps a scroll box of its own. */
+  .mk-dt--fill { height: auto; }
+  .mk-dt--fill .mk-dt-scroll { max-height: 70vh; }
+  .mk-dt-nav .mk-btn { width: 38px; }
+  .mk-dt-size { height: 38px; }
+}
+
 /* ---- MultiSelect --------------------------------------------------------- */
 .mk-ms { position: relative; display: inline-block; }
 .mk-ms-trigger {

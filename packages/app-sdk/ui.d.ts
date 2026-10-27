@@ -175,3 +175,87 @@ export function tooltipSeriesRows<K extends string>(
   series: readonly { key: K; label?: string; color?: string }[],
   opts?: { stacked?: boolean },
 ): { key: K; label: string; color?: string; value: number }[];
+
+/** A table sort: the column id and its direction. */
+export interface DataTableSort {
+  id: string;
+  dir: "asc" | "desc";
+}
+export interface DataTableColumn<R = any> {
+  id: string;
+  /** Header text; also the CSV header when it is a string (else `id`). */
+  label: React.ReactNode;
+  /** The cell's raw value: what it sorts by and what CSV exports. */
+  value: (row: R) => unknown;
+  /** What the cell shows; defaults to `value(row)`. */
+  render?: (row: R) => React.ReactNode;
+  /** A number: right-aligned, tabular figures, sorts largest first on the first click. */
+  num?: boolean;
+  align?: "left" | "right" | "center";
+  /** Header width (and min width), e.g. 120 or "12rem". */
+  width?: number | string;
+  /** Truncate the cell with an ellipsis past this width; the full value shows on hover. */
+  maxWidth?: number | string;
+  /** Truncate at 260px (or `maxWidth`) with the full value as the hover title. */
+  truncate?: boolean;
+  /** Pin to the left edge with a solid background. Use on the first column. */
+  sticky?: boolean;
+  /** Default true. */
+  sortable?: boolean;
+  /** Header hover text, e.g. the column's definition. */
+  hint?: string;
+  /** false leaves the column out of CSV; a function exports a readable cell (an ISO date, a level name). */
+  csv?: false | ((row: R) => unknown);
+}
+export interface DataTableProps<R = any> {
+  rows: readonly R[];
+  columns: readonly DataTableColumn<R>[];
+  /** A stable key per row; defaults to `row.id`, else the position. */
+  rowKey?: (row: R) => React.Key;
+  title?: React.ReactNode;
+  description?: React.ReactNode;
+  /** Controls in the card's title row (search, filters). */
+  actions?: React.ReactNode;
+  /** Controlled sort (put it in the URL); pair with `onSortChange`. */
+  sort?: DataTableSort | null;
+  defaultSort?: DataTableSort | null;
+  onSortChange?: (sort: DataTableSort) => void;
+  /** Controlled page, 1-based; pair with `onPageChange`. */
+  page?: number;
+  onPageChange?: (page: number) => void;
+  pageSize?: number;
+  /** Default 50. */
+  defaultPageSize?: number;
+  onPageSizeChange?: (size: number) => void;
+  /** Default [25, 50, 100]; one entry hides the select. */
+  pageSizes?: readonly number[];
+  /** Plural noun for the footer: "1–50 of 312 customers". Default "rows". */
+  noun?: string;
+  /** Shown when there are no rows. Default "No rows match these filters." */
+  empty?: React.ReactNode;
+  /** Fill the parent's height; the body scrolls inside the card. */
+  fill?: boolean;
+  /** Body scroll height when not `fill`. Default 70vh. */
+  maxHeight?: number | string;
+  /** Row click (and Enter). Clicks on links, buttons and fields inside the row are theirs. */
+  onRowClick?: (row: R, event: React.SyntheticEvent) => void;
+  /** Adds an "Export CSV" button: every row, as sorted. Copies as TSV inside Mako's frame. */
+  exportFilename?: string;
+  className?: string;
+  style?: React.CSSProperties;
+}
+/** The house data table: sortable, paged, sticky header, optional pinned first column, CSV export. */
+export function DataTable<R = any>(props: DataTableProps<R>): React.ReactElement;
+
+/** A sorted copy: stable, by `value(row)`, empty values (null, "", NaN) last both ways. */
+export function sortRows<R>(rows: readonly R[], columns: readonly DataTableColumn<R>[], sort: DataTableSort | null | undefined): R[];
+/** The sort after a header click: same column flips; a new one starts desc for `num`, else asc. */
+export function nextSort(sort: DataTableSort | null | undefined, column: Pick<DataTableColumn, "id" | "num">): DataTableSort;
+/** Paging math, 1-based and clamped: rows `start` (inclusive) to `end` (exclusive). */
+export function pageSlice(total: number, page: number, pageSize: number): { page: number; pageCount: number; start: number; end: number };
+/** CSV text with a header row; skips `csv: false` columns; quotes every cell; guards formulas. */
+export function toCsv<R>(rows: readonly R[], columns: readonly DataTableColumn<R>[]): string;
+/** CSV text as tab-separated lines (pastes into spreadsheet columns). */
+export function csvToTsv(text: string): string;
+/** Download CSV text; inside a sandboxed frame copy it as TSV instead. */
+export function saveCsv(filename: string, text: string): "downloaded" | "copied" | "failed";

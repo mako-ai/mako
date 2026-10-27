@@ -2,7 +2,8 @@
 
 > Start from the house kit: `@makoai/app-sdk/ui` (+ `ui.css`) already covers
 > page header, cards, KPI tiles, buttons, the multi-select filter, the
-> freshness badge and the refresh-all button, in the house style. Reach for
+> freshness badge, the refresh-all button and the data table, in the house
+> style. Reach for
 > shadcn below only for what the kit does not have — and map it onto the
 > SDK's tokens, never onto a pasted palette.
 
@@ -113,6 +114,41 @@ The CLI writes `src/components/ui/*` and installs what it needs (`radix-ui`,
 
 Because the theme block above maps shadcn's expected token names onto the
 SDK's, generated components are correctly themed with zero edits.
+
+## Tables: use DataTable
+
+Every list of rows (customers, renewals, deals) is the kit's `DataTable`
+(`@makoai/app-sdk/ui`, SDK ≥ 2.11; README "Data tables"). Do not hand-roll a
+`<table>` or a shadcn table for it. The rules it encodes:
+
+- **Paginate, never cap.** Show every row across pages (25 / 50 / 100 per
+  page, default 50). A `LIMIT 100` or `.slice(0, 200)` hides rows and makes the
+  title's count wrong.
+- **Sticky header, pinned name column.** Put the row's identity first and set
+  `sticky: true` on it. Truncate long names (`truncate` or `maxWidth`); the
+  full value shows on hover.
+- **Fill the height.** A list that is the page's main content gets `fill` and
+  sits in a `100dvh` flex column, so the body scrolls and the pager stays in
+  view. A secondary table keeps the default 70vh scroll box.
+- **Every column sorts.** `value(row)` returns the raw number or string, never
+  formatted text: "€1,200" sorts wrong. `render(row)` formats. Numbers get
+  `num: true`. Pick a `defaultSort` that answers the card's question (largest
+  MRR, longest wait).
+- **CSV export.** Set `exportFilename`. It exports every row as sorted, and
+  inside Mako's frame it copies to the clipboard instead. Give date or level
+  columns a readable `csv(row)` and drop link-only columns with `csv: false`.
+- **Empty state.** Pass `empty` with a sentence that names the filters ("No
+  customers match these filters."). Never render an empty table body.
+- **Links under the name.** Links to Close, Stripe or the CRM go under the name
+  in the pinned cell (small, 12px) or in an unsortable last column. Use
+  `onRowClick` only for a detail sheet. Links inside a clickable row keep their
+  own click.
+- **URL state.** When the view is shareable, keep `sort` and `page` in the URL
+  with the SDK's `useSearchParams` and pass them as controlled props (`sort` +
+  `onSortChange`, `page` + `onPageChange`).
+- **Title is the takeaway.** The card title states the count and the finding
+  ("41 customers not onboarded, 12 of them paid over 30 days ago"), and the
+  footer repeats the count with the `noun`.
 
 ## Filter controls: the dropdown pattern
 

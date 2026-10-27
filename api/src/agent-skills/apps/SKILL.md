@@ -302,11 +302,13 @@ warm `--canvas`, `#527df2` `--brand`, `--positive`/`--warning`/`--negative`,
 every workspace app was re-forking: `PageHeader`, `Card`, `KpiRow` /
 `KpiTile`, `Button`, `StatusDot`, `MultiSelect` (filters), `FreshnessBadge`
 (data age per source), `RefreshAllButton` (rebuild every binding, with a
-progress modal). Import `@makoai/app-sdk/ui.css` before the app's own CSS.
+progress modal), `DataTable` (sortable, paged list with CSV export; SDK ≥ 2.11,
+rules in `references/ui-toolkit.md` "Tables"). Import `@makoai/app-sdk/ui.css` before the app's own CSS.
 New apps are scaffolded on it. Do NOT paste a token block into an app or
 fork these components — override a single token, or ask for the kit to grow.
 
-For anything beyond the kit (tables, sheets, dialogs, command menus): Tailwind
+Every row-level list is a `DataTable`. For anything beyond the kit (sheets,
+dialogs, command menus): Tailwind
 v4 + shadcn/ui — install, mapping Tailwind onto the SDK's theme tokens, the
 cursor-pointer base rule, and v1-CDN migration notes — read
 `references/ui-toolkit.md`

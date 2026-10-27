@@ -11,9 +11,19 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { bindingPhaseLabel, refreshBinding, useBindingProgress } from "./index.js";
-import { formatSeconds as fmtSecs, normalizeTone, refreshOrder, tooltipSeriesRows } from "./ui-core.js";
+import {
+  csvToTsv,
+  formatSeconds as fmtSecs,
+  nextSort,
+  normalizeTone,
+  pageSlice,
+  refreshOrder,
+  sortRows,
+  toCsv,
+  tooltipSeriesRows,
+} from "./ui-core.js";
 
-export { normalizeTone, refreshOrder, tooltipSeriesRows };
+export { csvToTsv, nextSort, normalizeTone, pageSlice, refreshOrder, sortRows, toCsv, tooltipSeriesRows };
 
 const h = React.createElement;
 
@@ -257,6 +267,310 @@ export function tableTooltip(build) {
     const props = build(datum, label);
     return props ? h(TableTooltip, props) : null;
   };
+}
+
+// ---------------------------------------------------------------------------
+// DataTable: sortable, paged, sticky header, CSV export
+// ---------------------------------------------------------------------------
+
+const IconSort = ({ dir }) =>
+  svg(
+    12,
+    2,
+    [
+      h("path", {
+        key: "p",
+        d:
+          dir === "asc"
+            ? "m5 12 7-7 7 7M12 19V5"
+            : dir === "desc"
+              ? "M12 5v14M19 12l-7 7-7-7"
+              : "m21 16-4 4-4-4M17 20V4M3 8l4-4 4 4M7 4v16",
+      }),
+    ],
+    dir ? undefined : "mk-dt-faint",
+  );
+
+/** A value that is controlled when `value !== undefined`, local state otherwise. */
+function useControlled(value, initial, onChange) {
+  const [local, setLocal] = React.useState(initial);
+  const controlled = value !== undefined;
+  const set = React.useCallback(
+    next => {
+      if (!controlled) setLocal(next);
+      onChange?.(next);
+    },
+    [controlled, onChange],
+  );
+  return [controlled ? value : local, set];
+}
+
+function framed() {
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+}
+
+function copyText(text) {
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.readOnly = true;
+  area.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+  document.body.appendChild(area);
+  area.select();
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    area.remove();
+  }
+}
+
+/**
+ * Save CSV text (from `toCsv`) as a file. Mako shows apps in an iframe
+ * sandboxed without downloads, where a download fails silently, so inside a
+ * frame the table goes to the clipboard instead, tab-separated so it pastes
+ * into spreadsheet columns. Returns "downloaded" | "copied" | "failed".
+ */
+export function saveCsv(filename, text) {
+  if (typeof document === "undefined") return "failed";
+  if (framed()) return copyText(csvToTsv(text)) ? "copied" : "failed";
+  const name = /\.csv$/i.test(filename) ? filename : `${filename}.csv`;
+  const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8;" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return "downloaded";
+}
+
+const fmtCount = n => n.toLocaleString("en-US");
+// A click on a link, button or field inside a row is that control's, not the row's.
+const INTERACTIVE = "a,button,input,select,textarea,label,[role=button]";
+
+/**
+ * The house data table: click-to-sort headers, a sticky header (and first
+ * column with `sticky`), right-aligned tabular numbers, and a pager footer
+ * ("1–50 of 312 customers", rows per page, « ‹ Page x of y › »). Sort, page
+ * and page size are each controlled (`sort` + `onSortChange`, …) or left to
+ * the table. `fill` makes the card fill its parent's height with the body
+ * scrolling inside; `exportFilename` adds an "Export CSV" button.
+ */
+export function DataTable({
+  rows,
+  columns,
+  rowKey,
+  title,
+  description,
+  actions,
+  sort: sortProp,
+  defaultSort = null,
+  onSortChange,
+  page: pageProp,
+  onPageChange,
+  pageSize: pageSizeProp,
+  defaultPageSize = 50,
+  onPageSizeChange,
+  pageSizes = [25, 50, 100],
+  noun = "rows",
+  empty = "No rows match these filters.",
+  fill = false,
+  maxHeight,
+  onRowClick,
+  exportFilename,
+  className,
+  style,
+}) {
+  const [sort, setSort] = useControlled(sortProp, defaultSort, onSortChange);
+  const [rawPage, setRawPage] = useControlled(pageProp, 1, onPageChange);
+  const [pageSize, setPageSize] = useControlled(pageSizeProp, defaultPageSize, onPageSizeChange);
+  const [note, setNote] = React.useState(null);
+  const scrollRef = React.useRef(null);
+
+  const sorted = React.useMemo(() => sortRows(rows, columns, sort), [rows, columns, sort]);
+  const { page, pageCount, start, end } = pageSlice(sorted.length, rawPage, pageSize);
+  const visible = sorted.slice(start, end);
+
+  const goTo = p => {
+    if (p !== rawPage) setRawPage(p);
+    scrollRef.current?.scrollTo?.({ top: 0 });
+  };
+
+  // Back to page 1 when the rows change (a filter, a search). Compared row by
+  // row, so a new array of the same rows (an unmemoized filter) keeps the page.
+  const prevRows = React.useRef(rows);
+  React.useEffect(() => {
+    const prev = prevRows.current;
+    prevRows.current = rows;
+    const changed = prev.length !== rows.length || rows.some((r, i) => r !== prev[i]);
+    if (changed && rawPage !== 1) goTo(1);
+  });
+
+  React.useEffect(() => {
+    if (!note) return undefined;
+    const t = setTimeout(() => setNote(null), 8000);
+    return () => clearTimeout(t);
+  }, [note]);
+
+  const sortBy = col => {
+    setSort(nextSort(sort, col));
+    goTo(1);
+  };
+  const exportCsv = () => {
+    const res = saveCsv(exportFilename, toCsv(sorted, columns));
+    setNote(
+      res === "copied"
+        ? `${fmtCount(sorted.length)} ${noun} copied. Paste them into Google Sheets or Excel. For a .csv file, open the app in a new tab and export again.`
+        : res === "failed"
+          ? "The browser blocked the copy. Open the app in a new tab and export again."
+          : null,
+    );
+  };
+
+  const cellClass = (col, extra) =>
+    cx(col.num && "mk-dt-num", col.align === "right" && "mk-dt-num", col.align === "center" && "mk-dt-center", col.sticky && "mk-dt-pin", extra);
+
+  const head = h(
+    "thead",
+    null,
+    h(
+      "tr",
+      null,
+      ...columns.map(col => {
+        const active = sort?.id === col.id;
+        const label =
+          col.sortable === false
+            ? h("span", { className: "mk-dt-label" }, col.label)
+            : h(
+                "button",
+                {
+                  type: "button",
+                  className: "mk-dt-sort",
+                  onClick: () => sortBy(col),
+                  title: `${col.hint ?? (typeof col.label === "string" ? col.label : col.id)} · click to sort`,
+                },
+                col.label,
+                h(IconSort, { dir: active ? sort.dir : null }),
+              );
+        return h(
+          "th",
+          {
+            key: col.id,
+            scope: "col",
+            className: cellClass(col, active && "mk-dt-sorted"),
+            "aria-sort": col.sortable === false ? undefined : active ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
+            style: col.width != null ? { width: col.width, minWidth: col.width } : undefined,
+          },
+          label,
+        );
+      }),
+    ),
+  );
+
+  const cell = (col, row) => {
+    const content = col.render ? col.render(row) : col.value(row);
+    if (!col.truncate && col.maxWidth == null) return content;
+    const v = col.value(row);
+    return h(
+      "span",
+      { className: "mk-dt-trunc", style: col.maxWidth != null ? { maxWidth: col.maxWidth } : undefined, title: v == null ? undefined : String(v) },
+      content,
+    );
+  };
+
+  const body = h(
+    "tbody",
+    null,
+    visible.length === 0
+      ? h("tr", { key: "__empty" }, h("td", { colSpan: columns.length, className: "mk-dt-empty" }, empty))
+      : visible.map((row, i) => {
+          const key = rowKey ? rowKey(row) : (row?.id ?? start + i);
+          const click = onRowClick
+            ? {
+                tabIndex: 0,
+                className: "mk-dt-click",
+                onClick: e => {
+                  if (!e.target.closest?.(INTERACTIVE)) onRowClick(row, e);
+                },
+                onKeyDown: e => {
+                  if (e.key === "Enter" && e.target === e.currentTarget) onRowClick(row, e);
+                },
+              }
+            : null;
+          return h(
+            "tr",
+            { key, ...click },
+            ...columns.map(col => h("td", { key: col.id, className: cellClass(col) || undefined }, cell(col, row))),
+          );
+        }),
+  );
+
+  const footer = h(
+    "footer",
+    { className: "mk-dt-foot" },
+    h(
+      "span",
+      { "aria-live": "polite" },
+      sorted.length
+        ? [h("b", { key: "r" }, `${fmtCount(start + 1)}–${fmtCount(end)}`), " of ", h("b", { key: "t" }, fmtCount(sorted.length)), ` ${noun}`]
+        : `No ${noun}`,
+    ),
+    h(
+      "div",
+      { className: "mk-dt-nav" },
+      pageSizes.length > 1 &&
+        h(
+          "select",
+          {
+            className: "mk-dt-size",
+            "aria-label": "Rows per page",
+            value: pageSize,
+            onChange: e => {
+              setPageSize(Number(e.target.value));
+              goTo(1);
+            },
+          },
+          ...pageSizes.map(n => h("option", { key: n, value: n }, `${n} per page`)),
+        ),
+      h(Button, { size: "sm", "aria-label": "First page", disabled: page <= 1, onClick: () => goTo(1) }, "«"),
+      h(Button, { size: "sm", "aria-label": "Previous page", disabled: page <= 1, onClick: () => goTo(page - 1) }, "‹"),
+      h("span", { className: "mk-dt-page" }, `Page ${page} of ${pageCount}`),
+      h(Button, { size: "sm", "aria-label": "Next page", disabled: page >= pageCount, onClick: () => goTo(page + 1) }, "›"),
+      h(Button, { size: "sm", "aria-label": "Last page", disabled: page >= pageCount, onClick: () => goTo(pageCount) }, "»"),
+    ),
+  );
+
+  const exportButton =
+    exportFilename != null &&
+    h(
+      Button,
+      { key: "__export", disabled: !sorted.length, onClick: exportCsv, title: "Export every row on every page, as sorted" },
+      "Export CSV",
+    );
+
+  return h(
+    Card,
+    {
+      title,
+      description,
+      actions: actions != null || exportButton ? h(React.Fragment, null, actions, exportButton) : undefined,
+      className: cx("mk-dt", fill && "mk-dt--fill", className),
+      style,
+    },
+    note && h("p", { className: "mk-dt-note", role: "status" }, note),
+    h(
+      "div",
+      { className: "mk-dt-scroll", ref: scrollRef, style: !fill && maxHeight != null ? { maxHeight } : undefined },
+      h("table", { className: "mk-dt-table" }, head, body),
+    ),
+    footer,
+  );
 }
 
 // ---------------------------------------------------------------------------
