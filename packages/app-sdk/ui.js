@@ -12,18 +12,37 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import { bindingPhaseLabel, refreshBinding, useBindingProgress } from "./index.js";
 import {
+  compareValues,
+  csvCell,
+  csvDate,
   csvToTsv,
   formatSeconds as fmtSecs,
   nextSort,
   normalizeTone,
   pageSlice,
+  pageToSync,
   refreshOrder,
+  serializeResetKey,
   sortRows,
   toCsv,
   tooltipSeriesRows,
 } from "./ui-core.js";
 
-export { csvToTsv, nextSort, normalizeTone, pageSlice, refreshOrder, sortRows, toCsv, tooltipSeriesRows };
+export {
+  compareValues,
+  csvCell,
+  csvDate,
+  csvToTsv,
+  nextSort,
+  normalizeTone,
+  pageSlice,
+  pageToSync,
+  refreshOrder,
+  serializeResetKey,
+  sortRows,
+  toCsv,
+  tooltipSeriesRows,
+};
 
 const h = React.createElement;
 
@@ -305,49 +324,27 @@ function useControlled(value, initial, onChange) {
   return [controlled ? value : local, set];
 }
 
-function framed() {
-  try {
-    return window.self !== window.top;
-  } catch {
-    return true;
-  }
-}
-
-function copyText(text) {
-  const area = document.createElement("textarea");
-  area.value = text;
-  area.readOnly = true;
-  area.style.cssText = "position:fixed;top:0;left:0;opacity:0";
-  document.body.appendChild(area);
-  area.select();
-  try {
-    return document.execCommand("copy");
-  } catch {
-    return false;
-  } finally {
-    area.remove();
-  }
-}
-
 /**
- * Save CSV text (from `toCsv`) as a file. Mako shows apps in an iframe
- * sandboxed without downloads, where a download fails silently, so inside a
- * frame the table goes to the clipboard instead, tab-separated so it pastes
- * into spreadsheet columns. Returns "downloaded" | "copied" | "failed".
+ * Download CSV text (from `toCsv`) as `filename` (".csv" added when missing).
+ * Mako's app frames allow downloads, so this works inside Mako and out.
+ * Returns "downloaded", or "failed" when the browser refused.
  */
 export function saveCsv(filename, text) {
   if (typeof document === "undefined") return "failed";
-  if (framed()) return copyText(csvToTsv(text)) ? "copied" : "failed";
-  const name = /\.csv$/i.test(filename) ? filename : `${filename}.csv`;
-  const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8;" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  return "downloaded";
+  try {
+    const name = /\.csv$/i.test(filename) ? filename : `${filename}.csv`;
+    const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8;" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return "downloaded";
+  } catch {
+    return "failed";
+  }
 }
 
 const fmtCount = n => n.toLocaleString("en-US");
@@ -359,11 +356,12 @@ const INTERACTIVE = "a,button,input,select,textarea,label,[role=button]";
  * column with `sticky`), right-aligned tabular numbers, and a pager footer
  * ("1–50 of 312 customers", rows per page, « ‹ Page x of y › »). Sort, page
  * and page size are each controlled (`sort` + `onSortChange`, …) or left to
- * the table. `fill` makes the card fill its parent's height with the body
- * scrolling inside; `exportFilename` adds an "Export CSV" button.
+ * the table. Pass the filter state as `resetKey`: when it changes the table
+ * goes back to page 1. `fill` makes the card fill its parent's height with the
+ * body scrolling inside; `exportFilename` adds an "Export CSV" button.
  */
 export function DataTable({
-  rows,
+  rows = [],
   columns,
   rowKey,
   title,
@@ -383,6 +381,8 @@ export function DataTable({
   fill = false,
   maxHeight,
   onRowClick,
+  rowLabel,
+  resetKey,
   exportFilename,
   className,
   style,
@@ -402,15 +402,23 @@ export function DataTable({
     scrollRef.current?.scrollTo?.({ top: 0 });
   };
 
-  // Back to page 1 when the rows change (a filter, a search). Compared row by
-  // row, so a new array of the same rows (an unmemoized filter) keeps the page.
-  const prevRows = React.useRef(rows);
+  // Back to page 1 when the filters change, as the caller states them in
+  // `resetKey`. Row identity never resets the page: a load, a background
+  // refresh or rows rebuilt inline keep it.
+  const key = serializeResetKey(resetKey);
+  const prevKey = React.useRef(key);
   React.useEffect(() => {
-    const prev = prevRows.current;
-    prevRows.current = rows;
-    const changed = prev.length !== rows.length || rows.some((r, i) => r !== prev[i]);
-    if (changed && rawPage !== 1) goTo(1);
-  });
+    if (prevKey.current === key) return;
+    prevKey.current = key;
+    if (rawPage !== 1) goTo(1);
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A page past the end (rows shrank, a stale URL) shows the last page; report
+  // it so a controlled page matches. Skipped while there are no rows yet.
+  const syncTo = pageToSync(rawPage, sorted.length, pageSize);
+  React.useEffect(() => {
+    if (syncTo != null) setRawPage(syncTo);
+  }, [syncTo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
     if (!note) return undefined;
@@ -424,13 +432,7 @@ export function DataTable({
   };
   const exportCsv = () => {
     const res = saveCsv(exportFilename, toCsv(sorted, columns));
-    setNote(
-      res === "copied"
-        ? `${fmtCount(sorted.length)} ${noun} copied. Paste them into Google Sheets or Excel. For a .csv file, open the app in a new tab and export again.`
-        : res === "failed"
-          ? "The browser blocked the copy. Open the app in a new tab and export again."
-          : null,
-    );
+    setNote(res === "failed" ? "The browser blocked the download. Open the app in a new tab and export again." : null);
   };
 
   const cellClass = (col, extra) =>
@@ -495,11 +497,15 @@ export function DataTable({
             ? {
                 tabIndex: 0,
                 className: "mk-dt-click",
+                "aria-label": rowLabel ? rowLabel(row) : undefined,
                 onClick: e => {
                   if (!e.target.closest?.(INTERACTIVE)) onRowClick(row, e);
                 },
                 onKeyDown: e => {
-                  if (e.key === "Enter" && e.target === e.currentTarget) onRowClick(row, e);
+                  if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
+                    e.preventDefault();
+                    onRowClick(row, e);
+                  }
                 },
               }
             : null;

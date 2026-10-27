@@ -204,11 +204,16 @@ export interface DataTableColumn<R = any> {
   sortable?: boolean;
   /** Header hover text, e.g. the column's definition. */
   hint?: string;
-  /** false leaves the column out of CSV; a function exports a readable cell (an ISO date, a level name). */
+  /**
+   * false leaves the column out of CSV; a function exports a readable cell (a
+   * level name). Numbers export as is; a Date at local or UTC midnight exports
+   * as YYYY-MM-DD, any other Date as a full UTC ISO timestamp.
+   */
   csv?: false | ((row: R) => unknown);
 }
 export interface DataTableProps<R = any> {
-  rows: readonly R[];
+  /** Default [] (renders the empty state while loading). */
+  rows?: readonly R[];
   columns: readonly DataTableColumn<R>[];
   /** A stable key per row; defaults to `row.id`, else the position. */
   rowKey?: (row: R) => React.Key;
@@ -220,9 +225,20 @@ export interface DataTableProps<R = any> {
   sort?: DataTableSort | null;
   defaultSort?: DataTableSort | null;
   onSortChange?: (sort: DataTableSort) => void;
-  /** Controlled page, 1-based; pair with `onPageChange`. */
+  /**
+   * Controlled page, 1-based; pair with `onPageChange`. A page past the end
+   * shows the last page and reports it through `onPageChange` (once there are
+   * rows), so a URL stays in sync.
+   */
   page?: number;
   onPageChange?: (page: number) => void;
+  /**
+   * The filter state (search text, selected values; any JSON-serialisable
+   * value). When it changes the table goes back to page 1. A sort or page-size
+   * click also resets the page. New row objects with the same key (a load, a
+   * background refresh, rows rebuilt inline) keep the page.
+   */
+  resetKey?: unknown;
   pageSize?: number;
   /** Default 50. */
   defaultPageSize?: number;
@@ -237,9 +253,11 @@ export interface DataTableProps<R = any> {
   fill?: boolean;
   /** Body scroll height when not `fill`. Default 70vh. */
   maxHeight?: number | string;
-  /** Row click (and Enter). Clicks on links, buttons and fields inside the row are theirs. */
+  /** Row click (and Enter or Space on a focused row). Clicks on links, buttons and fields inside the row are theirs. */
   onRowClick?: (row: R, event: React.SyntheticEvent) => void;
-  /** Adds an "Export CSV" button: every row, as sorted. Copies as TSV inside Mako's frame. */
+  /** The accessible name of a clickable row, e.g. `c => \`Open ${c.name}\``. */
+  rowLabel?: (row: R) => string;
+  /** Adds an "Export CSV" button: downloads every row, as sorted. */
   exportFilename?: string;
   className?: string;
   style?: React.CSSProperties;
@@ -251,11 +269,21 @@ export function DataTable<R = any>(props: DataTableProps<R>): React.ReactElement
 export function sortRows<R>(rows: readonly R[], columns: readonly DataTableColumn<R>[], sort: DataTableSort | null | undefined): R[];
 /** The sort after a header click: same column flips; a new one starts desc for `num`, else asc. */
 export function nextSort(sort: DataTableSort | null | undefined, column: Pick<DataTableColumn, "id" | "num">): DataTableSort;
+/** Compare two cell values ascending: numbers, bigints, dates and two numeric strings by value; text A→Z. */
+export function compareValues(a: unknown, b: unknown): number;
 /** Paging math, 1-based and clamped: rows `start` (inclusive) to `end` (exclusive). */
 export function pageSlice(total: number, page: number, pageSize: number): { page: number; pageCount: number; start: number; end: number };
-/** CSV text with a header row; skips `csv: false` columns; quotes every cell; guards formulas. */
+/** The clamped page to report when `requested` is out of range; null when it is fine or there are no rows yet. */
+export function pageToSync(requested: number, total: number, pageSize: number): number | null;
+/** A `resetKey` as a comparable string (JSON; Sets and Maps as arrays, bigints as text). */
+export function serializeResetKey(key: unknown): string;
+/** CSV text with a header row; skips `csv: false` columns; quotes every cell; cells via `csvCell`. */
 export function toCsv<R>(rows: readonly R[], columns: readonly DataTableColumn<R>[]): string;
+/** One CSV cell: numbers as is, text starting with = + - @ tab or CR guarded with an apostrophe, dates via `csvDate`. */
+export function csvCell(value: unknown): string;
+/** A Date at local or UTC midnight as YYYY-MM-DD; any other Date as a full UTC ISO timestamp. */
+export function csvDate(date: Date): string;
 /** CSV text as tab-separated lines (pastes into spreadsheet columns). */
 export function csvToTsv(text: string): string;
-/** Download CSV text; inside a sandboxed frame copy it as TSV instead. */
-export function saveCsv(filename: string, text: string): "downloaded" | "copied" | "failed";
+/** Download CSV text as a file. Works inside Mako's app frame. */
+export function saveCsv(filename: string, text: string): "downloaded" | "failed";

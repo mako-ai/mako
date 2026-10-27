@@ -312,7 +312,7 @@ import { DataTable, type DataTableColumn } from "@makoai/app-sdk/ui";
 const COLUMNS: DataTableColumn<Customer>[] = [
   { id: "name", label: "Customer", value: c => c.name, sticky: true, truncate: true,
     render: c => <><div>{c.name}</div><SystemLinks c={c} /></> },
-  { id: "paid", label: "Paid on", value: c => c.paidDay, csv: c => isoDate(c.paidDay) },
+  { id: "paid", label: "Paid on", value: c => c.paidDay, render: c => fmtDay(c.paidDay) },
   { id: "mrr", label: "MRR", num: true, value: c => c.mrr, render: c => fmtEur(c.mrr) },
   { id: "links", label: "Links", value: () => null, sortable: false, csv: false, render: c => <Links c={c} /> },
 ];
@@ -321,6 +321,7 @@ const COLUMNS: DataTableColumn<Customer>[] = [
   title={`${fmtInt(list.length)} customers not onboarded`}
   actions={<input className="search" value={q} onChange={e => setQ(e.target.value)} />}
   rows={list}
+  resetKey={q}
   columns={COLUMNS}
   noun="customers"
   empty="No customers match these filters."
@@ -336,28 +337,35 @@ const COLUMNS: DataTableColumn<Customer>[] = [
   values (null, "", NaN) sort last both ways. `width`, `maxWidth` / `truncate`
   (ellipsis, the full value on hover), `sticky` (pin the first column),
   `sortable: false`, `hint` (header hover text), `csv` (`false` to leave a
-  column out, a function for a readable cell such as an ISO date).
+  column out, a function for a readable cell such as a level name). Numeric
+  strings ("1.25", "-10") sort as numbers.
 - **Sort, page, page size** are each uncontrolled by default or controlled with
   `sort` + `onSortChange`, `page` (1-based) + `onPageChange`, `pageSize` +
-  `onPageSizeChange`, so an app can keep them in the URL. The table goes back
-  to page 1 when the rows, the sort or the page size change, and scrolls to the
-  top on a page change.
+  `onPageSizeChange`, so an app can keep them in the URL. Pass your filter
+  state as `resetKey` (e.g. `resetKey={{ q, owners }}`): when it changes the
+  table goes back to page 1. A sort or page-size click resets the page too.
+  New row objects never do, so a load or a background refresh keeps the page.
+  A page past the end shows the last page and reports it through
+  `onPageChange`. The table scrolls to the top on a page change. `rows`
+  defaults to `[]`, so a table can render while its data loads.
 - **Height.** `fill` makes the card fill its parent's height and the body
   scroll inside it, with the pager always in view: give the parent a height
   (e.g. `<main style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>`).
   On phones it falls back to a 70vh scroll box. Without `fill` the body scrolls
   past `maxHeight` (default 70vh).
-- **Rows.** `onRowClick(row)` makes rows clickable (and Enter on a focused
-  row); clicks on links and buttons inside a cell stay theirs. `rowKey`
-  defaults to `row.id`.
-- **CSV.** `exportFilename` adds an "Export CSV" button: every row on every
-  page, as sorted. Mako shows apps in a sandboxed frame where downloads fail
-  silently, so there it copies the table to the clipboard as TSV (it pastes
-  into spreadsheet columns) and says so under the title. For your own button:
-  `saveCsv(filename, toCsv(rows, columns))` returns `"downloaded"`,
-  `"copied"` or `"failed"`.
-- Pure helpers for custom tables: `sortRows`, `nextSort`, `pageSlice`, `toCsv`,
-  `csvToTsv`.
+- **Rows.** `onRowClick(row)` makes rows clickable (and Enter or Space on a
+  focused row); clicks on links and buttons inside a cell stay theirs.
+  `rowLabel(row)` names a clickable row for screen readers. `rowKey` defaults
+  to `row.id`.
+- **CSV.** `exportFilename` adds an "Export CSV" button that downloads every
+  row on every page, as sorted. Mako's app frames allow downloads. Numbers
+  export as is. Text starting with `=`, `+`, `-`, `@`, tab or CR gets a
+  leading apostrophe so a spreadsheet never runs it. A Date at local or UTC
+  midnight exports as `YYYY-MM-DD`, any other Date as a UTC ISO timestamp. For
+  your own button: `saveCsv(filename, toCsv(rows, columns))` returns
+  `"downloaded"` or `"failed"`.
+- Pure helpers for custom tables: `sortRows`, `compareValues`, `nextSort`,
+  `pageSlice`, `pageToSync`, `toCsv`, `csvCell`, `csvDate`, `csvToTsv`.
 
 `ui.css` is plain CSS (no Tailwind needed; it coexists with Tailwind) and
 every kit class is prefixed `mk-`. It also sets the house base: Inter 14px on

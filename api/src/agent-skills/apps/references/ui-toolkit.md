@@ -134,9 +134,12 @@ Every list of rows (customers, renewals, deals) is the kit's `DataTable`
   formatted text: "€1,200" sorts wrong. `render(row)` formats. Numbers get
   `num: true`. Pick a `defaultSort` that answers the card's question (largest
   MRR, longest wait).
-- **CSV export.** Set `exportFilename`. It exports every row as sorted, and
-  inside Mako's frame it copies to the clipboard instead. Give date or level
-  columns a readable `csv(row)` and drop link-only columns with `csv: false`.
+- **CSV export.** Set `exportFilename`. It downloads every row as sorted, in
+  Mako and out. Give level or code columns a readable `csv(row)` and drop
+  link-only columns with `csv: false`. Dates export as `YYYY-MM-DD`.
+- **Reset on filters.** Pass the filter state as `resetKey` (`resetKey={{ q,
+  owners }}`). A filter change goes back to page 1. A data refresh keeps the
+  page.
 - **Empty state.** Pass `empty` with a sentence that names the filters ("No
   customers match these filters."). Never render an empty table body.
 - **Links under the name.** Links to Close, Stripe or the CRM go under the name

@@ -173,8 +173,67 @@ test("DataTable renders sortable headers, a pinned corner, the page and the page
   assert.match(html, /Page 2 of 7/);
   assert.match(html, /<option value="50" selected="">50 per page<\/option>/);
   assert.match(html, /Export CSV/);
-  const empty = server.renderToStaticMarkup(React.createElement(ui.DataTable, { rows: [], columns, empty: "No customers yet.", fill: true }));
+  const empty = server.renderToStaticMarkup(React.createElement(ui.DataTable, { columns, empty: "No customers yet.", fill: true }));
   assert.match(empty, /class="mk-card mk-dt mk-dt--fill"/);
   assert.match(empty, /<td colSpan="2" class="mk-dt-empty">No customers yet.<\/td>/i);
   assert.match(empty, /No rows/);
+  const clickable = server.renderToStaticMarkup(
+    React.createElement(ui.DataTable, { rows: rows.slice(0, 2), columns, onRowClick: () => {}, rowLabel: r => `Open ${r.name}` }),
+  );
+  assert.match(clickable, /<tr tabindex="0" class="mk-dt-click" aria-label="Open Org 0">/i);
+  const past = server.renderToStaticMarkup(React.createElement(ui.DataTable, { rows, columns, page: 99 }));
+  assert.match(past, /Page 7 of 7/);
+});
+
+test("compareValues: numeric strings as numbers, bigints by value, text with digit runs", async () => {
+  const { compareValues } = await import("./ui-core.js");
+  assert.deepEqual(["1.5", "1.25", "-3", "-10"].sort(compareValues), ["-10", "-3", "1.25", "1.5"]);
+  assert.deepEqual([3n, 2, 10n, -1, 9007199254740993n].sort(compareValues), [-1, 2, 3n, 10n, 9007199254740993n]);
+  assert.ok(compareValues(9007199254740993n, 9007199254740992n) > 0);
+  assert.deepEqual(["item 10", "item 9", "Item 1"].sort(compareValues), ["Item 1", "item 9", "item 10"]);
+  assert.ok(compareValues("abc", " ") !== 0);
+  assert.ok(compareValues(new Date(2026, 0, 2), new Date(2026, 0, 1)) > 0);
+});
+
+test("csvCell: numbers pass through, text formulas guarded", async () => {
+  const { csvCell, toCsv } = await import("./ui-core.js");
+  assert.equal(csvCell(-5), "-5");
+  assert.equal(csvCell(-0.25), "-0.25");
+  assert.equal(csvCell(-12n), "-12");
+  assert.equal(csvCell("-5"), "-5");
+  assert.equal(csvCell("-1.25e3"), "-1.25e3");
+  assert.equal(csvCell(NaN), "");
+  for (const s of ["=1+1", "+1+1", "-2+3+cmd|' /C calc'!A0", "@SUM(A1)", "\t=1", "\r=1", "-"]) {
+    assert.equal(csvCell(s), "'" + s, JSON.stringify(s));
+  }
+  assert.equal(csvCell("plain"), "plain");
+  const csv = toCsv([{ n: -5, s: "=HYPERLINK(1)" }], [{ id: "n", label: "N", value: r => r.n }, { id: "s", label: "S", value: r => r.s }]);
+  assert.equal(csv.slice(1).split("\r\n")[1], `"-5","'=HYPERLINK(1)"`);
+});
+
+test("csvDate: local or UTC midnight is the day, anything else a UTC timestamp", async () => {
+  const { csvDate, csvCell } = await import("./ui-core.js");
+  assert.equal(csvDate(new Date(2026, 9, 27)), "2026-10-27");
+  assert.equal(csvDate(new Date(Date.UTC(2026, 9, 27))), "2026-10-27");
+  assert.equal(csvDate(new Date(Date.UTC(2026, 9, 27, 13, 5))), "2026-10-27T13:05:00.000Z");
+  assert.equal(csvCell(new Date(NaN)), "");
+});
+
+test("pageToSync: reports a clamped page, never while there are no rows", async () => {
+  const { pageToSync } = await import("./ui-core.js");
+  assert.equal(pageToSync(3, 312, 50), null);
+  assert.equal(pageToSync(9, 312, 50), 7);
+  assert.equal(pageToSync(0, 312, 50), 1);
+  assert.equal(pageToSync(3, 0, 50), null); // still loading: keep ?page=3
+  assert.equal(pageToSync(1, 0, 50), null);
+  assert.equal(pageToSync(3, 20, 50), 1); // filtered down to one page
+});
+
+test("serializeResetKey: same filters compare equal, new row objects never matter", async () => {
+  const { serializeResetKey: k } = await import("./ui-core.js");
+  assert.equal(k({ q: "a", owners: ["x"] }), k({ q: "a", owners: ["x"] }));
+  assert.notEqual(k({ q: "a" }), k({ q: "ab" }));
+  assert.equal(k(new Set(["a", "b"])), k(["a", "b"]));
+  assert.equal(k({ n: 5n }), k({ n: 5n }));
+  assert.equal(k(undefined), k(undefined));
 });

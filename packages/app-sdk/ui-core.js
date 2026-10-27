@@ -68,11 +68,20 @@ export function tooltipSeriesRows(datum, series, { stacked = false } = {}) {
 const isEmpty = v => v == null || v === "" || (typeof v === "number" && Number.isNaN(v));
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
-/** Compare two cell values ascending: numbers and dates by value, text A→Z. */
+const isNumeric = v => typeof v === "number" || typeof v === "bigint";
+const isNumericString = v => typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v));
+
+/**
+ * Compare two cell values ascending: numbers, bigints and dates by value (a
+ * bigint against a number too), two numeric strings ("1.5", "-10") as
+ * numbers, booleans false first, everything else as text A→Z with digit runs
+ * in numeric order.
+ */
 export function compareValues(a, b) {
-  const x = a instanceof Date ? a.getTime() : a;
-  const y = b instanceof Date ? b.getTime() : b;
-  if (typeof x === "number" && typeof y === "number") return x - y;
+  let x = a instanceof Date ? a.getTime() : a;
+  let y = b instanceof Date ? b.getTime() : b;
+  if (isNumericString(x) && isNumericString(y)) (x = Number(x)), (y = Number(y));
+  if (isNumeric(x) && isNumeric(y)) return x < y ? -1 : x > y ? 1 : 0;
   if (typeof x === "boolean" && typeof y === "boolean") return Number(x) - Number(y);
   return collator.compare(String(x), String(y));
 }
@@ -124,23 +133,78 @@ export function pageSlice(total, page, pageSize) {
   return { page: p, pageCount, start, end: Math.min(start + size, total) };
 }
 
-// A leading = + - @ would run as a formula in a spreadsheet: the apostrophe keeps it text.
-const csvSafe = v => {
-  const t = isEmpty(v) ? "" : v instanceof Date ? v.toISOString() : String(v);
+/**
+ * The page to report back when the requested page is out of range, so a
+ * controlled page (in the URL) matches what the table shows. null when the
+ * requested page is fine, or while there are no rows yet (still loading), so
+ * `?page=3` survives the first render.
+ */
+export function pageToSync(requested, total, pageSize) {
+  if (!(total > 0)) return null;
+  const { page } = pageSlice(total, requested, pageSize);
+  return page === requested ? null : page;
+}
+
+/**
+ * A `resetKey` as a comparable string: JSON, with Sets and Maps as arrays and
+ * bigints as text. Two keys that serialise the same are the same filters.
+ */
+export function serializeResetKey(key) {
+  if (key === undefined) return "";
+  try {
+    return JSON.stringify(key, (_, v) =>
+      v instanceof Set ? [...v] : v instanceof Map ? [...v.entries()] : typeof v === "bigint" ? `${v}n` : v,
+    );
+  } catch {
+    return String(key);
+  }
+}
+
+const pad2 = n => String(n).padStart(2, "0");
+
+/**
+ * A Date as CSV text: a date at local midnight is that local day
+ * (YYYY-MM-DD), a date at UTC midnight (how DuckDB hands over a DATE) is that
+ * UTC day, anything else is the full ISO timestamp in UTC.
+ */
+export function csvDate(d) {
+  if (Number.isNaN(d.getTime())) return "";
+  if (d.getHours() === 0 && d.getMinutes() === 0 && d.getSeconds() === 0 && d.getMilliseconds() === 0) {
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  }
+  const iso = d.toISOString();
+  return iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso;
+}
+
+const PLAIN_NUMBER = /^-?\d+(\.\d+)?(e[+-]?\d+)?$/i;
+
+/**
+ * One cell as CSV text. Numbers, bigints and plain numeric text ("-5",
+ * "-1.25e3") pass through as they are. Other text starting with = + - @ tab
+ * or CR would run as a formula in a spreadsheet, so it gets a leading
+ * apostrophe.
+ */
+export function csvCell(v) {
+  if (isEmpty(v)) return "";
+  if (isNumeric(v)) return String(v);
+  if (v instanceof Date) return csvDate(v);
+  const t = String(v);
+  if (PLAIN_NUMBER.test(t)) return t;
   return /^[=+\-@\t\r]/.test(t) ? "'" + t : t;
-};
+}
 const csvHeader = c => (typeof c.label === "string" || typeof c.label === "number" ? String(c.label) : c.id);
 
 /**
  * The rows as CSV text: a header row of column labels, then one line per row
  * from each column's `csv(row)` (or `value(row)`); columns with `csv: false`
  * are left out. Every cell is quoted, a byte-order mark keeps Excel on UTF-8,
- * and a cell starting with = + - @ gets a leading apostrophe.
+ * and cells go through `csvCell` (numbers as is, text formulas guarded, dates
+ * as `csvDate`).
  */
 export function toCsv(rows, columns) {
   const cols = columns.filter(c => c.csv !== false);
   const table = [cols.map(csvHeader), ...rows.map(r => cols.map(c => (typeof c.csv === "function" ? c.csv(r) : c.value(r))))];
-  return "﻿" + table.map(line => line.map(v => '"' + csvSafe(v).replace(/"/g, '""') + '"').join(",")).join("\r\n") + "\r\n";
+  return "﻿" + table.map(line => line.map(v => '"' + csvCell(v).replace(/"/g, '""') + '"').join(",")).join("\r\n") + "\r\n";
 }
 
 /** Parse CSV text (quoted or not, CRLF or LF) into rows of cells. */
