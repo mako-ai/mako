@@ -122,6 +122,21 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
   }
 }
 
+/* ---- Chart tooltip (TableTooltip) ---------------------------------------- */
+.mk-tip {
+  background: var(--popover); color: var(--popover-foreground);
+  border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--mk-shadow-md);
+  padding: 8px 10px; font-size: 12px; line-height: 1.4; white-space: nowrap;
+}
+.mk-tip-title { font-weight: 600; margin-bottom: 4px; }
+.mk-tip table { border-collapse: collapse; }
+.mk-tip thead th { color: var(--muted-foreground); font-weight: 500; text-align: right; padding-left: 12px; }
+.mk-tip tbody th { text-align: left; font-weight: 400; padding-top: 2px; }
+.mk-tip td { text-align: right; padding: 2px 0 0 12px; font-variant-numeric: tabular-nums; }
+.mk-tip-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+.mk-tip-total th, .mk-tip-total td { font-weight: 600; }
+.mk-tip-rule th, .mk-tip-rule td { border-top: 1px solid var(--border); padding-top: 3px; }
+
 /* ---- MultiSelect --------------------------------------------------------- */
 .mk-ms { position: relative; display: inline-block; }
 .mk-ms-trigger {

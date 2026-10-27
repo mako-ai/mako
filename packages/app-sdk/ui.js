@@ -11,9 +11,9 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { bindingPhaseLabel, refreshBinding, useBindingProgress } from "./index.js";
-import { formatSeconds as fmtSecs, normalizeTone, refreshOrder } from "./ui-core.js";
+import { formatSeconds as fmtSecs, normalizeTone, refreshOrder, tooltipSeriesRows } from "./ui-core.js";
 
-export { normalizeTone, refreshOrder };
+export { normalizeTone, refreshOrder, tooltipSeriesRows };
 
 const h = React.createElement;
 
@@ -195,6 +195,68 @@ export function KpiTile({ label, value, delta, tone, hint, className }) {
 /** A row of KPI tiles that wraps. */
 export function KpiRow({ className, children }) {
   return h("div", { className: cx("mk-kpi-row", className) }, children);
+}
+
+// ---------------------------------------------------------------------------
+// Chart tooltips: a table, never a coloured "name : value" list
+// ---------------------------------------------------------------------------
+
+function TooltipRow({ row, className }) {
+  return h(
+    "tr",
+    { className },
+    h(
+      "th",
+      { scope: "row" },
+      h("span", { className: "mk-tip-swatch", style: { background: row.color ?? "transparent" } }),
+      row.label,
+    ),
+    ...(row.cells ?? []).map((c, i) => h("td", { key: i }, c)),
+  );
+}
+
+/**
+ * The house chart tooltip: a bold title, small muted column headers, one row
+ * per series with a 9px swatch in the series colour and the label in the
+ * popover's text colour, right-aligned tabular numbers, then a bold `total`
+ * row under a rule. `after` rows follow the total, apart (a value on another
+ * axis, such as an average next to a rate).
+ */
+export function TableTooltip({ title, columns = [], rows = [], total, after, className }) {
+  return h(
+    "div",
+    { className: cx("mk-tip", className) },
+    title != null && h("div", { className: "mk-tip-title" }, title),
+    h(
+      "table",
+      null,
+      columns.length > 0 &&
+        h("thead", null, h("tr", null, h("th", null), ...columns.map(c => h("th", { key: c }, c)))),
+      h(
+        "tbody",
+        null,
+        ...rows.map(r => h(TooltipRow, { key: r.key ?? r.label, row: r })),
+        total && h(TooltipRow, { key: "__total", row: total, className: cx("mk-tip-total", rows.length > 0 && "mk-tip-rule") }),
+        ...(after ?? []).map((r, i) =>
+          h(TooltipRow, { key: `__after_${r.key ?? r.label}`, row: r, className: i === 0 ? "mk-tip-rule" : undefined }),
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * A recharts `<Tooltip content={…} />` from a builder: `build(datum, label)`
+ * gets the hovered data row and the axis label and returns TableTooltip props
+ * (or null to show nothing).
+ */
+export function tableTooltip(build) {
+  return function TableTooltipContent({ active, payload, label }) {
+    const datum = payload?.[0]?.payload;
+    if (!active || !datum) return null;
+    const props = build(datum, label);
+    return props ? h(TableTooltip, props) : null;
+  };
 }
 
 // ---------------------------------------------------------------------------

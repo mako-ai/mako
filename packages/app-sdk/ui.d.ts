@@ -139,3 +139,39 @@ export interface RefreshAllButtonProps {
   className?: string;
 }
 export function RefreshAllButton(props: RefreshAllButtonProps): React.ReactElement;
+
+/** One tooltip row: swatch + label, then the cells (right-aligned). */
+export interface TooltipRow {
+  label: React.ReactNode;
+  /** The series colour for the 9px swatch; omit for no swatch. */
+  color?: string;
+  cells: React.ReactNode[];
+  key?: string;
+}
+export interface TableTooltipProps {
+  title?: React.ReactNode;
+  /** Column headers for the cells, e.g. ["MRR", "Orgs", "% of due"]. */
+  columns?: string[];
+  /** Top-down as drawn (see `tooltipSeriesRows`). */
+  rows?: TooltipRow[];
+  /** Bold row under a rule: the stack total, "All selected", the base. */
+  total?: TooltipRow;
+  /** Rows after the total, apart: a value on another axis. */
+  after?: TooltipRow[];
+  className?: string;
+}
+/** The house chart tooltip: a table with swatches, right-aligned numbers and a total row. */
+export function TableTooltip(props: TableTooltipProps): React.ReactElement;
+/** A recharts `<Tooltip content={tableTooltip((datum, label) => ({ … }))} />`. */
+export function tableTooltip<D = any>(
+  build: (datum: D, label: unknown) => TableTooltipProps | null,
+): (props: { active?: boolean; payload?: readonly { payload?: unknown }[]; label?: unknown }) => React.ReactElement | null;
+/**
+ * The hovered datum's series in reading order: stacked = top segment first
+ * (pass series bottom-up, as drawn), else highest value first. Drops empty.
+ */
+export function tooltipSeriesRows<K extends string>(
+  datum: Record<string, unknown> | null | undefined,
+  series: readonly { key: K; label?: string; color?: string }[],
+  opts?: { stacked?: boolean },
+): { key: K; label: string; color?: string; value: number }[];

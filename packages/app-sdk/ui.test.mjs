@@ -55,3 +55,41 @@ test("the injected theme keeps every v1 token name", () => {
     assert.match(block, new RegExp(`--${name}:`), `--${name} missing from the injected theme`);
   }
 });
+
+test("tooltipSeriesRows: a stack reads top segment first, lines highest first, empties dropped", async () => {
+  const { tooltipSeriesRows } = await import("./ui-core.js");
+  const series = [
+    { key: "new", label: "New", color: "g" },
+    { key: "exp", label: "Expansion", color: "lg" },
+    { key: "react", label: "Reactivation", color: "b" },
+  ];
+  const datum = { new: 74438, exp: 0, react: 15359 };
+  assert.deepEqual(tooltipSeriesRows(datum, series, { stacked: true }).map(r => r.key), ["react", "new"]);
+  assert.deepEqual(tooltipSeriesRows({ new: 1, exp: 3, react: null }, series).map(r => r.label), ["Expansion", "New"]);
+});
+
+test("TableTooltip renders a table: swatch + label, cells, a total row under a rule", async t => {
+  let React, server, ui;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    ui = await import("./ui.js");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const html = server.renderToStaticMarkup(
+    React.createElement(ui.TableTooltip, {
+      title: "2026-06",
+      columns: ["MRR", "% of start"],
+      rows: [{ label: "New", color: "#0a0", cells: ["+€74,438", "4.9%"] }],
+      total: { label: "Net", cells: ["+€25,720", "1.7%"] },
+    }),
+  );
+  assert.match(html, /class="mk-tip"/);
+  assert.match(html, /<th scope="row"><span class="mk-tip-swatch" style="background:#0a0"><\/span>New<\/th>/);
+  assert.match(html, /<tr class="mk-tip-total mk-tip-rule">/);
+  const content = ui.tableTooltip(d => ({ title: d.ym, rows: [] }));
+  assert.equal(content({ active: false, payload: [] }), null);
+  assert.ok(content({ active: true, payload: [{ payload: { ym: "2026-06" } }] }));
+});

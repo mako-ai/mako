@@ -46,3 +46,16 @@ export function refreshOrder(bindings, { first = [], last = [], skip = [] } = {}
 export function formatSeconds(s) {
   return s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
 }
+
+/**
+ * The rows a chart tooltip shows for one hovered datum, in the order the eye
+ * reads the chart: a stack top segment first (series are given bottom-up, the
+ * order they are drawn), lines highest first. Empty (null, undefined, 0)
+ * values are left out. Returns `{ key, label, color, value }`.
+ */
+export function tooltipSeriesRows(datum, series, { stacked = false } = {}) {
+  const rows = series
+    .map(s => ({ key: s.key, label: s.label ?? s.key, color: s.color, value: datum?.[s.key] }))
+    .filter(r => r.value != null && r.value !== 0 && !Number.isNaN(Number(r.value)));
+  return stacked ? rows.reverse() : rows.sort((a, b) => Number(b.value) - Number(a.value));
+}

@@ -316,6 +316,7 @@ cursor-pointer base rule, and v1-CDN migration notes — read
 
 Before adding any chart, read `references/charting.md`
 (`read_skill_resource("apps", "references/charting.md")`): recharts, the
-`--chart-N` theme tokens, date/money formatting, and the loading/error/empty
-states every chart card must render. Dates arrive from bindings as strings
+`--chart-N` theme tokens, the table tooltip every chart uses (`tableTooltip`
+from `@makoai/app-sdk/ui`, never recharts' default list), date/money
+formatting, and the loading/error/empty states every chart card must render. Dates arrive from bindings as strings
 (`YYYY-MM-DD` / ISO) since SDK 2.2 — do not assume numbers.

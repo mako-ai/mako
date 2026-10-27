@@ -13,6 +13,7 @@ small comparison inside a card.
 
 ```tsx
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import { tableTooltip } from "@makoai/app-sdk/ui";
 
 <div style={{ height: 280 }}>
   <ResponsiveContainer width="100%" height="100%">
@@ -20,7 +21,13 @@ import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGri
       <CartesianGrid vertical={false} stroke="var(--border)" />
       <XAxis dataKey="country" tickLine={false} axisLine={false} />
       <YAxis tickFormatter={fmtCompact} tickLine={false} axisLine={false} width={48} />
-      <Tooltip formatter={(v: number) => fmtEur(v)} />
+      <Tooltip
+        content={tableTooltip((d) => ({
+          title: d.country,
+          columns: ["Revenue"],
+          rows: [{ label: "Revenue", color: "var(--chart-1)", cells: [fmtEur(d.revenue)] }],
+        }))}
+      />
       <Bar dataKey="revenue" fill="var(--chart-1)" radius={[4, 4, 0, 0]} />
     </BarChart>
   </ResponsiveContainer>
@@ -37,6 +44,39 @@ axes and labels, `var(--border)` for grid lines. They flip correctly in dark
 mode. One series → one hue (`--chart-1`); highlight by dimming the others
 (opacity 0.35), not by adding colors. Categorical series get `--chart-1..5`
 in order; more than five series is a table or a filter, not a chart.
+
+## Tooltips: always a table
+
+Never ship recharts' default tooltip or a custom one that lists coloured
+`name : value` lines. Every chart tooltip is a table, built with the SDK's
+`TableTooltip` / `tableTooltip` (`@makoai/app-sdk/ui`, SDK ≥ 2.10; README
+"Chart tooltips"):
+
+- **Title, then columns.** The bucket or date in bold, then small muted column
+  headers. Name the base of every %: "% of due", "% of total".
+- **One row per series.** A 9px swatch in the series colour on the left, the
+  label in plain text. Never colour the label or the value by series.
+- **Numbers right-aligned**, tabular figures. Value, then count, then share.
+- **Reading order.** Rows read top-down as drawn: a stack's top segment first,
+  lines highest first, an overlaid line or target before the segments.
+  `tooltipSeriesRows(d, SERIES, { stacked })` does this and drops empty
+  values. One `SERIES = [{ key, label, color }]` list, bottom-up, drives the
+  marks, the legend and the tooltip.
+- **A total row.** Bold, under a rule: the stack total (100%), "All
+  selected" for per-country lines, or the base a rate is of. Growth (YoY) is a
+  column on each row and on the total, never a row of its own.
+- **Other axes go after the total** (`after`), such as an average plotted on
+  the right axis next to rates.
+- **Precompute in the data row** the totals, counts and bases the tooltip
+  shows. The builder only reads and formats.
+- **Single-series charts** get one row. Add a % column when there is a
+  meaningful base.
+- **Donuts with an HTML centre label:** add `wrapperStyle={{ zIndex: 20 }}`
+  or the label paints over the tooltip.
+
+KPI-card hints that compare two or more numbers (objective vs actual) use
+the same layout: labels left, values right, the ratio last under a rule.
+Definitions stay as plain text.
 
 ## Data shape
 
@@ -61,5 +101,5 @@ draws nothing looks like a broken binding.
 
 Look at it: run the app (`pnpm dev` locally or `app_open_app`), then
 `app_browse` / your own browser. Check axis labels are not clipped, the tooltip
-formats like the table, and the top bar's value label is inside the card.
+is a table whose rows add up to its total, and the top bar's value label is inside the card.
 Report what you saw, with the numbers, not that "the chart renders".

@@ -262,6 +262,43 @@ import {
   and declare it once (`src/vite-env.d.ts`):
   `declare const __APP_BINDING_NAMES__: string[];`
 
+### Chart tooltips: `TableTooltip` (2.10+)
+
+Every chart tooltip is a table, never recharts' coloured `name : value` list:
+a bold title, small muted column headers, one row per series with a 9px
+swatch in the series colour and the label in plain text, right-aligned
+tabular numbers, and a bold total row under a rule.
+
+```tsx
+import { tableTooltip, tooltipSeriesRows } from "@makoai/app-sdk/ui";
+
+const SEGMENTS = [ // bottom-up, as stacked; drives the bars AND the tooltip
+  { key: "new", label: "New", color: "var(--positive)" },
+  { key: "churn", label: "Churn", color: "var(--negative)" },
+];
+
+<Tooltip
+  content={tableTooltip((d) => ({
+    title: d.month,
+    columns: ["MRR", "Orgs", "% of start"],
+    rows: tooltipSeriesRows(d, SEGMENTS, { stacked: true }).map((r) => ({
+      ...r, cells: [fmtEur(r.value), fmtInt(d[`orgs_${r.key}`]), fmtPct(r.value / d.start)],
+    })),
+    total: { label: "Net change", cells: [fmtEur(d.net), fmtInt(d.netOrgs), fmtPct(d.net / d.start)] },
+  }))}
+/>
+```
+
+- `tooltipSeriesRows(datum, series, { stacked })` puts the rows in reading
+  order (a stack's top segment first, lines highest first) and drops empty
+  values.
+- `total` is the stack total, "All selected", or the base the % is of.
+  `after` rows follow it, apart: a value on another axis.
+- Precompute what the tooltip shows (totals, counts, bases) in each data row.
+  The builder only reads and formats.
+- On a chart with an HTML overlay (a donut's centre label), lift the tooltip:
+  `<Tooltip wrapperStyle={{ zIndex: 20 }} … />`.
+
 `ui.css` is plain CSS (no Tailwind needed; it coexists with Tailwind) and
 every kit class is prefixed `mk-`. It also sets the house base: Inter 14px on
 the warm `--canvas`.
