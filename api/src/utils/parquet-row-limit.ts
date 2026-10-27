@@ -12,7 +12,7 @@
  * - Server memory stays flat. The builder streams rows into an on-disk
  *   DuckDB file capped at 512 MB of buffer: peak RSS was 430 MB at 0.5M
  *   rows and 570 MB at 5M. The DuckDB file grows instead, and on Cloud Run
- *   /tmp is RAM: 60 MB per 1M narrow rows, 420 MB per 1M rows of a real
+ *   /tmp is RAM: 60 MB per 1M narrow rows, 300 MB per 1M rows of a real
  *   43-column binding.
  * - Build time grows linearly. Prod builds run at 250-500 us per row on
  *   one vCPU, so 5M rows take 20-40 minutes against the 60-minute request
