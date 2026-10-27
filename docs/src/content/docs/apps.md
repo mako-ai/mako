@@ -29,8 +29,11 @@ Bindings are how apps reach workspace data. A binding is one file — `bindings/
 -- connection: <workspace connection id>
 -- materialization: parquet
 -- schedule: 0 6 * * *
+-- row_limit: 3000000
 SELECT category, amount, created_at FROM orders
 ```
+
+`row_limit` is optional. A binding holds up to 2,000,000 rows by default and may declare up to 5,000,000 (`3000000`, `3_000_000` or `3M`). Operators set both numbers with `PARQUET_ROW_LIMIT` and `PARQUET_MAX_ROW_LIMIT`. Each binding downloads whole into the viewer's browser tab and sits in DuckDB-WASM memory. That costs about 950 bytes per row for a 43-column binding and about 180 bytes for a 14-column one. DuckDB-WASM stops at 3.1 GB per page, for all bindings together, so a 43-column binding runs out near 3.3M rows. Past a million rows, select fewer columns, pre-aggregate in SQL, or shard the binding by year or country. In the page, `useQuery(name)` turns at most 500,000 rows into JS objects and sets `truncated` past that (the `rowLimit` option). Aggregate bigger bindings in `useDuckDB` SQL or read them with `{ format: "arrow" }`.
 
 Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**. The query is materialized into a Parquet artifact; at runtime the preview serves each artifact at the app-relative URL `__data/<name>.parquet`, In app code, read bindings through `@makoai/app-sdk` — the published npm package (apps depend on it with a caret range; it is no longer vendored into the workspace repo):
 
@@ -248,7 +251,7 @@ preview the app as a specific workspace member during `pnpm dev`.
 ## Security Model
 
 - Binding queries are validated against the workspace's connections and run server-side with read-only enforcement on materialization SQL.
-- A binding is the app's whole data, so one past the 500,000-row Parquet limit **fails its build** (the run records the error, and the previously built artifact keeps being served) instead of being silently cut to 500,000 rows. Narrow or aggregate the binding's SQL.
+- A binding is the app's whole data, so one past its row limit (2,000,000 by default, `-- row_limit:` up to 5,000,000) **fails its build** instead of being silently cut. The run records the error, and the previously built artifact keeps being served. The error names the binding, the rows its query returned and the `-- row_limit:` that would fit them. Raise the limit, or aggregate or shard the binding's SQL.
 - The sandbox is an isolated microVM per workspace; app code and shell commands never run in Mako's API process.
 - The preview iframe is sandboxed; app code receives query *results* only — never credentials.
 

@@ -52,6 +52,7 @@ import {
 } from "./observability/langfuse";
 import { assertDevLoginSafeAtBoot } from "./auth/dev-login";
 import { initAppBindingParquetWriteOptions } from "./utils/parquet-compression";
+import { initParquetRowLimits } from "./utils/parquet-row-limit";
 import { attachAppsTerminalWs } from "./apps/terminal-ws";
 import {
   isGkeWorkerConfigured,
@@ -378,6 +379,8 @@ async function main(): Promise<void> {
   // A typo in PARQUET_COMPRESSION / PARQUET_ZSTD_LEVEL stops the boot here,
   // so the revision never serves, instead of failing app binding builds.
   initAppBindingParquetWriteOptions();
+  // Same for PARQUET_ROW_LIMIT / PARQUET_MAX_ROW_LIMIT.
+  initParquetRowLimits();
 
   const systemSkillRegistry = discoverSystemSkills();
   const missingSystemSkills = REQUIRED_SYSTEM_SKILLS.filter(

@@ -331,7 +331,7 @@ async function planDevBuildUnlabelled(
   }
 
   // Committed = the whole definition matches (connection, database, dbt
-  // link, materialization, query), not just the artifact key, which ignores
+  // link, materialization, row limit, query), not just the artifact key, which ignores
   // the dbt link and the mode. From here on the COMMITTED binding is what is
   // served or built: its key is the one published readers resolve, and
   // materializing it as read here (not re-read by name) means a commit
@@ -371,6 +371,7 @@ async function planDevBuildUnlabelled(
     databaseName: draft.binding.databaseName,
     renderedCode: rendered.code,
     devModifiedAt: rendered.devModifiedAt ?? null,
+    rowLimit: draft.binding.rowLimit,
   });
   if (!isCommitted && !input.refresh) {
     // An explicit refresh skips both: it rebuilds, and a person clicking it

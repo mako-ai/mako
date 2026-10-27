@@ -180,7 +180,7 @@ Make a *published* app runnable outside Mako entirely:
   1. `mako export` → static bundle (`index.html` + published files + runtime + baked-in publishable key + API base URL) — host on any static host.
   2. `<script>` embed / iframe embed of the share URL with an app key (custom-domain-friendly).
   3. Mako-hosted custom domains (later).
-- **Security posture:** publishable keys are single-app, published-snapshot-only, `bindings:execute`-only, origin-allowlisted, revocable, rate-limited (WS0). Row caps + the existing 500k truncation flag apply. Document loudly that secret keys must never ship in a bundle; `mako export` refuses a `revops_`/secret key.
+- **Security posture:** publishable keys are single-app, published-snapshot-only, `bindings:execute`-only, origin-allowlisted, revocable, rate-limited (WS0). Row caps apply: the per-binding row limit (2M default, `-- row_limit:` up to 5M) fails a build rather than truncating it. Document loudly that secret keys must never ship in a bundle; `mako export` refuses a `revops_`/secret key.
 
 ---
 
@@ -315,7 +315,7 @@ Numbered so phases and reviews can reference them. **Bold** = changes the design
 
 - **L6 — Prompt injection through the feedback channels.** Everything the MCP loop feeds back to Claude Code is attacker-influenceable: query results, schema/table names, README/skill text from synced repos, and especially `get_preview_errors` (app code can `throw` arbitrary strings; any workspace member can post to the error-report endpoint). A hostile string can steer an agent holding write/destructive tools. *Mitigations:* error-report endpoint requires workspace auth + is scoped per app and size-capped; MCP tool results wrap external strings in clearly-delimited data blocks; destructive tools carry MCP annotations so clients confirm; default MCP toolset is read-mostly with writes opt-in per key scope.
 - **L7 — Exfiltration via tool composition.** An injected or careless agent with `query:execute` plus any write-capable tool (or web access on the client side) can move data between connections or out of the tenant. *Mitigations:* per-key connection restriction; usage log with row counts (Phase 0) feeding anomaly alerts; no cross-connection write tool in the MCP suite.
-- **L8 — Resource exhaustion.** `run_query`/`run_binding` against huge tables burns the *customer's* database and Mako's memory; MCP makes it trivially scriptable. *Mitigations:* enforce server-side row caps + statement timeouts on the MCP execution path (same caps as the in-product 500k/truncation behavior), per-key concurrency limits, per-workspace quotas surfaced in usage/billing.
+- **L8 — Resource exhaustion.** `run_query`/`run_binding` against huge tables burns the *customer's* database and Mako's memory; MCP makes it trivially scriptable. *Mitigations:* enforce server-side row caps + statement timeouts on the MCP execution path (same caps as the in-product per-binding row limit), per-key concurrency limits, per-workspace quotas surfaced in usage/billing.
 - **L9 — Workspace confusion / drift in auth wiring.** `mcp.routes.ts` today uses an inline workspace check instead of `requireWorkspace`; the new MCP server must not repeat that — every drift point between "key's workspace" and "requested workspace" (path param vs `x-workspace-id`) is a confused-deputy candidate. *Mitigation:* the MCP route uses the standard `unifiedAuthMiddleware + requireWorkspace + requireScope` stack; add a test that a key for workspace A calling with `x-workspace-id: B` fails.
 
 ### Supply chain (repo, npm, esm.sh)

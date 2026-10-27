@@ -184,6 +184,7 @@ A binding is ONE file — `bindings/<name>.sql` (name = filename, no manifest):
 -- materialization: parquet                (default; only option today)
 -- schedule: 0 6 * * *                     (optional cron refresh)
 -- dbt_project: <id>                       (optional)
+-- row_limit: 3000000                      (optional; default 2,000,000, max 5,000,000)
 SELECT ...
 ```
 
@@ -212,6 +213,27 @@ binding. Use `useQuery` / `useDuckDB` first. For anything custom (SDK ≥ 2.8):
 Artifacts are ZSTD-compressed. DuckDB reads them as they are. Plain
 hyparquet throws "unsupported compression codec: ZSTD", one more reason
 not to bring your own reader.
+
+**Row limits.** A binding holds up to 2,000,000 rows unless its front
+matter says `-- row_limit: <n>` (`3000000`, `3_000_000` or `3M`), up to
+5,000,000. Operators can move both numbers. The build error states the
+ones in force. A query past its limit fails the build and never truncates.
+The app keeps its previous data. The error names the binding, the rows the
+query returned and the `-- row_limit:` that fits them. Set that value, or
+aggregate or shard the binding.
+
+Design for the browser, not the cap. Every binding downloads whole into
+the tab, and DuckDB-WASM holds it in memory. DuckDB-WASM stops at 3.1 GB
+per page, for all bindings together. A 43-column binding takes about 950
+bytes per row there, so 3.3M rows fill it. A 14-column one takes about 180
+bytes. Past about 1M rows, select only the columns the app reads and
+pre-aggregate in SQL (one row per day x country, not per event). Shard by
+year or country when a screen needs one slice at a time: `useDuckDB`
+downloads only the bindings its SQL names. `useQuery(name)` and row-format
+`useDuckDB` turn at most 500,000 result rows into JS objects and set
+`truncated: true` past that (`rowLimit` option). For a bigger binding,
+aggregate in `useDuckDB` SQL or ask for `{ format: "arrow" }`.
+
 After wiring a binding into the UI, `app_browse` is how you confirm the data
 actually loads — a failed `__data/...` fetch shows up in its failedRequests.
 
