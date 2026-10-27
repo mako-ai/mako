@@ -125,8 +125,14 @@ Every list of rows (customers, renewals, deals) is the kit's `DataTable`
   page, default 50). A `LIMIT 100` or `.slice(0, 200)` hides rows and makes the
   title's count wrong.
 - **Sticky header, pinned name column.** Put the row's identity first and set
-  `sticky: true` on it. Truncate long names (`truncate` or `maxWidth`); the
-  full value shows on hover.
+  `sticky: true` on it. Long values ellipsize at the column's width with the
+  full value on hover.
+- **Give every column a width.** The table must not reflow when sorting,
+  filtering or paging. Set `width` on each column (px or a CSS length) sized
+  for its real values, or rely on the defaults (numbers 96px, `date: true`
+  110px, the first column 240px, other text 140px). Mark the column that
+  should take spare room `grow: true` (default: the first). Never size a
+  column from the rows on screen.
 - **Fill the height.** A list that is the page's main content gets `fill` and
   sits in a `100dvh` flex column, so the body scrolls and the pager stays in
   view. A secondary table keeps the default 70vh scroll box.

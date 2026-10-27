@@ -150,9 +150,12 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
 .mk-dt-scroll { overflow: auto; max-height: 70vh; border-top: 1px solid var(--border); scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 .mk-dt > .mk-dt-scroll:first-child { border-top: 0; }
 .mk-dt--fill .mk-dt-scroll { flex: 1 1 auto; min-height: 0; max-height: none; }
-.mk-dt-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+/* Fixed layout: the <colgroup> sets every width, so the rows on screen never
+ * resize a column. The table fills the card; its inline min-width (the sum of
+ * the columns) makes it scroll sideways in a narrower card. */
+.mk-dt-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 13px; }
 .mk-dt-table th, .mk-dt-table td {
-  padding: 7px 10px; text-align: left; white-space: nowrap; vertical-align: middle;
+  padding: 7px 10px; text-align: left; white-space: nowrap; vertical-align: middle; overflow: hidden;
   border-bottom: 1px solid var(--mk-row-line); background: var(--card);
 }
 .mk-dt-table thead th {
@@ -161,19 +164,21 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
   box-shadow: inset 0 -1px 0 var(--border);
 }
 .mk-dt-table thead th.mk-dt-sorted { color: var(--foreground); }
-.mk-dt-label { display: inline-block; padding: 8px 10px; }
+.mk-dt-label { display: flex; padding: 8px 10px; }
 .mk-dt-sort {
-  appearance: none; display: inline-flex; align-items: center; gap: 4px; width: 100%; padding: 8px 10px;
+  appearance: none; display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; padding: 8px 10px;
   font: inherit; color: inherit; background: none; border: 0; text-align: inherit; white-space: nowrap;
 }
+/* A long header label ellipsizes; the sort icon beside it never shrinks. */
+.mk-dt-th-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mk-dt-sort:hover { color: var(--foreground); }
 .mk-dt-sort:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: var(--mk-radius-sm); }
 .mk-dt-sort svg { flex: none; }
 .mk-dt-faint { opacity: .35; }
 .mk-dt-table .mk-dt-num { text-align: right; font-variant-numeric: tabular-nums; }
-.mk-dt-table th.mk-dt-num .mk-dt-sort { justify-content: flex-end; }
+.mk-dt-table th.mk-dt-num :is(.mk-dt-sort, .mk-dt-label) { justify-content: flex-end; }
 .mk-dt-table .mk-dt-center { text-align: center; }
-.mk-dt-table th.mk-dt-center .mk-dt-sort { justify-content: center; }
+.mk-dt-table th.mk-dt-center :is(.mk-dt-sort, .mk-dt-label) { justify-content: center; }
 /* The pinned column: solid background and a hairline on its right edge. */
 .mk-dt-table .mk-dt-pin { position: sticky; left: 0; z-index: 1; box-shadow: inset -1px 0 0 var(--border); }
 /* The corner cell is pinned both ways and keeps BOTH borders: one box-shadow
@@ -184,9 +189,11 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
 .mk-dt-click { cursor: pointer; }
 .mk-dt-click:focus-visible { outline: none; }
 .mk-dt-click:focus-visible > td { background: color-mix(in srgb, var(--muted) 70%, var(--card)); }
-.mk-dt-trunc { display: inline-block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+.mk-dt-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A render() that returns blocks (a name over its links) ellipsizes each line. */
-.mk-dt-trunc :where(div, p) { overflow: hidden; text-overflow: ellipsis; }
+.mk-dt-cell :where(div, p) { overflow: hidden; text-overflow: ellipsis; }
+/* `truncate: false`: the text wraps inside the column; the width still holds. */
+.mk-dt-wrap { white-space: normal; overflow-wrap: anywhere; }
 .mk-dt-table td.mk-dt-empty { text-align: center; color: var(--muted-foreground); padding: 48px 10px; white-space: normal; }
 .mk-dt-foot {
   flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;

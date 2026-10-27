@@ -12,10 +12,13 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import { bindingPhaseLabel, refreshBinding, useBindingProgress } from "./index.js";
 import {
+  COLUMN_WIDTHS,
+  columnLayout,
   compareValues,
   csvCell,
   csvDate,
   csvToTsv,
+  defaultColumnWidth,
   formatSeconds as fmtSecs,
   nextSort,
   normalizeTone,
@@ -29,10 +32,13 @@ import {
 } from "./ui-core.js";
 
 export {
+  COLUMN_WIDTHS,
+  columnLayout,
   compareValues,
   csvCell,
   csvDate,
   csvToTsv,
+  defaultColumnWidth,
   nextSort,
   normalizeTone,
   pageSlice,
@@ -359,6 +365,11 @@ const INTERACTIVE = "a,button,input,select,textarea,label,[role=button]";
  * the table. Pass the filter state as `resetKey`: when it changes the table
  * goes back to page 1. `fill` makes the card fill its parent's height with the
  * body scrolling inside; `exportFilename` adds an "Export CSV" button.
+ *
+ * Columns have fixed widths (`table-layout: fixed` and a `<colgroup>`), from
+ * each column's `width` or a default by kind (see `columnLayout`). The rows
+ * on screen never change a width, so sorting, filtering and paging never
+ * shift the layout. Cells ellipsize at their width with the full value on hover.
  */
 export function DataTable({
   rows = [],
@@ -394,6 +405,7 @@ export function DataTable({
   const scrollRef = React.useRef(null);
 
   const sorted = React.useMemo(() => sortRows(rows, columns, sort), [rows, columns, sort]);
+  const layout = React.useMemo(() => columnLayout(columns), [columns]);
   const { page, pageCount, start, end } = pageSlice(sorted.length, rawPage, pageSize);
   const visible = sorted.slice(start, end);
 
@@ -446,18 +458,19 @@ export function DataTable({
       null,
       ...columns.map(col => {
         const active = sort?.id === col.id;
+        const text = typeof col.label === "string" ? col.label : col.id;
         const label =
           col.sortable === false
-            ? h("span", { className: "mk-dt-label" }, col.label)
+            ? h("span", { className: "mk-dt-label", title: col.hint ?? text }, h("span", { className: "mk-dt-th-text" }, col.label))
             : h(
                 "button",
                 {
                   type: "button",
                   className: "mk-dt-sort",
                   onClick: () => sortBy(col),
-                  title: `${col.hint ?? (typeof col.label === "string" ? col.label : col.id)} · click to sort`,
+                  title: `${col.hint ?? text} · click to sort`,
                 },
-                col.label,
+                h("span", { className: "mk-dt-th-text" }, col.label),
                 h(IconSort, { dir: active ? sort.dir : null }),
               );
         return h(
@@ -467,7 +480,6 @@ export function DataTable({
             scope: "col",
             className: cellClass(col, active && "mk-dt-sorted"),
             "aria-sort": col.sortable === false ? undefined : active ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
-            style: col.width != null ? { width: col.width, minWidth: col.width } : undefined,
           },
           label,
         );
@@ -475,15 +487,14 @@ export function DataTable({
     ),
   );
 
+  // Every cell ellipsizes at its column's width, with the raw value (text or
+  // a number) as the hover title. `truncate: false` wraps instead.
   const cell = (col, row) => {
-    const content = col.render ? col.render(row) : col.value(row);
-    if (!col.truncate && col.maxWidth == null) return content;
     const v = col.value(row);
-    return h(
-      "span",
-      { className: "mk-dt-trunc", style: col.maxWidth != null ? { maxWidth: col.maxWidth } : undefined, title: v == null ? undefined : String(v) },
-      content,
-    );
+    const content = col.render ? col.render(row) : v;
+    if (col.truncate === false) return h("div", { className: "mk-dt-wrap" }, content);
+    const title = typeof v === "string" || typeof v === "number" || typeof v === "bigint" ? String(v) : undefined;
+    return h("div", { className: "mk-dt-cell", title: title || undefined }, content);
   };
 
   const body = h(
@@ -573,7 +584,17 @@ export function DataTable({
     h(
       "div",
       { className: "mk-dt-scroll", ref: scrollRef, style: !fill && maxHeight != null ? { maxHeight } : undefined },
-      h("table", { className: "mk-dt-table" }, head, body),
+      h(
+        "table",
+        { className: "mk-dt-table", style: { minWidth: layout.minWidth } },
+        h(
+          "colgroup",
+          null,
+          ...layout.cols.map(c => h("col", { key: c.id, style: c.width ? { width: c.width } : undefined })),
+        ),
+        head,
+        body,
+      ),
     ),
     footer,
   );

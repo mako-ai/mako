@@ -168,7 +168,10 @@ test("DataTable renders sortable headers, a pinned corner, the page and the page
   );
   assert.match(html, /<th scope="col" class="mk-dt-pin" aria-sort="none"><button type="button" class="mk-dt-sort"/);
   assert.match(html, /<th scope="col" class="mk-dt-num mk-dt-sorted" aria-sort="descending"/);
-  assert.match(html, /<td class="mk-dt-num">€261<\/td>/); // page 2 of a desc sort starts at 311 - 50
+  assert.match(html, /<td class="mk-dt-num"><div class="mk-dt-cell" title="261">€261<\/div><\/td>/); // page 2 of a desc sort starts at 311 - 50
+  // Fixed widths: the colgroup sets them, the first column grows, the sum is the floor.
+  assert.match(html, /<table class="mk-dt-table" style="min-width:336px"><colgroup><col\/><col style="width:96px"\/><\/colgroup>/);
+  assert.match(html, /<span class="mk-dt-th-text">Customer<\/span><svg/);
   assert.match(html, /<b>51–100<\/b> of <b>312<\/b> customers/);
   assert.match(html, /Page 2 of 7/);
   assert.match(html, /<option value="50" selected="">50 per page<\/option>/);
@@ -176,6 +179,7 @@ test("DataTable renders sortable headers, a pinned corner, the page and the page
   const empty = server.renderToStaticMarkup(React.createElement(ui.DataTable, { columns, empty: "No customers yet.", fill: true }));
   assert.match(empty, /class="mk-card mk-dt mk-dt--fill"/);
   assert.match(empty, /<td colSpan="2" class="mk-dt-empty">No customers yet.<\/td>/i);
+  assert.match(empty, /<colgroup><col\/><col style="width:96px"\/><\/colgroup>/); // same widths with no rows
   assert.match(empty, /No rows/);
   const clickable = server.renderToStaticMarkup(
     React.createElement(ui.DataTable, { rows: rows.slice(0, 2), columns, onRowClick: () => {}, rowLabel: r => `Open ${r.name}` }),
@@ -183,6 +187,61 @@ test("DataTable renders sortable headers, a pinned corner, the page and the page
   assert.match(clickable, /<tr tabindex="0" class="mk-dt-click" aria-label="Open Org 0">/i);
   const past = server.renderToStaticMarkup(React.createElement(ui.DataTable, { rows, columns, page: 99 }));
   assert.match(past, /Page 7 of 7/);
+});
+
+test("DataTable widths: overrides, defaults by kind, grow and calc floors", async t => {
+  let React, server, ui;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    ui = await import("./ui.js");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const columns = [
+    { id: "name", label: "Customer", value: r => r.name, sticky: true, width: 200 },
+    { id: "owner", label: "Owner", value: r => r.owner, grow: true, minWidth: "10rem" },
+    { id: "since", label: "Since", value: r => r.since, date: true, sortable: false },
+    { id: "mrr", label: "MRR", num: true, value: r => r.mrr },
+    { id: "note", label: "Note", value: r => r.note, width: "12rem", truncate: false },
+  ];
+  const html = server.renderToStaticMarkup(
+    React.createElement(ui.DataTable, { rows: [{ id: 1, name: "A very long customer name", owner: "Ann", since: "2026-01-01", mrr: 5, note: "n" }], columns }),
+  );
+  assert.match(
+    html,
+    /style="min-width:calc\(406px \+ 10rem \+ 12rem\)"><colgroup><col style="width:200px"\/><col\/><col style="width:110px"\/><col style="width:96px"\/><col style="width:12rem"\/><\/colgroup>/,
+  );
+  assert.match(html, /<div class="mk-dt-cell" title="A very long customer name">/);
+  assert.match(html, /<div class="mk-dt-wrap">n<\/div>/);
+  assert.match(html, /<span class="mk-dt-label" title="Since"><span class="mk-dt-th-text">Since<\/span><\/span>/);
+  assert.doesNotMatch(html, /<th[^>]*style=/); // widths live on the colgroup only
+});
+
+test("columnLayout and defaultColumnWidth: defaults by kind, the first column grows", async () => {
+  const { columnLayout, defaultColumnWidth } = await import("./ui-core.js");
+  assert.equal(defaultColumnWidth({ num: true }, 0), 96);
+  assert.equal(defaultColumnWidth({ align: "right" }), 96);
+  assert.equal(defaultColumnWidth({ date: true }), 110);
+  assert.equal(defaultColumnWidth({ sticky: true }, 3), 240);
+  assert.equal(defaultColumnWidth({}, 0), 240);
+  assert.equal(defaultColumnWidth({}, 2), 140);
+  assert.deepEqual(columnLayout([{ id: "a" }, { id: "b" }, { id: "c", num: true }]), {
+    cols: [{ id: "a", width: null }, { id: "b", width: "140px" }, { id: "c", width: "96px" }],
+    minWidth: "476px",
+  });
+  assert.deepEqual(columnLayout([{ id: "a" }, { id: "b", grow: true, width: 300, minWidth: 180 }]), {
+    cols: [{ id: "a", width: "240px" }, { id: "b", width: null }],
+    minWidth: "420px",
+  });
+});
+
+test("ui.css: the DataTable has a fixed layout and keeps the corner's two borders", () => {
+  const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
+  assert.match(css, /\.mk-dt-table \{[^}]*table-layout: fixed/);
+  assert.match(css, /thead th\.mk-dt-pin \{[^}]*inset -1px 0 0 var\(--border\), inset 0 -1px 0 var\(--border\)/);
+  assert.match(css, /\.mk-dt-sort svg \{ flex: none; \}/);
 });
 
 test("compareValues: numeric strings as numbers, bigints by value, text with digit runs", async () => {

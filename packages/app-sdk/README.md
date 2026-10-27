@@ -303,18 +303,19 @@ const SEGMENTS = [ // bottom-up, as stacked; drives the bars AND the tooltip
 
 `DataTable` is the table the best workspace dashboards converged on: a card
 with click-to-sort headers, a sticky header, an optional pinned first column,
-right-aligned tabular numbers, a pager footer ("1–50 of 312 customers", 25 /
-50 / 100 per page, « ‹ Page 2 of 7 › »), an empty state and CSV export.
+right-aligned tabular numbers, fixed column widths, a pager footer ("1–50 of
+312 customers", 25 / 50 / 100 per page, « ‹ Page 2 of 7 › »), an empty state
+and CSV export.
 
 ```tsx
 import { DataTable, type DataTableColumn } from "@makoai/app-sdk/ui";
 
 const COLUMNS: DataTableColumn<Customer>[] = [
-  { id: "name", label: "Customer", value: c => c.name, sticky: true, truncate: true,
+  { id: "name", label: "Customer", value: c => c.name, sticky: true, width: 260,
     render: c => <><div>{c.name}</div><SystemLinks c={c} /></> },
-  { id: "paid", label: "Paid on", value: c => c.paidDay, render: c => fmtDay(c.paidDay) },
+  { id: "paid", label: "Paid on", value: c => c.paidDay, date: true, render: c => fmtDay(c.paidDay) },
   { id: "mrr", label: "MRR", num: true, value: c => c.mrr, render: c => fmtEur(c.mrr) },
-  { id: "links", label: "Links", value: () => null, sortable: false, csv: false, render: c => <Links c={c} /> },
+  { id: "links", label: "Links", value: () => null, sortable: false, csv: false, width: 120, render: c => <Links c={c} /> },
 ];
 
 <DataTable
@@ -334,11 +335,25 @@ const COLUMNS: DataTableColumn<Customer>[] = [
 - **Columns.** `value(row)` is what the column sorts by and exports;
   `render(row)` is what the cell shows. `num` right-aligns with tabular
   figures and sorts largest first on the first click (text sorts A→Z). Empty
-  values (null, "", NaN) sort last both ways. `width`, `maxWidth` / `truncate`
-  (ellipsis, the full value on hover), `sticky` (pin the first column),
+  values (null, "", NaN) sort last both ways. `sticky` (pin the first column),
   `sortable: false`, `hint` (header hover text), `csv` (`false` to leave a
   column out, a function for a readable cell such as a level name). Numeric
   strings ("1.25", "-10") sort as numbers.
+- **Widths: no layout shift.** The table uses `table-layout: fixed` and a
+  `<colgroup>`, so a column's width never depends on the rows on screen.
+  Sorting, filtering, paging, the empty state and loading all keep the same
+  widths. Each column is exactly its `width` (px as a number, or any CSS
+  length such as `"12rem"`). Defaults by kind: `num` or right-aligned 96px,
+  `date: true` 110px, the first or sticky column 240px, other text 140px.
+  When the card is wider than the sum, the `grow: true` columns take the extra
+  space. Without one, the first column grows. `minWidth` sets a growing
+  column's floor. When the card is narrower than the sum, the table scrolls
+  sideways inside the card. `columnLayout(columns)` returns the widths the
+  table renders.
+- **Cells stay on one line.** A cell ellipsizes at its column's width with the
+  raw value (text or number) as the hover title. Headers ellipsize too, and
+  the sort icon stays visible. `truncate: false` wraps a cell's text inside
+  its column instead: the width holds and the row grows.
 - **Sort, page, page size** are each uncontrolled by default or controlled with
   `sort` + `onSortChange`, `page` (1-based) + `onPageChange`, `pageSize` +
   `onPageSizeChange`, so an app can keep them in the URL. Pass your filter

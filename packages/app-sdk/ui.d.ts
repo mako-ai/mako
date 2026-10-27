@@ -192,11 +192,27 @@ export interface DataTableColumn<R = any> {
   /** A number: right-aligned, tabular figures, sorts largest first on the first click. */
   num?: boolean;
   align?: "left" | "right" | "center";
-  /** Header width (and min width), e.g. 120 or "12rem". */
+  /** A date column: takes the 110px default width. */
+  date?: boolean;
+  /**
+   * The column's fixed width: px as a number (120) or any CSS length ("12rem").
+   * Defaults by kind: numbers (`num` or right-aligned) 96px, `date` 110px, the
+   * first or sticky column 240px, other text 140px. The rows on screen never
+   * change it, so sorting, filtering and paging never shift the layout.
+   */
   width?: number | string;
-  /** Truncate the cell with an ellipsis past this width; the full value shows on hover. */
-  maxWidth?: number | string;
-  /** Truncate at 260px (or `maxWidth`) with the full value as the hover title. */
+  /**
+   * This column takes the space left when the card is wider than the sum of
+   * the widths. Without any `grow` column, the first column grows.
+   */
+  grow?: boolean;
+  /** A growing column's floor; defaults to its `width`. Other columns are exactly `width`. */
+  minWidth?: number | string;
+  /**
+   * Default true: the cell stays on one line and ellipsizes at the column's
+   * width, the raw value (text or number) as its hover title. false wraps the
+   * text inside the column instead (the width still holds; the row grows).
+   */
   truncate?: boolean;
   /** Pin to the left edge with a solid background. Use on the first column. */
   sticky?: boolean;
@@ -262,9 +278,25 @@ export interface DataTableProps<R = any> {
   className?: string;
   style?: React.CSSProperties;
 }
-/** The house data table: sortable, paged, sticky header, optional pinned first column, CSV export. */
+/**
+ * The house data table: sortable, paged, sticky header, optional pinned first
+ * column, CSV export. Fixed column widths (`table-layout: fixed` + a
+ * `<colgroup>`): no layout shift on sort, filter, page, empty or loading.
+ */
 export function DataTable<R = any>(props: DataTableProps<R>): React.ReactElement;
 
+/** Default widths in px by kind. */
+export const COLUMN_WIDTHS: { num: number; date: number; first: number; text: number };
+/** A column's width when it sets none: num/right 96, date 110, first or sticky 240, text 140. */
+export function defaultColumnWidth(column: Pick<DataTableColumn, "num" | "align" | "date" | "sticky">, index?: number): number;
+/**
+ * The fixed layout a DataTable renders: each `<col>` width (null for a
+ * growing column) and the table's min-width, the sum of the columns.
+ */
+export function columnLayout(columns: readonly Pick<DataTableColumn, "id" | "num" | "align" | "date" | "sticky" | "width" | "minWidth" | "grow">[]): {
+  cols: { id: string; width: string | null }[];
+  minWidth: string;
+};
 /** A sorted copy: stable, by `value(row)`, empty values (null, "", NaN) last both ways. */
 export function sortRows<R>(rows: readonly R[], columns: readonly DataTableColumn<R>[], sort: DataTableSort | null | undefined): R[];
 /** The sort after a header click: same column flips; a new one starts desc for `num`, else asc. */

@@ -120,6 +120,50 @@ export function sortRows(rows, columns, sort) {
     .map(x => x.row);
 }
 
+/** Default column widths in px, by kind: see `defaultColumnWidth`. */
+export const COLUMN_WIDTHS = { num: 96, date: 110, first: 240, text: 140 };
+
+/** A width as CSS: a number is px, a string passes through ("12rem", "20%"). */
+export function cssLength(v) {
+  return typeof v === "number" ? `${v}px` : v;
+}
+
+/**
+ * A column's width when it sets none: numbers (`num` or right-aligned) 96px,
+ * dates (`date`) 110px, the first or sticky column 240px, other text 140px.
+ */
+export function defaultColumnWidth(column, index = 1) {
+  if (column?.num || column?.align === "right") return COLUMN_WIDTHS.num;
+  if (column?.date) return COLUMN_WIDTHS.date;
+  if (column?.sticky || index === 0) return COLUMN_WIDTHS.first;
+  return COLUMN_WIDTHS.text;
+}
+
+/**
+ * The fixed layout of a DataTable: one `<col>` width per column and the
+ * table's minimum width (their sum). Every column is exactly its `width`
+ * (default `defaultColumnWidth`). The flexible columns (`grow: true`, else the
+ * first column) take the space left when the card is wider than the sum; their
+ * floor is `minWidth`, else their width. Widths never depend on the rows, so
+ * sorting, filtering and paging never move a column.
+ * Returns `{ cols: [{ id, width: CSS length | null (flexible) }], minWidth }`.
+ */
+export function columnLayout(columns) {
+  const anyGrow = columns.some(c => c.grow);
+  let px = 0;
+  const other = [];
+  const cols = columns.map((c, i) => {
+    const grow = anyGrow ? !!c.grow : i === 0;
+    const base = c.width ?? defaultColumnWidth(c, i);
+    const floor = grow ? (c.minWidth ?? base) : base;
+    if (typeof floor === "number") px += floor;
+    else other.push(floor);
+    return { id: c.id, width: grow ? null : cssLength(base) };
+  });
+  const minWidth = other.length ? `calc(${[`${px}px`, ...other].join(" + ")})` : `${px}px`;
+  return { cols, minWidth };
+}
+
 /**
  * Paging math for `total` rows. `page` is 1-based and clamped into range.
  * Returns `{ page, pageCount, start, end }`: rows `start` (inclusive) to
