@@ -266,14 +266,13 @@ export default function AppViewerPage() {
           // No allow-same-origin while the app is served from Mako's own
           // origin: granting it would let app code out of the sandbox. On the
           // app's own (foreign) origin it is added, so the cache works.
+          // Popups escape the sandbox so a link to a record (a CRM page, a
+          // listing) opens as a normal tab, as in the workspace preview.
           <iframe
             ref={frameRef}
             title={app?.title ?? "App"}
             src={src}
-            sandbox={appFrameSandbox(
-              src,
-              "allow-scripts allow-forms allow-downloads",
-            )}
+            sandbox={appFrameSandbox(src)}
             onLoad={() => setFrameLoaded(true)}
             style={{
               border: 0,
