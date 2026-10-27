@@ -85,6 +85,20 @@ export const LEAD_STATUS_CHANGE_SCHEMA: Record<string, ConnectorFieldSchema> = {
   new_status_id: s(),
   new_status_label: s(),
   new_status_type: s(),
+  created_by_agent_id: s(),
+  updated_by_agent_id: s(),
+};
+
+export const OPPORTUNITY_STATUS_CHANGE_SCHEMA: Record<
+  string,
+  ConnectorFieldSchema
+> = {
+  ...LEAD_STATUS_CHANGE_SCHEMA,
+  opportunity_id: s(),
+  old_pipeline_id: s(),
+  old_pipeline_name: s(),
+  new_pipeline_id: s(),
+  new_pipeline_name: s(),
 };
 
 export const MEETING_SCHEMA: Record<string, ConnectorFieldSchema> = {
@@ -104,6 +118,10 @@ export const MEETING_SCHEMA: Record<string, ConnectorFieldSchema> = {
   outcome_autofill_confidence: s(),
   outcome_autofill_reasoning: s(),
   notetaker_id: s(),
+  // Declared as strings: these columns already exist as STRING in live
+  // warehouses (first created from webhook payloads as unknown fields).
+  notetaker_states: s(),
+  agent_config_id: s(),
   playbook_id: s(),
   playbook_reason: s(),
   conversation_type_id: s(),
@@ -151,6 +169,7 @@ export const CALL_SCHEMA: Record<string, ConnectorFieldSchema> = {
   transferred_to: s(),
   transferred_to_user_id: s(),
   forwarded_to: s(),
+  caller_id_reason: s(),
   agent_config_id: s(),
   notetaker_id: s(),
   dialer_id: s(),
@@ -225,6 +244,8 @@ export const EMAIL_THREAD_SCHEMA: Record<string, ConnectorFieldSchema> = {
   latest_normalized_subject: s(),
   summary: s(),
   n_emails: n(),
+  // STRING in live warehouses (first created from webhook payloads).
+  email_ids: s(),
   importance: j(),
   latest_emails: j(),
   participants: j(),
@@ -244,6 +265,8 @@ export const SMS_SCHEMA: Record<string, ConnectorFieldSchema> = {
   source: s(),
   template_id: s(),
   error_message: s(),
+  caller_id_mode: s(),
+  caller_id_reason: s(),
   agent_action_reason: s(),
   agent_config_id: s(),
   sequence_id: s(),
@@ -260,13 +283,20 @@ export const NOTE_SCHEMA: Record<string, ConnectorFieldSchema> = {
   note_html: s(),
   note_date_updated: ts(),
   source: s(),
+  agent_action_reason: s(),
+  agent_config_id: s(),
   pinned: b(),
   pinned_at: ts(),
   attachments: j(),
   note_mentions: j(),
 };
 
-export const TASK_COMPLETED_SCHEMA: Record<string, ConnectorFieldSchema> = {};
+export const TASK_COMPLETED_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  task_id: s(),
+  task_text: s(),
+  task_assigned_to: s(),
+  task_assigned_to_name: s(),
+};
 
 export const CUSTOM_ACTIVITY_SCHEMA: Record<string, ConnectorFieldSchema> = {
   custom_activity_type_id: s(),
@@ -510,7 +540,7 @@ export const ACTIVITY_SCHEMA_MAP: Record<
   Record<string, ConnectorFieldSchema>
 > = {
   "activities:LeadStatusChange": LEAD_STATUS_CHANGE_SCHEMA,
-  "activities:OpportunityStatusChange": LEAD_STATUS_CHANGE_SCHEMA,
+  "activities:OpportunityStatusChange": OPPORTUNITY_STATUS_CHANGE_SCHEMA,
   "activities:Meeting": MEETING_SCHEMA,
   "activities:Call": CALL_SCHEMA,
   "activities:Email": EMAIL_SCHEMA,
@@ -542,6 +572,29 @@ export const CORE_ENTITY_SCHEMA_MAP: Record<
 // ---------------------------------------------------------------------------
 // Schema resolution
 // ---------------------------------------------------------------------------
+
+const MAKO_SYSTEM_FIELD_NAMES = new Set(Object.keys(MAKO_SYSTEM_FIELDS));
+
+/**
+ * The Search API `_fields` list for one activity subtype: every column its
+ * schema declares, minus the columns Mako stamps itself.
+ *
+ * This is the only definition of what the search path (full backfill and
+ * incremental poll alike) asks Close for, so a column added to the schema is
+ * requested automatically. A hand-kept list drifted from the schema before:
+ * custom activities came back without `custom_activity_type_id`, emails
+ * without `date_sent`, threads without `n_emails`. Custom-field selectors
+ * (`custom.cf_*`) are added on top by the connector.
+ *
+ * Returns null for entities that are not activity subtypes.
+ */
+export function closeActivitySearchFields(entity: string): string[] | null {
+  const typeSchema = ACTIVITY_SCHEMA_MAP[entity];
+  if (!typeSchema) return null;
+  return Object.keys({ ...COMMON_ACTIVITY_SCHEMA, ...typeSchema }).filter(
+    field => !MAKO_SYSTEM_FIELD_NAMES.has(field),
+  );
+}
 
 export interface CloseCustomField {
   id: string;

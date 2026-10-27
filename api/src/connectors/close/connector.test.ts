@@ -5,9 +5,12 @@ import {
   formatCloseApiErrorResponse,
 } from "./connector";
 import {
+  ACTIVITY_SCHEMA_MAP,
   buildCloseSearchFieldSelection,
+  closeActivitySearchFields,
   splitCloseSearchFieldSelection,
 } from "./schema";
+import { MAKO_SYSTEM_FIELDS } from "../base/BaseConnector";
 
 function createConnector() {
   return new CloseConnector({
@@ -1105,6 +1108,284 @@ async function testExistingWebhookFetchesDetailWhenListOmitsSignatureKey() {
   assert.equal(result.signingSecret, "fedcba9876543210fedcba9876543210");
 }
 
+// ---------------------------------------------------------------------------
+// Activity Search API field selection
+// ---------------------------------------------------------------------------
+
+const ACTIVITY_CUSTOM_FIELDS = [
+  { id: "cf_OnbStep9x", name: "Onboarding step", type: "text" },
+  { id: "cf_VisScore7q", name: "Visibility score", type: "number" },
+];
+
+/**
+ * Stub the Close client for one Search API activity run. Serves a single page
+ * of `pageRows`, then reports the range as exhausted. Every paged request
+ * body (not the probes) is recorded in `searchBodies`.
+ */
+function stubActivitySearchApi(params: {
+  objectType: string;
+  pageRows: Record<string, unknown>[];
+  customFields?: () => typeof ACTIVITY_CUSTOM_FIELDS;
+  rejectSelector?: string;
+}) {
+  const searchBodies: any[] = [];
+  const getUrls: string[] = [];
+  let servedPage = false;
+  const api = {
+    get: async (url: string) => {
+      getUrls.push(url);
+      if (url === "/custom_field/activity/") {
+        return {
+          data: {
+            data: (params.customFields ?? (() => ACTIVITY_CUSTOM_FIELDS))(),
+          },
+        };
+      }
+      return { data: { data: [] } };
+    },
+    post: async (_url: string, body: any) => {
+      if (body?.include_counts) {
+        return { data: { count: { total: params.pageRows.length }, data: [] } };
+      }
+      if (body?._limit === 1 && Array.isArray(body?.sort)) {
+        return {
+          data: {
+            data: [{ id: "probe", date_created: "2026-01-01T00:00:00.000Z" }],
+          },
+        };
+      }
+      if (body?._limit === 1) return { data: { data: [] } };
+      const fields: string[] = body?._fields?.[params.objectType] ?? [];
+      if (params.rejectSelector && fields.includes(params.rejectSelector)) {
+        throw Object.assign(new Error("Request failed with status code 400"), {
+          isAxiosError: true,
+          response: {
+            status: 400,
+            headers: {},
+            data: { "field-errors": { _fields: ["Unsupported field"] } },
+          },
+        });
+      }
+      searchBodies.push(body);
+      if (!servedPage) {
+        servedPage = true;
+        return { data: { data: params.pageRows, cursor: null } };
+      }
+      return { data: { data: [], cursor: null } };
+    },
+  };
+  return { api, searchBodies, getUrls };
+}
+
+async function runActivityChunk(
+  connector: CloseConnector,
+  entity: string,
+  since?: Date,
+) {
+  const batches: Record<string, unknown>[][] = [];
+  await connector.fetchEntityChunk({
+    entity,
+    since,
+    onBatch: async (batch: Record<string, unknown>[]) => {
+      batches.push(batch);
+    },
+    rateLimitDelay: 1,
+  } as any);
+  return batches;
+}
+
+const customActivityRow = {
+  id: "acti_1",
+  _type: "CustomActivity",
+  lead_id: "lead_1",
+  custom_activity_type_id: "actitype_5iJqCnAa7233npoHsoYDtH",
+  status: "published",
+  date_created: "2026-01-01T00:00:01.000Z",
+  date_updated: "2026-01-02T00:00:00.000Z",
+  "custom.cf_OnbStep9x": "kickoff",
+  "custom.cf_VisScore7q": 7,
+};
+
+// The 2026-10-20 backfill loaded ~98% of custom activities with a NULL
+// custom_activity_type_id and empty custom_cf_* columns: the Search API
+// request named neither. Both must be requested and land as columns.
+async function testCustomActivitySearchRequestsTypeAndCustomFields() {
+  const connector = createConnector();
+  const { api, searchBodies } = stubActivitySearchApi({
+    objectType: "activity.custom_activity",
+    pageRows: [customActivityRow],
+  });
+  (connector as any).closeApi = api;
+
+  const batches = await runActivityChunk(
+    connector,
+    "activities:CustomActivity",
+  );
+
+  const requested: string[] =
+    searchBodies[0]?._fields?.["activity.custom_activity"] ?? [];
+  for (const field of [
+    "custom_activity_type_id",
+    "custom.cf_OnbStep9x",
+    "custom.cf_VisScore7q",
+  ]) {
+    assert.ok(
+      requested.includes(field),
+      `_fields should include ${field}, got: ${requested.join(",")}`,
+    );
+  }
+
+  assert.equal(batches.length, 1);
+  const record = batches[0][0];
+  assert.equal(
+    record.custom_activity_type_id,
+    "actitype_5iJqCnAa7233npoHsoYDtH",
+  );
+  assert.equal(record.custom_cf_OnbStep9x, "kickoff");
+  assert.equal(record.custom_cf_VisScore7q, 7);
+  assert.ok(
+    !("custom.cf_OnbStep9x" in record),
+    "dotted key should be renamed in emitted records",
+  );
+}
+
+// Backfill and the webhook path must produce the same columns for the same
+// custom activity, so a re-backfill overwrites webhook rows like-for-like.
+function testCustomActivityBackfillAndWebhookShapesMatch() {
+  const connector = createConnector();
+  const backfill = connector.normalizeBackfillRecord(
+    "activities:CustomActivity",
+    { ...customActivityRow },
+  );
+  const [webhook] = connector.extractWebhookCdcRecords(
+    {
+      event: {
+        id: "ev_acti_1",
+        object_type: "activity.custom_activity",
+        action: "updated",
+        object_id: "acti_1",
+        date_updated: "2026-01-02T00:00:00.000Z",
+        data: { ...customActivityRow },
+      },
+    },
+    "activity.custom_activity.updated",
+  );
+
+  assert.ok(backfill);
+  assert.equal(webhook.entity, "activities:CustomActivity");
+  const backfillPayload = backfill!.payload as Record<string, unknown>;
+  const webhookPayload = webhook.payload as Record<string, unknown>;
+  for (const key of [
+    "custom_activity_type_id",
+    "custom_cf_OnbStep9x",
+    "custom_cf_VisScore7q",
+  ]) {
+    assert.deepEqual(backfillPayload[key], webhookPayload[key], key);
+    assert.ok(backfillPayload[key] !== undefined, `${key} present`);
+  }
+}
+
+// Anti-drift: for every activity subtype, the Search API request names every
+// non-system column of the resolved schema (custom fields included), and the
+// incremental poll requests exactly what the full backfill requests.
+async function testActivitySearchRequestsEverySchemaColumn() {
+  const systemFields = new Set(Object.keys(MAKO_SYSTEM_FIELDS));
+  for (const entity of Object.keys(ACTIVITY_SCHEMA_MAP)) {
+    const objectType = (createConnector() as any).getSearchObjectType(entity);
+
+    const full = createConnector();
+    const fullStub = stubActivitySearchApi({ objectType, pageRows: [] });
+    (full as any).closeApi = fullStub.api;
+    await runActivityChunk(full, entity);
+
+    const incremental = createConnector();
+    const incStub = stubActivitySearchApi({ objectType, pageRows: [] });
+    (incremental as any).closeApi = incStub.api;
+    await runActivityChunk(
+      incremental,
+      entity,
+      new Date("2026-10-01T00:00:00.000Z"),
+    );
+
+    const fullFields: string[] =
+      fullStub.searchBodies[0]?._fields?.[objectType] ?? [];
+    const incFields: string[] =
+      incStub.searchBodies[0]?._fields?.[objectType] ?? [];
+    assert.ok(fullFields.length > 0, `${entity}: backfill requests fields`);
+    assert.deepEqual(
+      [...incFields].sort(),
+      [...fullFields].sort(),
+      `${entity}: incremental and backfill request the same fields`,
+    );
+
+    // Same connector (and stubbed custom fields) the backfill ran with.
+    const schema = await full.resolveSchema(entity);
+    const expected = Object.keys(schema!.fields)
+      .filter(column => !systemFields.has(column))
+      .map(column =>
+        column.startsWith("custom_cf_")
+          ? column.replace(/^custom_/, "custom.")
+          : column,
+      );
+    if (entity === "activities:CustomActivity") {
+      assert.ok(expected.includes("custom.cf_OnbStep9x"));
+    }
+    const missing = [...expected].filter(c => !fullFields.includes(c));
+    assert.deepEqual(missing, [], `${entity}: schema columns not requested`);
+    assert.deepEqual(
+      fullFields.filter(f => !f.startsWith("custom.")),
+      closeActivitySearchFields(entity),
+      `${entity}: base fields come from closeActivitySearchFields`,
+    );
+  }
+}
+
+// A custom activity field deleted in Close mid-run makes the Search API
+// reject its selector; the connector re-reads /custom_field/activity/ and
+// re-plans instead of failing the sync.
+async function testCustomActivityReplansWhenCustomFieldDeleted() {
+  const connector = createConnector();
+  let reads = 0;
+  const { api, searchBodies, getUrls } = stubActivitySearchApi({
+    objectType: "activity.custom_activity",
+    pageRows: [customActivityRow],
+    rejectSelector: "custom.cf_VisScore7q",
+    customFields: () => {
+      reads++;
+      return reads === 1
+        ? ACTIVITY_CUSTOM_FIELDS
+        : ACTIVITY_CUSTOM_FIELDS.slice(0, 1);
+    },
+  });
+  (connector as any).closeApi = api;
+
+  const batches = await runActivityChunk(
+    connector,
+    "activities:CustomActivity",
+  );
+
+  assert.equal(
+    getUrls.filter(u => u === "/custom_field/activity/").length,
+    2,
+    "activity custom fields are re-read after the rejection",
+  );
+  assert.ok(
+    !getUrls.some(u => u.startsWith("/custom_field_schema/activity")),
+    "custom activities never hit the lead/contact/opportunity schema endpoint",
+  );
+  assert.equal(batches.length, 1);
+  assert.ok(
+    searchBodies.every(
+      b =>
+        !b._fields["activity.custom_activity"].includes("custom.cf_VisScore7q"),
+    ),
+  );
+  assert.equal(
+    batches[0][0].custom_activity_type_id,
+    "actitype_5iJqCnAa7233npoHsoYDtH",
+  );
+}
+
 async function main() {
   testCloseApiErrorResponseIsFormattedForLogs();
   testUserWebhookEventsAreSupported();
@@ -1135,6 +1416,10 @@ async function main() {
   await testCreateWebhookSubscriptionReturnsSignatureKey();
   await testExistingWebhookSubscriptionReturnsSignatureKey();
   await testExistingWebhookFetchesDetailWhenListOmitsSignatureKey();
+  await testCustomActivitySearchRequestsTypeAndCustomFields();
+  testCustomActivityBackfillAndWebhookShapesMatch();
+  await testActivitySearchRequestsEverySchemaColumn();
+  await testCustomActivityReplansWhenCustomFieldDeleted();
 }
 
 main().catch(error => {
