@@ -82,6 +82,48 @@ describe("parseDbtCommand", () => {
     );
   });
 
+  it("accepts several space-separated selectors, as dbt does", () => {
+    // The exact command from realadvisor's manual-build-customer-activation
+    // job, which was refused and so never got a scheduler row.
+    expect(
+      parseDbtCommand(
+        "run --select stg_crm__reviews stg_crm__teams stg_crm__property_transactions --full-refresh",
+      ).argv,
+    ).toEqual([
+      "run",
+      "--select",
+      "stg_crm__reviews",
+      "stg_crm__teams",
+      "stg_crm__property_transactions",
+      "--full-refresh",
+    ]);
+    expect(
+      parseDbtCommand("build -s a b --exclude c d --threads 4").argv,
+    ).toEqual([
+      "build",
+      "-s",
+      "a",
+      "b",
+      "--exclude",
+      "c",
+      "d",
+      "--threads",
+      "4",
+    ]);
+  });
+
+  it("keeps single-value flags single and still screens trailing flags", () => {
+    expect(() => parseDbtCommand("run --threads 4 my_model")).toThrow(
+      DbtCommandValidationError,
+    );
+    expect(() => parseDbtCommand("run --selector a b")).toThrow(
+      DbtCommandValidationError,
+    );
+    expect(() =>
+      parseDbtCommand("run --select a b --profiles-dir /etc"),
+    ).toThrow(DbtCommandValidationError);
+  });
+
   it("rejects value flags missing their value", () => {
     expect(() => parseDbtCommand("run --select")).toThrow(
       DbtCommandValidationError,

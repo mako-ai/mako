@@ -340,6 +340,18 @@ export async function resolveLiveJobRow(
   const live = await loadLiveJobById(project, jobId);
   if (!live) return { ok: false, status: 404, error: "Job not found" };
   if (!live.row) {
+    // A file the sync refuses never gets a row, so "once the push is
+    // synced" would be a promise that never comes true. Say what is wrong.
+    const failure = live.def.parsed
+      ? jobApplyFailure(project, live.def.parsed)
+      : "unparseable job file";
+    if (failure) {
+      return {
+        ok: false,
+        status: 409,
+        error: `Job "${live.def.slug}" is not registered because ${live.def.path} is invalid: ${failure}. Fix the file on main; it registers on the next push.`,
+      };
+    }
     return {
       ok: false,
       status: 409,

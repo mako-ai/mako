@@ -35,6 +35,15 @@ const VALUE_FLAGS = new Set([
   "--output",
 ]);
 
+/**
+ * Value flags that take one OR MORE values, as dbt's own CLI does
+ * (`--select a b c` is the union of a, b and c). Every following token up to
+ * the next flag is a value. Without this, a job file written the way dbt's
+ * docs write it was rejected as "Unexpected token", and a job merged on
+ * GitHub that way never got a scheduler row.
+ */
+const MULTI_VALUE_FLAGS = new Set(["--select", "-s", "--exclude"]);
+
 /** Boolean flags. */
 const BOOLEAN_FLAGS = new Set([
   "--full-refresh",
@@ -124,6 +133,9 @@ export function parseDbtCommand(command: string): ParsedDbtCommand {
           throw new DbtCommandValidationError(`Flag ${token} requires a value`);
         }
         i++;
+        if (MULTI_VALUE_FLAGS.has(token)) {
+          while (i + 1 < rest.length && !rest[i + 1].startsWith("-")) i++;
+        }
         continue;
       }
       if (BOOLEAN_FLAGS.has(token)) continue;
@@ -131,8 +143,9 @@ export function parseDbtCommand(command: string): ParsedDbtCommand {
         `Flag "${token}" is not allowed in dbt commands`,
       );
     }
-    // Bare selector token (e.g. "dbt run my_model" style) — reject so all
-    // selections go through --select explicitly.
+    // Bare selector token (e.g. "dbt run my_model" style, or a second value
+    // after a single-value flag) — reject so all selections go through
+    // --select explicitly.
     throw new DbtCommandValidationError(
       `Unexpected token "${token}" — use --select for node selection`,
     );
