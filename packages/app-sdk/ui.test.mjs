@@ -244,6 +244,45 @@ test("ui.css: the DataTable has a fixed layout and keeps the corner's two border
   assert.match(css, /\.mk-dt-sort svg \{ flex: none; \}/);
 });
 
+test("ui.css: native selects get an inset chevron in a base layer the app can override", () => {
+  const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
+  const layer = css.slice(css.indexOf("@layer base {"));
+  assert.ok(css.includes("@layer base {"), "the select base sits in @layer base");
+  const rule = /select:not\(\[multiple\], \[size\], \[class\*="appearance-none"\]\) \{([^}]*)\}/.exec(layer)?.[1];
+  assert.ok(rule, "the single-line select rule exists");
+  assert.match(rule, /appearance: none/);
+  assert.match(rule, /height: 32px/);
+  assert.match(rule, /padding: 0 28px 0 12px/);
+  assert.match(rule, /font-size: 14px/);
+  assert.match(rule, /var\(--muted-foreground\)/);
+  assert.match(rule, /background-position: right 15px center, right 10px center/);
+  assert.match(rule, /border-radius: var\(--mk-radius-md\)/);
+  assert.match(layer, /\):focus-visible \{[^}]*box-shadow: var\(--mk-ring-focus\)/);
+  assert.match(layer, /\):hover:not\(:disabled\) \{ background-color: var\(--accent\); \}/);
+  // The pager select relies on the base: no second box of its own.
+  assert.match(css, /\.mk-dt-size \{ margin-right: 8px; \}/);
+});
+
+test("DataTable: defaultPageSize 100 and a size outside the list", async t => {
+  let React, server, ui;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    ui = await import("./ui.js");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const rows = Array.from({ length: 312 }, (_, i) => ({ id: i, name: `Org ${i}` }));
+  const columns = [{ id: "name", label: "Customer", value: r => r.name }];
+  const hundred = server.renderToStaticMarkup(React.createElement(ui.DataTable, { rows, columns, defaultPageSize: 100 }));
+  assert.match(hundred, /<option value="100" selected="">100 per page<\/option>/);
+  assert.match(hundred, /<b>1–100<\/b> of <b>312<\/b>/);
+  assert.match(hundred, /Page 1 of 4/);
+  const odd = server.renderToStaticMarkup(React.createElement(ui.DataTable, { rows, columns, defaultPageSize: 200 }));
+  assert.match(odd, /<option value="100">100 per page<\/option><option value="200" selected="">200 per page<\/option>/);
+});
+
 test("compareValues: numeric strings as numbers, bigints by value, text with digit runs", async () => {
   const { compareValues } = await import("./ui-core.js");
   assert.deepEqual(["1.5", "1.25", "-3", "-10"].sort(compareValues), ["-10", "-3", "1.25", "1.5"]);

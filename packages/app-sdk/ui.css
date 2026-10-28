@@ -45,6 +45,48 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
 
+/* ---- Native <select> ------------------------------------------------------
+ * macOS draws the native dropdown arrow flush against the right border, so
+ * every unstyled <select> looked broken. The base takes the arrow over: no
+ * native appearance, a chevron in the --muted-foreground token 10px in from
+ * the right edge, 28px of right padding so the text never runs under it, and
+ * the MultiSelect trigger's box (32px, 14px text, border, radius, shadow).
+ * Tokens carry it into dark mode.
+ *
+ * It lives in @layer base so the app always wins: unlayered app CSS beats any
+ * layered rule, and Tailwind v4 utilities sit in a later layer. Inside base it
+ * outranks Tailwind's preflight. List boxes ([multiple], [size]) keep the
+ * native look. A select with appearance-none in its classes (shadcn's
+ * NativeSelect) draws its own arrow and is left alone.
+ */
+@layer base {
+  select:not([multiple], [size], [class*="appearance-none"]) {
+    appearance: none;
+    cursor: pointer;
+    height: 32px;
+    padding: 0 28px 0 12px;
+    font-size: 14px;
+    color: var(--foreground);
+    background-color: var(--background);
+    background-image:
+      linear-gradient(45deg, transparent calc(50% - 1px), var(--muted-foreground) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 1px)),
+      linear-gradient(135deg, transparent calc(50% - 1px), var(--muted-foreground) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 1px));
+    background-position: right 15px center, right 10px center;
+    background-size: 5px 5px;
+    background-repeat: no-repeat;
+    border: 1px solid var(--border);
+    border-radius: var(--mk-radius-md);
+    box-shadow: var(--mk-shadow-xs);
+    transition: background-color .15s var(--mk-ease), border-color .15s var(--mk-ease);
+  }
+  select:not([multiple], [size], [class*="appearance-none"]):hover:not(:disabled) { background-color: var(--accent); }
+  select:not([multiple], [size], [class*="appearance-none"]):focus-visible { outline: none; border-color: var(--ring); box-shadow: var(--mk-ring-focus); }
+  select:not([multiple], [size], [class*="appearance-none"]):disabled { cursor: not-allowed; opacity: .5; }
+  @media (max-width: 640px) {
+    select:not([multiple], [size], [class*="appearance-none"]) { height: 38px; }
+  }
+}
+
 /* ---- Tones --------------------------------------------------------------- */
 .mk-dot { display: inline-block; width: 6px; height: 6px; border-radius: 999px; flex-shrink: 0; background: var(--muted-foreground); }
 .mk-dot.mk-tone-ok { background: var(--positive); }
@@ -202,18 +244,14 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
 .mk-dt-foot b { font-weight: 500; color: var(--foreground); font-variant-numeric: tabular-nums; }
 .mk-dt-nav { display: flex; align-items: center; gap: 4px; }
 .mk-dt-nav .mk-btn { width: 28px; padding: 0; }
-.mk-dt-size {
-  cursor: pointer; height: 28px; margin-right: 8px; padding: 0 8px; font-size: 12px; color: var(--foreground);
-  background: var(--background); border: 1px solid var(--border); border-radius: var(--mk-radius-md); box-shadow: var(--mk-shadow-xs);
-}
-.mk-dt-size:focus-visible { outline: none; border-color: var(--ring); box-shadow: var(--mk-ring-focus); }
+/* The rows-per-page select takes its look from the native <select> base above. */
+.mk-dt-size { margin-right: 8px; }
 .mk-dt-page { padding: 0 6px; font-variant-numeric: tabular-nums; }
 @media (max-width: 640px) {
   /* Phones: the page scrolls as usual and the table keeps a scroll box of its own. */
   .mk-dt--fill { height: auto; }
   .mk-dt--fill .mk-dt-scroll { max-height: 70vh; }
   .mk-dt-nav .mk-btn { width: 38px; }
-  .mk-dt-size { height: 38px; }
 }
 
 /* ---- MultiSelect --------------------------------------------------------- */

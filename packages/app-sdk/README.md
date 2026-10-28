@@ -363,6 +363,10 @@ const COLUMNS: DataTableColumn<Customer>[] = [
   A page past the end shows the last page and reports it through
   `onPageChange`. The table scrolls to the top on a page change. `rows`
   defaults to `[]`, so a table can render while its data loads.
+- **Page size.** 50 rows by default, with 25 / 50 / 100 in the select.
+  `defaultPageSize={100}` opens on 100 rows. `pageSizes` sets the choices (one
+  entry hides the select). A size outside the list still shows as the selected
+  option.
 - **Height.** `fill` makes the card fill its parent's height and the body
   scroll inside it, with the pager always in view: give the parent a height
   (e.g. `<main style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>`).
@@ -385,6 +389,19 @@ const COLUMNS: DataTableColumn<Customer>[] = [
 `ui.css` is plain CSS (no Tailwind needed; it coexists with Tailwind) and
 every kit class is prefixed `mk-`. It also sets the house base: Inter 14px on
 the warm `--canvas`.
+
+**Native `<select>` (2.11.1+).** macOS draws the native dropdown arrow flush
+against the right border. `ui.css` styles every single-line `<select>` like the
+MultiSelect trigger: 32px tall, 14px text, a token-coloured chevron 10px in
+from the right, 28px of right padding, hover and focus rings, dark mode from
+the tokens. It stays a native select, so keyboard and screen readers work as
+before. The rule sits in `@layer base`, so any rule of the app wins (plain CSS
+and Tailwind utilities alike). `[multiple]` and `[size]` list boxes keep the
+native look. A select with `appearance-none` in its classes (shadcn's
+`NativeSelect`) draws its own arrow and is left alone. Setting
+`appearance: none` or a `padding` shorthand in your own CSS takes the chevron or
+its 28px gap away: draw your own arrow at least 10px from the edge, or leave
+the base alone.
 
 ## In `vite.config.ts`
 

@@ -401,6 +401,8 @@ export function DataTable({
   const [sort, setSort] = useControlled(sortProp, defaultSort, onSortChange);
   const [rawPage, setRawPage] = useControlled(pageProp, 1, onPageChange);
   const [pageSize, setPageSize] = useControlled(pageSizeProp, defaultPageSize, onPageSizeChange);
+  // A page size outside the list (defaultPageSize={200}) still shows as the selected option.
+  const sizeOptions = pageSizes.includes(pageSize) ? pageSizes : [...pageSizes, pageSize].sort((a, b) => a - b);
   const [note, setNote] = React.useState(null);
   const scrollRef = React.useRef(null);
 
@@ -553,7 +555,7 @@ export function DataTable({
               goTo(1);
             },
           },
-          ...pageSizes.map(n => h("option", { key: n, value: n }, `${n} per page`)),
+          ...sizeOptions.map(n => h("option", { key: n, value: n }, `${n} per page`)),
         ),
       h(Button, { size: "sm", "aria-label": "First page", disabled: page <= 1, onClick: () => goTo(1) }, "«"),
       h(Button, { size: "sm", "aria-label": "Previous page", disabled: page <= 1, onClick: () => goTo(page - 1) }, "‹"),

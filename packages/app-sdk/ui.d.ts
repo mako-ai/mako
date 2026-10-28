@@ -256,7 +256,7 @@ export interface DataTableProps<R = any> {
    */
   resetKey?: unknown;
   pageSize?: number;
-  /** Default 50. */
+  /** Default 50. `defaultPageSize={100}` opens on 100 rows; a size outside `pageSizes` is added to the select. */
   defaultPageSize?: number;
   onPageSizeChange?: (size: number) => void;
   /** Default [25, 50, 100]; one entry hides the select. */

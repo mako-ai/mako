@@ -159,6 +159,23 @@ Every list of rows (customers, renewals, deals) is the kit's `DataTable`
   ("41 customers not onboarded, 12 of them paid over 30 days ago"), and the
   footer repeats the count with the `noun`.
 
+## Native `<select>`: the SDK base styles it
+
+macOS draws the native dropdown arrow flush against the right border. Since
+SDK 2.11.1, `ui.css` styles every single-line `<select>` like the MultiSelect
+trigger: 32px tall, 14px text, a chevron in the `--muted-foreground` token
+10px in from the right edge, 28px of right padding, hover and focus rings,
+dark mode from the tokens. It stays a native select, so keyboard and screen
+readers keep working. The rule sits in `@layer base`: any app CSS or Tailwind
+utility overrides it.
+
+- Do not strip it with `appearance: none` (or a `padding` shorthand that drops
+  the 28px) unless you draw your own arrow at least 10px from the right edge.
+- In Tailwind apps prefer shadcn `Select`. A select with `appearance-none` in
+  its classes (shadcn `NativeSelect`) draws its own arrow and the base leaves
+  it alone.
+- `[multiple]` and `[size]` list boxes keep the native look.
+
 ## Filter controls: the dropdown pattern
 
 Use the kit's `MultiSelect` (`@makoai/app-sdk/ui`) — it is this pattern,

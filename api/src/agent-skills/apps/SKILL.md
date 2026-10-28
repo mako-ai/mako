@@ -326,6 +326,10 @@ every workspace app was re-forking: `PageHeader`, `Card`, `KpiRow` /
 (data age per source), `RefreshAllButton` (rebuild every binding, with a
 progress modal), `DataTable` (sortable, paged list with CSV export; SDK ≥ 2.11,
 rules in `references/ui-toolkit.md` "Tables"). Import `@makoai/app-sdk/ui.css` before the app's own CSS.
+Native `<select>`: the SDK base styles it (arrow inset 10px, 32px, tokens),
+because macOS otherwise draws the caret against the right border. Don't strip
+that with `appearance: none` unless you draw your own arrow with ≥10px inset;
+prefer shadcn `Select` in Tailwind apps.
 New apps are scaffolded on it. Do NOT paste a token block into an app or
 fork these components — override a single token, or ask for the kit to grow.
 
