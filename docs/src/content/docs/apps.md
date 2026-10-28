@@ -252,6 +252,7 @@ preview the app as a specific workspace member during `pnpm dev`.
 - The sandbox is an isolated microVM per workspace; app code and shell commands never run in Mako's API process.
 - The preview iframe is sandboxed; app code receives query *results* only — never credentials.
 - App frames are sandboxed but keep `allow-downloads`, so an app can save the files it builds (an Excel or CSV export).
+- Published apps can open links in a new tab (`target="_blank"`): the frame keeps `allow-popups` and `allow-popups-to-escape-sandbox`, so the opened tab is a normal, unsandboxed page. The app frame itself stays opaque on Mako's origin.
 - Apps run on their own origin (`<appId>.makousercontent.com`), so their keystrokes never reach Mako's own listeners. The SDK forwards Cmd/Ctrl+K to Mako (a `mako-app:shortcut` message) so the command palette opens while an app has focus; it needs `@makoai/app-sdk` 2.9.1 or newer, which published apps pick up on their next deploy.
 
 ## API Surface
