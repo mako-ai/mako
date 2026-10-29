@@ -206,7 +206,7 @@ const wise: CallableConnection = {
 export function customApiCredentialType(
   config: Config,
 ): CredentialTypeId | "none" {
-  const picked = text(config.credential_type) as CredentialTypeId | "none";
+  const picked = text(config.auth_type) as CredentialTypeId | "none";
   return picked === "none" || CREDENTIAL_TYPES.includes(picked as never)
     ? picked
     : "bearer";
