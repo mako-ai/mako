@@ -5,7 +5,8 @@
  * HTTP with the worker's key or a person's own key. In-memory Mongo; only the
  * service on the other side is replaced (setTransportForTests).
  *
- * Pins: a read passes for an unlisted workflow; an unlisted write is refused
+ * Pins: live reads are off on a connection that never had the field; once
+ * on, a read passes for an unlisted workflow; an unlisted write is refused
  * and recorded; a listed `workflow:<name>` writes; a person's own run acts as
  * the person, whatever workflow it names; a path outside the base URL is
  * refused; agents and unidentified callers only read; no answer carries the
@@ -38,6 +39,8 @@ import { workflowRuntimeRoutes } from "../routes/workflows";
 import { encryptString } from "../services/crypto.service";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { setTransportForTests } from "./forward";
+import { connectorRegistry } from "../connectors/registry";
+import { createSourceConnection } from "../connectors/source-connection-create.service";
 import { connectionRequest } from "./proxy.service";
 
 const WORKER_KEY = "revops_worker_proxy_key_tests_only";
@@ -164,10 +167,10 @@ async function main() {
     await SourceConnection.create({
       workspaceId: ws,
       name: "probo",
-      type: "http",
+      type: "custom_api",
       config: {
         base_url: "https://api.probo.example.com/graphql",
-        auth_scheme: "bearer",
+        credential_type: "bearer",
         token: encryptString(PROBO_TOKEN),
         graphql: true,
       },
@@ -200,6 +203,17 @@ async function main() {
     };
 
     const worker = await load(WORKER_KEY);
+
+    // A connection made before live reads existed has no field: reads are off
+    // until an admin turns them on. Writes do not depend on it.
+    assert.match(
+      await running.run("other-flow", () =>
+        attempt(() => worker.connection("ch_close").get("/lead/")),
+      ),
+      /Live reads are off for ch_close/,
+    );
+    assert.equal(sent.length, 0, "a refused read is never sent");
+    await SourceConnection.updateMany({}, { $set: { liveReads: true } });
 
     // A read passes for a workflow on no list, by connection name.
     const lead = await running.run("other-flow", () =>
@@ -382,7 +396,7 @@ async function main() {
     );
     assert.match(elsewhere, /^No connection/);
 
-    // Live reads off: reads are refused too.
+    // Live reads turned off again: reads are refused.
     await SourceConnection.updateOne(
       { _id: close._id },
       { $set: { liveReads: false } },
@@ -393,6 +407,25 @@ async function main() {
       ),
       /Live reads are off/,
     );
+
+    // A new Custom API starts with live reads on; any other kind off.
+    await connectorRegistry.ready();
+    const custom = await createSourceConnection({
+      workspaceId: String(ws),
+      userId: "deployer",
+      name: "new_custom",
+      type: "custom_api",
+      config: { base_url: "https://x.example.com", token: "t0ken_value" },
+    });
+    assert.equal(custom.liveReads, true);
+    const builtin = await createSourceConnection({
+      workspaceId: String(ws),
+      userId: "deployer",
+      name: "new_close",
+      type: "close",
+      config: { api_key: "k3y_value" },
+    });
+    assert.equal(builtin.liveReads, undefined);
 
     console.info("connection proxy tests passed");
   } finally {

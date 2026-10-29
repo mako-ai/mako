@@ -522,9 +522,9 @@ export function createConnectorTools(workspaceId: string) {
     }),
     call_connection: tool({
       description: [
-        "Send one READ request to a service through a SOURCE connection (a Close account, a Stripe key, an HTTP API connection): Mako adds the stored credential, which you never see, and returns the service's status, headers and body.",
-        "Reads only: GET, and the POSTs that only read (a GraphQL query on an HTTP API connection with GraphQL on, a Close search or a Close POST with header x-http-method-override: GET). Any write is refused: writes belong to a workflow on the connection's writers list.",
-        "`path` is relative to the connection's base URL (Close: /lead/, Stripe: /v1/customers, an HTTP API: whatever its base URL serves) and cannot leave it. Prefer the synced tables for anything the warehouse already holds: this reads live.",
+        "Send one READ request to a service through a SOURCE connection (a Close account, a Stripe key, a Custom API connection): Mako adds the stored credential, which you never see, and returns the service's status, headers and body. Works only where an admin turned live reads on in the connection's Access tab.",
+        "Reads only: GET, and the POSTs that only read (a GraphQL query on a Custom API connection with GraphQL on, a Close search or a Close POST with header x-http-method-override: GET). Any write is refused: writes belong to a workflow on the connection's writers list.",
+        "`path` is relative to the connection's base URL (Close: /lead/, Stripe: /v1/customers, a Custom API: whatever its address serves) and cannot leave it. Prefer the synced tables for anything the warehouse already holds: this reads live.",
       ].join("\n"),
       inputSchema: z.object({
         connectionId: z

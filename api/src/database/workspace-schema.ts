@@ -387,8 +387,10 @@ export interface ISourceConnection extends Document {
    */
   writers?: IConnectionWriter[];
   /**
-   * Off: the proxy refuses reads too, for a connection whose live data is
-   * more than its synced tables should show. Absent: on.
+   * On: workflows and agents may read the service live through the proxy.
+   * Absent or false: off, so a connection made before the proxy existed
+   * shows no more than its synced tables until an admin turns this on. A new
+   * Custom API connection is created with it on.
    */
   liveReads?: boolean;
   createdBy: string;

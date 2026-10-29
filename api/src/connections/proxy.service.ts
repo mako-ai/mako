@@ -2,8 +2,11 @@
  * The connection proxy: workflows, agents and (later) custom connectors call
  * a service through a source connection without ever seeing its credential.
  *
- * Everyone in the workspace reads. GET, HEAD, OPTIONS, a credential type's
- * `reads` (a Close search POST) and a GraphQL query are reads; everything
+ * Reads are live reads: on only where an admin turned them on in the Access
+ * tab (a new Custom API connection starts on; every older connection, with
+ * no `liveReads` stored, is off), and then for everyone in the workspace.
+ * GET, HEAD, OPTIONS, a connection's `reads` (a Close search POST) and a
+ * GraphQL query are reads; everything
  * else is a write, for the principals on the connection's writers list only
  * (the same list and the same identity rule as database connections,
  * access/connection-writes.ts): a deployed workflow writes as
@@ -26,7 +29,7 @@ import {
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers } from "../logging";
 import { getRequestContext } from "../logging/context";
-import { credentialTypeFor, isReadRequest } from "./credential-types";
+import { callableFor, isReadRequest } from "./callable";
 import {
   ConnectionRequestError,
   forward,
@@ -119,8 +122,8 @@ export async function connectionRequest(
       404,
     );
   }
-  const credentialType = credentialTypeFor(row.type);
-  if (!credentialType) {
+  const callable = callableFor(row.type);
+  if (!callable) {
     throw new ConnectionRequestError(
       `${row.name} is a ${row.type} connection, which cannot be called directly yet.`,
     );
@@ -140,12 +143,12 @@ export async function connectionRequest(
   }
   const config = loaded.connection ?? {};
   const method = params.request.method.toUpperCase();
-  const baseUrl = credentialType.baseUrl(config);
+  const baseUrl = callable.baseUrl(config);
   // Refuses a path outside the base URL before anything else.
   const url = urlUnder(baseUrl, params.request.path, params.request.query);
   const path = relativePath(baseUrl, url);
   const read = isReadRequest(
-    credentialType,
+    callable,
     {
       method,
       path,
@@ -165,9 +168,11 @@ export async function connectionRequest(
   };
 
   if (read) {
-    if (row.liveReads === false) {
+    // Off unless an admin turned it on (a Custom API starts on): a missing
+    // field on a connection made before live reads existed means off.
+    if (row.liveReads !== true) {
       throw new ConnectionRequestError(
-        `Live reads are off for ${row.name}: read its synced tables instead.`,
+        `Live reads are off for ${row.name}: read its synced tables, or ask an admin to turn live reads on in its Access tab.`,
         403,
       );
     }
@@ -207,7 +212,7 @@ export async function connectionRequest(
       config,
       settings: loaded.settings as ISourceConnection["settings"],
     },
-    credentialType,
+    callable,
     params.request,
     { signal: params.signal, lane: "proxy" },
   );
