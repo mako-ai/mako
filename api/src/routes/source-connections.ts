@@ -31,6 +31,14 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { Types } from "mongoose";
+import {
+  NOT_YOURS_REFUSAL,
+  VIEWER_REFUSAL,
+  mayChangeSourceConnection,
+  mayCreateSourceConnection,
+  roleIn,
+  type WorkspaceRole,
+} from "../access/source-connection-access";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
   SECRET_KEPT,
@@ -199,9 +207,22 @@ function redactSourceConfig(
   return redactCiphertextLeaves(redacted) as Record<string, unknown>;
 }
 
+/** Who is asking: whether they may change a connection is part of its answer. */
+type Caller = { role: WorkspaceRole | null; userId?: string };
+
+async function callerOf(
+  c: AuthenticatedContext,
+  workspaceId: string | undefined,
+): Promise<Caller> {
+  if (!workspaceId) return { role: null };
+  const userId = (c.get("user") as { id?: string } | undefined)?.id;
+  return { role: await roleIn(workspaceId, userId), userId };
+}
+
 async function publicSourceConnection(
   doc: unknown,
   workspaceId: string | undefined,
+  caller?: Caller,
 ): Promise<Record<string, unknown>> {
   const record = asSourceRecord(doc);
   let schema: { fields: ConnectorFieldSchema[] } | null = null;
@@ -220,6 +241,15 @@ async function publicSourceConnection(
   return {
     ...record,
     config: redactSourceConfig(record.config, schema),
+    ...(caller
+      ? {
+          canEdit: mayChangeSourceConnection(
+            caller.role,
+            caller.userId,
+            record,
+          ),
+        }
+      : {}),
   };
 }
 
@@ -253,8 +283,11 @@ sourceConnectionRoutes.openapi(
         .sort({ createdAt: -1 })
         .lean();
 
+      const caller = await callerOf(c, _workspaceId);
       const data = await Promise.all(
-        sourceConnections.map(row => publicSourceConnection(row, _workspaceId)),
+        sourceConnections.map(row =>
+          publicSourceConnection(row, _workspaceId, caller),
+        ),
       );
       return c.json({ success: true, data });
     } catch (error) {
@@ -304,7 +337,11 @@ sourceConnectionRoutes.openapi(
 
       return c.json({
         success: true,
-        data: await publicSourceConnection(sourceConnection, _workspaceId),
+        data: await publicSourceConnection(
+          sourceConnection,
+          _workspaceId,
+          await callerOf(c, _workspaceId),
+        ),
       });
     } catch (error) {
       return c.json(
@@ -341,6 +378,10 @@ sourceConnectionRoutes.openapi(
           400,
         );
       }
+      const caller = await callerOf(c, workspaceId);
+      if (!mayCreateSourceConnection(caller.role)) {
+        return c.json({ success: false, error: VIEWER_REFUSAL }, 403);
+      }
       const body = await c.req.json();
 
       let sourceConnection;
@@ -369,6 +410,7 @@ sourceConnectionRoutes.openapi(
           data: await publicSourceConnection(
             sourceConnection.toObject(),
             workspaceId,
+            caller,
           ),
           message: "Connector created successfully",
         },
@@ -418,6 +460,21 @@ sourceConnectionRoutes.openapi(
         return c.json(
           { success: false, error: "Source connection not found" },
           404,
+        );
+      }
+      const caller = await callerOf(c, workspaceId);
+      if (
+        !mayChangeSourceConnection(caller.role, caller.userId, sourceConnection)
+      ) {
+        return c.json(
+          {
+            success: false,
+            error:
+              caller.role === "viewer" || !caller.role
+                ? VIEWER_REFUSAL
+                : NOT_YOURS_REFUSAL,
+          },
+          403,
         );
       }
 
@@ -537,6 +594,7 @@ sourceConnectionRoutes.openapi(
         data: await publicSourceConnection(
           sourceConnection.toObject(),
           workspaceId,
+          caller,
         ),
         message: hasChanges
           ? "Connector updated successfully"
@@ -572,6 +630,30 @@ sourceConnectionRoutes.openapi(
         return c.json(
           { success: false, error: "Invalid source connection ID format" },
           400,
+        );
+      }
+
+      const existing = await SourceConnection.findOne(
+        { _id: id, workspaceId },
+        { createdBy: 1 },
+      ).lean();
+      if (!existing) {
+        return c.json(
+          { success: false, error: "Source connection not found" },
+          404,
+        );
+      }
+      const caller = await callerOf(c, workspaceId);
+      if (!mayChangeSourceConnection(caller.role, caller.userId, existing)) {
+        return c.json(
+          {
+            success: false,
+            error:
+              caller.role === "viewer" || !caller.role
+                ? VIEWER_REFUSAL
+                : NOT_YOURS_REFUSAL,
+          },
+          403,
         );
       }
 
@@ -848,6 +930,30 @@ sourceConnectionRoutes.openapi(
         );
       }
 
+      const existing = await SourceConnection.findOne(
+        { _id: id, workspaceId },
+        { createdBy: 1 },
+      ).lean();
+      if (!existing) {
+        return c.json(
+          { success: false, error: "Source connection not found" },
+          404,
+        );
+      }
+      const caller = await callerOf(c, workspaceId);
+      if (!mayChangeSourceConnection(caller.role, caller.userId, existing)) {
+        return c.json(
+          {
+            success: false,
+            error:
+              caller.role === "viewer" || !caller.role
+                ? VIEWER_REFUSAL
+                : NOT_YOURS_REFUSAL,
+          },
+          403,
+        );
+      }
+
       const sourceConnection = await SourceConnection.findOneAndUpdate(
         {
           _id: id,
@@ -873,6 +979,7 @@ sourceConnectionRoutes.openapi(
         data: await publicSourceConnection(
           sourceConnection.toObject(),
           workspaceId,
+          caller,
         ),
         message: `Connector ${
           body.enabled ? "enabled" : "disabled"

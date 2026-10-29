@@ -36,6 +36,7 @@ interface SourceConnectionRow {
   type: string;
   isActive: boolean;
   workspaceId: string;
+  canEdit?: boolean;
 }
 
 function SourceConnectionExplorer() {
@@ -175,13 +176,18 @@ function SourceConnectionExplorer() {
 
   const reveal = useExplorerRevealStore(selectRevealFor("connectors"));
 
+  // Viewers read source connections; members and up create them.
+  const canCreate = currentWorkspace?.role !== "viewer";
+
   const actions = (
     <>
-      <Tooltip title="Add source connection">
-        <IconButton size="small" onClick={handleAdd}>
-          <AddIcon size={20} strokeWidth={2} />
-        </IconButton>
-      </Tooltip>
+      {canCreate && (
+        <Tooltip title="Add source connection">
+          <IconButton size="small" onClick={handleAdd}>
+            <AddIcon size={20} strokeWidth={2} />
+          </IconButton>
+        </Tooltip>
+      )}
       <Tooltip title="Refresh">
         <IconButton size="small" onClick={fetchSources}>
           <RefreshIcon size={20} strokeWidth={2} />
@@ -233,7 +239,8 @@ function SourceConnectionExplorer() {
               }}
               getContextMenuItems={(node, { closeMenu }) => {
                 const src = connectorById.get(node.id);
-                if (!src) return null;
+                // Only who may change it may delete it (the server checks too).
+                if (!src || src.canEdit === false) return null;
                 return [
                   <MenuItem
                     key="delete"
