@@ -72,6 +72,14 @@ export function setTransportForTests(next: Transport | null): void {
   transport = next ?? safeRequest;
 }
 
+/** One SSRF-hardened request (or the test transport). */
+export function sendRequest(
+  url: string,
+  options: Parameters<typeof safeRequest>[1],
+): Promise<SafeRequestResult> {
+  return transport(url, options);
+}
+
 export const ALLOWED_METHODS = new Set([
   "GET",
   "HEAD",
@@ -239,11 +247,8 @@ function containsSecret(text: string, secrets: string[]): boolean {
 }
 
 /** Values long enough to search for: a one-letter "secret" would mangle every body. */
-function searchableSecrets(
-  callable: CallableConnection,
-  config: ForwardConnection["config"],
-): string[] {
-  const values = secretsOf(callable, config).filter(s => s.length >= 6);
+export function searchableSecrets(secrets: string[]): string[] {
+  const values = secrets.filter(s => s.length >= 6);
   // Also the encodings a credential is sent in.
   const encoded = values.flatMap(s => [
     Buffer.from(`${s}:`).toString("base64"),
@@ -311,18 +316,11 @@ export function clean(
   callable: CallableConnection,
   config: ForwardConnection["config"],
 ): ForwardResult {
-  const secrets = searchableSecrets(callable, config);
-  const dropped = new Set([
-    ...RESPONSE_HEADER_BLOCKLIST,
-    ...secretHeadersOf(callable, config).map(h => h.toLowerCase()),
-  ]);
-  const headers: Record<string, string> = {};
-  for (const [name, value] of Object.entries(answer.headers)) {
-    const lower = name.toLowerCase();
-    if (dropped.has(lower) || containsSecret(value, secrets)) continue;
-    headers[lower] = value;
-  }
-  const text = redact(answer.body.toString("utf8"), secrets);
+  const { headers, text } = cleanAnswer(
+    answer,
+    secretsOf(callable, config),
+    secretHeadersOf(callable, config),
+  );
   const type = headers["content-type"] ?? "";
   let body: unknown = text;
   if (/\bjson\b/i.test(type) && text) {
@@ -333,4 +331,28 @@ export function clean(
     }
   }
   return { status: answer.status, headers, body };
+}
+
+/**
+ * An answer's headers and text without the credential: headers it may travel
+ * in, cookies, and any header or text holding a secret value (also base64-
+ * or URL-encoded) are removed.
+ */
+export function cleanAnswer(
+  answer: SafeRequestResult,
+  secretValues: string[],
+  secretHeaders: string[],
+): { headers: Record<string, string>; text: string } {
+  const secrets = searchableSecrets(secretValues);
+  const dropped = new Set([
+    ...RESPONSE_HEADER_BLOCKLIST,
+    ...secretHeaders.map(h => h.toLowerCase()),
+  ]);
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(answer.headers)) {
+    const lower = name.toLowerCase();
+    if (dropped.has(lower) || containsSecret(value, secrets)) continue;
+    headers[lower] = value;
+  }
+  return { headers, text: redact(answer.body.toString("utf8"), secrets) };
 }
