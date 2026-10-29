@@ -22,7 +22,12 @@ export function placeholderFor(connectionId: string, field: string): string {
   return `${PLACEHOLDER_PREFIX}${connectionId}/${field}`;
 }
 
-const PLACEHOLDER = /mako-secret:([a-f0-9]{24})\/([A-Za-z0-9_.-]{1,128})/g;
+/**
+ * A placeholder as written, or URL-encoded (a connector that puts its key in
+ * a query string with encodeURIComponent sends `mako-secret%3A…%2F…`).
+ */
+const PLACEHOLDER =
+  /mako-secret(:|%3A)([a-f0-9]{24})(\/|%2F)([A-Za-z0-9_.-]{1,128})/gi;
 
 /**
  * `config` with every secret field replaced by its placeholder. Nested
@@ -60,19 +65,28 @@ export function swapPlaceholders(
   connectionId: string,
   values: Record<string, string>,
 ): string {
-  return text.replace(PLACEHOLDER, (whole, id: string, field: string) => {
-    if (id !== connectionId || typeof values[field] !== "string") {
-      throw new PlaceholderError(
-        `The request carries ${whole}, which is not a key of this connection.`,
-      );
-    }
-    return values[field];
-  });
+  return text.replace(
+    PLACEHOLDER,
+    (whole, colon: string, id: string, slash: string, field: string) => {
+      if (
+        id.toLowerCase() !== connectionId.toLowerCase() ||
+        typeof values[field] !== "string"
+      ) {
+        throw new PlaceholderError(
+          `The request carries ${whole}, which is not a key of this connection.`,
+        );
+      }
+      // Encoded where it was written encoded, so the URL stays valid.
+      return colon === ":" && slash === "/"
+        ? values[field]
+        : encodeURIComponent(values[field]);
+    },
+  );
 }
 
 /** Whether `text` still holds anything that looks like a placeholder. */
 export function hasPlaceholder(text: string): boolean {
-  return text.includes(PLACEHOLDER_PREFIX);
+  return /mako-secret(:|%3A)/i.test(text);
 }
 
 /**

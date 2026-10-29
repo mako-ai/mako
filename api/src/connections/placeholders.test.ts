@@ -208,6 +208,23 @@ describe("the sandbox-fetch route", () => {
     expect(result.status).toBe(200);
   });
 
+  it("swaps a placeholder the connector URL-encoded into a query string", async () => {
+    const sent = vendor("{}");
+    await sandboxFetch(token(), {
+      url: `https://api.vendor.example/x?apikey=${encodeURIComponent(placeholder())}`,
+    });
+    expect(sent[0].url).toBe(
+      `https://api.vendor.example/x?apikey=${encodeURIComponent(KEY)}`,
+    );
+    await expect(
+      sandboxFetch(token(), {
+        url: `https://api.vendor.example/x?apikey=${encodeURIComponent(
+          placeholderFor(new Types.ObjectId().toString(), "apiKey"),
+        )}`,
+      }),
+    ).rejects.toThrow(/not a key of this connection/);
+  });
+
   it("never answers with the key, raw or encoded", async () => {
     vendor(JSON.stringify({ echo: KEY }), { "x-echo": KEY, "set-cookie": "a" });
     const result = await sandboxFetch(token(), {
