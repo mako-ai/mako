@@ -41,8 +41,6 @@ const CREDENTIAL_NAME =
 const NOT_A_SECRET: Record<string, string> = {
   "posthog.auth_type":
     "selects WHICH credential to use (personal vs project key); the key itself is posthog.api_key",
-  "custom_api.credential_type":
-    "selects HOW the key is sent (bearer, header, query, basic); the key itself is custom_api.token or custom_api.password",
 };
 
 function connectorTypes(): string[] {
