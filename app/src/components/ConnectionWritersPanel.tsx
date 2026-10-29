@@ -331,7 +331,7 @@ export default function ConnectionWritersPanel({
           }
           label={
             <Typography variant="body2">
-              Live reads: workflows and agents may read {connectionName}
+              Live reads: workflows and agents may read {connectionName}{" "}
               directly, not only its synced tables. Off until an admin turns it
               on (a new Custom API starts on).
             </Typography>
