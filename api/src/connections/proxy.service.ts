@@ -22,10 +22,7 @@ import {
   type ISourceConnection,
 } from "../database/workspace-schema";
 import { ConnectionWriteEvent } from "../access/connection-write-event";
-import {
-  actingPrincipal,
-  notAWriterRefusal,
-} from "../access/connection-writes";
+import { actingPrincipal } from "../access/connection-writes";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers } from "../logging";
 import { getRequestContext } from "../logging/context";
@@ -197,8 +194,10 @@ export async function connectionRequest(
     recordProxyWrite(row, principal, target, allowed);
     if (!allowed) {
       logger.warn("Refused a connection write", where);
+      // Not the database wording ("everyone can read it"): here reading
+      // depends on live reads being on.
       throw new ConnectionRequestError(
-        notAWriterRefusal(principal, row.name),
+        `${principal} is not allowed to write to ${row.name}. An admin can allow ${principal} on the connection's Access tab.`,
         403,
       );
     }
