@@ -1,17 +1,19 @@
 /**
- * Credential types and the forwarding core: which requests read, where a
- * path may go, how each credential is added, and that no answer carries it.
+ * Call profiles, credential types and the forwarding core: which requests
+ * read, where a path may go, how each credential is sent, and that no answer
+ * carries it. Also the three kinds of source connection.
  * No network: the transport is replaced.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { Types } from "mongoose";
 import {
-  credentialTypeFor,
+  callableFor,
   isGraphqlQuery,
   isGraphqlReadBody,
   isReadRequest,
-  type CredentialType,
-} from "./credential-types";
+  type CallableConnection,
+} from "./callable";
+import { isSyncSource, sourceConnectionKind } from "./kinds";
 import {
   ConnectionRequestError,
   callerHeaders,
@@ -20,14 +22,14 @@ import {
   setTransportForTests,
   urlUnder,
 } from "./forward";
-import { HttpConnector } from "../connectors/http/connector";
+import { CustomApiConnector } from "../connectors/custom_api/connector";
 import type { ISourceConnection } from "../database/workspace-schema";
 
 const KEY = "api_live_7f3a9c1e2b4d";
 
-function type(name: string): CredentialType {
-  const found = credentialTypeFor(name);
-  if (!found) throw new Error(`no credential type ${name}`);
+function type(name: string): CallableConnection {
+  const found = callableFor(name);
+  if (!found) throw new Error(`no call profile for ${name}`);
   return found;
 }
 
@@ -83,7 +85,7 @@ describe("reads and writes", () => {
     );
 
   it("GET, HEAD and OPTIONS read on every type", () => {
-    for (const kind of ["close", "stripe", "wise", "http"]) {
+    for (const kind of ["close", "stripe", "wise", "custom_api"]) {
       for (const method of ["GET", "HEAD", "OPTIONS"]) {
         expect(read(kind, method, "/anything")).toBe(true);
       }
@@ -107,25 +109,28 @@ describe("reads and writes", () => {
     expect(read("wise", "POST", "/v3/profiles/1/quotes")).toBe(false);
   });
 
-  it("http GraphQL: a query reads, a mutation writes, only when GraphQL is on", () => {
+  it("Custom API GraphQL: a query reads, a mutation writes, only when GraphQL is on", () => {
     const on = { config: { graphql: true } };
     expect(
-      read("http", "POST", "/", { ...on, body: { query: "{ me { id } }" } }),
+      read("custom_api", "POST", "/", {
+        ...on,
+        body: { query: "{ me { id } }" },
+      }),
     ).toBe(true);
     expect(
-      read("http", "POST", "/", {
+      read("custom_api", "POST", "/", {
         ...on,
         body: { query: "query Q { me { id } }" },
       }),
     ).toBe(true);
     expect(
-      read("http", "POST", "/", {
+      read("custom_api", "POST", "/", {
         ...on,
         body: { query: "mutation { delete(id: 1) }" },
       }),
     ).toBe(false);
     expect(
-      read("http", "POST", "/", { body: { query: "{ me { id } }" } }),
+      read("custom_api", "POST", "/", { body: { query: "{ me { id } }" } }),
     ).toBe(false);
   });
 
@@ -219,35 +224,43 @@ describe("each credential is added the type's way", () => {
     expect(sent[0].headers.authorization).toBe(`Bearer ${KEY}`);
   });
 
-  it("http: bearer, header, basic and query", async () => {
+  it("Custom API: bearer, API key in a header or query, basic", async () => {
     const base = { base_url: "https://probo.example.com/api" };
     const cases: Array<[Record<string, unknown>, (s: Sent) => void]> = [
       [
-        { auth_scheme: "bearer", token: KEY },
+        { credential_type: "bearer", token: KEY },
         s => expect(s.headers.authorization).toBe(`Bearer ${KEY}`),
       ],
       [
-        { auth_scheme: "header", token: KEY, header_name: "X-Probo-Key" },
+        {
+          credential_type: "api_key_header",
+          token: KEY,
+          header_name: "X-Probo-Key",
+        },
         s => expect(s.headers["x-probo-key"]).toBe(KEY),
       ],
       [
-        { auth_scheme: "basic", username: "me", password: KEY },
+        { credential_type: "basic", username: "me", password: KEY },
         s =>
           expect(s.headers.authorization).toBe(
             `Basic ${Buffer.from(`me:${KEY}`).toString("base64")}`,
           ),
       ],
       [
-        { auth_scheme: "query", token: KEY, query_param: "key" },
+        { credential_type: "api_key_query", token: KEY, query_param: "key" },
         s => expect(new URL(s.url).searchParams.get("key")).toBe(KEY),
       ],
     ];
     for (const [config, check] of cases) {
       const sent = answering(200, {});
-      await forward(connection("http", { ...base, ...config }), type("http"), {
-        method: "GET",
-        path: "/x",
-      });
+      await forward(
+        connection("custom_api", { ...base, ...config }),
+        type("custom_api"),
+        {
+          method: "GET",
+          path: "/x",
+        },
+      );
       check(sent[0]);
     }
   });
@@ -295,16 +308,16 @@ describe("no secret in any answer", () => {
     });
   });
 
-  it("drops the http type's own key header", async () => {
+  it("drops a Custom API's own key header", async () => {
     answering(200, "ok", { "content-type": "text/plain", "x-probo-key": "x" });
     const result = await forward(
-      connection("http", {
+      connection("custom_api", {
         base_url: "https://probo.example.com",
-        auth_scheme: "header",
+        credential_type: "api_key_header",
         header_name: "X-Probo-Key",
         token: KEY,
       }),
-      type("http"),
+      type("custom_api"),
       { method: "GET", path: "/" },
     );
     expect(result.headers["x-probo-key"]).toBeUndefined();
@@ -312,16 +325,16 @@ describe("no secret in any answer", () => {
   });
 });
 
-describe("the http connection", () => {
+describe("the Custom API connection", () => {
   const conn = (config: Record<string, unknown>) =>
-    new HttpConnector(
-      connection("http", config) as unknown as ISourceConnection,
+    new CustomApiConnector(
+      connection("custom_api", config) as unknown as ISourceConnection,
     );
 
-  it("is not a sync source", () => {
+  it("is never a sync source", () => {
     const c = conn({ base_url: "https://x.example.com" });
     expect(c.getAvailableEntities()).toEqual([]);
-    expect(c.getMetadata().syncable).toBe(false);
+    expect(isSyncSource("custom_api")).toBe(false);
   });
 
   it("tests with GET on the test path, or { __typename } for GraphQL", async () => {
@@ -360,6 +373,32 @@ describe("the http connection", () => {
     expect((await conn({ base_url: "ftp://x" }).testConnection()).success).toBe(
       false,
     );
+  });
+});
+
+describe("kinds of source connection", () => {
+  it("are read from the type alone", () => {
+    expect(sourceConnectionKind("custom_api")).toBe("custom");
+    expect(sourceConnectionKind("close")).toBe("builtin");
+    expect(sourceConnectionKind("rest")).toBe("builtin");
+    expect(sourceConnectionKind("graphql")).toBe("builtin");
+    expect(sourceConnectionKind("ws:close-tasks")).toBe("workspace");
+    expect(isSyncSource("close")).toBe(true);
+    expect(isSyncSource("ws:close-tasks")).toBe(true);
+  });
+
+  it("an unknown credential type on a Custom API falls back to bearer", async () => {
+    const sent = answering(200, {});
+    await forward(
+      connection("custom_api", {
+        base_url: "https://x.example.com",
+        credential_type: "oauth9",
+        token: KEY,
+      }),
+      type("custom_api"),
+      { method: "GET", path: "/" },
+    );
+    expect(sent[0].headers.authorization).toBe(`Bearer ${KEY}`);
   });
 });
 

@@ -29,8 +29,6 @@ interface ConnectorRegistryMetadata {
     description: string;
     author?: string;
     supportedEntities: string[];
-    /** False for a connection that is not a sync source (an HTTP API). */
-    syncable?: boolean;
     webhook: WebhookCapabilities;
     incremental: IncrementalCapabilities;
   };

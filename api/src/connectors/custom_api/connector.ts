@@ -3,52 +3,53 @@ import {
   ConnectionTestResult,
   FetchOptions,
 } from "../base/BaseConnector";
-import { http } from "../../connections/credential-types";
+import { customApi } from "../../connections/callable";
 import { ConnectionRequestError, forward } from "../../connections/forward";
 
 /**
- * A generic HTTP API connection: a base URL and one way to authenticate.
+ * A Custom API connection: an address, a credential type and its key, and an
+ * optional GraphQL mode.
  *
- * Not a sync source. It holds a credential that workflows (`connection(id)`
- * in lib/mako) and agents call through the connection proxy; it has no
- * entities, so a flow never offers it. Its credential type is `http` in
- * connections/credential-types.ts.
+ * Called, never synced. Workflows (`connection(id)` in lib/mako) and agents
+ * call it through the connection proxy; it has no entities, and a flow never
+ * offers it (connections/kinds.ts). How it is called is `customApi` in
+ * connections/callable.ts.
  */
-export class HttpConnector extends BaseConnector {
+export class CustomApiConnector extends BaseConnector {
   static getConfigSchema() {
     return {
       fields: [
         {
           name: "base_url",
-          label: "Base URL",
+          label: "Address",
           type: "string",
           required: true,
           placeholder: "https://api.example.com/v1",
           helperText:
-            "Every request goes under this URL. A path outside it is refused.",
+            "The API's base URL. Every request goes under it; a path outside it is refused.",
         },
         {
-          name: "auth_scheme",
-          label: "Authentication",
+          name: "credential_type",
+          label: "Credential type",
           type: "select",
           required: true,
           default: "bearer",
           options: [
             { label: "Bearer token", value: "bearer" },
-            { label: "API key in a header", value: "header" },
-            { label: "Basic (username and password)", value: "basic" },
-            { label: "API key in the query string", value: "query" },
+            { label: "API key in a header", value: "api_key_header" },
+            { label: "API key in the query string", value: "api_key_query" },
+            { label: "Basic auth (username and password)", value: "basic" },
             { label: "None", value: "none" },
           ],
         },
         {
           name: "token",
-          label: "Token or API key",
+          label: "Key",
           type: "password",
           required: false,
           showIf: {
-            field: "auth_scheme",
-            equals: ["bearer", "header", "query"],
+            field: "credential_type",
+            equals: ["bearer", "api_key_header", "api_key_query"],
           },
         },
         {
@@ -57,7 +58,7 @@ export class HttpConnector extends BaseConnector {
           type: "string",
           required: false,
           default: "X-API-Key",
-          showIf: { field: "auth_scheme", equals: "header" },
+          showIf: { field: "credential_type", equals: "api_key_header" },
         },
         {
           name: "query_param",
@@ -65,21 +66,21 @@ export class HttpConnector extends BaseConnector {
           type: "string",
           required: false,
           default: "api_key",
-          showIf: { field: "auth_scheme", equals: "query" },
+          showIf: { field: "credential_type", equals: "api_key_query" },
         },
         {
           name: "username",
           label: "Username",
           type: "string",
           required: false,
-          showIf: { field: "auth_scheme", equals: "basic" },
+          showIf: { field: "credential_type", equals: "basic" },
         },
         {
           name: "password",
           label: "Password",
           type: "password",
           required: false,
-          showIf: { field: "auth_scheme", equals: "basic" },
+          showIf: { field: "credential_type", equals: "basic" },
         },
         {
           name: "graphql",
@@ -97,7 +98,7 @@ export class HttpConnector extends BaseConnector {
           required: false,
           placeholder: "/me",
           helperText:
-            "Optional. A GET under the base URL that needs the credential, used by Test. With GraphQL on, Test sends { __typename } instead.",
+            "Optional. A GET under the address that needs the credential, used by Test. With GraphQL on, Test sends { __typename } instead.",
         },
       ],
     };
@@ -105,12 +106,11 @@ export class HttpConnector extends BaseConnector {
 
   getMetadata() {
     return {
-      name: "HTTP API",
+      name: "Custom API",
       version: "1.0.0",
       description:
-        "Any HTTP or GraphQL API with a stored credential, for workflows and agents. Not a sync source.",
+        "Any HTTP or GraphQL API with a stored key, for workflows and agents to call. Never synced.",
       supportedEntities: [],
-      syncable: false,
     };
   }
 
@@ -121,10 +121,10 @@ export class HttpConnector extends BaseConnector {
     try {
       const url = new URL(base);
       if (url.protocol !== "https:" && url.protocol !== "http:") {
-        errors.push("The base URL must start with https://");
+        errors.push("The address must start with https://");
       }
     } catch {
-      errors.push("A base URL is required");
+      errors.push("An address is required");
     }
     return { valid: errors.length === 0, errors };
   }
@@ -146,7 +146,7 @@ export class HttpConnector extends BaseConnector {
     try {
       const answer = await forward(
         this.dataSource,
-        http,
+        customApi,
         config.graphql === true
           ? { method: "POST", path: "/", body: { query: "{ __typename }" } }
           : { method: "GET", path: testPath },
@@ -185,7 +185,7 @@ export class HttpConnector extends BaseConnector {
 
   async fetchEntity(_options: FetchOptions): Promise<void> {
     throw new Error(
-      "An HTTP API connection is not a sync source. Call it from a workflow with connection(id).",
+      "A Custom API connection is never synced. Call it from a workflow with connection(id).",
     );
   }
 }

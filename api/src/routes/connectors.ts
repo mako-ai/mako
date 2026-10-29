@@ -124,8 +124,6 @@ const ConnectorMetadataSchema = z
     description: z.string(),
     author: z.string().optional(),
     supportedEntities: z.array(z.string()),
-    /** False: a credential for workflows and agents, never a flow source. */
-    syncable: z.boolean().optional(),
     webhook: WebhookCapabilitiesSchema,
     incremental: IncrementalCapabilitiesSchema,
   })

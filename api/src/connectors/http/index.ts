@@ -1,1 +1,0 @@
-export { HttpConnector } from "./connector";

@@ -7,6 +7,7 @@
  * pieces of both legacy forms (destination + schema/prefix, entity layout
  * table, webhook secret/provisioning block, cron presets).
  */
+import { isSyncSource } from "../lib/source-connection-kind";
 import { useEffect, useState, useMemo, useRef } from "react";
 import { useForm, Controller, useFieldArray } from "react-hook-form";
 import {
@@ -242,17 +243,6 @@ export function SyncFlowForm({
     }
     return map;
   }, [connectorTypes]);
-
-  // Connection types that are not sync sources (an HTTP API credential).
-  const notSyncable = useMemo(
-    () =>
-      new Set(
-        (connectorTypes || [])
-          .filter(entry => entry.syncable === false)
-          .map(entry => entry.type),
-      ),
-    [connectorTypes],
-  );
 
   const flows = useMemo(
     () => (currentWorkspace ? flowsMap[currentWorkspace.id] || [] : []),
@@ -1436,7 +1426,9 @@ export function SyncFlowForm({
                           {connectors
                             .filter(
                               source =>
-                                !notSyncable.has(source.type) ||
+                                // Custom API connections are called, never
+                                // synced; one already chosen stays visible.
+                                isSyncSource(source.type) ||
                                 source._id === field.value,
                             )
                             .map(source => (
