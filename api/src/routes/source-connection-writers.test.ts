@@ -104,20 +104,28 @@ beforeEach(async () => {
 });
 
 describe("source connection writers", () => {
-  it("starts with no one, live reads on", async () => {
+  it("starts with no one, and live reads off on an existing connection", async () => {
     const res = await req("GET", `/${id}/writers`);
     expect(res.status).toBe(200);
     const { data } = await res.json();
     expect(data).toMatchObject({
       writers: [],
       canEdit: true,
-      liveReads: true,
+      liveReads: false,
       callable: true,
       recent: [],
     });
   });
 
-  it("lets an admin allow a workflow under one path and turn live reads off", async () => {
+  it("lets an admin allow a workflow under one path and turn live reads on and off", async () => {
+    const on = await req("PUT", `/${id}/writers`, {
+      writers: [],
+      liveReads: true,
+    });
+    expect(on.status).toBe(200);
+    expect(
+      (await (await req("GET", `/${id}/writers`)).json()).data.liveReads,
+    ).toBe(true);
     const put = await req("PUT", `/${id}/writers`, {
       writers: [{ principal: "workflow:fr-offer-to-cash", where: "/task/" }],
       liveReads: false,
