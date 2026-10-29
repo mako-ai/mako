@@ -1340,6 +1340,18 @@ async function testActivitySearchRequestsEverySchemaColumn() {
   }
 }
 
+// Transcripts come back only when `_fields` names them, so the call schema
+// must declare them for backfills and polls to request them. String, like
+// the columns webhook rows already created.
+async function testCallSearchRequestsTranscripts() {
+  const fields = closeActivitySearchFields("activities:Call") ?? [];
+  assert.ok(fields.includes("recording_transcript"));
+  assert.ok(fields.includes("voicemail_transcript"));
+  const schema = await createConnector().resolveSchema("activities:Call");
+  assert.equal(schema!.fields.recording_transcript.type, "string");
+  assert.equal(schema!.fields.voicemail_transcript.type, "string");
+}
+
 // A custom activity field deleted in Close mid-run makes the Search API
 // reject its selector; the connector re-reads /custom_field/activity/ and
 // re-plans instead of failing the sync.
@@ -1420,6 +1432,7 @@ async function main() {
   testCustomActivityBackfillAndWebhookShapesMatch();
   await testActivitySearchRequestsEverySchemaColumn();
   await testCustomActivityReplansWhenCustomFieldDeleted();
+  await testCallSearchRequestsTranscripts();
 }
 
 main().catch(error => {

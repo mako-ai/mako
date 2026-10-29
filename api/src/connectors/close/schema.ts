@@ -195,6 +195,10 @@ export const CALL_SCHEMA: Record<string, ConnectorFieldSchema> = {
   coach_legs: j(),
   note_mentions: j(),
   recording_history: j(),
+  // Close returns these only when `_fields` names them. Kept as string (JSON
+  // text) to match the columns webhook rows already created.
+  recording_transcript: s(),
+  voicemail_transcript: s(),
 };
 
 export const EMAIL_SCHEMA: Record<string, ConnectorFieldSchema> = {
