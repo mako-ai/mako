@@ -170,7 +170,7 @@ async function main() {
       type: "custom_api",
       config: {
         base_url: "https://api.probo.example.com/graphql",
-        credential_type: "bearer",
+        auth_type: "bearer",
         token: encryptString(PROBO_TOKEN),
         graphql: true,
       },
