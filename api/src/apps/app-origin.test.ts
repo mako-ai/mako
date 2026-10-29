@@ -234,6 +234,20 @@ describe("the app host gate", () => {
     expect((await onHost(host, "/api/workspaces")).status).toBe(404);
   });
 
+  it("answers the reachability ping to Mako only, without a token", async () => {
+    const res = await onHost(`${appA}.makoapps.dev`, "/__mako/ping");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe(
+      "https://app.mako.ai",
+    );
+    expect(res.headers.get("Access-Control-Allow-Credentials")).toBeNull();
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(served.calls).toHaveLength(0);
+    // Only on app hosts: Mako's own host has no such route.
+    expect((await onHost("app.mako.ai", "/__mako/ping")).status).toBe(404);
+  });
+
   it("leaves Mako's own host alone", async () => {
     const me = await onHost("app.mako.ai", "/api/auth/me", {
       cookie: "mako_session=s",
