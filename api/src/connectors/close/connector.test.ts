@@ -1386,6 +1386,250 @@ async function testCustomActivityReplansWhenCustomFieldDeleted() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// tasks / meetings — `_skip`-paged list endpoints
+// ---------------------------------------------------------------------------
+
+function stubListApi(pages: Record<string, unknown>[][]) {
+  const calls: { url: string; params: Record<string, unknown> }[] = [];
+  const api = {
+    get: async (url: string, config?: { params?: Record<string, unknown> }) => {
+      const params = config?.params ?? {};
+      calls.push({ url, params });
+      const page = Math.floor(Number(params._skip ?? 0) / 2);
+      return {
+        data: {
+          data: pages[page] ?? [],
+          has_more: page < pages.length - 1,
+        },
+      };
+    },
+    post: async () => {
+      throw new Error("tasks/meetings must not use the Search API");
+    },
+  };
+  return { api, calls };
+}
+
+async function runListChunk(
+  connector: CloseConnector,
+  entity: string,
+  options: { since?: Date; maxIterations?: number; state?: any } = {},
+) {
+  const batches: Record<string, unknown>[][] = [];
+  const state = await connector.fetchEntityChunk({
+    entity,
+    since: options.since,
+    state: options.state,
+    maxIterations: options.maxIterations,
+    batchSize: 2,
+    rateLimitDelay: 1,
+    onBatch: async (batch: Record<string, unknown>[]) => {
+      batches.push(batch);
+    },
+  } as any);
+  return { batches, state };
+}
+
+const taskPages = [
+  [
+    { id: "task_1", _type: "lead", text: "Call back", is_complete: false },
+    { id: "noti_2", _type: "missed_call", phone: "+15550001" },
+  ],
+  [{ id: "task_3", _type: "lead", text: "Follow up", is_complete: true }],
+];
+
+const meetingPages = [
+  [
+    { id: "acti_m1", _type: "Meeting", title: "Kickoff" },
+    { id: "acti_m2", _type: "Meeting", title: "Demo" },
+  ],
+  [{ id: "acti_m3", _type: "Meeting", title: "Review" }],
+];
+
+function testTasksAndMeetingsAreListed() {
+  const connector = createConnector();
+  for (const entity of ["tasks", "meetings"]) {
+    assert.ok(
+      connector.getMetadata().supportedEntities.includes(entity),
+      `${entity} should be in supportedEntities`,
+    );
+    assert.ok(
+      connector.getAvailableEntities().includes(entity),
+      `${entity} should be an available entity`,
+    );
+    assert.ok(
+      connector.getEntityMetadata().some(meta => meta.name === entity),
+      `${entity} should be present in entity metadata`,
+    );
+  }
+  // activities:Meeting stays a separate, unchanged sub-entity.
+  assert.ok(connector.getAvailableEntities().includes("activities:Meeting"));
+}
+
+async function testTasksAndMeetingsSchemasResolve() {
+  const connector = createConnector();
+
+  const tasks = await connector.resolveSchema("tasks");
+  assert.ok(tasks, "tasks schema should resolve");
+  if (!tasks) return;
+  assert.equal(tasks.entity, "tasks");
+  assert.deepEqual(tasks.fields.id, { type: "string", required: true });
+  assert.equal(tasks.fields.is_complete?.type, "boolean");
+  assert.equal(tasks.fields.date?.type, "timestamp");
+  assert.equal(tasks.fields.date_updated?.type, "timestamp");
+  assert.equal(tasks.fields.assigned_to?.type, "string");
+  assert.equal(tasks.fields.lead_id?.type, "string");
+  assert.ok(tasks.fields._syncedAt, "tasks schema carries Mako system fields");
+
+  const meetings = await connector.resolveSchema("meetings");
+  assert.ok(meetings, "meetings schema should resolve");
+  if (!meetings) return;
+  assert.equal(meetings.entity, "meetings");
+  assert.deepEqual(meetings.fields.id, { type: "string", required: true });
+  assert.equal(meetings.fields.starts_at?.type, "timestamp");
+  assert.equal(meetings.fields.attendees?.type, "json");
+  assert.equal(meetings.fields.lead_id?.type, "string");
+
+  // Same Meeting object, so the same columns as activities:Meeting.
+  const activityMeeting = await connector.resolveSchema("activities:Meeting");
+  assert.ok(activityMeeting);
+  assert.deepEqual(
+    Object.keys(meetings.fields).sort(),
+    Object.keys(activityMeeting?.fields ?? {}).sort(),
+  );
+}
+
+async function testTasksPaginateAcrossTwoPages() {
+  const connector = createConnector();
+  const { api, calls } = stubListApi(taskPages);
+  (connector as any).closeApi = api;
+
+  const { batches, state } = await runListChunk(connector, "tasks");
+
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call.url === "/task/"));
+  assert.deepEqual(
+    calls.map(call => call.params._skip),
+    [0, 2],
+  );
+  for (const call of calls) {
+    assert.equal(call.params._limit, 2);
+    assert.equal(call.params._type, "all", "every task type, not just lead");
+    assert.equal(call.params._order_by, "date_created");
+    assert.equal(call.params.date_updated__gte, undefined);
+  }
+  assert.deepEqual(
+    batches.flat().map(row => row.id),
+    ["task_1", "noti_2", "task_3"],
+  );
+  assert.equal(state.hasMore, false);
+  assert.equal(state.totalProcessed, 3);
+}
+
+async function testTasksChunkResumesFromOffset() {
+  const connector = createConnector();
+  const { api, calls } = stubListApi(taskPages);
+  (connector as any).closeApi = api;
+
+  const first = await runListChunk(connector, "tasks", { maxIterations: 1 });
+  assert.equal(first.state.hasMore, true);
+  assert.equal(first.state.offset, 2);
+  assert.equal(first.state.totalProcessed, 2);
+
+  const second = await runListChunk(connector, "tasks", {
+    state: first.state,
+  });
+  assert.equal(second.state.hasMore, false);
+  assert.equal(second.state.totalProcessed, 3);
+  assert.deepEqual(
+    calls.map(call => call.params._skip),
+    [0, 2],
+  );
+  assert.deepEqual(
+    second.batches.flat().map(row => row.id),
+    ["task_3"],
+  );
+}
+
+async function testTasksIncrementalFiltersOnDateUpdated() {
+  const connector = createConnector();
+  const { api, calls } = stubListApi(taskPages);
+  (connector as any).closeApi = api;
+
+  await runListChunk(connector, "tasks", {
+    since: new Date("2026-07-15T10:30:00.000Z"),
+  });
+
+  assert.ok(calls.length > 0);
+  for (const call of calls) {
+    assert.equal(call.params.date_updated__gte, "2026-07-15");
+    assert.equal(call.params.date_created__gte, undefined);
+  }
+}
+
+async function testMeetingsPaginateAndAnchorOnCreation() {
+  const connector = createConnector();
+  const { api, calls } = stubListApi(meetingPages);
+  (connector as any).closeApi = api;
+
+  const full = await runListChunk(connector, "meetings");
+  assert.ok(calls.every(call => call.url === "/activity/meeting/"));
+  assert.deepEqual(
+    calls.map(call => call.params._skip),
+    [0, 2],
+  );
+  assert.deepEqual(
+    full.batches.flat().map(row => row.id),
+    ["acti_m1", "acti_m2", "acti_m3"],
+  );
+  assert.equal(calls[0].params.date_created__gte, undefined);
+
+  calls.length = 0;
+  await runListChunk(connector, "meetings", {
+    since: new Date("2026-07-15T10:30:00.000Z"),
+  });
+  assert.ok(calls.length > 0);
+  for (const call of calls) {
+    // /activity/meeting/ has no updated filter: creation time only.
+    assert.equal(call.params.date_created__gte, "2026-07-15");
+    assert.equal(call.params.date_updated__gte, undefined);
+  }
+}
+
+async function testFetchEntityReadsEveryTaskAndMeetingPage() {
+  for (const [entity, pages] of [
+    ["tasks", taskPages],
+    ["meetings", meetingPages],
+  ] as const) {
+    const connector = createConnector();
+    const { api } = stubListApi(pages as any);
+    (connector as any).closeApi = api;
+    const rows: Record<string, unknown>[] = [];
+    await connector.fetchEntity({
+      entity,
+      batchSize: 2,
+      rateLimitDelay: 1,
+      onBatch: async (batch: Record<string, unknown>[]) => {
+        rows.push(...batch);
+      },
+    } as any);
+    assert.equal(rows.length, 3, `${entity}: every page`);
+  }
+}
+
+function testTasksAndMeetingsIncrementalModes() {
+  const caps = createConnector().getIncrementalCapabilities();
+  assert.deepEqual(caps.perEntity?.tasks, {
+    mode: "native",
+    anchorField: "date_updated__gte",
+  });
+  assert.deepEqual(caps.perEntity?.meetings, {
+    mode: "created-anchor",
+    anchorField: "date_created__gte",
+  });
+}
+
 async function main() {
   testCloseApiErrorResponseIsFormattedForLogs();
   testUserWebhookEventsAreSupported();
@@ -1420,6 +1664,14 @@ async function main() {
   testCustomActivityBackfillAndWebhookShapesMatch();
   await testActivitySearchRequestsEverySchemaColumn();
   await testCustomActivityReplansWhenCustomFieldDeleted();
+  testTasksAndMeetingsAreListed();
+  await testTasksAndMeetingsSchemasResolve();
+  await testTasksPaginateAcrossTwoPages();
+  await testTasksChunkResumesFromOffset();
+  await testTasksIncrementalFiltersOnDateUpdated();
+  await testMeetingsPaginateAndAnchorOnCreation();
+  await testFetchEntityReadsEveryTaskAndMeetingPage();
+  testTasksAndMeetingsIncrementalModes();
 }
 
 main().catch(error => {
