@@ -228,26 +228,26 @@ describe("each credential is added the type's way", () => {
     const base = { base_url: "https://probo.example.com/api" };
     const cases: Array<[Record<string, unknown>, (s: Sent) => void]> = [
       [
-        { credential_type: "bearer", token: KEY },
+        { auth_type: "bearer", token: KEY },
         s => expect(s.headers.authorization).toBe(`Bearer ${KEY}`),
       ],
       [
         {
-          credential_type: "api_key_header",
+          auth_type: "api_key_header",
           token: KEY,
           header_name: "X-Probo-Key",
         },
         s => expect(s.headers["x-probo-key"]).toBe(KEY),
       ],
       [
-        { credential_type: "basic", username: "me", password: KEY },
+        { auth_type: "basic", username: "me", password: KEY },
         s =>
           expect(s.headers.authorization).toBe(
             `Basic ${Buffer.from(`me:${KEY}`).toString("base64")}`,
           ),
       ],
       [
-        { credential_type: "api_key_query", token: KEY, query_param: "key" },
+        { auth_type: "api_key_query", token: KEY, query_param: "key" },
         s => expect(new URL(s.url).searchParams.get("key")).toBe(KEY),
       ],
     ];
@@ -313,7 +313,7 @@ describe("no secret in any answer", () => {
     const result = await forward(
       connection("custom_api", {
         base_url: "https://probo.example.com",
-        credential_type: "api_key_header",
+        auth_type: "api_key_header",
         header_name: "X-Probo-Key",
         token: KEY,
       }),
@@ -392,7 +392,7 @@ describe("kinds of source connection", () => {
     await forward(
       connection("custom_api", {
         base_url: "https://x.example.com",
-        credential_type: "oauth9",
+        auth_type: "oauth9",
         token: KEY,
       }),
       type("custom_api"),

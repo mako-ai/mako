@@ -29,7 +29,9 @@ export class CustomApiConnector extends BaseConnector {
             "The API's base URL. Every request goes under it; a path outside it is refused.",
         },
         {
-          name: "credential_type",
+          // Not `credential_type`: a field named like a credential is
+          // treated as a secret and masked when read back.
+          name: "auth_type",
           label: "Credential type",
           type: "select",
           required: true,
@@ -48,7 +50,7 @@ export class CustomApiConnector extends BaseConnector {
           type: "password",
           required: false,
           showIf: {
-            field: "credential_type",
+            field: "auth_type",
             equals: ["bearer", "api_key_header", "api_key_query"],
           },
         },
@@ -58,7 +60,7 @@ export class CustomApiConnector extends BaseConnector {
           type: "string",
           required: false,
           default: "X-API-Key",
-          showIf: { field: "credential_type", equals: "api_key_header" },
+          showIf: { field: "auth_type", equals: "api_key_header" },
         },
         {
           name: "query_param",
@@ -66,21 +68,21 @@ export class CustomApiConnector extends BaseConnector {
           type: "string",
           required: false,
           default: "api_key",
-          showIf: { field: "credential_type", equals: "api_key_query" },
+          showIf: { field: "auth_type", equals: "api_key_query" },
         },
         {
           name: "username",
           label: "Username",
           type: "string",
           required: false,
-          showIf: { field: "credential_type", equals: "basic" },
+          showIf: { field: "auth_type", equals: "basic" },
         },
         {
           name: "password",
           label: "Password",
           type: "password",
           required: false,
-          showIf: { field: "credential_type", equals: "basic" },
+          showIf: { field: "auth_type", equals: "basic" },
         },
         {
           name: "graphql",
