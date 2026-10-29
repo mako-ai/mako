@@ -136,7 +136,7 @@ export default function ConnectionWritersPanel({
     ConnectionWriters | SourceConnectionWriters | null
   >(null);
   const liveReads =
-    !source || (state as SourceConnectionWriters | null)?.liveReads !== false;
+    !source || (state as SourceConnectionWriters | null)?.liveReads === true;
   const callable =
     !source || (state as SourceConnectionWriters | null)?.callable !== false;
   const [namespaces, setNamespaces] = useState<string[]>([]);
@@ -331,8 +331,9 @@ export default function ConnectionWritersPanel({
           }
           label={
             <Typography variant="body2">
-              Live reads: workflows and agents read {connectionName} directly,
-              not only its synced tables
+              Live reads: workflows and agents may read {connectionName}
+              directly, not only its synced tables. Off until an admin turns it
+              on (a new Custom API starts on).
             </Typography>
           }
         />

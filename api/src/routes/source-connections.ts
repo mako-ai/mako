@@ -38,7 +38,7 @@ import {
   publicWriters,
   recentWriters,
 } from "../access/connection-writers-list";
-import { credentialTypeFor } from "../connections/credential-types";
+import { callableFor } from "../connections/callable";
 import { mayWrite } from "../connections/proxy.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
@@ -1278,9 +1278,10 @@ sourceConnectionRoutes.openapi(
       data: {
         writers: publicWriters(row.writers),
         canEdit,
-        liveReads: row.liveReads !== false,
+        // Absent (every connection older than the proxy) means off.
+        liveReads: row.liveReads === true,
         // Whether the proxy can call this connection at all yet.
-        callable: credentialTypeFor(row.type) !== null,
+        callable: callableFor(row.type) !== null,
         recent: await recentWriters(id, (principal, target) =>
           mayWrite(row.writers, principal, targetPath(target)),
         ),
@@ -1367,7 +1368,7 @@ sourceConnectionRoutes.openapi(
       connectionId: id,
       userId: user.id,
       writers: row.writers.length,
-      liveReads: row.liveReads !== false,
+      liveReads: row.liveReads === true,
     });
     return c.json({ success: true });
   },
