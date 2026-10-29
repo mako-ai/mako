@@ -380,6 +380,19 @@ export interface ISourceConnection extends Document {
     timezone?: string;
   };
   targetDatabases?: Types.ObjectId[];
+  /**
+   * Who may write through this connection's proxy (connections/proxy.service.ts):
+   * the same list as on a database connection. Absent or empty: no one.
+   * Everyone may read; syncs are not concerned.
+   */
+  writers?: IConnectionWriter[];
+  /**
+   * On: workflows and agents may read the service live through the proxy.
+   * Absent or false: off, so a connection made before the proxy existed
+   * shows no more than its synced tables until an admin turns this on. A new
+   * Custom API connection is created with it on.
+   */
+  liveReads?: boolean;
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -1601,6 +1614,17 @@ const WorkspaceInviteSchema = new Schema<IWorkspaceInvite>({
 WorkspaceInviteSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 WorkspaceInviteSchema.index({ workspaceId: 1, email: 1 });
 
+/** One entry of a writers list, on database and source connections alike. */
+const ConnectionWriterSchema = new Schema<IConnectionWriter>(
+  {
+    principal: { type: String, required: true },
+    where: { type: String },
+    addedBy: { type: String },
+    addedAt: { type: Date },
+  },
+  { _id: false },
+);
+
 /**
  * DatabaseConnection Schema
  * Represents a saved connection to a database server
@@ -1649,17 +1673,7 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
       default: false,
     },
     writers: {
-      type: [
-        new Schema<IConnectionWriter>(
-          {
-            principal: { type: String, required: true },
-            where: { type: String },
-            addedBy: { type: String },
-            addedAt: { type: Date },
-          },
-          { _id: false },
-        ),
-      ],
+      type: [ConnectionWriterSchema],
       default: undefined,
     },
     createdBy: {
@@ -1738,6 +1752,11 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
         ref: "DatabaseConnection",
       },
     ],
+    writers: {
+      type: [ConnectionWriterSchema],
+      default: undefined,
+    },
+    liveReads: { type: Boolean },
     createdBy: {
       type: String,
       ref: "User",
@@ -3755,6 +3774,11 @@ export interface IConnectorDefinition extends Document {
    * the push ran, and only this row remembers which one that was.
    */
   entry: string;
+  /**
+   * From `connector.yaml`: `proxied` gives the sandbox placeholders instead of
+   * secret values (connections/placeholders.ts). Absent: `raw`, as before.
+   */
+  credentials?: "raw" | "proxied";
   /** The commit this folder was read at, so a stale row is recognisable. */
   sha: string;
   /** Blob sha of connector.yaml plus the entry file: the idempotence check. */
@@ -3785,6 +3809,7 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
     slug: { type: String, required: true, trim: true },
     runtime: { type: String, required: true, default: "node" },
     entry: { type: String, required: true, default: "connector.ts" },
+    credentials: { type: String, enum: ["raw", "proxied"] },
     sha: { type: String, required: true },
     sourceSha: { type: String, required: true },
     spec: { type: Schema.Types.Mixed },

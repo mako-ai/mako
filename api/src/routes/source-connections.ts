@@ -31,6 +31,23 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { Types } from "mongoose";
+import {
+  NOT_YOURS_REFUSAL,
+  VIEWER_REFUSAL,
+  mayChangeSourceConnection,
+  mayCreateSourceConnection,
+  roleIn,
+  type WorkspaceRole,
+} from "../access/source-connection-access";
+import { principalsOutsideWorkspace } from "../access/connection-writes";
+import {
+  LISTABLE_PRINCIPAL,
+  nextWriters,
+  publicWriters,
+  recentWriters,
+} from "../access/connection-writers-list";
+import { callableFor } from "../connections/callable";
+import { mayWrite } from "../connections/proxy.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
   SECRET_KEPT,
@@ -199,9 +216,22 @@ function redactSourceConfig(
   return redactCiphertextLeaves(redacted) as Record<string, unknown>;
 }
 
+/** Who is asking: whether they may change a connection is part of its answer. */
+type Caller = { role: WorkspaceRole | null; userId?: string };
+
+async function callerOf(
+  c: AuthenticatedContext,
+  workspaceId: string | undefined,
+): Promise<Caller> {
+  if (!workspaceId) return { role: null };
+  const userId = (c.get("user") as { id?: string } | undefined)?.id;
+  return { role: await roleIn(workspaceId, userId), userId };
+}
+
 async function publicSourceConnection(
   doc: unknown,
   workspaceId: string | undefined,
+  caller?: Caller,
 ): Promise<Record<string, unknown>> {
   const record = asSourceRecord(doc);
   let schema: { fields: ConnectorFieldSchema[] } | null = null;
@@ -220,6 +250,15 @@ async function publicSourceConnection(
   return {
     ...record,
     config: redactSourceConfig(record.config, schema),
+    ...(caller
+      ? {
+          canEdit: mayChangeSourceConnection(
+            caller.role,
+            caller.userId,
+            record,
+          ),
+        }
+      : {}),
   };
 }
 
@@ -253,8 +292,11 @@ sourceConnectionRoutes.openapi(
         .sort({ createdAt: -1 })
         .lean();
 
+      const caller = await callerOf(c, _workspaceId);
       const data = await Promise.all(
-        sourceConnections.map(row => publicSourceConnection(row, _workspaceId)),
+        sourceConnections.map(row =>
+          publicSourceConnection(row, _workspaceId, caller),
+        ),
       );
       return c.json({ success: true, data });
     } catch (error) {
@@ -304,7 +346,11 @@ sourceConnectionRoutes.openapi(
 
       return c.json({
         success: true,
-        data: await publicSourceConnection(sourceConnection, _workspaceId),
+        data: await publicSourceConnection(
+          sourceConnection,
+          _workspaceId,
+          await callerOf(c, _workspaceId),
+        ),
       });
     } catch (error) {
       return c.json(
@@ -341,6 +387,10 @@ sourceConnectionRoutes.openapi(
           400,
         );
       }
+      const caller = await callerOf(c, workspaceId);
+      if (!mayCreateSourceConnection(caller.role)) {
+        return c.json({ success: false, error: VIEWER_REFUSAL }, 403);
+      }
       const body = await c.req.json();
 
       let sourceConnection;
@@ -369,6 +419,7 @@ sourceConnectionRoutes.openapi(
           data: await publicSourceConnection(
             sourceConnection.toObject(),
             workspaceId,
+            caller,
           ),
           message: "Connector created successfully",
         },
@@ -418,6 +469,21 @@ sourceConnectionRoutes.openapi(
         return c.json(
           { success: false, error: "Source connection not found" },
           404,
+        );
+      }
+      const caller = await callerOf(c, workspaceId);
+      if (
+        !mayChangeSourceConnection(caller.role, caller.userId, sourceConnection)
+      ) {
+        return c.json(
+          {
+            success: false,
+            error:
+              caller.role === "viewer" || !caller.role
+                ? VIEWER_REFUSAL
+                : NOT_YOURS_REFUSAL,
+          },
+          403,
         );
       }
 
@@ -537,6 +603,7 @@ sourceConnectionRoutes.openapi(
         data: await publicSourceConnection(
           sourceConnection.toObject(),
           workspaceId,
+          caller,
         ),
         message: hasChanges
           ? "Connector updated successfully"
@@ -572,6 +639,30 @@ sourceConnectionRoutes.openapi(
         return c.json(
           { success: false, error: "Invalid source connection ID format" },
           400,
+        );
+      }
+
+      const existing = await SourceConnection.findOne(
+        { _id: id, workspaceId },
+        { createdBy: 1 },
+      ).lean();
+      if (!existing) {
+        return c.json(
+          { success: false, error: "Source connection not found" },
+          404,
+        );
+      }
+      const caller = await callerOf(c, workspaceId);
+      if (!mayChangeSourceConnection(caller.role, caller.userId, existing)) {
+        return c.json(
+          {
+            success: false,
+            error:
+              caller.role === "viewer" || !caller.role
+                ? VIEWER_REFUSAL
+                : NOT_YOURS_REFUSAL,
+          },
+          403,
         );
       }
 
@@ -848,6 +939,30 @@ sourceConnectionRoutes.openapi(
         );
       }
 
+      const existing = await SourceConnection.findOne(
+        { _id: id, workspaceId },
+        { createdBy: 1 },
+      ).lean();
+      if (!existing) {
+        return c.json(
+          { success: false, error: "Source connection not found" },
+          404,
+        );
+      }
+      const caller = await callerOf(c, workspaceId);
+      if (!mayChangeSourceConnection(caller.role, caller.userId, existing)) {
+        return c.json(
+          {
+            success: false,
+            error:
+              caller.role === "viewer" || !caller.role
+                ? VIEWER_REFUSAL
+                : NOT_YOURS_REFUSAL,
+          },
+          403,
+        );
+      }
+
       const sourceConnection = await SourceConnection.findOneAndUpdate(
         {
           _id: id,
@@ -873,6 +988,7 @@ sourceConnectionRoutes.openapi(
         data: await publicSourceConnection(
           sourceConnection.toObject(),
           workspaceId,
+          caller,
         ),
         message: `Connector ${
           body.enabled ? "enabled" : "disabled"
@@ -1207,3 +1323,160 @@ sourceConnectionRoutes.openapi(
 
 /** @deprecated use sourceConnectionRoutes */
 export const dataSourceRoutes = sourceConnectionRoutes;
+
+// --- Who may write through this connection's proxy ---------------------------
+// The same Access tab as a database connection's (access/connection-writes.ts):
+// everyone reads; the listed people and workflows write, each anywhere or only
+// under one path. Anyone in the workspace may look; the owner and admins
+// change it, in the app. Syncs are not concerned.
+
+const SourceWriterSchema = z.object({
+  principal: z
+    .string()
+    .regex(LISTABLE_PRINCIPAL)
+    .openapi({ example: "workflow:fr-offer-to-cash" }),
+  where: z
+    .string()
+    .regex(/^\/[^\s?#]{0,500}$/)
+    .optional()
+    .openapi({ example: "/task/" }),
+});
+
+/** A logged target (`POST /task/`) as the path the list is checked against. */
+function targetPath(target: string): string {
+  return target.slice(target.indexOf(" ") + 1);
+}
+
+sourceConnectionRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/writers",
+    tags: ["Source Connections"],
+    summary: "Who may write through this source connection",
+    security: AUTH_SECURITY,
+    request: { params: SourceIdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    if (!workspaceId || !isSourceConnectionId(id)) {
+      return c.json(
+        { success: false, error: "Invalid source connection ID format" },
+        400,
+      );
+    }
+    const row = await SourceConnection.findOne({ _id: id, workspaceId })
+      .select("writers liveReads type")
+      .lean();
+    if (!row) {
+      return c.json(
+        { success: false, error: "Source connection not found" },
+        404,
+      );
+    }
+    const user = c.get("user");
+    const canEdit =
+      c.get("authType") === "session" &&
+      !!user?.id &&
+      (await workspaceService.isAdmin(workspaceId, user.id));
+    return c.json({
+      success: true,
+      data: {
+        writers: publicWriters(row.writers),
+        canEdit,
+        // Absent (every connection older than the proxy) means off.
+        liveReads: row.liveReads === true,
+        // Whether the proxy can call this connection at all yet.
+        callable: callableFor(row.type) !== null,
+        recent: await recentWriters(id, (principal, target) =>
+          mayWrite(row.writers, principal, targetPath(target)),
+        ),
+      },
+    });
+  },
+);
+
+sourceConnectionRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/writers",
+    tags: ["Source Connections"],
+    summary: "Change who may write through this source connection",
+    security: AUTH_SECURITY,
+    request: {
+      params: SourceIdParam,
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              writers: z.array(SourceWriterSchema).max(200),
+              liveReads: z.boolean().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    const user = c.get("user");
+    // People decide who writes, in the app: never an API key, MCP client or
+    // agent, whatever it is asked.
+    if (c.get("authType") !== "session" || !user?.id) {
+      return c.json(
+        { success: false, error: "Writers can only be changed in the app" },
+        403,
+      );
+    }
+    if (!workspaceId || !isSourceConnectionId(id)) {
+      return c.json(
+        { success: false, error: "Invalid source connection ID format" },
+        400,
+      );
+    }
+    if (!(await workspaceService.isAdmin(workspaceId, user.id))) {
+      return c.json(
+        {
+          success: false,
+          error: "Only the workspace owner and admins can change who writes",
+        },
+        403,
+      );
+    }
+    const row = await SourceConnection.findOne({ _id: id, workspaceId });
+    if (!row) {
+      return c.json(
+        { success: false, error: "Source connection not found" },
+        404,
+      );
+    }
+    const { writers, liveReads } = c.req.valid("json");
+    const strangers = await principalsOutsideWorkspace(
+      workspaceId,
+      writers.map(w => w.principal),
+    );
+    if (strangers.length > 0) {
+      return c.json(
+        {
+          success: false,
+          error: `${strangers.join(", ")} is not a member of this workspace`,
+        },
+        400,
+      );
+    }
+    row.writers = nextWriters(row.writers, writers, user.id);
+    if (liveReads !== undefined) row.liveReads = liveReads;
+    await row.save();
+    logger.info("Source connection writers changed", {
+      workspaceId,
+      connectionId: id,
+      userId: user.id,
+      writers: row.writers.length,
+      liveReads: row.liveReads === true,
+    });
+    return c.json({ success: true });
+  },
+);

@@ -531,6 +531,80 @@ export const OUTCOME_SCHEMA: Record<string, ConnectorFieldSchema> = {
   ...MAKO_SYSTEM_FIELDS,
 };
 
+/**
+ * `tasks` — `GET /task/?_type=all`. Every task type shares the common columns;
+ * the type-specific ones (phone numbers for missed calls, subject for email
+ * tasks, opportunity value for `opportunity_due`) are declared too so they
+ * land typed. Anything else Close adds later falls through to the
+ * `unknownFieldPolicy` (string).
+ */
+export const TASK_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  id: { type: "string", required: true },
+  _type: s(),
+  text: s(),
+  view: s(),
+  lead_id: s(),
+  lead_name: s(),
+  contact_id: s(),
+  contact_name: s(),
+  assigned_to: s(),
+  assigned_to_name: s(),
+  object_id: s(),
+  object_type: s(),
+  organization_id: s(),
+  created_by: s(),
+  created_by_name: s(),
+  updated_by: s(),
+  updated_by_name: s(),
+  agent_config_id: s(),
+  deduplication_key: s(),
+  resolution: s(),
+  sequence_id: s(),
+  sequence_subscription_id: s(),
+  step_id: s(),
+  // Type-specific columns
+  subject: s(),
+  body_preview: s(),
+  email_id: s(),
+  phone: s(),
+  phone_formatted: s(),
+  phone_number_description: s(),
+  local_phone: s(),
+  remote_phone: s(),
+  remote_phone_formatted: s(),
+  remote_phone_description: s(),
+  voicemail_url: s(),
+  recording_url: s(),
+  opportunity_note: s(),
+  opportunity_value_currency: s(),
+  opportunity_value_formatted: s(),
+  opportunity_value_period: s(),
+  opportunity_value: n(),
+  voicemail_duration: n(),
+  is_complete: b(),
+  is_dateless: b(),
+  is_primary_lead_notification: b(),
+  // `date` is the due date: a date-only string for dateless-time tasks and a
+  // datetime otherwise; both parse as timestamps.
+  date: ts(),
+  date_created: ts(),
+  date_updated: ts(),
+  emails: j(),
+  attachments: j(),
+  ...MAKO_SYSTEM_FIELDS,
+};
+
+/**
+ * `meetings` — `GET /activity/meeting/`. The same Meeting activity object the
+ * `activities:Meeting` entity syncs through the Search API, so it shares that
+ * entity's columns. It is its own entity (own table) so a flow can sync
+ * meetings without touching what `activities:Meeting` returns.
+ */
+export const MEETINGS_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  ...COMMON_ACTIVITY_SCHEMA,
+  ...MEETING_SCHEMA,
+};
+
 // ---------------------------------------------------------------------------
 // Schema maps for resolveSchema lookup
 // ---------------------------------------------------------------------------
@@ -567,6 +641,8 @@ export const CORE_ENTITY_SCHEMA_MAP: Record<
   opportunity_statuses: OPPORTUNITY_STATUS_SCHEMA,
   outcomes: OUTCOME_SCHEMA,
   groups: GROUP_SCHEMA,
+  tasks: TASK_SCHEMA,
+  meetings: MEETINGS_SCHEMA,
 };
 
 // ---------------------------------------------------------------------------

@@ -238,3 +238,112 @@ export async function execute(
   const { rowCount } = await runSql(connection, sql, options);
   return { rowCount };
 }
+
+export type ConnectionRequestOptions = {
+  /** Query string parameters, added to the path's own. */
+  query?: Record<
+    string,
+    string | number | boolean | Array<string | number | boolean>
+  >;
+  /** Extra headers. Authorization is Mako's: it adds the stored credential. */
+  headers?: Record<string, string>;
+  /** The vendor's idempotency key (Stripe's Idempotency-Key), when it has one. */
+  idempotencyKey?: string;
+};
+
+export type ConnectionResponse<T = unknown> = {
+  status: number;
+  headers: Record<string, string>;
+  /** Parsed JSON when the service answered JSON, else text. */
+  body: T;
+};
+
+/** A service's answer with a status of 400 or more, or Mako's refusal. */
+export class ConnectionError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: unknown,
+  ) {
+    super(message);
+    this.name = "ConnectionError";
+  }
+}
+
+/**
+ * A service through a connection Mako holds, e.g.
+ * `await connection("ch_close").post("/task/", { lead_id, text })`. Mako adds
+ * the stored credential: workflow code never sees it. Paths are relative to
+ * the connection's base URL. GETs (and GraphQL queries, Close searches) are
+ * reads; anything else is a write and needs this workflow on the
+ * connection's writers list. get/post/put/patch/delete return the body and
+ * throw ConnectionError at a status of 400 or more; `request` returns the
+ * whole answer whatever its status.
+ */
+export function connection(id: string) {
+  const request = async <T = unknown>(
+    method: string,
+    path: string,
+    body?: unknown,
+    options: ConnectionRequestOptions = {},
+  ): Promise<ConnectionResponse<T>> => {
+    const workflow = workflowName();
+    const res = await fetch(
+      `${url}/api/workflows/runtime/connections/${encodeURIComponent(id)}/request`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+          ...(workflow ? { "X-Mako-Workflow": workflow } : {}),
+        },
+        body: JSON.stringify({ method, path, body, ...options }),
+      },
+    );
+    const answer = (await res.json().catch(() => ({}))) as {
+      status?: number;
+      headers?: Record<string, string>;
+      body?: T;
+      error?: string;
+    };
+    if (!res.ok) {
+      throw new ConnectionError(
+        answer.error ?? `The connection request failed (${res.status})`,
+        res.status,
+        answer,
+      );
+    }
+    return {
+      status: answer.status ?? 0,
+      headers: answer.headers ?? {},
+      body: answer.body as T,
+    };
+  };
+  const send =
+    (method: string) =>
+    async <T = unknown>(
+      path: string,
+      body?: unknown,
+      options?: ConnectionRequestOptions,
+    ): Promise<T> => {
+      const answer = await request<T>(method, path, body, options);
+      if (answer.status >= 400) {
+        throw new ConnectionError(
+          `${method} ${path} on ${id} answered ${answer.status}`,
+          answer.status,
+          answer.body,
+        );
+      }
+      return answer.body;
+    };
+  return {
+    request,
+    get: <T = unknown>(path: string, options?: ConnectionRequestOptions) =>
+      send("GET")<T>(path, undefined, options),
+    post: send("POST"),
+    put: send("PUT"),
+    patch: send("PATCH"),
+    delete: <T = unknown>(path: string, options?: ConnectionRequestOptions) =>
+      send("DELETE")<T>(path, undefined, options),
+  };
+}

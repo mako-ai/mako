@@ -15,6 +15,8 @@ entities:
   - scheduled job
   - background job
   - build error
+  - connection(
+  - API key
 ---
 
 # Workflows
@@ -31,7 +33,8 @@ workflows/
 That one file is all a workflow needs. `../hatchet` (the Hatchet client) and
 `../lib/mako` (Mako data access) are supplied when it is built: do not create
 them, and they are not in the repo to read. `../lib/mako` exports `query`,
-`execute`, `call`, `agent`, `model`, `decide` and `tools`, each shown below.
+`execute`, `connection`, `call`, `agent`, `model`, `decide` and `tools`, each
+shown below.
 
 With `workflowId: "daily-digest"`, file paths are relative to that folder:
 the file above is `path: "workflow.ts"`.
@@ -173,6 +176,43 @@ changed; `query` also runs a write and returns its `RETURNING` rows. A
 test run (laptop or sandbox) writes as the person running it, under their
 own access. A dbt
 job (`call("dbt_run_job", { ... })`) remains the way to rebuild models.
+
+## Calling a service through a connection
+
+A source connection (a Close account, a Stripe key, a Custom API connection
+such as Probo) holds a credential. `connection(id)` calls the service with
+it; the workflow never sees the key. Never put an API key in workflow code.
+
+```ts
+import { connection } from "../lib/mako";
+
+const close = connection("ch_close"); // id or name, from list_connections
+const leads = await close.get<{ data: { id: string }[] }>("/lead/", {
+  query: { query: "status:Won", _limit: 10 },
+});
+await close.post("/task/", { lead_id: "lead_1", text: "Send the offer" });
+```
+
+Paths are relative to the connection's base URL and cannot leave it.
+`get`, `post`, `put`, `patch` and `delete` return the body and throw
+`ConnectionError` (with `status` and `body`) at a status of 400 or more;
+`request(method, path, body)` returns `{ status, headers, body }` whatever
+the status. A Custom API connection with GraphQL on takes
+`post("/", { query, variables })`.
+
+A GET, a GraphQL query and a Close search are reads. Reads work once live
+reads are on in the connection's Access tab (a Custom API starts on; other
+connections start off, so ask an admin). Any other request is a write and needs this workflow on the connection's Access
+tab, anywhere or only under one path (`/task/`); a refused write throws and
+shows in the Access tab with Allow. Before building a workflow that writes,
+tell the user which connection and which path to allow it on. A test run
+writes as the person running it.
+
+A step can be retried, so a write can run twice. Check before you create:
+look for the record first (`close.get("/task/", { query: { lead_id } })`)
+and create it only when it is missing. Where the service takes an
+idempotency key (Stripe), pass one that is the same on every retry:
+`` post(path, body, { idempotencyKey: `offer-${offerId}` }) ``.
 
 ## Calling a Mako tool in a step
 

@@ -16,6 +16,8 @@ import {
   IconButton,
   Tooltip,
   Snackbar,
+  Tab,
+  Tabs,
 } from "@mui/material";
 import {
   Visibility,
@@ -35,6 +37,8 @@ import { useSourceConnectionStore } from "../store/sourceConnectionStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { connectorIconUrl } from "../lib/connector-icon";
 import { EntityHistoryButton } from "./EntityHistoryButton";
+import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
+import ConnectionWritersPanel from "./ConnectionWritersPanel";
 
 /** `ws:acme` — a connector defined in the workspace repo (`connectors/acme/`). */
 const WORKSPACE_TYPE_PREFIX = "ws:";
@@ -67,6 +71,29 @@ export interface ConnectorFieldSchema {
 
 export interface ConnectorSchemaResponse {
   fields: ConnectorFieldSchema[];
+}
+
+/**
+ * Whether a top-level field's `showIf` holds. A field not filled in yet
+ * counts as its schema default, so a cached schema (whose defaults were not
+ * applied to the form) shows the same fields as a fresh one.
+ */
+function isFieldShown(
+  field: ConnectorFieldSchema,
+  fields: ConnectorFieldSchema[],
+  watch: (name: string) => unknown,
+): boolean {
+  if (!field.showIf) return true;
+  const other = fields.find(f => f.name === field.showIf?.field);
+  const value = watch(field.showIf.field) ?? other?.default;
+  const { equals: eq, notEquals: ne } = field.showIf;
+  const eqOk = Array.isArray(eq)
+    ? eq.includes(value as string | number | boolean)
+    : eq === undefined || value === eq;
+  const neOk = Array.isArray(ne)
+    ? !ne.includes(value as string | number | boolean)
+    : ne === undefined || value !== ne;
+  return eqOk && neOk;
 }
 
 interface SourceConnectionFormProps {
@@ -135,6 +162,12 @@ function SourceConnectionForm({
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [tab, setTab] = useState<"connection" | "access">("connection");
+  const [testResult, setTestResult] = useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
 
   const draftRef = useRef<Record<string, any> | undefined>(
     tabId
@@ -214,6 +247,10 @@ function SourceConnectionForm({
   } = form;
 
   const selectedType = watch("type");
+  // The server refuses a change by someone who may not make it; say so first.
+  const readOnly = connector
+    ? connector.canEdit === false
+    : currentWorkspace?.role === "viewer";
 
   useEffect(() => {
     if (connector) {
@@ -232,6 +269,8 @@ function SourceConnectionForm({
     }
     if (schemas[selectedType]) {
       setSchema(schemas[selectedType]);
+      // A second fetch that raced the first answered null; the schema is here.
+      setSchemaError(null);
       const currentValues = form.getValues();
       schemas[selectedType].fields.forEach((field: ConnectorFieldSchema) => {
         if (field.type === "object_array" && !currentValues[field.name]) {
@@ -474,6 +513,22 @@ function SourceConnectionForm({
       console.error("[SourceConnectionForm] onSubmit threw", err);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  // Test the saved connection: the server uses the stored credential.
+  const runTest = async () => {
+    if (!currentWorkspace || !connector?._id) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      setTestResult(
+        await useSourceConnectionEntitiesStore
+          .getState()
+          .test(currentWorkspace.id, connector._id),
+      );
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -982,7 +1037,10 @@ function SourceConnectionForm({
           {schemaError}
         </Alert>
       )}
-      {schema && schema.fields.map(f => renderDynamicField(f, form))}
+      {schema &&
+        schema.fields
+          .filter(f => isFieldShown(f, schema.fields, watch))
+          .map(f => renderDynamicField(f, form))}
       {!schemaLoading && !schema && (
         <Typography
           sx={{
@@ -1115,6 +1173,14 @@ function SourceConnectionForm({
         </Alert>
       )}
 
+      {readOnly && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {currentWorkspace?.role === "viewer"
+            ? "Viewers can see source connections but not change them."
+            : "You can change only the source connections you created. Ask the workspace owner or an admin."}
+        </Alert>
+      )}
+
       {typeSelect}
 
       {selectedType && (
@@ -1179,9 +1245,33 @@ function SourceConnectionForm({
           {basicInformationSection}
           {connectionConfigSection}
           {advancedSettingsSection}
+          {testResult && (
+            <Alert
+              severity={testResult.success ? "success" : "error"}
+              sx={{ mt: 2 }}
+              onClose={() => setTestResult(null)}
+            >
+              {testResult.message ||
+                (testResult.success ? "Connected" : "The test failed")}
+            </Alert>
+          )}
           <Box
             sx={{ display: "flex", justifyContent: "flex-end", gap: 1, mt: 2 }}
           >
+            {connector?._id && (
+              <Button
+                onClick={() => void runTest()}
+                disabled={testing || isSubmitting || isDirty}
+                sx={{ mr: "auto" }}
+                startIcon={
+                  testing ? (
+                    <CircularProgress size={16} color="inherit" />
+                  ) : undefined
+                }
+              >
+                {testing ? "Testing…" : "Test connection"}
+              </Button>
+            )}
             <Button onClick={onClose} disabled={isSubmitting}>
               Cancel
             </Button>
@@ -1189,7 +1279,7 @@ function SourceConnectionForm({
               type="submit"
               variant="contained"
               disableElevation
-              disabled={isSubmitting}
+              disabled={isSubmitting || readOnly}
               startIcon={
                 isSubmitting ? (
                   <CircularProgress size={16} color="inherit" />
@@ -1227,7 +1317,32 @@ function SourceConnectionForm({
       sx={{ p: 2, maxWidth: "800px", mx: "auto" }}
       data-form-type="other"
     >
-      {formContent}
+      {connector?._id && (
+        <Tabs
+          value={tab}
+          onChange={(_, value) => setTab(value)}
+          sx={{
+            minHeight: 40,
+            borderBottom: 1,
+            borderColor: "divider",
+            "& .MuiTab-root": { minHeight: 40, textTransform: "none" },
+          }}
+        >
+          <Tab value="connection" label="Connection" />
+          <Tab value="access" label="Access" />
+        </Tabs>
+      )}
+      {tab === "access" && connector?._id ? (
+        <Box sx={{ py: 2 }}>
+          <ConnectionWritersPanel
+            kind="source"
+            connectionId={connector._id}
+            connectionName={connector.name || "this connection"}
+          />
+        </Box>
+      ) : (
+        formContent
+      )}
 
       <Snackbar
         open={!!snackbarMessage}

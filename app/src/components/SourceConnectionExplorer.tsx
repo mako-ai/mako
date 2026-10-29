@@ -1,11 +1,16 @@
 import { useEffect, useState, useMemo } from "react";
 import {
+  SOURCE_CONNECTION_KIND_LABEL,
+  sourceConnectionKind,
+} from "../lib/source-connection-kind";
+import {
   Box,
   Typography,
   IconButton,
   CircularProgress,
   Tooltip,
   MenuItem,
+  Chip,
 } from "@mui/material";
 import {
   Plus as AddIcon,
@@ -36,6 +41,7 @@ interface SourceConnectionRow {
   type: string;
   isActive: boolean;
   workspaceId: string;
+  canEdit?: boolean;
 }
 
 function SourceConnectionExplorer() {
@@ -162,6 +168,20 @@ function SourceConnectionExplorer() {
     );
   };
 
+  // Built-in, Workspace or Custom API, from the type alone.
+  const getKindBadge = (node: ResourceTreeNode) => {
+    const src = connectorById.get(node.id);
+    if (!src) return null;
+    return (
+      <Chip
+        size="small"
+        variant="outlined"
+        label={SOURCE_CONNECTION_KIND_LABEL[sourceConnectionKind(src.type)]}
+        sx={{ height: 18, fontSize: 10, "& .MuiChip-label": { px: 0.75 } }}
+      />
+    );
+  };
+
   const activeConnectorId = useMemo(() => {
     if (!activeConsoleId) return null;
     const tab = consoleTabs.find(
@@ -175,13 +195,18 @@ function SourceConnectionExplorer() {
 
   const reveal = useExplorerRevealStore(selectRevealFor("connectors"));
 
+  // Viewers read source connections; members and up create them.
+  const canCreate = currentWorkspace?.role !== "viewer";
+
   const actions = (
     <>
-      <Tooltip title="Add source connection">
-        <IconButton size="small" onClick={handleAdd}>
-          <AddIcon size={20} strokeWidth={2} />
-        </IconButton>
-      </Tooltip>
+      {canCreate && (
+        <Tooltip title="Add source connection">
+          <IconButton size="small" onClick={handleAdd}>
+            <AddIcon size={20} strokeWidth={2} />
+          </IconButton>
+        </Tooltip>
+      )}
       <Tooltip title="Refresh">
         <IconButton size="small" onClick={fetchSources}>
           <RefreshIcon size={20} strokeWidth={2} />
@@ -222,6 +247,7 @@ function SourceConnectionExplorer() {
               revealNodeId={reveal?.nodeId}
               revealNonce={reveal?.nonce}
               getItemIcon={getItemIcon}
+              getRightAdornment={getKindBadge}
               hideFolderIcon
               isFolderExpanded={() => true}
               onToggleFolder={() => {}}
@@ -234,6 +260,10 @@ function SourceConnectionExplorer() {
               getContextMenuItems={(node, { closeMenu }) => {
                 const src = connectorById.get(node.id);
                 if (!src) return null;
+                // Only who may change it may delete it (the server checks too).
+                // An empty list, not null: null falls back to the tree's own
+                // menu (Rename).
+                if (src.canEdit === false) return [];
                 return [
                   <MenuItem
                     key="delete"
