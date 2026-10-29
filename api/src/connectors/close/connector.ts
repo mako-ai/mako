@@ -721,6 +721,8 @@ export class CloseConnector extends BaseConnector {
         "contacts",
         "users",
         "custom_fields",
+        "tasks",
+        "meetings",
       ],
     };
   }
@@ -861,6 +863,8 @@ export class CloseConnector extends BaseConnector {
       "opportunity_statuses",
       "outcomes",
       "groups",
+      "tasks",
+      "meetings",
     ];
 
     const activitySubEntities = CLOSE_ACTIVITY_TYPES.map(
@@ -954,6 +958,19 @@ export class CloseConnector extends BaseConnector {
         description: "User groups (functional teams, e.g. Sales / CSM)",
         layoutSuggestion: lookupLayout,
       },
+      {
+        name: "tasks",
+        label: "Tasks",
+        description: "Tasks of every type, open and completed",
+        layoutSuggestion: defaultLayout,
+      },
+      {
+        name: "meetings",
+        label: "Meetings",
+        description:
+          "Meeting activities from the Meetings endpoint (own table, separate from activities:Meeting)",
+        layoutSuggestion: defaultLayout,
+      },
     ];
   }
 
@@ -995,6 +1012,10 @@ export class CloseConnector extends BaseConnector {
 
     if (entity === "groups") {
       return await this.fetchGroupsChunk(options);
+    }
+
+    if (entity in CloseConnector.LIST_ENTITY_ENDPOINTS) {
+      return await this.fetchListEntityChunk(entity, options);
     }
 
     if (entity in CloseConnector.SIMPLE_ENTITY_ENDPOINTS) {
@@ -2048,6 +2069,15 @@ export class CloseConnector extends BaseConnector {
       return;
     }
 
+    // Tasks / meetings — `_skip` pagination with a `since` filter.
+    if (entity in CloseConnector.LIST_ENTITY_ENDPOINTS) {
+      await this.fetchListEntityChunk(entity, {
+        ...options,
+        maxIterations: Number.MAX_SAFE_INTEGER,
+      } as ResumableFetchOptions);
+      return;
+    }
+
     // Simple entities (statuses, types) — fetch all via pagination
     if (entity in CloseConnector.SIMPLE_ENTITY_ENDPOINTS) {
       await this.fetchSimpleEntityChunk(entity, options as any);
@@ -2287,6 +2317,118 @@ export class CloseConnector extends BaseConnector {
     custom_object_types: "/custom_object_type/",
     outcomes: "/outcome/",
   };
+
+  /**
+   * List endpoints paged with `_skip`/`_limit` that also take a server-side
+   * time filter, so `since` narrows the request instead of being ignored.
+   *
+   * - `tasks`: `/task/` filters on `date_updated__gte` (real updated-since).
+   *   `_type=all` because the endpoint returns only `lead` tasks by default.
+   *   Ordered by `date_created` (the only stable order `/task/` offers) so
+   *   `_skip` pages do not reshuffle as tasks are edited.
+   * - `meetings`: `/activity/meeting/` filters on `date_created__gte` only —
+   *   it has no `date_updated` filter, so incremental misses later edits
+   *   (declared `created-anchor`). `activities:Meeting` (Search API) is the
+   *   updated-since alternative.
+   *
+   * Like the existing offset entities, the filter is sent as a date
+   * (`YYYY-MM-DD`): inclusive of the whole `since` day, so a run re-reads at
+   * most a day of rows (idempotent upserts) and never skips any.
+   */
+  private static readonly LIST_ENTITY_ENDPOINTS: Record<
+    string,
+    {
+      endpoint: string;
+      sinceParam: string;
+      params?: Record<string, string>;
+    }
+  > = {
+    tasks: {
+      endpoint: "/task/",
+      sinceParam: "date_updated__gte",
+      params: { _type: "all", _order_by: "date_created" },
+    },
+    meetings: {
+      endpoint: "/activity/meeting/",
+      sinceParam: "date_created__gte",
+    },
+  };
+
+  private async fetchListEntityChunk(
+    entity: string,
+    options: ResumableFetchOptions,
+  ): Promise<FetchState> {
+    const { onBatch, onProgress, since, state } = options;
+
+    if (state && !state.hasMore) {
+      return {
+        totalProcessed: state.totalProcessed,
+        hasMore: false,
+        iterationsInChunk: 0,
+      };
+    }
+
+    const spec = CloseConnector.LIST_ENTITY_ENDPOINTS[entity];
+    if (!spec) throw new Error(`No endpoint for entity: ${entity}`);
+
+    const api = this.getCloseClient();
+    const batchSize = options.batchSize || this.getBatchSize();
+    const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
+    const maxIterations = options.maxIterations || 10;
+
+    let offset = state?.offset || 0;
+    let recordCount = state?.totalProcessed || 0;
+    let hasMore = true;
+    let iterations = 0;
+
+    while (hasMore && iterations < maxIterations) {
+      const params: Record<string, string | number> = {
+        ...spec.params,
+        _limit: batchSize,
+        _skip: offset,
+      };
+      if (since) {
+        params[spec.sinceParam] = since.toISOString().split("T")[0];
+      }
+
+      try {
+        const response = await api.get(spec.endpoint, { params });
+        const data = response.data.data || [];
+
+        if (data.length > 0) {
+          await onBatch(data);
+          recordCount += data.length;
+          if (onProgress) onProgress(recordCount, undefined);
+        }
+
+        hasMore = response.data.has_more || false;
+        if (hasMore) {
+          offset += batchSize;
+          iterations++;
+          await this.sleep(rateLimitDelay);
+        }
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 429) {
+          const retryAfter = parseInt(
+            error.response.headers["retry-after"] || "60",
+          );
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
+          await this.sleep(retryAfter * 1000);
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    return {
+      offset,
+      totalProcessed: recordCount,
+      hasMore,
+      iterationsInChunk: iterations,
+    };
+  }
 
   /**
    * Fetch user groups (functional teams). Unlike the SIMPLE_ENTITY_ENDPOINTS,
@@ -2542,6 +2684,10 @@ export class CloseConnector extends BaseConnector {
         custom_activity_types: { mode: "none" },
         custom_object_types: { mode: "none" },
         custom_objects: { mode: "none" },
+        // `/task/` honours `date_updated__gte`.
+        tasks: { mode: "native", anchorField: "date_updated__gte" },
+        // `/activity/meeting/` has no updated filter — creation time only.
+        meetings: { mode: "created-anchor", anchorField: "date_created__gte" },
       },
     };
   }
