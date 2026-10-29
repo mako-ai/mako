@@ -15,6 +15,11 @@ interface SourceConnectionEntity {
   createdAt: string;
   updatedAt: string;
   workspaceId: string;
+  /**
+   * Whether the signed-in person may edit, disable or delete it: owners and
+   * admins any, members the ones they created, viewers none.
+   */
+  canEdit?: boolean;
 }
 
 interface ApiResponse<T> {
