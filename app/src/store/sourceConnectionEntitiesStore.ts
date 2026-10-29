@@ -48,6 +48,11 @@ interface EntitiesState {
     workspaceId: string,
     connectorId: string,
   ) => Promise<{ success: boolean; error: string | null }>;
+  /** Test the saved connection with its stored credential. */
+  test: (
+    workspaceId: string,
+    connectorId: string,
+  ) => Promise<{ success: boolean; message: string }>;
 }
 
 function makeKey(workspaceId: string, connectorId: string) {
@@ -251,6 +256,28 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
         return {
           success: false,
           error: err?.message || "Failed to delete",
+        };
+      }
+    },
+    test: async (workspaceId, connectorId) => {
+      try {
+        const body = unwrapBody(
+          await api.POST(
+            "/api/workspaces/{workspaceId}/connections/sources/{id}/test",
+            { params: { path: { workspaceId, id: connectorId } } },
+          ),
+        ) as ApiResponse<{ success?: boolean; message?: string }>;
+        if (body.success && body.data) {
+          return {
+            success: body.data.success === true,
+            message: body.data.message || "",
+          };
+        }
+        return { success: false, message: body.error || "The test failed" };
+      } catch (err: any) {
+        return {
+          success: false,
+          message: err?.message || "The test failed",
         };
       }
     },
