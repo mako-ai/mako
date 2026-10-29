@@ -6097,7 +6097,6 @@ export interface components {
             description: string;
             author?: string;
             supportedEntities: string[];
-            syncable?: boolean;
             webhook: {
                 supported: boolean;
                 provisioning: {

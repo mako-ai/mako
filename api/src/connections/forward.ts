@@ -2,7 +2,7 @@
  * Send one request to a connection's service with its credential, and give
  * back what the service answered without the credential in it.
  *
- * The path must stay under the credential type's base URL. The request goes
+ * The path must stay under the connection's base URL (connections/callable.ts). The request goes
  * through the SSRF-hardened `safeRequest` (no private addresses, no
  * redirects followed) and waits at the key's rate gate. Response headers the
  * credential may travel in, cookies, and any header or body text holding a
@@ -16,7 +16,12 @@ import {
 } from "../services/safe-fetch.service";
 import { throttledRequest, type RateGateLane } from "../connectors/rate-gate";
 import type { ISourceConnection } from "../database/workspace-schema";
-import type { CredentialType, OutgoingRequest } from "./credential-types";
+import { applyCredential, type OutgoingRequest } from "./credential-types";
+import {
+  secretHeadersOf,
+  secretsOf,
+  type CallableConnection,
+} from "./callable";
 
 /** A caller mistake or a refusal: the message is safe to show. */
 export class ConnectionRequestError extends Error {
@@ -193,12 +198,12 @@ export function formEncode(value: unknown, prefix = ""): string[] {
 
 function encodeBody(
   body: unknown,
-  credentialType: CredentialType,
+  callable: CallableConnection,
   headers: Record<string, string>,
 ): string | undefined {
   if (body === undefined || body === null) return undefined;
   if (typeof body === "string") return body;
-  if (credentialType.bodyEncoding === "form") {
+  if (callable.bodyEncoding === "form") {
     headers["content-type"] ??= "application/x-www-form-urlencoded";
     return formEncode(body).join("&");
   }
@@ -235,10 +240,10 @@ function containsSecret(text: string, secrets: string[]): boolean {
 
 /** Values long enough to search for: a one-letter "secret" would mangle every body. */
 function searchableSecrets(
-  credentialType: CredentialType,
+  callable: CallableConnection,
   config: ForwardConnection["config"],
 ): string[] {
-  const values = credentialType.secrets(config).filter(s => s.length >= 6);
+  const values = secretsOf(callable, config).filter(s => s.length >= 6);
   // Also the encodings a credential is sent in.
   const encoded = values.flatMap(s => [
     Buffer.from(`${s}:`).toString("base64"),
@@ -254,7 +259,7 @@ function searchableSecrets(
  */
 export async function forward(
   connection: ForwardConnection,
-  credentialType: CredentialType,
+  callable: CallableConnection,
   input: ForwardInput,
   options: {
     signal?: AbortSignal;
@@ -267,10 +272,10 @@ export async function forward(
     throw new ConnectionRequestError(`Method ${input.method} is not allowed.`);
   }
   const config = connection.config ?? {};
-  const url = urlUnder(credentialType.baseUrl(config), input.path, input.query);
+  const url = urlUnder(callable.baseUrl(config), input.path, input.query);
   const headers = callerHeaders(input.headers);
-  if (input.idempotencyKey && credentialType.idempotencyHeader) {
-    headers[credentialType.idempotencyHeader] = input.idempotencyKey;
+  if (input.idempotencyKey && callable.idempotencyHeader) {
+    headers[callable.idempotencyHeader] = input.idempotencyKey;
   }
   const request: OutgoingRequest = {
     method,
@@ -279,11 +284,11 @@ export async function forward(
     body:
       method === "GET" || method === "HEAD"
         ? undefined
-        : encodeBody(input.body, credentialType, headers),
+        : encodeBody(input.body, callable, headers),
   };
-  credentialType.authorize(request, config);
+  applyCredential(request, callable.credential(config));
 
-  const gate = credentialType.rateGate(connection);
+  const gate = callable.rateGate(connection);
   const answer = await throttledRequest(
     gate.key || `connection:${String(connection._id)}`,
     () =>
@@ -297,19 +302,19 @@ export async function forward(
     gate.minDelayMs,
     options.lane ?? "proxy",
   );
-  return clean(answer, credentialType, config);
+  return clean(answer, callable, config);
 }
 
 /** The service's answer, without the credential in its headers or body. */
 export function clean(
   answer: SafeRequestResult,
-  credentialType: CredentialType,
+  callable: CallableConnection,
   config: ForwardConnection["config"],
 ): ForwardResult {
-  const secrets = searchableSecrets(credentialType, config);
+  const secrets = searchableSecrets(callable, config);
   const dropped = new Set([
     ...RESPONSE_HEADER_BLOCKLIST,
-    ...credentialType.secretHeaders(config).map(h => h.toLowerCase()),
+    ...secretHeadersOf(callable, config).map(h => h.toLowerCase()),
   ]);
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(answer.headers)) {
