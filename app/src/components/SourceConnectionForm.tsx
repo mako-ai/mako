@@ -214,6 +214,10 @@ function SourceConnectionForm({
   } = form;
 
   const selectedType = watch("type");
+  // The server refuses a change by someone who may not make it; say so first.
+  const readOnly = connector
+    ? connector.canEdit === false
+    : currentWorkspace?.role === "viewer";
 
   useEffect(() => {
     if (connector) {
@@ -1115,6 +1119,14 @@ function SourceConnectionForm({
         </Alert>
       )}
 
+      {readOnly && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {currentWorkspace?.role === "viewer"
+            ? "Viewers can see source connections but not change them."
+            : "You can change only the source connections you created. Ask the workspace owner or an admin."}
+        </Alert>
+      )}
+
       {typeSelect}
 
       {selectedType && (
@@ -1189,7 +1201,7 @@ function SourceConnectionForm({
               type="submit"
               variant="contained"
               disableElevation
-              disabled={isSubmitting}
+              disabled={isSubmitting || readOnly}
               startIcon={
                 isSubmitting ? (
                   <CircularProgress size={16} color="inherit" />
