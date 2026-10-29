@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   APP_FRAME_SANDBOX,
   appFrameForMessage,
   appFrameMessageOrigin,
   appFrameSandbox,
+  reachableViewUrl,
+  resetAppHostProbes,
 } from "./app-frame";
 
 const page = "https://app.mako.ai/workspaces/w/apps/a";
@@ -86,5 +88,88 @@ describe("appFrameForMessage", () => {
     expect(
       appFrameForMessage({ source: {} as Window, origin }, [frame], page),
     ).toBeNull();
+  });
+});
+
+describe("reachableViewUrl", () => {
+  const foreign = `https://${appId}.makousercontent.com/api/apps-preview/pub.x.y/`;
+  const ok = () =>
+    vi.fn(
+      async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+
+  beforeEach(() => resetAppHostProbes());
+
+  it("keeps a same-origin URL without probing", async () => {
+    const fetchImpl = ok();
+    expect(
+      await reachableViewUrl("/api/apps-preview/pub.x.y/", {
+        fetchImpl,
+        pageHref: page,
+      }),
+    ).toBe("/api/apps-preview/pub.x.y/");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("keeps the app's own origin when its host answers the ping", async () => {
+    const fetchImpl = ok();
+    expect(await reachableViewUrl(foreign, { fetchImpl, pageHref: page })).toBe(
+      foreign,
+    );
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `https://${appId}.makousercontent.com/__mako/ping`,
+      expect.objectContaining({ mode: "cors", credentials: "omit" }),
+    );
+  });
+
+  it("falls back to Mako's origin when a proxy blocks the apps domain", async () => {
+    // A blocked CORS fetch rejects; a proxy page that passes CORS is not JSON.
+    for (const fetchImpl of [
+      vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      }),
+      vi.fn(async () => new Response("<html>zscaler</html>", { status: 200 })),
+      vi.fn(async () => new Response("blocked", { status: 403 })),
+    ]) {
+      resetAppHostProbes();
+      expect(
+        await reachableViewUrl(`${foreign}?region=ch`, {
+          fetchImpl,
+          pageHref: page,
+        }),
+      ).toBe("/api/apps-preview/pub.x.y/?region=ch");
+    }
+  });
+
+  it("gives up on a hung probe after the timeout", async () => {
+    const fetchImpl = vi.fn(
+      (_url: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        }),
+    );
+    expect(
+      await reachableViewUrl(foreign, {
+        fetchImpl,
+        pageHref: page,
+        timeoutMs: 10,
+      }),
+    ).toBe("/api/apps-preview/pub.x.y/");
+  });
+
+  it("remembers a block for every app host, without probing again", async () => {
+    const blocked = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    await reachableViewUrl(foreign, { fetchImpl: blocked, pageHref: page });
+    const other =
+      "https://33d9b603172c133a8427e813.makousercontent.com/api/apps-preview/pub.a.b/";
+    const fetchImpl = ok();
+    expect(await reachableViewUrl(other, { fetchImpl, pageHref: page })).toBe(
+      "/api/apps-preview/pub.a.b/",
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
