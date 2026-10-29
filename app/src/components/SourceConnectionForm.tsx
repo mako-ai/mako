@@ -16,6 +16,8 @@ import {
   IconButton,
   Tooltip,
   Snackbar,
+  Tab,
+  Tabs,
 } from "@mui/material";
 import {
   Visibility,
@@ -36,6 +38,7 @@ import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { connectorIconUrl } from "../lib/connector-icon";
 import { EntityHistoryButton } from "./EntityHistoryButton";
 import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
+import ConnectionWritersPanel from "./ConnectionWritersPanel";
 
 /** `ws:acme` — a connector defined in the workspace repo (`connectors/acme/`). */
 const WORKSPACE_TYPE_PREFIX = "ws:";
@@ -160,6 +163,7 @@ function SourceConnectionForm({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [tab, setTab] = useState<"connection" | "access">("connection");
   const [testResult, setTestResult] = useState<{
     success: boolean;
     message: string;
@@ -1301,7 +1305,32 @@ function SourceConnectionForm({
       sx={{ p: 2, maxWidth: "800px", mx: "auto" }}
       data-form-type="other"
     >
-      {formContent}
+      {connector?._id && (
+        <Tabs
+          value={tab}
+          onChange={(_, value) => setTab(value)}
+          sx={{
+            minHeight: 40,
+            borderBottom: 1,
+            borderColor: "divider",
+            "& .MuiTab-root": { minHeight: 40, textTransform: "none" },
+          }}
+        >
+          <Tab value="connection" label="Connection" />
+          <Tab value="access" label="Access" />
+        </Tabs>
+      )}
+      {tab === "access" && connector?._id ? (
+        <Box sx={{ py: 2 }}>
+          <ConnectionWritersPanel
+            kind="source"
+            connectionId={connector._id}
+            connectionName={connector.name || "this connection"}
+          />
+        </Box>
+      ) : (
+        formContent
+      )}
 
       <Snackbar
         open={!!snackbarMessage}

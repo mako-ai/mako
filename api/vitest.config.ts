@@ -29,6 +29,7 @@ export default defineConfig({
       // Connections: credential types, the proxy, writers on source connections.
       "src/connections/callable.test.ts",
       "src/connections/rate-gate.test.ts",
+      "src/routes/source-connection-writers.test.ts",
     ],
     exclude: [
       "**/node_modules/**",

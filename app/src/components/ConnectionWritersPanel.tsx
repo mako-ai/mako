@@ -3,9 +3,12 @@
  * the workspace reads; only the people and workflows listed write, each
  * anywhere or only to one schema or table.
  *
- * Changes save as they are made. While the workspace only reports, the tab
- * also shows who really wrote here lately, to allow them in one click before
- * anything is refused.
+ * Changes save as they are made. The tab also shows who tried to write here
+ * lately and was refused, to allow them in one click.
+ *
+ * Both kinds of connection: a database (`where` is a schema or table) and a
+ * source connection, written through Mako's proxy (`where` is a path, and
+ * live reads can be turned off).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -16,8 +19,10 @@ import {
   Button,
   Chip,
   CircularProgress,
+  FormControlLabel,
   IconButton,
   Stack,
+  Switch,
   TextField,
   Tooltip,
   Typography,
@@ -27,6 +32,7 @@ import {
   BookOpen,
   Database,
   Folder,
+  Link2,
   PenLine,
   Route,
   Table2,
@@ -41,13 +47,22 @@ import {
   type ConnectionWriters,
 } from "../store/schemaStore";
 import { useWorkflowsStore } from "../store/workflowsStore";
+import {
+  useSourceConnectionEntitiesStore,
+  type SourceConnectionWriters,
+} from "../store/sourceConnectionEntitiesStore";
+
+export type ConnectionKind = "database" | "source";
 
 type Who = { principal: string; label: string; kind: "person" | "workflow" };
 
 const ANYWHERE = "Anywhere";
 
-function whereLabel(where?: string | null) {
+type Place = { text: string; kind: "anywhere" | "schema" | "table" | "path" };
+
+function whereLabel(where?: string | null): Place {
   if (!where) return { text: "Anywhere", kind: "anywhere" as const };
+  if (where.startsWith("/")) return { text: where, kind: "path" as const };
   return where.includes(".")
     ? { text: where, kind: "table" as const }
     : { text: where, kind: "schema" as const };
@@ -85,17 +100,31 @@ function initials(text: string) {
   return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "?";
 }
 
+/** Paths a source connection was written to lately: `POST /task/` → `/task/`. */
+function recentPaths(state: ConnectionWriters | null): string[] {
+  const paths = (state?.recent ?? []).flatMap(r =>
+    r.targets.map(t => t.slice(t.indexOf(" ") + 1)),
+  );
+  return [...new Set(paths)].slice(0, 20);
+}
+
 export default function ConnectionWritersPanel({
   connectionId,
   connectionName,
+  kind = "database",
 }: {
   connectionId: string;
   connectionName: string;
+  kind?: ConnectionKind;
 }) {
+  const source = kind === "source";
   const { currentWorkspace, members, loadMembers } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const getWriters = useSchemaStore(s => s.getConnectionWriters);
-  const setWriters = useSchemaStore(s => s.setConnectionWriters);
+  const getDatabaseWriters = useSchemaStore(s => s.getConnectionWriters);
+  const setDatabaseWriters = useSchemaStore(s => s.setConnectionWriters);
+  const getSourceWriters = useSourceConnectionEntitiesStore(s => s.getWriters);
+  const setSourceWriters = useSourceConnectionEntitiesStore(s => s.setWriters);
+  const getWriters = source ? getSourceWriters : getDatabaseWriters;
   const ensureTreeRoot = useSchemaStore(s => s.ensureTreeRoot);
   const ensureTreeChildren = useSchemaStore(s => s.ensureTreeChildren);
   const fetchWorkflows = useWorkflowsStore(s => s.fetchOverview);
@@ -103,7 +132,13 @@ export default function ConnectionWritersPanel({
     workspaceId ? s.overviewByWorkspace[workspaceId]?.workflows : undefined,
   );
 
-  const [state, setState] = useState<ConnectionWriters | null>(null);
+  const [state, setState] = useState<
+    ConnectionWriters | SourceConnectionWriters | null
+  >(null);
+  const liveReads =
+    !source || (state as SourceConnectionWriters | null)?.liveReads === true;
+  const callable =
+    !source || (state as SourceConnectionWriters | null)?.callable !== false;
   const [namespaces, setNamespaces] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -125,6 +160,8 @@ export default function ConnectionWritersPanel({
     void load();
     void loadMembers?.();
     void fetchWorkflows(workspaceId);
+    // A source connection has no schemas: its places are paths.
+    if (source) return;
     void writePlaces(
       workspaceId,
       connectionId,
@@ -141,6 +178,7 @@ export default function ConnectionWritersPanel({
     fetchWorkflows,
     ensureTreeRoot,
     ensureTreeChildren,
+    source,
   ]);
 
   const people = useMemo<Who[]>(
@@ -175,18 +213,27 @@ export default function ConnectionWritersPanel({
     [people, flows],
   );
 
-  const save = async (next: ConnectionWriter[]): Promise<boolean> => {
+  const save = async (
+    next: ConnectionWriter[],
+    nextLiveReads?: boolean,
+  ): Promise<boolean> => {
     if (!workspaceId) return false;
     setBusy(true);
     try {
-      await setWriters(
-        workspaceId,
-        connectionId,
-        next.map(w => ({
-          principal: w.principal,
-          ...(w.where ? { where: w.where } : {}),
-        })),
-      );
+      const writers = next.map(w => ({
+        principal: w.principal,
+        ...(w.where ? { where: w.where } : {}),
+      }));
+      if (source) {
+        await setSourceWriters(
+          workspaceId,
+          connectionId,
+          writers,
+          nextLiveReads,
+        );
+      } else {
+        await setDatabaseWriters(workspaceId, connectionId, writers);
+      }
       await load();
       return true;
     } catch (err) {
@@ -247,8 +294,11 @@ export default function ConnectionWritersPanel({
       >
         <Summary
           icon={<BookOpen size={16} />}
-          label="Read"
-          value="Everyone in the workspace"
+          label={source ? "Read live" : "Read"}
+          value={
+            liveReads ? "Everyone in the workspace" : "Off: synced tables only"
+          }
+          tone={liveReads ? "normal" : "muted"}
         />
         <Summary
           icon={<PenLine size={16} />}
@@ -262,13 +312,41 @@ export default function ConnectionWritersPanel({
         />
       </Box>
 
+      {source && !callable && (
+        <Alert severity="info">
+          Mako cannot call this connection&apos;s service yet; the list applies
+          once it can.
+        </Alert>
+      )}
+
+      {source && state.canEdit && (
+        <FormControlLabel
+          control={
+            <Switch
+              size="small"
+              checked={liveReads}
+              disabled={busy}
+              onChange={(_, checked) => void save(state.writers, checked)}
+            />
+          }
+          label={
+            <Typography variant="body2">
+              Live reads: workflows and agents may read {connectionName}{" "}
+              directly, not only its synced tables. Off until an admin turns it
+              on (a new Custom API starts on).
+            </Typography>
+          }
+        />
+      )}
+
       {/* Allowed */}
       <Box>
         <SectionTitle>Allowed to write</SectionTitle>
         {state.writers.length === 0 ? (
           <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
-            No one writes through {connectionName}. Syncs, flows and dbt are not
-            affected.
+            {source
+              ? `No one writes through ${connectionName}. Syncs are not affected.`
+              : `No one writes through ${connectionName}. Syncs, flows and dbt are not affected.`}
           </Typography>
         ) : (
           <Box
@@ -366,7 +444,10 @@ export default function ConnectionWritersPanel({
             <Autocomplete
               size="small"
               freeSolo
-              options={[ANYWHERE, ...namespaces]}
+              options={[
+                ANYWHERE,
+                ...(source ? recentPaths(state) : namespaces),
+              ]}
               value={where}
               onChange={(_, value) => setWhere(value ?? ANYWHERE)}
               onInputChange={(_, value) => setWhere(value || ANYWHERE)}
@@ -374,7 +455,9 @@ export default function ConnectionWritersPanel({
                 <TextField
                   {...params}
                   margin="none"
-                  placeholder="schema or schema.table"
+                  placeholder={
+                    source ? "path, e.g. /task/" : "schema or schema.table"
+                  }
                 />
               )}
             />
@@ -495,14 +578,12 @@ function PrincipalAvatar({ who }: { who: Who }) {
   );
 }
 
-function PlaceChip({
-  place,
-}: {
-  place: { text: string; kind: "anywhere" | "schema" | "table" };
-}) {
+function PlaceChip({ place }: { place: Place }) {
   const icon =
     place.kind === "anywhere" ? (
       <Database size={14} />
+    ) : place.kind === "path" ? (
+      <Link2 size={14} />
     ) : place.kind === "schema" ? (
       <Folder size={14} />
     ) : (
