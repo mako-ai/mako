@@ -4,6 +4,7 @@ import type { AuthEnv } from "../openapi/core";
 import { consoleRoutes } from "./consoles";
 import { realtimeRoutes } from "./realtime";
 import { sourceConnectionRoutes } from "./source-connections";
+import { connectionSandboxFetchRoutes } from "./connection-sandbox-fetch";
 import { customPromptRoutes } from "./custom-prompt";
 import { skillsRoutes } from "./skills";
 import { dbtRoutes } from "./dbt.routes";
@@ -134,6 +135,9 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   // Also public, same token: processes inside a sandbox reporting the box's
   // own state (branch, dirty files, dev servers) the moment it changes.
   app.route("/api/apps-box", appsBoxRoutes);
+  // Also public, gated by a run token: a proxied workspace connector's
+  // ctx.http, with placeholders where its keys would be.
+  app.route("/api/connections/sandbox-fetch", connectionSandboxFetchRoutes);
   // Legacy aliases from before the apps-v2 → apps rename. Live sandboxes have
   // the old git-remote URL baked into their clones, and already-running box
   // agents post state to the old box path; both must keep working until every

@@ -68,6 +68,24 @@ by: a spec that omits it is refused at push time, because an absent field list
 cannot be told apart from one that failed to parse, and guessing would store a
 customer's API key in plaintext. Mark every secret `airbyte_secret: true`.
 
+## `credentials: proxied`: the connector never holds a key
+
+```yaml
+runtime: node
+credentials: proxied # default: raw
+```
+
+With `proxied`, every secret field (`airbyte_secret: true`) reaches the
+connector as a placeholder, `mako-secret:<connectionId>/<field>`, and
+`ctx.http` (and `ctx.createHttp`) sends each request through Mako, which puts
+the real value where the placeholder is (URL, headers, a basic-auth header,
+body) and removes it from the answer. Use the placeholder exactly as you
+would the key: `Authorization: Bearer ${ctx.config.apiKey}`,
+`?apikey=${ctx.config.apiKey}`, basic auth with it as the username or
+password. It works only for requests made through `ctx.http`: a connector
+that calls `fetch` itself, signs requests, or exchanges the key for a token
+in its own code must stay `raw`.
+
 ## Node 22.6 or newer
 
 A connector is TypeScript and is imported with no build step, so the Node that
