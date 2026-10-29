@@ -91,13 +91,16 @@ The SDK also ships a small UI kit — plain ESM and plain CSS (no Tailwind requi
 ```tsx
 import "@makoai/app-sdk/ui.css"; // before ./styles.css, so the app wins
 import { PageHeader, Card, KpiRow, KpiTile, Button, StatusDot,
-  MultiSelect, FreshnessBadge, RefreshAllButton } from "@makoai/app-sdk/ui";
+  MultiSelect, FreshnessBadge, RefreshAllButton, DataTable } from "@makoai/app-sdk/ui";
 ```
 
 - `PageHeader`, `Card`, `KpiRow` / `KpiTile`, `Button`, `StatusDot` — page furniture.
 - `MultiSelect` — controlled filter; an empty selection means "all" unless `emptyMeansAll={false}`. On phones the menu is a bottom sheet.
+- `DataTable` (SDK 2.11+) — the house data table: click-to-sort headers, sticky header, optional pinned first column, right-aligned tabular numbers, a pager footer (25 / 50 / 100 per page), an empty state and CSV export. Columns are declared with `value` (sort/CSV value) and an optional `render`; see the SDK README for the full props.
 - `FreshnessBadge` — presentational: the app decides what "fresh" means and passes a `tone`, a `headline` and per-source rows.
 - `RefreshAllButton` — rebuilds every binding (`refreshBinding`) a few at a time, with a progress modal. Feed it the binding names through a build-time `__APP_BINDING_NAMES__` define in `vite.config.ts` (the scaffold sets this up).
+
+Native `<select>` elements get a token-coloured inset chevron from `ui.css` (SDK 2.11.1+), so they match the `MultiSelect` trigger on macOS; a select with `appearance-none` in its classes draws its own arrow and is left alone.
 
 ## SDK Versions
 
