@@ -112,7 +112,7 @@ export async function reachableViewUrl(
   url: string,
   {
     fetchImpl = fetch,
-    pageHref = window.location.href,
+    pageHref = typeof window === "undefined" ? undefined : window.location.href,
     timeoutMs = APP_HOST_PROBE_TIMEOUT_MS,
   }: {
     fetchImpl?: typeof fetch;
@@ -120,7 +120,8 @@ export async function reachableViewUrl(
     timeoutMs?: number;
   } = {},
 ): Promise<string> {
-  if (!isForeignAppFrame(url, pageHref)) return url;
+  // No page to frame into (a store test outside a DOM): nothing to decide.
+  if (!pageHref || !isForeignAppFrame(url, pageHref)) return url;
   const parsed = new URL(url, pageHref);
   const sameOrigin = `${parsed.pathname}${parsed.search}${parsed.hash}`;
   if (appsDomainBlocked) return sameOrigin;
