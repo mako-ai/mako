@@ -239,8 +239,11 @@ function SourceConnectionExplorer() {
               }}
               getContextMenuItems={(node, { closeMenu }) => {
                 const src = connectorById.get(node.id);
+                if (!src) return null;
                 // Only who may change it may delete it (the server checks too).
-                if (!src || src.canEdit === false) return null;
+                // An empty list, not null: null falls back to the tree's own
+                // menu (Rename).
+                if (src.canEdit === false) return [];
                 return [
                   <MenuItem
                     key="delete"
