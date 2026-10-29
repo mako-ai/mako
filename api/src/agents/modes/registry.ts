@@ -70,6 +70,8 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   inspect_connector: "connectors",
   inspect_connection: "connectors",
   probe_connection: "connectors",
+  // A live READ through a source connection's proxy (writes refused).
+  call_connection: "connectors",
   // Deprecated single-field alias of set_multiple_fields (which updates one
   // or many fields). Its FIELD_PATHS enum makes it one of the heaviest
   // schemas in the catalog, so it stays out of the flow working set.
