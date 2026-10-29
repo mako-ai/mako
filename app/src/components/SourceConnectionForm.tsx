@@ -269,6 +269,8 @@ function SourceConnectionForm({
     }
     if (schemas[selectedType]) {
       setSchema(schemas[selectedType]);
+      // A second fetch that raced the first answered null; the schema is here.
+      setSchemaError(null);
       const currentValues = form.getValues();
       schemas[selectedType].fields.forEach((field: ConnectorFieldSchema) => {
         if (field.type === "object_array" && !currentValues[field.name]) {
