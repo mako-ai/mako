@@ -107,7 +107,7 @@ export function isMcpEndpoint(path: string): boolean {
 
 /** The runtime routes a person's own run of workflow code calls. */
 const WORKFLOW_TEST_ROUTE =
-  /^\/api\/workflows\/runtime\/(query|agent|ai\/[a-z-]+)$/;
+  /^\/api\/workflows\/runtime\/(query|agent|ai\/[a-z-]+|connections\/[^/]+\/request)$/;
 
 /**
  * True when a scoped key with `scopes` may call `method path`. `/api/mcp`
@@ -131,7 +131,7 @@ export function scopedKeyMayAccess(
   }
   // The workflow worker's own routes: source, reports, model calls, the agent.
   // A person's own run of workflow code (`mako workflow run`) calls the same
-  // SQL, model and agent routes with their workflows:run grant, as themselves
+  // SQL, model, agent and connection routes with their workflows:run grant, as themselves
   // (routes/workflows.ts).
   if (/^\/api\/workflows\/runtime\//.test(path)) {
     return (
