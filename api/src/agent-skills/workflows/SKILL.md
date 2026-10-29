@@ -179,7 +179,7 @@ job (`call("dbt_run_job", { ... })`) remains the way to rebuild models.
 
 ## Calling a service through a connection
 
-A source connection (a Close account, a Stripe key, an HTTP API connection
+A source connection (a Close account, a Stripe key, a Custom API connection
 such as Probo) holds a credential. `connection(id)` calls the service with
 it; the workflow never sees the key. Never put an API key in workflow code.
 
@@ -197,11 +197,12 @@ Paths are relative to the connection's base URL and cannot leave it.
 `get`, `post`, `put`, `patch` and `delete` return the body and throw
 `ConnectionError` (with `status` and `body`) at a status of 400 or more;
 `request(method, path, body)` returns `{ status, headers, body }` whatever
-the status. An HTTP API connection with GraphQL on takes
+the status. A Custom API connection with GraphQL on takes
 `post("/", { query, variables })`.
 
-Everyone reads: a GET, a GraphQL query and a Close search are reads. Any
-other request is a write and needs this workflow on the connection's Access
+A GET, a GraphQL query and a Close search are reads. Reads work once live
+reads are on in the connection's Access tab (a Custom API starts on; other
+connections start off, so ask an admin). Any other request is a write and needs this workflow on the connection's Access
 tab, anywhere or only under one path (`/task/`); a refused write throws and
 shows in the Access tab with Allow. Before building a workflow that writes,
 tell the user which connection and which path to allow it on. A test run
