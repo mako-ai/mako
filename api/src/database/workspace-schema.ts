@@ -3755,6 +3755,11 @@ export interface IConnectorDefinition extends Document {
    * the push ran, and only this row remembers which one that was.
    */
   entry: string;
+  /**
+   * From `connector.yaml`: `proxied` gives the sandbox placeholders instead of
+   * secret values (connections/placeholders.ts). Absent: `raw`, as before.
+   */
+  credentials?: "raw" | "proxied";
   /** The commit this folder was read at, so a stale row is recognisable. */
   sha: string;
   /** Blob sha of connector.yaml plus the entry file: the idempotence check. */
@@ -3785,6 +3790,7 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
     slug: { type: String, required: true, trim: true },
     runtime: { type: String, required: true, default: "node" },
     entry: { type: String, required: true, default: "connector.ts" },
+    credentials: { type: String, enum: ["raw", "proxied"] },
     sha: { type: String, required: true },
     sourceSha: { type: String, required: true },
     spec: { type: Schema.Types.Mixed },
