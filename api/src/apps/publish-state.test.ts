@@ -63,6 +63,55 @@ afterEach(async () => {
   await fs.rm(repoDir, { recursive: true, force: true });
 });
 
+describe("readPublishState deploy progress", () => {
+  it("reports the in-flight deploy of a newer commit", async () => {
+    const live = await commit("apps/sales/App.tsx", "feat: v1");
+    const next = await commit("apps/sales/App.tsx", "feat: v2");
+    const state = await readPublishState(repoDir, {
+      branch: "main",
+      appRoot: "apps/sales",
+      publishedSha: live,
+      publishedAt: null,
+      lastDeployError: null,
+      deployProgress: {
+        sha: next,
+        stage: "bindings",
+        startedAt: new Date("2026-10-30T10:00:00Z"),
+        stageStartedAt: new Date("2026-10-30T10:01:00Z"),
+        updatedAt: new Date("2026-10-30T10:05:00Z"),
+        bindings: { total: 4, prepared: 1, current: "deals" },
+      },
+      now: new Date("2026-10-30T10:06:00Z"),
+    });
+    expect(state.upToDate).toBe(false);
+    expect(state.deploy).toMatchObject({
+      sha: next,
+      stage: "bindings",
+      bindings: { total: 4, prepared: 1, current: "deals" },
+      summary:
+        "bindings: 1 of 4 prepared (preparing `deals`), 5 min in this stage",
+    });
+  });
+
+  it("is null when nothing is deploying", async () => {
+    const sha = await commit("apps/sales/App.tsx", "feat: v1");
+    const state = await read(sha);
+    expect(state.deploy).toBeNull();
+    expect(state.note).toBeUndefined();
+  });
+
+  it("says so when main is ahead and nothing is deploying or failed", async () => {
+    // 2026-10-30: a merge at 13:19 UTC went live at 14:32 via the :17
+    // reconcile, with pendingCommits and no error showing meanwhile.
+    const live = await commit("apps/sales/App.tsx", "feat: v1");
+    await commit("apps/sales/App.tsx", "feat: v2");
+    const state = await read(live);
+    expect(state.upToDate).toBe(false);
+    expect(state.deploy).toBeNull();
+    expect(state.note).toContain("No deploy is queued or running");
+  });
+});
+
 describe("readPublishState", () => {
   it("describes the published commit and reads up to date at the tip", async () => {
     const sha = await commit("apps/sales/App.tsx", "feat: seasonality");

@@ -18,6 +18,10 @@ import {
   resolveCommit,
 } from "./repository.service";
 import { appRootFor } from "./worktree.service";
+import {
+  describeDeployProgress,
+  type DeployProgressView,
+} from "./deploy-progress";
 
 export interface PublishedCommit {
   author: string;
@@ -45,6 +49,19 @@ export interface PublishState {
   pendingCommits: number | null;
   /** Why the newest commit is not live, when it is not (cleared on success). */
   lastDeployError: IAppProject["lastDeployError"] | null;
+  /**
+   * The deploy in flight, when there is one: its sha, stage (queued /
+   * bindings / build / publishing), timings, bindings prepared so far, and
+   * `stalled` when the stage stopped moving. Null when nothing is deploying.
+   */
+  deploy: DeployProgressView | null;
+  /**
+   * Set when main has app changes that are not live and nothing explains
+   * it: no deploy in flight and no recorded failure. The push's deploy was
+   * never enqueued or was lost; the hourly reconcile (at :17) or
+   * app_publish deploys it.
+   */
+  note?: string;
 }
 
 export interface PublishStateInput {
@@ -53,6 +70,9 @@ export interface PublishStateInput {
   publishedSha: string | null;
   publishedAt: Date | null;
   lastDeployError: IAppProject["lastDeployError"] | null;
+  deployProgress?: IAppProject["deployProgress"] | null;
+  /** Injectable clock for the deploy timings. */
+  now?: Date;
 }
 
 async function gitOut(repoDir: string, args: string[]): Promise<string | null> {
@@ -140,6 +160,13 @@ export async function readPublishState(
     }
   }
 
+  const deploy = describeDeployProgress(
+    input.deployProgress,
+    publishedSha,
+    input.now,
+  );
+  const unexplained =
+    !!publishedSha && !upToDate && !deploy && !lastDeployError;
   return {
     published: !!publishedSha,
     publishedSha,
@@ -151,6 +178,15 @@ export async function readPublishState(
     upToDate,
     pendingCommits,
     lastDeployError,
+    deploy,
+    ...(unexplained
+      ? {
+          note:
+            "No deploy is queued or running for the newest app commit and " +
+            "none failed. The hourly reconcile (at :17 past the hour) will " +
+            "deploy it; call app_publish to deploy now.",
+        }
+      : {}),
   };
 }
 
@@ -171,5 +207,6 @@ export async function publishState(
     publishedSha: project.publishedSha ?? null,
     publishedAt: project.publishedAt ?? null,
     lastDeployError: project.lastDeployError ?? null,
+    deployProgress: project.deployProgress ?? null,
   });
 }

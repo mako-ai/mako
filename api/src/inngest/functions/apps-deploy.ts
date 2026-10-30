@@ -11,6 +11,11 @@
  * folder differs between `publishedSha` and the head of `main` is, by
  * definition, an app that needs deploying.
  */
+import { recordDeployFailure } from "../../apps/deployment.service";
+import {
+  deployErrorStageFor,
+  markDeployQueued,
+} from "../../apps/deploy-progress";
 import { NonRetriableError } from "inngest";
 import { inngest } from "../client";
 import { loggers } from "../../logging";
@@ -170,6 +175,21 @@ export async function reportDeployFailure(
     : error instanceof Error
       ? error.message
       : String(error ?? "deploy failed");
+  // A failure no stage recorded (a sandbox crash, a timeout, a git error)
+  // used to leave lastDeployError null, so app_publish_status showed a
+  // stale app with no reason. Record it against the stage it died in.
+  if (project?._id && !recorded) {
+    const progress =
+      project.deployProgress?.sha === target.sha
+        ? project.deployProgress
+        : null;
+    await recordDeployFailure(
+      project,
+      target.sha,
+      deployErrorStageFor(progress?.stage),
+      message,
+    );
+  }
   await reportAppDeployStatus({
     ...target,
     state: "failure",
@@ -311,6 +331,9 @@ export async function requestAppDeploys(
   reason: AppsDeployEventData["reason"],
 ): Promise<void> {
   if (appIds.length === 0) return;
+  // "queued" until the deploy function picks it up (two builds run per
+  // workspace at a time). The newest request owns the row.
+  await Promise.all(appIds.map(appId => markDeployQueued(appId, sha)));
   await inngest.send(
     appIds.map(appId => ({
       name: APPS_DEPLOY_EVENT,

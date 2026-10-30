@@ -49,6 +49,11 @@ import {
 } from "./bindings.service";
 import { isCronDue, nextCronRunAt } from "../services/cron-due";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
+import {
+  clearDeployProgress,
+  markBindingProgress,
+  markDeployStage,
+} from "./deploy-progress";
 import { resolveAppViewer, type ViewerIdentity } from "./app-viewer.service";
 import { loggers } from "../logging";
 import {
@@ -243,6 +248,7 @@ export async function setPublishedSha(
       $unset: { lastDeployError: 1 },
     },
   );
+  await clearDeployProgress(project, sha);
 }
 
 /**
@@ -286,6 +292,8 @@ export async function recordDeployFailure(
       error: err instanceof Error ? err.message : String(err),
     });
   });
+  // The deploy is over; lastDeployError now says why.
+  await clearDeployProgress(project, sha);
 }
 
 /** Whether a given sha's deployment still exists in the store. */
@@ -518,6 +526,13 @@ export async function ensureDeploymentBindings(
     materialized: [],
     skipped,
   };
+  // Visible in app_publish_status as "bindings: n of m prepared".
+  await markDeployStage(project, sha, "bindings");
+  let prepared = 0;
+  await markBindingProgress(project, sha, {
+    total: bindings.length,
+    prepared,
+  });
   for (const binding of bindings) {
     const key = bindingArtifactKey(binding);
     const store = await artifactStoreForRead(key);
@@ -533,12 +548,23 @@ export async function ensureDeploymentBindings(
       }))
     ) {
       readiness.reused.push(binding.name);
+      prepared += 1;
       continue;
     }
+    await markBindingProgress(project, sha, {
+      total: bindings.length,
+      prepared,
+      current: binding.name,
+    });
     await materializeAppBinding(project, binding.name, PUBLISH_ACTOR, {
       at: sha,
     });
     readiness.materialized.push(binding.name);
+    prepared += 1;
+    await markBindingProgress(project, sha, {
+      total: bindings.length,
+      prepared,
+    });
   }
 
   await writeDeploymentBindingIndex(projectId, sha, bindings);
@@ -766,6 +792,7 @@ export async function deployBuild(
   // host no longer keeps a copy of the working tree. Copy just `dist/` out,
   // deliberately narrowly: this is the one thing publishing needs that the
   // repository cannot provide.
+  await markDeployStage(project, sha, "publishing");
   const staging = await fs.mkdtemp(path.join(os.tmpdir(), "mako-dist-"));
   try {
     await readBoxDir(boxCtx(handle), `${handle.appRoot}/dist`, staging);
