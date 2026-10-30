@@ -125,3 +125,22 @@ export function resolveDbtAccess(input: {
 
   return ALLOW;
 }
+
+/** Owners and admins change and run dbt; everyone else only validates. */
+export function isDbtAdminRole(role: string | undefined | null): boolean {
+  return role === "owner" || role === "admin";
+}
+
+/**
+ * Whose working tree an ad-hoc parse/compile/show builds. Owners and admins
+ * build their own (checkout branch + drafts). Everyone else builds the
+ * project's tracked branch as committed: a member validates committed
+ * models, never drafts or another ref (Joan, 2026-10-30). `undefined` means
+ * the committed base tree.
+ */
+export function dbtWorkingTreeUserFor(
+  role: string | undefined | null,
+  userId: string | undefined,
+): string | undefined {
+  return isDbtAdminRole(role) ? userId : undefined;
+}

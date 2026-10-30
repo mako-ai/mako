@@ -3,6 +3,8 @@ import {
   DBT_ADMIN_ONLY,
   DBT_MEMBER_ONLY_GET,
   DBT_MEMBER_WRITES,
+  dbtWorkingTreeUserFor,
+  isDbtAdminRole,
   resolveDbtAccess,
 } from "./rbac";
 
@@ -158,5 +160,14 @@ describe("resolveDbtAccess", () => {
     expect(DBT_ADMIN_ONLY.length).toBeGreaterThan(0);
     expect(DBT_MEMBER_WRITES.length).toBeGreaterThan(0);
     expect(DBT_MEMBER_ONLY_GET.length).toBeGreaterThan(0);
+  });
+
+  it("builds drafts only for owners and admins", () => {
+    expect(dbtWorkingTreeUserFor("owner", "u1")).toBe("u1");
+    expect(dbtWorkingTreeUserFor("admin", "u1")).toBe("u1");
+    for (const role of ["member", "viewer", undefined, null]) {
+      expect(dbtWorkingTreeUserFor(role, "u1")).toBeUndefined();
+      expect(isDbtAdminRole(role)).toBe(false);
+    }
   });
 });

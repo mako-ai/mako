@@ -49,7 +49,7 @@ import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
   isDbtCompatibleConnectionType,
 } from "../dbt/adapter-map";
-import { resolveDbtAccess } from "../dbt/rbac";
+import { dbtWorkingTreeUserFor, resolveDbtAccess } from "../dbt/rbac";
 import {
   DbtCommandValidationError,
   isWarehouseWriteCommand,
@@ -1567,7 +1567,8 @@ dbtRoutes.post(
         workspaceId: project.workspaceId.toString(),
         projectId: project._id.toString(),
         environmentName: environment,
-        userId: getUserId(c),
+        // Members compile the committed tracked branch, never drafts.
+        userId: dbtWorkingTreeUserFor(c.get("memberRole"), getUserId(c)),
         command,
         select,
         deferState,
@@ -1618,7 +1619,8 @@ dbtRoutes.post(
         workspaceId: project.workspaceId.toString(),
         projectId: project._id.toString(),
         environmentName: environment,
-        userId: getUserId(c),
+        // Members preview the committed tracked branch, never drafts.
+        userId: dbtWorkingTreeUserFor(c.get("memberRole"), getUserId(c)),
         command: `show --select ${select} --limit ${rowLimit} --output json`,
         deferState,
         timeoutMs: 3 * 60 * 1000,
@@ -1698,7 +1700,8 @@ dbtRoutes.post(
         workspaceId: project.workspaceId.toString(),
         projectId: project._id.toString(),
         environmentName: environment,
-        userId,
+        // Members run read-only commands on the committed tracked branch.
+        userId: dbtWorkingTreeUserFor(role, userId),
         command: normalized,
         deferState,
         timeoutMs: 9 * 60 * 1000,

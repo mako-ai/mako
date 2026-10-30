@@ -260,6 +260,31 @@ describe("RBAC matrix (through real middleware)", () => {
     expect(parse.status).not.toBe(403);
   });
 
+  // Joan, 2026-10-30: members compile/show/parse the committed tracked
+  // branch only; owners/admins keep their working tree (checkout + drafts).
+  it.each([
+    ["member", undefined],
+    ["admin", "u1"],
+    ["owner", "u1"],
+  ] as const)(
+    "%s compile/preview/command build the right tree",
+    async (role, expectedUser) => {
+      const projectId = await createProjectAsOwner();
+      ctx.role = role;
+      for (const [path, body] of [
+        [`/projects/${projectId}/compile`, { select: "customers" }],
+        [`/projects/${projectId}/preview`, { select: "customers" }],
+        [`/projects/${projectId}/command`, { command: "parse" }],
+      ] as const) {
+        adhocMock.mockClear();
+        const res = await req("POST", path, body);
+        expect(res.status).toBe(200);
+        expect(adhocMock).toHaveBeenCalledOnce();
+        expect(adhocMock.mock.calls[0][0].userId).toBe(expectedUser);
+      }
+    },
+  );
+
   it("members cannot trigger jobs, cancel runs or start local runs", async () => {
     const projectId = await createProjectAsOwner();
     ctx.role = "member";
