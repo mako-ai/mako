@@ -55,6 +55,13 @@ export interface PublishState {
    * `stalled` when the stage stopped moving. Null when nothing is deploying.
    */
   deploy: DeployProgressView | null;
+  /**
+   * Set when main has app changes that are not live and nothing explains
+   * it: no deploy in flight and no recorded failure. The push's deploy was
+   * never enqueued or was lost; the hourly reconcile (at :17) or
+   * app_publish deploys it.
+   */
+  note?: string;
 }
 
 export interface PublishStateInput {
@@ -153,6 +160,13 @@ export async function readPublishState(
     }
   }
 
+  const deploy = describeDeployProgress(
+    input.deployProgress,
+    publishedSha,
+    input.now,
+  );
+  const unexplained =
+    !!publishedSha && !upToDate && !deploy && !lastDeployError;
   return {
     published: !!publishedSha,
     publishedSha,
@@ -164,11 +178,15 @@ export async function readPublishState(
     upToDate,
     pendingCommits,
     lastDeployError,
-    deploy: describeDeployProgress(
-      input.deployProgress,
-      publishedSha,
-      input.now,
-    ),
+    deploy,
+    ...(unexplained
+      ? {
+          note:
+            "No deploy is queued or running for the newest app commit and " +
+            "none failed. The hourly reconcile (at :17 past the hour) will " +
+            "deploy it; call app_publish to deploy now.",
+        }
+      : {}),
   };
 }
 

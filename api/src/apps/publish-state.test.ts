@@ -95,7 +95,20 @@ describe("readPublishState deploy progress", () => {
 
   it("is null when nothing is deploying", async () => {
     const sha = await commit("apps/sales/App.tsx", "feat: v1");
-    expect((await read(sha)).deploy).toBeNull();
+    const state = await read(sha);
+    expect(state.deploy).toBeNull();
+    expect(state.note).toBeUndefined();
+  });
+
+  it("says so when main is ahead and nothing is deploying or failed", async () => {
+    // 2026-10-30: a merge at 13:19 UTC went live at 14:32 via the :17
+    // reconcile, with pendingCommits and no error showing meanwhile.
+    const live = await commit("apps/sales/App.tsx", "feat: v1");
+    await commit("apps/sales/App.tsx", "feat: v2");
+    const state = await read(live);
+    expect(state.upToDate).toBe(false);
+    expect(state.deploy).toBeNull();
+    expect(state.note).toContain("No deploy is queued or running");
   });
 });
 
