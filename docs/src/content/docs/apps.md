@@ -94,13 +94,16 @@ The SDK also ships a small UI kit — plain ESM and plain CSS (no Tailwind requi
 ```tsx
 import "@makoai/app-sdk/ui.css"; // before ./styles.css, so the app wins
 import { PageHeader, Card, KpiRow, KpiTile, Button, StatusDot,
-  MultiSelect, FreshnessBadge, RefreshAllButton } from "@makoai/app-sdk/ui";
+  MultiSelect, FreshnessBadge, RefreshAllButton, DataTable } from "@makoai/app-sdk/ui";
 ```
 
 - `PageHeader`, `Card`, `KpiRow` / `KpiTile`, `Button`, `StatusDot` — page furniture.
 - `MultiSelect` — controlled filter; an empty selection means "all" unless `emptyMeansAll={false}`. On phones the menu is a bottom sheet.
+- `DataTable` (SDK 2.11+) — the house data table: click-to-sort headers, sticky header, optional pinned first column, right-aligned tabular numbers, a pager footer (25 / 50 / 100 per page), an empty state and CSV export. Columns are declared with `value` (sort/CSV value) and an optional `render`; see the SDK README for the full props.
 - `FreshnessBadge` — presentational: the app decides what "fresh" means and passes a `tone`, a `headline` and per-source rows.
 - `RefreshAllButton` — rebuilds every binding (`refreshBinding`) a few at a time, with a progress modal. Feed it the binding names through a build-time `__APP_BINDING_NAMES__` define in `vite.config.ts` (the scaffold sets this up).
+
+Native `<select>` elements get a token-coloured inset chevron from `ui.css` (SDK 2.11.1+), so they match the `MultiSelect` trigger on macOS; a select with `appearance-none` in its classes draws its own arrow and is left alone.
 
 ## SDK Versions
 
@@ -254,6 +257,10 @@ preview the app as a specific workspace member during `pnpm dev`.
 - A binding is the app's whole data, so one past its row limit (2,000,000 by default, `-- row_limit:` up to 5,000,000) **fails its build** instead of being silently cut. The run records the error, and the previously built artifact keeps being served. The error names the binding, the rows its query returned and the `-- row_limit:` that would fit them. Raise the limit, or aggregate or shard the binding's SQL.
 - The sandbox is an isolated microVM per workspace; app code and shell commands never run in Mako's API process.
 - The preview iframe is sandboxed; app code receives query *results* only — never credentials.
+- App frames are sandboxed but keep `allow-downloads`, so an app can save the files it builds (an Excel or CSV export).
+- Published apps can open links in a new tab (`target="_blank"`): the frame keeps `allow-popups` and `allow-popups-to-escape-sandbox`, so the opened tab is a normal, unsandboxed page. The app frame itself stays opaque on Mako's origin.
+- Apps run on their own origin (`<appId>.makousercontent.com`), so their keystrokes never reach Mako's own listeners. The SDK forwards Cmd/Ctrl+K to Mako (a `mako-app:shortcut` message) so the command palette opens while an app has focus; it needs `@makoai/app-sdk` 2.9.1 or newer, which published apps pick up on their next deploy.
+- If a corporate proxy blocks the apps domain, the app frame would show the proxy's error page. Before framing an app on its own origin, Mako probes `GET /__mako/ping` on the app host (CORS for `CLIENT_URL`, no credentials, 4 s timeout). If the probe fails, it frames the same token path from Mako's own origin instead and remembers that for every app host for the rest of the page load. The production deploy no longer sets `APPS_ORIGIN_BASE` by default, so apps are framed from Mako's origin unless it is configured.
 
 ## API Surface
 
