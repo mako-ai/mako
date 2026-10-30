@@ -30,15 +30,34 @@ describe("workspace role floors", () => {
     });
     expect(missingWorkspaceRole("dbt_create_project", "admin")).toBeNull();
     expect(missingWorkspaceRole("dbt_create_project", "owner")).toBeNull();
-    expect(missingWorkspaceRole("create_dbt_file", "viewer")).toEqual({
-      required: "member",
-    });
-    expect(missingWorkspaceRole("create_dbt_file", "member")).toBeNull();
+    // Members only read and validate dbt (2026-10-30).
+    for (const name of [
+      "create_dbt_file",
+      "edit_dbt_file",
+      "modify_dbt_file",
+      "delete_dbt_file",
+      "dbt_run_model",
+      "dbt_run_job",
+      "dbt_cancel_run",
+      "dbt_ensure_dev_environment",
+    ]) {
+      expect(missingWorkspaceRole(name, "member")).toEqual({
+        required: "admin",
+      });
+      expect(missingWorkspaceRole(name, "admin")).toBeNull();
+      expect(missingWorkspaceRole(name, "owner")).toBeNull();
+    }
+    for (const name of ["dbt_parse", "dbt_compile_model", "dbt_show"]) {
+      expect(missingWorkspaceRole(name, "member")).toBeNull();
+      expect(missingWorkspaceRole(name, "viewer")).toEqual({
+        required: "member",
+      });
+    }
     // No membership at all is never enough.
-    expect(missingWorkspaceRole("create_dbt_file", null)).toEqual({
+    expect(missingWorkspaceRole("dbt_parse", null)).toEqual({
       required: "member",
     });
-    expect(missingWorkspaceRole("create_dbt_file", undefined)).toEqual({
+    expect(missingWorkspaceRole("dbt_parse", undefined)).toEqual({
       required: "member",
     });
     // Tools without a floor are unaffected.
@@ -113,6 +132,27 @@ describe("workspace role floors", () => {
     // Tools without a floor are not wrapped, so they never pay the lookup.
     await run(asViewer, "read_dbt_file");
     expect(lookups).toBe(1);
+
+    // The in-product agent of a member cannot run a job either.
+    let jobRuns = 0;
+    const asMember = enforceCapabilityGrantsAtExecution(
+      {
+        dbt_run_job: {
+          description: "z",
+          execute: async () => {
+            jobRuns += 1;
+            return { success: true, runId: "r" };
+          },
+        },
+      } as unknown as ToolSet,
+      () => ALL_CAPABILITY_GRANTS,
+      async () => "member",
+    );
+    await expect(run(asMember, "dbt_run_job")).resolves.toMatchObject({
+      success: false,
+      error: expect.stringMatching(/admin workspace role \(you are a member\)/),
+    });
+    expect(jobRuns).toBe(0);
 
     const asAdmin = enforceCapabilityGrantsAtExecution(
       tools,

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { DBT_ADMIN_ONLY, DBT_MEMBER_ONLY_GET, resolveDbtAccess } from "./rbac";
+import {
+  DBT_ADMIN_ONLY,
+  DBT_MEMBER_ONLY_GET,
+  DBT_MEMBER_WRITES,
+  resolveDbtAccess,
+} from "./rbac";
 
 const WS = "/api/workspaces/64b000000000000000000001/dbt";
 
@@ -64,24 +69,14 @@ describe("resolveDbtAccess", () => {
     );
   });
 
-  describe("member-allowed writes (files, ad-hoc, runs, sync, own-checkout git)", () => {
+  // 2026-10-30: members validate but never change or run dbt.
+  describe("member-allowed writes (validation only)", () => {
     const memberCases: Array<{ method: string; path: string }> = [
-      { method: "PUT", path: `${WS}/projects/abc/files/models%2Ffoo.sql` },
-      { method: "DELETE", path: `${WS}/projects/abc/files/models%2Ffoo.sql` },
-      { method: "POST", path: `${WS}/projects/abc/files/rename` },
       { method: "POST", path: `${WS}/projects/abc/compile` },
+      { method: "POST", path: `${WS}/projects/abc/preview` },
+      // The route refuses warehouse-writing commands for members.
       { method: "POST", path: `${WS}/projects/abc/command` },
-      { method: "POST", path: `${WS}/projects/abc/jobs/j1/trigger` },
-      { method: "POST", path: `${WS}/projects/abc/runs/r1/cancel` },
-      { method: "POST", path: `${WS}/projects/abc/runs/r1/retry` },
-      { method: "POST", path: `${WS}/projects/abc/sync` },
-      // Per-user checkouts + drafts make these safe for members; protected
-      // branches are enforced separately in the git service.
-      { method: "POST", path: `${WS}/projects/abc/git/commit` },
-      { method: "POST", path: `${WS}/projects/abc/git/commit-to-branch` },
-      { method: "POST", path: `${WS}/projects/abc/git/branch` },
-      { method: "POST", path: `${WS}/projects/abc/git/switch-branch` },
-      { method: "POST", path: `${WS}/projects/abc/git/pull-request` },
+      { method: "PUT", path: `${WS}/projects/abc/my-environment` },
     ];
 
     it.each(memberCases)(
@@ -94,16 +89,32 @@ describe("resolveDbtAccess", () => {
     );
   });
 
-  it("does not let job-trigger match the admin-only job-create rule", () => {
-    // /jobs$ (create, admin) vs /jobs/:id/trigger (member). Guard against the
-    // looser regex accidentally catching trigger.
-    expect(
-      resolveDbtAccess({
-        method: "POST",
-        path: `${WS}/projects/abc/jobs/j1/trigger`,
-        role: "member",
-      }).ok,
-    ).toBe(true);
+  describe("admin-only dbt changes and runs", () => {
+    const adminCases: Array<{ method: string; path: string }> = [
+      { method: "PUT", path: `${WS}/projects/abc/files/models%2Ffoo.sql` },
+      { method: "DELETE", path: `${WS}/projects/abc/files/models%2Ffoo.sql` },
+      { method: "POST", path: `${WS}/projects/abc/files/rename` },
+      { method: "POST", path: `${WS}/projects/abc/jobs/j1/trigger` },
+      { method: "POST", path: `${WS}/projects/abc/runs/r1/cancel` },
+      { method: "POST", path: `${WS}/projects/abc/runs/r1/retry` },
+      { method: "POST", path: `${WS}/projects/abc/environments/personal` },
+      // `mako dbt run` from a checkout (#1043 opened it to any MCP login).
+      { method: "POST", path: `${WS}/local-runs` },
+      { method: "POST", path: `${WS}/local-runs/r1/cancel` },
+      // Unknown future writes default to admin.
+      { method: "POST", path: `${WS}/projects/abc/something-new` },
+    ];
+
+    it.each(adminCases)(
+      "blocks member, allows admin/owner on $method $path",
+      ({ method, path }) => {
+        const member = resolveDbtAccess({ method, path, role: "member" });
+        expect(member.ok).toBe(false);
+        expect(member.error).toMatch(/admin or owner/);
+        expect(resolveDbtAccess({ method, path, role: "admin" }).ok).toBe(true);
+        expect(resolveDbtAccess({ method, path, role: "owner" }).ok).toBe(true);
+      },
+    );
   });
 
   describe("member-only GitHub discovery GETs", () => {
@@ -145,6 +156,7 @@ describe("resolveDbtAccess", () => {
 
   it("exposes non-empty policy tables", () => {
     expect(DBT_ADMIN_ONLY.length).toBeGreaterThan(0);
+    expect(DBT_MEMBER_WRITES.length).toBeGreaterThan(0);
     expect(DBT_MEMBER_ONLY_GET.length).toBeGreaterThan(0);
   });
 });

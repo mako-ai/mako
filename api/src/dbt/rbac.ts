@@ -2,12 +2,13 @@
  * dbt RBAC policy — pure, testable access decisions for the Transforms module.
  *
  * Reads/lists (GET) are open to any member incl. viewer; viewers are otherwise
- * read-only. Deployment-config mutations (project create/delete/settings incl.
- * protected branches, repo connect/import, job create/edit/delete) and PR
- * merges require admin+. All other writes — files (per-user drafts), git
- * commit/branch/switch/PR-open on the caller's own checkout, ad-hoc
- * compile/run, run trigger/cancel/retry, repo sync — are member+. Protected
- * branches (PR-only) are enforced separately in the git service.
+ * read-only. Members may only VALIDATE: compile, preview (dbt show of an
+ * existing model), read-only console commands (checked in the route) and
+ * their own dev-environment preference. Everything else that writes — dbt
+ * files, projects, environments, jobs, job triggers, run cancel/retry, local
+ * (CLI) runs, warehouse-writing commands — requires admin or owner.
+ * 2026-10-30: "members shouldn't touch dbt"; before that every non-GET was
+ * member+ except deployment config.
  */
 
 export type WorkspaceRole = "owner" | "admin" | "member" | "viewer";
@@ -21,6 +22,18 @@ export const DBT_MEMBER_ONLY_GET: RegExp[] = [
   /\/dbt\/github\/repos$/,
   /\/dbt\/github\/branches$/,
   /\/dbt\/github\/repo-check$/,
+];
+
+/**
+ * The only non-GET routes a member may call. Everything else that is not a
+ * GET is admin+. `/command` is listed because the route itself refuses a
+ * warehouse-writing command for a member (isWarehouseWriteCommand).
+ */
+export const DBT_MEMBER_WRITES: Array<{ method: string; pattern: RegExp }> = [
+  { method: "POST", pattern: /\/dbt\/projects\/[^/]+\/compile$/ },
+  { method: "POST", pattern: /\/dbt\/projects\/[^/]+\/preview$/ },
+  { method: "POST", pattern: /\/dbt\/projects\/[^/]+\/command$/ },
+  { method: "PUT", pattern: /\/dbt\/projects\/[^/]+\/my-environment$/ },
 ];
 
 /** Method + path-pattern pairs that require the admin or owner role. */
@@ -96,14 +109,17 @@ export function resolveDbtAccess(input: {
     };
   }
 
-  const adminOnly = DBT_ADMIN_ONLY.some(
+  // DBT_ADMIN_ONLY stays as documentation of deployment config; the rule is
+  // now allowlist-shaped: any write not in DBT_MEMBER_WRITES is admin+.
+  const memberWrite = DBT_MEMBER_WRITES.some(
     rule => rule.method === method && rule.pattern.test(path),
   );
-  if (adminOnly && role !== "owner" && role !== "admin") {
+  if (!memberWrite && role !== "owner" && role !== "admin") {
     return {
       ok: false,
       status: 403,
-      error: "This action requires the admin or owner workspace role",
+      error:
+        "Changing or running dbt requires the admin or owner workspace role",
     };
   }
 

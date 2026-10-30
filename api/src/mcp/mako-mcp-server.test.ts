@@ -574,8 +574,9 @@ async function main() {
     assert.equal(names.has("dbt_create_job"), false);
   }
 
-  // Members can author and execute models, while project/job administration
-  // remains reserved for admins and owners.
+  // Members only read and validate dbt (2026-10-30: "members shouldn't
+  // touch dbt"). Changing files, building, running or cancelling jobs and
+  // provisioning environments are admin/owner, like project/job admin.
   {
     const [res] = await exchange(
       [{ jsonrpc: "2.0", id: "member-list", method: "tools/list" }],
@@ -586,10 +587,77 @@ async function main() {
     );
     const { tools } = res.result as { tools: { name: string }[] };
     const names = new Set(tools.map(tool => tool.name));
-    assert.ok(names.has("create_dbt_file"));
-    assert.ok(names.has("dbt_run_model"));
-    assert.equal(names.has("dbt_create_project"), false);
-    assert.equal(names.has("dbt_create_job"), false);
+    for (const readTool of [
+      "read_dbt_project_tree",
+      "read_dbt_file",
+      "dbt_get_run",
+      "dbt_parse",
+      "dbt_compile_model",
+      "dbt_show",
+    ]) {
+      assert.ok(names.has(readTool), `members keep ${readTool}`);
+    }
+    for (const adminTool of [
+      "create_dbt_file",
+      "edit_dbt_file",
+      "modify_dbt_file",
+      "delete_dbt_file",
+      "dbt_run_model",
+      "dbt_run_job",
+      "dbt_cancel_run",
+      "dbt_ensure_dev_environment",
+      "dbt_create_project",
+      "dbt_create_job",
+      "dbt_update_job",
+      "dbt_delete_job",
+    ]) {
+      assert.equal(names.has(adminTool), false, `members lose ${adminTool}`);
+    }
+  }
+
+  // ...and calling a hidden one anyway is refused at execution (the
+  // 2026-10-30 path: a member session triggered a prod job via dbt_run_job).
+  {
+    const [res] = await exchange(
+      [
+        {
+          jsonrpc: "2.0",
+          id: "member-run-job",
+          method: "tools/call",
+          params: {
+            name: "dbt_run_job",
+            arguments: {
+              projectId: "6a379d6014cf36380f79d5fe",
+              jobId: "6a41707a1d0dea2cb603784a",
+            },
+          },
+        },
+      ],
+      ["mcp", "query:read", "warehouse:write"],
+      false,
+      undefined,
+      "member",
+    );
+    const text = JSON.stringify(res);
+    // Hidden tools are not registered for the session at all.
+    assert.match(text, /Unknown tool: dbt_run_job/);
+    assert.doesNotMatch(text, /"runId"/);
+  }
+
+  // Admins keep the full dbt surface.
+  {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: "admin-list", method: "tools/list" }],
+      ["mcp", "query:read", "warehouse:write"],
+      false,
+      undefined,
+      "admin",
+    );
+    const { tools } = res.result as { tools: { name: string }[] };
+    const names = new Set(tools.map(tool => tool.name));
+    for (const tool of ["create_dbt_file", "dbt_run_model", "dbt_run_job"]) {
+      assert.ok(names.has(tool), `admins keep ${tool}`);
+    }
   }
 
   // Syncs: anyone may read them; a backfill or a trigger change is an

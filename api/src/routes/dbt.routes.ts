@@ -1674,6 +1674,23 @@ dbtRoutes.post(
         }
         throw error;
       }
+      // Members may run read-only commands (parse/compile/show/ls) only;
+      // anything that writes the warehouse is admin+ (see dbt/rbac.ts).
+      const role = c.get("memberRole");
+      if (
+        isWarehouseWriteCommand(validated) &&
+        role !== "owner" &&
+        role !== "admin"
+      ) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Commands that write the warehouse require the admin or owner workspace role",
+          },
+          403,
+        );
+      }
       const userId = getUserId(c);
       const startedAt = new Date();
       const deferState = defer ? await loadDeferState(project) : undefined;
