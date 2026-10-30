@@ -129,6 +129,9 @@ const MAX_TOOL_RESULT_CHARS = 200_000;
 
 const SKILL_URI_PREFIX = "mako://skills/";
 
+/** dbt_get_run's longest server-side wait over MCP (see createDbtServerTools). */
+export const MCP_MAX_RUN_WAIT_MS = 45_000;
+
 export interface MakoMcpContext {
   workspaceId: string;
   /** Acting user (the API key's creator). */
@@ -199,7 +202,13 @@ export function buildMakoMcpCandidateTools(
   const skillTools = createSkillTools(workspaceId, userId);
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId, userId);
   const webTools = createWebTools();
-  const dbtTools = createDbtServerTools(workspaceId, userId, { chatId });
+  const dbtTools = createDbtServerTools(workspaceId, userId, {
+    chatId,
+    // The MCP route answers with one JSON body and no keepalives, and MCP
+    // clients commonly abort a request at 60s ("The operation timed out."),
+    // so a dbt_get_run wait must return well before that.
+    maxRunWaitMs: MCP_MAX_RUN_WAIT_MS,
+  });
   // Connector discovery for flow authoring (RFC: agent-authored flows).
   const connectorTools = createConnectorTools(workspaceId);
   // Gated by the capability's live minimum role (member); creates source

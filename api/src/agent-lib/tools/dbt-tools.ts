@@ -79,6 +79,14 @@ import {
 import { buildStarterScaffold } from "../../dbt/scaffold";
 import { validateScheduledConsoleSchedule } from "../../services/scheduled-query-schedule.service";
 import type { DbtLogLine } from "../../dbt/runner.service";
+import { describeQueuedRun } from "../../dbt/dbt-run-queue";
+import {
+  FULL_STEPS_THRESHOLD,
+  FULL_TREE_THRESHOLD,
+  shapeStepResults,
+  shapeTreeFiles,
+  summarizeRunLogs,
+} from "./dbt-tool-output";
 
 /**
  * A single dbt node name (e.g. `stg_orders`) OR a dbt selector with graph
@@ -100,8 +108,16 @@ function toolError(error: unknown, fallback: string) {
   };
 }
 
-/** Upper bound on dbt_get_run's server-side wait, well under proxy timeouts. */
+/**
+ * Upper bound on dbt_get_run's server-side wait, well under proxy timeouts.
+ * The in-product agent streams keepalives, so it can hold 90s.
+ */
 const MAX_RUN_WAIT_MS = 90_000;
+/**
+ * At or under this many jobs, read_dbt_project_tree lists each job's commands
+ * in the default summary.
+ */
+const FULL_JOBS_THRESHOLD = 10;
 /** Cadence for the dbt_get_run wait loop — mirrors the IDE run-detail poll. */
 const RUN_POLL_INTERVAL_MS = 2_000;
 
@@ -124,18 +140,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** Keep tool outputs small: errors + warnings + last few info lines. */
-function summarizeLogs(logs: DbtLogLine[], maxLines = 30): string[] {
-  const important = logs.filter(
-    log => log.level === "error" || log.level === "warn",
-  );
-  const rest = logs.filter(
-    log => log.level !== "error" && log.level !== "warn",
-  );
-  const selected = [...important, ...rest.slice(-10)].slice(0, maxLines);
-  return selected.map(log => `[${log.level}] ${log.line}`);
-}
-
 /** Mirror of dbt.routes.ts isSafeDbtPath — block traversal / absolute paths. */
 function isSafeDbtPath(path: string): boolean {
   return (
@@ -151,8 +155,20 @@ function isSafeDbtPath(path: string): boolean {
 export const createDbtServerTools = (
   workspaceId: string,
   userId?: string,
-  options?: { chatId?: string },
+  options?: {
+    chatId?: string;
+    /**
+     * Cap on dbt_get_run's `waitMs`. External MCP clients get a plain JSON
+     * response with no keepalives, and common clients abort a request after
+     * 60s, so the MCP server passes a lower cap than the in-product agent.
+     */
+    maxRunWaitMs?: number;
+  },
 ) => {
+  const maxRunWaitMs = Math.min(
+    options?.maxRunWaitMs ?? MAX_RUN_WAIT_MS,
+    MAX_RUN_WAIT_MS,
+  );
   const agentClientId = `agent:${options?.chatId ?? "unknown"}`;
   // Drafts/checkouts belong to the user the agent acts for; without a user
   // session (rare) the agent gets its own overlay under the "agent" owner.
@@ -325,9 +341,32 @@ export const createDbtServerTools = (
         "project when projectId is given. Call this FIRST to get project IDs " +
         "and file paths before using any other dbt tool. When the project has " +
         "a .makorules file, its contents come back in `rules` — those are " +
-        "binding conventions for any SQL you write in that project.",
-      inputSchema: readDbtTreeSchema,
-      execute: async ({ projectId }) => {
+        "binding conventions for any SQL you write in that project. " +
+        `A project with more than ${FULL_TREE_THRESHOLD} files returns a ` +
+        "summary by default: root files in `files`, a file count per " +
+        "directory in `directories`, and `filesTotal`. Pass `pathPrefix` " +
+        '(e.g. "models/staging/") to list one directory, or detail "full" ' +
+        `for every path. Job \`commands\` are included when there are at most ` +
+        `${FULL_JOBS_THRESHOLD} jobs or detail is "full"; otherwise each job ` +
+        "has `commandCount`.",
+      inputSchema: readDbtTreeSchema.extend({
+        pathPrefix: z
+          .string()
+          .max(512)
+          .optional()
+          .describe(
+            'List only files under this path, e.g. "models/marts/". ' +
+              "Requires projectId.",
+          ),
+        detail: z
+          .enum(["summary", "full"])
+          .optional()
+          .describe(
+            'summary (default) compacts large projects; "full" returns ' +
+              "every file path and every job's commands.",
+          ),
+      }),
+      execute: async ({ projectId, pathPrefix, detail }) => {
         try {
           if (!projectId) {
             const projects = await DbtProject.find({
@@ -364,7 +403,10 @@ export const createDbtServerTools = (
             name: project.name,
             defaultEnvironment: project.defaultEnvironment,
             environments: project.environments,
-            files: files.map(f => f.path),
+            ...shapeTreeFiles(
+              files.map(f => f.path),
+              { detail, pathPrefix },
+            ),
             // Team-authored rules for this project — binding for any SQL
             // written here. Omitted entirely when the project has none.
             // `truncated` is only included (as `true`) when the file was
@@ -382,11 +424,19 @@ export const createDbtServerTools = (
               : {}),
             jobs: jobs.map(live => {
               const job = liveJobToPlain(live, project);
+              const withCommands =
+                detail === "full" || jobs.length <= FULL_JOBS_THRESHOLD;
               return {
                 id: live.id.toString(),
                 name: job.name,
                 environment: job.environment,
-                commands: job.commands,
+                ...(withCommands
+                  ? { commands: job.commands }
+                  : {
+                      commandCount: Array.isArray(job.commands)
+                        ? job.commands.length
+                        : 0,
+                    }),
                 schedule: job.schedule ?? null,
                 enabled: job.enabled,
                 ...(job.definitionInvalid
@@ -1094,7 +1144,15 @@ export const createDbtServerTools = (
         "server-side until the run reaches a terminal status (success/error/" +
         "cancelled) or the wait elapses — call it ONCE with waitMs ~90000 " +
         "after dbt_run_model; if it returns still running, tell the user the " +
-        "build is in progress and stop (the run card shows live progress).",
+        "build is in progress and stop (the run card shows live progress). " +
+        `The wait is capped at ${maxRunWaitMs}ms; when it elapses the current ` +
+        "status comes back (queued/running), never an error. A queued run " +
+        "carries `queue`: the run it waits behind, the runs ahead, and a " +
+        "start estimate. Results are compact by default: `stepCounts` and " +
+        `\`stepsTotal\` are exact, and a run with more than ${FULL_STEPS_THRESHOLD} ` +
+        "steps lists only the steps that did not pass. Page every step with " +
+        'stepOffset/stepLimit, or pass detail "full". `logs` holds distinct ' +
+        "error/warning lines (with repeat counts) plus the last `logTail` lines.",
       inputSchema: z.object({
         projectId: projectIdField,
         runId: z
@@ -1111,11 +1169,51 @@ export const createDbtServerTools = (
           .min(0)
           .optional()
           .describe(
-            "If set, wait up to this many ms (capped at 90000) for the run " +
-              "to finish before returning. Use ~90000 once after dbt_run_model.",
+            `If set, wait up to this many ms (capped at ${maxRunWaitMs}) for ` +
+              "the run to finish before returning. Use ~90000 once after " +
+              "dbt_run_model.",
           ),
+        detail: z
+          .enum(["summary", "full"])
+          .optional()
+          .describe(
+            "summary (default) lists only non-passing steps on large runs; " +
+              '"full" lists every step.',
+          ),
+        stepOffset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Page through every step in run order from this index."),
+        stepLimit: z
+          .number()
+          .int()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe("Steps per page (default 50) with stepOffset."),
+        logTail: z
+          .number()
+          .int()
+          .min(0)
+          .max(500)
+          .optional()
+          .describe("Trailing non-error log lines to include (default 10)."),
       }),
-      execute: async ({ projectId, runId, jobId, waitMs }, { abortSignal }) => {
+      execute: async (
+        {
+          projectId,
+          runId,
+          jobId,
+          waitMs,
+          detail,
+          stepOffset,
+          stepLimit,
+          logTail,
+        },
+        { abortSignal },
+      ) => {
         try {
           const project = await assertProject(projectId);
           if (!runId && !jobId) {
@@ -1143,7 +1241,7 @@ export const createDbtServerTools = (
             status === "error" ||
             status === "cancelled";
 
-          const deadline = Date.now() + Math.min(waitMs ?? 0, MAX_RUN_WAIT_MS);
+          const deadline = Date.now() + Math.min(waitMs ?? 0, maxRunWaitMs);
 
           let found = await DbtRun.findOne(query)
             .sort({ createdAt: -1 })
@@ -1167,6 +1265,9 @@ export const createDbtServerTools = (
             run = await reconcileStaleQueuedRun(found);
           }
 
+          const queue =
+            run.status === "queued" ? await describeQueuedRun(run) : null;
+
           return {
             success: true,
             runId: run._id.toString(),
@@ -1174,25 +1275,25 @@ export const createDbtServerTools = (
             trigger: run.trigger,
             environment: run.environment,
             commands: run.commands,
+            createdAt: run.createdAt,
             startedAt: run.startedAt,
             completedAt: run.completedAt,
             durationMs: run.durationMs,
             error: run.error,
             output: run.output,
-            stepResults: (run.stepResults ?? []).map(step => ({
-              name: step.name,
-              resourceType: step.resourceType,
-              status: step.status,
-              executionTimeMs: step.executionTimeMs,
-              rowsAffected: step.rowsAffected,
-              message: step.message,
-            })),
-            logs: summarizeLogs(
+            ...(queue ? { queue } : {}),
+            ...shapeStepResults(run.stepResults ?? [], {
+              detail,
+              stepOffset,
+              stepLimit,
+            }),
+            logs: summarizeRunLogs(
               (run.logs ?? []).map(log => ({
                 ts: log.ts,
                 level: log.level,
                 line: log.line,
               })) as DbtLogLine[],
+              { tail: logTail ?? 10 },
             ),
           };
         } catch (error) {

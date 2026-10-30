@@ -6,6 +6,7 @@
  * check as skills.ts). Business logic lives in api/src/dbt/**.
  */
 
+import { describeQueuedRun } from "../dbt/dbt-run-queue";
 import { Hono } from "hono";
 import { workspaceResourceLoader } from "./lib/load-resource";
 import { Readable } from "stream";
@@ -1169,12 +1170,16 @@ dbtRoutes.get(
       // logsSince = number of log lines the client already has (cursor).
       const logsSince = Number(c.req.query("logsSince")) || 0;
       const logs = run.logs ?? [];
+      // Why a queued run is waiting (the run holding the project's slot).
+      const queue =
+        run.status === "queued" ? await describeQueuedRun(run) : null;
       return c.json({
         success: true,
         run: {
           ...run,
           logs: logs.slice(logsSince),
           logCursor: logs.length,
+          ...(queue ? { queue } : {}),
         },
       });
     } catch (error) {
