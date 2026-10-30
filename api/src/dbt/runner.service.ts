@@ -171,6 +171,32 @@ interface DbtJsonLogEvent {
   };
 }
 
+/**
+ * Python's `warnings` module prints to stderr as
+ * `/path/mod.py:12: FutureWarning: message`, followed by indented source
+ * lines (`  warnings.warn(...)`). Those are warnings, not errors: labelling
+ * them `error` made every run with google-cloud packages on Python 3.11 look
+ * failed.
+ */
+const PY_WARNING_LINE = /^\S.*:\d+: [A-Za-z]*Warning: /;
+
+/**
+ * Stateful level for stderr lines: a Python warning header and the indented
+ * lines that follow it are `warn`; everything else stays `error`.
+ */
+export function createStderrClassifier(): (line: string) => "warn" | "error" {
+  let inWarning = false;
+  return line => {
+    if (PY_WARNING_LINE.test(line)) {
+      inWarning = true;
+      return "warn";
+    }
+    if (inWarning && /^\s/.test(line)) return "warn";
+    inWarning = false;
+    return "error";
+  };
+}
+
 function parseLogLine(raw: string): DbtLogLine {
   try {
     const event = JSON.parse(raw) as DbtJsonLogEvent;
@@ -412,11 +438,12 @@ function execDbtCommand(params: {
       params.signal?.addEventListener("abort", onAbort, { once: true });
     }
 
+    const classifyStderr = createStderrClassifier();
     const flushLines = (chunk: string, isStderr: boolean) => {
       if (isStderr) {
         for (const line of chunk.split("\n")) {
           if (line.trim()) {
-            params.onLog({ ts: new Date(), level: "error", line });
+            params.onLog({ ts: new Date(), level: classifyStderr(line), line });
           }
         }
         return;

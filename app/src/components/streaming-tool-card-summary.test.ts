@@ -23,6 +23,18 @@ describe("StreamingToolCard getOutputSummary", () => {
     ).toBe("error · 2 steps");
   });
 
+  it("counts every step of a summarized dbt run, not just the listed ones", () => {
+    expect(
+      getOutputSummary({
+        success: true,
+        runId: "6a425cd21f3df656858dd1ff",
+        status: "error",
+        stepsTotal: 1583,
+        stepResults: [{ name: "a" }],
+      }),
+    ).toBe("error · 1583 steps");
+  });
+
   it("prefers the error message over the run status when the tool failed", () => {
     expect(
       getOutputSummary({

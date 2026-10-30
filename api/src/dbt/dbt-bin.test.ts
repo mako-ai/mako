@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildDbtBaseEnv } from "./dbt-bin";
+import { DEFAULT_DBT_PYTHONWARNINGS, buildDbtBaseEnv } from "./dbt-bin";
 
 describe("buildDbtBaseEnv", () => {
   const saved = { ...process.env };
@@ -35,5 +35,14 @@ describe("buildDbtBaseEnv", () => {
     expect(env.PATH).toBe("/usr/bin:/bin");
     expect(env.HTTPS_PROXY).toBe("http://proxy.local:8080");
     expect(env.UV_INDEX_URL).toBe("https://pypi.internal/simple");
+  });
+
+  it("silences Python FutureWarnings unless the operator sets a filter", () => {
+    delete process.env.PYTHONWARNINGS;
+    expect(buildDbtBaseEnv().PYTHONWARNINGS).toBe(DEFAULT_DBT_PYTHONWARNINGS);
+    expect(DEFAULT_DBT_PYTHONWARNINGS).toBe("ignore::FutureWarning");
+
+    process.env.PYTHONWARNINGS = "default";
+    expect(buildDbtBaseEnv().PYTHONWARNINGS).toBe("default");
   });
 });

@@ -24,7 +24,14 @@ export function getOutputSummary(output: unknown): string | null {
   // run id plus the run's lifecycle status. Surface the status so the card
   // header reads "success" / "running" instead of a bare "Done".
   if (typeof o.runId === "string" && typeof o.status === "string") {
-    const steps = Array.isArray(o.stepResults) ? o.stepResults.length : 0;
+    // dbt_get_run lists only the non-passing steps of a large run;
+    // `stepsTotal` is the real count.
+    const steps =
+      typeof o.stepsTotal === "number"
+        ? o.stepsTotal
+        : Array.isArray(o.stepResults)
+          ? o.stepResults.length
+          : 0;
     return steps > 0
       ? `${o.status} · ${steps} step${steps !== 1 ? "s" : ""}`
       : o.status;
