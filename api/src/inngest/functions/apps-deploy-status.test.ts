@@ -2,9 +2,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
   project: null as null | {
+    _id?: string;
     lastDeployError?: { sha: string; stage: string; message: string };
+    deployProgress?: { sha: string; stage: string };
   },
   reports: [] as Array<Record<string, unknown>>,
+  recorded: [] as Array<{ sha: string; stage: string; message: unknown }>,
+}));
+
+vi.mock("../../apps/deployment.service", async importOriginal => ({
+  ...(await importOriginal<typeof import("../../apps/deployment.service")>()),
+  recordDeployFailure: vi.fn(
+    async (_p: unknown, sha: string, stage: string, message: unknown) => {
+      state.recorded.push({ sha, stage, message });
+    },
+  ),
 }));
 
 vi.mock("../../apps/worktree.service", () => ({
@@ -35,6 +47,7 @@ const target = {
 beforeEach(() => {
   state.project = null;
   state.reports = [];
+  state.recorded = [];
 });
 
 describe("reportDeployFailure (apps-deploy onFailure)", () => {
@@ -66,5 +79,16 @@ describe("reportDeployFailure (apps-deploy onFailure)", () => {
       state: "failure",
       description: "deploy failed: fatal: Not a valid object",
     });
+  });
+
+  it("records an unrecorded failure against the stage it died in", async () => {
+    state.project = {
+      _id: target.appRef,
+      deployProgress: { sha: target.sha, stage: "publishing" },
+    };
+    await reportDeployFailure(target, new Error("upload timed out"));
+    expect(state.recorded).toEqual([
+      { sha: target.sha, stage: "publish", message: "upload timed out" },
+    ]);
   });
 });

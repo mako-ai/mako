@@ -18,6 +18,10 @@ import {
   resolveCommit,
 } from "./repository.service";
 import { appRootFor } from "./worktree.service";
+import {
+  describeDeployProgress,
+  type DeployProgressView,
+} from "./deploy-progress";
 
 export interface PublishedCommit {
   author: string;
@@ -45,6 +49,12 @@ export interface PublishState {
   pendingCommits: number | null;
   /** Why the newest commit is not live, when it is not (cleared on success). */
   lastDeployError: IAppProject["lastDeployError"] | null;
+  /**
+   * The deploy in flight, when there is one: its sha, stage (queued /
+   * bindings / build / publishing), timings, bindings prepared so far, and
+   * `stalled` when the stage stopped moving. Null when nothing is deploying.
+   */
+  deploy: DeployProgressView | null;
 }
 
 export interface PublishStateInput {
@@ -53,6 +63,9 @@ export interface PublishStateInput {
   publishedSha: string | null;
   publishedAt: Date | null;
   lastDeployError: IAppProject["lastDeployError"] | null;
+  deployProgress?: IAppProject["deployProgress"] | null;
+  /** Injectable clock for the deploy timings. */
+  now?: Date;
 }
 
 async function gitOut(repoDir: string, args: string[]): Promise<string | null> {
@@ -151,6 +164,11 @@ export async function readPublishState(
     upToDate,
     pendingCommits,
     lastDeployError,
+    deploy: describeDeployProgress(
+      input.deployProgress,
+      publishedSha,
+      input.now,
+    ),
   };
 }
 
@@ -171,5 +189,6 @@ export async function publishState(
     publishedSha: project.publishedSha ?? null,
     publishedAt: project.publishedAt ?? null,
     lastDeployError: project.lastDeployError ?? null,
+    deployProgress: project.deployProgress ?? null,
   });
 }

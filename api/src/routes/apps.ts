@@ -9,6 +9,7 @@
  * subdirectories in it, worked on inside E2B sandboxes. Always available (no
  * feature flag).
  */
+import { markDeployStage } from "../apps/deploy-progress";
 import { withQueryLabels } from "../services/bigquery-labels";
 import { createRoute, z } from "@hono/zod-openapi";
 import { eyesShotKey } from "../apps/eyes.service";
@@ -3994,6 +3995,7 @@ appsRoutes.openapi(
       }
 
       // Build main (now a durable ref) and deploy on success.
+      await markDeployStage(loaded.project, sha, "build");
       await checkoutInBox(handle, sha);
       const build = await buildApp(handle, execInWorktree);
       if (!build.ok) {

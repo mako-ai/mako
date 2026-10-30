@@ -63,6 +63,42 @@ afterEach(async () => {
   await fs.rm(repoDir, { recursive: true, force: true });
 });
 
+describe("readPublishState deploy progress", () => {
+  it("reports the in-flight deploy of a newer commit", async () => {
+    const live = await commit("apps/sales/App.tsx", "feat: v1");
+    const next = await commit("apps/sales/App.tsx", "feat: v2");
+    const state = await readPublishState(repoDir, {
+      branch: "main",
+      appRoot: "apps/sales",
+      publishedSha: live,
+      publishedAt: null,
+      lastDeployError: null,
+      deployProgress: {
+        sha: next,
+        stage: "bindings",
+        startedAt: new Date("2026-10-30T10:00:00Z"),
+        stageStartedAt: new Date("2026-10-30T10:01:00Z"),
+        updatedAt: new Date("2026-10-30T10:05:00Z"),
+        bindings: { total: 4, prepared: 1, current: "deals" },
+      },
+      now: new Date("2026-10-30T10:06:00Z"),
+    });
+    expect(state.upToDate).toBe(false);
+    expect(state.deploy).toMatchObject({
+      sha: next,
+      stage: "bindings",
+      bindings: { total: 4, prepared: 1, current: "deals" },
+      summary:
+        "bindings: 1 of 4 prepared (preparing `deals`), 5 min in this stage",
+    });
+  });
+
+  it("is null when nothing is deploying", async () => {
+    const sha = await commit("apps/sales/App.tsx", "feat: v1");
+    expect((await read(sha)).deploy).toBeNull();
+  });
+});
+
 describe("readPublishState", () => {
   it("describes the published commit and reads up to date at the tip", async () => {
     const sha = await commit("apps/sales/App.tsx", "feat: seasonality");

@@ -90,6 +90,7 @@ export default defineConfig({
       "src/apps/app-chat.service.test.ts",
       "src/services/auto-join.service.test.ts",
       "src/apps/deploy-on-push.test.ts",
+      "src/apps/deploy-progress.test.ts",
       // What is live for an app: the published chip and app_publish_status.
       "src/apps/publish-state.test.ts",
       // Apps in real folders: the index over the tree at main, manifest

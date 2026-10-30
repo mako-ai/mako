@@ -1005,6 +1005,7 @@ function buildTools(
         "What is LIVE for this app: the published deployment's commit sha vs the tip of the default branch. " +
         "A push to the default branch builds and publishes automatically; when the branch is ahead of the published sha, " +
         "the newest commits are still building or the build/data preparation failed — `lastDeployError` then names the stage (bindings/build) and the error; app_build_log has the full build output. " +
+        "While a deploy is in flight, `deploy` names its sha and stage (queued, bindings, build or publishing) with timestamps, `bindings` {prepared, total, current} during data preparation, a one-line `summary`, and `stalled` when the stage has had no progress for too long. " +
         "For the sandbox worktree's own git state, use app_status.",
       inputSchema: z.object({ appId: z.string() }),
       execute: async ({ appId }) => {
