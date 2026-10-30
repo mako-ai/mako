@@ -257,6 +257,7 @@ preview the app as a specific workspace member during `pnpm dev`.
 - App frames are sandboxed but keep `allow-downloads`, so an app can save the files it builds (an Excel or CSV export).
 - Published apps can open links in a new tab (`target="_blank"`): the frame keeps `allow-popups` and `allow-popups-to-escape-sandbox`, so the opened tab is a normal, unsandboxed page. The app frame itself stays opaque on Mako's origin.
 - Apps run on their own origin (`<appId>.makousercontent.com`), so their keystrokes never reach Mako's own listeners. The SDK forwards Cmd/Ctrl+K to Mako (a `mako-app:shortcut` message) so the command palette opens while an app has focus; it needs `@makoai/app-sdk` 2.9.1 or newer, which published apps pick up on their next deploy.
+- If a corporate proxy blocks the apps domain, the app frame would show the proxy's error page. Before framing an app on its own origin, Mako probes `GET /__mako/ping` on the app host (CORS for `CLIENT_URL`, no credentials, 4 s timeout). If the probe fails, it frames the same token path from Mako's own origin instead and remembers that for every app host for the rest of the page load. The production deploy no longer sets `APPS_ORIGIN_BASE` by default, so apps are framed from Mako's origin unless it is configured.
 
 ## API Surface
 
