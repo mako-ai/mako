@@ -8,7 +8,6 @@ import assert from "node:assert/strict";
 import {
   authorizeAppMove,
   authorizeFolderTarget,
-  canDeployApp,
   canOrganizeWorkspaceTree,
 } from "./app-authorization";
 import type { AppFolderTarget } from "./worktree.service";
@@ -166,28 +165,3 @@ assert.match(
 );
 
 console.log("app-authorization: ok");
-
-// app_publish: a member who can see a workspace app deploys its main, even
-// when the app's general access is view-only (2026-10-30: the web-performance
-// app, owned by joan, answered "not found" to a member's app_publish while
-// app_publish_status worked). Viewers and strangers still cannot.
-{
-  const sharedViewOnly = {
-    owner_id: "u1",
-    access: "workspace" as const,
-    workspaceRole: "viewer" as const,
-  };
-  assert.equal(canDeployApp(sharedViewOnly, "u1", "member"), true, "owner");
-  assert.equal(canDeployApp(sharedViewOnly, "u2", "member"), true, "member");
-  assert.equal(canDeployApp(sharedViewOnly, "u2", "viewer"), false, "viewer");
-  assert.equal(canDeployApp(sharedViewOnly, "u2", undefined), false, "no role");
-  const privateApp = { owner_id: "u1", access: "private" as const };
-  assert.equal(
-    canDeployApp(privateApp, "u2", "admin"),
-    false,
-    "a private app stays its owner's",
-  );
-  assert.equal(canDeployApp(privateApp, "u1", "member"), true);
-}
-
-console.log("app-authorization: canDeployApp passed");

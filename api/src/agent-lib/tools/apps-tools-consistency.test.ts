@@ -190,7 +190,8 @@ describe("app tool repository consistency", () => {
 // 2026-10-30: app_publish answered "App … not found" for an app that
 // app_list_apps listed and app_publish_status read. The caller (a workspace
 // member) could see the workspace app but its general access was view-only,
-// and the write check reported that as "not found".
+// and the write check reported that as "not found". Deploying still needs
+// edit access; only the message changes.
 describe("app tool access", () => {
   const asMember = () =>
     createAppsTools({
@@ -198,9 +199,23 @@ describe("app tool access", () => {
       userId: "u2",
     }) as unknown as Record<string, Executable>;
 
-  it("lets an editing member deploy a view-only workspace app", async () => {
+  it("a member with view-only access gets view-only, not not found", async () => {
     state.role = "member";
     state.canWrite = false;
+    const result = await asMember().app_publish.execute({
+      appId: "6a9411eb4c8b33609a65e665",
+    });
+    expect(result.success).toBe(false);
+    expect(String(result.error)).toContain(
+      "You can view app 6a9411eb4c8b33609a65e665 but not deploy it",
+    );
+    expect(String(result.error)).toContain("workspace role: member");
+    expect(state.events.some(e => e.startsWith("deploy:"))).toBe(false);
+  });
+
+  it("an editor still deploys", async () => {
+    state.role = "member";
+    state.canWrite = true;
     const result = await asMember().app_publish.execute({
       appId: "6a9411eb4c8b33609a65e665",
     });

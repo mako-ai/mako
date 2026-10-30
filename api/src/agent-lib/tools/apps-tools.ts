@@ -90,7 +90,6 @@ import {
 import {
   authorizeAppMove,
   authorizeFolderTarget,
-  canDeployApp,
   canSeeIndexedApp,
 } from "../../apps/app-authorization";
 import { materializeAppBinding } from "../../apps/bindings.service";
@@ -298,9 +297,7 @@ function buildTools(
       if (!canReadResource(project, userId, role)) {
         return { error: `App ${appId} not found. Use app_list_apps.` };
       }
-      const allowed = opts.deploy
-        ? canDeployApp(project, userId, role)
-        : !opts.write || canWriteResource(project, userId, role);
+      const allowed = !opts.write || canWriteResource(project, userId, role);
       if (!allowed) {
         return {
           error:
@@ -1044,9 +1041,7 @@ function buildTools(
         "(typically under 2 minutes; required parquet bindings are prepared " +
         "at that exact commit before it goes live, and a failing build or binding surfaces in " +
         "app_build_log). Use when a push's automatic deploy did not land, or " +
-        "to force a redeploy of the current branch tip. Any editing workspace " +
-        "member (owner, admin, member) who can see the app may deploy it; " +
-        "it builds what is already on main.",
+        "to force a redeploy of the current branch tip. Needs edit access to the app.",
       inputSchema: z.object({ appId: z.string() }),
       execute: async ({ appId }) => {
         const loaded = await loadProject(appId, { write: true, deploy: true });
