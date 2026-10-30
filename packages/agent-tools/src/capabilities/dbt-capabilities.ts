@@ -12,11 +12,7 @@ import {
 } from "./types";
 
 export type DbtCapabilityPack =
-  | "dbt-orient"
-  | "dbt-edit"
-  | "dbt-validation"
-  | "dbt-projects"
-  | "dbt-jobs";
+  "dbt-orient" | "dbt-edit" | "dbt-validation" | "dbt-projects" | "dbt-jobs";
 
 export type DbtCapabilityDefinition = AgentCapabilityDefinition<
   "dbt",
@@ -46,7 +42,7 @@ export const DBT_CAPABILITIES = [
     name: "create_dbt_file",
     pack: "dbt-edit",
     risk: "write",
-    minimumWorkspaceRole: "member",
+    minimumWorkspaceRole: "admin",
     requiredGrant: "artifact-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
@@ -55,7 +51,7 @@ export const DBT_CAPABILITIES = [
     name: "modify_dbt_file",
     pack: "dbt-edit",
     risk: "write",
-    minimumWorkspaceRole: "member",
+    minimumWorkspaceRole: "admin",
     requiredGrant: "artifact-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
@@ -64,7 +60,7 @@ export const DBT_CAPABILITIES = [
     name: "edit_dbt_file",
     pack: "dbt-edit",
     risk: "write",
-    minimumWorkspaceRole: "member",
+    minimumWorkspaceRole: "admin",
     requiredGrant: "artifact-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
@@ -73,16 +69,18 @@ export const DBT_CAPABILITIES = [
     name: "delete_dbt_file",
     pack: "dbt-edit",
     risk: "destructive",
-    minimumWorkspaceRole: "member",
+    minimumWorkspaceRole: "admin",
     requiredGrant: "artifact-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   // Validation runs are async (queue + poll dbt_get_run) since #755, so they
   // are safe on the stateless external MCP surface. Read-risk validation
-  // bridges for every key; warehouse-mutating runs additionally require the
-  // warehouse-write grant, which every external MCP/CLI credential holds —
-  // their minimumWorkspaceRole is what keeps viewers out.
+  // (parse / compile / show) stays open to members. Every external MCP/CLI
+  // credential holds the warehouse-write grant (#1043), so the role is the
+  // real gate: changing dbt files, building models, running or cancelling
+  // jobs and provisioning environments require admin (2026-10-30: members
+  // do not touch dbt; a member MCP session had triggered a prod job).
   define({
     name: "dbt_parse",
     pack: "dbt-validation",
@@ -112,7 +110,7 @@ export const DBT_CAPABILITIES = [
     name: "dbt_run_model",
     pack: "dbt-validation",
     risk: "destructive",
-    minimumWorkspaceRole: "member",
+    minimumWorkspaceRole: "admin",
     requiredGrant: "warehouse-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
@@ -130,7 +128,7 @@ export const DBT_CAPABILITIES = [
     name: "dbt_cancel_run",
     pack: "dbt-validation",
     risk: "write",
-    minimumWorkspaceRole: "member",
+    minimumWorkspaceRole: "admin",
     requiredGrant: "warehouse-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
@@ -148,7 +146,7 @@ export const DBT_CAPABILITIES = [
     name: "dbt_ensure_dev_environment",
     pack: "dbt-projects",
     risk: "write",
-    minimumWorkspaceRole: "member",
+    minimumWorkspaceRole: "admin",
     requiredGrant: "warehouse-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
@@ -197,7 +195,7 @@ export const DBT_CAPABILITIES = [
     name: "dbt_run_job",
     pack: "dbt-jobs",
     risk: "destructive",
-    minimumWorkspaceRole: "member",
+    minimumWorkspaceRole: "admin",
     requiredGrant: "warehouse-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",

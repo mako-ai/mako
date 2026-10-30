@@ -77,6 +77,7 @@ import {
   isDbtCompatibleConnectionType,
 } from "../../dbt/adapter-map";
 import { buildStarterScaffold } from "../../dbt/scaffold";
+import { dbtWorkingTreeUserFor } from "../../dbt/rbac";
 import { validateScheduledConsoleSchedule } from "../../services/scheduled-query-schedule.service";
 import type { DbtLogLine } from "../../dbt/runner.service";
 
@@ -280,12 +281,30 @@ export const createDbtServerTools = (
     Boolean(project.lastProdManifestKey) &&
     environmentName !== resolveProdLikeEnvironmentName(project);
 
+  // The acting user's workspace role, looked up once per tool set.
+  let rolePromise: Promise<string | undefined> | undefined;
+  const actingRole = (): Promise<string | undefined> => {
+    rolePromise ??= userId
+      ? workspaceService
+          .getMember(workspaceId, userId)
+          .then(member => member?.role)
+      : Promise.resolve(undefined);
+    return rolePromise;
+  };
+
   const queueAgentRun = async (
     project: Awaited<ReturnType<typeof assertProject>>,
     environment: string,
     commands: string[],
     deferToProduction = false,
   ) => {
+    // Owners/admins build their working tree (checkout + drafts). Members
+    // validate the committed tracked branch only — never drafts or another
+    // ref (dbt/rbac.ts dbtWorkingTreeUserFor).
+    const workingTreeUserId = dbtWorkingTreeUserFor(
+      await actingRole(),
+      actingUserId,
+    );
     const run = await triggerDbtRun({
       workspaceId,
       projectId: project._id.toString(),
@@ -293,7 +312,7 @@ export const createDbtServerTools = (
       commands,
       trigger: "agent",
       triggeredBy: "agent",
-      workingTreeUserId: actingUserId,
+      workingTreeUserId,
       deferToProduction,
     });
     publishRunUpdated(project._id.toString(), {
@@ -305,6 +324,12 @@ export const createDbtServerTools = (
       status: run.status,
       environment: run.environment,
       commands: run.commands,
+      ...(workingTreeUserId
+        ? {}
+        : {
+            source:
+              "committed tracked branch (members validate committed models, not drafts)",
+          }),
     };
   };
 
