@@ -22,6 +22,7 @@ import type { AppRepoLocation } from "./app-paths";
 import type { OwnerDirectory } from "./user-handles";
 import {
   canReadResource,
+  canWriteResource,
   type ShareableResourceLike,
 } from "../utils/resource-acl";
 
@@ -110,4 +111,21 @@ export function authorizeAppMove(
     return "Only the owner can move an app out of their personal folder";
   }
   return null;
+}
+
+/**
+ * Who may deploy an app's default branch (app_publish). Deploying changes no
+ * content: it builds the commit already on main, which any push to main
+ * deploys anyway. So an app editor may, and so may any editing member
+ * (owner, admin, member) who can see the app — the same people who can push
+ * to the workspace repo. Viewers and actors without a role may not.
+ */
+export function canDeployApp(
+  app: ShareableResourceLike,
+  userId: string | undefined,
+  role: string | undefined,
+): boolean {
+  if (!userId) return true;
+  if (canWriteResource(app, userId, role)) return true;
+  return canOrganizeWorkspaceTree(role) && canReadResource(app, userId, role);
 }
