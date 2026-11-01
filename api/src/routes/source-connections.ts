@@ -1335,10 +1335,16 @@ sourceConnectionRoutes.openapi(
       );
     }
     const caller = await callerOf(c, workspaceId);
+    // Only the people who can act on it today: a creator recorded as
+    // `system` (seeded or imported connections), someone who left, or a
+    // member since made a viewer is not shown. A connection left with no one
+    // is configured by the workspace owner until they add editors.
+    const listed = editorsOf(row);
+    const roles = await Promise.all(listed.map(e => roleIn(workspaceId, e)));
     return c.json({
       success: true,
       data: {
-        editors: editorsOf(row),
+        editors: listed.filter((_, i) => mayCreateSourceConnection(roles[i])),
         canEdit:
           c.get("authType") === "session" &&
           mayChangeSourceConnection(caller.role, caller.userId, row),
