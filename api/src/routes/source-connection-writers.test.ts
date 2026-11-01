@@ -40,8 +40,13 @@ vi.mock("../auth/unified-auth.middleware", () => ({
 vi.mock("../services/workspace.service", () => ({
   workspaceService: {
     hasAccess: vi.fn(async () => true),
+    // The caller has their test role; the connection's creator is a member.
     getMember: vi.fn(async (_ws: string, userId: string) =>
-      userId === who.userId ? { role: who.role } : null,
+      userId === who.userId
+        ? { role: who.role }
+        : userId === "editor1"
+          ? { role: "member" }
+          : null,
     ),
   },
 }));
