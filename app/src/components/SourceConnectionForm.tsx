@@ -16,6 +16,8 @@ import {
   IconButton,
   Tooltip,
   Snackbar,
+  Tab,
+  Tabs,
 } from "@mui/material";
 import {
   Visibility,
@@ -35,6 +37,7 @@ import { useSourceConnectionStore } from "../store/sourceConnectionStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { connectorIconUrl } from "../lib/connector-icon";
 import { EntityHistoryButton } from "./EntityHistoryButton";
+import ConnectionEditorsPanel from "./ConnectionEditorsPanel";
 
 /** `ws:acme` — a connector defined in the workspace repo (`connectors/acme/`). */
 const WORKSPACE_TYPE_PREFIX = "ws:";
@@ -135,6 +138,7 @@ function SourceConnectionForm({
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [tab, setTab] = useState<"connection" | "access">("connection");
 
   const draftRef = useRef<Record<string, any> | undefined>(
     tabId
@@ -1123,7 +1127,7 @@ function SourceConnectionForm({
         <Alert severity="info" sx={{ mb: 2 }}>
           {currentWorkspace?.role === "viewer"
             ? "Viewers can see source connections but not change them."
-            : "You can change only the source connections you created. Ask the workspace owner or an admin."}
+            : "Only this connection's editors can change it. The Access tab shows who they are."}
         </Alert>
       )}
 
@@ -1239,7 +1243,28 @@ function SourceConnectionForm({
       sx={{ p: 2, maxWidth: "800px", mx: "auto" }}
       data-form-type="other"
     >
-      {formContent}
+      {connector?._id && (
+        <Tabs
+          value={tab}
+          onChange={(_, value) => setTab(value)}
+          sx={{
+            minHeight: 40,
+            borderBottom: 1,
+            borderColor: "divider",
+            "& .MuiTab-root": { minHeight: 40, textTransform: "none" },
+          }}
+        >
+          <Tab value="connection" label="Connection" />
+          <Tab value="access" label="Access" />
+        </Tabs>
+      )}
+      {tab === "access" && connector?._id ? (
+        <Box sx={{ py: 2 }}>
+          <ConnectionEditorsPanel connectionId={connector._id} />
+        </Box>
+      ) : (
+        formContent
+      )}
 
       <Snackbar
         open={!!snackbarMessage}

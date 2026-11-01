@@ -16,10 +16,18 @@ interface SourceConnectionEntity {
   updatedAt: string;
   workspaceId: string;
   /**
-   * Whether the signed-in person may edit, disable or delete it: owners and
-   * admins any, members the ones they created, viewers none.
+   * Whether the signed-in person may configure it: its editors and the
+   * workspace owner. Being an admin is not enough.
    */
   canEdit?: boolean;
+  /** User ids that configure it (its creator unless an editor changed it). */
+  editors?: string[];
+}
+
+/** Who configures a source connection, and whether the caller may change it. */
+export interface SourceConnectionEditors {
+  editors: string[];
+  canEdit: boolean;
 }
 
 interface ApiResponse<T> {
@@ -53,6 +61,16 @@ interface EntitiesState {
     workspaceId: string,
     connectorId: string,
   ) => Promise<{ success: boolean; error: string | null }>;
+  /** Who configures the connection (its Access tab). */
+  getEditors: (
+    workspaceId: string,
+    connectorId: string,
+  ) => Promise<SourceConnectionEditors>;
+  setEditors: (
+    workspaceId: string,
+    connectorId: string,
+    editors: string[],
+  ) => Promise<void>;
 }
 
 function makeKey(workspaceId: string, connectorId: string) {
@@ -258,6 +276,35 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
           error: err?.message || "Failed to delete",
         };
       }
+    },
+    getEditors: async (workspaceId, connectorId) => {
+      const res = unwrapBody(
+        await api.GET(
+          "/api/workspaces/{workspaceId}/connections/sources/{id}/editors",
+          { params: { path: { workspaceId, id: connectorId } } },
+        ),
+      ) as ApiResponse<SourceConnectionEditors>;
+      if (!res.success || !res.data) {
+        throw new Error(res.error ?? "Couldn't load the editors.");
+      }
+      return res.data;
+    },
+    setEditors: async (workspaceId, connectorId, editors) => {
+      const res = unwrapBody(
+        await api.PUT(
+          "/api/workspaces/{workspaceId}/connections/sources/{id}/editors",
+          {
+            params: { path: { workspaceId, id: connectorId } },
+            body: { editors },
+          },
+        ),
+      ) as ApiResponse<{ editors: string[] }>;
+      if (!res.success) throw new Error(res.error ?? "Couldn't save.");
+      // Who may edit changed: the cached row's canEdit is stale.
+      set(state => {
+        delete state.entities[makeKey(workspaceId, connectorId)];
+      });
+      await get().fetchOne(workspaceId, connectorId);
     },
   })),
 );

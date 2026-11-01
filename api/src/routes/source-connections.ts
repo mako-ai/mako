@@ -32,8 +32,9 @@ import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { Types } from "mongoose";
 import {
-  NOT_YOURS_REFUSAL,
   VIEWER_REFUSAL,
+  changeRefusal,
+  editorsOf,
   mayChangeSourceConnection,
   mayCreateSourceConnection,
   roleIn,
@@ -241,6 +242,7 @@ async function publicSourceConnection(
   return {
     ...record,
     config: redactSourceConfig(record.config, schema),
+    editors: editorsOf(record),
     ...(caller
       ? {
           canEdit: mayChangeSourceConnection(
@@ -467,13 +469,7 @@ sourceConnectionRoutes.openapi(
         !mayChangeSourceConnection(caller.role, caller.userId, sourceConnection)
       ) {
         return c.json(
-          {
-            success: false,
-            error:
-              caller.role === "viewer" || !caller.role
-                ? VIEWER_REFUSAL
-                : NOT_YOURS_REFUSAL,
-          },
+          { success: false, error: changeRefusal(caller.role) },
           403,
         );
       }
@@ -635,7 +631,7 @@ sourceConnectionRoutes.openapi(
 
       const existing = await SourceConnection.findOne(
         { _id: id, workspaceId },
-        { createdBy: 1 },
+        { createdBy: 1, editors: 1 },
       ).lean();
       if (!existing) {
         return c.json(
@@ -646,13 +642,7 @@ sourceConnectionRoutes.openapi(
       const caller = await callerOf(c, workspaceId);
       if (!mayChangeSourceConnection(caller.role, caller.userId, existing)) {
         return c.json(
-          {
-            success: false,
-            error:
-              caller.role === "viewer" || !caller.role
-                ? VIEWER_REFUSAL
-                : NOT_YOURS_REFUSAL,
-          },
+          { success: false, error: changeRefusal(caller.role) },
           403,
         );
       }
@@ -932,7 +922,7 @@ sourceConnectionRoutes.openapi(
 
       const existing = await SourceConnection.findOne(
         { _id: id, workspaceId },
-        { createdBy: 1 },
+        { createdBy: 1, editors: 1 },
       ).lean();
       if (!existing) {
         return c.json(
@@ -943,13 +933,7 @@ sourceConnectionRoutes.openapi(
       const caller = await callerOf(c, workspaceId);
       if (!mayChangeSourceConnection(caller.role, caller.userId, existing)) {
         return c.json(
-          {
-            success: false,
-            error:
-              caller.role === "viewer" || !caller.role
-                ? VIEWER_REFUSAL
-                : NOT_YOURS_REFUSAL,
-          },
+          { success: false, error: changeRefusal(caller.role) },
           403,
         );
       }
@@ -1161,8 +1145,8 @@ sourceConnectionRoutes.openapi(
  * The primitive is gone rather than narrowed: the server reads the
  * ciphertext from its OWN record, addressed by connector id scoped to the
  * URL workspace, so nothing decryptable can be supplied by the caller. The
- * gate is admin/owner — the same people who may edit these credentials —
- * and every reveal is logged with actor, connector and field, because
+ * gate is the connection's editors and the workspace owner — the same people
+ * who may edit these credentials — and every reveal is logged with actor, connector and field, because
  * showing a credential should leave a trace.
  */
 sourceConnectionRoutes.openapi(
@@ -1171,7 +1155,7 @@ sourceConnectionRoutes.openapi(
     path: "/{id}/reveal-secret",
     tags: ["Source Connections"],
     summary:
-      "Reveal one stored secret of a source connection (admin/owner only)",
+      "Reveal one stored secret of a source connection (its editors and the workspace owner only)",
     security: AUTH_SECURITY,
     request: {
       params: WorkspaceParam.extend({
@@ -1208,19 +1192,9 @@ sourceConnectionRoutes.openapi(
         return c.json({ success: false, error: "field is required" }, 400);
       }
 
-      // Revealing a credential is an admin/owner act — the same bar as
-      // editing it. Membership is NOT enough (a viewer must not read the
-      // credentials an admin configured).
       const user = c.get("user");
-      if (!user || !(await workspaceService.isAdmin(workspaceId, user.id))) {
-        return c.json(
-          {
-            success: false,
-            error:
-              "Revealing a source-connection secret requires the admin or owner workspace role",
-          },
-          403,
-        );
+      if (!user) {
+        return c.json({ success: false, error: VIEWER_REFUSAL }, 403);
       }
 
       // The ciphertext comes from OUR record for THIS workspace — never from
@@ -1233,6 +1207,19 @@ sourceConnectionRoutes.openapi(
         return c.json(
           { success: false, error: "Source connection not found" },
           404,
+        );
+      }
+
+      // Revealing a credential is an editor's act — the same bar as editing
+      // it. Being an admin is NOT enough: only the people the connection's
+      // editors picked (and the workspace owner) see its key.
+      const caller = await callerOf(c, workspaceId);
+      if (
+        !mayChangeSourceConnection(caller.role, caller.userId, sourceConnection)
+      ) {
+        return c.json(
+          { success: false, error: changeRefusal(caller.role) },
+          403,
         );
       }
 
@@ -1309,6 +1296,136 @@ sourceConnectionRoutes.openapi(
         500,
       );
     }
+  },
+);
+
+// --- Who configures this connection -----------------------------------------
+// Its editors (access/source-connection-access.ts): the creator first, then
+// whoever an editor adds. Anyone in the workspace may see the list; only an
+// editor or the workspace owner changes it, in the app.
+
+const MAX_EDITORS = 50;
+
+sourceConnectionRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/editors",
+    tags: ["Source Connections"],
+    summary: "Who configures this source connection",
+    security: AUTH_SECURITY,
+    request: { params: SourceIdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    if (!workspaceId || !isSourceConnectionId(id)) {
+      return c.json(
+        { success: false, error: "Invalid source connection ID format" },
+        400,
+      );
+    }
+    const row = await SourceConnection.findOne({ _id: id, workspaceId })
+      .select("editors createdBy")
+      .lean();
+    if (!row) {
+      return c.json(
+        { success: false, error: "Source connection not found" },
+        404,
+      );
+    }
+    const caller = await callerOf(c, workspaceId);
+    return c.json({
+      success: true,
+      data: {
+        editors: editorsOf(row),
+        canEdit:
+          c.get("authType") === "session" &&
+          mayChangeSourceConnection(caller.role, caller.userId, row),
+      },
+    });
+  },
+);
+
+sourceConnectionRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/editors",
+    tags: ["Source Connections"],
+    summary: "Change who configures this source connection",
+    security: AUTH_SECURITY,
+    request: {
+      params: SourceIdParam,
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              editors: z
+                .array(z.string().min(1).max(64))
+                .min(1)
+                .max(MAX_EDITORS),
+            }),
+          },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    const user = c.get("user");
+    // People pick who holds a key, in the app: never an API key, MCP client
+    // or agent, whatever it is asked.
+    if (c.get("authType") !== "session" || !user?.id) {
+      return c.json(
+        { success: false, error: "Editors can only be changed in the app" },
+        403,
+      );
+    }
+    if (!workspaceId || !isSourceConnectionId(id)) {
+      return c.json(
+        { success: false, error: "Invalid source connection ID format" },
+        400,
+      );
+    }
+    const row = await SourceConnection.findOne({ _id: id, workspaceId });
+    if (!row) {
+      return c.json(
+        { success: false, error: "Source connection not found" },
+        404,
+      );
+    }
+    const caller = await callerOf(c, workspaceId);
+    if (!mayChangeSourceConnection(caller.role, caller.userId, row)) {
+      return c.json({ success: false, error: changeRefusal(caller.role) }, 403);
+    }
+    const { editors } = c.req.valid("json");
+    const next = [...new Set(editors)];
+    // Every editor is a member who may configure connections: a viewer, or
+    // someone outside the workspace, would hold a key they cannot use.
+    const roles = await Promise.all(next.map(e => roleIn(workspaceId, e)));
+    const refused = next.filter((_, i) => !mayCreateSourceConnection(roles[i]));
+    if (refused.length > 0) {
+      return c.json(
+        {
+          success: false,
+          error: `${refused.join(", ")} cannot be an editor: editors must be members or admins of this workspace`,
+        },
+        400,
+      );
+    }
+    const before = editorsOf(row);
+    row.set("editors", next);
+    await row.save();
+    logger.info("Source connection editors changed", {
+      workspaceId,
+      connectionId: id,
+      userId: user.id,
+      added: next.filter(e => !before.includes(e)),
+      removed: before.filter(e => !next.includes(e)),
+    });
+    return c.json({ success: true, data: { editors: next } });
   },
 );
 

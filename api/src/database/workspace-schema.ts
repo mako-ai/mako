@@ -381,6 +381,12 @@ export interface ISourceConnection extends Document {
   };
   targetDatabases?: Types.ObjectId[];
   createdBy: string;
+  /**
+   * User ids that configure this connection (edit, reveal or replace its
+   * key, delete it, change this list). Absent or empty: its creator.
+   * See access/source-connection-access.ts.
+   */
+  editors?: string[];
   createdAt: Date;
   updatedAt: Date;
   lastSyncedAt?: Date;
@@ -1742,6 +1748,12 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
       type: String,
       ref: "User",
       required: true,
+    },
+    // No default: an absent list means "its creator", and a default would
+    // write an empty array onto every connection that is saved.
+    editors: {
+      type: [String],
+      default: undefined,
     },
     lastSyncedAt: {
       type: Date,

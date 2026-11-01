@@ -1,7 +1,8 @@
 /**
- * Who may configure a source connection: viewers read only; members create,
- * and change or delete the connections they created; owners and admins change
- * or delete any. Revealing a key stays owner/admin only.
+ * Who may configure a source connection: its editors (the creator first, then
+ * whoever an editor adds) and the workspace owner. Being an admin is not
+ * enough. Viewers read only, even when listed. Revealing a key follows the
+ * same rule.
  *
  * Real routes + real Mongo (mongodb-memory-server); auth, roles and the
  * connector schema are mocked.
@@ -22,6 +23,13 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 const who = vi.hoisted(() => ({
   userId: "member1",
   role: "member" as string | null,
+  authType: "session",
+  // Everyone else's role, for checking who may be added as an editor.
+  others: {
+    member2: "member",
+    admin2: "admin",
+    viewer2: "viewer",
+  } as Record<string, string>,
 }));
 
 vi.mock("../auth/unified-auth.middleware", () => ({
@@ -30,6 +38,7 @@ vi.mock("../auth/unified-auth.middleware", () => ({
     next: () => Promise<void>,
   ) => {
     c.set("user", { id: who.userId });
+    c.set("authType", who.authType);
     await next();
   },
 }));
@@ -37,7 +46,10 @@ vi.mock("../auth/unified-auth.middleware", () => ({
 vi.mock("../services/workspace.service", () => ({
   workspaceService: {
     hasAccess: vi.fn(async () => who.role !== null),
-    getMember: vi.fn(async () => (who.role ? { role: who.role } : null)),
+    getMember: vi.fn(async (_ws: string, userId: string) => {
+      const role = userId === who.userId ? who.role : who.others[userId];
+      return role ? { role } : null;
+    }),
     isAdmin: vi.fn(async () => who.role === "owner" || who.role === "admin"),
   },
 }));
@@ -84,9 +96,10 @@ function req(method: string, path: string, body?: unknown) {
   );
 }
 
-function as(role: string | null, userId: string) {
+function as(role: string | null, userId: string, authType = "session") {
   who.role = role;
   who.userId = userId;
+  who.authType = authType;
 }
 
 beforeAll(async () => {
@@ -132,6 +145,15 @@ const rename = (id: string) => req("PUT", `/${id}`, { name: "renamed" });
 const enable = (id: string) =>
   req("PATCH", `/${id}/enable`, { enabled: false });
 const remove = (id: string) => req("DELETE", `/${id}`);
+const reveal = (id: string) =>
+  req("POST", `/${id}/reveal-secret`, { field: "api_key" });
+const setEditors = (id: string, editors: string[]) =>
+  req("PUT", `/${id}/editors`, { editors });
+const editorsOfRow = async (id: string) =>
+  (await (await req("GET", `/${id}/editors`)).json()).data as {
+    editors: string[];
+    canEdit: boolean;
+  };
 
 describe("viewer", () => {
   beforeEach(() => as("viewer", "viewer1"));
@@ -161,23 +183,26 @@ describe("viewer", () => {
 describe("member", () => {
   beforeEach(() => as("member", "member1"));
 
-  it("creates, and may change what they created", async () => {
+  it("creates, and is the first editor of what they create", async () => {
     const created = await create();
     expect(created.status).toBe(201);
-    expect((await created.json()).data.canEdit).toBe(true);
+    const body = (await created.json()).data;
+    expect(body.canEdit).toBe(true);
+    expect(body.editors).toEqual(["member1"]);
     expect((await rename(mine)).status).toBe(200);
+    expect((await reveal(mine)).status).toBe(200);
     expect((await enable(mine)).status).toBe(200);
     expect((await remove(mine)).status).toBe(200);
   });
 
-  it("cannot change or delete someone else's", async () => {
+  it("cannot change, reveal or delete a connection they are not an editor of", async () => {
     const res = await rename(theirs);
     expect(res.status).toBe(403);
-    expect((await res.json()).error).toMatch(
-      /only the source connections they created/,
-    );
+    expect((await res.json()).error).toMatch(/Only this connection's editors/);
+    expect((await reveal(theirs)).status).toBe(403);
     expect((await enable(theirs)).status).toBe(403);
     expect((await remove(theirs)).status).toBe(403);
+    expect((await setEditors(theirs, ["member1"])).status).toBe(403);
     const list = (await (await req("GET", "/")).json()).data as {
       name: string;
       canEdit: boolean;
@@ -187,29 +212,103 @@ describe("member", () => {
       theirs: false,
     });
   });
+});
 
-  it("cannot reveal a key, even of their own connection", async () => {
+describe("admin", () => {
+  beforeEach(() => as("admin", "admin1"));
+
+  it("cannot configure a connection they are not an editor of", async () => {
+    expect((await rename(theirs)).status).toBe(403);
     expect(
-      (await req("POST", `/${mine}/reveal-secret`, { field: "api_key" }))
+      (await req("PUT", `/${theirs}`, { config: { api_key: "new-key" } }))
         .status,
     ).toBe(403);
+    expect((await reveal(theirs)).status).toBe(403);
+    expect((await enable(theirs)).status).toBe(403);
+    expect((await remove(theirs)).status).toBe(403);
+    expect((await setEditors(theirs, ["admin1"])).status).toBe(403);
+    expect(await SourceConnection.countDocuments()).toBe(2);
+  });
+
+  it("configures one once an editor adds them", async () => {
+    as("member", "someone-else");
+    who.others.admin1 = "admin";
+    expect((await setEditors(theirs, ["someone-else", "admin1"])).status).toBe(
+      200,
+    );
+    as("admin", "admin1");
+    expect((await editorsOfRow(theirs)).canEdit).toBe(true);
+    expect((await rename(theirs)).status).toBe(200);
+    expect((await reveal(theirs)).status).toBe(200);
+    delete who.others.admin1;
   });
 });
 
-describe("admin and owner", () => {
-  for (const role of ["admin", "owner"]) {
-    it(`${role} changes, replaces the key of, and deletes anyone's`, async () => {
-      as(role, `${role}1`);
-      expect((await rename(theirs)).status).toBe(200);
-      expect(
-        (await req("PUT", `/${theirs}`, { config: { api_key: "new-key" } }))
-          .status,
-      ).toBe(200);
-      expect((await enable(theirs)).status).toBe(200);
-      expect((await remove(theirs)).status).toBe(200);
-      expect((await create()).status).toBe(201);
+describe("workspace owner", () => {
+  beforeEach(() => as("owner", "owner1"));
+
+  it("configures any connection, the way back when its editors are gone", async () => {
+    expect((await rename(theirs)).status).toBe(200);
+    expect(
+      (await req("PUT", `/${theirs}`, { config: { api_key: "new-key" } }))
+        .status,
+    ).toBe(200);
+    expect((await reveal(theirs)).status).toBe(200);
+    expect((await setEditors(theirs, ["member2"])).status).toBe(200);
+    expect((await enable(theirs)).status).toBe(200);
+    expect((await remove(theirs)).status).toBe(200);
+    expect((await create()).status).toBe(201);
+  });
+});
+
+describe("editors list", () => {
+  it("defaults to the creator for a connection stored without one", async () => {
+    as("viewer", "viewer1");
+    expect(await editorsOfRow(theirs)).toEqual({
+      editors: ["someone-else"],
+      canEdit: false,
     });
-  }
+  });
+
+  it("an editor hands over: the new editor configures, the old one no longer does", async () => {
+    as("member", "member1");
+    expect((await setEditors(mine, ["member2"])).status).toBe(200);
+    expect((await rename(mine)).status).toBe(403);
+    as("member", "member2");
+    expect((await rename(mine)).status).toBe(200);
+    expect((await editorsOfRow(mine)).editors).toEqual(["member2"]);
+  });
+
+  it("refuses viewers, strangers and an empty list", async () => {
+    as("member", "member1");
+    expect((await setEditors(mine, ["member1", "viewer2"])).status).toBe(400);
+    expect((await setEditors(mine, ["member1", "stranger"])).status).toBe(400);
+    expect((await setEditors(mine, [])).status).toBe(400);
+    expect((await editorsOfRow(mine)).editors).toEqual(["member1"]);
+  });
+
+  it("a listed member demoted to viewer loses the right", async () => {
+    as("member", "member1");
+    expect((await setEditors(mine, ["member1", "member2"])).status).toBe(200);
+    as("viewer", "member2");
+    expect((await rename(mine)).status).toBe(403);
+    expect((await reveal(mine)).status).toBe(403);
+  });
+
+  it("is changed in the app only, never with an API key", async () => {
+    as("member", "member1", "api_key");
+    expect((await setEditors(mine, ["member1", "member2"])).status).toBe(403);
+    expect((await editorsOfRow(mine)).canEdit).toBe(false);
+  });
+
+  it("cannot be set through the ordinary update", async () => {
+    as("member", "member1");
+    expect(
+      (await req("PUT", `/${mine}`, { editors: ["member2"], name: "x" }))
+        .status,
+    ).toBe(200);
+    expect((await editorsOfRow(mine)).editors).toEqual(["member1"]);
+  });
 });
 
 describe("not a member", () => {
