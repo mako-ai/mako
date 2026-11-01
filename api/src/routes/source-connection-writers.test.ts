@@ -1,7 +1,7 @@
 /**
- * The Access tab of a source connection: everyone may look, its editors and
+ * The Access tab of a source connection: everyone may look, its managers and
  * the workspace owner change who writes (in the app only; an admin who is not
- * an editor cannot), and the write log shows who tried, with what the list
+ * a manager cannot), and the write log shows who tried, with what the list
  * does not cover.
  *
  * Real routes + real Mongo (mongodb-memory-server); auth and workspace roles
@@ -22,7 +22,7 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 
 const who = vi.hoisted(() => ({
   authType: "session" as string,
-  userId: "editor1",
+  userId: "manager1",
   role: "member" as string,
 }));
 
@@ -44,7 +44,7 @@ vi.mock("../services/workspace.service", () => ({
     getMember: vi.fn(async (_ws: string, userId: string) =>
       userId === who.userId
         ? { role: who.role }
-        : userId === "editor1"
+        : userId === "manager1"
           ? { role: "member" }
           : null,
     ),
@@ -98,7 +98,7 @@ afterAll(async () => {
 let id: string;
 beforeEach(async () => {
   who.authType = "session";
-  who.userId = "editor1";
+  who.userId = "manager1";
   who.role = "member";
   await SourceConnection.deleteMany({});
   await ConnectionWriteEvent.deleteMany({});
@@ -108,7 +108,7 @@ beforeEach(async () => {
     type: "close",
     config: { api_key: "x" },
     settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
-    createdBy: "editor1",
+    createdBy: "manager1",
   });
   id = String(row._id);
 });
@@ -127,7 +127,7 @@ describe("source connection writers", () => {
     });
   });
 
-  it("lets an editor allow a workflow under one path and turn live reads on and off", async () => {
+  it("lets a manager allow a workflow under one path and turn live reads on and off", async () => {
     const on = await req("PUT", `/${id}/writers`, {
       writers: [],
       liveReads: true,
@@ -146,13 +146,13 @@ describe("source connection writers", () => {
       {
         principal: "workflow:fr-offer-to-cash",
         where: "/task/",
-        addedBy: "editor1",
+        addedBy: "manager1",
       },
     ]);
     expect(stored?.liveReads).toBe(false);
   });
 
-  it("refuses a change from an API key, an admin who is not an editor, or for a stranger", async () => {
+  it("refuses a change from an API key, an admin who is not a manager, or for a stranger", async () => {
     const body = { writers: [{ principal: "workflow:x" }] };
     who.authType = "apiKey";
     expect((await req("PUT", `/${id}/writers`, body)).status).toBe(403);
@@ -163,7 +163,7 @@ describe("source connection writers", () => {
     who.userId = "member2";
     who.role = "member";
     expect((await req("PUT", `/${id}/writers`, body)).status).toBe(403);
-    who.userId = "editor1";
+    who.userId = "manager1";
     expect(
       (
         await req("PUT", `/${id}/writers`, {
@@ -183,7 +183,7 @@ describe("source connection writers", () => {
     ).toBeUndefined();
   });
 
-  it("someone who is not an editor sees the list but cannot edit it", async () => {
+  it("someone who is not a manager sees the list but cannot edit it", async () => {
     for (const [userId, role] of [
       ["admin1", "admin"],
       ["member2", "member"],

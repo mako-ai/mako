@@ -11398,7 +11398,7 @@
         "tags": [
           "Source Connections"
         ],
-        "summary": "Reveal one stored secret of a source connection (its editors and the workspace owner only)",
+        "summary": "Reveal one stored secret of a source connection (its managers and the workspace owner only)",
         "security": [
           {
             "cookieAuth": []
@@ -11490,7 +11490,7 @@
         "operationId": "post_api_workspaces_workspaceId_connections_sources_id_reveal_secret"
       }
     },
-    "/api/workspaces/{workspaceId}/connections/sources/{id}/editors": {
+    "/api/workspaces/{workspaceId}/connections/sources/{id}/managers": {
       "get": {
         "tags": [
           "Source Connections"
@@ -11564,7 +11564,7 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_connections_sources_id_editors"
+        "operationId": "get_api_workspaces_workspaceId_connections_sources_id_managers"
       },
       "put": {
         "tags": [
@@ -11603,7 +11603,7 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "editors": {
+                  "managers": {
                     "type": "array",
                     "items": {
                       "type": "string",
@@ -11615,7 +11615,7 @@
                   }
                 },
                 "required": [
-                  "editors"
+                  "managers"
                 ]
               }
             }
@@ -11663,7 +11663,7 @@
             }
           }
         },
-        "operationId": "put_api_workspaces_workspaceId_connections_sources_id_editors"
+        "operationId": "put_api_workspaces_workspaceId_connections_sources_id_managers"
       }
     },
     "/api/workspaces/{workspaceId}/connections/sources/{id}/writers": {
@@ -12599,7 +12599,7 @@
         "tags": [
           "Source Connections"
         ],
-        "summary": "Reveal one stored secret of a source connection (its editors and the workspace owner only)",
+        "summary": "Reveal one stored secret of a source connection (its managers and the workspace owner only)",
         "security": [
           {
             "cookieAuth": []
@@ -12691,7 +12691,7 @@
         "operationId": "post_api_workspaces_workspaceId_connectors_id_reveal_secret"
       }
     },
-    "/api/workspaces/{workspaceId}/connectors/{id}/editors": {
+    "/api/workspaces/{workspaceId}/connectors/{id}/managers": {
       "get": {
         "tags": [
           "Source Connections"
@@ -12765,7 +12765,7 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_connectors_id_editors"
+        "operationId": "get_api_workspaces_workspaceId_connectors_id_managers"
       },
       "put": {
         "tags": [
@@ -12804,7 +12804,7 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "editors": {
+                  "managers": {
                     "type": "array",
                     "items": {
                       "type": "string",
@@ -12816,7 +12816,7 @@
                   }
                 },
                 "required": [
-                  "editors"
+                  "managers"
                 ]
               }
             }
@@ -12864,7 +12864,7 @@
             }
           }
         },
-        "operationId": "put_api_workspaces_workspaceId_connectors_id_editors"
+        "operationId": "put_api_workspaces_workspaceId_connectors_id_managers"
       }
     },
     "/api/workspaces/{workspaceId}/connectors/{id}/writers": {

@@ -37,7 +37,7 @@ import { useSourceConnectionStore } from "../store/sourceConnectionStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { connectorIconUrl } from "../lib/connector-icon";
 import { EntityHistoryButton } from "./EntityHistoryButton";
-import ConnectionEditorsPanel from "./ConnectionEditorsPanel";
+import ConnectionManagersPanel from "./ConnectionManagersPanel";
 import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
 import ConnectionWritersPanel from "./ConnectionWritersPanel";
 
@@ -168,7 +168,9 @@ function SourceConnectionForm({
     success: boolean;
     message: string;
   } | null>(null);
-  const [tab, setTab] = useState<"connection" | "access">("connection");
+  const [tab, setTab] = useState<"connection" | "managers" | "access">(
+    "connection",
+  );
 
   const draftRef = useRef<Record<string, any> | undefined>(
     tabId
@@ -1178,7 +1180,7 @@ function SourceConnectionForm({
         <Alert severity="info" sx={{ mb: 2 }}>
           {currentWorkspace?.role === "viewer"
             ? "Viewers can see source connections but not change them."
-            : "Only this connection's editors can change it. The Access tab shows who they are."}
+            : "Only this connection's managers can change it. The Managers tab shows who they are."}
         </Alert>
       )}
 
@@ -1330,16 +1332,19 @@ function SourceConnectionForm({
           }}
         >
           <Tab value="connection" label="Connection" />
+          <Tab value="managers" label="Managers" />
           <Tab value="access" label="Access" />
         </Tabs>
       )}
-      {tab === "access" && connector?._id ? (
+      {tab === "managers" && connector?._id ? (
         <Box sx={{ py: 2 }}>
-          <ConnectionEditorsPanel connectionId={connector._id} />
-          <Box sx={{ my: 3, borderTop: 1, borderColor: "divider" }} />
+          <ConnectionManagersPanel connectionId={connector._id} />
+        </Box>
+      ) : tab === "access" && connector?._id ? (
+        <Box sx={{ py: 2 }}>
           <ConnectionWritersPanel
-            // Reload when the caller's edit rights change (an editor removed
-            // themself), so the writers controls match the editors list.
+            // Reload when the caller's edit rights change (a manager removed
+            // themself), so the writers controls match the managers list.
             key={String(connector.canEdit)}
             kind="source"
             connectionId={connector._id}

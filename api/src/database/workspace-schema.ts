@@ -399,7 +399,7 @@ export interface ISourceConnection extends Document {
    * key, delete it, change this list). Absent or empty: its creator.
    * See access/source-connection-access.ts.
    */
-  editors?: string[];
+  managers?: string[];
   createdAt: Date;
   updatedAt: Date;
   lastSyncedAt?: Date;
@@ -1770,7 +1770,7 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
     },
     // No default: an absent list means "its creator", and a default would
     // write an empty array onto every connection that is saved.
-    editors: {
+    managers: {
       type: [String],
       default: undefined,
     },

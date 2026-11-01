@@ -1799,7 +1799,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reveal one stored secret of a source connection (its editors and the workspace owner only) */
+        /** Reveal one stored secret of a source connection (its managers and the workspace owner only) */
         post: operations["post_api_workspaces_workspaceId_connections_sources_id_reveal_secret"];
         delete?: never;
         options?: never;
@@ -1807,7 +1807,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/connections/sources/{id}/editors": {
+    "/api/workspaces/{workspaceId}/connections/sources/{id}/managers": {
         parameters: {
             query?: never;
             header?: never;
@@ -1815,9 +1815,9 @@ export interface paths {
             cookie?: never;
         };
         /** Who configures this source connection */
-        get: operations["get_api_workspaces_workspaceId_connections_sources_id_editors"];
+        get: operations["get_api_workspaces_workspaceId_connections_sources_id_managers"];
         /** Change who configures this source connection */
-        put: operations["put_api_workspaces_workspaceId_connections_sources_id_editors"];
+        put: operations["put_api_workspaces_workspaceId_connections_sources_id_managers"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1957,7 +1957,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reveal one stored secret of a source connection (its editors and the workspace owner only) */
+        /** Reveal one stored secret of a source connection (its managers and the workspace owner only) */
         post: operations["post_api_workspaces_workspaceId_connectors_id_reveal_secret"];
         delete?: never;
         options?: never;
@@ -1965,7 +1965,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/connectors/{id}/editors": {
+    "/api/workspaces/{workspaceId}/connectors/{id}/managers": {
         parameters: {
             query?: never;
             header?: never;
@@ -1973,9 +1973,9 @@ export interface paths {
             cookie?: never;
         };
         /** Who configures this source connection */
-        get: operations["get_api_workspaces_workspaceId_connectors_id_editors"];
+        get: operations["get_api_workspaces_workspaceId_connectors_id_managers"];
         /** Change who configures this source connection */
-        put: operations["put_api_workspaces_workspaceId_connectors_id_editors"];
+        put: operations["put_api_workspaces_workspaceId_connectors_id_managers"];
         post?: never;
         delete?: never;
         options?: never;
@@ -12271,7 +12271,7 @@ export interface operations {
             };
         };
     };
-    get_api_workspaces_workspaceId_connections_sources_id_editors: {
+    get_api_workspaces_workspaceId_connections_sources_id_managers: {
         parameters: {
             query?: never;
             header?: never;
@@ -12312,7 +12312,7 @@ export interface operations {
             };
         };
     };
-    put_api_workspaces_workspaceId_connections_sources_id_editors: {
+    put_api_workspaces_workspaceId_connections_sources_id_managers: {
         parameters: {
             query?: never;
             header?: never;
@@ -12325,7 +12325,7 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
-                    editors: string[];
+                    managers: string[];
                 };
             };
         };
@@ -12899,7 +12899,7 @@ export interface operations {
             };
         };
     };
-    get_api_workspaces_workspaceId_connectors_id_editors: {
+    get_api_workspaces_workspaceId_connectors_id_managers: {
         parameters: {
             query?: never;
             header?: never;
@@ -12940,7 +12940,7 @@ export interface operations {
             };
         };
     };
-    put_api_workspaces_workspaceId_connectors_id_editors: {
+    put_api_workspaces_workspaceId_connectors_id_managers: {
         parameters: {
             query?: never;
             header?: never;
@@ -12953,7 +12953,7 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
-                    editors: string[];
+                    managers: string[];
                 };
             };
         };
