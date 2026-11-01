@@ -37,7 +37,7 @@ import { useSourceConnectionStore } from "../store/sourceConnectionStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { connectorIconUrl } from "../lib/connector-icon";
 import { EntityHistoryButton } from "./EntityHistoryButton";
-import ConnectionEditorsPanel from "./ConnectionEditorsPanel";
+import ConnectionManagersPanel from "./ConnectionManagersPanel";
 
 /** `ws:acme` — a connector defined in the workspace repo (`connectors/acme/`). */
 const WORKSPACE_TYPE_PREFIX = "ws:";
@@ -138,7 +138,7 @@ function SourceConnectionForm({
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [tab, setTab] = useState<"connection" | "access">("connection");
+  const [tab, setTab] = useState<"connection" | "managers">("connection");
 
   const draftRef = useRef<Record<string, any> | undefined>(
     tabId
@@ -1127,7 +1127,7 @@ function SourceConnectionForm({
         <Alert severity="info" sx={{ mb: 2 }}>
           {currentWorkspace?.role === "viewer"
             ? "Viewers can see source connections but not change them."
-            : "Only this connection's editors can change it. The Access tab shows who they are."}
+            : "Only this connection's managers can change it. The Managers tab shows who they are."}
         </Alert>
       )}
 
@@ -1255,12 +1255,12 @@ function SourceConnectionForm({
           }}
         >
           <Tab value="connection" label="Connection" />
-          <Tab value="access" label="Access" />
+          <Tab value="managers" label="Managers" />
         </Tabs>
       )}
-      {tab === "access" && connector?._id ? (
+      {tab === "managers" && connector?._id ? (
         <Box sx={{ py: 2 }}>
-          <ConnectionEditorsPanel connectionId={connector._id} />
+          <ConnectionManagersPanel connectionId={connector._id} />
         </Box>
       ) : (
         formContent

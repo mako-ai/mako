@@ -138,7 +138,7 @@ export async function createSourceConnection(
     throw new SourceConnectionInputError("Name and type are required");
   }
   // Every connection records the person who created it: they are its first
-  // editor (access/source-connection-access.ts).
+  // manager (access/source-connection-access.ts).
   if (!input.userId) {
     throw new SourceConnectionInputError(
       "A source connection is created by a person",
@@ -168,7 +168,7 @@ export async function createSourceConnection(
     },
     targetDatabases: input.targetDatabases || [],
     createdBy: input.userId,
-    editors: [input.userId],
+    managers: [input.userId],
     isActive: input.isActive !== false,
   });
 
