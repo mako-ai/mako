@@ -69,7 +69,7 @@ export default function ConnectionEditorsPanel({
   const describe = (userId: string): Person =>
     people.find(p => p.userId === userId) ?? {
       userId,
-      email: "A former member",
+      email: "Unknown member",
       role: "",
     };
   // Viewers cannot configure connections, so they are not offered.
@@ -118,6 +118,13 @@ export default function ConnectionEditorsPanel({
       {error && (
         <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setError(null)}>
           {error}
+        </Alert>
+      )}
+
+      {state.editors.length === 0 && (
+        <Alert severity="info" sx={{ mb: 1.5 }}>
+          No editors yet. Until the workspace owner adds some, only they can
+          configure this connection.
         </Alert>
       )}
 
