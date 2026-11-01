@@ -332,7 +332,7 @@ export default function ConnectionWritersPanel({
           label={
             <Typography variant="body2">
               Live reads: workflows and agents may read {connectionName}{" "}
-              directly, not only its synced tables. Off until an admin turns it
+              directly, not only its synced tables. Off until an editor turns it
               on (a new Custom API starts on).
             </Typography>
           }
@@ -478,7 +478,9 @@ export default function ConnectionWritersPanel({
             color="text.secondary"
             sx={{ display: "block", mt: 1 }}
           >
-            Only the workspace owner and admins can change who writes.
+            {source
+              ? "Only this connection's editors and the workspace owner can change who writes."
+              : "Only the workspace owner and admins can change who writes."}
           </Typography>
         )}
       </Box>

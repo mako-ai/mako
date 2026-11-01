@@ -1447,8 +1447,8 @@ export const dataSourceRoutes = sourceConnectionRoutes;
 // --- Who may write through this connection's proxy ---------------------------
 // The same Access tab as a database connection's (access/connection-writes.ts):
 // everyone reads; the listed people and workflows write, each anywhere or only
-// under one path. Anyone in the workspace may look; the owner and admins
-// change it, in the app. Syncs are not concerned.
+// under one path. Anyone in the workspace may look; the connection's editors
+// (and the workspace owner) change it, in the app. Syncs are not concerned.
 
 const SourceWriterSchema = z.object({
   principal: z
@@ -1487,7 +1487,7 @@ sourceConnectionRoutes.openapi(
       );
     }
     const row = await SourceConnection.findOne({ _id: id, workspaceId })
-      .select("writers liveReads type")
+      .select("writers liveReads type editors createdBy")
       .lean();
     if (!row) {
       return c.json(
@@ -1495,11 +1495,10 @@ sourceConnectionRoutes.openapi(
         404,
       );
     }
-    const user = c.get("user");
+    const caller = await callerOf(c, workspaceId);
     const canEdit =
       c.get("authType") === "session" &&
-      !!user?.id &&
-      (await workspaceService.isAdmin(workspaceId, user.id));
+      mayChangeSourceConnection(caller.role, caller.userId, row);
     return c.json({
       success: true,
       data: {
@@ -1557,21 +1556,18 @@ sourceConnectionRoutes.openapi(
         400,
       );
     }
-    if (!(await workspaceService.isAdmin(workspaceId, user.id))) {
-      return c.json(
-        {
-          success: false,
-          error: "Only the workspace owner and admins can change who writes",
-        },
-        403,
-      );
-    }
     const row = await SourceConnection.findOne({ _id: id, workspaceId });
     if (!row) {
       return c.json(
         { success: false, error: "Source connection not found" },
         404,
       );
+    }
+    // The same people who configure the connection decide who writes
+    // through it: its editors and the workspace owner, not every admin.
+    const caller = await callerOf(c, workspaceId);
+    if (!mayChangeSourceConnection(caller.role, caller.userId, row)) {
+      return c.json({ success: false, error: changeRefusal(caller.role) }, 403);
     }
     const { writers, liveReads } = c.req.valid("json");
     const strangers = await principalsOutsideWorkspace(

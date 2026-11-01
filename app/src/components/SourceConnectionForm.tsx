@@ -164,7 +164,6 @@ function SourceConnectionForm({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [tab, setTab] = useState<"connection" | "access">("connection");
   const [testResult, setTestResult] = useState<{
     success: boolean;
     message: string;

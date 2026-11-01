@@ -1,7 +1,8 @@
 /**
- * The Access tab of a source connection: everyone may look, the owner and
- * admins change who writes (in the app only), and the write log shows who
- * tried, with what the list does not cover.
+ * The Access tab of a source connection: everyone may look, its editors and
+ * the workspace owner change who writes (in the app only; an admin who is not
+ * an editor cannot), and the write log shows who tried, with what the list
+ * does not cover.
  *
  * Real routes + real Mongo (mongodb-memory-server); auth and workspace roles
  * are mocked.
@@ -21,7 +22,8 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 
 const who = vi.hoisted(() => ({
   authType: "session" as string,
-  admin: true,
+  userId: "editor1",
+  role: "member" as string,
 }));
 
 vi.mock("../auth/unified-auth.middleware", () => ({
@@ -29,7 +31,7 @@ vi.mock("../auth/unified-auth.middleware", () => ({
     c: { set: (k: string, v: unknown) => void },
     next: () => Promise<void>,
   ) => {
-    c.set("user", { id: "admin1" });
+    c.set("user", { id: who.userId });
     c.set("authType", who.authType);
     await next();
   },
@@ -38,7 +40,9 @@ vi.mock("../auth/unified-auth.middleware", () => ({
 vi.mock("../services/workspace.service", () => ({
   workspaceService: {
     hasAccess: vi.fn(async () => true),
-    isAdmin: vi.fn(async () => who.admin),
+    getMember: vi.fn(async (_ws: string, userId: string) =>
+      userId === who.userId ? { role: who.role } : null,
+    ),
   },
 }));
 
@@ -89,7 +93,8 @@ afterAll(async () => {
 let id: string;
 beforeEach(async () => {
   who.authType = "session";
-  who.admin = true;
+  who.userId = "editor1";
+  who.role = "member";
   await SourceConnection.deleteMany({});
   await ConnectionWriteEvent.deleteMany({});
   const row = await SourceConnection.create({
@@ -98,7 +103,7 @@ beforeEach(async () => {
     type: "close",
     config: { api_key: "x" },
     settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
-    createdBy: "admin1",
+    createdBy: "editor1",
   });
   id = String(row._id);
 });
@@ -117,7 +122,7 @@ describe("source connection writers", () => {
     });
   });
 
-  it("lets an admin allow a workflow under one path and turn live reads on and off", async () => {
+  it("lets an editor allow a workflow under one path and turn live reads on and off", async () => {
     const on = await req("PUT", `/${id}/writers`, {
       writers: [],
       liveReads: true,
@@ -136,20 +141,24 @@ describe("source connection writers", () => {
       {
         principal: "workflow:fr-offer-to-cash",
         where: "/task/",
-        addedBy: "admin1",
+        addedBy: "editor1",
       },
     ]);
     expect(stored?.liveReads).toBe(false);
   });
 
-  it("refuses a change from an API key, a member, or for a stranger", async () => {
+  it("refuses a change from an API key, an admin who is not an editor, or for a stranger", async () => {
     const body = { writers: [{ principal: "workflow:x" }] };
     who.authType = "apiKey";
     expect((await req("PUT", `/${id}/writers`, body)).status).toBe(403);
     who.authType = "session";
-    who.admin = false;
+    who.userId = "admin1";
+    who.role = "admin";
     expect((await req("PUT", `/${id}/writers`, body)).status).toBe(403);
-    who.admin = true;
+    who.userId = "member2";
+    who.role = "member";
+    expect((await req("PUT", `/${id}/writers`, body)).status).toBe(403);
+    who.userId = "editor1";
     expect(
       (
         await req("PUT", `/${id}/writers`, {
@@ -169,10 +178,25 @@ describe("source connection writers", () => {
     ).toBeUndefined();
   });
 
-  it("a member sees the list but cannot edit it", async () => {
-    who.admin = false;
-    const { data } = await (await req("GET", `/${id}/writers`)).json();
-    expect(data.canEdit).toBe(false);
+  it("someone who is not an editor sees the list but cannot edit it", async () => {
+    for (const [userId, role] of [
+      ["admin1", "admin"],
+      ["member2", "member"],
+    ]) {
+      who.userId = userId;
+      who.role = role;
+      const { data } = await (await req("GET", `/${id}/writers`)).json();
+      expect(data.canEdit).toBe(false);
+    }
+  });
+
+  it("the workspace owner can always change it", async () => {
+    who.userId = "owner1";
+    who.role = "owner";
+    expect(
+      (await req("PUT", `/${id}/writers`, { writers: [], liveReads: true }))
+        .status,
+    ).toBe(200);
   });
 
   it("shows who tried to write, and what the list does not cover", async () => {
