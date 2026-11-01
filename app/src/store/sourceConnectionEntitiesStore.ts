@@ -16,17 +16,17 @@ interface SourceConnectionEntity {
   updatedAt: string;
   workspaceId: string;
   /**
-   * Whether the signed-in person may configure it: its editors and the
+   * Whether the signed-in person may configure it: its managers and the
    * workspace owner. Being an admin is not enough.
    */
   canEdit?: boolean;
-  /** User ids that configure it (its creator unless an editor changed it). */
-  editors?: string[];
+  /** User ids that configure it (its creator unless a manager changed it). */
+  managers?: string[];
 }
 
 /** Who configures a source connection, and whether the caller may change it. */
-export interface SourceConnectionEditors {
-  editors: string[];
+export interface SourceConnectionManagers {
+  managers: string[];
   canEdit: boolean;
 }
 
@@ -61,15 +61,15 @@ interface EntitiesState {
     workspaceId: string,
     connectorId: string,
   ) => Promise<{ success: boolean; error: string | null }>;
-  /** Who configures the connection (its Access tab). */
-  getEditors: (
+  /** Who configures the connection (its Managers tab). */
+  getManagers: (
     workspaceId: string,
     connectorId: string,
-  ) => Promise<SourceConnectionEditors>;
-  setEditors: (
+  ) => Promise<SourceConnectionManagers>;
+  setManagers: (
     workspaceId: string,
     connectorId: string,
-    editors: string[],
+    managers: string[],
   ) => Promise<void>;
   /** Test the saved connection with its stored credential. */
   test: (
@@ -282,28 +282,28 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
         };
       }
     },
-    getEditors: async (workspaceId, connectorId) => {
+    getManagers: async (workspaceId, connectorId) => {
       const res = unwrapBody(
         await api.GET(
-          "/api/workspaces/{workspaceId}/connections/sources/{id}/editors",
+          "/api/workspaces/{workspaceId}/connections/sources/{id}/managers",
           { params: { path: { workspaceId, id: connectorId } } },
         ),
-      ) as ApiResponse<SourceConnectionEditors>;
+      ) as ApiResponse<SourceConnectionManagers>;
       if (!res.success || !res.data) {
-        throw new Error(res.error ?? "Couldn't load the editors.");
+        throw new Error(res.error ?? "Couldn't load the managers.");
       }
       return res.data;
     },
-    setEditors: async (workspaceId, connectorId, editors) => {
+    setManagers: async (workspaceId, connectorId, managers) => {
       const res = unwrapBody(
         await api.PUT(
-          "/api/workspaces/{workspaceId}/connections/sources/{id}/editors",
+          "/api/workspaces/{workspaceId}/connections/sources/{id}/managers",
           {
             params: { path: { workspaceId, id: connectorId } },
-            body: { editors },
+            body: { managers },
           },
         ),
-      ) as ApiResponse<{ editors: string[] }>;
+      ) as ApiResponse<{ managers: string[] }>;
       if (!res.success) throw new Error(res.error ?? "Couldn't save.");
       // Who may edit changed, so the cached row's canEdit is stale. Refresh it
       // in place: dropping it would unmount the open form and lose its tab.
