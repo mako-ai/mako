@@ -7,8 +7,9 @@
  * lately and was refused, to allow them in one click.
  *
  * Both kinds of connection: a database (`where` is a schema or table) and a
- * source connection, written through Mako's proxy (`where` is a path, and
- * live reads can be turned off).
+ * source connection, written through Mako's proxy (a writer writes anywhere
+ * there: the app offers no path limit, though the API honours a `where`
+ * path; live reads can be turned off).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -98,14 +99,6 @@ function initials(text: string) {
   const name = text.split("@")[0] ?? text;
   const parts = name.split(/[._-]+/).filter(Boolean);
   return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "?";
-}
-
-/** Paths a source connection was written to lately: `POST /task/` → `/task/`. */
-function recentPaths(state: ConnectionWriters | null): string[] {
-  const paths = (state?.recent ?? []).flatMap(r =>
-    r.targets.map(t => t.slice(t.indexOf(" ") + 1)),
-  );
-  return [...new Set(paths)].slice(0, 20);
 }
 
 export default function ConnectionWritersPanel({
@@ -420,7 +413,10 @@ export default function ConnectionWritersPanel({
             sx={{
               mt: 1.5,
               display: "grid",
-              gridTemplateColumns: { xs: "1fr", sm: "1.4fr 1fr auto" },
+              gridTemplateColumns: {
+                xs: "1fr",
+                sm: source ? "1fr auto" : "1.4fr 1fr auto",
+              },
               gap: 1,
               alignItems: "stretch",
             }}
@@ -441,26 +437,25 @@ export default function ConnectionWritersPanel({
                 />
               )}
             />
-            <Autocomplete
-              size="small"
-              freeSolo
-              options={[
-                ANYWHERE,
-                ...(source ? recentPaths(state) : namespaces),
-              ]}
-              value={where}
-              onChange={(_, value) => setWhere(value ?? ANYWHERE)}
-              onInputChange={(_, value) => setWhere(value || ANYWHERE)}
-              renderInput={params => (
-                <TextField
-                  {...params}
-                  margin="none"
-                  placeholder={
-                    source ? "path, e.g. /task/" : "schema or schema.table"
-                  }
-                />
-              )}
-            />
+            {/* A source writer writes anywhere through the connection: no
+                path limit to pick (the API still honours one, `where`). */}
+            {!source && (
+              <Autocomplete
+                size="small"
+                freeSolo
+                options={[ANYWHERE, ...namespaces]}
+                value={where}
+                onChange={(_, value) => setWhere(value ?? ANYWHERE)}
+                onInputChange={(_, value) => setWhere(value || ANYWHERE)}
+                renderInput={params => (
+                  <TextField
+                    {...params}
+                    margin="none"
+                    placeholder="schema or schema.table"
+                  />
+                )}
+              />
+            )}
             <Button
               variant="contained"
               disableElevation
