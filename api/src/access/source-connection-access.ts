@@ -5,12 +5,16 @@
  * deleting it, and deciding who else configures it. That is a short list of
  * people per connection, its EDITORS, not a workspace role:
  *
- *   - the person who creates a connection is its first editor;
+ *   - the person who creates a connection is its first editor (stored on the
+ *     connection when it is created);
  *   - an editor adds or removes other editors (members or admins they pick);
- *   - an admin who is not on the list cannot configure it — a workspace with
- *     many admins should not hand every one of them every key;
- *   - the workspace owner always can: the way back to a connection whose
- *     editors have all left;
+ *   - while a connection has editors, an admin who is not one cannot
+ *     configure it — a workspace with many admins should not hand every one
+ *     of them every key;
+ *   - a connection with NO editor who can act today (created by `system`
+ *     before creators were recorded, or whose editors all left) is
+ *     configured by every admin, as before, until someone adds an editor;
+ *   - the workspace owner always can;
  *   - viewers never can, even when listed (their role caps them);
  *   - everyone in the workspace still sees it and uses it, as its live-reads
  *     and writers settings allow.
@@ -38,7 +42,22 @@ export function mayCreateSourceConnection(role: WorkspaceRole | null): boolean {
   return role === "owner" || role === "admin" || role === "member";
 }
 
-/** The user ids that configure `connection`: its list, else its creator. */
+/** Looks up a workspace role, once per user id per request. */
+export type RoleOf = (userId: string) => Promise<WorkspaceRole | null>;
+
+export function roleLookup(workspaceId: string): RoleOf {
+  const seen = new Map<string, Promise<WorkspaceRole | null>>();
+  return userId => {
+    let role = seen.get(userId);
+    if (!role) {
+      role = roleIn(workspaceId, userId);
+      seen.set(userId, role);
+    }
+    return role;
+  };
+}
+
+/** The user ids recorded as configuring `connection`: its list, else its creator. */
 export function editorsOf(connection: {
   editors?: unknown;
   createdBy?: unknown;
@@ -52,17 +71,40 @@ export function editorsOf(connection: {
 }
 
 /**
- * Whether `userId` with `role` may configure `connection`: edit it, replace
- * or reveal its key, disable or delete it, and change its editors.
+ * The recorded editors who can act today: members and admins of the
+ * workspace. Leaves out `system`, people who left, and viewers.
  */
-export function mayChangeSourceConnection(
-  role: WorkspaceRole | null,
-  userId: string | undefined,
+export async function actingEditors(
   connection: { editors?: unknown; createdBy?: unknown },
-): boolean {
+  roleOf: RoleOf,
+): Promise<string[]> {
+  const listed = editorsOf(connection);
+  const roles = await Promise.all(listed.map(id => roleOf(id)));
+  return listed.filter((_, i) => mayCreateSourceConnection(roles[i]));
+}
+
+/** Who is asking, and how to look up anyone else's role. */
+export interface Caller {
+  role: WorkspaceRole | null;
+  userId?: string;
+  roleOf: RoleOf;
+}
+
+/**
+ * Whether the caller may configure `connection`: edit it, replace or reveal
+ * its key, disable or delete it, and change its editors.
+ */
+export async function mayChangeSourceConnection(
+  caller: Caller,
+  connection: { editors?: unknown; createdBy?: unknown },
+): Promise<boolean> {
+  const { role, userId } = caller;
   if (!userId || !role || role === "viewer") return false;
   if (role === "owner") return true;
-  return editorsOf(connection).includes(String(userId));
+  const editors = await actingEditors(connection, caller.roleOf);
+  // No one can act on it yet: every admin may, until an editor is added.
+  if (editors.length === 0) return role === "admin";
+  return editors.includes(String(userId));
 }
 
 export const VIEWER_REFUSAL =

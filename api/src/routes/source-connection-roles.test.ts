@@ -280,7 +280,7 @@ describe("editors list", () => {
     expect((await editorsOfRow(mine)).editors).toEqual(["member2"]);
   });
 
-  it("shows no one for a connection created by `system`, until the owner adds editors", async () => {
+  it("a connection created by `system` has no editor: every admin configures it until one is added", async () => {
     const seeded = String(
       (
         await SourceConnection.create({
@@ -293,18 +293,34 @@ describe("editors list", () => {
         })
       )._id,
     );
-    as("admin", "admin2");
+    as("member", "member1");
     expect(await editorsOfRow(seeded)).toEqual({ editors: [], canEdit: false });
     expect((await rename(seeded)).status).toBe(403);
-    as("owner", "owner1");
-    expect((await editorsOfRow(seeded)).canEdit).toBe(true);
-    expect((await setEditors(seeded, ["admin2"])).status).toBe(200);
     as("admin", "admin2");
-    expect(await editorsOfRow(seeded)).toEqual({
-      editors: ["admin2"],
-      canEdit: true,
-    });
+    expect(await editorsOfRow(seeded)).toEqual({ editors: [], canEdit: true });
     expect((await rename(seeded)).status).toBe(200);
+    expect((await reveal(seeded)).status).toBe(200);
+    // Once it has an editor, the rule applies: the admin who is not one is out.
+    expect((await setEditors(seeded, ["member2"])).status).toBe(200);
+    expect((await rename(seeded)).status).toBe(403);
+    as("member", "member2");
+    expect((await rename(seeded)).status).toBe(200);
+  });
+
+  it("a connection whose editors all left goes back to every admin", async () => {
+    as("admin", "admin2");
+    expect((await rename(theirs)).status).toBe(403);
+    delete who.others["someone-else"];
+    expect((await rename(theirs)).status).toBe(200);
+    who.others["someone-else"] = "member";
+  });
+
+  it("records the creator as the first editor when a connection is created", async () => {
+    as("member", "member1");
+    const created = (await (await create()).json()).data;
+    const stored = await SourceConnection.findById(created._id).lean();
+    expect(stored?.createdBy).toBe("member1");
+    expect(stored?.editors).toEqual(["member1"]);
   });
 
   it("does not show a listed editor who left or became a viewer", async () => {
