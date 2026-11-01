@@ -1338,6 +1338,9 @@ function SourceConnectionForm({
           <ConnectionEditorsPanel connectionId={connector._id} />
           <Box sx={{ my: 3, borderTop: 1, borderColor: "divider" }} />
           <ConnectionWritersPanel
+            // Reload when the caller's edit rights change (an editor removed
+            // themself), so the writers controls match the editors list.
+            key={String(connector.canEdit)}
             kind="source"
             connectionId={connector._id}
             connectionName={connector.name || "this connection"}
