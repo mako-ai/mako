@@ -1,8 +1,10 @@
 /**
  * Who configures a source connection: its editors. They edit it, reveal or
  * replace its key, delete it, and change this list. Being an admin is not
- * enough; the workspace owner always can (the way back when every editor has
- * left). Everyone else sees the connection and uses it.
+ * enough once a connection has editors; one with none (created before
+ * creators were recorded) is configured by every admin until someone is
+ * added. The workspace owner always can. Everyone else sees the connection
+ * and uses it.
  *
  * Changes save as they are made.
  */
@@ -123,8 +125,9 @@ export default function ConnectionEditorsPanel({
 
       {state.editors.length === 0 && (
         <Alert severity="info" sx={{ mb: 1.5 }}>
-          No editors yet. Until the workspace owner adds some, only they can
-          configure this connection.
+          No editors yet. Until someone is added, the workspace owner and every
+          admin can configure this connection. Add the people who manage this
+          key.
         </Alert>
       )}
 

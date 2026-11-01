@@ -33,12 +33,13 @@ import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { Types } from "mongoose";
 import {
   VIEWER_REFUSAL,
+  actingEditors,
   changeRefusal,
   editorsOf,
   mayChangeSourceConnection,
   mayCreateSourceConnection,
-  roleIn,
-  type WorkspaceRole,
+  roleLookup,
+  type Caller,
 } from "../access/source-connection-access";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
@@ -209,15 +210,14 @@ function redactSourceConfig(
 }
 
 /** Who is asking: whether they may change a connection is part of its answer. */
-type Caller = { role: WorkspaceRole | null; userId?: string };
-
 async function callerOf(
   c: AuthenticatedContext,
   workspaceId: string | undefined,
 ): Promise<Caller> {
-  if (!workspaceId) return { role: null };
+  if (!workspaceId) return { role: null, roleOf: async () => null };
   const userId = (c.get("user") as { id?: string } | undefined)?.id;
-  return { role: await roleIn(workspaceId, userId), userId };
+  const roleOf = roleLookup(workspaceId);
+  return { role: userId ? await roleOf(userId) : null, userId, roleOf };
 }
 
 async function publicSourceConnection(
@@ -242,14 +242,10 @@ async function publicSourceConnection(
   return {
     ...record,
     config: redactSourceConfig(record.config, schema),
-    editors: editorsOf(record),
     ...(caller
       ? {
-          canEdit: mayChangeSourceConnection(
-            caller.role,
-            caller.userId,
-            record,
-          ),
+          editors: await actingEditors(record, caller.roleOf),
+          canEdit: await mayChangeSourceConnection(caller, record),
         }
       : {}),
   };
@@ -465,9 +461,7 @@ sourceConnectionRoutes.openapi(
         );
       }
       const caller = await callerOf(c, workspaceId);
-      if (
-        !mayChangeSourceConnection(caller.role, caller.userId, sourceConnection)
-      ) {
+      if (!(await mayChangeSourceConnection(caller, sourceConnection))) {
         return c.json(
           { success: false, error: changeRefusal(caller.role) },
           403,
@@ -640,7 +634,7 @@ sourceConnectionRoutes.openapi(
         );
       }
       const caller = await callerOf(c, workspaceId);
-      if (!mayChangeSourceConnection(caller.role, caller.userId, existing)) {
+      if (!(await mayChangeSourceConnection(caller, existing))) {
         return c.json(
           { success: false, error: changeRefusal(caller.role) },
           403,
@@ -931,7 +925,7 @@ sourceConnectionRoutes.openapi(
         );
       }
       const caller = await callerOf(c, workspaceId);
-      if (!mayChangeSourceConnection(caller.role, caller.userId, existing)) {
+      if (!(await mayChangeSourceConnection(caller, existing))) {
         return c.json(
           { success: false, error: changeRefusal(caller.role) },
           403,
@@ -1214,9 +1208,7 @@ sourceConnectionRoutes.openapi(
       // it. Being an admin is NOT enough: only the people the connection's
       // editors picked (and the workspace owner) see its key.
       const caller = await callerOf(c, workspaceId);
-      if (
-        !mayChangeSourceConnection(caller.role, caller.userId, sourceConnection)
-      ) {
+      if (!(await mayChangeSourceConnection(caller, sourceConnection))) {
         return c.json(
           { success: false, error: changeRefusal(caller.role) },
           403,
@@ -1338,16 +1330,15 @@ sourceConnectionRoutes.openapi(
     // Only the people who can act on it today: a creator recorded as
     // `system` (seeded or imported connections), someone who left, or a
     // member since made a viewer is not shown. A connection left with no one
-    // is configured by the workspace owner until they add editors.
-    const listed = editorsOf(row);
-    const roles = await Promise.all(listed.map(e => roleIn(workspaceId, e)));
+    // is configured by every admin until someone adds an editor.
+    const editors = await actingEditors(row, caller.roleOf);
     return c.json({
       success: true,
       data: {
-        editors: listed.filter((_, i) => mayCreateSourceConnection(roles[i])),
+        editors,
         canEdit:
           c.get("authType") === "session" &&
-          mayChangeSourceConnection(caller.role, caller.userId, row),
+          (await mayChangeSourceConnection(caller, row)),
       },
     });
   },
@@ -1403,14 +1394,14 @@ sourceConnectionRoutes.openapi(
       );
     }
     const caller = await callerOf(c, workspaceId);
-    if (!mayChangeSourceConnection(caller.role, caller.userId, row)) {
+    if (!(await mayChangeSourceConnection(caller, row))) {
       return c.json({ success: false, error: changeRefusal(caller.role) }, 403);
     }
     const { editors } = c.req.valid("json");
     const next = [...new Set(editors)];
     // Every editor is a member who may configure connections: a viewer, or
     // someone outside the workspace, would hold a key they cannot use.
-    const roles = await Promise.all(next.map(e => roleIn(workspaceId, e)));
+    const roles = await Promise.all(next.map(e => caller.roleOf(e)));
     const refused = next.filter((_, i) => !mayCreateSourceConnection(roles[i]));
     if (refused.length > 0) {
       return c.json(
