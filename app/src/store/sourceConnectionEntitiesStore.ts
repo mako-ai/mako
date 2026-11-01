@@ -300,11 +300,17 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
         ),
       ) as ApiResponse<{ editors: string[] }>;
       if (!res.success) throw new Error(res.error ?? "Couldn't save.");
-      // Who may edit changed: the cached row's canEdit is stale.
-      set(state => {
-        delete state.entities[makeKey(workspaceId, connectorId)];
-      });
-      await get().fetchOne(workspaceId, connectorId);
+      // Who may edit changed, so the cached row's canEdit is stale. Refresh it
+      // in place: dropping it would unmount the open form and lose its tab.
+      const fresh = unwrapBody(
+        await api.GET(
+          "/api/workspaces/{workspaceId}/connections/sources/{id}",
+          {
+            params: { path: { workspaceId, id: connectorId } },
+          },
+        ),
+      ) as ApiResponse<SourceConnectionEntity>;
+      if (fresh.success && fresh.data) get().upsert(fresh.data);
     },
   })),
 );

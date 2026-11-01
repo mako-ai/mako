@@ -1410,7 +1410,10 @@ sourceConnectionRoutes.openapi(
       return c.json(
         {
           success: false,
-          error: `${refused.join(", ")} cannot be an editor: editors must be members or admins of this workspace`,
+          error:
+            refused.length === 1
+              ? "That person cannot be an editor: editors must be members or admins of this workspace, not viewers."
+              : `${refused.length} of these people cannot be editors: editors must be members or admins of this workspace, not viewers.`,
         },
         400,
       );
