@@ -27,6 +27,7 @@ const who = vi.hoisted(() => ({
   // Everyone else's role, for checking who may be added as an editor.
   others: {
     member2: "member",
+    "someone-else": "member",
     admin2: "admin",
     viewer2: "viewer",
   } as Record<string, string>,
@@ -277,6 +278,45 @@ describe("editors list", () => {
     as("member", "member2");
     expect((await rename(mine)).status).toBe(200);
     expect((await editorsOfRow(mine)).editors).toEqual(["member2"]);
+  });
+
+  it("shows no one for a connection created by `system`, until the owner adds editors", async () => {
+    const seeded = String(
+      (
+        await SourceConnection.create({
+          workspaceId: WS,
+          name: "seeded",
+          type: "close",
+          config: { api_key: "k" },
+          settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+          createdBy: "system",
+        })
+      )._id,
+    );
+    as("admin", "admin2");
+    expect(await editorsOfRow(seeded)).toEqual({ editors: [], canEdit: false });
+    expect((await rename(seeded)).status).toBe(403);
+    as("owner", "owner1");
+    expect((await editorsOfRow(seeded)).canEdit).toBe(true);
+    expect((await setEditors(seeded, ["admin2"])).status).toBe(200);
+    as("admin", "admin2");
+    expect(await editorsOfRow(seeded)).toEqual({
+      editors: ["admin2"],
+      canEdit: true,
+    });
+    expect((await rename(seeded)).status).toBe(200);
+  });
+
+  it("does not show a listed editor who left or became a viewer", async () => {
+    as("member", "member1");
+    expect(
+      (await setEditors(mine, ["member1", "member2", "admin2"])).status,
+    ).toBe(200);
+    who.others.member2 = "viewer";
+    delete who.others.admin2;
+    expect((await editorsOfRow(mine)).editors).toEqual(["member1"]);
+    who.others.member2 = "member";
+    who.others.admin2 = "admin";
   });
 
   it("refuses viewers, strangers and an empty list", async () => {
