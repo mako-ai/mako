@@ -3,24 +3,24 @@
  *
  * Configuring means editing it, replacing or revealing its key, disabling or
  * deleting it, and deciding who else configures it. That is a short list of
- * people per connection, its EDITORS, not a workspace role:
+ * people per connection, its MANAGERS, not a workspace role:
  *
- *   - the person who creates a connection is its first editor (stored on the
+ *   - the person who creates a connection is its first manager (stored on the
  *     connection when it is created);
- *   - an editor adds or removes other editors (members or admins they pick);
- *   - while a connection has editors, an admin who is not one cannot
+ *   - a manager adds or removes other managers (members or admins they pick);
+ *   - while a connection has managers, an admin who is not one cannot
  *     configure it — a workspace with many admins should not hand every one
  *     of them every key;
- *   - a connection with NO editor who can act today (created by `system`
- *     before creators were recorded, or whose editors all left) is
- *     configured by every admin, as before, until someone adds an editor;
+ *   - a connection with NO manager who can act today (created by `system`
+ *     before creators were recorded, or whose managers all left) is
+ *     configured by every admin, as before, until someone adds a manager;
  *   - the workspace owner always can;
  *   - viewers never can, even when listed (their role caps them);
  *   - everyone in the workspace still sees it and uses it, as its live-reads
  *     and writers settings allow.
  *
  * A connection stored before the list existed has none: its creator is its
- * editor, so nothing needs migrating.
+ * manager, so nothing needs migrating.
  *
  * An API key acts as the person who created it.
  */
@@ -58,12 +58,12 @@ export function roleLookup(workspaceId: string): RoleOf {
 }
 
 /** The user ids recorded as configuring `connection`: its list, else its creator. */
-export function editorsOf(connection: {
-  editors?: unknown;
+export function managersOf(connection: {
+  managers?: unknown;
   createdBy?: unknown;
 }): string[] {
-  const listed = Array.isArray(connection.editors)
-    ? connection.editors.map(String).filter(Boolean)
+  const listed = Array.isArray(connection.managers)
+    ? connection.managers.map(String).filter(Boolean)
     : [];
   if (listed.length > 0) return [...new Set(listed)];
   const creator = String(connection.createdBy ?? "");
@@ -71,14 +71,14 @@ export function editorsOf(connection: {
 }
 
 /**
- * The recorded editors who can act today: members and admins of the
+ * The recorded managers who can act today: members and admins of the
  * workspace. Leaves out `system`, people who left, and viewers.
  */
-export async function actingEditors(
-  connection: { editors?: unknown; createdBy?: unknown },
+export async function actingManagers(
+  connection: { managers?: unknown; createdBy?: unknown },
   roleOf: RoleOf,
 ): Promise<string[]> {
-  const listed = editorsOf(connection);
+  const listed = managersOf(connection);
   const roles = await Promise.all(listed.map(id => roleOf(id)));
   return listed.filter((_, i) => mayCreateSourceConnection(roles[i]));
 }
@@ -92,28 +92,28 @@ export interface Caller {
 
 /**
  * Whether the caller may configure `connection`: edit it, replace or reveal
- * its key, disable or delete it, and change its editors.
+ * its key, disable or delete it, and change its managers.
  */
 export async function mayChangeSourceConnection(
   caller: Caller,
-  connection: { editors?: unknown; createdBy?: unknown },
+  connection: { managers?: unknown; createdBy?: unknown },
 ): Promise<boolean> {
   const { role, userId } = caller;
   if (!userId || !role || role === "viewer") return false;
   if (role === "owner") return true;
-  const editors = await actingEditors(connection, caller.roleOf);
-  // No one can act on it yet: every admin may, until an editor is added.
-  if (editors.length === 0) return role === "admin";
-  return editors.includes(String(userId));
+  const managers = await actingManagers(connection, caller.roleOf);
+  // No one can act on it yet: every admin may, until a manager is added.
+  if (managers.length === 0) return role === "admin";
+  return managers.includes(String(userId));
 }
 
 export const VIEWER_REFUSAL =
   "Viewers can see source connections but not create or change them. Ask an admin for the member role.";
 
-export const NOT_AN_EDITOR_REFUSAL =
-  "Only this connection's editors can change it. Ask one of them, or the workspace owner, to add you.";
+export const NOT_A_MANAGER_REFUSAL =
+  "Only this connection's managers can change it. Ask one of them, or the workspace owner, to add you.";
 
 /** The refusal for a caller `mayChangeSourceConnection` turned down. */
 export function changeRefusal(role: WorkspaceRole | null): string {
-  return role === "viewer" || !role ? VIEWER_REFUSAL : NOT_AN_EDITOR_REFUSAL;
+  return role === "viewer" || !role ? VIEWER_REFUSAL : NOT_A_MANAGER_REFUSAL;
 }
