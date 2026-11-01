@@ -31,6 +31,7 @@ export default defineConfig({
       "src/connections/callable.test.ts",
       "src/connections/rate-gate.test.ts",
       "src/routes/source-connection-writers.test.ts",
+      "src/connections/placeholders.test.ts",
     ],
     exclude: [
       "**/node_modules/**",

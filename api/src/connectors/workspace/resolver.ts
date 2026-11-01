@@ -51,6 +51,8 @@ export interface LoadedConnector {
   runtime: string;
   /** The file `connector.yaml` names, defaulted for rows written before it was indexed. */
   entry: string;
+  /** `proxied`: the sandbox gets placeholders, not secret values. */
+  credentials: "raw" | "proxied";
   sha: string;
   sourceSha: string;
   spec?: Record<string, unknown>;
@@ -84,6 +86,7 @@ export async function loadConnectorDefinition(
     slug: row.slug,
     runtime: row.runtime,
     entry: row.entry || DEFAULT_ENTRY,
+    credentials: row.credentials === "proxied" ? "proxied" : "raw",
     sha: row.sha,
     sourceSha: row.sourceSha,
     spec: row.spec as Record<string, unknown> | undefined,
@@ -103,6 +106,7 @@ export async function listConnectorDefinitions(
     slug: row.slug,
     runtime: row.runtime,
     entry: row.entry || DEFAULT_ENTRY,
+    credentials: row.credentials === "proxied" ? "proxied" : "raw",
     sha: row.sha,
     sourceSha: row.sourceSha,
     spec: row.spec as Record<string, unknown> | undefined,

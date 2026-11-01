@@ -33,6 +33,45 @@ export function isRetryable(response, error) {
   return RETRYABLE_STATUS.has(response.status);
 }
 
+/**
+ * A fetch that sends every request to Mako's sandbox-fetch route instead of
+ * the vendor. Mako was given placeholders for this connector's keys
+ * (`credentials: proxied` in connector.yaml); it swaps them for the real
+ * values on the way out and strips them from the answer, so the connector
+ * never holds a key. The answer comes back as the vendor's own Response.
+ */
+export function proxiedFetch(proxy, fetchImpl = globalThis.fetch) {
+  return async (target, init = {}) => {
+    const headers = Object.fromEntries(new Headers(init.headers ?? {}).entries());
+    let body;
+    let bodyEncoding;
+    if (init.body !== undefined && init.body !== null) {
+      if (typeof init.body === "string") {
+        body = init.body;
+        bodyEncoding = "text";
+      } else {
+        body = Buffer.from(await new Response(init.body).arrayBuffer()).toString("base64");
+        bodyEncoding = "base64";
+      }
+    }
+    const res = await fetchImpl(proxy.url, {
+      method: "POST",
+      signal: init.signal,
+      headers: { authorization: `Bearer ${proxy.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ url: String(target), method: init.method ?? "GET", headers, body, bodyEncoding }),
+    });
+    // Mako itself refused (a foreign placeholder, an expired run): pass its
+    // reason on as the answer, so ctx.http reports it like a vendor's error.
+    if (!res.ok) return res;
+    const answer = await res.json();
+    const empty = answer.status === 204 || answer.status === 205 || answer.status === 304;
+    return new Response(empty ? null : Buffer.from(answer.body ?? "", "base64"), {
+      status: answer.status,
+      headers: answer.headers ?? {},
+    });
+  };
+}
+
 export function createHttp({
   baseUrl,
   headers: defaultHeaders = {},
@@ -40,9 +79,11 @@ export function createHttp({
   minIntervalMs = 0,
   timeoutMs = 60_000,
   log = () => {},
-  fetchImpl = globalThis.fetch,
+  fetchImpl: givenFetch = globalThis.fetch,
   sleepImpl = sleep,
+  proxy,
 } = {}) {
+  const fetchImpl = proxy?.url && proxy?.token ? proxiedFetch(proxy, givenFetch) : givenFetch;
   let lastRequestAt = 0;
 
   const resolveUrl = url => {

@@ -33,7 +33,12 @@ import {
   syncBoxContext,
   type ProtocolMessage,
 } from "./sync-box";
-import { jsonSchemaToEntitySchema } from "./spec-translation";
+import {
+  connectionSpecificationToForm,
+  jsonSchemaToEntitySchema,
+} from "./spec-translation";
+import { appsGitOriginBase } from "../../apps/config";
+import { signRunToken, withPlaceholders } from "../../connections/placeholders";
 import {
   ensureConnectorRuntime,
   loadConnectorDefinition,
@@ -52,6 +57,18 @@ export function isWorkspaceConnectorType(type: string | undefined): boolean {
 
 export function slugFromType(type: string): string {
   return type.slice(WORKSPACE_TYPE_PREFIX.length);
+}
+
+/** The config fields a workspace connector's spec marks secret. */
+export function secretFieldsOfSpec(
+  spec: Record<string, unknown> | undefined,
+): string[] {
+  const form = connectionSpecificationToForm(
+    spec?.connectionSpecification as never,
+  ) as { fields?: { name: string; type?: string; encrypted?: boolean }[] };
+  return (form.fields ?? [])
+    .filter(f => f.encrypted === true || f.type === "password")
+    .map(f => f.name);
 }
 
 /** The protocol's log levels are Airbyte's; the engine's are narrower. */
@@ -140,8 +157,31 @@ export class SandboxedConnector extends BaseConnector {
     };
   }
 
-  private config(): Record<string, unknown> {
-    return (this.dataSource.config ?? {}) as Record<string, unknown>;
+  /**
+   * The config the sandbox gets. `raw` (every connector unless its
+   * connector.yaml says otherwise): the stored values, as always. `proxied`:
+   * placeholders where the secret fields are, plus a run token and where
+   * to send `ctx.http` requests (connections/placeholders.ts).
+   */
+  private async config(): Promise<Record<string, unknown>> {
+    const config = (this.dataSource.config ?? {}) as Record<string, unknown>;
+    const definition = await this.definition();
+    if (definition.credentials !== "proxied") return config;
+    const connectionId = String(this.dataSource._id);
+    return {
+      ...withPlaceholders(
+        config,
+        connectionId,
+        secretFieldsOfSpec(definition.spec),
+      ),
+      __http: {
+        ...((config.__http as Record<string, unknown> | undefined) ?? {}),
+        proxy: {
+          url: `${appsGitOriginBase()}/api/connections/sandbox-fetch`,
+          token: signRunToken({ workspaceId: this.workspaceId, connectionId }),
+        },
+      },
+    };
   }
 
   async testConnection(): Promise<ConnectionTestResult> {
@@ -153,7 +193,7 @@ export class SandboxedConnector extends BaseConnector {
         connectorDir: dir,
         command: "check",
         entry,
-        config: this.config(),
+        config: await this.config(),
       });
       const failure = failureMessage(result);
       if (failure) return { success: false, message: failure };
@@ -228,7 +268,7 @@ export class SandboxedConnector extends BaseConnector {
       connectorDir: dir,
       command: "discover",
       entry,
-      config: this.config(),
+      config: await this.config(),
     });
     const failure = failureMessage(result);
     if (failure) throw new Error(`discover failed: ${failure}`);
@@ -278,7 +318,7 @@ export class SandboxedConnector extends BaseConnector {
       connectorDir: dir,
       command: "read",
       entry,
-      config: this.config(),
+      config: await this.config(),
       catalog: {
         streams: [
           { stream: { name: options.entity }, sync_mode: "incremental" },

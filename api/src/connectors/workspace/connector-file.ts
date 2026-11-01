@@ -26,7 +26,18 @@ export interface ConnectorFile {
   /** Entry file for the `node` runtime, relative to the folder. */
   entry: string;
   page?: { vendor?: string; category?: string; docs?: string };
+  /**
+   * How the connector receives its secret config fields. `raw` (the default,
+   * and every connector today): the values themselves. `proxied`:
+   * placeholders, which Mako swaps for the values only on requests sent
+   * through `ctx.http` (connections/placeholders.ts), so the code never
+   * holds a key. Only for a connector that sends its key through `ctx.http`.
+   */
+  credentials: ConnectorCredentials;
 }
+
+export const CONNECTOR_CREDENTIALS = ["raw", "proxied"] as const;
+export type ConnectorCredentials = (typeof CONNECTOR_CREDENTIALS)[number];
 
 export type ParseResult =
   { ok: true; value: ConnectorFile } | { ok: false; reason: string };
@@ -115,12 +126,22 @@ export function parseConnectorFile(contents: string): ParseResult {
     };
   }
 
+  const credentials = raw.credentials === undefined ? "raw" : raw.credentials;
+  if (!CONNECTOR_CREDENTIALS.includes(credentials as ConnectorCredentials)) {
+    return {
+      ok: false,
+      reason:
+        "`credentials` must be `raw` (the connector receives its keys) or `proxied` (it receives placeholders that only `ctx.http` can use).",
+    };
+  }
+
   return {
     ok: true,
     value: {
       runtime: runtime as ConnectorRuntime,
       entry,
       page: page as ConnectorFile["page"],
+      credentials: credentials as ConnectorCredentials,
     },
   };
 }

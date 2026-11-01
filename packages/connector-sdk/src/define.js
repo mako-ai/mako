@@ -152,6 +152,12 @@ export function createContext({ config, state, log, entity }) {
     http,
     paginate,
     log: message => log("INFO", typeof message === "string" ? message : JSON.stringify(message)),
-    createHttp: options => createHttp({ log: message => log("INFO", message), ...options }),
+    // A proxied connector's own clients go through Mako too.
+    createHttp: options =>
+      createHttp({
+        log: message => log("INFO", message),
+        ...(config?.__http?.proxy ? { proxy: config.__http.proxy } : {}),
+        ...options,
+      }),
   };
 }
