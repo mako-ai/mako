@@ -61,7 +61,7 @@ interface EntitiesState {
     workspaceId: string,
     connectorId: string,
   ) => Promise<{ success: boolean; error: string | null }>;
-  /** Who configures the connection (its Access tab). */
+  /** Who configures the connection (its Managers tab). */
   getManagers: (
     workspaceId: string,
     connectorId: string,
