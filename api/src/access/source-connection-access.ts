@@ -12,8 +12,8 @@
  *     configure it — a workspace with many admins should not hand every one
  *     of them every key;
  *   - a connection with NO manager who can act today (created by `system`
- *     before creators were recorded, or whose managers all left) is
- *     configured by every admin, as before, until someone adds a manager;
+ *     before creators were recorded, or whose managers all left) is managed
+ *     by the workspace owner, until the owner adds someone;
  *   - the workspace owner always can;
  *   - viewers never can, even when listed (their role caps them);
  *   - everyone in the workspace still sees it and uses it, as its live-reads
@@ -45,6 +45,12 @@ export function mayCreateSourceConnection(role: WorkspaceRole | null): boolean {
 /** Looks up a workspace role, once per user id per request. */
 export type RoleOf = (userId: string) => Promise<WorkspaceRole | null>;
 
+/** The workspace's roles and its owners, looked up once per request. */
+export interface People {
+  roleOf: RoleOf;
+  owners: () => Promise<string[]>;
+}
+
 export function roleLookup(workspaceId: string): RoleOf {
   const seen = new Map<string, Promise<WorkspaceRole | null>>();
   return userId => {
@@ -54,6 +60,14 @@ export function roleLookup(workspaceId: string): RoleOf {
       seen.set(userId, role);
     }
     return role;
+  };
+}
+
+export function peopleOf(workspaceId: string): People {
+  let owners: Promise<string[]> | undefined;
+  return {
+    roleOf: roleLookup(workspaceId),
+    owners: () => (owners ??= workspaceService.getOwnerIds(workspaceId)),
   };
 }
 
@@ -71,23 +85,24 @@ export function managersOf(connection: {
 }
 
 /**
- * The recorded managers who can act today: members and admins of the
- * workspace. Leaves out `system`, people who left, and viewers.
+ * The managers who can act today: the recorded members and admins of the
+ * workspace (leaving out `system`, people who left, and viewers), else the
+ * workspace owner.
  */
 export async function actingManagers(
   connection: { managers?: unknown; createdBy?: unknown },
-  roleOf: RoleOf,
+  people: People,
 ): Promise<string[]> {
   const listed = managersOf(connection);
-  const roles = await Promise.all(listed.map(id => roleOf(id)));
-  return listed.filter((_, i) => mayCreateSourceConnection(roles[i]));
+  const roles = await Promise.all(listed.map(id => people.roleOf(id)));
+  const acting = listed.filter((_, i) => mayCreateSourceConnection(roles[i]));
+  return acting.length > 0 ? acting : people.owners();
 }
 
-/** Who is asking, and how to look up anyone else's role. */
-export interface Caller {
+/** Who is asking, and how to look up everyone else. */
+export interface Caller extends People {
   role: WorkspaceRole | null;
   userId?: string;
-  roleOf: RoleOf;
 }
 
 /**
@@ -101,9 +116,7 @@ export async function mayChangeSourceConnection(
   const { role, userId } = caller;
   if (!userId || !role || role === "viewer") return false;
   if (role === "owner") return true;
-  const managers = await actingManagers(connection, caller.roleOf);
-  // No one can act on it yet: every admin may, until a manager is added.
-  if (managers.length === 0) return role === "admin";
+  const managers = await actingManagers(connection, caller);
   return managers.includes(String(userId));
 }
 
