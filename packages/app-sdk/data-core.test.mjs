@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  isOutOfMemoryError,
   mentionedBindings,
   missingBinding,
   quoteIdent,
@@ -297,4 +298,13 @@ test("readsCatalog spots table listings", () => {
 test("quoting", () => {
   assert.equal(quoteIdent('a"b'), '"a""b"');
   assert.equal(quoteString("it's"), "'it''s'");
+});
+
+test("isOutOfMemoryError reads DuckDB's message, the only signal duckdb-wasm passes", () => {
+  // Both shapes seen from duckdb-wasm 1.29.0 in Chrome.
+  assert.equal(isOutOfMemoryError(new Error("Out of Memory Error: failed to allocate data of size 1.0 MiB (3.1 GiB/3.1 GiB used)")), true);
+  assert.equal(isOutOfMemoryError(new Error("Out of Memory Error: could not allocate block of size 256.0 KiB (37.9 MiB/38.1 MiB used)")), true);
+  assert.equal(isOutOfMemoryError("Out of Memory Error: x"), true);
+  assert.equal(isOutOfMemoryError(new Error("Catalog Error: Table with name x does not exist")), false);
+  assert.equal(isOutOfMemoryError(null), false);
 });

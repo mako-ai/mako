@@ -22,6 +22,7 @@ import {
   quoteIdent,
   readsCatalog,
   quoteString,
+  isOutOfMemoryError,
   toPlainRows,
   parseBindingSnapshot,
   snapshotUrl,
@@ -32,7 +33,7 @@ import {
  * in a page (or this export) says which SDK a deployed app actually runs.
  * Kept in step with package.json by snapshot.test.mjs.
  */
-export const SDK_VERSION = "2.11.1";
+export const SDK_VERSION = "2.12.0";
 if (typeof window !== "undefined") {
   try {
     window.__MAKO_APP_SDK__ = SDK_VERSION;
@@ -53,10 +54,12 @@ const DUCKDB_ESM =
 // parquet download instead of waiting for it.
 // ---------------------------------------------------------------------------
 let dbPromise = null;
+let duckdbModule = null; // the duckdb-wasm ESM, for DuckDBDataProtocol
 function getDb() {
   if (!dbPromise) {
     dbPromise = (async () => {
       const duckdb = await import(/* @vite-ignore */ DUCKDB_ESM);
+      duckdbModule = duckdb;
       const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
       const worker = await duckdb.createWorker(bundle.mainWorker);
       const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker);
@@ -195,50 +198,380 @@ async function downloadBinding(name, bust, report) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Memory (2.12). Every table lives in this frame's WASM heap, where DuckDB's
+// memory_limit is 3.1 GiB. 2.8 to 2.11 never dropped one, so an app with many
+// bindings (Web Performance: 106 shards) browsed its way to "Out of Memory".
+//
+// - Every read bumps its binding. Least recently used goes first.
+// - After each load the runtime asks DuckDB what it holds (duckdb_memory()).
+//   Over the budget, the least recently used unpinned table is demoted to a
+//   view over its parquet, kept as a Blob in JS memory and read through
+//   BROWSER_FILEREADER. Measured on 250k rows: 30 MiB of heap as a table,
+//   0 as a view (a view over registerFileBuffer would keep a malloc'd copy of
+//   the file in the heap). A view re-decodes the file on every query (an
+//   aggregate: 54 ms against 5 ms), so the next read promotes it back to a
+//   table from the Blob, with no download.
+// - Blobs have their own budget. Past it, the least recently used view is
+//   dropped outright and its next read downloads it again.
+// - A binding a mounted hook reads, or a query in flight, is pinned: never
+//   demoted or dropped. Loads in flight are never touched either.
+// - "Out of Memory" on a load or a query demotes unpinned tables and retries
+//   once. A load that still does not fit lands as a view.
+// - A parquet over a quarter of the budget starts as a view: its table would
+//   be 3x to 8x bigger and could not fit.
+//
+// All catalog changes run one at a time (catalog()), so the bookkeeping here
+// always matches DuckDB's catalog. The worker runs one statement at a time
+// anyway, so this costs no parallelism.
+// ---------------------------------------------------------------------------
+const MIB = 1024 * 1024;
+export const DEFAULT_BINDING_MEMORY_BUDGET = 1536 * MIB;
+export const DEFAULT_BINDING_BLOB_BUDGET = 512 * MIB;
+let memoryBudget = DEFAULT_BINDING_MEMORY_BUDGET;
+let blobBudget = DEFAULT_BINDING_BLOB_BUDGET;
+
+// name -> { storage: "table" | "view", blob: Blob | null, file: string | null,
+// demoted: boolean }. `file` is the registered Blob a view reads; a table
+// keeps no file. `demoted`: a view only because of memory pressure.
+const entries = new Map();
+const lastUse = new Map(); // name -> sequence number of its latest read
+let useSeq = 0;
+const pins = new Map(); // name -> how many hooks or queries hold it
+const loading = new Set(); // names with a load in flight
+// Loaded through ensureBinding(): app code may query them by name at any
+// time, so they are demoted (still readable) but never dropped.
+const externalBindings = new Set();
+let measuredBytes = 0;
+
+function touch(name) {
+  lastUse.set(name, ++useSeq);
+}
+function isPinned(name) {
+  return (pins.get(name) ?? 0) > 0;
+}
+/** Hold `name` against eviction; the returned function lets go (once). */
+function pin(name) {
+  pins.set(name, (pins.get(name) ?? 0) + 1);
+  let held = true;
+  return () => {
+    if (!held) return;
+    held = false;
+    const n = (pins.get(name) ?? 1) - 1;
+    if (n > 0) pins.set(name, n);
+    else pins.delete(name);
+  };
+}
+
+let catalogQueue = Promise.resolve();
+function catalog(fn) {
+  const run = catalogQueue.then(fn);
+  catalogQueue = run.catch(() => {});
+  return run;
+}
+
+// The statements in one transaction, so another connection never sees the
+// name missing between a DROP and a CREATE.
+async function exec(engine, statements) {
+  const conn = await engine.connect();
+  try {
+    if (statements.length === 1) {
+      await conn.query(statements[0]);
+      return;
+    }
+    await conn.query("BEGIN TRANSACTION");
+    try {
+      for (const sql of statements) await conn.query(sql);
+      await conn.query("COMMIT");
+    } catch (error) {
+      await conn.query("ROLLBACK").catch(() => {});
+      throw error;
+    }
+  } finally {
+    await conn.close();
+  }
+}
+
+function dropSql(storage, name) {
+  return "DROP " + (storage === "view" ? "VIEW" : "TABLE") + " IF EXISTS " + quoteIdent(name);
+}
+
 let fileSeq = 0;
+// Every load registers its bytes under its own file name, so a reload never
+// drops a file another load is still reading.
+function nextFile() {
+  return "mako-" + ++fileSeq + ".parquet";
+}
+
+/** `bytes` decoded into a table named `name`, replacing what was there. */
+async function putTable(engine, name, bytes) {
+  const prev = entries.get(name);
+  const file = nextFile();
+  await engine.registerFileBuffer(file, bytes);
+  try {
+    const create =
+      "CREATE OR REPLACE TABLE " + quoteIdent(name) +
+      " AS SELECT * FROM read_parquet(" + quoteString(file) + ")";
+    await exec(engine, prev && prev.storage === "view" ? [dropSql("view", name), create] : [create]);
+  } finally {
+    await engine.dropFile(file).catch(() => {});
+  }
+  if (prev && prev.file) await engine.dropFile(prev.file).catch(() => {});
+}
+
+/** A view named `name` over `blob`, read from JS memory. Returns its file. */
+async function putView(engine, name, blob) {
+  const prev = entries.get(name);
+  const file = nextFile();
+  const protocol = duckdbModule?.DuckDBDataProtocol?.BROWSER_FILEREADER ?? 2;
+  await engine.registerFileHandle(file, blob, protocol, true);
+  try {
+    const create =
+      "CREATE OR REPLACE VIEW " + quoteIdent(name) +
+      " AS SELECT * FROM read_parquet(" + quoteString(file) + ")";
+    await exec(engine, prev && prev.storage === "table" ? [dropSql("table", name), create] : [create]);
+  } catch (error) {
+    await engine.dropFile(file).catch(() => {});
+    throw error;
+  }
+  if (prev && prev.file) await engine.dropFile(prev.file).catch(() => {});
+  return file;
+}
+
+/** What DuckDB holds right now, in bytes (the last figure if it cannot say). */
+async function measureNow(engine) {
+  const conn = await engine.connect();
+  try {
+    const result = await conn.query(
+      "SELECT coalesce(sum(memory_usage_bytes), 0)::DOUBLE AS bytes FROM duckdb_memory()",
+    );
+    const value = Number(result.getChildAt(0)?.get(0));
+    if (Number.isFinite(value)) measuredBytes = value;
+  } catch {
+    /* an engine without duckdb_memory(): the OOM retry still applies */
+  } finally {
+    await conn.close();
+  }
+  reportMemory();
+  return measuredBytes;
+}
+
+// Hook for whoever wants the figure (the host frame, in a later step).
+function reportMemory() {}
+
+/** The least recently read binding that passes `test` and nothing holds. */
+function leastRecent(test) {
+  let best = null;
+  let bestSeq = Infinity;
+  for (const [name, entry] of entries) {
+    if (isPinned(name) || loading.has(name) || !test(name, entry)) continue;
+    const seq = lastUse.get(name) ?? 0;
+    if (seq < bestSeq) {
+      best = name;
+      bestSeq = seq;
+    }
+  }
+  return best;
+}
+
+/** Forget a binding entirely: the next read downloads it again. */
+async function dropNow(engine, name) {
+  const entry = entries.get(name);
+  if (!entry) return;
+  await exec(engine, [dropSql(entry.storage, name)]);
+  if (entry.file) await engine.dropFile(entry.file).catch(() => {});
+  entries.delete(name);
+  loadedBindings.delete(name);
+}
+
+/** One step down: a table becomes a view over its Blob, or goes. */
+async function evictNow(engine, name) {
+  const entry = entries.get(name);
+  if (entry.blob) {
+    const file = await putView(engine, name, entry.blob);
+    entries.set(name, { ...entry, storage: "view", file, demoted: true });
+  } else {
+    await dropNow(engine, name);
+    registered.delete(name);
+  }
+}
+
+const evictableTable = except => (name, entry) =>
+  name !== except &&
+  entry.storage === "table" &&
+  (entry.blob !== null || !externalBindings.has(name));
+
+/** Evict least recently used tables until DuckDB holds at most `target`. */
+async function trimNow(engine, except, target = memoryBudget) {
+  for (;;) {
+    if ((await measureNow(engine)) <= target) break;
+    const victim = leastRecent(evictableTable(except));
+    if (!victim) break;
+    await evictNow(engine, victim);
+  }
+  for (;;) {
+    let blobs = 0;
+    for (const entry of entries.values()) if (entry.blob) blobs += entry.blob.size;
+    if (blobs <= blobBudget) return;
+    const victim = leastRecent(
+      (name, entry) =>
+        name !== except && entry.blob !== null && !(entry.storage === "view" && externalBindings.has(name)),
+    );
+    if (!victim) return;
+    const entry = entries.get(victim);
+    if (entry.storage === "view") {
+      await dropNow(engine, victim);
+      registered.delete(victim);
+    } else {
+      // A table keeps its rows; evicting it later drops it outright.
+      entries.set(victim, { ...entry, blob: null });
+    }
+  }
+}
+
+/**
+ * After an Out of Memory error: demote unpinned tables, least recently used
+ * first, until DuckDB holds half of what it did (or half the budget). Returns
+ * how many it freed; 0 means a retry would fail the same way.
+ */
+async function relieveNow(engine, except) {
+  const target = Math.min(memoryBudget, await measureNow(engine)) / 2;
+  let freed = 0;
+  for (;;) {
+    const victim = leastRecent(evictableTable(except));
+    if (!victim) break;
+    await evictNow(engine, victim);
+    freed++;
+    if ((await measureNow(engine)) <= target) break;
+  }
+  return freed;
+}
+
+/** Decode a download into DuckDB: a table when it fits, else a view. */
+async function placeNow(engine, name, buf, blob) {
+  if (blob.size > memoryBudget / 4) {
+    return { storage: "view", file: await putView(engine, name, blob) };
+  }
+  try {
+    await putTable(engine, name, buf);
+    return { storage: "table", file: null };
+  } catch (error) {
+    if (!isOutOfMemoryError(error)) throw error;
+  }
+  // The worker owns `buf` now (registerFileBuffer transfers it): the Blob
+  // has the same bytes.
+  if (await relieveNow(engine, name)) {
+    try {
+      await putTable(engine, name, new Uint8Array(await blob.arrayBuffer()));
+      return { storage: "table", file: null };
+    } catch (error) {
+      if (!isOutOfMemoryError(error)) throw error;
+    }
+  }
+  return { storage: "view", file: await putView(engine, name, blob) };
+}
+
 async function loadBinding(name, bust) {
   const db = getDb(); // boot in parallel with the download
   db.catch(() => {});
+  loading.add(name);
   try {
     const buf = await downloadBinding(name, bust, patch => setProgress(name, patch));
     setProgress(name, { phase: "loading_duckdb" });
     const engine = await db;
-    const file = "mako-" + ++fileSeq + ".parquet";
-    await engine.registerFileBuffer(file, buf);
-    try {
-      const conn = await engine.connect();
-      try {
-        await conn.query(
-          "CREATE OR REPLACE TABLE " + quoteIdent(name) +
-            " AS SELECT * FROM read_parquet(" + quoteString(file) + ")",
-        );
-      } finally {
-        await conn.close();
-      }
-    } finally {
-      await engine.dropFile(file).catch(() => {});
-    }
-    loadedBindings.add(name);
+    // Made before the buffer goes to the worker: the copy a demotion reads.
+    const blob = new Blob([buf]);
+    await catalog(async () => {
+      const placed = await placeNow(engine, name, buf, blob);
+      entries.set(name, { ...placed, blob, demoted: false });
+      loadedBindings.add(name);
+      loading.delete(name);
+      await trimNow(engine, name);
+    });
   } finally {
+    loading.delete(name);
     // A refresh owns the record until its reload is done (refreshBinding).
     if (!refreshes.has(name)) setProgress(name, null);
   }
 }
 
+/** A demoted view read again: back to a table from its Blob, no download. */
+async function promote(name) {
+  const engine = await getDb();
+  await catalog(async () => {
+    const entry = entries.get(name);
+    if (!entry || entry.storage !== "view" || !entry.blob) return;
+    await putTable(engine, name, new Uint8Array(await entry.blob.arrayBuffer()));
+    entries.set(name, { ...entry, storage: "table", file: null, demoted: false });
+    await trimNow(engine, name);
+  }).catch(() => {
+    /* it stays a view, which reads the same rows */
+  });
+}
+
 const registered = new Map(); // name -> Promise<void>
-const loadedBindings = new Set(); // names whose table is in DuckDB
+const loadedBindings = new Set(); // names DuckDB can read (table or view)
 // Refreshed on the server while never loaded on this page: the next load
 // must skip any cache between here and the server.
 const staleBindings = new Set();
 function registerBinding(name) {
-  if (!registered.has(name)) {
+  touch(name);
+  const known = registered.get(name);
+  if (!known) {
     const load = loadBinding(name, staleBindings.delete(name));
     registered.set(name, load);
     load.catch(() => {
       if (registered.get(name) === load) registered.delete(name);
     });
+    return load;
   }
-  return registered.get(name);
+  const entry = entries.get(name);
+  if (entry && entry.demoted && !loading.has(name)) {
+    entry.demoted = false; // one promotion at a time
+    const promotion = known.then(() => promote(name));
+    registered.set(name, promotion);
+    return promotion;
+  }
+  return known;
+}
+
+/**
+ * Cap what binding tables may hold in DuckDB, in bytes (default 1.5 GiB,
+ * half of the frame's 3.1 GiB heap: queries need the rest). Over it, the
+ * least recently read tables become views over their compressed parquet.
+ * `opts.blobBytes` caps those parquet copies (default 512 MiB); past it the
+ * oldest are dropped and download again on their next read. `Infinity`
+ * turns either off. Resolves once the engine is back under the new budget.
+ */
+export async function setBindingMemoryBudget(bytes, opts) {
+  const valid = n => typeof n === "number" && n > 0 && !Number.isNaN(n);
+  if (!valid(bytes)) throw new TypeError("setBindingMemoryBudget: a positive number of bytes");
+  memoryBudget = bytes;
+  if (opts && opts.blobBytes !== undefined) {
+    if (!valid(opts.blobBytes)) throw new TypeError("setBindingMemoryBudget: blobBytes must be a positive number");
+    blobBudget = opts.blobBytes;
+  }
+  if (!dbPromise) return;
+  const engine = await getDb();
+  await catalog(() => trimNow(engine, null));
+}
+
+/**
+ * What the binding tables hold now: DuckDB's own figure, the budgets, and
+ * each loaded binding, least recently read first.
+ */
+export async function getBindingMemory() {
+  const engine = await getDb();
+  const usedBytes = await catalog(() => measureNow(engine));
+  const bindings = [...entries]
+    .sort(([a], [b]) => (lastUse.get(a) ?? 0) - (lastUse.get(b) ?? 0))
+    .map(([name, entry]) => ({
+      name,
+      storage: entry.storage,
+      pinned: isPinned(name),
+      parquetBytes: entry.blob ? entry.blob.size : null,
+    }));
+  return { usedBytes, budgetBytes: memoryBudget, blobBudgetBytes: blobBudget, bindings };
 }
 
 // ---------------------------------------------------------------------------
@@ -270,23 +603,28 @@ export async function withConnection(fn) {
  * Make sure a binding's table exists in the shared DuckDB, loading it once
  * per page (concurrent callers share the download). Resolves with the table
  * name — the binding name; quote it in SQL when it is not a bare identifier.
+ * Each call counts as a read. Under memory pressure the table may become a
+ * view over its parquet (same name, same rows, slower); it is never dropped.
  */
 export async function ensureBinding(name) {
+  externalBindings.add(name);
   await registerBinding(name);
   return name;
 }
 
 /**
- * Forget a loaded binding: drops its table so its memory is freed. The next
- * query or ensureBinding() downloads it again.
+ * Forget a loaded binding: drops its table (or view) so its memory is freed.
+ * The next query or ensureBinding() downloads it again.
  */
 export async function unloadBinding(name) {
   const pending = registered.get(name);
   if (!pending) return;
   registered.delete(name);
-  loadedBindings.delete(name);
+  externalBindings.delete(name);
   await pending.catch(() => {});
-  await withConnection(conn => conn.query("DROP TABLE IF EXISTS " + quoteIdent(name)));
+  if (registered.has(name)) return; // read again meanwhile: it stays
+  const engine = await getDb();
+  await catalog(() => dropNow(engine, name));
 }
 
 /**
@@ -495,7 +833,19 @@ function bindingIndex() {
   return indexPromise;
 }
 
+// Out of Memory on a query: free what no one holds and try once more.
 async function runSql(sql, rowLimit, format) {
+  try {
+    return await runSqlOnce(sql, rowLimit, format);
+  } catch (error) {
+    if (!isOutOfMemoryError(error)) throw error;
+    const engine = await getDb();
+    if (!(await catalog(() => relieveNow(engine, null)))) throw error;
+    return runSqlOnce(sql, rowLimit, format);
+  }
+}
+
+async function runSqlOnce(sql, rowLimit, format) {
   const cap = rowLimit === null ? Infinity : (rowLimit ?? DEFAULT_ROW_LIMIT);
   const db = await getDb();
   const conn = await db.connect();
@@ -529,6 +879,9 @@ const EMPTY = {
 // until the new ones arrive — a dashboard must not blink to empty on every
 // refresh). `isRefreshing` says whether a refresh in flight concerns this
 // query, so `refreshing` is true from the click, not only from the reload.
+// `run(hold)` names each binding it reads through `hold`: those stay pinned
+// against eviction while this hook shows that query (until the deps change
+// or it unmounts, and never before its run settles).
 function useAsyncQuery(run, deps, isRefreshing) {
   const bindings = useBindingState();
   const [state, setState] = React.useState(EMPTY);
@@ -538,7 +891,9 @@ function useAsyncQuery(run, deps, isRefreshing) {
     const isRefresh = seenVersion.current !== bindings.version;
     seenVersion.current = bindings.version;
     setState(s => (isRefresh && s.data !== null ? { ...s, refreshing: true } : EMPTY));
-    run().then(
+    const held = [];
+    const settled = run(name => held.push(pin(name)));
+    settled.then(
       result => {
         if (active) setState({ ...result, error: null, loading: false, refreshing: false });
       },
@@ -553,6 +908,9 @@ function useAsyncQuery(run, deps, isRefreshing) {
     );
     return () => {
       active = false;
+      settled.catch(() => {}).finally(() => {
+        for (const release of held) release();
+      });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, bindings.version]);
@@ -622,7 +980,8 @@ export function useQuery(name, opts) {
   const withSnapshot = Boolean(opts && opts.snapshot);
   const preview = useSnapshotPreview(name, withSnapshot, rowLimit);
   const state = useAsyncQuery(
-    async () => {
+    async hold => {
+      hold(name);
       await registerBinding(name);
       const r = await runSql("SELECT * FROM " + quoteIdent(name), rowLimit);
       return { data: r.rows, fields: r.fields, truncated: r.truncated, rowCount: r.rowCount };
@@ -682,12 +1041,13 @@ export function useViewer() {
  * A binding that fails to load must not sink the query silently: when the
  * SQL then fails, the load failure is what surfaces — it is the cause.
  */
-async function runOverBindings(sql, rowLimit, format) {
+async function runOverBindings(sql, rowLimit, format, hold) {
   const names = await bindingIndex();
   const failures = new Map();
   const attempted = new Set();
   const load = n => {
     attempted.add(n);
+    hold(n);
     return registerBinding(n).catch(e => {
       failures.set(n, e);
     });
@@ -722,8 +1082,8 @@ export function useDuckDB(sql, opts) {
   bootEngine();
   const rowLimit = opts ? opts.rowLimit : undefined;
   const format = opts && opts.format === "arrow" ? "arrow" : "rows";
-  const state = useAsyncQuery(async () => {
-    const r = await runOverBindings(sql, rowLimit, format);
+  const state = useAsyncQuery(async hold => {
+    const r = await runOverBindings(sql, rowLimit, format, hold);
     return { data: r.rows, fields: r.fields, truncated: r.truncated, rowCount: r.rowCount };
   }, [sql, rowLimit, format], refreshing => refreshing.size > 0);
   // Every binding the query can read: the combined record says what the

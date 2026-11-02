@@ -273,11 +273,52 @@ export function withConnection<T>(fn: (conn: DuckDBConnection) => Promise<T>): P
 /**
  * Load a binding into the shared DuckDB as a table (once per page;
  * concurrent callers share the download). Resolves with the table name.
+ * Each call counts as a read for eviction. Under memory pressure the table
+ * may become a view over its parquet (same name and rows, slower to query);
+ * a binding loaded this way is never dropped outright.
  */
 export function ensureBinding(name: string): Promise<string>;
 
-/** Drop a loaded binding's table to free memory; the next read reloads it. */
+/** Drop a loaded binding's table (or view) to free memory; the next read reloads it. */
 export function unloadBinding(name: string): Promise<void>;
+
+/** 1.5 GiB: what binding tables may hold in DuckDB unless the app says otherwise. */
+export const DEFAULT_BINDING_MEMORY_BUDGET: number;
+/** 512 MiB: the compressed parquet copies kept for demoted bindings. */
+export const DEFAULT_BINDING_BLOB_BUDGET: number;
+
+/**
+ * Cap the bytes binding tables may hold in this frame's DuckDB (default
+ * 1.5 GiB, half of the 3.1 GiB heap; queries need the rest). After each load
+ * the SDK measures DuckDB's memory and, over the cap, turns the least
+ * recently read tables into views over their compressed parquet (kept as a
+ * Blob outside the WASM heap). A demoted binding becomes a table again on its
+ * next read, without a download. Bindings a mounted hook reads are never
+ * evicted. `blobBytes` caps those parquet copies (default 512 MiB); past it
+ * the oldest views are dropped and download again when read. `Infinity`
+ * turns a cap off. Resolves once memory is back under the new cap.
+ */
+export function setBindingMemoryBudget(bytes: number, opts?: { blobBytes?: number }): Promise<void>;
+
+export interface BindingMemory {
+  /** What DuckDB holds now, from duckdb_memory(). */
+  usedBytes: number;
+  budgetBytes: number;
+  blobBudgetBytes: number;
+  /** Every loaded binding, least recently read first. */
+  bindings: {
+    name: string;
+    /** "table": decoded in the heap. "view": read from its parquet on each query. */
+    storage: "table" | "view";
+    /** Read by a mounted hook or a query in flight: never evicted. */
+    pinned: boolean;
+    /** The compressed copy kept for a demotion; null once dropped. */
+    parquetBytes: number | null;
+  }[];
+}
+
+/** What the binding tables hold right now, for a debug panel or a test. */
+export function getBindingMemory(): Promise<BindingMemory>;
 
 /**
  * The binding's raw parquet bytes, not registered anywhere — for an app with

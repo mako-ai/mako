@@ -89,16 +89,44 @@ Never import `@duckdb/duckdb-wasm`, `hyparquet` or `apache-arrow` parquet
 readers in an app. Use the page's engine through the SDK:
 
 ```ts
-import { getDuckDB, withConnection, ensureBinding, unloadBinding, fetchBindingBytes, useDuckDB } from "@makoai/app-sdk";
+import { getDuckDB, withConnection, ensureBinding, unloadBinding, fetchBindingBytes, useDuckDB, getBindingMemory, setBindingMemoryBudget } from "@makoai/app-sdk";
 
 const big = useDuckDB("select lat, lng from listings", { format: "arrow" }); // data: Arrow Table
 const table = await ensureBinding("valuations");          // loaded once, returns "valuations"
 const n = await withConnection(c => c.query(`select count(*) from ${table}`));
 await unloadBinding("valuations");                         // free its memory
 const bytes = await fetchBindingBytes("valuations", { onProgress: p => p && console.log(p.phase, p.bytes, p.bytesTotal) });
+const mem = await getBindingMemory();                      // { usedBytes, budgetBytes, bindings }
+await setBindingMemoryBudget(800 * 1024 ** 2);             // cap binding tables at 800 MiB
 const db = await getDuckDB();                              // shared: never close() or terminate()
 await db.registerFileBuffer("valuations.parquet", bytes);  // read_parquet with your own options
 ```
+
+### Memory: least recently read goes first (2.12)
+
+Each app frame has its own DuckDB with a 3.1 GiB heap. Before 2.12 every
+binding table stayed in it for good, and an app with many bindings ran out
+of memory. Now the SDK measures DuckDB (`duckdb_memory()`) after each load:
+
+| 250k rows (a date, 5 text, 5 integer columns) | Heap | Aggregate query |
+| --- | --- | --- |
+| Table (the default) | 30.2 MiB | 5 ms |
+| View over the parquet in the heap | 3.7 MiB | 20 ms |
+| View over a Blob (eviction step) | 0 MiB | 54 ms |
+
+- Over the budget, the least recently read table becomes a view over a Blob.
+  Its next read makes it a table again from the Blob, with no download.
+- Past 512 MiB of Blobs, the oldest views are dropped. They download again
+  on their next read.
+- A table a mounted `useQuery`/`useDuckDB` reads is pinned. `ensureBinding`
+  bindings can become views but are never dropped.
+- A parquet over a quarter of the budget loads as a view from the start.
+- "Out of Memory" on a load or a hook's query frees unpinned tables and
+  retries once. `withConnection` does not retry: your `fn` may not be safe
+  to run twice.
+
+`setBindingMemoryBudget(bytes)` changes the 1.5 GiB default;
+`getBindingMemory()` shows what is loaded, oldest first.
 
 ### Loading cost (2.8)
 
@@ -109,6 +137,12 @@ await db.registerFileBuffer("valuations.parquet", bytes);  // read_parquet with 
   freed. A refresh swaps the table in one commit, so a running query never
   sees it missing. A table costs about 3x the parquet in memory (10 MB of
   parquet, 149k rows: 33 MB).
+- Tables are evicted least recently read first (2.12). Over the memory
+  budget (default 1.5 GiB of DuckDB's 3.1 GiB heap), the oldest table becomes
+  a view over its compressed parquet, held outside the heap. Its next read
+  turns it back into a table without a download. Tables a mounted hook reads
+  are never evicted. An "Out of Memory" error frees unpinned tables and
+  retries once.
 - The DuckDB engine and its parquet extension start loading on the first
   data hook render, in parallel with the first binding download.
 - Rows decode column by column: 149k rows x 16 columns in 190 ms, down

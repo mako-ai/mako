@@ -102,7 +102,7 @@ test("fetchBindingBytes: raw parquet, progress, fresh, nothing registered", opts
 });
 
 test("the hooks and escape hatches are exported", opts, () => {
-  for (const name of ["useDuckDB", "useQuery", "getDuckDB", "withConnection", "ensureBinding", "unloadBinding", "fetchBindingBytes", "refreshBinding"]) {
+  for (const name of ["useDuckDB", "useQuery", "getDuckDB", "withConnection", "ensureBinding", "unloadBinding", "fetchBindingBytes", "refreshBinding", "setBindingMemoryBudget", "getBindingMemory"]) {
     assert.equal(typeof sdk[name], "function", name);
   }
 });
@@ -200,4 +200,112 @@ test("hostShortcutFor hands Cmd/Ctrl+K to the host and nothing else", opts, () =
   assert.equal(key("k", { metaKey: true, shiftKey: true }), null);
   assert.equal(key("k", { ctrlKey: true, altKey: true }), null);
   assert.equal(key("j", { metaKey: true }), null);
+});
+
+// --- Memory: LRU eviction of binding tables (SDK 2.12) ---
+// Each fake table holds `tableBytes`; duckdb_memory() reports the sum.
+
+async function freshMemory(budget, opts) {
+  for (const b of (await sdk.getBindingMemory()).bindings) await sdk.unloadBinding(b.name);
+  duck().tableBytes = 100;
+  duck().oom = null;
+  await sdk.setBindingMemoryBudget(budget, { blobBytes: Infinity, ...opts });
+}
+const storage = async () =>
+  Object.fromEntries((await sdk.getBindingMemory()).bindings.map(b => [b.name, b.storage]));
+
+test("over budget, the least recently used table becomes a view over its Blob", opts, async () => {
+  await freshMemory(250);
+  await sdk.ensureBinding("m_a");
+  await sdk.ensureBinding("m_b");
+  await sdk.ensureBinding("m_c");
+  assert.deepEqual(await storage(), { m_a: "view", m_b: "table", m_c: "table" });
+  assert.ok(!duck().tables.has("m_a"));
+  const file = duck().views.get("m_a");
+  const handle = duck().handles.get(file);
+  assert.ok(handle.handle instanceof Blob, "the view reads a Blob, outside the WASM heap");
+  assert.equal(handle.protocol, 2, "BROWSER_FILEREADER");
+  assert.equal(handle.handle.size, 11);
+  const mem = await sdk.getBindingMemory();
+  assert.equal(mem.usedBytes, 200);
+  assert.equal(mem.budgetBytes, 250);
+  assert.deepEqual(mem.bindings.map(b => b.name), ["m_a", "m_b", "m_c"], "least recently read first");
+});
+
+test("a read bumps a binding: a demoted one comes back as a table, no download", opts, async () => {
+  fetches.length = 0;
+  await sdk.ensureBinding("m_a");
+  assert.deepEqual(fetches, [], "promoted from its Blob");
+  assert.deepEqual(await storage(), { m_a: "table", m_b: "view", m_c: "table" });
+  assert.ok(duck().tables.has("m_a") && !duck().views.has("m_a"));
+  const swap = duck().sql.findIndex(q => q === 'DROP VIEW IF EXISTS "m_a"');
+  assert.equal(duck().sql[swap - 1], "BEGIN TRANSACTION", "the view is swapped for the table in one commit");
+  assert.match(duck().sql[swap + 1], /^CREATE OR REPLACE TABLE "m_a"/);
+  assert.equal(duck().sql[swap + 2], "COMMIT");
+  // Bumping m_c makes m_a the oldest table: the next load demotes it.
+  await sdk.ensureBinding("m_c");
+  await sdk.ensureBinding("m_d");
+  assert.deepEqual(await storage(), { m_b: "view", m_a: "view", m_c: "table", m_d: "table" });
+});
+
+test("a view's file handle is released when it becomes a table again", opts, async () => {
+  const file = duck().views.get("m_b");
+  assert.ok(duck().handles.has(file));
+  await sdk.ensureBinding("m_b");
+  assert.ok(!duck().handles.has(file));
+});
+
+test("a lower budget trims at once; a higher one lets tables come back on read", opts, async () => {
+  await freshMemory(Infinity);
+  for (const n of ["m_e", "m_f", "m_g"]) await sdk.ensureBinding(n);
+  assert.deepEqual(await storage(), { m_e: "table", m_f: "table", m_g: "table" });
+  await sdk.setBindingMemoryBudget(100);
+  assert.deepEqual(await storage(), { m_e: "view", m_f: "view", m_g: "table" });
+  await assert.rejects(sdk.setBindingMemoryBudget(0), TypeError);
+  await assert.rejects(sdk.setBindingMemoryBudget(100, { blobBytes: -1 }), TypeError);
+});
+
+test("ensureBinding's views are never dropped, even past the Blob budget", opts, async () => {
+  await freshMemory(150, { blobBytes: 15 });
+  await sdk.ensureBinding("m_h");
+  await sdk.ensureBinding("m_i");
+  const s = await storage();
+  assert.deepEqual(Object.keys(s).sort(), ["m_h", "m_i"], "still readable by name");
+});
+
+test("Out of Memory on a load demotes older tables and retries once", opts, async () => {
+  await freshMemory(Infinity);
+  await sdk.ensureBinding("m_j");
+  await sdk.ensureBinding("m_k");
+  duck().oom = /^CREATE OR REPLACE TABLE "m_l"/;
+  await sdk.ensureBinding("m_l");
+  const s = await storage();
+  assert.equal(s.m_l, "table");
+  assert.equal(s.m_j, "view", "the oldest went first");
+  assert.equal(duck().sql.filter(q => q.startsWith('CREATE OR REPLACE TABLE "m_l"')).length, 2);
+});
+
+test("Out of Memory with nothing to free: the load lands as a view", opts, async () => {
+  await freshMemory(Infinity);
+  duck().oom = /^CREATE OR REPLACE TABLE "m_m"/;
+  assert.equal(await sdk.ensureBinding("m_m"), "m_m");
+  assert.deepEqual(await storage(), { m_m: "view" });
+});
+
+test("a parquet over a quarter of the budget starts as a view", opts, async () => {
+  await freshMemory(40); // 11 bytes > 40 / 4
+  await sdk.ensureBinding("m_n");
+  assert.deepEqual(await storage(), { m_n: "view" });
+  assert.ok(!duck().sql.some(q => q.startsWith('CREATE OR REPLACE TABLE "m_n"')));
+  await freshMemory(sdk.DEFAULT_BINDING_MEMORY_BUDGET);
+});
+
+test("unloadBinding drops a view and its file handle too", opts, async () => {
+  await freshMemory(40);
+  await sdk.ensureBinding("m_o");
+  const file = duck().views.get("m_o");
+  await sdk.unloadBinding("m_o");
+  assert.ok(!duck().views.has("m_o") && !duck().handles.has(file));
+  await freshMemory(sdk.DEFAULT_BINDING_MEMORY_BUDGET);
+  assert.equal(sdk.DEFAULT_BINDING_MEMORY_BUDGET, 1.5 * 1024 ** 3);
 });

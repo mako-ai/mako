@@ -298,3 +298,15 @@ export function parseBindingSnapshot(body, rowLimit) {
     builtAt: typeof body.builtAt === "string" ? body.builtAt : null,
   };
 }
+
+/**
+ * Whether `error` is DuckDB running out of memory. duckdb-wasm hands errors
+ * across its worker as plain Errors with no type or code (measured on 1.29.0:
+ * `{ name: "Error", message }`), so DuckDB's message, which starts with its
+ * error type ("Out of Memory Error: failed to allocate …" or "… could not
+ * allocate block …"), is the only signal there is.
+ */
+export function isOutOfMemoryError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /\bOut of Memory Error\b/i.test(message);
+}
