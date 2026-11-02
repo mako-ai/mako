@@ -106,27 +106,48 @@ await db.registerFileBuffer("valuations.parquet", bytes);  // read_parquet with 
 
 Each app frame has its own DuckDB with a 3.1 GiB heap. Before 2.12 every
 binding table stayed in it for good, and an app with many bindings ran out
-of memory. Now the SDK measures DuckDB (`duckdb_memory()`) after each load:
+of memory. Now tables stay under a 1.5 GiB budget, and the rest of the heap is
+for queries.
 
-| 250k rows (a date, 5 text, 5 integer columns) | Heap | Aggregate query |
+| 8 panels over 15 shards (6M rows, 23 columns) | Heap for bindings | All 8 panels |
 | --- | --- | --- |
-| Table (the default) | 30.2 MiB | 5 ms |
-| View over the parquet in the heap | 3.7 MiB | 20 ms |
-| View over a Blob (eviction step) | 0 MiB | 54 ms |
+| Tables | 2,068 MiB | 6.9 s |
+| Views over the parquet in the heap | about 150 MiB | 8.7 s |
 
-- Over the budget, the least recently read table becomes a view over a Blob.
-  Its next read makes it a table again from the Blob, with no download.
-- Past 512 MiB of Blobs, the oldest views are dropped. They download again
-  on their next read.
-- A table a mounted `useQuery`/`useDuckDB` reads is pinned. `ensureBinding`
-  bindings can become views but are never dropped.
+- A new table lands only if it fits under the budget, after evicting tables no
+  one holds, least recently read first.
+- A binding that does not fit lands as a view: same name, same rows, slower.
+  A later read makes it a table when there is room, with no download.
+- The parquet stays in JS memory as a Blob, so these swaps never download. Past
+  512 MiB of Blobs, the oldest unpinned views are dropped and download again on
+  their next read.
+- A binding a mounted `useQuery`/`useDuckDB` reads is pinned: it goes last.
+  `ensureBinding` bindings can become views but are never dropped.
 - A parquet over a quarter of the budget loads as a view from the start.
-- "Out of Memory" on a load or a hook's query frees unpinned tables and
-  retries once. `withConnection` does not retry: your `fn` may not be safe
-  to run twice.
+- "Out of Memory" on a hook's query demotes unpinned tables, then pinned ones,
+  and runs again until it answers or no table is left. For the next minute no
+  table grows back past what is left. `withConnection` does not retry: your
+  `fn` may not be safe to run twice.
+- A mounted hook whose query still fails on memory runs it again by itself: 1,
+  2, 4, 8 and 15 s, then every 30 s. The error stays up until a run answers.
+- Do not `registerFileHandle` a Blob with `BROWSER_FILEREADER`. In duckdb-wasm
+  1.29.0 its size is lost when the allocator returns a pointer past 2 GiB, and
+  reads fail with "too small to be a Parquet file". Use `registerFileBuffer`.
+- One query should read at most about 50 bindings. Around 60 in a double-read
+  `UNION ALL` overflowed the WASM stack and broke the engine until a reload.
 
 `setBindingMemoryBudget(bytes)` changes the 1.5 GiB default;
-`getBindingMemory()` shows what is loaded, oldest first.
+`getBindingMemory()` shows what is loaded, oldest first, and `pressure`.
+
+### Failed downloads (2.12)
+
+- A download tries 3 times, 1 s and 3 s apart with jitter, on a rejected fetch, a
+  429 or a 503. A `retryAfterMs` up to 30 s sets the wait. No other status retries.
+- It retries only until headers arrive, on the first request and on the signed
+  download alike. A build that fails in its stream never runs again from here.
+- A mounted hook then runs its query again after 5, 20 and 60 s. Other errors
+  stay as they are until the query changes or the page reloads.
+- A failed `__data/index.json` is not kept: the panel shows the failure and asks again.
 
 ### Loading cost (2.8)
 
@@ -139,10 +160,8 @@ of memory. Now the SDK measures DuckDB (`duckdb_memory()`) after each load:
   parquet, 149k rows: 33 MB).
 - Tables are evicted least recently read first (2.12). Over the memory
   budget (default 1.5 GiB of DuckDB's 3.1 GiB heap), the oldest table becomes
-  a view over its compressed parquet, held outside the heap. Its next read
-  turns it back into a table without a download. Tables a mounted hook reads
-  are never evicted. An "Out of Memory" error frees unpinned tables and
-  retries once.
+  a view over its compressed parquet. Its next read turns it back into a table
+  without a download when it fits. See Memory above.
 - The DuckDB engine and its parquet extension start loading on the first
   data hook render, in parallel with the first binding download.
 - Rows decode column by column: 149k rows x 16 columns in 190 ms, down

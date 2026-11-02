@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  isNetworkError,
   isOutOfMemoryError,
+  retryDelayMs,
   mentionedBindings,
   missingBinding,
   quoteIdent,
@@ -307,4 +309,25 @@ test("isOutOfMemoryError reads DuckDB's message, the only signal duckdb-wasm pas
   assert.equal(isOutOfMemoryError("Out of Memory Error: x"), true);
   assert.equal(isOutOfMemoryError(new Error("Catalog Error: Table with name x does not exist")), false);
   assert.equal(isOutOfMemoryError(null), false);
+});
+
+test("isNetworkError knows each browser's words and no server's", () => {
+  for (const m of ["Failed to fetch", "NetworkError when attempting to fetch resource.", "Load failed", "network error"]) {
+    assert.equal(isNetworkError(new TypeError(m)), true, m);
+  }
+  assert.equal(isNetworkError(new Error("Syntax error at line 1")), false);
+  assert.equal(isNetworkError(new Error('Data for binding "x" could not be loaded (HTTP 403)')), false);
+  assert.equal(isNetworkError(new Error('Data for binding "x" could not be loaded (HTTP 429)')), true);
+  assert.equal(isNetworkError(new Error('Data for binding "x" could not be loaded (HTTP 503)')), true);
+});
+
+test("retryDelayMs: Out of Memory keeps trying, the network stops, the rest never start", () => {
+  const oom = new Error("Out of Memory Error: x");
+  assert.equal(retryDelayMs(oom, 0), 1000);
+  assert.equal(retryDelayMs(oom, 500), 30000);
+  const net = new TypeError("Failed to fetch");
+  assert.equal(retryDelayMs(net, 0), 5000);
+  assert.equal(retryDelayMs(net, 2), 60000);
+  assert.equal(retryDelayMs(net, 3), null, "a live binding builds on request: no storm");
+  assert.equal(retryDelayMs(new Error("Binder Error: no such column"), 0), null);
 });

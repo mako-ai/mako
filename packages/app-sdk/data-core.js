@@ -310,3 +310,28 @@ export function isOutOfMemoryError(error) {
   const message = error instanceof Error ? error.message : String(error ?? "");
   return /\bOut of Memory Error\b/i.test(message);
 }
+
+/**
+ * Whether `error` is a request that never got an answer worth keeping: what
+ * fetch throws in Chrome ("Failed to fetch"), Firefox ("NetworkError when...")
+ * and Safari ("Load failed"), a body cut off mid-stream, or the server's 429 or
+ * 503 once fetchRetrying has given up. Any other status said what it meant.
+ */
+export function isNetworkError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /\b(Failed to fetch|NetworkError|Load failed|network error|HTTP (429|503))\b/i.test(message);
+}
+
+// When a mounted hook runs a failed query again. Out of Memory costs only this
+// tab, and only time frees memory, so it keeps trying. A network failure can
+// reach the warehouse (a live binding builds on request), so it stops.
+const OOM_RETRY_MS = [1000, 2000, 4000, 8000, 15000];
+const OOM_RETRY_MAX_MS = 30000;
+const NETWORK_RETRY_MS = [5000, 20000, 60000];
+
+/** Ms until retry number `retries` (from 0), or null: leave the error up. */
+export function retryDelayMs(error, retries) {
+  if (isOutOfMemoryError(error)) return OOM_RETRY_MS[retries] ?? OOM_RETRY_MAX_MS;
+  if (isNetworkError(error)) return NETWORK_RETRY_MS[retries] ?? null;
+  return null;
+}

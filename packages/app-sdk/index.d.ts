@@ -289,28 +289,30 @@ export const DEFAULT_BINDING_BLOB_BUDGET: number;
 
 /**
  * Cap the bytes binding tables may hold in this frame's DuckDB (default
- * 1.5 GiB, half of the 3.1 GiB heap; queries need the rest). After each load
- * the SDK measures DuckDB's memory and, over the cap, turns the least
- * recently read tables into views over their compressed parquet (kept as a
- * Blob outside the WASM heap). A demoted binding becomes a table again on its
- * next read, without a download. Bindings a mounted hook reads are never
- * evicted. `blobBytes` caps those parquet copies (default 512 MiB); past it
- * the oldest views are dropped and download again when read. `Infinity`
- * turns a cap off. Resolves once memory is back under the new cap.
+ * 1.5 GiB, half of the 3.1 GiB heap; queries need the rest). The cap is hard. A
+ * table that would pass it evicts the least recently read unpinned tables, and
+ * if that is not enough the binding lands as a view over its parquet. A read
+ * promotes a view back to a table when it fits, without a download. On "Out of
+ * Memory" a query demotes pinned tables too. `blobBytes` caps the parquet copies
+ * kept for this (default 512 MiB); past it the oldest unpinned views are dropped
+ * and download again when read. `Infinity` turns a cap off. Resolves once memory
+ * is back under the new cap, and ends any memory pressure.
  */
 export function setBindingMemoryBudget(bytes: number, opts?: { blobBytes?: number }): Promise<void>;
 
 export interface BindingMemory {
-  /** What DuckDB holds now, from duckdb_memory(). */
+  /** What bindings hold now: duckdb_memory() plus the parquet copies views read. Query scratch never shows. */
   usedBytes: number;
   budgetBytes: number;
   blobBudgetBytes: number;
+  /** A query ran out of memory in the last minute: tables stay at what relief left. */
+  pressure: boolean;
   /** Every loaded binding, least recently read first. */
   bindings: {
     name: string;
-    /** "table": decoded in the heap. "view": read from its parquet on each query. */
+    /** "table": decoded in the heap. "view": decoded from its parquet copy in the heap on each query. */
     storage: "table" | "view";
-    /** Read by a mounted hook or a query in flight: never evicted. */
+    /** Read by a mounted hook or a query in flight: evicted last, and only as a view. */
     pinned: boolean;
     /** The compressed copy kept for a demotion; null once dropped. */
     parquetBytes: number | null;

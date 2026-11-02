@@ -3,9 +3,10 @@
 //
 // Memory: each table holds `tableBytes` (0 unless a test sets it), views hold
 // nothing, and duckdb_memory() reports the sum, as the real engine does
-// (measured: a view over a Blob adds 0 bytes). A query whose SQL matches
-// `oom` fails once with DuckDB's Out of Memory message. Like DuckDB, CREATE
-// OR REPLACE refuses to swap a view for a table or back.
+// (a view's parquet copy sits in the heap outside duckdb_memory(), as measured).
+// A query whose SQL matches `oom` fails with DuckDB's Out of Memory message,
+// `oomTimes` times (default once). Like DuckDB, CREATE OR REPLACE refuses to
+// swap a view for a table or back.
 const state = (globalThis.__fakeDuck ??= {
   boots: 0,
   sql: [],
@@ -50,7 +51,11 @@ export class AsyncDuckDB {
       async query(sql) {
         state.sql.push(sql);
         if (state.oom && state.oom.test(sql)) {
-          state.oom = null;
+          state.oomTimes = (state.oomTimes ?? 1) - 1;
+          if (state.oomTimes <= 0) {
+            state.oom = null;
+            state.oomTimes = 1;
+          }
           throw new Error("Out of Memory Error: failed to allocate data of size 1.0 MiB (3.1 GiB/3.1 GiB used)");
         }
         if (/FROM duckdb_memory\(\)/.test(sql)) {

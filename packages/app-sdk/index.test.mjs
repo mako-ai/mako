@@ -214,7 +214,7 @@ async function freshMemory(budget, opts) {
 const storage = async () =>
   Object.fromEntries((await sdk.getBindingMemory()).bindings.map(b => [b.name, b.storage]));
 
-test("over budget, the least recently used table becomes a view over its Blob", opts, async () => {
+test("over budget, the least recently used table becomes a view over its heap copy", opts, async () => {
   await freshMemory(250);
   await sdk.ensureBinding("m_a");
   await sdk.ensureBinding("m_b");
@@ -222,12 +222,10 @@ test("over budget, the least recently used table becomes a view over its Blob", 
   assert.deepEqual(await storage(), { m_a: "view", m_b: "table", m_c: "table" });
   assert.ok(!duck().tables.has("m_a"));
   const file = duck().views.get("m_a");
-  const handle = duck().handles.get(file);
-  assert.ok(handle.handle instanceof Blob, "the view reads a Blob, outside the WASM heap");
-  assert.equal(handle.protocol, 2, "BROWSER_FILEREADER");
-  assert.equal(handle.handle.size, 11);
+  assert.equal(duck().files.get(file).length, 11, "a registered buffer, never a Blob handle");
+  assert.equal(duck().handles.size, 0, "openFile on a Blob handle breaks past 2 GiB of heap");
   const mem = await sdk.getBindingMemory();
-  assert.equal(mem.usedBytes, 200);
+  assert.equal(mem.usedBytes, 211, "two tables and the view's parquet copy");
   assert.equal(mem.budgetBytes, 250);
   assert.deepEqual(mem.bindings.map(b => b.name), ["m_a", "m_b", "m_c"], "least recently read first");
 });
@@ -248,18 +246,18 @@ test("a read bumps a binding: a demoted one comes back as a table, no download",
   assert.deepEqual(await storage(), { m_b: "view", m_a: "view", m_c: "table", m_d: "table" });
 });
 
-test("a view's file handle is released when it becomes a table again", opts, async () => {
+test("a view's heap copy is released when it becomes a table again", opts, async () => {
   const file = duck().views.get("m_b");
-  assert.ok(duck().handles.has(file));
+  assert.ok(duck().files.has(file));
   await sdk.ensureBinding("m_b");
-  assert.ok(!duck().handles.has(file));
+  assert.ok(!duck().files.has(file));
 });
 
 test("a lower budget trims at once; a higher one lets tables come back on read", opts, async () => {
   await freshMemory(Infinity);
   for (const n of ["m_e", "m_f", "m_g"]) await sdk.ensureBinding(n);
   assert.deepEqual(await storage(), { m_e: "table", m_f: "table", m_g: "table" });
-  await sdk.setBindingMemoryBudget(100);
+  await sdk.setBindingMemoryBudget(130); // the table and two 11-byte parquet copies
   assert.deepEqual(await storage(), { m_e: "view", m_f: "view", m_g: "table" });
   await assert.rejects(sdk.setBindingMemoryBudget(0), TypeError);
   await assert.rejects(sdk.setBindingMemoryBudget(100, { blobBytes: -1 }), TypeError);
@@ -300,12 +298,12 @@ test("a parquet over a quarter of the budget starts as a view", opts, async () =
   await freshMemory(sdk.DEFAULT_BINDING_MEMORY_BUDGET);
 });
 
-test("unloadBinding drops a view and its file handle too", opts, async () => {
+test("unloadBinding drops a view and its heap copy too", opts, async () => {
   await freshMemory(40);
   await sdk.ensureBinding("m_o");
   const file = duck().views.get("m_o");
   await sdk.unloadBinding("m_o");
-  assert.ok(!duck().views.has("m_o") && !duck().handles.has(file));
+  assert.ok(!duck().views.has("m_o") && !duck().files.has(file));
   await freshMemory(sdk.DEFAULT_BINDING_MEMORY_BUDGET);
   assert.equal(sdk.DEFAULT_BINDING_MEMORY_BUDGET, 1.5 * 1024 ** 3);
 });
