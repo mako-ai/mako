@@ -113,7 +113,9 @@ function appHostHeaders(headers: Headers): Headers {
     "Content-Security-Policy",
     `frame-ancestors ${appFrameAncestors()}`,
   );
-  // Nothing on this host should ever carry the token to another site.
-  headers.set("Referrer-Policy", "no-referrer");
+  // The token is in the path: only the origin ever leaves this host. The
+  // origin itself must: browser API keys (Google Maps/Places) are restricted
+  // by referrer, and with none at all they refuse every request.
+  headers.set("Referrer-Policy", "strict-origin");
   return headers;
 }
