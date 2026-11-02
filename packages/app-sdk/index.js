@@ -36,7 +36,7 @@ import {
  * in a page (or this export) says which SDK a deployed app actually runs.
  * Kept in step with package.json by snapshot.test.mjs.
  */
-export const SDK_VERSION = "2.13.0";
+export const SDK_VERSION = "2.14.0";
 if (typeof window !== "undefined") {
   try {
     window.__MAKO_APP_SDK__ = SDK_VERSION;
@@ -50,7 +50,7 @@ const DEFAULT_ROW_LIMIT = 500000;
 // corrupts the engine for every panel (measured). 50 held.
 const MAX_BINDINGS_IN_QUERY = 50;
 const DUCKDB_ESM =
-  "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
+  "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm";
 
 // ---------------------------------------------------------------------------
 // DuckDB: one lazy instance per page, bindings registered on first use. The
@@ -91,9 +91,26 @@ function getDb() {
       // binding bytes are still downloading, not after they arrive.
       const conn = await db.connect();
       try {
-        await conn.query("LOAD parquet");
-      } catch {
-        /* autoload on first read_parquet still applies */
+        try {
+          await conn.query("LOAD parquet");
+        } catch {
+          /* autoload on first read_parquet still applies */
+        }
+        // 1.32 reads TIMESTAMPTZ in the browser's zone once ICU loads. Apps were
+        // written against 1.29, which read UTC. Fetches ICU from
+        // extensions.duckdb.org, like parquet above. A failure here fails the
+        // boot on purpose: the next query retries, where a skipped SET would
+        // shift every timestamp without a word.
+        try {
+          await conn.query("SET GLOBAL TimeZone='UTC'");
+        } catch (error) {
+          if (error instanceof Error) error.retry = "network"; // the XHR for ICU
+          throw error;
+        }
+        // Binding tables live here, compressed at CHECKPOINT: 17 bytes a row
+        // against 289 on Web Performance's 7d set. Tables an app creates stay in
+        // the default database, uncompressed.
+        await conn.query("ATTACH ':memory:' AS mako_tables (COMPRESS)");
       } finally {
         await conn.close();
       }
@@ -190,7 +207,7 @@ export function useBindingProgress(name) {
 // Each binding becomes a TABLE, decoded from its parquet once: a view over
 // read_parquet re-decoded the file on every query (SELECT * of a 149k-row
 // binding: 366 ms through a view, 174 ms from a table). The file buffer is
-// dropped as soon as the table exists. CREATE OR REPLACE swaps the new table
+// dropped as soon as the table exists. CREATE OR REPLACE VIEW swaps the new table
 // in with one commit, so a query running during a reload reads the old rows
 // or the new ones, never a missing table. Every load registers its bytes
 // under its own file name, so a reload never drops a file another load is
@@ -483,10 +500,6 @@ function markEngineError(error, engine) {
 }
 const isEngineOom = error => Boolean(error?.fromEngine) && isOutOfMemoryError(error);
 
-function dropSql(storage, name) {
-  return "DROP " + (storage === "view" ? "VIEW" : "TABLE") + " IF EXISTS " + quoteIdent(name);
-}
-
 let fileSeq = 0;
 // Every load registers its bytes under its own file name, so a reload never
 // drops a file another load is still reading.
@@ -494,14 +507,48 @@ function nextFile() {
   return "mako-" + ++fileSeq + ".parquet";
 }
 
-/** The table for a registered parquet `file`, in place of whatever `name` was. */
+// name -> its table in mako_tables. Each load gets a fresh table, so a view
+// never points at a table whose columns changed under it.
+const stores = new Map();
+let storeSeq = 0;
+function storeSql(store) {
+  return "mako_tables.main." + quoteIdent(store);
+}
+
+/**
+ * Drop the compressed table behind `name`, if any. Runs after the view has moved,
+ * so a failure costs memory until the page reloads and never fails the load.
+ */
+async function dropStore(engine, name) {
+  const store = stores.get(name);
+  if (!store) return;
+  stores.delete(name);
+  await exec(engine, ["DROP TABLE IF EXISTS " + storeSql(store)]).catch(() => {});
+}
+
+/**
+ * A registered parquet `file` decoded into a compressed table, and a view named
+ * `name` over it. The name is always a view, so CREATE OR REPLACE VIEW swaps it
+ * atomically. A transaction cannot write to two databases, so the order keeps it
+ * readable: new table, then the view, then the old table goes.
+ */
 async function tableFromFile(engine, name, file) {
   const prev = entries.get(name);
   const before = await duckdbBytes(engine);
-  const create =
-    "CREATE OR REPLACE TABLE " + quoteIdent(name) +
-    " AS SELECT * FROM read_parquet(" + quoteString(file) + ")";
-  await exec(engine, prev && prev.storage === "view" ? [dropSql("view", name), create] : [create]);
+  const store = "t" + ++storeSeq;
+  await exec(engine, ["CREATE TABLE " + storeSql(store) + " AS SELECT * FROM read_parquet(" + quoteString(file) + ")"]);
+  try {
+    // Only a CHECKPOINT compresses. It fails while a transaction is open on
+    // another connection: the table stays readable, and the next load's
+    // CHECKPOINT compresses it.
+    await exec(engine, ["CHECKPOINT mako_tables"]).catch(() => {});
+    await exec(engine, ["CREATE OR REPLACE VIEW " + quoteIdent(name) + " AS SELECT * FROM " + storeSql(store)]);
+  } catch (error) {
+    await exec(engine, ["DROP TABLE IF EXISTS " + storeSql(store)]).catch(() => {});
+    throw error;
+  }
+  await dropStore(engine, name);
+  stores.set(name, store);
   const after = await duckdbBytes(engine);
   if (before === null || after === null) return prev?.tableBytes ?? null;
   const grown = after - before + (prev?.storage === "table" ? (prev.tableBytes ?? 0) : 0);
@@ -514,7 +561,8 @@ async function viewFromFile(engine, name, file) {
   const create =
     "CREATE OR REPLACE VIEW " + quoteIdent(name) +
     " AS SELECT * FROM read_parquet(" + quoteString(file) + ")";
-  await exec(engine, prev && prev.storage === "table" ? [dropSql("table", name), create] : [create]);
+  await exec(engine, [create]);
+  await dropStore(engine, name);
 }
 
 /**
@@ -653,6 +701,7 @@ async function releaseEngine() {
     // engine must not restart the next one.
     for (const [name, entry] of entries) if (entry.blob) parked.set(name, entry.blob);
     entries.clear();
+    stores.clear();
     registered.clear();
     loadedBindings.clear();
     liveEngine = null;
@@ -699,7 +748,8 @@ function leastRecent(test, pinnedToo = false) {
 async function dropNow(engine, name) {
   const entry = entries.get(name);
   if (!entry) return;
-  await exec(engine, [dropSql(entry.storage, name)]);
+  await exec(engine, ["DROP VIEW IF EXISTS " + quoteIdent(name)]);
+  await dropStore(engine, name);
   if (entry.file) await engine.dropFile(entry.file).catch(() => {});
   entries.delete(name);
   loadedBindings.delete(name);
@@ -1392,6 +1442,7 @@ function restartEngine() {
   dbPromise = null;
   catalogQueue = Promise.resolve();
   entries.clear();
+  stores.clear();
   registered.clear();
   loadedBindings.clear();
   measuredBytes = 0;
