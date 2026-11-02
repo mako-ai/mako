@@ -30,6 +30,7 @@ const who = vi.hoisted(() => ({
     "someone-else": "member",
     admin2: "admin",
     viewer2: "viewer",
+    owner1: "owner",
   } as Record<string, string>,
 }));
 
@@ -52,6 +53,7 @@ vi.mock("../services/workspace.service", () => ({
       return role ? { role } : null;
     }),
     isAdmin: vi.fn(async () => who.role === "owner" || who.role === "admin"),
+    getOwnerIds: vi.fn(async () => ["owner1"]),
   },
 }));
 
@@ -280,7 +282,7 @@ describe("managers list", () => {
     expect((await managersOfRow(mine)).managers).toEqual(["member2"]);
   });
 
-  it("a connection created by `system` has no manager: every admin configures it until one is added", async () => {
+  it("a connection created by `system` has no manager: the workspace owner manages it", async () => {
     const seeded = String(
       (
         await SourceConnection.create({
@@ -295,28 +297,31 @@ describe("managers list", () => {
     );
     as("member", "member1");
     expect(await managersOfRow(seeded)).toEqual({
-      managers: [],
+      managers: ["owner1"],
       canEdit: false,
     });
     expect((await rename(seeded)).status).toBe(403);
+    // Admins have no fallback: the owner is its manager.
     as("admin", "admin2");
     expect(await managersOfRow(seeded)).toEqual({
-      managers: [],
-      canEdit: true,
+      managers: ["owner1"],
+      canEdit: false,
     });
-    expect((await rename(seeded)).status).toBe(200);
-    expect((await reveal(seeded)).status).toBe(200);
-    // Once it has a manager, the rule applies: the admin who is not one is out.
-    expect((await setManagers(seeded, ["member2"])).status).toBe(200);
     expect((await rename(seeded)).status).toBe(403);
+    expect((await reveal(seeded)).status).toBe(403);
+    // The owner hands it to someone, who then configures it.
+    as("owner", "owner1");
+    expect((await setManagers(seeded, ["member2"])).status).toBe(200);
     as("member", "member2");
     expect((await rename(seeded)).status).toBe(200);
   });
 
-  it("a connection whose managers all left goes back to every admin", async () => {
+  it("a connection whose managers all left goes to the workspace owner", async () => {
+    delete who.others["someone-else"];
     as("admin", "admin2");
     expect((await rename(theirs)).status).toBe(403);
-    delete who.others["someone-else"];
+    expect((await managersOfRow(theirs)).managers).toEqual(["owner1"]);
+    as("owner", "owner1");
     expect((await rename(theirs)).status).toBe(200);
     who.others["someone-else"] = "member";
   });
