@@ -1,10 +1,9 @@
 /**
  * Who configures a source connection: its managers. They edit it, reveal or
  * replace its key, delete it, and change this list. Being an admin is not
- * enough once a connection has managers; one with none (created before
- * creators were recorded) is configured by every admin until someone is
- * added. The workspace owner always can. Everyone else sees the connection
- * and uses it.
+ * enough; a connection with none (created before creators were recorded,
+ * or whose managers left) is managed by the workspace owner. The workspace
+ * owner always can. Everyone else sees the connection and uses it.
  *
  * Changes save as they are made.
  */
@@ -136,9 +135,8 @@ export default function ConnectionManagersPanel({
 
       {state.managers.length === 0 && (
         <Alert severity="info" sx={{ mb: 1.5 }}>
-          No managers yet. Until someone is added, the workspace owner and every
-          admin can configure this connection. Add the people who manage this
-          key.
+          No managers yet. The workspace owner manages this connection until
+          someone is added.
         </Alert>
       )}
 
