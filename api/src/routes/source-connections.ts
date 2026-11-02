@@ -38,7 +38,7 @@ import {
   managersOf,
   mayChangeSourceConnection,
   mayCreateSourceConnection,
-  roleLookup,
+  peopleOf,
   type Caller,
 } from "../access/source-connection-access";
 import { principalsOutsideWorkspace } from "../access/connection-writes";
@@ -223,10 +223,16 @@ async function callerOf(
   c: AuthenticatedContext,
   workspaceId: string | undefined,
 ): Promise<Caller> {
-  if (!workspaceId) return { role: null, roleOf: async () => null };
+  if (!workspaceId) {
+    return { role: null, roleOf: async () => null, owners: async () => [] };
+  }
   const userId = (c.get("user") as { id?: string } | undefined)?.id;
-  const roleOf = roleLookup(workspaceId);
-  return { role: userId ? await roleOf(userId) : null, userId, roleOf };
+  const people = peopleOf(workspaceId);
+  return {
+    ...people,
+    role: userId ? await people.roleOf(userId) : null,
+    userId,
+  };
 }
 
 async function publicSourceConnection(
@@ -253,7 +259,7 @@ async function publicSourceConnection(
     config: redactSourceConfig(record.config, schema),
     ...(caller
       ? {
-          managers: await actingManagers(record, caller.roleOf),
+          managers: await actingManagers(record, caller),
           canEdit: await mayChangeSourceConnection(caller, record),
         }
       : {}),
@@ -1339,8 +1345,8 @@ sourceConnectionRoutes.openapi(
     // Only the people who can act on it today: a creator recorded as
     // `system` (seeded or imported connections), someone who left, or a
     // member since made a viewer is not shown. A connection left with no one
-    // is configured by every admin until someone adds a manager.
-    const managers = await actingManagers(row, caller.roleOf);
+    // is managed by the workspace owner.
+    const managers = await actingManagers(row, caller);
     return c.json({
       success: true,
       data: {
