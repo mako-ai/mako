@@ -329,7 +329,7 @@ export async function safeRequest(
       method: options.method,
       redirect: "manual",
       signal,
-      headers: options.headers,
+      headers: stripBlockedRequestHeaders(options.headers),
       body: options.body,
       dispatcher: createPinnedAgent(undici, resolved.address, resolved.family),
     });
