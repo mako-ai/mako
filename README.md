@@ -5,9 +5,9 @@
 
 <p align="center"><strong>The AI-native SQL Client.</strong></p>
 
-> **The Cursor for Data.** Connect to any database, query with AI, and build live dashboards -- all from your browser.
+> **The Cursor for Data.** Connect to any database, query with AI, and build live data apps -- all from your browser.
 
-Stop wrestling with complex SQL and slow, bloated database tools. Write queries in plain English, get instant results, and turn them into interactive dashboards with cross-filtering and scheduled refresh.
+Stop wrestling with complex SQL and slow, bloated database tools. Write queries in plain English, get instant results, and turn them into live React apps with scheduled data refresh.
 
 ![Mako App Interface](./.github/screenshots/app-screenshot.png)
 
@@ -17,13 +17,11 @@ A modern SQL client built for the AI era, replacing slow desktop tools with a fa
 
 - **✨ AI Query Generation**: Write queries in natural language. Our schema-aware AI generates optimized SQL instantly.
   - _Replaces: DataGrip, DBeaver, Postico_
-- **📊 AI Dashboards**: Build interactive dashboards from conversation. Cross-filtering, scheduled data refresh, Parquet materialization -- powered by DuckDB in the browser.
-  - _Replaces: Metabase, Looker, manual BI pipelines_
 - **🧱 dbt Transforms**: Build, run, and schedule dbt Core projects in-app -- file IDE, jobs, run history, lineage, and GitHub sync.
   - _Replaces: dbt Cloud_
-- **⚛️ React Apps**: Ask the agent to build live React apps wired to your data through secure, credential-free bindings.
-  - _Replaces: Lovable, v0, internal-tool builders_
-- **🕓 Version History**: Every console and dashboard save is an immutable snapshot you can browse and restore.
+- **⚛️ React Apps**: Ask the agent to build live React apps wired to your data through secure, credential-free bindings -- scheduled Parquet materialization, queried with DuckDB in the browser.
+  - _Replaces: Metabase, Looker, Lovable, v0, internal-tool builders_
+- **🕓 Version History**: Every console save is an immutable snapshot, and apps live in git -- browse and restore either.
   - _Replaces: Lost SQL files, manual backups_
 - **🖥️ Mako Desktop**: Native app that bundles a local agent so `localhost` databases work out of the box.
   - _Replaces: SSH tunnels and bastion hops for local DBs_
@@ -64,7 +62,7 @@ A modern SQL client built for the AI era, replacing slow desktop tools with a fa
 
 ### Data Connectors
 
-Sync external SaaS data into Mako's data warehouse for querying and dashboards.
+Sync external SaaS data into Mako's data warehouse for querying and apps.
 
 | Integration    | Status  | Description                                      |
 | -------------- | ------- | ------------------------------------------------ |
@@ -83,9 +81,9 @@ Sync external SaaS data into Mako's data warehouse for querying and dashboards.
 ┌─────────────────────────────────────────────────────────┐
 │  Frontend (React + Vite)                                │
 │  ┌──────────┐ ┌──────────────┐ ┌─────────────────────┐ │
-│  │ Console  │ │  Dashboards  │ │   AI Chat (Vercel   │ │
-│  │ (Monaco) │ │  (DuckDB +   │ │    AI SDK)          │ │
-│  │          │ │   Mosaic)    │ │                     │ │
+│  │ Console  │ │  Apps        │ │   AI Chat (Vercel   │ │
+│  │ (Monaco) │ │  (React +    │ │    AI SDK)          │ │
+│  │          │ │   DuckDB)    │ │                     │ │
 │  └──────────┘ └──────────────┘ └─────────────────────┘ │
 │           ▲          ▲                   ▲              │
 │           │     Parquet/Arrow            │              │
@@ -96,12 +94,12 @@ Sync external SaaS data into Mako's data warehouse for querying and dashboards.
 │  API (Hono + Node.js)                                  │
 │  ┌──────────────────────────────────────────────────┐  │
 │  │ Unified Agent (expertise modes: Query /          │  │
-│  │   Dashboard / Sync Flow / React App / Transforms │  │
-│  │   / Explore, switched via enable_mode)           │  │
+│  │   Sync Flow / React App / Transforms /           │  │
+│  │   Explore, switched via enable_mode)             │  │
 │  └──────────────────────────────────────────────────┘  │
 │  ┌──────────────┐ ┌───────────────┐ ┌──────────────┐  │
-│  │  DB Drivers   │ │  Connectors   │ │  Dashboard   │  │
-│  │  (9 drivers)  │ │  (8 sources)  │ │  Engine      │  │
+│  │  DB Drivers   │ │  Connectors   │ │  App binding │  │
+│  │  (9 drivers)  │ │  (8 sources)  │ │  engine      │  │
 │  │              │ │               │ │  (DuckDB     │  │
 │  │              │ │               │ │   + Parquet) │  │
 │  └──────────────┘ └───────────────┘ └──────────────┘  │
@@ -120,27 +118,19 @@ Sync external SaaS data into Mako's data warehouse for querying and dashboards.
 ```
 
 **Key technology choices:**
-- **DuckDB** (both server-side via `@duckdb/node-api` and browser-side via `@duckdb/duckdb-wasm`): powers dashboard SQL execution, Parquet artifact generation, and in-browser cross-filtering with OPFS caching
-- **Mosaic** (`@uwdata/mosaic-core`): coordinates cross-filtering across dashboard widgets
+- **DuckDB** (both server-side via `@duckdb/node-api` and browser-side via `@duckdb/duckdb-wasm`): powers Parquet artifact generation for app bindings and in-browser SQL over them
 - **Apache Arrow / Parquet**: server materializes query results into Parquet, served to browser as Arrow IPC for zero-copy rendering
-- **Inngest**: event-driven job queues for scheduled dashboard refresh and incremental data sync
+- **Inngest**: event-driven job queues for scheduled app binding refresh and incremental data sync
 - **Hono**: lightweight, fast HTTP framework for the API
 - **Monaco Editor**: VS Code's editor for the SQL console
 - **Vercel AI SDK**: multi-provider LLM abstraction (OpenAI, Anthropic, Google)
 
-## 📊 Dashboard Engine
+## 📦 Artifact Storage
 
-Dashboards are a core feature. The AI agent creates interactive dashboards from natural language:
-
-1. **Agent creates a dashboard spec** with widgets, layouts, and SQL queries
-2. **Server materializes** query results into Parquet artifacts (stored on filesystem, GCS, or S3)
-3. **Browser loads** Parquet data into DuckDB-WASM, cached in OPFS for instant reloads
-4. **Mosaic cross-filtering** lets users click on one chart to filter all others
-5. **Inngest cron** keeps data fresh with scheduled re-materialization and stale-run detection
-
-### Dashboard Artifact Storage
-
-Dashboard materialization stores Parquet artifacts on the backend. Three storage backends:
+App data bindings (and app deployments, dbt outputs, and chat attachments) are
+materialized into an artifact store on the backend. The configuration names
+below predate apps -- they come from the since-removed dashboards feature -- and
+are kept so existing deployments keep working. Three storage backends:
 
 - `filesystem` -- default; stores files on local disk
 - `gcs` -- Google Cloud Storage

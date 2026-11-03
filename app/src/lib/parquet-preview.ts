@@ -1,7 +1,7 @@
 /**
- * Materialized-data preview: fetch a Parquet artifact (app binding or
- * dashboard data source) and read its first rows through a transient
- * DuckDB-WASM instance. Used by the data source editors to show a snapshot of
+ * Materialized-data preview: fetch a Parquet artifact (an app binding) and
+ * read its first rows through a transient DuckDB-WASM instance. Used by the
+ * binding editor and the agent's data source tools to show a snapshot of
  * what was actually materialized — like the table previews in the explorer,
  * but for artifacts.
  */

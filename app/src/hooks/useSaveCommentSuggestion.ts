@@ -7,7 +7,7 @@ export interface SaveCommentSuggestionResult {
 
 /**
  * Shared state machine for the AI-suggested commit message in save-version
- * dialogs (consoles, dashboards, apps). Encapsulates the abort-on-reopen
+ * dialogs (consoles, apps). Encapsulates the abort-on-reopen
  * controller, the loading flag, and the suggested comment + diff pair so each
  * entity's save dialog only supplies a fetcher for its version-comment
  * endpoint.

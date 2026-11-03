@@ -4,13 +4,14 @@ NODE_ENV: production
 PORT: "3001"
 DATABASE_URL: "mongodb://localhost:27017/mako"
 ENCRYPTION_KEY: "your_32_character_hex_key_for_encryption"
-# Dashboard artifact storage backend:
+# Artifact storage backend (app bindings, deployments, dbt, chat attachments;
+# the DASHBOARD_* names are historical):
 # - filesystem (default)
 # - gcs
 # - s3
 DASHBOARD_ARTIFACT_STORE: "filesystem"
 
-# Optional key prefix / directory prefix for dashboard parquet artifacts.
+# Optional key prefix / directory prefix for materialized artifacts.
 # Example values:
 # - dashboards
 # - dashboard-artifacts/prod

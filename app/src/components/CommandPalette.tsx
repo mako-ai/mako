@@ -1,9 +1,12 @@
 /**
  * Command palette (Cmd/Ctrl+K).
  *
- * Default mode searches navigable entities (open tabs, consoles via the
- * server search endpoint, dashboards, apps, dbt projects, flows) plus the
- * top-matching commands. Typing `>` switches to commands-only mode
+ * Default mode searches navigable entities (open tabs, apps, consoles via
+ * the server search endpoint, dbt projects, flows) plus the top-matching
+ * commands. Apps match instantly on the loaded list and are refined by the
+ * server's app search (tables, owner, usage); with no query the palette
+ * shows Recently viewed and Popular apps. Cmd/Ctrl+Enter opens the Apps
+ * home searching for the query. Typing `>` switches to commands-only mode
  * (VS Code style). Built on MUI primitives — no extra dependencies.
  */
 
@@ -11,17 +14,17 @@ import {
   Box,
   CircularProgress,
   Dialog,
+  IconButton,
   InputBase,
   Typography,
 } from "@mui/material";
-import { ChevronRight, Search } from "lucide-react";
+import { ChevronRight, Search, X as ClearIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../contexts/auth-context";
 import { useTheme as useAppTheme } from "../contexts/ThemeContext";
 import { buildCommands } from "../lib/command-palette/commands";
 import {
   consoleResultItems,
-  searchDashboards,
   searchDbtProjects,
   searchFlows,
   searchOpenTabs,
@@ -31,14 +34,34 @@ import {
   type PaletteItem,
   type PaletteRunContext,
 } from "../lib/command-palette/types";
+import {
+  appPaletteItems,
+  mergeAppResults,
+  rankAppsLocally,
+  type PaletteApp,
+} from "../lib/command-palette/app-search";
+import {
+  ownerHandle,
+  popularApps,
+  recentlyViewedApps,
+} from "../lib/apps-discovery";
+import { focusAppsHomeTab } from "../apps-runtime/shell";
+import { appFrameForMessage } from "../lib/app-frame";
 import { useCommandPaletteStore } from "../store/commandPaletteStore";
-import { useDashboardTreeStore } from "../store/dashboardTreeStore";
+import {
+  selectDiscovery,
+  useAppsDiscoveryStore,
+} from "../store/appsDiscoveryStore";
+import { useAppsStore } from "../store/appsStore";
 import { useDbtStore } from "../store/dbtStore";
 import { useFlowStore } from "../store/flowStore";
 import { useUIStore } from "../store/uiStore";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 const SEARCH_DEBOUNCE_MS = 200;
+const APP_RESULTS = 6;
+const RECENT_APPS = 5;
+const POPULAR_APPS = 3;
 
 type Row =
   | { type: "header"; label: string }
@@ -67,6 +90,11 @@ export default function CommandPalette() {
   const workspaceId = useUIStore(state => state.currentWorkspaceId);
   const { user } = useAuth();
   const { setMode } = useAppTheme();
+  const appsList = useAppsStore(state => state.apps);
+  const discovery = useAppsDiscoveryStore(
+    selectDiscovery(workspaceId ?? undefined),
+  );
+  const appSearch = useAppsDiscoveryStore(state => state.searches.palette);
 
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -92,8 +120,23 @@ export default function CommandPalette() {
         useCommandPaletteStore.getState().togglePalette();
       }
     };
+    // An app on its own origin is a cross-origin frame: while it has focus
+    // its keystrokes never reach this window, so the SDK forwards the
+    // shortcut instead. Only an app frame on this page is believed.
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: unknown; key?: unknown } | null;
+      if (data?.type !== "mako-app:shortcut" || data.key !== "mod+k") return;
+      if (!appFrameForMessage(event)) return;
+      // Take focus back from the frame, or the palette's input cannot.
+      window.focus();
+      useCommandPaletteStore.getState().togglePalette();
+    };
     window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
+    window.addEventListener("message", onMessage);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("message", onMessage);
+    };
   }, []);
 
   // Reset transient state and warm entity lists whenever the palette opens.
@@ -103,9 +146,17 @@ export default function CommandPalette() {
     setSelectedIndex(0);
     pointerRef.current = null;
     const swallow = () => undefined;
-    void useDashboardTreeStore.getState().fetchTree(workspaceId).catch(swallow);
     void useDbtStore.getState().fetchProjects(workspaceId).catch(swallow);
     void useFlowStore.getState().fetchFlows(workspaceId).catch(swallow);
+    // Apps: the list for the instant match (usually already loaded by the
+    // explorer), and this person's recent + popular for the empty state.
+    if (useAppsStore.getState().apps.length === 0) {
+      void useAppsStore.getState().fetchApps(workspaceId).catch(swallow);
+    }
+    const discoveryStore = useAppsDiscoveryStore.getState();
+    void discoveryStore.fetchRecent(workspaceId);
+    void discoveryStore.fetchUsage(workspaceId);
+    discoveryStore.clearSearch("palette");
   }, [open, workspaceId]);
 
   // Debounced server-side console search (default mode only).
@@ -119,9 +170,34 @@ export default function CommandPalette() {
       void useCommandPaletteStore
         .getState()
         .searchConsoles(workspaceId, effectiveQuery);
+      void useAppsDiscoveryStore
+        .getState()
+        .searchApps(workspaceId, effectiveQuery, "palette");
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timeout);
   }, [open, workspaceId, commandMode, effectiveQuery]);
+
+  // Every app this person can see, in the palette's terms: the discovery
+  // listing when it is loaded (it knows owners), else the explorer's list.
+  const paletteApps = useMemo<PaletteApp[]>(() => {
+    if (discovery.appsLoaded) {
+      return discovery.apps.map(app => ({
+        id: app.id,
+        title: app.title,
+        description: app.description,
+        path: app.path,
+        slug: app.slug,
+        owner: ownerHandle(app) ?? undefined,
+      }));
+    }
+    return appsList.map(app => ({
+      id: app.id,
+      title: app.title,
+      description: app.description,
+      path: app.path,
+      slug: app.slug,
+    }));
+  }, [discovery.appsLoaded, discovery.apps, appsList]);
 
   const items = useMemo<PaletteItem[]>(() => {
     if (!open || !workspaceId) return [];
@@ -139,16 +215,63 @@ export default function CommandPalette() {
       return scoredCommands.map(entry => entry.command);
     }
 
+    let appItems: PaletteItem[];
+    if (!effectiveQuery) {
+      const recent = recentlyViewedApps(
+        paletteApps,
+        discovery.recent,
+        RECENT_APPS,
+      );
+      const recentIds = new Set(recent.map(a => a.id));
+      const popular = popularApps(
+        paletteApps.filter(a => !recentIds.has(a.id)),
+        discovery.usage,
+        POPULAR_APPS,
+      );
+      appItems = [
+        ...appPaletteItems(recent, "Recently viewed apps"),
+        ...appPaletteItems(popular, "Popular apps"),
+      ];
+    } else {
+      const local = rankAppsLocally(
+        paletteApps,
+        effectiveQuery,
+        discovery.usage,
+        APP_RESULTS,
+      );
+      const serverAnswered =
+        appSearch.workspaceId === workspaceId &&
+        appSearch.query === effectiveQuery &&
+        !appSearch.loading &&
+        !appSearch.error;
+      const server = serverAnswered
+        ? appSearch.results.map(hit => ({
+            id: hit.id,
+            title: hit.title,
+            description: hit.description,
+            path: hit.path,
+            slug: hit.slug,
+            owner: ownerHandle(hit) ?? undefined,
+            related: hit.matches?.includes("related") ?? false,
+          }))
+        : null;
+      appItems = appPaletteItems(
+        mergeAppResults(local, server, APP_RESULTS),
+        "Apps",
+      );
+    }
+
     return [
       ...searchOpenTabs(effectiveQuery),
+      ...(effectiveQuery ? appItems : []),
       // Surface a few command hits in default mode for discoverability.
       ...scoredCommands
         .slice(0, effectiveQuery ? 3 : 4)
         .map(entry => entry.command),
+      ...(effectiveQuery ? [] : appItems),
       ...(effectiveQuery.length >= 2
         ? consoleResultItems(workspaceId, consoleResults)
         : []),
-      ...searchDashboards(workspaceId, effectiveQuery),
       ...searchDbtProjects(effectiveQuery),
       ...searchFlows(workspaceId, effectiveQuery),
     ];
@@ -159,6 +282,10 @@ export default function CommandPalette() {
     effectiveQuery,
     consoleResults,
     isSuperAdmin,
+    paletteApps,
+    discovery.recent,
+    discovery.usage,
+    appSearch,
   ]);
 
   const rows = useMemo(() => groupIntoRows(items), [items]);
@@ -191,8 +318,22 @@ export default function CommandPalette() {
   // Home/End, and emacs-style Ctrl+N/P.
   const onDialogKeyDown = (event: React.KeyboardEvent) => {
     const count = items.length;
-    if (count === 0) return;
     const isCtrl = (key: string) => event.ctrlKey && event.key === key;
+    // Works with no results too: "nothing here, show me everything".
+    if (
+      event.key === "Enter" &&
+      (event.metaKey || event.ctrlKey) &&
+      !commandMode &&
+      effectiveQuery
+    ) {
+      // Secondary action: the full Apps home, already searching.
+      event.preventDefault();
+      useAppsDiscoveryStore.getState().setHomeQuery(effectiveQuery);
+      useCommandPaletteStore.getState().closePalette();
+      focusAppsHomeTab();
+      return;
+    }
+    if (count === 0) return;
 
     if (event.key === "ArrowDown" || isCtrl("n")) {
       event.preventDefault();
@@ -249,14 +390,28 @@ export default function CommandPalette() {
           fullWidth
           inputRef={inputRef}
           value={query}
-          placeholder="Search consoles, dashboards, apps… type > for commands"
+          placeholder="Search consoles, apps… type > for commands"
           onChange={event => {
             setQuery(event.target.value);
             setSelectedIndex(0);
           }}
           sx={{ fontSize: 14 }}
         />
-        {searching && <CircularProgress size={14} />}
+        {searching || appSearch.loading ? (
+          <CircularProgress size={14} />
+        ) : query ? (
+          <IconButton
+            size="small"
+            aria-label="Clear search"
+            onClick={() => {
+              setQuery("");
+              setSelectedIndex(0);
+              inputRef.current?.focus();
+            }}
+          >
+            <ClearIcon size={14} />
+          </IconButton>
+        ) : null}
       </Box>
 
       <Box ref={listRef} sx={{ maxHeight: 400, overflowY: "auto", py: 0.5 }}>
@@ -341,6 +496,22 @@ export default function CommandPalette() {
           ),
         )}
       </Box>
+      {!commandMode && effectiveQuery && !isMobile && (
+        <Typography
+          variant="caption"
+          sx={{
+            color: "text.secondary",
+            px: 2,
+            py: 0.75,
+            borderTop: 1,
+            borderColor: "divider",
+            display: "block",
+          }}
+        >
+          {/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl"}+Enter to
+          search all apps in Apps home
+        </Typography>
+      )}
     </Dialog>
   );
 }

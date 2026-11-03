@@ -14,22 +14,34 @@ import {
 
 assert.deepEqual(parseAppRepoPath("apps/report"), {
   scope: "workspace",
-  ownerId: undefined,
+  ownerHandle: undefined,
   folderSegments: [],
   slug: "report",
 });
 assert.deepEqual(parseAppRepoPath("apps/Sales/CH/daily tracker"), {
   scope: "workspace",
-  ownerId: undefined,
+  ownerHandle: undefined,
   folderSegments: ["Sales", "CH"],
   slug: "daily tracker",
 });
-assert.deepEqual(parseAppRepoPath("users/6846e6a01b05af0948070583/apps/x"), {
+// A personal tree is named by a handle; the parser returns it raw — who it
+// belongs to is the OwnerDirectory's answer, never the folder's (see
+// user-handles.test.ts).
+assert.deepEqual(parseAppRepoPath("users/joan.rodriguez/apps/x"), {
   scope: "private",
-  ownerId: "6846e6a01b05af0948070583",
+  ownerHandle: "joan.rodriguez",
   folderSegments: [],
   slug: "x",
 });
+assert.deepEqual(
+  parseAppRepoPath("users/joan-2/apps/Sales/x")?.ownerHandle,
+  "joan-2",
+);
+// Not a handle: uppercase, a leading dot, traversal — not an app location.
+assert.equal(parseAppRepoPath("users/Joan/apps/x"), null);
+assert.equal(parseAppRepoPath("users/.joan/apps/x"), null);
+assert.equal(parseAppRepoPath("users/../apps/x"), null);
+assert.equal(parseAppRepoPath("users/joan./apps/x"), null);
 assert.equal(parseAppRepoPath("apps"), null);
 assert.equal(parseAppRepoPath("consoles/report"), null);
 assert.equal(parseAppRepoPath("users/abc/consoles/x"), null);
@@ -44,11 +56,19 @@ assert.equal(
 assert.equal(
   appRepoPath({
     scope: "private",
-    ownerId: "u1",
+    ownerHandle: "joan",
     folderSegments: [],
     slug: "scratch",
   }),
-  "users/u1/apps/scratch",
+  "users/joan/apps/scratch",
+);
+assert.throws(() =>
+  appRepoPath({
+    scope: "private",
+    ownerHandle: "../joan",
+    folderSegments: [],
+    slug: "r",
+  }),
 );
 assert.throws(() =>
   appRepoPath({ scope: "workspace", folderSegments: [".."], slug: "r" }),
@@ -61,14 +81,15 @@ assert.deepEqual(parseAppFolderPath("apps"), {
   scope: "workspace",
   folderSegments: [],
 });
-assert.deepEqual(parseAppFolderPath("users/u1/apps"), {
+assert.deepEqual(parseAppFolderPath("users/joan/apps"), {
   scope: "private",
-  ownerId: "u1",
+  ownerHandle: "joan",
   folderSegments: [],
 });
+assert.equal(parseAppFolderPath("users/Joan/apps"), null);
 assert.deepEqual(parseAppFolderPath("apps/Sales/CH"), {
   scope: "workspace",
-  ownerId: undefined,
+  ownerHandle: undefined,
   folderSegments: ["Sales", "CH"],
 });
 assert.equal(parseAppFolderPath("dbt/models"), null);

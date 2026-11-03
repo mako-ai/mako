@@ -12,6 +12,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import mongoose, { Types } from "mongoose";
+import { MongoMemoryServer } from "mongodb-memory-server";
 
 // The push reaction is the one side effect the endpoint owns; observe it
 // instead of the mirror queue and realtime bus it fans out to.
@@ -38,6 +40,7 @@ import {
   verifyGitToken,
 } from "./git-token.service";
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
+import { WorkspaceMember } from "../database/workspace-schema";
 
 const run = promisify(execFile);
 const WS = "6846e6a01b05af0948070599";
@@ -45,6 +48,7 @@ const OTHER_WS = "6846e6a01b05af0948070600";
 
 let tmpRoot: string;
 let server: TestGitServer;
+let mongo: MongoMemoryServer;
 let repoDir: string;
 
 /** Env that lets the git CLI authenticate non-interactively with `token`. */
@@ -117,10 +121,19 @@ beforeAll(async () => {
   ]);
 
   server = await startTestGitServer();
+  // The endpoint reads the pusher's role for the workflows rule.
+  mongo = await MongoMemoryServer.create();
+  await mongoose.connect(mongo.getUri());
+  await WorkspaceMember.collection.insertMany([
+    { workspaceId: new Types.ObjectId(WS), userId: "admin", role: "admin" },
+    { workspaceId: new Types.ObjectId(WS), userId: "member", role: "member" },
+  ]);
 }, 120_000);
 
 afterAll(async () => {
   await server?.close();
+  await mongoose.disconnect();
+  await mongo?.stop();
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
@@ -451,6 +464,59 @@ describe("commit authorship enforcement", () => {
     await expect(
       run("git", ["-C", repoDir, "rev-parse", "--verify", "refs/heads/legacy"]),
     ).resolves.toBeTruthy();
+  });
+});
+
+describe("workflows reach main through an admin", () => {
+  const tokenFor = (userId: string) =>
+    mintGitToken({ workspaceId: WS, userId, email: "t@t" });
+
+  /** A clone with one commit under workflows/, on the current branch. */
+  async function workflowCommit(userId: string): Promise<string> {
+    const dir = await freshClone(tokenFor(userId));
+    await fs.mkdir(path.join(dir, "workflows", "digest"), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, "workflows", "digest", "workflow.ts"),
+      `export default ${userId};\n`,
+    );
+    await run("git", ["-C", dir, "add", "-A"]);
+    await run("git", ["-C", dir, "commit", "-qm", "a workflow"]);
+    return dir;
+  }
+  const push = (dir: string, userId: string, ref: string) =>
+    run("git", ["-C", dir, "push", "-q", "origin", `HEAD:${ref}`], {
+      env: gitEnv(tokenFor(userId)),
+    });
+
+  it("a member pushes a change under workflows/ to a branch, not to main", async () => {
+    const dir = await workflowCommit("member");
+    await expect(push(dir, "member", "refs/heads/main")).rejects.toThrow(
+      /only workspace admins put workflows on main/i,
+    );
+    await push(dir, "member", "refs/heads/wf-member");
+  });
+
+  it("an admin pushes it, to a branch or to main", async () => {
+    const dir = await workflowCommit("admin");
+    await push(dir, "admin", "refs/heads/main");
+    await push(dir, "admin", "refs/heads/wf-admin");
+    await expect(
+      run("git", [
+        "-C",
+        repoDir,
+        "rev-parse",
+        "--verify",
+        "refs/heads/wf-admin",
+      ]),
+    ).resolves.toBeTruthy();
+  });
+
+  it("a member's push to main that leaves workflows/ alone is fine", async () => {
+    const dir = await freshClone(tokenFor("member"));
+    await fs.writeFile(path.join(dir, "note.txt"), "no workflow here\n");
+    await run("git", ["-C", dir, "add", "-A"]);
+    await run("git", ["-C", dir, "commit", "-qm", "a note"]);
+    await push(dir, "member", "refs/heads/main");
   });
 });
 

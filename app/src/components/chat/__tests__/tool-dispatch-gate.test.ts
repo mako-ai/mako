@@ -45,13 +45,13 @@ describe("ToolDispatchGate", () => {
           role: "assistant",
           parts: [
             {
-              type: "tool-create_dashboard",
+              type: "tool-create_console",
               toolCallId: "done-1",
               state: "output-available",
             },
             {
               type: "dynamic-tool",
-              toolName: "create_data_source",
+              toolName: "app_create_data_binding",
               toolCallId: "done-2",
               state: "output-error",
             },
@@ -71,12 +71,12 @@ describe("ToolDispatchGate", () => {
           role: "assistant",
           parts: [
             {
-              type: "tool-create_dashboard",
+              type: "tool-create_console",
               toolCallId: "pending-1",
               state: "input-available",
             },
             {
-              type: "tool-add_widget",
+              type: "tool-app_write_file",
               toolCallId: "pending-2",
               state: "input-streaming",
             },

@@ -32,8 +32,8 @@ const knownCommits = vi.hoisted(() => new Set<string>());
 vi.mock("../inngest/client", () => ({
   inngest: { send: vi.fn(async () => ({ ids: [] })) },
 }));
-vi.mock("../services/dashboard-artifact-store.service", () => ({
-  getDashboardArtifactStore: () => ({
+vi.mock("../services/artifact-store.service", () => ({
+  getArtifactStore: () => ({
     exists: async (key: string) => stored.has(key),
     putBuffer: async (buffer: Buffer, key: string) => {
       stored.set(key, Buffer.from(buffer));

@@ -420,12 +420,6 @@ describe("StreamingToolCard structural guards", () => {
     "utf-8",
   );
 
-  it("unmounts the collapsed body (Collapse unmountOnExit)", () => {
-    // Collapsed tool cards must not keep their syntax-highlighted JSON/code in
-    // the DOM — that's the dominant DOM-node source in long chats on mobile.
-    expect(cardSource).toMatch(/<Collapse[^>]*unmountOnExit/s);
-  });
-
   it("renders full tool content but budget-gates the syntax highlighter", () => {
     // The body must NEVER truncate tool content (users need the full streamed
     // SQL/code inline) — but Prism explodes big payloads into tens of

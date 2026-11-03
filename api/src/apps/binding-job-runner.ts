@@ -2,19 +2,26 @@
  * The worker half of binding-jobs.ts: run one queued job to completion and
  * record what the synchronous route would have answered.
  */
+import { withQueryLabels } from "../services/bigquery-labels";
 import fs from "node:fs/promises";
 import type { IAppProject } from "../database/workspace-schema";
 import { resolveProjectRef } from "./worktree.service";
+import { unregisteredDraftProject } from "./unregistered-draft-app";
 import { materializeAppBinding } from "./bindings.service";
 import { DevBuildError, planDevBuild } from "./binding-dev-build";
 import {
   JOB_HEARTBEAT_MS,
   heartbeatBindingJob,
   markBindingJob,
+  recordBindingJobProgress,
   storeJobDraft,
   type BindingJobDoc,
   type BindingJobResult,
 } from "./binding-jobs";
+import {
+  withBindingProgress,
+  type BindingProgressEvent,
+} from "./binding-progress";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps");
@@ -25,31 +32,79 @@ export interface BindingJobRunnerDeps {
     workspaceId: string,
     projectId: string,
   ) => Promise<IAppProject | null>;
+  /** The draft-only project of an app not on main yet, as the route made it. */
+  resolveUnregistered: (
+    workspaceId: string,
+    projectId: string,
+    userId: string | undefined,
+  ) => Promise<IAppProject | null>;
   materialize: typeof materializeAppBinding;
   plan: typeof planDevBuild;
   mark: typeof markBindingJob;
   storeDraft: typeof storeJobDraft;
   heartbeat: (jobId: string) => Promise<void>;
   heartbeatMs: number;
+  /** Record the build's phase on the job row for its poller. */
+  progress: (jobId: string, event: BindingProgressEvent) => Promise<void>;
+  /** A phase change is written at once; row counts at most this often. */
+  progressMs: number;
 }
 
 const defaultDeps: BindingJobRunnerDeps = {
   resolveProject: (workspaceId, projectId) =>
     resolveProjectRef(workspaceId, projectId),
+  resolveUnregistered: unregisteredDraftProject,
   materialize: materializeAppBinding,
   plan: planDevBuild,
   mark: markBindingJob,
   storeDraft: storeJobDraft,
   heartbeat: jobId => heartbeatBindingJob(jobId),
   heartbeatMs: JOB_HEARTBEAT_MS,
+  progress: (jobId, event) => recordBindingJobProgress(jobId, event),
+  progressMs: 2_000,
 };
+
+/**
+ * Phases into the job row, throttled: every phase change, and the latest
+ * row count at most every `progressMs` — a 500k-row build reports 100
+ * batches, which is 100 events but only a handful of writes.
+ */
+function jobProgressWriter(
+  jobId: string,
+  deps: BindingJobRunnerDeps,
+): (event: BindingProgressEvent) => void {
+  let lastPhase: string | null = null;
+  let lastAt = 0;
+  let chain = Promise.resolve();
+  return event => {
+    const now = Date.now();
+    if (event.phase === lastPhase && now - lastAt < deps.progressMs) return;
+    lastPhase = event.phase;
+    lastAt = now;
+    // In order, never in parallel: an older count must not land last.
+    chain = chain
+      .then(() => deps.progress(jobId, event))
+      .catch(() => undefined);
+  };
+}
 
 export async function runBindingJob(
   job: BindingJobDoc,
   deps: BindingJobRunnerDeps = defaultDeps,
 ): Promise<BindingJobDoc["status"]> {
   const jobId = job._id.toString();
-  const project = await deps.resolveProject(job.workspaceId, job.projectId);
+  // An app pushed since the job was queued resolves as itself; its drafts
+  // were keyed by the id it now has, so nothing is lost either way.
+  let project = await deps.resolveProject(job.workspaceId, job.projectId);
+  let unregistered = false;
+  if (!project && job.unregistered && job.kind === "dev-build") {
+    project = await deps.resolveUnregistered(
+      job.workspaceId,
+      job.projectId,
+      job.userId,
+    );
+    unregistered = project !== null;
+  }
   if (!project) {
     await deps.mark(jobId, {
       status: "error",
@@ -65,7 +120,10 @@ export async function runBindingJob(
     deps.heartbeat(jobId).catch(() => undefined);
   }, deps.heartbeatMs);
   try {
-    const result = await build(job, project, deps);
+    const result = await withBindingProgress(
+      jobProgressWriter(jobId, deps),
+      () => build(job, project, unregistered, deps),
+    );
     await deps.mark(jobId, { status: "ready", result });
     return "ready";
   } catch (error) {
@@ -91,10 +149,13 @@ export async function runBindingJob(
 async function build(
   job: BindingJobDoc,
   project: IAppProject,
+  unregistered: boolean,
   deps: BindingJobRunnerDeps,
 ): Promise<BindingJobResult> {
   if (job.kind === "materialize") {
-    const result = await deps.materialize(project, job.name, job.actorId);
+    const result = await withQueryLabels({ mako_trigger: "manual" }, () =>
+      deps.materialize(project, job.name, job.actorId),
+    );
     return {
       artifactKey: result.artifactKey,
       build: "materialized",
@@ -115,6 +176,7 @@ async function build(
     dbtEnvironment: job.request.dbtEnvironment,
     dbtDefer: job.request.dbtDefer,
     refresh: job.request.refresh,
+    unregistered,
   });
   if (plan.kind === "artifact") {
     return { artifactKey: plan.artifactKey, build: "artifact" };

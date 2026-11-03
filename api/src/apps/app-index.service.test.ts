@@ -24,7 +24,12 @@ import {
   AppIndexEntry,
   AppIndexHead,
   AppProject,
+  WorkspaceMember,
+  WorkspaceUserHandle,
 } from "../database/workspace-schema";
+import { OAuthAccount, User } from "../database/schema";
+import { invalidateOwnerDirectory } from "./user-handles.service";
+import { invalidatePeopleDirectory } from "./app-owner.service";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -49,6 +54,7 @@ import {
   createAppFolder,
   createProject,
   deleteAppFolder,
+  PUBLISH_ACTOR,
   ensureProjectRow,
   moveAppFolder,
   moveProject,
@@ -58,6 +64,12 @@ import {
   stampAppId,
 } from "./worktree.service";
 import { appFolderChanged } from "./deploy-on-push";
+import { getAppAuthors, visibleIndexedAppIds } from "./app-usage.service";
+import {
+  listDiscoveryApps,
+  searchDiscoveryApps,
+} from "./app-discovery.service";
+import { readThumbnailBlob, thumbnailHeaders } from "./app-thumbnail";
 import { runGit } from "./git";
 import { canReadResource } from "../utils/resource-acl";
 import { up as isolateAppIds } from "../migrations/2026-09-16-190000_app_identity_isolation";
@@ -82,6 +94,8 @@ afterAll(async () => {
 
 const WS = new Types.ObjectId().toString();
 const USER = new Types.ObjectId().toString();
+/** USER's personal folder name: `users/<handle>/`, never their id. */
+const HANDLE = "alice";
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 const B_ID = new Types.ObjectId().toHexString();
 
@@ -93,6 +107,13 @@ beforeEach(async () => {
   await AppIndexEntry.deleteMany({});
   await AppIndexHead.deleteMany({});
   await AppProject.deleteMany({});
+  await WorkspaceUserHandle.deleteMany({});
+  await WorkspaceUserHandle.create({
+    workspaceId: new Types.ObjectId(WS),
+    userId: USER,
+    handle: HANDLE,
+  });
+  invalidateOwnerDirectory();
   await unbindTestWorkspaceRepo(WS);
   invalidateAppsIndexCache();
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
@@ -107,7 +128,7 @@ beforeEach(async () => {
       "-- connection: c1\n-- schedule: 0 * * * *\nselect 1\n",
     "apps/Empty/.gitkeep": "",
     "apps/README.md": "stray file, not an app\n",
-    [`users/${USER}/apps/c/mako.json`]: manifest("C"),
+    [`users/${HANDLE}/apps/c/mako.json`]: manifest("C"),
     "consoles/x.sql": "select 1\n",
   });
   await bindTestWorkspaceRepo(WS);
@@ -184,13 +205,359 @@ describe("discoverApps", () => {
       { type: "tree", oid: "t12", path: "users/u1/consoles" },
     ]);
     // Sorted by path, locale-aware (so "a" sorts before "Sales").
-    expect(out.apps.map(a => [a.path, a.scope, a.ownerId, a.treeOid])).toEqual([
+    // Discovery is pure: it reports the folder's handle, not an owner.
+    expect(
+      out.apps.map(a => [a.path, a.scope, a.ownerHandle, a.treeOid]),
+    ).toEqual([
       ["apps/a", "workspace", undefined, "t2"],
       ["apps/Sales/CH/b", "workspace", undefined, "t6"],
       ["users/u1/apps/c", "private", "u1", "t11"],
     ]);
     expect(out.apps[1].bindingBlobs.get("rows")).toBe("b4");
     expect(out.folders).toEqual(["apps/Empty", "apps/Sales", "apps/Sales/CH"]);
+  });
+});
+
+describe("personal trees resolve through the handle mapping only", () => {
+  it("a folder's name makes nobody its owner; the mapping does", async () => {
+    const OTHER = new Types.ObjectId().toString();
+    await WorkspaceUserHandle.create({
+      workspaceId: new Types.ObjectId(WS),
+      userId: OTHER,
+      handle: "bob",
+    });
+    invalidateOwnerDirectory();
+    await externalCommit({
+      // Named by USER's raw id: not a handle → nobody's (the pre-migration
+      // shape, and what anyone could push to claim USER's tree).
+      [`users/${USER}/apps/by-id/mako.json`]: manifest("By id"),
+      // Named after someone else's handle: Bob's, whoever pushed it.
+      "users/bob/apps/planted/mako.json": manifest("Planted"),
+      // A handle nobody holds.
+      "users/ghost/apps/g/mako.json": manifest("Ghost"),
+    });
+    const snapshot = await loadAppsIndex(WS);
+    const owner = (p: string) =>
+      snapshot.apps.find(a => a.path === p)?.ownerId ?? null;
+    expect(owner(`users/${HANDLE}/apps/c`)).toBe(USER);
+    expect(owner("users/bob/apps/planted")).toBe(OTHER);
+    expect(owner(`users/${USER}/apps/by-id`)).toBeNull();
+    expect(owner("users/ghost/apps/g")).toBeNull();
+    // Synthesized projects follow: private, owned by the mapping's answer.
+    const planted = await resolveProjectRef(WS, "users/bob/apps/planted");
+    expect(planted?.access).toBe("private");
+    expect(planted?.owner_id).toBe(OTHER);
+    const byId = await resolveProjectRef(WS, `users/${USER}/apps/by-id`);
+    expect(byId?.access).toBe("private");
+    expect(byId?.owner_id).toBeUndefined();
+  });
+
+  it("a personal app first persisted by the push-deploy worker keeps its owner", async () => {
+    // A users/<handle>/apps folder arriving by git push: deploy-on-push
+    // resolves it (no row yet) and persists the row as PUBLISH_ACTOR. The
+    // row must carry the mapping's owner, or the app is private to nobody.
+    const personal = (await resolveProjectRef(WS, `users/${HANDLE}/apps/c`))!;
+    expect(personal.owner_id).toBe(USER);
+    const row = await ensureProjectRow(personal, PUBLISH_ACTOR);
+    expect(row.access).toBe("private");
+    expect(row.owner_id).toBe(USER);
+    expect(canReadResource(row, USER, "member")).toBe(true);
+    expect(canReadResource(row, "someone-else", "member")).toBe(false);
+    const stored = await AppProject.findById(personal._id);
+    expect(stored?.owner_id).toBe(USER);
+    expect(stored?.access).toBe("private");
+
+    // A later worker run or another actor leaves the owner alone.
+    const again = (await resolveProjectRef(WS, `users/${HANDLE}/apps/c`))!;
+    expect((await ensureProjectRow(again, PUBLISH_ACTOR)).owner_id).toBe(USER);
+    const other = new Types.ObjectId().toString();
+    expect((await ensureProjectRow(again, other)).owner_id).toBe(USER);
+
+    // A workspace app is unaffected: workspace access, ownerless until a
+    // human claims it.
+    const shared = (await resolveProjectRef(WS, "a"))!;
+    const sharedRow = await ensureProjectRow(shared, PUBLISH_ACTOR);
+    expect(sharedRow.access).toBe("workspace");
+    expect(sharedRow.owner_id ?? undefined).toBeUndefined();
+  });
+
+  it("usage surfaces (/usage, /recent) and authorship follow the mapping, not the folder name", async () => {
+    const OTHER = new Types.ObjectId().toString();
+    await WorkspaceUserHandle.create({
+      workspaceId: new Types.ObjectId(WS),
+      userId: OTHER,
+      handle: "bob",
+    });
+    invalidateOwnerDirectory();
+    // A folder spelled like OTHER's raw id: not a handle, so not OTHER's.
+    await externalCommit({
+      [`users/${OTHER}/apps/by-id/mako.json`]: manifest("By id"),
+    });
+    const snapshot = await loadAppsIndex(WS);
+    const idOf = (p: string) => snapshot.apps.find(a => a.path === p)!.appId;
+    const alices = idOf(`users/${HANDLE}/apps/c`);
+    const byId = idOf(`users/${OTHER}/apps/by-id`);
+
+    const forOwner = await visibleIndexedAppIds(WS, USER, "member");
+    const forOther = await visibleIndexedAppIds(WS, OTHER, "admin");
+    expect(forOwner.has(alices)).toBe(true);
+    // Another member — even an admin — never sees a personal app's numbers.
+    expect(forOther.has(alices)).toBe(false);
+    // …nor gains a tree by its folder being named after their id.
+    expect(forOther.has(byId)).toBe(false);
+    expect(forOwner.has(byId)).toBe(false);
+    // Workspace apps stay visible to everyone.
+    expect(forOther.has(idOf("apps/a"))).toBe(true);
+
+    // The mapped owner counts as the app's author (their views are not
+    // popularity); the id-named folder has no tree owner at all.
+    const authors = await getAppAuthors(WS);
+    expect(authors.get(alices)?.has(USER)).toBe(true);
+    expect(authors.get(alices)?.has(OTHER) ?? false).toBe(false);
+    expect(authors.get(byId)?.has(OTHER) ?? false).toBe(false);
+  });
+
+  it("refuses to file an app under a handle that is not the owner's", async () => {
+    await expect(
+      createProject({
+        workspaceId: WS,
+        title: "Sneaky",
+        userId: USER,
+        folder: {
+          scope: "private",
+          ownerId: USER,
+          ownerHandle: "ghost",
+          folderSegments: [],
+        },
+      }),
+    ).rejects.toThrow(/does not belong/);
+    // Personal by default lands under the handle, never the id.
+    const mine = await createProject({
+      workspaceId: WS,
+      title: "Mine",
+      userId: USER,
+      folder: { scope: "private", folderSegments: [] },
+    });
+    expect(mine.path).toBe(`users/${HANDLE}/apps/mine`);
+  });
+});
+
+describe("discovery facts", () => {
+  it("indexes the tables bindings read and who added each app, and keeps the date across a move", async () => {
+    await externalCommit({
+      "apps/Sales/CH/b/bindings/leads.sql":
+        "-- connection: c1\nSELECT * FROM analytics.fct_leads l JOIN dim_agents a ON a.id = l.agent\n",
+      "apps/d/mako.json": manifest("D"),
+    });
+    const snapshot = await loadAppsIndex(WS);
+    const b = snapshot.apps.find(a => a.path === "apps/Sales/CH/b");
+    expect(b?.tables).toEqual(["analytics.fct_leads", "dim_agents"]);
+    expect(b?.bindings).toEqual(["leads", "rows"]);
+    const d = snapshot.apps.find(a => a.path === "apps/d");
+    expect(d?.authorEmail).toBe("laptop@example.com");
+    expect(d?.firstCommitAt).toBeTruthy();
+    // The seed commit dated the others.
+    expect(
+      snapshot.apps.find(a => a.path === "apps/a")?.firstCommitAt,
+    ).toBeTruthy();
+
+    const firstAt = b?.firstCommitAt;
+    await externalCommit(
+      {
+        "apps/Moved/b/mako.json": manifest("B", B_ID),
+        "apps/Moved/b/bindings/rows.sql": "select 1\n",
+      },
+      [
+        "apps/Sales/CH/b/mako.json",
+        "apps/Sales/CH/b/bindings/rows.sql",
+        "apps/Sales/CH/b/bindings/leads.sql",
+      ],
+    );
+    const moved = (await loadAppsIndex(WS)).apps.find(a => a.appId === B_ID);
+    expect(moved?.path).toBe("apps/Moved/b");
+    // A move is not a new app.
+    expect(moved?.firstCommitAt).toBe(firstAt);
+    expect(moved?.tables).toEqual([]);
+    expect(moved?.bindings).toEqual(["rows"]);
+
+    // Freshness reads only the bindings the app still has: the deleted
+    // `leads` binding's months-old state row must not age the app.
+    const State = mongoose.model("AppBindingState");
+    const fresh = new Date(Date.now() - 60_000);
+    await State.create([
+      {
+        projectId: new Types.ObjectId(B_ID),
+        name: "rows",
+        lastMaterializedAt: fresh,
+        history: [{ at: fresh, status: "ready" }],
+      },
+      {
+        projectId: new Types.ObjectId(B_ID),
+        name: "leads",
+        lastMaterializedAt: new Date("2026-08-01T00:00:00Z"),
+        history: [{ at: new Date("2026-08-01T00:00:00Z"), status: "error" }],
+      },
+    ]);
+    const discovered = (await listDiscoveryApps(WS, USER, "member")).find(
+      a => a.id === B_ID,
+    );
+    expect(discovered?.dataRefreshedAt).toBe(fresh.toISOString());
+    expect(discovered?.health.bindingErrors).toEqual([]);
+    await State.deleteMany({ projectId: new Types.ObjectId(B_ID) });
+  });
+
+  it("credits the first human, not the platform commit that created the folder", async () => {
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "apps/e/mako.json": manifest("E") }, deletes: [] },
+      {
+        message: "import",
+        author: { name: "Mako", email: "bot@mako.ai" },
+      },
+    );
+    await externalCommit({ "apps/e/src/main.tsx": "export {}\n" });
+    invalidateAppsIndexCache(WS);
+    const e = (await loadAppsIndex(WS)).apps.find(a => a.path === "apps/e");
+    expect(e?.authorEmail).toBe("laptop@example.com");
+    expect(e?.firstCommitAt).toBeTruthy();
+  });
+
+  it("shows each app's owner as the workspace member, not a commit email", async () => {
+    const ws = new Types.ObjectId(WS);
+    const joan = new Types.ObjectId().toString();
+    const tim = new Types.ObjectId().toString();
+    await User.create([
+      { _id: USER, email: "alice@acme.test", emailVerified: true },
+      { _id: joan, email: "joan@acme.test", emailVerified: true },
+      { _id: tim, email: "tim@acme.test", emailVerified: true },
+    ]);
+    await WorkspaceMember.create([
+      { workspaceId: ws, userId: USER, role: "owner", joinedAt: new Date(1) },
+      { workspaceId: ws, userId: joan, role: "member", joinedAt: new Date(2) },
+      { workspaceId: ws, userId: tim, role: "member", joinedAt: new Date(3) },
+    ]);
+    await OAuthAccount.create([
+      // Joan signs in with GitHub (id 42) whose email is his gmail.
+      {
+        userId: joan,
+        provider: "github",
+        providerUserId: "42",
+        email: "rodriguezjoan@gmail.com",
+      },
+    ]);
+    const commitAs = async (email: string, writes: Record<string, string>) => {
+      await commitBlobsOnBranch(
+        repoDirFor(WS),
+        DEFAULT_BRANCH,
+        { writes, deletes: [] },
+        { message: "laptop", author: { name: "Someone", email } },
+      );
+      invalidateAppsIndexCache(WS);
+    };
+    await commitAs("rodriguezjoan@gmail.com", {
+      "apps/alias/mako.json": manifest("Alias"),
+    });
+    await commitAs("42+joan-gh@users.noreply.github.com", {
+      "apps/noreply/mako.json": manifest("Noreply"),
+    });
+    await commitAs("tim@personal.example", {
+      "apps/local/mako.json": manifest("Local part"),
+    });
+    await commitAs("165400805+t-m-v@users.noreply.github.com", {
+      "apps/stranger/mako.json": manifest("Stranger"),
+    });
+    await commitAs("alice@gmail.com", {
+      "apps/gmail/mako.json": manifest("Gmail"),
+    });
+    try {
+      invalidateOwnerDirectory();
+      invalidatePeopleDirectory();
+      const apps = await listDiscoveryApps(WS, USER, "owner");
+      const owner = (p: string) => apps.find(a => a.path === p)?.owner;
+      const joanHandle = (await WorkspaceUserHandle.findOne({ userId: joan }))
+        ?.handle;
+      expect(joanHandle).toBe("joan");
+      expect(owner("apps/alias")).toMatchObject({ userId: joan, name: "joan" });
+      expect(owner("apps/noreply")).toMatchObject({
+        userId: joan,
+        name: "joan",
+      });
+      // The workspace's domain is acme.test; tim@ there is the only `tim`.
+      expect(owner("apps/local")).toMatchObject({ userId: tim, name: "tim" });
+      // Nobody here: the GitHub login, never the numeric prefix.
+      expect(owner("apps/stranger")).toEqual({ name: "t-m-v" });
+      // A public mail domain never matches by local part.
+      expect(owner("apps/gmail")).toEqual({ name: "alice" });
+      // The personal app: its tree's owner.
+      expect(owner(`users/${HANDLE}/apps/c`)).toMatchObject({
+        userId: USER,
+        name: HANDLE,
+        email: "alice@acme.test",
+      });
+      // Search finds an app by its owner's member handle.
+      expect(
+        searchDiscoveryApps(apps, "joan")
+          .map(a => a.path)
+          .sort(),
+      ).toEqual(["apps/alias", "apps/noreply"]);
+    } finally {
+      await User.deleteMany({});
+      await WorkspaceMember.deleteMany({});
+      await OAuthAccount.deleteMany({});
+      invalidatePeopleDirectory();
+    }
+  });
+
+  it("indexes the app's own thumbnail (png before svg) and serves it inert", async () => {
+    await externalCommit({
+      "apps/a/thumbnail.svg": '<svg xmlns="http://www.w3.org/2000/svg"/>',
+      "apps/a/thumbnail.png": "PNGBYTES",
+      // Not at the app root: not the app's thumbnail.
+      "apps/Sales/CH/b/public/thumbnail.png": "nope",
+    });
+    const snapshot = await loadAppsIndex(WS);
+    const a = snapshot.apps.find(x => x.path === "apps/a");
+    expect(a?.thumbnail?.file).toBe("thumbnail.png");
+    expect(
+      snapshot.apps.find(x => x.path === "apps/Sales/CH/b")?.thumbnail,
+    ).toBeUndefined();
+    const bytes = await readThumbnailBlob(repoDirFor(WS), a!.thumbnail!);
+    expect(bytes?.toString()).toBe("PNGBYTES");
+    const discovered = await listDiscoveryApps(WS, USER, "member");
+    expect(discovered.find(x => x.path === "apps/a")?.thumbnail?.oid).toBe(
+      a?.thumbnail?.oid,
+    );
+    const svg = thumbnailHeaders("thumbnail.svg", 10);
+    expect(svg["Content-Type"]).toBe("image/svg+xml");
+    expect(svg["Content-Security-Policy"]).toContain("sandbox");
+    expect(svg["Content-Security-Policy"]).toContain("default-src 'none'");
+  });
+
+  it("lists and searches with the list's visibility", async () => {
+    const other = new Types.ObjectId().toString();
+    const mine = await listDiscoveryApps(WS, USER, "member");
+    expect(mine.map(a => a.path).sort()).toEqual([
+      "apps/Sales/CH/b",
+      "apps/a",
+      `users/${HANDLE}/apps/c`,
+    ]);
+    // Someone else's personal tree is not theirs to discover.
+    const theirs = await listDiscoveryApps(WS, other, "member");
+    expect(theirs.map(a => a.path)).not.toContain(`users/${HANDLE}/apps/c`);
+    const c = mine.find(a => a.path === `users/${HANDLE}/apps/c`);
+    expect(c?.ownerId).toBe(USER);
+    expect(c?.ownerHandle).toBe(HANDLE);
+    expect(searchDiscoveryApps(mine, HANDLE).map(a => a.path)).toEqual([
+      `users/${HANDLE}/apps/c`,
+    ]);
+    expect(c?.health.bindingErrors).toEqual([]);
+    expect(c?.verified).toBe(false);
+
+    expect(searchDiscoveryApps(theirs, "laptop").map(a => a.path)).toEqual([]);
+    expect(searchDiscoveryApps(mine, "sales").map(a => a.path)).toEqual([
+      "apps/Sales/CH/b",
+    ]);
   });
 });
 
@@ -332,7 +699,7 @@ describe("the index", () => {
     expect(snapshot.apps.map(a => a.path)).toEqual([
       "apps/a",
       "apps/Sales/CH/b",
-      `users/${USER}/apps/c`,
+      `users/${HANDLE}/apps/c`,
     ]);
     const a = snapshot.apps.find(x => x.slug === "a")!;
     const b = snapshot.apps.find(x => x.slug === "b")!;
@@ -507,7 +874,7 @@ describe("moves", () => {
       folderSegments: ["Scratch"],
     });
     let row = (await loadAppsIndex(WS)).apps.find(a => a.appId === B_ID)!;
-    expect(row.path).toBe(`users/${USER}/apps/Scratch/b`);
+    expect(row.path).toBe(`users/${HANDLE}/apps/Scratch/b`);
     expect(row.scope).toBe("private");
     expect((await resolveProjectRef(WS, B_ID))?.access).toBe("private");
     await moveProject(b, { scope: "workspace", folderSegments: [] });
@@ -796,7 +1163,7 @@ describe("visibility follows the tree", () => {
       { userId: USER },
     );
     let row = (await AppProject.findById(a._id))!;
-    expect(row.path).toBe(`users/${USER}/apps/a`);
+    expect(row.path).toBe(`users/${HANDLE}/apps/a`);
     expect(row.access).toBe("private");
     expect(row.owner_id).toBe(USER);
     expect(canReadResource(row, "someone-else", "member")).toBe(false);
@@ -816,15 +1183,15 @@ describe("visibility follows the tree", () => {
     await ensureProjectRow((await resolveProjectRef(WS, "a"))!, USER);
     await externalCommit(
       {
-        [`users/${USER}/apps/a/mako.json`]: manifest("A"),
-        [`users/${USER}/apps/a/src/main.tsx`]: "export {}\n",
-        [`users/${USER}/apps/a/fixtures/mako.json`]: manifest("Not an app"),
+        [`users/${HANDLE}/apps/a/mako.json`]: manifest("A"),
+        [`users/${HANDLE}/apps/a/src/main.tsx`]: "export {}\n",
+        [`users/${HANDLE}/apps/a/fixtures/mako.json`]: manifest("Not an app"),
       },
       ["apps/a/mako.json", "apps/a/src/main.tsx", "apps/a/fixtures/mako.json"],
     );
     await loadAppsIndex(WS);
     const row = (await AppProject.findById(aId))!;
-    expect(row.path).toBe(`users/${USER}/apps/a`);
+    expect(row.path).toBe(`users/${HANDLE}/apps/a`);
     expect(row.access).toBe("private");
     expect(row.owner_id).toBe(USER);
   });
@@ -834,7 +1201,7 @@ describe("ambiguous slugs", () => {
   it("resolve to nothing rather than to whichever row Mongo returns first", async () => {
     await externalCommit({ "apps/Ops/c/mako.json": manifest("Ops C") });
     await loadAppsIndex(WS);
-    // "c" now names users/<USER>/apps/c and apps/Ops/c; neither is top-level.
+    // "c" now names users/<HANDLE>/apps/c and apps/Ops/c; neither is top-level.
     await ensureProjectRow((await resolveProjectRef(WS, "apps/Ops/c"))!, USER);
     expect(await resolveProjectRef(WS, "c")).toBeNull();
     expect((await resolveProjectRef(WS, "apps/Ops/c"))?.path).toBe(
@@ -891,7 +1258,7 @@ describe("createProject", () => {
       userId: USER,
       folder: { scope: "private", folderSegments: [] },
     });
-    expect(personal.path).toBe(`users/${USER}/apps/hello`);
+    expect(personal.path).toBe(`users/${HANDLE}/apps/hello`);
     expect((await resolveProjectRef(WS, personal._id.toString()))?.access).toBe(
       "private",
     );

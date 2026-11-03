@@ -42,7 +42,7 @@ export type AppDataBindingLanguage = z.infer<
  * How a binding's data reaches the app:
  * - `live`: the query runs server-side on every read through Mako's execute API.
  * - `parquet`: the query is materialized server-side into a Parquet artifact
- *   (stored on filesystem/GCS/S3, same pipeline as dashboards) and loaded into
+ *   (stored on filesystem/GCS/S3 in the shared artifact store) and loaded into
  *   DuckDB-WASM in the browser, where the app can run analytical SQL over it.
  */
 export const AppBindingMaterializationSchema = z.enum(["live", "parquet"]);
@@ -82,8 +82,8 @@ export type AppBindingMaterializationRun = z.infer<
 >;
 
 /**
- * Materialized-artifact cache metadata for a binding. Mirrors the dashboard
- * data source `cache` shape so the same artifact store + serve pipeline applies.
+ * Materialized-artifact cache metadata for a binding, served through the
+ * shared artifact store + serve pipeline.
  * `parquetUrl` is hydrated on read (a proxied API path), never persisted.
  */
 export const AppBindingCacheSchema = z.object({

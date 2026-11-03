@@ -14,6 +14,7 @@
  * One Server instance is built per HTTP request (stateless Streamable HTTP,
  * JSON response mode) — see stateless-transport.ts and mcp-server.routes.ts.
  */
+import { withQueryLabels } from "../services/bigquery-labels";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
@@ -41,16 +42,16 @@ import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
 import { createUniversalTools } from "../agent-lib/tools/universal-tools";
 import { createServerConsoleTools } from "../agent-lib/tools/server-console-tools";
-import { createServerDashboardTools } from "../agent-lib/tools/server-dashboard-tools";
 import { createNotebookServerTools } from "../agent-lib/tools/server-notebook-tools";
 import { createConsoleSearchTools } from "../agent-lib/tools/console-search-tools";
-import { createDashboardSearchTools } from "../agent-lib/tools/dashboard-search-tools";
 import { createVersionHistoryTools } from "../agent-lib/tools/version-history-tools";
 import { createSkillTools } from "../agent-lib/tools/skill-tools";
 import { createSelfDirectiveTools } from "../agent-lib/tools/self-directive-tool";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { createConnectionWriteTools } from "../agent-lib/tools/connection-write-tools";
 import { createFlowFileTools } from "../agent-lib/tools/flow-file-tools";
+import { createWorkflowTools } from "../agent-lib/tools/workflow-tools";
+import { createFlowSyncTools } from "../agent-lib/tools/flow-sync-tools";
 import { createMemberTools } from "../agent-lib/tools/member-tools";
 import { createWebTools } from "../agent-lib/tools/web-tools";
 import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
@@ -88,18 +89,20 @@ const SERVER_INSTRUCTIONS = `Mako builds data apps (git-backed React projects + 
 Typical loop:
 1. Discover data: list_connections (every configured credential — kind "database" for warehouses, kind "source" for Stripe/Close/… keys), then list_databases / list_tables / inspect_table on a database connection (they dispatch on engine — SQL or MongoDB). A source connection is not queryable: probe_connection reads one live page of an entity from its platform; list_connectors is the catalog of connector code.
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
-3. app_list_apps → app_create_app → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
+3. search_apps first (extend a close match rather than copy it) → app_create_app (lands in the user's personal users/<handle>/apps/ unless they ask for a shared one) → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
 4. Verify with app_open_app (starts the dev server, focuses the user's UI) + app_dev_log (vite + browser console) + app_browse (headless browser: click, navigate, screenshot the running app).
 5. app_commit → app_merge_to_main (main is what publishes buildable state).
 
 dbt: create/read projects → create/read/edit/delete model files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run) → create/update/delete jobs. Edits commit straight to the user's session branch of the workspace repo (dbt/ folder). Warehouse-mutating runs (dbt_run_model, dbt_run_job, dbt_cancel_run) appear only with the explicit warehouse:write OAuth/API-key scope.
+
+Syncs (flows, what loads sources into the warehouse): flow_list → flow_read / flow_status (per entity: mode, backlog, failures, last materialised). flow_backfill starts a full backfill; flow_update changes only the triggers (poll cron, webhook on/off, resync cron). Both need warehouse:write and an owner/admin.
 
 Skills (same knowledge as the in-product agent):
 - list_skills → compact index (workspace + system).
 - get_relevant_skills({ query }) → ranked bodies for your task (call this early).
 - load_skill / read_skill_resource / mako://skills/{name} for specifics.
 Before writing app code: get_relevant_skills("build a Mako app") or resource mako://skills/apps.
-Optional: search_dashboards, web_search / fetch_url for public docs.`;
+Optional: web_search / fetch_url for public docs.`;
 
 /** ACP Desktop Chat — no headless preview tokens; the user already has a live tab. */
 const ACP_DESKTOP_SERVER_INSTRUCTIONS = `Mako builds data apps (React + data bindings) inside Mako Desktop Chat.
@@ -107,7 +110,7 @@ const ACP_DESKTOP_SERVER_INSTRUCTIONS = `Mako builds data apps (React + data bin
 Typical loop:
 1. Discover data: list_connections (kind "database" for warehouses, kind "source" for Stripe/Close/… keys), then list_databases / list_tables / inspect_table on a database connection (they dispatch on engine — SQL or MongoDB). A source connection is not queryable: probe_connection reads one live page from its platform.
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
-3. app_list_apps → app_create_app → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
+3. search_apps first (extend a close match rather than copy it) → app_create_app (lands in the user's personal users/<handle>/apps/ unless they ask for a shared one) → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
 4. For dbt work: read_dbt_project_tree → read/edit files → validate asynchronously, then poll dbt_get_run. For large or destructive work (warehouse runs, Git mutations, schedules), prefer proposing a plan via mako-desktop submit_plan before acting.
 5. app_open_app opens/refreshes the app tab in Desktop. Verify with app_dev_log (vite + browser console) and app_browse (headless browser inside the sandbox). For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
 6. Interactive UX: mako-desktop ask_clarifying_questions / submit_plan (docked Chat cards) — never ask as plain text.
@@ -119,7 +122,7 @@ Skills (same knowledge as the in-product agent):
 - get_relevant_skills({ query }) → ranked bodies for your task (call this early).
 - load_skill / read_skill_resource / mako://skills/{name} for specifics.
 Before writing app code: get_relevant_skills("build a Mako app") or resource mako://skills/apps.
-Optional: search_dashboards, web_search / fetch_url for public docs.`;
+Optional: web_search / fetch_url for public docs.`;
 
 /** Defensive cap so a huge query result cannot blow up the JSON response. */
 const MAX_TOOL_RESULT_CHARS = 200_000;
@@ -174,17 +177,6 @@ export function buildMakoMcpCandidateTools(
     surface: "mcp",
   });
 
-  // Dashboards manage data sources the same way apps manage bindings: the
-  // server leg of update_data_source_query (per-surface adapter, run_app
-  // pattern) lets headless agents edit queries, toggle materialization, and
-  // set the dashboard refresh schedule.
-  const dashboardTools = createServerDashboardTools({
-    workspaceId,
-    userId,
-    chatId,
-    queryAccess,
-  });
-
   const notebookTools = createNotebookServerTools({
     workspaceId,
     userId,
@@ -203,7 +195,6 @@ export function buildMakoMcpCandidateTools(
   const { list_connections, list_databases, list_tables, inspect_table } =
     createUniversalTools(workspaceId, [], undefined, userId);
   const consoleSearchTools = createConsoleSearchTools(workspaceId);
-  const dashboardSearchTools = createDashboardSearchTools(workspaceId);
   const versionHistoryTools = createVersionHistoryTools(workspaceId);
   const skillTools = createSkillTools(workspaceId, userId);
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId, userId);
@@ -218,6 +209,9 @@ export function buildMakoMcpCandidateTools(
   // The agent in that scenario has the WORKSPACE repo checked out, not this
   // monorepo, so `pnpm flows:validate` is not a surface it can reach.
   const flowFileTools = createFlowFileTools(workspaceId);
+  const workflowTools = createWorkflowTools({ workspaceId, userId });
+  // Syncs (flows): read, status, backfill, trigger controls.
+  const flowSyncTools = createFlowSyncTools({ workspaceId, userId });
   // Gated by the members-write grant AND a live owner/admin check inside the
   // tools themselves — a key outlives the membership that justified it.
   const memberTools = createMemberTools(workspaceId, userId);
@@ -225,10 +219,11 @@ export function buildMakoMcpCandidateTools(
     ...connectorTools,
     ...connectionWriteTools,
     ...flowFileTools,
+    ...flowSyncTools,
+    ...workflowTools,
     ...appsTools,
     ...memberTools,
     ...consoleTools,
-    ...dashboardTools,
     ...notebookTools,
     ...selfDirectiveTools,
     // Unified cross-engine discovery (dispatches on connection type). The
@@ -248,7 +243,6 @@ export function buildMakoMcpCandidateTools(
     // buildMakoMcpToolset will strip it.
     mongo_execute_query: mongoTools.execute_query,
     ...consoleSearchTools,
-    ...dashboardSearchTools,
     ...versionHistoryTools,
     ...skillTools,
     ...webTools,
@@ -409,6 +403,7 @@ function capabilityScopeForGrant(
   if (grant === "git-write") return "git:write";
   if (grant === "members-write") return "members:write";
   if (grant === "connections-write") return "connections:write";
+  if (grant === "workflows-run") return "workflows:run";
   return undefined;
 }
 
@@ -621,12 +616,23 @@ export function buildMakoMcpServer(
       };
     }
 
+    const execute = tool.execute;
     try {
-      const result = await tool.execute(input as never, {
-        toolCallId: nanoid(),
-        messages: [],
-        context: undefined,
-      });
+      const result = await withQueryLabels(
+        {
+          mako_source: "agent",
+          mako_trigger: context.acpDesktop ? "desktop" : "mcp",
+          mako_tool: name,
+          mako_user: context.userId,
+          mako_workspace: context.workspaceId,
+        },
+        () =>
+          execute(input as never, {
+            toolCallId: nanoid(),
+            messages: [],
+            context: undefined,
+          }),
+      );
       const richContent = extractMcpContent(result);
       if (richContent) {
         return { content: richContent };

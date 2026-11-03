@@ -46,6 +46,7 @@ import {
   assertTreeAtMirrorMain,
 } from "../apps/cloud-repo.service";
 import { resolveConfiguredEntities } from "./entity-selection";
+import { isWebhookFlow } from "../services/flow-triggers.service";
 import type { FlowFile } from "../services/flow-config-files";
 
 const log = loggers.api("cdc-flow-reconcile");
@@ -174,7 +175,7 @@ export async function teardownFlow(flow: IFlow): Promise<{
   // the row holds — it is deleted below. Best-effort: a provider outage must
   // not block a deletion.
   if (
-    flow.type === "webhook" &&
+    isWebhookFlow(flow) &&
     flow.webhookConfig?.endpoint &&
     flow.dataSourceId
   ) {

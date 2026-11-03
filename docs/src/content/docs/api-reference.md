@@ -44,7 +44,7 @@ Create API keys in **Workspace settings → API Keys**. The same page surfaces y
 | `GET`  | `/api/workspaces`     | List user's workspaces |
 | `POST` | `/api/workspaces`     | Create a workspace     |
 | `GET`  | `/api/workspaces/:id` | Get workspace details  |
-| `GET`  | `/api/workspaces/:id/settings/limits` | Get refresh concurrency limits (`dashboardRefreshConcurrency`, `appBindingRefreshConcurrency`; defaults 2, clamped to the per-workspace max) |
+| `GET`  | `/api/workspaces/:id/settings/limits` | Get refresh concurrency limits (`appBindingRefreshConcurrency`; default 2, clamped to the per-workspace max) |
 | `PUT`  | `/api/workspaces/:id/settings/limits` | Update refresh concurrency limits |
 | `GET`  | `/api/workspaces/:id/auto-join` | Get domain auto-join settings (email domains that auto-join on first sign-in, and the role granted: `member` \| `viewer`) |
 | `PUT`  | `/api/workspaces/:id/auto-join` | Set domain auto-join (`{ domains: string[] (max 20), role?: "member" \| "viewer" }`, default role `viewer`) |
@@ -144,6 +144,8 @@ A *connector* is code (Stripe, Close, PostHog, a workspace-authored `ws:` connec
 
 The same methods are also served at `/api/workspaces/:wid/connectors` (and `/connectors/:id/…`) as a deprecated alias.
 
+Workspace-authored connector code has git history too: `GET /api/workspaces/:wid/connector-definitions/:slug/git/history` (also `/git/commit`, `/git/file-versions`) and `POST …/git/restore` (workspace editors only). See [Version History](/version-history/).
+
 ### Probe Request
 
 `POST …/connections/sources/:id/probe` (or the legacy `POST …/connectors/:id/probe`) takes an optional JSON body — `entity` (omit to test the credential only), `limit` (1–200, default 20), `fields` (top-level fields to keep), `since` (ISO 8601 instant, honoured where the connector can) — and answers `{ success, data: { connection, check, entity?, durationMs } }`. `entity` carries `records`, `schema`, `count`, `received`, `truncated`, `hasMore` and `logs`. One API page is read and nothing is written; credential values are scrubbed from every string in the result. Errors carry a `code` (`invalid_input`, `not_found`, `unknown_entity`, `timeout`, `connector_unavailable`). Requires a browser session or a legacy (unscoped) API key: scoped MCP keys stay MCP-only, and reach the same probe through the `probe_connection` tool.
@@ -157,6 +159,8 @@ The same methods are also served at `/api/workspaces/:wid/connectors` (and `/con
 | `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/status`                   | Get CDC stream status                                        |
 | `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/schema-health`            | Compare live destination column types to the connector schema (BigQuery; detects drift) |
 | `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/destination-counts`       | Batched row counts per entity in the destination             |
+| `GET`  | `/api/workspaces/:wid/flows/:id/git/history` (also `/git/commit`, `/git/file-versions`) | Git history of the flow definition file |
+| `POST` | `/api/workspaces/:wid/flows/:id/git/restore`                       | Restore the flow to a previous commit (as a new commit)      |
 
 ### Destination Counts Response
 
@@ -301,48 +305,6 @@ All endpoints require authentication and workspace access. Agent-side CRUD is av
 }
 ```
 
-## Dashboards
-
-| Method   | Endpoint                                                         | Description                          |
-| -------- | ---------------------------------------------------------------- | ------------------------------------ |
-| `GET`    | `/api/workspaces/:wid/dashboards`                                | List dashboards                      |
-| `POST`   | `/api/workspaces/:wid/dashboards`                                | Create a dashboard                   |
-| `GET`    | `/api/workspaces/:wid/dashboards/:did`                           | Get dashboard details                |
-| `PUT`    | `/api/workspaces/:wid/dashboards/:did`                           | Update dashboard                     |
-| `DELETE` | `/api/workspaces/:wid/dashboards/:did`                           | Delete dashboard                     |
-| `POST`   | `/api/workspaces/:wid/dashboards/:did/duplicate`                 | Duplicate a dashboard                |
-| `GET`    | `/api/workspaces/:wid/dashboards/:did/versions`                  | List dashboard version history       |
-| `GET`    | `/api/workspaces/:wid/dashboards/:did/versions/:version`         | Get a specific dashboard version     |
-| `POST`   | `/api/workspaces/:wid/dashboards/:did/versions/:version/restore` | Restore dashboard to a past version  |
-| `POST`   | `/api/workspaces/:wid/dashboards/:did/version-comment`           | AI-suggested commit message for pending changes |
-| `GET`    | `/api/workspaces/:wid/dashboards/:did/collaborators`             | List per-user collaborators                  |
-| `POST`   | `/api/workspaces/:wid/dashboards/:did/collaborators`             | Add/update a collaborator (`{ userId, role }`, role `viewer`\|`editor`; owner/admin only) |
-| `PATCH`  | `/api/workspaces/:wid/dashboards/:did/collaborators/:userId`     | Change a collaborator's role (owner/admin only) |
-| `DELETE` | `/api/workspaces/:wid/dashboards/:did/collaborators/:userId`     | Remove a collaborator (owner/admin only)     |
-| `PATCH`  | `/api/workspaces/:wid/dashboards/:did/sharing`                   | Update general access (`{ access, workspaceRole }`; owner/admin only) |
-| `POST`   | `/api/workspaces/:wid/dashboards/:did/public-share`             | Enable/create a public link (`{ password? }`; owner/admin only) |
-| `GET`    | `/api/workspaces/:wid/dashboards/:did/public-share/password`    | Reveal the public-link password (owner/admin only) |
-| `PATCH`  | `/api/workspaces/:wid/dashboards/:did/public-share`            | Update password / rotate token / rename slug (owner/admin only) |
-| `DELETE` | `/api/workspaces/:wid/dashboards/:did/public-share`            | Disable the public link (owner/admin only)   |
-
-### Dashboard Folders
-
-| Method   | Endpoint                                                         | Description                          |
-| -------- | ---------------------------------------------------------------- | ------------------------------------ |
-| `GET`    | `/api/workspaces/:wid/dashboard-folders`                         | List dashboard folders               |
-| `POST`   | `/api/workspaces/:wid/dashboard-folders`                         | Create a folder                      |
-| `PUT`    | `/api/workspaces/:wid/dashboard-folders/:fid`                    | Update a folder                      |
-| `DELETE` | `/api/workspaces/:wid/dashboard-folders/:fid`                    | Delete a folder                      |
-
-### Dashboard Materialization
-
-| Method | Endpoint                                                                      | Description                                   |
-| ------ | ----------------------------------------------------------------------------- | --------------------------------------------- |
-| `GET`  | `/api/workspaces/:wid/dashboards/:did/materialization/status`                 | Get materialization status for all data sources |
-| `POST` | `/api/workspaces/:wid/dashboards/:did/materialization/trigger`                | Trigger materialization for a data source       |
-| `POST` | `/api/workspaces/:wid/dashboards/:did/materialization/trigger-all`            | Trigger materialization for all data sources    |
-| `GET`  | `/api/workspaces/:wid/dashboards/:did/materialization/stream/:dataSourceId`   | Stream Parquet artifact (supports range requests) |
-
 ## Apps
 
 Git-backed React apps built inside the workspace ([Apps](/apps/)). Private apps are owner-only — admins and API keys cannot access another member's private app. The workspace repo itself is served over git HTTP at `/api/apps-git/:workspaceId.git` (scoped git token).
@@ -367,6 +329,12 @@ Git-backed React apps built inside the workspace ([Apps](/apps/)). Private apps 
 | `POST`   | `/api/workspaces/:wid/apps/:id/public-share`                  | Manage the anonymous public link (also `PATCH`/`DELETE`)   |
 | `GET`    | `/api/workspaces/:wid/apps/:id/sandbox`                       | Sandbox status (also `POST …/sandbox/recycle`)             |
 | `GET`    | `/api/workspaces/:wid/apps/:id/viewer`                        | Resolve the caller's viewer identity (what `useViewer()` sees): id, email, workspace role, app role. Editors may pass `?as=<email>` to preview another member's resolution |
+| `PATCH`  | `/api/workspaces/:wid/apps/:id/chat`                          | Turn "chat with this app" on or off for live-link viewers (`{ enabled }`; owner or workspace admin). See [Chat with an app](/apps/#chat-with-an-app) |
+| `GET`    | `/api/workspaces/:wid/apps/:id/chats`                         | List the caller's chats with the published app (50 most recent) |
+
+## Workflows (preview)
+
+Workflows are TypeScript files in the workspace repo's `workflows/` folder, deployed from `main` and run by Hatchet. Routes live under `/api/workspaces/:wid/workflows`: `GET /` (deployed workflows, schedules, recent runs), `GET /runs/:id`, `GET /files`, `POST /:name/run` (`{ input, sandbox? }`) and `PUT /:name/triggers` (activate, add or remove a webhook). See [Workflows](/workflows/#api) for details.
 
 ## Notebooks
 
@@ -374,7 +342,7 @@ Notebook CRUD, kernel sessions, executions, versions, presence, and the kernel's
 
 ## Public Shares
 
-Token-gated, **read-only** endpoints for published dashboard/app links. These are intentionally unauthenticated (no session or API key) and serve only materialized snapshots.
+Token-gated, **read-only** endpoints for published app links. These are intentionally unauthenticated (no session or API key) and serve only materialized snapshots.
 
 | Method | Endpoint                                  | Description                                              |
 | ------ | ----------------------------------------- | ------------------------------------------------------- |

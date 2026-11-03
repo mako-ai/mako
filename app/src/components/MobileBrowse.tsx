@@ -22,7 +22,11 @@ import {
   Settings as SettingsIcon,
 } from "lucide-react";
 import { SidebarUserMenu } from "./Sidebar";
-import { topNavigationItems, type NavigationView } from "../lib/explorer-nav";
+import {
+  topNavigationItems,
+  useNavigationItems,
+  type NavigationView,
+} from "../lib/explorer-nav";
 import { useAuth } from "../contexts/auth-context";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useUIStore, selectActiveExplorer } from "../store/uiStore";
@@ -36,7 +40,6 @@ import {
 import { tabKindIcon } from "../lib/entity-icons";
 import { relativeTime } from "../lib/relative-time";
 import { tabKindEntityLabel } from "../lib/entity-labels";
-import { focusDashboardTab } from "../dashboard-runtime/shell";
 import { focusNotebookTab } from "../notebook-runtime/shell";
 import { focusAppsTab } from "../apps-runtime/shell";
 
@@ -166,6 +169,7 @@ export default function MobileBrowse({
   /** The active explorer's panel — the same element the desktop pane shows. */
   explorer: React.ReactNode;
 }) {
+  const navigationItems = useNavigationItems();
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
   const browseView = useUIStore(state => state.mobileBrowseView);
@@ -209,9 +213,6 @@ export default function MobileBrowse({
             });
           break;
         }
-        case "dashboard":
-          focusDashboardTab(entry.id, entry.title);
-          break;
         case "notebook":
           focusNotebookTab(entry.id, entry.title);
           break;
@@ -289,7 +290,7 @@ export default function MobileBrowse({
         </Tooltip>
       </Box>
 
-      {/* Search = the command palette: consoles (server search), dashboards,
+      {/* Search = the command palette: consoles (server search),
           flows, projects and open tabs, one field. */}
       <Box sx={{ px: 1.5, pb: 1 }}>
         <ButtonBase
@@ -316,7 +317,7 @@ export default function MobileBrowse({
               color: "text.secondary",
             }}
           >
-            Search consoles, dashboards, apps…
+            Search consoles, apps…
           </Typography>
         </ButtonBase>
       </Box>
@@ -344,7 +345,7 @@ export default function MobileBrowse({
             px: 0.5,
           }}
         >
-          {topNavigationItems.map(item => {
+          {navigationItems.map(item => {
             const Icon = item.icon;
             return (
               <ButtonBase

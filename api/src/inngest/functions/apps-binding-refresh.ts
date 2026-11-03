@@ -33,7 +33,8 @@ import {
   type AppBinding,
   type AppBindingStateDoc,
 } from "../../apps/bindings.service";
-import { isDashboardMaterializationDue } from "../../services/dashboard-materialization-schedule.service";
+import { isCronDue, nextCronRunAt } from "../../services/cron-due";
+import { pausedScheduleAppIds } from "../../apps/app-lifecycle.service";
 
 import { APPS_BINDING_BUILD_CONCURRENCY } from "./apps-binding-concurrency";
 
@@ -66,13 +67,13 @@ export function isBindingDueAt(
 ): boolean {
   if (!binding.schedule) return false;
   const lastAttempt = state?.history?.[0]?.at ?? null;
-  return isDashboardMaterializationDue({
-    schedule: {
-      enabled: true,
-      cron: binding.schedule,
-      timezone: binding.timezone,
-    },
-    lastRefreshedAt: lastAttempt ?? state?.lastMaterializedAt ?? null,
+  // Parse up front so an invalid cron/timezone throws even before the first
+  // run (callers log-and-skip), instead of reading as "never ran → due".
+  nextCronRunAt(binding.schedule, { timezone: binding.timezone });
+  return isCronDue({
+    cron: binding.schedule,
+    timezone: binding.timezone,
+    lastRunAt: lastAttempt ?? state?.lastMaterializedAt ?? null,
     now,
   });
 }
@@ -133,7 +134,16 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
         .select("_id")
         .lean();
       const withRow = new Set(rows.map(r => r._id.toString()));
-      return entries.filter(e => withRow.has(e.appId));
+      // Unviewed apps (nobody opened them in 30 days) have their schedules
+      // paused by the lifecycle job until the next open — skipped here, the
+      // binding's front matter untouched (app-lifecycle.service.ts).
+      const paused = await pausedScheduleAppIds();
+      if (paused.size > 0) {
+        log.info("Skipping paused binding schedules", {
+          apps: entries.filter(e => paused.has(e.appId)).length,
+        });
+      }
+      return entries.filter(e => withRow.has(e.appId) && !paused.has(e.appId));
     })) as unknown as Array<
       Pick<IAppIndexEntry, "workspaceId" | "appId" | "schedules">
     >;

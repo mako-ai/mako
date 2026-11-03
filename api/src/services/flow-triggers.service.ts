@@ -15,6 +15,11 @@
 
 /** Structural subset of IFlow used for trigger derivation. */
 export interface FlowTriggerFields {
+  /**
+   * Retired. Documents written before triggers replaced it still carry it;
+   * nothing writes it any more and only `isWebhookFlow` reads it, as a
+   * fallback for such a document without an endpoint.
+   */
   type?: "scheduled" | "webhook";
   schedule?: {
     enabled?: boolean;
@@ -61,6 +66,28 @@ export function hasWebhookTrigger(flow: FlowTriggerFields): boolean {
   );
 }
 
+/** The flow has an inbound webhook URL (minted once; providers POST to it). */
+export function hasWebhookEndpoint(flow: FlowTriggerFields): boolean {
+  return (
+    typeof flow.webhookConfig?.endpoint === "string" &&
+    flow.webhookConfig.endpoint.trim().length > 0
+  );
+}
+
+/**
+ * Whether the flow is set up for inbound webhooks: it has its URL. Whether
+ * deliveries are accepted right now is `webhookConfig.enabled` (the receiver
+ * answers 403 when it is off), and `hasWebhookTrigger` is both. A flow with
+ * webhooks keeps polling when it has a poll schedule: webhooks only add speed.
+ *
+ * A document from before triggers replaced `type` and without an endpoint
+ * still counts when its retired `type` says webhook (the migration
+ * 2026-10-17 gives every such flow its endpoint; this is the safety net).
+ */
+export function isWebhookFlow(flow: FlowTriggerFields): boolean {
+  return hasWebhookEndpoint(flow) || flow.type === "webhook";
+}
+
 export function hasReconcileTrigger(flow: FlowTriggerFields): boolean {
   return (
     flow.backfillSchedule?.enabled === true &&
@@ -82,13 +109,9 @@ export function hasAnyTrigger(flow: FlowTriggerFields): boolean {
 }
 
 /**
- * Back-compat `type` derivation: a flow is only "webhook" when the webhook
- * trigger is its sole freshness source; anything with a poll schedule is
- * "scheduled" so legacy consumers keep working.
- *
- * IMPORTANT: this value must never be persisted onto an existing webhook
- * flow's `type` — the inbound webhook receiver hard-filters `type: "webhook"`,
- * so rewriting a hybrid flow's type would 404 its webhook endpoint.
+ * A label for API clients that still read `type`: "webhook" when the webhook
+ * trigger is the sync's only freshness source, else "scheduled". Display
+ * only: never persisted, never branched on.
  */
 export function deriveFlowType(
   flow: FlowTriggerFields,
@@ -97,24 +120,39 @@ export function deriveFlowType(
   return triggers.webhook && !triggers.schedule ? "webhook" : "scheduled";
 }
 
+export const LEGACY_ENGINE_REMOVED =
+  "The legacy sync engine has been removed: connector flows run on CDC and need a table destination with a CDC adapter";
+
 /**
- * Engine default for newly created flows. Webhook flows are always CDC (the
- * legacy real-time webhook pipeline has been decommissioned). Connector
- * flows targeting a CDC-capable table destination default to CDC; everything
- * else stays on the legacy engine until the full sunset.
+ * Engine for a flow. CDC is the only engine for connector flows (the legacy
+ * engine has been removed); a connector flow that cannot run on CDC is
+ * refused where it is created (`connectorFlowCdcError`). Database-source
+ * flows (query -> table) have their own write path and keep the "legacy"
+ * label, which nothing reads for them.
  */
 export function resolveDefaultSyncEngine(params: {
-  flowType: "scheduled" | "webhook";
+  sourceType: "connector" | "database";
+}): "cdc" | "legacy" {
+  return params.sourceType === "database" ? "legacy" : "cdc";
+}
+
+/**
+ * Why a connector flow cannot be created or saved, or null when it can: CDC
+ * needs a table destination whose database has a CDC adapter.
+ */
+export function connectorFlowCdcError(params: {
   sourceType: "connector" | "database";
   hasTableDestination: boolean;
   destinationSupportsCdc: boolean;
-}): "cdc" | "legacy" {
-  if (params.flowType === "webhook") return "cdc";
-  return params.sourceType === "connector" &&
-    params.hasTableDestination &&
-    params.destinationSupportsCdc
-    ? "cdc"
-    : "legacy";
+}): string | null {
+  if (params.sourceType === "database") return null;
+  if (!params.hasTableDestination) {
+    return `${LEGACY_ENGINE_REMOVED}: this flow has no table destination`;
+  }
+  if (!params.destinationSupportsCdc) {
+    return `${LEGACY_ENGINE_REMOVED}: the destination database has no CDC adapter`;
+  }
+  return null;
 }
 
 /**

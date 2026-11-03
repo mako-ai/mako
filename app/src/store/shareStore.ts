@@ -3,34 +3,32 @@ import { immer } from "zustand/middleware/immer";
 import { api, unwrap, toErrorMessage as errMessage } from "../api";
 
 /**
- * Typed base path per resource. Collaborator + sharing endpoints exist for all
- * three resources, so these literal templates resolve to valid spec paths and
+ * Typed base path per resource. Collaborator + sharing endpoints exist for both
+ * resources, so these literal templates resolve to valid spec paths and
  * give the typed client compile-time path/param checking.
  */
 const RESOURCE_BASE = {
-  dashboard: "/api/workspaces/{workspaceId}/dashboards/{id}",
   console: "/api/workspaces/{workspaceId}/consoles/{id}",
   app: "/api/workspaces/{workspaceId}/apps/{id}",
 } as const;
 
 /**
- * Public links are only supported for dashboards and apps (not consoles), so
+ * Public links are only supported for apps (not consoles), so
  * these literal templates resolve to valid spec paths for the typed client.
  */
 const PUBLIC_SHARE_BASE = {
-  dashboard: "/api/workspaces/{workspaceId}/dashboards/{id}/public-share",
   app: "/api/workspaces/{workspaceId}/apps/{id}/public-share",
 } as const;
 
 /**
- * Unified sharing store for dashboards, consoles and apps.
+ * Unified sharing store for consoles and apps.
  *
  * Backs the Google Workspace-style ShareDialog: per-user collaborators
  * (viewer/editor), general access (private/workspace + workspace role) and
- * public links with optional password (dashboards + apps).
+ * public links with optional password (apps only).
  */
 
-export type ShareResourceType = "dashboard" | "console" | "app";
+export type ShareResourceType = "console" | "app";
 export type ShareRole = "viewer" | "editor";
 export type ShareAccess = "private" | "workspace";
 
@@ -90,15 +88,24 @@ export function buildPublicShareUrl(
  * lib/tab-routing.ts so the copied link hydrates into the right tab.
  */
 const RESOURCE_URL_PREFIX: Record<ShareResourceType, string> = {
-  dashboard: "d",
   console: "c",
   app: "apps",
 };
 
 /**
- * Workspace-internal URL for logged-in collaborators. Apps use their
- * published deployment route so the copied link opens fullscreen without the
- * Mako shell; other resources still open their normal deep-linked tab.
+ * The canonical in-app URL of a published app: the viewer page, full-screen
+ * with its chat. This — not the raw `/api/…/live/` deployment route, which
+ * only redirects here — is what people copy and paste: it signs visitors in,
+ * and its HTML carries the app's link-preview tags.
+ */
+export function appViewerPath(workspaceId: string, appId: string): string {
+  return `/view/${encodeURIComponent(workspaceId)}/${encodeURIComponent(appId)}`;
+}
+
+/**
+ * Workspace-internal URL for logged-in collaborators. Apps use their viewer
+ * page (appViewerPath) so the copied link opens fullscreen without the Mako
+ * shell; other resources still open their normal deep-linked tab.
  *
  * Built from ids rather than read off the address bar so it also works in the
  * desktop shell, which has no address bar to copy from.
@@ -109,7 +116,7 @@ export function buildWorkspaceResourceUrl(
   workspaceId?: string,
 ): string {
   if (resourceType === "app" && workspaceId) {
-    return `${window.location.origin}/api/workspaces/${encodeURIComponent(workspaceId)}/apps/${encodeURIComponent(resourceId)}/live/`;
+    return `${window.location.origin}${appViewerPath(workspaceId, resourceId)}`;
   }
   return `${window.location.origin}/${RESOURCE_URL_PREFIX[resourceType]}/${resourceId}`;
 }
@@ -170,6 +177,12 @@ interface ShareStoreState {
     type: ShareResourceType,
     workspaceId: string,
     resourceId: string,
+  ) => Promise<Result>;
+  /** Apps only: turn "chat with app" on the live link on or off. */
+  updateAppChat: (
+    workspaceId: string,
+    appId: string,
+    enabled: boolean,
   ) => Promise<Result>;
   /** Owner/admin only: reveal the public link password in plain text. */
   getPublicSharePassword: (
@@ -310,6 +323,23 @@ export const useShareStore = create<ShareStoreState>()(
         return {
           ok: false,
           error: errMessage(error, "Failed to enable public sharing"),
+        };
+      }
+    },
+
+    updateAppChat: async (workspaceId, appId, enabled) => {
+      try {
+        unwrap(
+          await api.PATCH("/api/workspaces/{workspaceId}/apps/{id}/chat", {
+            params: { path: { workspaceId, id: appId } },
+            body: { enabled },
+          }),
+        );
+        return { ok: true };
+      } catch (error) {
+        return {
+          ok: false,
+          error: errMessage(error, "Failed to update chat setting"),
         };
       }
     },

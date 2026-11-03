@@ -142,15 +142,15 @@ async function main(): Promise<void> {
     assert.equal((await listFavourites(ALICE)).length, 0);
 
     // Starring something already starred INTO a folder moves it there:
-    // dropping a starred dashboard on a Starred folder must not snap back.
+    // dropping a starred console on a Starred folder must not snap back.
     const target = ok(await createFavouriteFolder(ALICE, { title: "Target" }));
     const loose = ok(
-      await addFavourite(ALICE, { kind: "dashboard", refId: "d9" }),
+      await addFavourite(ALICE, { kind: "console", refId: "d9" }),
     );
     assert.equal(loose.parentId, null);
     const filed = ok(
       await addFavourite(ALICE, {
-        kind: "dashboard",
+        kind: "console",
         refId: "d9",
         parentId: target.id,
       }),
@@ -158,7 +158,7 @@ async function main(): Promise<void> {
     assert.equal(filed.id, loose.id, "still one row");
     assert.equal(filed.parentId, target.id, "moved into the folder");
     const same = ok(
-      await addFavourite(ALICE, { kind: "dashboard", refId: "d9" }),
+      await addFavourite(ALICE, { kind: "console", refId: "d9" }),
     );
     assert.equal(
       same.parentId,
@@ -178,6 +178,20 @@ async function main(): Promise<void> {
       refId: "z",
     });
     assert.equal(badKind.ok, false);
+
+    // Stars on a kind that no longer exists (the removed dashboards) stay
+    // in the table but are never listed.
+    const before = (await listFavourites(ALICE)).length;
+    await Favourite.collection.insertOne({
+      workspaceId: new Types.ObjectId(WS),
+      userId: "alice",
+      parentId: null,
+      type: "item",
+      kind: "dashboard",
+      refId: "legacy",
+      position: 99,
+    });
+    assert.equal((await listFavourites(ALICE)).length, before);
   } finally {
     await mongoose.disconnect();
     await mongo.stop();

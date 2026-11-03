@@ -48,6 +48,9 @@ vi.mock("../api", () => {
     unwrapBody: vi.fn((r: { data?: unknown }) => (r?.data ?? {}) as never),
     ApiError,
     toErrorMessage: (e: unknown) => String(e),
+    toLoadError: (e: unknown, fallback: string) => ({
+      message: e instanceof Error ? e.message : fallback,
+    }),
   };
 });
 vi.mock("../apps-runtime/shell", () => ({
@@ -56,7 +59,7 @@ vi.mock("../apps-runtime/shell", () => ({
   reconcileAppsTabs: vi.fn(),
 }));
 
-import { ApiError, unwrapBody } from "../api";
+import { ApiError, api, unwrapBody } from "../api";
 import { reconcileAppsTabs } from "../apps-runtime/shell";
 import { useAppsStore } from "./appsStore";
 import { useConsoleStore } from "./consoleStore";
@@ -124,7 +127,7 @@ describe("a workspace-wide change", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("costs the same whether the window cached 5 apps or 50", () => {
+  it("costs the same whether the window cached 5 apps or 50", async () => {
     // The property the fix exists for: cost independent of cache size. A
     // batched endpoint would have kept this proportional, only with a smaller
     // constant.
@@ -134,6 +137,9 @@ describe("a workspace-wide change", () => {
     useAppsStore.getState().markAllAppsStale();
     useAppsStore.getState().refreshAppIfStale(WS, "app1");
     const few = calls.length;
+    // Let the first round's requests finish: a branch list still in flight
+    // would be shared (below), which is not what this measures.
+    await new Promise(resolve => setTimeout(resolve, 0));
 
     calls.length = 0;
     useAppsStore.setState({ filesByApp: {}, branchesByApp: {}, staleApps: {} });
@@ -141,6 +147,28 @@ describe("a workspace-wide change", () => {
     useAppsStore.getState().markAllAppsStale();
     useAppsStore.getState().refreshAppIfStale(WS, "app1");
     expect(calls.length).toBe(few);
+  });
+});
+
+describe("the workspace branch list", () => {
+  it("is one request however many apps ask at once", async () => {
+    // The list is the workspace repo's, identical for every app; on
+    // 2026-10-19 each open app fetched it separately (17 copies of the
+    // slowest call in the API).
+    await Promise.all(
+      ["app0", "app1", "app2", "app3"].map(id =>
+        useAppsStore.getState().fetchBranches(WS, id),
+      ),
+    );
+    expect(calls.filter(p => p.endsWith("/branches"))).toHaveLength(1);
+    for (const id of ["app0", "app1", "app2", "app3"]) {
+      expect(useAppsStore.getState().branchesByApp[id]).toEqual([]);
+    }
+
+    // Once answered, the next ask is a new request: a push pokes right after
+    // a commit and that refetch must see the commit.
+    await useAppsStore.getState().fetchBranches(WS, "app0");
+    expect(calls.filter(p => p.endsWith("/branches"))).toHaveLength(2);
   });
 });
 
@@ -200,5 +228,126 @@ describe("fetchApps after unlink", () => {
     expect(s.error).toBeNull();
     expect(s.appsLoading).toBe(false);
     expect(reconcileAppsTabs).toHaveBeenCalledWith(new Set());
+  });
+});
+
+describe("fetchApps on load", () => {
+  const listCalls = () =>
+    calls.filter(p => p === "/api/workspaces/{workspaceId}/apps").length;
+
+  it("shares one request among everyone asking at once", async () => {
+    calls.length = 0;
+    // The explorer, the URL sync, three restored app tabs, an editor.
+    await Promise.all(
+      Array.from({ length: 6 }, () => useAppsStore.getState().fetchApps(WS)),
+    );
+    expect(listCalls()).toBe(1);
+    // Once it has landed, the next ask is a new request.
+    await useAppsStore.getState().fetchApps(WS);
+    expect(listCalls()).toBe(2);
+  });
+
+  it("a caller that just wrote gets one request after the in-flight one", async () => {
+    calls.length = 0;
+    const first = useAppsStore.getState().fetchApps(WS);
+    const afterWrites = [
+      useAppsStore.getState().fetchApps(WS, { fresh: true }),
+      useAppsStore.getState().fetchApps(WS, { fresh: true }),
+    ];
+    await Promise.all([first, ...afterWrites]);
+    expect(listCalls()).toBe(2);
+  });
+});
+
+describe("the view token", () => {
+  const APP = "6846e6a01b05af0948070999";
+  const SHA = "38ce8e7b28e8ace0c1d83bdacb95e28df3d5175b";
+  const tokenPosts = () =>
+    (vi.mocked(api.POST).mock.calls as unknown as Array<[string]>).filter(
+      ([path]) => path === "/api/workspaces/{workspaceId}/apps/{id}/view-token",
+    );
+  const answer = (sha = SHA, expiresAt = Date.now() + 30 * 60 * 1000) => ({
+    data: {
+      success: true,
+      url: `/api/apps-preview/tok-${sha.slice(0, 4)}/`,
+      sha,
+      expiresAt,
+      appId: APP,
+    },
+  });
+
+  beforeEach(() => {
+    vi.mocked(api.POST).mockReset();
+    useAppsStore.setState({
+      apps: [{ id: APP, slug: "renewals", publishedSha: SHA } as never],
+      viewUrlByApp: {},
+      viewUrlErrorByApp: {},
+      viewTokenByApp: {},
+    });
+  });
+
+  it("files a prefetch by slug under the app id, and the tab reuses it", async () => {
+    let release: () => void = () => undefined;
+    vi.mocked(api.POST).mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          release = () => resolve(answer() as never);
+        }) as never,
+    );
+    const prefetch = useAppsStore
+      .getState()
+      .fetchViewUrl(WS, "renewals", { speculative: true });
+    // The tab mounts while the prefetch is still in flight.
+    const tab = useAppsStore
+      .getState()
+      .fetchViewUrl(WS, APP, { reuseFresh: true });
+    release();
+    await Promise.all([prefetch, tab]);
+
+    expect(tokenPosts()).toHaveLength(1);
+    expect(useAppsStore.getState().viewUrlByApp[APP]).toBe(
+      "/api/apps-preview/tok-38ce/",
+    );
+  });
+
+  it("asks again once a publish moved the app past the held token", async () => {
+    vi.mocked(api.POST).mockResolvedValueOnce(answer() as never);
+    await useAppsStore.getState().fetchViewUrl(WS, APP);
+    useAppsStore.setState(s => {
+      (s.apps[0] as { publishedSha?: string }).publishedSha = "b".repeat(40);
+    });
+    vi.mocked(api.POST).mockResolvedValueOnce(answer("b".repeat(40)) as never);
+    await useAppsStore.getState().fetchViewUrl(WS, APP, { reuseFresh: true });
+    expect(tokenPosts()).toHaveLength(2);
+    expect(useAppsStore.getState().viewUrlByApp[APP]).toBe(
+      "/api/apps-preview/tok-bbbb/",
+    );
+  });
+
+  it("asks again when the held token is close to expiry", async () => {
+    vi.mocked(api.POST).mockResolvedValueOnce(
+      answer(SHA, Date.now() + 60 * 1000) as never,
+    );
+    await useAppsStore.getState().fetchViewUrl(WS, APP);
+    vi.mocked(api.POST).mockResolvedValueOnce(answer() as never);
+    await useAppsStore.getState().fetchViewUrl(WS, APP, { reuseFresh: true });
+    expect(tokenPosts()).toHaveLength(2);
+  });
+
+  it("always asks when the caller did not opt into reuse (publish, retry)", async () => {
+    vi.mocked(api.POST).mockResolvedValue(answer() as never);
+    await useAppsStore.getState().fetchViewUrl(WS, APP);
+    await useAppsStore.getState().fetchViewUrl(WS, APP);
+    expect(tokenPosts()).toHaveLength(2);
+  });
+
+  it("records no error for a failed prefetch, but does for the tab's own ask", async () => {
+    vi.mocked(api.POST).mockRejectedValue(new ApiError("nope", 404) as never);
+    await useAppsStore
+      .getState()
+      .fetchViewUrl(WS, "renewals", { speculative: true });
+    expect(useAppsStore.getState().viewUrlErrorByApp.renewals).toBeUndefined();
+    await useAppsStore.getState().fetchViewUrl(WS, APP, { reuseFresh: true });
+    expect(useAppsStore.getState().viewUrlErrorByApp[APP]).toBeDefined();
   });
 });

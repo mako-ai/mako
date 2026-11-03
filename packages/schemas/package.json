@@ -16,7 +16,6 @@
     "prepare": "node prepare.js"
   },
   "dependencies": {
-    "nanoid": "^6.0.2",
     "zod": "^4.6.6"
   },
   "devDependencies": {

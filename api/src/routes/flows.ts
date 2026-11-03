@@ -1,4 +1,5 @@
 import { createRoute, z } from "@hono/zod-openapi";
+import { asSystem } from "../access/connection-writes";
 import { findInWorkspace } from "./lib/load-resource";
 import {
   Flow,
@@ -65,7 +66,13 @@ import {
   hasCdcDestinationAdapter,
   supportedCdcWriteModes,
 } from "../sync-cdc/adapters/registry";
-import { resolveDefaultSyncEngine } from "../services/flow-triggers.service";
+import {
+  connectorFlowCdcError,
+  deriveFlowType,
+  hasWebhookTrigger,
+  isWebhookFlow,
+  resolveDefaultSyncEngine,
+} from "../services/flow-triggers.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { connectorRegistry } from "../connectors/registry";
 import {
@@ -279,7 +286,9 @@ function projectFlowListItem(
   return {
     _id: flow._id,
     workspaceId: flow.workspaceId,
-    type: flow.type,
+    // Retired field: an old document's stored value, else a display label
+    // (deriveFlowType). Never branched on.
+    type: flow.type ?? deriveFlowType(flow as never),
     name: flow.name,
     slug: flow.slug,
     sourceType: flow.sourceType ?? "connector",
@@ -680,7 +689,7 @@ flowRoutes.openapi(
       const requestBaseUrl = getRequestBaseUrl(c);
       const normalizedFlows = plains.map(flow => {
         const projected = projectFlowListItem(flow);
-        if (projected.type !== "webhook" || !projected._id) {
+        if (!isWebhookFlow(projected as never) || !projected._id) {
           return projected;
         }
         const endpoint = generateWebhookEndpoint(
@@ -845,8 +854,11 @@ flowRoutes.openapi(
       const userId = "system";
       const body = await c.req.json();
 
-      // Validate required fields based on flow type and source type
-      const flowType = body.type || "scheduled";
+      // Webhooks on at creation: `webhookConfig.enabled`, or the retired
+      // `type: "webhook"` older clients still send. Not stored: a flow's
+      // triggers are its schedule, its webhook config and its resync.
+      const webhookOn =
+        body.webhookConfig?.enabled === true || body.type === "webhook";
       const sourceType = body.sourceType || "connector";
 
       // Schedule cron required whenever a poll schedule is enabled,
@@ -977,10 +989,19 @@ flowRoutes.openapi(
         );
       }
 
+      // CDC is the only engine for connector flows: refuse one it cannot run.
+      const cdcError = connectorFlowCdcError({
+        sourceType,
+        hasTableDestination: Boolean(body.tableDestination?.connectionId),
+        destinationSupportsCdc: hasCdcDestinationAdapter(destinationType),
+      });
+      if (cdcError) {
+        return c.json({ success: false, error: cdcError }, 400);
+      }
+
       // Create flow with type-specific configuration
       const flowData: any = {
         workspaceId: new Types.ObjectId(workspaceId),
-        type: flowType,
         sourceType,
         destinationDatabaseId,
         destinationDatabaseName:
@@ -989,16 +1010,8 @@ flowRoutes.openapi(
             ? body.destinationDatabaseName.trim()
             : undefined,
         syncMode: body.syncMode || "full",
-        // Webhook flows run exclusively on the CDC engine (the legacy real-time
-        // webhook pipeline has been decommissioned). Connector flows targeting
-        // a CDC-capable table destination default to CDC too; everything else
-        // keeps the legacy engine until the full sunset.
-        syncEngine: resolveDefaultSyncEngine({
-          flowType,
-          sourceType,
-          hasTableDestination: Boolean(body.tableDestination?.connectionId),
-          destinationSupportsCdc: hasCdcDestinationAdapter(destinationType),
-        }),
+        // CDC for every connector flow (the legacy engine has been removed).
+        syncEngine: resolveDefaultSyncEngine({ sourceType }),
         writeMode: body.writeMode || "append_dedup",
         syncStateUpdatedAt: new Date(),
         enabled: true,
@@ -1007,7 +1020,7 @@ flowRoutes.openapi(
 
       // Optional periodic full-backfill cadence (CDC flows only).
       if (
-        (flowType === "webhook" || flowData.syncEngine === "cdc") &&
+        (webhookOn || flowData.syncEngine === "cdc") &&
         body.backfillSchedule
       ) {
         const sched = body.backfillSchedule;
@@ -1101,7 +1114,7 @@ flowRoutes.openapi(
         flowData.entityLayouts = body.entityLayouts;
       }
 
-      if (flowType === "scheduled") {
+      if (!webhookOn) {
         const scheduleEnabled = body.schedule?.enabled === true;
         flowData.schedule = {
           enabled: scheduleEnabled,
@@ -1112,7 +1125,7 @@ flowRoutes.openapi(
             ? body.schedule?.timezone || body.timezone || "UTC"
             : undefined,
         };
-      } else if (flowType === "webhook") {
+      } else {
         // Unified trigger model: a webhook flow may also carry a poll
         // schedule (hybrid trigger set). Persist it so the scheduler's
         // trigger-based selection picks it up.
@@ -1152,8 +1165,7 @@ flowRoutes.openapi(
         syncMode: flowData.syncMode,
         destinationType,
         syncEngine: flowData.syncEngine,
-        webhookEnabled:
-          flowType === "webhook" || Boolean(flowData.webhookConfig?.enabled),
+        webhookEnabled: webhookOn,
         selectedEntities: selectedEntitiesFromFlowBody({
           entityFilter: flowData.entityFilter,
           entityLayouts: flowData.entityLayouts,
@@ -1187,7 +1199,7 @@ flowRoutes.openapi(
       const flow = new Flow(flowData);
 
       // Update webhook endpoint with actual flow ID
-      if (flowType === "webhook" && flow.webhookConfig) {
+      if (webhookOn && flow.webhookConfig) {
         const requestBaseUrl = getRequestBaseUrl(c);
         flow.webhookConfig.endpoint = generateWebhookEndpoint(
           workspaceId,
@@ -1212,12 +1224,15 @@ flowRoutes.openapi(
           const { createDestinationWriter } =
             await import("../services/destination-writer.service");
           // createDestinationWriter.initialize() calls ensureSchema which creates the dataset
-          await createDestinationWriter(
-            {
-              destinationDatabaseId: flowData.destinationDatabaseId,
-              tableDestination: flowData.tableDestination,
-            },
-            "pre-check",
+          // The flow's own destination: written as Mako, like its syncs.
+          await asSystem(() =>
+            createDestinationWriter(
+              {
+                destinationDatabaseId: flowData.destinationDatabaseId,
+                tableDestination: flowData.tableDestination,
+              },
+              "pre-check",
+            ),
           );
           logger.info("BigQuery dataset ensured", {
             dataset: flowData.tableDestination.schema,
@@ -1293,7 +1308,7 @@ flowRoutes.openapi(
       await attachFlowLookups(workspaceId, [flow], {
         includeSourceConfig: true,
       });
-      if (flow.type === "webhook") {
+      if (isWebhookFlow(flow as never)) {
         const webhookConfig = {
           ...((flow.webhookConfig as Record<string, unknown> | undefined) ??
             {}),
@@ -1370,6 +1385,7 @@ flowRoutes.openapi(
       // Entities before this edit: a change re-targets the provider-side
       // webhook subscription after save (see flow-webhook-subscription).
       const entitySignatureBefore = flow ? flowEntitySignature(flow) : "";
+      const webhookOnBefore = flow ? hasWebhookTrigger(flow) : false;
 
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);
@@ -1645,8 +1661,26 @@ flowRoutes.openapi(
         };
       }
 
+      // Switching webhooks on gives any flow its inbound URL, minted once with
+      // the same formula as a webhook flow's. Polling is untouched: webhooks
+      // only add speed on top of it.
+      if (
+        body.webhookConfig?.enabled === true &&
+        !flow.webhookConfig?.endpoint
+      ) {
+        flow.webhookConfig = {
+          ...((flow.webhookConfig as unknown as Record<string, unknown>) ?? {}),
+          endpoint: generateWebhookEndpoint(
+            workspaceId as string,
+            flow._id.toString(),
+            getRequestBaseUrl(c),
+          ),
+          enabled: true,
+        } as typeof flow.webhookConfig;
+      }
+
       // Update webhook-specific fields
-      if (flow.type === "webhook" && flow.webhookConfig) {
+      if (isWebhookFlow(flow) && flow.webhookConfig) {
         flow.webhookConfig.endpoint = generateWebhookEndpoint(
           workspaceId as string,
           flow._id.toString(),
@@ -1674,16 +1708,20 @@ flowRoutes.openapi(
       await flow.save();
 
       // Enabling or disabling an entity changes which provider events the
-      // flow needs. Best-effort: a provider failure surfaces as a warning,
-      // never as a failed save.
+      // flow needs, and switching webhooks on needs a subscription at all
+      // (adopted by URL, created only when none exists). Best-effort: a
+      // provider failure surfaces as a warning, never as a failed save, and
+      // polling carries on.
       if (
-        flow.type === "webhook" &&
-        flowEntitySignature(flow) !== entitySignatureBefore
+        isWebhookFlow(flow) &&
+        (flowEntitySignature(flow) !== entitySignatureBefore ||
+          !webhookOnBefore ||
+          !flow.webhookConfig?.secret)
       ) {
         const webhookSync = await syncFlowWebhookSubscription(flow);
         if (webhookSync.status === "failed") {
           syncConfigWarnings.push(
-            `Saved, but the provider webhook subscription could not be updated for the new entities: ${webhookSync.error}. Re-provision the webhook from the Triggers step.`,
+            `Saved, but the provider webhook subscription could not be set up: ${webhookSync.error}. The flow keeps polling; fix the cause and save again, or re-provision from the Triggers step.`,
           );
         } else if (webhookSync.status === "not_found") {
           syncConfigWarnings.push(
@@ -2070,9 +2108,14 @@ flowRoutes.openapi(
 
       const body = await c.req.json();
       const syncEngine = body?.syncEngine;
-      if (syncEngine !== "legacy" && syncEngine !== "cdc") {
+      // CDC is the only engine: the legacy engine has been removed.
+      if (syncEngine !== "cdc") {
         return c.json(
-          { success: false, error: "syncEngine must be 'legacy' or 'cdc'" },
+          {
+            success: false,
+            error:
+              "syncEngine must be 'cdc': the legacy sync engine has been removed",
+          },
           400,
         );
       }
@@ -2082,35 +2125,13 @@ flowRoutes.openapi(
         return c.json({ success: false, error: "Flow not found" }, 404);
       }
 
-      // The legacy real-time webhook pipeline has been decommissioned —
-      // webhook flows must run on the CDC engine.
-      if (flow.type === "webhook" && syncEngine === "legacy") {
-        return c.json(
-          {
-            success: false,
-            error:
-              "Webhook flows must use the CDC engine — the legacy webhook engine has been removed",
-          },
-          400,
-        );
-      }
-
       flow.syncEngine = syncEngine;
-      if (syncEngine === "legacy") {
-        flow.streamState = "idle";
-        flow.syncStateUpdatedAt = new Date();
-        flow.syncStateMeta = {
-          lastEvent: "ENGINE_SWITCH",
-          lastReason: "Switched to legacy engine",
-        };
-      } else {
-        flow.streamState = flow.streamState || "idle";
-        flow.syncStateUpdatedAt = new Date();
-        flow.syncStateMeta = {
-          lastEvent: "ENGINE_SWITCH",
-          lastReason: "Switched to cdc engine",
-        };
-      }
+      flow.streamState = flow.streamState || "idle";
+      flow.syncStateUpdatedAt = new Date();
+      flow.syncStateMeta = {
+        lastEvent: "ENGINE_SWITCH",
+        lastReason: "Switched to cdc engine",
+      };
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
@@ -2465,14 +2486,18 @@ flowRoutes.openapi(
             const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
             const bulkStagingTable = `${liveTable}__${flowToken}__staging`;
 
-            await driver.dropTable(destination, liveTable, { schema });
-            await driver.dropTable(destination, oldStageTable, {
-              schema: stageSchema,
+            // The flow's own tables: dropped as Mako, like its syncs.
+            const dropTable = driver.dropTable.bind(driver);
+            await asSystem(async () => {
+              await dropTable(destination, liveTable, { schema });
+              await dropTable(destination, oldStageTable, {
+                schema: stageSchema,
+              });
+              await dropTable(destination, `${liveTable}__stage_changes`, {
+                schema: stageSchema,
+              });
+              await dropTable(destination, bulkStagingTable, { schema });
             });
-            await driver.dropTable(destination, `${liveTable}__stage_changes`, {
-              schema: stageSchema,
-            });
-            await driver.dropTable(destination, bulkStagingTable, { schema });
           }
         }
       }
@@ -2724,9 +2749,9 @@ flowRoutes.openapi(
         );
       }
 
-      const resetResult = await driver.executeQuery(
-        destinationDoc as any,
-        resetQuery,
+      // The flow's own table: reset as Mako, like its syncs.
+      const resetResult = await asSystem(() =>
+        driver.executeQuery(destinationDoc as any, resetQuery),
       );
       if (!resetResult.success) {
         return c.json(
@@ -2835,12 +2860,15 @@ flowRoutes.openapi(
         retryFailedMaterialization?: boolean;
         entity?: string;
       };
-      const result = await cdcBackfillService.recoverFlow({
-        workspaceId,
-        flowId,
-        retryFailedMaterialization: body.retryFailedMaterialization !== false,
-        entity: typeof body.entity === "string" ? body.entity : undefined,
-      });
+      // Drops the flow's own orphaned staging tables: Mako's, like its syncs.
+      const result = await asSystem(() =>
+        cdcBackfillService.recoverFlow({
+          workspaceId,
+          flowId,
+          retryFailedMaterialization: body.retryFailedMaterialization !== false,
+          entity: typeof body.entity === "string" ? body.entity : undefined,
+        }),
+      );
       return c.json({
         success: true,
         message: "CDC flow recovered",
@@ -2896,12 +2924,15 @@ flowRoutes.openapi(
         retryFailedMaterialization?: boolean;
         entity?: string;
       };
-      const result = await cdcBackfillService.recoverStream({
-        workspaceId,
-        flowId,
-        retryFailedMaterialization: body.retryFailedMaterialization !== false,
-        entity: typeof body.entity === "string" ? body.entity : undefined,
-      });
+      // Drops the flow's own orphaned staging tables: Mako's, like its syncs.
+      const result = await asSystem(() =>
+        cdcBackfillService.recoverStream({
+          workspaceId,
+          flowId,
+          retryFailedMaterialization: body.retryFailedMaterialization !== false,
+          entity: typeof body.entity === "string" ? body.entity : undefined,
+        }),
+      );
       return c.json({
         success: true,
         message: "CDC stream recovered",
@@ -3135,15 +3166,6 @@ flowRoutes.openapi(
       const flow = await findFlow(workspaceId, flowId);
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);
-      }
-      if (flow.type !== "webhook") {
-        return c.json(
-          {
-            success: false,
-            error: "Webhook provisioning requires webhook flow",
-          },
-          400,
-        );
       }
       if (!flow.dataSourceId) {
         return c.json(
@@ -3399,12 +3421,15 @@ flowRoutes.openapi(
         });
       }
 
-      await cdcBackfillService.resyncFlow({
-        workspaceId,
-        flowId,
-        deleteDestination: Boolean(body.deleteDestination),
-        clearWebhookEvents: Boolean(body.clearWebhookEvents),
-      });
+      // May drop the flow's own destination tables: Mako's, like its syncs.
+      await asSystem(() =>
+        cdcBackfillService.resyncFlow({
+          workspaceId,
+          flowId,
+          deleteDestination: Boolean(body.deleteDestination),
+          clearWebhookEvents: Boolean(body.clearWebhookEvents),
+        }),
+      );
       return c.json({
         success: true,
         message: "CDC resync started",
@@ -4789,10 +4814,9 @@ flowRoutes.openapi(
       const flow = await Flow.findOne({
         _id: new Types.ObjectId(flowId),
         workspaceId: new Types.ObjectId(workspaceId),
-        type: "webhook",
       });
 
-      if (!flow) {
+      if (!flow || !isWebhookFlow(flow)) {
         return c.json({ success: false, error: "Webhook flow not found" }, 404);
       }
 

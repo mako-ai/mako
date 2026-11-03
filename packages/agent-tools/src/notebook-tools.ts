@@ -1,7 +1,7 @@
 /**
  * Client-side notebook agent tools.
  *
- * Like the app/dashboard tools, these have no `execute` function, so the AI SDK
+ * Like the other client tools, these have no `execute` function, so the AI SDK
  * routes them to the browser via `onToolCall`, where `executeNotebookAgentTool`
  * applies them to the open notebook (via `notebookStore`) and returns a result.
  * Edits autosave through the notebook CRUD API, so agent and human edits share

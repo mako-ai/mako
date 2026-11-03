@@ -14,14 +14,10 @@ import {
   cdcMaterializeSchedulerFunction,
 } from "./functions/webhook-flow";
 import {
-  dashboardRefreshFunction,
-  dashboardSchedulerFunction,
-  cleanupAbandonedMaterializationRunsFunction,
-} from "./functions/dashboard-refresh";
-import {
   appsBindingMaterializeFunction,
   appsBindingSchedulerFunction,
 } from "./functions/apps-binding-refresh";
+import { appsLifecycleFunction } from "./functions/apps-lifecycle";
 import {
   appsBindingJobFunction,
   appsBindingJobSweeperFunction,
@@ -30,6 +26,10 @@ import {
   appsDeployFunction,
   appsDeployReconcileFunction,
 } from "./functions/apps-deploy";
+import {
+  workflowsDeployFunction,
+  workflowsDeployReconcileFunction,
+} from "./functions/workflows-deploy";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
 import { cdcRepartitionFunction } from "./functions/cdc-repartition";
 import { usageReportingFunction } from "./functions/usage-reporting";
@@ -49,6 +49,7 @@ import {
   dbtRunSweeperFunction,
 } from "./functions/dbt-run";
 import { consoleDescriptionFunction } from "./functions/console-description";
+import { appsThumbnailWarmFunction } from "./functions/apps-thumbnail-warm";
 import {
   flowWebhookResubscribeFunction,
   flowWebhookUnsubscribeFunction,
@@ -62,11 +63,10 @@ const baseFunctions = [
   cleanupAbandonedFlowsFunction,
   syncBackfillEntityFunction,
   cdcRepartitionFunction,
-  dashboardRefreshFunction,
-  cleanupAbandonedMaterializationRunsFunction,
   appsBindingMaterializeFunction,
   appsBindingJobFunction,
   appsDeployFunction,
+  workflowsDeployFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,
@@ -76,6 +76,7 @@ const baseFunctions = [
   dbtRunCancelFunction,
   dbtRunSweeperFunction,
   consoleDescriptionFunction,
+  appsThumbnailWarmFunction,
   flowWebhookResubscribeFunction,
   flowWebhookUnsubscribeFunction,
 ];
@@ -110,10 +111,11 @@ export function getFunctions() {
         ...webhookFunctions,
         flowSchedulerFunction,
         cdcScheduledBackfillFunction,
-        dashboardSchedulerFunction,
         appsBindingSchedulerFunction,
         appsBindingJobSweeperFunction,
+        appsLifecycleFunction,
         appsDeployReconcileFunction,
+        workflowsDeployReconcileFunction,
         scheduledQuerySchedulerFunction,
         dbtSchedulerFunction,
       ];
@@ -159,13 +161,11 @@ export {
   webhookRetryFunction,
   cdcMaterializeFunction,
   cdcMaterializeSchedulerFunction,
-  dashboardRefreshFunction,
-  dashboardSchedulerFunction,
-  cleanupAbandonedMaterializationRunsFunction,
   appsBindingMaterializeFunction,
   appsBindingJobFunction,
   appsBindingJobSweeperFunction,
   appsBindingSchedulerFunction,
+  appsLifecycleFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,

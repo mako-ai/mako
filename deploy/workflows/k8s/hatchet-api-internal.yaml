@@ -1,0 +1,19 @@
+# A stable in-VPC address for the Hatchet REST API. The Mako API runs on Cloud
+# Run, outside the cluster, and cannot resolve cluster Service names; it sets
+# HATCHET_API_URL to this load balancer. Internal only: no public IP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hatchet-api-internal
+  namespace: hatchet
+  annotations:
+    networking.gke.io/load-balancer-type: "Internal"
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/instance: hatchet
+    app.kubernetes.io/name: api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

@@ -7,6 +7,7 @@ import {
   type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
+import { bigQueryJobLabels } from "../../services/bigquery-labels";
 import * as crypto from "crypto";
 
 type JsonRecord = Record<string, any>;
@@ -224,6 +225,17 @@ export class BigQueryConnector extends BaseConnector {
     return this.accessToken as string;
   }
 
+  /** Job labels (services/bigquery-labels.ts): a flow reading this source. */
+  private jobLabels(source: string): Record<string, string> {
+    return bigQueryJobLabels({
+      workspaceId: this.dataSource.workspaceId,
+      explicit: {
+        mako_source: source,
+        mako_connector: this.dataSource._id?.toString(),
+      },
+    });
+  }
+
   private async getHttpClient(): Promise<AxiosInstance> {
     if (!this.httpClient) {
       const rawBase: string = (
@@ -269,6 +281,7 @@ export class BigQueryConnector extends BaseConnector {
         useLegacySql: false,
         maxResults: 1,
         ...(location ? { location } : {}),
+        labels: this.jobLabels("connection_test"),
       };
 
       await client.post(`/projects/${projectId}/queries`, body);
@@ -300,8 +313,7 @@ export class BigQueryConnector extends BaseConnector {
 
     const projectId = this.dataSource.config.project_id as string;
     const configuredLocation = this.dataSource.config.location as
-      | string
-      | undefined;
+      string | undefined;
     const batchSize = Number(
       def.batch_size || options.batchSize || this.getBatchSize(),
     );
@@ -333,6 +345,7 @@ export class BigQueryConnector extends BaseConnector {
           useLegacySql: Boolean(def.use_legacy_sql) || false,
           maxResults: batchSize,
           ...(configuredLocation ? { location: configuredLocation } : {}),
+          labels: this.jobLabels("flow"),
         };
         response = await client.post(`/projects/${projectId}/queries`, body);
         data = response.data || {};

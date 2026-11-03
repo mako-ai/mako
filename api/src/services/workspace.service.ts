@@ -55,7 +55,6 @@ export class WorkspaceService {
           maxDatabases: 5,
           maxMembers: 10,
           billingTier: "free",
-          dashboardRefreshConcurrency: 2,
           appBindingRefreshConcurrency: 2,
         },
       });
@@ -632,7 +631,6 @@ export class WorkspaceService {
           maxDatabases: 5,
           maxMembers: 10,
           billingTier: "free",
-          dashboardRefreshConcurrency: 2,
           appBindingRefreshConcurrency: 2,
         },
       });

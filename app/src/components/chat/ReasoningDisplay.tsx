@@ -1,23 +1,15 @@
 import React from "react";
-import { Box, ButtonBase } from "@mui/material";
-import { ChevronDown } from "lucide-react";
+import { Brain } from "lucide-react";
 import { StreamingMarkdown } from "../StreamingMarkdown";
-import { buiShimmerLabelSx } from "./bui-styles";
-
-// Beautiful UI "Thinking" sparkle glyph.
-function SparkleIcon({ dim }: { dim: boolean }) {
-  return (
-    <svg
-      width="15"
-      height="15"
-      viewBox="0 0 24 24"
-      fill={dim ? "var(--bui-ink-3)" : "var(--bui-ink-2)"}
-      aria-hidden
-    >
-      <path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z" />
-    </svg>
-  );
-}
+import {
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleTrigger,
+  TraceCollapsibleContent,
+  TraceLine,
+  TraceIcon,
+  TraceTitle,
+} from "../ui/trace";
 
 // ReasoningDisplay for showing reasoning/thinking parts inline.
 // - Auto-opens while streaming, auto-collapses when done.
@@ -123,72 +115,38 @@ export const ReasoningDisplay = React.memo(
       label = "Thought";
     }
 
+    const line = (
+      <TraceLine
+        status={isStreaming ? "running" : undefined}
+        className="min-h-7"
+      >
+        <TraceIcon>
+          <Brain />
+        </TraceIcon>
+        <TraceTitle>{label}</TraceTitle>
+      </TraceLine>
+    );
+
     return (
-      <Box sx={{ my: clustered ? 0.125 : 0.5 }}>
-        <ButtonBase
-          onClick={handleToggle}
-          aria-expanded={isOpen}
-          disableRipple
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            gap: 1,
-            px: 0.75,
-            py: 0.5,
-            mx: -0.75,
-            borderRadius: "8px",
-            width: "fit-content",
-            transition: "background-color 0.1s",
-            "&:hover": {
-              backgroundColor: "var(--bui-hover-2)",
-            },
-          }}
-        >
-          <SparkleIcon dim={!isStreaming} />
-          <Box
-            component="span"
-            sx={{
-              fontSize: "13px",
-              fontWeight: 500,
-              whiteSpace: "nowrap",
-              ...(isStreaming
-                ? buiShimmerLabelSx
-                : { color: "var(--bui-ink-2)" }),
-            }}
-          >
-            {label}
-          </Box>
-          <ChevronDown
-            size={14}
-            style={{
-              color: "var(--bui-ink-3)",
-              transition: "transform 0.3s",
-              transform: isOpen ? "rotate(180deg)" : "rotate(0deg)",
-              flexShrink: 0,
-            }}
-          />
-        </ButtonBase>
-        {isOpen && (
-          <Box
-            ref={scrollRef}
-            sx={{
-              mt: 0.5,
-              ml: "6px",
-              pl: 2,
-              borderLeft: "1px solid var(--bui-line-strong)",
-              color: "var(--bui-ink-2)",
-              fontSize: "12.5px",
-              lineHeight: 1.65,
-              maxHeight: 300,
-              overflowY: "auto",
-              "& p": { my: 0.5 },
-              "& [data-streamdown]": { fontSize: "12.5px" },
-            }}
-          >
-            <StreamingMarkdown>{reasoningText}</StreamingMarkdown>
-          </Box>
+      <Trace className={clustered ? "my-0.5" : "my-1"}>
+        {hasText ? (
+          <TraceCollapsible open={isOpen} onOpenChange={handleToggle}>
+            <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
+            <TraceCollapsibleContent>
+              <div
+                ref={scrollRef}
+                className="max-h-72 overflow-y-auto text-sm leading-relaxed"
+              >
+                <StreamingMarkdown isStreaming={isStreaming}>
+                  {reasoningText}
+                </StreamingMarkdown>
+              </div>
+            </TraceCollapsibleContent>
+          </TraceCollapsible>
+        ) : (
+          line
         )}
-      </Box>
+      </Trace>
     );
   },
 );

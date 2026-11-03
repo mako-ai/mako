@@ -19,6 +19,10 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { Types } from "mongoose";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import {
+  concurrencyLimit,
+  repoWorkPool,
+} from "../middleware/concurrency-limit";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
@@ -92,6 +96,11 @@ workspaceRepoRoutes.use("*", async (c: AuthenticatedContext, next) => {
   }
   await next();
 });
+
+// Same per-instance cap as the apps routes: these read git and sandboxes.
+for (const route of ["/status", "/branches"]) {
+  workspaceRepoRoutes.on("GET", route, concurrencyLimit(repoWorkPool));
+}
 
 function actingUserId(c: AuthenticatedContext): string {
   return c.get("user")?.id ?? "api-key";
@@ -385,6 +394,7 @@ workspaceRepoRoutes.openapi(
         workspaceScope(workspaceId),
         branch,
         user?.email ? { name: user.email, email: user.email } : undefined,
+        user?.id,
       );
       return c.json({ success: true as const, result }, 200);
     } catch (error) {

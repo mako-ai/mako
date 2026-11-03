@@ -46,7 +46,7 @@ Durable knowledge for this workspace lives in Mako's self-directive:
 Do **not** write \`.claude/**/MEMORY.md\`, \`.claude/projects/**\`, or other on-disk Claude Code memory — that is local to this machine and invisible to Mako Chat / other sessions. Prefer Mako memory for anything the user or future sessions should retain.
 
 ## Skills (same knowledge as the in-product agent)
-Call these early when the task involves apps, SQL dialects, dashboards, or connectors:
+Call these early when the task involves apps, SQL dialects, flows, or connectors:
 - \`${prefix}get_relevant_skills\` with a short query for your task
 - \`${prefix}list_skills\` / \`${prefix}load_skill\` / \`${prefix}read_skill_resource\`
 - resources \`mako://skills/{name}\` (e.g. mako://skills/apps)

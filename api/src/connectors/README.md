@@ -45,7 +45,7 @@ Where it is **not yet** applied — left with a reason:
 - **Flow YAML discriminant** `source.type: connector` — public on-disk key; means "this source is a source connection", not connector code.
 - **Analytics** `connector_created` still fires; `source_connection_created` is dual-fired alongside.
 - **File path** `sync/database-data-source-manager.ts` — exports are `SourceConnectionConfig` / `sourceConnectionManager`; the filename is historical.
-- **DuckDB dashboard data sources** (`list_data_sources`, `DashboardDataSourceEditor`, `/api/workspaces/:wid/data-sources`) — correctly named; not this vocabulary.
+- **App DuckDB data sources** (`list_data_sources` / `inspect_data_source` over app bindings) — correctly named; not this vocabulary.
 
 When touching any of those, move them toward this vocabulary; when writing
 prompts, skills or tool descriptions, use these words from the start.
@@ -158,7 +158,7 @@ table of connectors and entities. Summary:
 ### Stripe
 
 - Syncs payment data from Stripe
-- Supported entities: customers, subscriptions, disputes, charges, invoices, products, prices, plans, payment intents
+- Supported entities: customers, subscriptions, disputes, charges, invoices, products, prices, plans, payment intents, balance_transactions, payouts, payout_balance_transactions, refunds, credit_notes, customer_balance_transactions, invoice_items, subscription_schedules, coupons, promotion_codes, checkout_sessions, setup_intents, early_fraud_warnings
 - Required config: `api_key`
 - Supports backfill and CDC webhooks (auto-provisioning)
 

@@ -109,8 +109,8 @@ vi.mock("../../apps/dev-server.service", () => ({
   devLogPath: vi.fn(),
   ensureDevServer: vi.fn(),
 }));
-vi.mock("../../services/dashboard-artifact-store.service", () => ({
-  getDashboardArtifactStore: vi.fn(),
+vi.mock("../../services/artifact-store.service", () => ({
+  getArtifactStore: vi.fn(),
 }));
 vi.mock("../../apps/eyes.service", () => ({
   browseApp: vi.fn(),

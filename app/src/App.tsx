@@ -65,9 +65,8 @@ import SourceConnectionExplorer from "./components/SourceConnectionExplorer";
 import Editor from "./components/Editor";
 import DbtProjectDrawersHost from "./components/DbtProjectDrawersHost";
 import { FlowsExplorer } from "./components/FlowsExplorer";
+import { WorkflowsExplorer } from "./components/WorkflowsExplorer";
 import SettingsExplorer from "./components/SettingsExplorer";
-const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
-const DashboardsExplorer = lazy(loadDashboardsExplorer);
 const loadNotebooksExplorer = () => import("./components/NotebooksExplorer");
 const NotebooksExplorer = lazy(loadNotebooksExplorer);
 const loadAppsExplorer = () => import("./components/AppsExplorer");
@@ -76,6 +75,7 @@ const SourceControlExplorer = lazy(
   () => import("./components/SourceControlExplorer"),
 );
 const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
+const AppViewerPage = lazy(() => import("./pages/AppViewerPage"));
 const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
@@ -191,12 +191,6 @@ function MainApp() {
     const record = useRecentsStore.getState().record;
     if (kind === "console") {
       record(workspaceId, { kind, id: tab.id, title: tab.title });
-    } else if (kind === "dashboard" && tab.metadata?.dashboardId) {
-      record(workspaceId, {
-        kind,
-        id: tab.metadata.dashboardId as string,
-        title: tab.title,
-      });
     } else if (kind === "notebook" && tab.metadata?.notebookId) {
       record(workspaceId, {
         kind,
@@ -560,8 +554,6 @@ function MainApp() {
         return <SourceConnectionExplorer />;
       case "flows":
         return <FlowsExplorer />;
-      case "dashboards":
-        return <DashboardsExplorer />;
       case "apps":
         return <AppsExplorer />;
       case "notebooks":
@@ -570,6 +562,8 @@ function MainApp() {
         return <SourceControlExplorer />;
       case "dbt":
         return <DbtExplorer />;
+      case "workflows":
+        return <WorkflowsExplorer />;
       case "settings":
         return <SettingsExplorer />;
       default:
@@ -600,38 +594,6 @@ function MainApp() {
     ),
     [],
   );
-
-  useEffect(() => {
-    const win = window as Window & {
-      requestIdleCallback?: (cb: () => void) => number;
-      cancelIdleCallback?: (id: number) => void;
-    };
-
-    let idleId: number | undefined;
-    let timeoutId: number | undefined;
-
-    if (typeof win.requestIdleCallback === "function") {
-      idleId = win.requestIdleCallback(() => {
-        void loadDashboardsExplorer();
-      });
-    } else {
-      timeoutId = window.setTimeout(() => {
-        void loadDashboardsExplorer();
-      }, 1500);
-    }
-
-    return () => {
-      if (
-        idleId !== undefined &&
-        typeof win.cancelIdleCallback === "function"
-      ) {
-        win.cancelIdleCallback(idleId);
-      }
-      if (timeoutId !== undefined) {
-        window.clearTimeout(timeoutId);
-      }
-    };
-  }, []);
 
   // ── Mobile shell (< md) ───────────────────────────────────────────────
   // One full-screen pane at a time behind a FIXED bottom nav — Browse ·
@@ -689,7 +651,7 @@ function MainApp() {
                 }
               />
             </Box>
-            {/* View: the active tab (console, app, dashboard, ...). */}
+            {/* View: the active tab (console, app, notebook, ...). */}
             <Box
               sx={{
                 position: "absolute",
@@ -1092,6 +1054,17 @@ function App() {
             }
           />
         ))}
+
+        {/* A published app's live link: the app full screen, with chat.
+            Signs the visitor in first (the page redirects to /login). */}
+        <Route
+          path="/view/:workspaceId/:appId"
+          element={
+            <Suspense fallback={<LoadingScreen />}>
+              <AppViewerPage />
+            </Suspense>
+          }
+        />
 
         {/* Desktop sign-in handoff - renders for both authed and unauthed users */}
         <Route path="/desktop-auth" element={<DesktopAuthPage />} />

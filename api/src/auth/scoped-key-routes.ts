@@ -39,6 +39,12 @@ const BINDING_ROUTES: ReadonlyArray<{
     scope: "query:read",
   },
   {
+    method: "GET",
+    pattern:
+      /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/bindings\/[^/]+\/snapshot\/?$/,
+    scope: "query:read",
+  },
+  {
     method: "POST",
     pattern:
       /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/bindings\/[^/]+\/materialize\/?$/,
@@ -51,6 +57,13 @@ const BINDING_ROUTES: ReadonlyArray<{
     method: "POST",
     pattern:
       /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/bindings\/[^/]+\/dev-build\/?$/,
+    scope: "query:read",
+  },
+  // Its preview: the snapshot of the artifact that same text maps to.
+  {
+    method: "POST",
+    pattern:
+      /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/bindings\/[^/]+\/dev-snapshot\/?$/,
     scope: "query:read",
   },
   // Polling an asynchronous build (`?async=1` / `async: true` above) and
@@ -92,6 +105,10 @@ export function isMcpEndpoint(path: string): boolean {
   return /^\/api\/mcp\/?$/.test(path);
 }
 
+/** The runtime routes a person's own run of workflow code calls. */
+const WORKFLOW_TEST_ROUTE =
+  /^\/api\/workflows\/runtime\/(query|agent|ai\/[a-z-]+)$/;
+
 /**
  * True when a scoped key with `scopes` may call `method path`. `/api/mcp`
  * is always allowed (the scope check for it lives in the MCP route itself).
@@ -110,6 +127,18 @@ export function scopedKeyMayAccess(
   ) {
     return DBT_LOCAL_RUN_SCOPES.some(scope =>
       hasWorkspaceApiKeyScope(scopes, scope),
+    );
+  }
+  // The workflow worker's own routes: source, reports, model calls, the agent.
+  // A person's own run of workflow code (`mako workflow run`) calls the same
+  // SQL, model and agent routes with their workflows:run grant, as themselves
+  // (routes/workflows.ts).
+  if (/^\/api\/workflows\/runtime\//.test(path)) {
+    return (
+      hasWorkspaceApiKeyScope(scopes, "workflows:runtime") ||
+      (verb === "POST" &&
+        WORKFLOW_TEST_ROUTE.test(path) &&
+        hasWorkspaceApiKeyScope(scopes, "workflows:run"))
     );
   }
   return BINDING_ROUTES.some(

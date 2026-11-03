@@ -41,10 +41,12 @@ import {
   serializeBindingJob,
   storeJobDraft,
   type BindingJobDoc,
+  recordBindingJobProgress,
 } from "./binding-jobs";
+import { reportBindingPhase } from "./binding-progress";
 import { runBindingJob, type BindingJobRunnerDeps } from "./binding-job-runner";
 import { DevBuildError } from "./binding-dev-build";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -104,6 +106,7 @@ function deps(
 ): BindingJobRunnerDeps {
   return {
     resolveProject: vi.fn(async () => project),
+    resolveUnregistered: vi.fn(async () => null),
     materialize: vi.fn(async () => ({
       artifactKey: "apps/bindings/c/abc.parquet",
       rowCount: 9,
@@ -124,6 +127,8 @@ function deps(
     storeDraft: storeJobDraft,
     heartbeat: vi.fn(async () => undefined),
     heartbeatMs: 60_000,
+    progress: recordBindingJobProgress,
+    progressMs: 0,
     ...overrides,
   };
 }
@@ -150,6 +155,50 @@ describe("binding jobs", () => {
     );
   });
 
+  it("shows the running build's phase to its poller, from the row", async () => {
+    const job = await newJob({ kind: "materialize", request: {} });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    let reported!: () => void;
+    const seen = new Promise<void>(resolve => {
+      reported = resolve;
+    });
+    const running = runBindingJob(
+      job,
+      deps({
+        progress: async (jobId, event) => {
+          await recordBindingJobProgress(jobId, event);
+          if (event.phase === "writing_parquet") reported();
+        },
+        materialize: vi.fn(async () => {
+          reportBindingPhase("querying_warehouse");
+          reportBindingPhase("writing_parquet", { rowsWritten: 5000 });
+          await gate;
+          return {
+            artifactKey: "apps/bindings/c/abc.parquet",
+            rowCount: 9,
+            byteSize: 90,
+            materializedAt: new Date("2026-09-28T10:00:00Z"),
+          };
+        }),
+      }),
+    );
+    await seen;
+    expect(serializeBindingJob(await reload(job))).toMatchObject({
+      status: "running",
+      phase: "writing_parquet",
+      rowsWritten: 5000,
+    });
+    release();
+    expect(await running).toBe("ready");
+    // A finished job says what it built, not the phase it passed through.
+    const done = serializeBindingJob(await reload(job));
+    expect(done.status).toBe("ready");
+    expect(done).not.toHaveProperty("phase");
+  });
+
   it("keeps a draft dev-build under the job's own key", async () => {
     const job = await newJob({
       request: { source: "x", dbtEnvironment: "joan" },
@@ -172,7 +221,7 @@ describe("binding jobs", () => {
       build: "draft",
       rowCount: 4,
     });
-    expect(await getDashboardArtifactStore().exists(key)).toBe(true);
+    expect(await getArtifactStore().exists(key)).toBe(true);
   });
 
   it("uses the draft cache's per-build key when the build was kept there", async () => {
@@ -248,6 +297,36 @@ describe("binding jobs", () => {
     });
   });
 
+  it("builds an app not on main yet as a draft only when the job says so", async () => {
+    const queued = await newJob({ unregistered: true });
+    const d = deps({
+      resolveProject: vi.fn(async () => null),
+      resolveUnregistered: vi.fn(async () => project),
+    });
+    expect(await runBindingJob(queued, d)).toBe("ready");
+    expect(d.resolveUnregistered).toHaveBeenCalledWith(WS, PROJECT, "u1");
+    expect(d.plan).toHaveBeenCalledWith(
+      expect.objectContaining({ project, unregistered: true }),
+    );
+
+    // An ordinary job whose app vanished stays a 404: no synthesized app.
+    const ordinary = await newJob();
+    const o = deps({
+      resolveProject: vi.fn(async () => null),
+      resolveUnregistered: vi.fn(async () => project),
+    });
+    expect(await runBindingJob(ordinary, o)).toBe("error");
+    expect(o.resolveUnregistered).not.toHaveBeenCalled();
+
+    // Pushed since it was queued: built as the real app, committed rules on.
+    const pushed = await newJob({ unregistered: true });
+    const p = deps();
+    expect(await runBindingJob(pushed, p)).toBe("ready");
+    expect(p.plan).toHaveBeenCalledWith(
+      expect.objectContaining({ unregistered: false }),
+    );
+  });
+
   it("is visible only within its project, and a finished job until it expires", async () => {
     const job = await newJob();
     const id = job._id.toString();
@@ -280,7 +359,7 @@ describe("binding jobs", () => {
     );
     const committedKey = "apps/bindings/c/keep.parquet";
     const committedFile = await localFile();
-    await getDashboardArtifactStore().put(committedFile, committedKey);
+    await getArtifactStore().put(committedFile, committedKey);
     const committedJob = await newJob({ kind: "materialize" }, t0);
     await mongoose.connection.collection("app_binding_jobs").updateOne(
       { _id: committedJob._id },
@@ -294,7 +373,7 @@ describe("binding jobs", () => {
     );
 
     await newJob();
-    const store = getDashboardArtifactStore();
+    const store = getArtifactStore();
     expect(await store.exists(draftKey)).toBe(false);
     expect(await store.exists(committedKey)).toBe(true);
     expect(await getBindingJobById(draftJob._id.toString())).toBeNull();
@@ -345,7 +424,7 @@ describe("leases and expiry", () => {
     await markBindingJob(id, { status: "running" });
     // The worker uploaded its draft, then died before recording it.
     const orphan = await storeJobDraft(job, await localFile());
-    const store = getDashboardArtifactStore();
+    const store = getArtifactStore();
     expect(await store.exists(orphan)).toBe(true);
 
     const soon = new Date(Date.now() + JOB_LEASE_MS / 2);

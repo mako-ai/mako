@@ -8,6 +8,7 @@ import {
 } from "../database/workspace-schema";
 import { randomUUID } from "crypto";
 import { connectorRegistry } from "../connectors/registry";
+import { isWebhookFlow } from "../services/flow-triggers.service";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { enrichContextWithWorkspace, loggers } from "../logging";
@@ -90,13 +91,14 @@ router.openapi(
     const query = c.req.query();
 
     try {
+      // By id alone: any flow whose webhook trigger is on takes deliveries,
+      // whatever its `type` (isWebhookFlow).
       const flow = await Flow.findOne({
         _id: flowId,
         workspaceId: workspaceId,
-        type: "webhook",
       });
 
-      if (!flow) {
+      if (!flow || !isWebhookFlow(flow)) {
         logger.warn("Webhook received for invalid flow", { flowId });
         return c.json({ error: "Invalid webhook endpoint" }, 404);
       }
@@ -234,10 +236,9 @@ router.openapi(
       const flow = await Flow.findOne({
         _id: flowId,
         workspaceId: workspaceId,
-        type: "webhook",
       });
 
-      if (!flow) {
+      if (!flow || !isWebhookFlow(flow)) {
         return c.json({ error: "Webhook flow not found" });
       }
 

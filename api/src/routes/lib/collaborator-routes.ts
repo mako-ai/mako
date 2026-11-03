@@ -1,6 +1,5 @@
 /**
- * Generic per-user collaborator routes shared by dashboards, consoles and
- * apps (Google Workspace-style "share with people" model).
+ * Generic per-user collaborator routes shared by consoles and apps (Google Workspace-style "share with people" model).
  *
  * Mounts on an existing workspace-scoped router (auth + membership are
  * enforced by the host router's middleware):
@@ -73,7 +72,7 @@ export type ShareableDocument = Document &
   };
 
 export interface CollaboratorRouteOptions {
-  /** Used in log + error messages, e.g. "dashboard". */
+  /** Used in log + error messages, e.g. "console". */
   resourceName: string;
   /**
    * Load the resource by `c.req.param("id")`, scoped to the workspace.
@@ -92,8 +91,8 @@ function parseRole(value: unknown): ResourceShareRole {
  *   PATCH /:id/sharing — { access?: "private"|"workspace",
  *                          workspaceRole?: "viewer"|"editor" } (owner/admin)
  *
- * Gives the unified Share dialog one consistent endpoint across dashboards,
- * consoles and apps.
+ * Gives the unified Share dialog one consistent endpoint across consoles and
+ * apps.
  */
 export function registerSharingSettingsRoutes(
   app: OpenAPIHono<AuthEnv>,

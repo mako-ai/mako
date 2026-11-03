@@ -78,11 +78,11 @@ describe("buildStarredSection", () => {
 
   it("renders nothing when there are no folders and no resolvable items", () => {
     expect(buildStarredSection([], "app", resolve)).toEqual([]);
-    expect(buildStarredSection(rows, "dashboard", resolve)).toHaveLength(1);
+    expect(buildStarredSection(rows, "console", resolve)).toHaveLength(1);
     expect(
       buildStarredSection(
         rows.filter(r => r.type === "item"),
-        "dashboard",
+        "console",
         resolve,
       ),
     ).toEqual([]);

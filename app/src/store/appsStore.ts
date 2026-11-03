@@ -26,6 +26,7 @@ import {
   healAppsTabs,
   reconcileAppsTabs,
 } from "../apps-runtime/shell";
+import { reachableViewUrl } from "../lib/app-frame";
 import { onRealtimeEvent } from "./lib/realtime-channel";
 import { useConsoleStore } from "./consoleStore";
 import { useUIStore } from "./uiStore";
@@ -107,18 +108,20 @@ export interface AppMeta {
   slug?: string;
   /**
    * Repo-relative folder the app lives in: `apps/Sales/CH/report` or
-   * `users/<id>/apps/scratch`. The folders between the tree root and the app
+   * `users/<handle>/apps/scratch`. The folders between the tree root and the app
    * are the explorer's tree. Identity is `id`, which the manifest carries, so
    * a move keeps everything.
    */
   path?: string;
-  /** Which tree: the workspace's, or one person's (`users/<id>/apps`). */
+  /** Which tree: the workspace's, or one person's (`users/<handle>/apps`). */
   scope?: "workspace" | "private";
   /**
    * Set on a copied folder whose mako.json still declares another app's id:
    * the server filed it under an id of its own and offers to stamp it.
    */
   duplicateOf?: string;
+  /** A workspace admin vouched for this app (workspace tree only). */
+  verified?: boolean;
   title: string;
   description?: string;
   updatedAt?: string;
@@ -138,6 +141,8 @@ export interface AppMeta {
   workspaceRole?: "viewer" | "editor";
   /** Safe public-link metadata; password material never leaves the API. */
   publicShare?: PublicShareInfo;
+  /** Whether live-link viewers can chat with the app (default off). */
+  chatEnabled?: boolean;
 }
 
 export interface AppFileEntry {
@@ -324,10 +329,16 @@ interface AppsStore {
   appsCacheByWorkspace: Record<string, AppMeta[]>;
   /**
    * Folders of the two app trees the caller can see (`apps/Sales`,
-   * `users/<me>/apps/Scratch`), empty ones included — real directories in
+   * `users/<handle>/apps/Scratch`), empty ones included — real directories in
    * the workspace repo, straight from the list endpoint.
    */
   folders: string[];
+  /**
+   * The caller's own tree, `users/<handle>/apps` — named by their handle in
+   * this workspace, which only the server knows. Null until the list loads,
+   * or for an actor with no personal tree.
+   */
+  personalRoot: string | null;
   appsLoading: boolean;
   error: string | null;
 
@@ -374,6 +385,15 @@ interface AppsStore {
    * request used to fall through to.
    */
   viewUrlErrorByApp: Record<string, LoadError | undefined>;
+  /**
+   * What each view URL was minted for: the published commit and when the
+   * token expires. Lets an app that opens with a token already in hand (a
+   * prefetch, a remounted tab) use it instead of asking again.
+   */
+  viewTokenByApp: Record<
+    string,
+    { sha: string; expiresAt: number } | undefined
+  >;
   historyByApp: Record<string, AppCommit[]>;
   /** The published chip's context: commit, age, what main has that is not live. */
   publishStateByApp: Record<string, AppPublishState | undefined>;
@@ -432,7 +452,17 @@ interface AppsStore {
     workspaceId: string,
     installationId: number,
   ) => Promise<{ ok: boolean; error?: string }>;
-  fetchApps: (workspaceId: string) => Promise<void>;
+  /**
+   * Load the app list. Calls while one is already on the wire share it —
+   * on load the explorer, the URL sync, every restored app tab and the
+   * editors each ask at once. `fresh`: the caller just changed something
+   * and needs a list read AFTER that change, so it gets one trailing
+   * request (shared by every such caller) instead of the one in flight.
+   */
+  fetchApps: (
+    workspaceId: string,
+    options?: { fresh?: boolean },
+  ) => Promise<void>;
   /** Drag between rail sections: flip private <-> workspace. */
   setAppAccess: (
     workspaceId: string,
@@ -443,7 +473,7 @@ interface AppsStore {
     workspaceId: string,
     title: string,
     description?: string,
-    /** Destination folder path (`apps`, `apps/Sales`, `users/<me>/apps`). */
+    /** Destination folder path (`apps`, `apps/Sales`, `users/<handle>/apps`). */
     folder?: string,
   ) => Promise<AppMeta | null>;
   deleteApp: (workspaceId: string, appId: string) => Promise<boolean>;
@@ -466,6 +496,21 @@ interface AppsStore {
   deleteAppFolder: (workspaceId: string, path: string) => Promise<boolean>;
   /** Give a copied app (duplicateOf set) an id of its own. */
   stampAppId: (workspaceId: string, appId: string) => Promise<boolean>;
+  /** Workspace admins: vouch for an app (or withdraw it). */
+  setAppVerified: (
+    workspaceId: string,
+    appId: string,
+    verified: boolean,
+  ) => Promise<boolean>;
+  /**
+   * Move a personal app into the Workspace tree, writing a one-line
+   * description into its manifest. One commit; the app keeps its id.
+   */
+  shareAppWithWorkspace: (
+    workspaceId: string,
+    appId: string,
+    description: string,
+  ) => Promise<boolean>;
 
   /**
    * List an app's files.
@@ -499,8 +544,21 @@ interface AppsStore {
   refreshAppIfStale: (workspaceId: string, appId: string) => void;
   /** Mark every loaded app stale — a workspace-wide change touched them all. */
   markAllAppsStale: () => void;
-  /** Fetch (or refresh) the cookie-free URL for an app's published build. */
-  fetchViewUrl: (workspaceId: string, appId: string) => Promise<void>;
+  /**
+   * Fetch (or refresh) the cookie-free URL for an app's published build.
+   *
+   * `ref` is the app's id, or — for a prefetch before the app list has
+   * loaded — whatever the address bar names (a slug); the answer is filed
+   * under the app id the server resolved. `reuseFresh` joins a request in
+   * flight and keeps a token minted for the current publish with minutes to
+   * spare. `speculative` records nothing on failure: a prefetch for an app
+   * that turns out unpublished must not paint an error.
+   */
+  fetchViewUrl: (
+    workspaceId: string,
+    ref: string,
+    options?: { reuseFresh?: boolean; speculative?: boolean },
+  ) => Promise<void>;
   /** Enter or leave edit mode for an app (see `editingByApp`). */
   setEditing: (workspaceId: string, appId: string, editing: boolean) => void;
   /**
@@ -674,6 +732,23 @@ interface AppsStore {
 
 const fileKey = (appId: string, path: string) => `${appId}\u0000${path}`;
 
+/**
+ * The app-list request on the wire per workspace (fetchApps), and the one
+ * trailing request `fresh` callers queue behind it.
+ */
+const appsListFetches = new Map<
+  string,
+  { run: Promise<void>; again: Promise<void> | null }
+>();
+
+/**
+ * View-token requests in flight, by `${workspaceId}:${ref}`. Browser-local by
+ * nature (one tab's own requests); the server keeps no state for them.
+ */
+const viewTokenRequests = new Map<string, Promise<void>>();
+/** A held token is reused only with this much of its 30 minutes left. */
+const VIEW_TOKEN_REUSE_MARGIN_MS = 5 * 60 * 1000;
+
 export const useAppsStore = create<AppsStore>()(
   persist(
     immer((set, get) => ({
@@ -682,6 +757,7 @@ export const useAppsStore = create<AppsStore>()(
       apps: [],
       appsCacheByWorkspace: {},
       folders: [],
+      personalRoot: null,
       appsLoading: false,
       error: null,
       filesByApp: {},
@@ -693,6 +769,7 @@ export const useAppsStore = create<AppsStore>()(
       editingByApp: {},
       viewUrlByApp: {},
       viewUrlErrorByApp: {},
+      viewTokenByApp: {},
       historyByApp: {},
       publishStateByApp: {},
       commitFilesByApp: {},
@@ -861,7 +938,9 @@ export const useAppsStore = create<AppsStore>()(
             }
           });
           // An import can make apps appear instantly; refetch either way.
-          refreshGitDerivedExplorers(workspaceId, get().fetchApps);
+          refreshGitDerivedExplorers(workspaceId, id =>
+            get().fetchApps(id, { fresh: true }),
+          );
           return { ok: true, adoption: body.adoption };
         } catch (e) {
           return { ok: false, error: message(e, "Failed to connect repo") };
@@ -883,7 +962,9 @@ export const useAppsStore = create<AppsStore>()(
           });
           // canCreate follows the probe — no GitHub binding means no creates.
           void get().probeEnabled(workspaceId);
-          refreshGitDerivedExplorers(workspaceId, get().fetchApps);
+          refreshGitDerivedExplorers(workspaceId, id =>
+            get().fetchApps(id, { fresh: true }),
+          );
         } catch (e) {
           set(s => {
             s.error = message(e, "Failed to disconnect repo");
@@ -908,59 +989,82 @@ export const useAppsStore = create<AppsStore>()(
         }
       },
 
-      fetchApps: async workspaceId => {
-        set(s => {
-          // Instant paint from the persisted list while the request runs; a
-          // cache miss (first visit) shows the skeleton instead.
-          const cached = s.appsCacheByWorkspace[workspaceId];
-          if (cached && s.apps.length === 0) s.apps = cached;
-          s.appsLoading = true;
-          s.error = null;
-        });
-        try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/apps", {
-              params: { path: { workspaceId } },
-            }),
-          ) as { apps?: AppMeta[]; folders?: string[] };
-          const apps = body.apps ?? [];
-          set(s => {
-            s.apps = apps;
-            s.folders = body.folders ?? [];
-            s.appsCacheByWorkspace[workspaceId] = apps;
-            s.appsLoading = false;
-          });
-          // Drop tabs pointing at apps this workspace does not have, so a
-          // deleted app cannot leave a working-looking workspace view behind.
-          reconcileAppsTabs(new Set(apps.map(a => a.id)));
-          // And keep the survivors' URL handles current: a push that moved
-          // an app changes what its tabs' links should say.
-          healAppsTabs(new Map(apps.map(a => [a.id, appUrlSlug(a)])));
-        } catch (e) {
-          // GET /apps is 412 without a GitHub binding. That is an empty
-          // explorer (disconnect, never linked), not a load failure. Keeping
-          // the previous list and persisted cache left the sidebar populated
-          // after unlink.
-          const githubRequired = e instanceof ApiError && e.status === 412;
-          if (githubRequired) {
-            set(s => {
-              s.apps = [];
-              s.folders = [];
-              delete s.appsCacheByWorkspace[workspaceId];
-              s.appsLoading = false;
-              s.error = null;
-            });
-            reconcileAppsTabs(new Set());
-            return;
-          }
-          set(s => {
-            s.appsLoading = false;
-            // A 404 here means the flag is off — not an error worth surfacing.
-            if (!(e instanceof ApiError && e.status === 404)) {
-              s.error = message(e, "Failed to load apps");
-            }
-          });
+      fetchApps: (workspaceId, options) => {
+        const current = appsListFetches.get(workspaceId);
+        if (current) {
+          if (!options?.fresh) return current.run;
+          current.again ??= current.run
+            .catch(() => undefined)
+            .then(() => get().fetchApps(workspaceId));
+          return current.again;
         }
+        const load = async () => {
+          set(s => {
+            // Instant paint from the persisted list while the request runs; a
+            // cache miss (first visit) shows the skeleton instead.
+            const cached = s.appsCacheByWorkspace[workspaceId];
+            if (cached && s.apps.length === 0) s.apps = cached;
+            s.appsLoading = true;
+            s.error = null;
+          });
+          try {
+            const body = unwrapBody(
+              await api.GET("/api/workspaces/{workspaceId}/apps", {
+                params: { path: { workspaceId } },
+              }),
+            ) as {
+              apps?: AppMeta[];
+              folders?: string[];
+              personalRoot?: string;
+            };
+            const apps = body.apps ?? [];
+            set(s => {
+              s.apps = apps;
+              s.folders = body.folders ?? [];
+              s.personalRoot = body.personalRoot ?? null;
+              s.appsCacheByWorkspace[workspaceId] = apps;
+              s.appsLoading = false;
+            });
+            // Drop tabs pointing at apps this workspace does not have, so a
+            // deleted app cannot leave a working-looking workspace view behind.
+            reconcileAppsTabs(new Set(apps.map(a => a.id)));
+            // And keep the survivors' URL handles current: a push that moved
+            // an app changes what its tabs' links should say.
+            healAppsTabs(new Map(apps.map(a => [a.id, appUrlSlug(a)])));
+          } catch (e) {
+            // GET /apps is 412 without a GitHub binding. That is an empty
+            // explorer (disconnect, never linked), not a load failure. Keeping
+            // the previous list and persisted cache left the sidebar populated
+            // after unlink.
+            const githubRequired = e instanceof ApiError && e.status === 412;
+            if (githubRequired) {
+              set(s => {
+                s.apps = [];
+                s.folders = [];
+                s.personalRoot = null;
+                delete s.appsCacheByWorkspace[workspaceId];
+                s.appsLoading = false;
+                s.error = null;
+              });
+              reconcileAppsTabs(new Set());
+              return;
+            }
+            set(s => {
+              s.appsLoading = false;
+              // A 404 here means the flag is off — not an error worth surfacing.
+              if (!(e instanceof ApiError && e.status === 404)) {
+                s.error = message(e, "Failed to load apps");
+              }
+            });
+          }
+        };
+        const run = load().finally(() => {
+          if (appsListFetches.get(workspaceId)?.run === run) {
+            appsListFetches.delete(workspaceId);
+          }
+        });
+        appsListFetches.set(workspaceId, { run, again: null });
+        return run;
       },
 
       setAppAccess: async (workspaceId, appId, access) => {
@@ -977,7 +1081,7 @@ export const useAppsStore = create<AppsStore>()(
             }),
           );
         } catch {
-          void get().fetchApps(workspaceId);
+          void get().fetchApps(workspaceId, { fresh: true });
         }
       },
 
@@ -1026,7 +1130,7 @@ export const useAppsStore = create<AppsStore>()(
           });
           const moved = get().apps.find(a => a.id === appId);
           if (moved) healAppsTabs(new Map([[appId, appUrlSlug(moved)]]));
-          void get().fetchApps(workspaceId);
+          void get().fetchApps(workspaceId, { fresh: true });
           return true;
         } catch (e) {
           set(s => {
@@ -1047,7 +1151,7 @@ export const useAppsStore = create<AppsStore>()(
           set(s => {
             if (!s.folders.includes(path)) s.folders.push(path);
           });
-          void get().fetchApps(workspaceId);
+          void get().fetchApps(workspaceId, { fresh: true });
           return true;
         } catch (e) {
           set(s => {
@@ -1065,7 +1169,7 @@ export const useAppsStore = create<AppsStore>()(
               body: { path, to },
             }),
           );
-          await get().fetchApps(workspaceId);
+          await get().fetchApps(workspaceId, { fresh: true });
           return true;
         } catch (e) {
           set(s => {
@@ -1103,11 +1207,70 @@ export const useAppsStore = create<AppsStore>()(
               params: { path: { workspaceId, id: appId } },
             }),
           );
-          await get().fetchApps(workspaceId);
+          await get().fetchApps(workspaceId, { fresh: true });
           return true;
         } catch (e) {
           set(s => {
             s.error = message(e, "Failed to stamp the app id");
+          });
+          return false;
+        }
+      },
+
+      setAppVerified: async (workspaceId, appId, verified) => {
+        try {
+          unwrapBody(
+            await api.PUT("/api/workspaces/{workspaceId}/apps/{id}/verified", {
+              params: { path: { workspaceId, id: appId } },
+              body: { verified },
+            }),
+          );
+          set(s => {
+            const app = s.apps.find(a => a.id === appId);
+            if (app) app.verified = verified;
+          });
+          // The Apps home renders the badge from its own discovery list.
+          void import("./appsDiscoveryStore").then(
+            ({ useAppsDiscoveryStore }) =>
+              useAppsDiscoveryStore.getState().fetchDiscovery(workspaceId),
+          );
+          return true;
+        } catch (e) {
+          set(s => {
+            s.error = message(e, "Failed to change verification");
+          });
+          return false;
+        }
+      },
+
+      shareAppWithWorkspace: async (workspaceId, appId, description) => {
+        try {
+          const body = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/apps/{id}/share-with-workspace",
+              {
+                params: { path: { workspaceId, id: appId } },
+                body: { description },
+              },
+            ),
+          ) as { to?: string };
+          set(s => {
+            const app = s.apps.find(a => a.id === appId);
+            if (app && body.to) {
+              app.path = body.to;
+              app.slug = body.to.split("/").pop();
+              app.scope = "workspace";
+              app.access = "workspace";
+              app.description = description;
+            }
+          });
+          const moved = get().apps.find(a => a.id === appId);
+          if (moved) healAppsTabs(new Map([[appId, appUrlSlug(moved)]]));
+          void get().fetchApps(workspaceId, { fresh: true });
+          return true;
+        } catch (e) {
+          set(s => {
+            s.error = message(e, "Failed to share the app with the workspace");
           });
           return false;
         }
@@ -1364,37 +1527,81 @@ export const useAppsStore = create<AppsStore>()(
         }
       },
 
-      fetchViewUrl: async (workspaceId, appId) => {
+      fetchViewUrl: async (workspaceId, ref, options = {}) => {
+        if (options.reuseFresh) {
+          // A prefetch (UrlSync asks by slug the moment the address bar
+          // names an app, in parallel with GET /apps) may already be on its
+          // way; its answer is filed under the id this caller knows.
+          const pending = [...viewTokenRequests.entries()]
+            .filter(([key]) => key.startsWith(`${workspaceId}:`))
+            .map(([, request]) => request);
+          if (pending.length) await Promise.allSettled(pending);
+          const state = get();
+          const held = state.viewTokenByApp[ref];
+          const publishedSha = state.apps.find(a => a.id === ref)?.publishedSha;
+          if (
+            held &&
+            state.viewUrlByApp[ref] &&
+            (!publishedSha || held.sha === publishedSha) &&
+            held.expiresAt - Date.now() > VIEW_TOKEN_REUSE_MARGIN_MS
+          ) {
+            return;
+          }
+        }
         // A retry reads as loading again, not as the old error.
-        if (get().viewUrlErrorByApp[appId]) {
+        if (!options.speculative && get().viewUrlErrorByApp[ref]) {
           set(s => {
-            s.viewUrlErrorByApp[appId] = undefined;
+            s.viewUrlErrorByApp[ref] = undefined;
           });
         }
+        const key = `${workspaceId}:${ref}`;
+        const request = (async () => {
+          try {
+            const body = unwrapBody(
+              await api.POST(
+                "/api/workspaces/{workspaceId}/apps/{id}/view-token",
+                {
+                  params: { path: { workspaceId, id: ref } },
+                },
+              ),
+            ) as {
+              url?: string;
+              sha?: string;
+              expiresAt?: number;
+              appId?: string;
+            };
+            const appId = body.appId ?? ref;
+            const url = body.url ? await reachableViewUrl(body.url) : undefined;
+            set(s => {
+              s.viewUrlByApp[appId] = url;
+              s.viewUrlErrorByApp[appId] = undefined;
+              s.viewTokenByApp[appId] =
+                body.sha && body.expiresAt
+                  ? { sha: body.sha, expiresAt: body.expiresAt }
+                  : undefined;
+            });
+          } catch (e) {
+            if (options.speculative) return;
+            // Not published, or the token could not be minted. The workspace
+            // shows the error for a published app and its "nothing to view
+            // yet" state otherwise — never a broken frame.
+            set(s => {
+              s.viewUrlByApp[ref] = undefined;
+              s.viewTokenByApp[ref] = undefined;
+              s.viewUrlErrorByApp[ref] = toLoadError(
+                e,
+                "The published app could not be opened.",
+              );
+            });
+          }
+        })();
+        viewTokenRequests.set(key, request);
         try {
-          const body = unwrapBody(
-            await api.POST(
-              "/api/workspaces/{workspaceId}/apps/{id}/view-token",
-              {
-                params: { path: { workspaceId, id: appId } },
-              },
-            ),
-          ) as { url?: string };
-          set(s => {
-            s.viewUrlByApp[appId] = body.url;
-            s.viewUrlErrorByApp[appId] = undefined;
-          });
-        } catch (e) {
-          // Not published, or the token could not be minted. The workspace
-          // shows the error for a published app and its "nothing to view
-          // yet" state otherwise — never a broken frame.
-          set(s => {
-            s.viewUrlByApp[appId] = undefined;
-            s.viewUrlErrorByApp[appId] = toLoadError(
-              e,
-              "The published app could not be opened.",
-            );
-          });
+          await request;
+        } finally {
+          if (viewTokenRequests.get(key) === request) {
+            viewTokenRequests.delete(key);
+          }
         }
       },
 
@@ -1452,13 +1659,9 @@ export const useAppsStore = create<AppsStore>()(
 
       fetchBranches: async (workspaceId, appId) => {
         try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/apps/{id}/branches", {
-              params: { path: { workspaceId, id: appId } },
-            }),
-          ) as { branches?: AppBranch[] };
+          const branches = await loadWorkspaceBranches(workspaceId, appId);
           set(s => {
-            s.branchesByApp[appId] = body.branches ?? [];
+            s.branchesByApp[appId] = branches;
           });
         } catch (e) {
           set(s => {
@@ -1476,6 +1679,7 @@ export const useAppsStore = create<AppsStore>()(
             }),
           );
           // Everything on screen was showing the OLD branch.
+          forgetInFlightBranches(workspaceId);
           await Promise.all([
             get().fetchFiles(workspaceId, appId),
             get().fetchStatus(workspaceId, appId),
@@ -1496,6 +1700,7 @@ export const useAppsStore = create<AppsStore>()(
             }),
           ) as { result?: { merged: boolean; reason?: string } };
           // Merge moves main: refresh everything the UI shows.
+          forgetInFlightBranches(workspaceId);
           void get().fetchBranches(workspaceId, appId);
           void get().fetchFiles(workspaceId, appId);
           void get().fetchStatus(workspaceId, appId);
@@ -2308,7 +2513,7 @@ onRealtimeEvent("app.updated", "appsStore", (event, ctx) => {
   if (!workspaceId) return;
   const v2 = useAppsStore.getState();
   // Explorer list (titles, new/deleted apps).
-  void v2.fetchApps(workspaceId);
+  void v2.fetchApps(workspaceId, { fresh: true });
   if (event.origin === "lifecycle") return;
   // A deploy from main changes what is live, not the files: refresh the
   // published chip (a failed deploy leaves the sha alone, so nothing else
@@ -2343,6 +2548,43 @@ onRealtimeEvent("app.updated", "appsStore", (event, ctx) => {
   const active = activeAppId();
   if (active) refreshAppNow(workspaceId, active);
 });
+
+/**
+ * The branch list is the WORKSPACE repo's, identical for every app, so apps
+ * asking at the same time share one request. Before this, each open app
+ * fetched it separately — on 2026-10-19 that was 17 copies of the slowest
+ * call in the API. No freshness window on top: a push pokes right after a
+ * commit, and that refetch must see the commit (the server caches by branch
+ * tips, so asking again is cheap).
+ */
+const branchesInFlight = new Map<string, Promise<AppBranch[]>>();
+
+function loadWorkspaceBranches(
+  workspaceId: string,
+  appId: string,
+): Promise<AppBranch[]> {
+  const existing = branchesInFlight.get(workspaceId);
+  if (existing) return existing;
+  const run = (async () => {
+    const body = unwrapBody(
+      await api.GET("/api/workspaces/{workspaceId}/apps/{id}/branches", {
+        params: { path: { workspaceId, id: appId } },
+      }),
+    ) as { branches?: AppBranch[] };
+    return body.branches ?? [];
+  })().finally(() => {
+    if (branchesInFlight.get(workspaceId) === run) {
+      branchesInFlight.delete(workspaceId);
+    }
+  });
+  branchesInFlight.set(workspaceId, run);
+  return run;
+}
+
+/** After a checkout or merge, a request already in flight predates it. */
+function forgetInFlightBranches(workspaceId: string): void {
+  branchesInFlight.delete(workspaceId);
+}
 
 /** Refresh one app's cached state now, ignoring whether it was marked stale. */
 function refreshAppNow(workspaceId: string, appId: string): void {

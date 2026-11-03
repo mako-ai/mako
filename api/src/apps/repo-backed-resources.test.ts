@@ -29,6 +29,8 @@ const SYNCS = [
   "syncDbtConfigFromRepo",
   "syncNotebooksFromRepo",
   "syncConnectorsFromRepo",
+  // Requested here, run durably (inngest/functions/workflows-deploy.ts).
+  "requestWorkflowsDeploy",
 ];
 
 const shared = worktree.slice(

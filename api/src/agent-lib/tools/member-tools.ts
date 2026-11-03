@@ -38,8 +38,7 @@ const INVITABLE_ROLES = ["viewer", "member", "admin"] as const;
 type InvitableRole = (typeof INVITABLE_ROLES)[number];
 
 const ROLE_SUMMARY: Record<InvitableRole, string> = {
-  viewer:
-    "read-only: can see consoles, dashboards and apps, cannot run arbitrary SQL",
+  viewer: "read-only: can see consoles and apps, cannot run arbitrary SQL",
   member: "can create and manage resources, and run queries",
   admin: "can additionally manage workspace settings and members",
 };

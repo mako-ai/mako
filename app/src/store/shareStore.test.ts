@@ -8,14 +8,13 @@ import {
 
 /** Deep-link pattern for resources that open inside the Mako shell. */
 const TAB_PATTERN_FOR_RESOURCE: Partial<Record<ShareResourceType, RegExp>> = {
-  dashboard: TAB_DEEP_LINK_PATTERNS.dashboard,
   console: TAB_DEEP_LINK_PATTERNS.console,
 };
 
 describe("buildWorkspaceResourceUrl", () => {
   it("builds an absolute URL from the current origin", () => {
-    expect(buildWorkspaceResourceUrl("dashboard", "dash-123")).toBe(
-      `${window.location.origin}/d/dash-123`,
+    expect(buildWorkspaceResourceUrl("console", "console-123")).toBe(
+      `${window.location.origin}/c/console-123`,
     );
   });
 
@@ -34,9 +33,9 @@ describe("buildWorkspaceResourceUrl", () => {
     },
   );
 
-  it("builds a fullscreen published-app URL for workspace members", () => {
-    expect(buildWorkspaceResourceUrl("app", "app-123", "workspace-456")).toBe(
-      `${window.location.origin}/api/workspaces/workspace-456/apps/app-123/live/`,
-    );
+  it("copies the canonical viewer URL for an app, never the raw /live/ route", () => {
+    const url = buildWorkspaceResourceUrl("app", "app-123", "workspace-456");
+    expect(url).toBe(`${window.location.origin}/view/workspace-456/app-123`);
+    expect(url).not.toContain("/live");
   });
 });

@@ -541,7 +541,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
           multiline
           minRows={2}
           label="What do you want to build? (optional)"
-          placeholder="e.g., A dashboard of weekly sales by region from our Postgres"
+          placeholder="e.g., An app showing weekly sales by region from our Postgres"
           value={buildIntent}
           onChange={e => setBuildIntent(e.target.value)}
           disabled={state === "creating" || acceptingToken !== null}

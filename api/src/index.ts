@@ -9,8 +9,17 @@ import { Scalar } from "@scalar/hono-api-reference";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
+import type { Context } from "hono";
 import { connectDatabase } from "./database/schema";
+import {
+  injectOgTags,
+  ogTagsForPath,
+  publicOrigin,
+} from "./services/share-og.service";
 import { registerApiRoutes } from "./routes/register-routes";
+import { edgeOriginMiddleware } from "./middleware/edge-origin";
+import { appsHostGate } from "./middleware/apps-host-gate";
+import { apiRateLimitMiddleware } from "./middleware/rate-limit";
 import { mcpOAuthWellKnownRoutes } from "./routes/mcp-oauth.routes";
 import { getOpenApiDocument } from "./openapi";
 import type { AuthEnv } from "./openapi/core";
@@ -29,8 +38,10 @@ import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
 import { sshTunnelManager } from "./services/ssh-tunnel.service";
 import { loggers, loggingMiddleware } from "./logging";
+import { asSystem } from "./access/connection-writes";
 import { checkPubSubBackendHealth } from "./services/pubsub.service";
 import { warmPricingCache } from "./services/gateway-pricing.service";
+import { scheduleThumbnailBackfillOnBoot } from "./apps/thumbnail-warm-boot";
 import { warmCatalog } from "./services/model-catalog.service";
 import { discoverSystemSkills } from "./agent-lib/skills/system-skills";
 
@@ -40,7 +51,13 @@ import {
   shutdownLangfuse,
 } from "./observability/langfuse";
 import { assertDevLoginSafeAtBoot } from "./auth/dev-login";
+import { initAppBindingParquetWriteOptions } from "./utils/parquet-compression";
+import { initParquetRowLimits } from "./utils/parquet-row-limit";
 import { attachAppsTerminalWs } from "./apps/terminal-ws";
+import {
+  isGkeWorkerConfigured,
+  rollWorkersToRuntimeImage,
+} from "./workflows/kube";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
@@ -65,13 +82,16 @@ const REQUIRED_SYSTEM_SKILLS = [
   "dialect-mysql",
   "dialect-sqlite",
   "mongodb-queries",
-  "dashboards",
   "flows",
 ];
 
 const app = new OpenAPIHono<AuthEnv>();
 
 const isProduction = process.env.NODE_ENV === "production";
+
+// App hosts (`<appId>.<apps domain>`) serve one app's files and nothing else.
+// First, so its header rewrite runs after every other middleware's.
+app.use("*", appsHostGate);
 
 // Security headers. CSP is intentionally left unset here because the SPA loads
 // GTM, Google Fonts, and renders sandboxed blob/srcdoc iframes; a tuned CSP is
@@ -124,6 +144,10 @@ app.use(
     skipSuccessInDev: ["/api/inngest", "/health"],
   }),
 );
+
+// Edge check, then the per-caller budget — before any route does work.
+app.use("*", edgeOriginMiddleware);
+app.use("*", apiRateLimitMiddleware);
 
 // Global JSON error handler – ensures errors are returned as JSON
 app.onError((err, c) => {
@@ -219,10 +243,13 @@ app.get(
   }),
 );
 
-// Inngest endpoint
+// Inngest endpoint. Its functions (syncs, flows, dbt, CDC) are Mako's own
+// work: their writes are not a person's (access/connection-writes.ts). A
+// scheduled console still writes as its owner, named by the function.
 app.on(
   ["GET", "PUT", "POST"],
   "/api/inngest",
+  (_c, next) => asSystem(next),
   serveInngest({
     client: inngest,
     functions: getFunctions(),
@@ -259,7 +286,7 @@ app.use("*", async (c, next) => {
       // index.html must always be revalidated so a reload after a deploy
       // picks up the new bundle (stale-client detection depends on this).
       c.header("Cache-Control", "no-cache");
-      return c.html(content);
+      return c.html(await withShareLinkPreview(c, requestPath, content));
     }
   }
 
@@ -288,6 +315,28 @@ app.use("*", async (c, next) => {
 
   return c.text("Frontend not found", 404);
 });
+
+/**
+ * Link previews (share-og.service): a public share's HTML, and an in-app
+ * app link's (`/view/<workspace>/<app>`), carry Open Graph tags —
+ * link-preview crawlers do not run the SPA, and are never signed in. Only
+ * the head changes; any failure serves the page untouched.
+ */
+async function withShareLinkPreview(
+  c: Context,
+  requestPath: string,
+  html: string,
+): Promise<string> {
+  try {
+    const tags = await ogTagsForPath(
+      requestPath,
+      publicOrigin(c.req.url, c.req.header("x-forwarded-proto")),
+    );
+    return tags ? injectOgTags(html, tags) : html;
+  } catch {
+    return html;
+  }
+}
 
 function getContentType(ext: string): string {
   const types: Record<string, string> = {
@@ -326,6 +375,12 @@ async function main(): Promise<void> {
   // production environment. A misconfiguration here must be a loud crash, not
   // a silently weakened login path.
   assertDevLoginSafeAtBoot();
+
+  // A typo in PARQUET_COMPRESSION / PARQUET_ZSTD_LEVEL stops the boot here,
+  // so the revision never serves, instead of failing app binding builds.
+  initAppBindingParquetWriteOptions();
+  // Same for PARQUET_ROW_LIMIT / PARQUET_MAX_ROW_LIMIT.
+  initParquetRowLimits();
 
   const systemSkillRegistry = discoverSystemSkills();
   const missingSystemSkills = REQUIRED_SYSTEM_SKILLS.filter(
@@ -393,11 +448,32 @@ async function main(): Promise<void> {
     });
   });
 
+  // Fill the shared store with any missing card / link-preview variants so
+  // a crawler's first hit on a fresh instance is a store read, not a clone.
+  scheduleThumbnailBackfillOnBoot();
+
   warmPricingCache().catch(err => {
     logger.warn("Startup pricing cache warm failed", {
       error: err instanceof Error ? err.message : String(err),
     });
   });
+
+  // A new API may name a new workflows runtime image: move the workers.
+  if (isGkeWorkerConfigured()) {
+    rollWorkersToRuntimeImage()
+      .then(moved => {
+        if (moved.length > 0) {
+          logger.info("Moved workflow workers to the runtime image", {
+            count: moved.length,
+          });
+        }
+      })
+      .catch(err => {
+        logger.warn("Could not move workflow workers to the runtime image", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+  }
 
   warmCatalog().catch(err => {
     logger.warn("Startup model catalog warm failed", {

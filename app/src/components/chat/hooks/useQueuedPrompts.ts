@@ -9,7 +9,6 @@ import {
 import type { UseChatHelpers } from "@ai-sdk/react";
 import type { FileUIPart, UIMessage } from "ai";
 import { useConsoleStore } from "../../../store/consoleStore";
-import type { ConsoleTab } from "../../../store/lib/types";
 import { usePlanStore } from "../../../store/planStore";
 import { generateObjectId } from "../../../utils/objectId";
 import { trackEvent } from "../../../lib/analytics";
@@ -32,7 +31,6 @@ export interface UseQueuedPromptsArgs {
   sendMessageRef: MutableRefObject<ChatHelpers["sendMessage"] | undefined>;
   modelIdRef: MutableRefObject<string | undefined>;
   capturedConsoleIdRef: MutableRefObject<string | null>;
-  capturedDashboardIdRef: MutableRefObject<string | null>;
   activeConsoleIdRef: MutableRefObject<string | null>;
   pendingPlanToolCallIdRef: MutableRefObject<string | null>;
   /** One-shot latch consumed by the SDK's `sendAutomaticallyWhen` predicate.
@@ -72,7 +70,6 @@ export function useQueuedPrompts({
   sendMessageRef,
   modelIdRef,
   capturedConsoleIdRef,
-  capturedDashboardIdRef,
   activeConsoleIdRef,
   pendingPlanToolCallIdRef,
   suppressNextAutoSendRef,
@@ -175,7 +172,6 @@ export function useQueuedPrompts({
         isLoadingRef.current = true;
         setQueuedPrompts(remaining);
         capturedConsoleIdRef.current = forced.consoleId;
-        capturedDashboardIdRef.current = forced.dashboardId;
         manualStopRequestedRef.current = false;
         trackEvent("ai_chat_message_sent", {
           model: modelIdRef.current,
@@ -247,7 +243,6 @@ export function useQueuedPrompts({
     isLoadingRef.current = true;
     setQueuedPrompts(rest);
     capturedConsoleIdRef.current = next.consoleId;
-    capturedDashboardIdRef.current = next.dashboardId;
     manualStopRequestedRef.current = false;
     trackEvent("ai_chat_message_sent", {
       model: modelIdRef.current,
@@ -326,13 +321,6 @@ export function useQueuedPrompts({
 
       capturedConsoleIdRef.current = activeConsoleIdRef.current;
       const store = useConsoleStore.getState();
-      const currentTab = store.tabs[store.activeTabId || ""] as
-        (ConsoleTab & { metadata?: Record<string, unknown> }) | undefined;
-      const dashboardId =
-        currentTab?.kind === "dashboard"
-          ? ((currentTab.metadata?.dashboardId as string | undefined) ?? null)
-          : null;
-      capturedDashboardIdRef.current = dashboardId;
       const consoleId = capturedConsoleIdRef.current;
 
       if (isLoadingRef.current) {
@@ -347,7 +335,6 @@ export function useQueuedPrompts({
             text,
             files,
             consoleId,
-            dashboardId,
           },
         ]);
         return;
@@ -375,7 +362,6 @@ export function useQueuedPrompts({
     [
       activeConsoleIdRef,
       capturedConsoleIdRef,
-      capturedDashboardIdRef,
       isLoadingRef,
       manualStopRequestedRef,
       modelIdRef,

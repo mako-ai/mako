@@ -22,7 +22,10 @@ export function getEmbeddingModelName(): string | null {
   return isEmbeddingAvailable() ? EMBEDDING_MODEL_LABEL : null;
 }
 
-export async function embedText(text: string): Promise<number[] | null> {
+export async function embedText(
+  text: string,
+  options: { abortSignal?: AbortSignal; maxRetries?: number } = {},
+): Promise<number[] | null> {
   if (!isEmbeddingAvailable()) return null;
 
   const { embedding } = await propagateAttributes(
@@ -33,6 +36,10 @@ export async function embedText(text: string): Promise<number[] | null> {
         model: getEmbeddingModel(GATEWAY_EMBEDDING_MODEL_ID),
         value: text,
         telemetry: { functionId: "embed-text" },
+        ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
+        ...(options.maxRetries !== undefined
+          ? { maxRetries: options.maxRetries }
+          : {}),
       }),
   );
   return embedding;

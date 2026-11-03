@@ -6,7 +6,7 @@ description: Entity icons single source of truth — never pick lucide icons ad 
 # Entity icons: single source of truth
 
 Every icon that represents an *entity concept* — an explorer section
-(Consoles, Dashboards, Apps, ...), a tab kind, or a settings section — MUST
+(Consoles, Apps, Notebooks, ...), a tab kind, or a settings section — MUST
 come from [app/src/lib/entity-icons.ts](mdc:app/src/lib/entity-icons.ts):
 
 - `EXPLORER_ICONS: Record<LeftPaneView, LucideIcon>` — sidebar rail, "Go to

@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   clientChartTools,
   clientConsoleTools,
-  clientDashboardTools,
+  clientScreenshotTools,
 } from "@mako/agent-tools";
 import { UNIVERSAL_PROMPT_V2 } from "../../../api/src/agent-lib/prompts/universal";
-import { buildCurrentScreenContext } from "../../../api/src/agents/unified/prompt";
 import { createDbtServerTools } from "../../../api/src/agent-lib/tools/dbt-tools";
 import {
   AGENT_TOOL_MANIFEST,
@@ -36,15 +35,15 @@ describe("client tool manifest contracts", () => {
     ).toEqual(Object.keys(clientConsoleTools).sort());
   });
 
-  it("matches the dashboard client executor schema keys", () => {
+  it("matches the screenshot client executor schema keys", () => {
     expect(
       manifestKeysFor(toolName => {
         return (
           toolName.execution === "client" &&
-          toolName.clientExecutor === "dashboard"
+          toolName.clientExecutor === "screenshot"
         );
       }),
-    ).toEqual(Object.keys(clientDashboardTools).sort());
+    ).toEqual(Object.keys(clientScreenshotTools).sort());
   });
 
   it("matches the chart client tool schema keys", () => {
@@ -59,27 +58,6 @@ describe("client tool manifest contracts", () => {
     expect(UNIVERSAL_PROMPT_V2).toContain("sql_execute_query");
     expect(UNIVERSAL_PROMPT_V2).toContain("mongo_execute_query");
     expect(UNIVERSAL_PROMPT_V2).not.toContain("`execute_query`");
-  });
-
-  it("renders open dashboards from the typed context contract", () => {
-    const context = buildCurrentScreenContext({
-      workspaceId: "ws_1",
-      activeView: "dashboard",
-      openDashboards: [
-        { id: "dash_1", title: "Revenue Dashboard", isActive: true },
-      ],
-      activeDashboardContext: {
-        dashboardId: "dash_1",
-        title: "Revenue Dashboard",
-        dataSources: [],
-        widgets: [],
-        crossFilterEnabled: true,
-      },
-    } as any);
-
-    expect(context).toContain("### Open Dashboards");
-    expect(context).toContain("Revenue Dashboard");
-    expect(context).toContain("dash_1");
   });
 
   // Server-side dbt tools have no compile-time drift guard (unlike client

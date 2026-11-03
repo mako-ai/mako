@@ -25,6 +25,8 @@ import {
   Avatar,
   IconButton,
   InputAdornment,
+  Tab,
+  Tabs,
 } from "@mui/material";
 import Accordion from "@mui/material/Accordion";
 import AccordionSummary from "@mui/material/AccordionSummary";
@@ -35,6 +37,7 @@ import Visibility from "@mui/icons-material/Visibility";
 import VisibilityOff from "@mui/icons-material/VisibilityOff";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ErrorIcon from "@mui/icons-material/Error";
+import SearchIcon from "@mui/icons-material/Search";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useSchemaStore } from "../store/schemaStore";
@@ -58,7 +61,7 @@ import {
   parseMySQLConnectionString,
   buildMySQLConnectionString,
 } from "../utils/mysql-connection-string";
-import { ConfirmDialog } from "./ConfirmDialog";
+import ConnectionWritersPanel from "./ConnectionWritersPanel";
 
 /** Set a value at a dot-separated path inside a nested object, creating intermediate objects as needed. */
 function setNested(obj: Record<string, any>, path: string, value: any) {
@@ -75,6 +78,39 @@ function setNested(obj: Record<string, any>, path: string, value: any) {
 function getNested(obj: Record<string, any> | undefined, path: string): any {
   if (!obj) return undefined;
   return path.split(".").reduce((acc: any, key) => acc?.[key], obj);
+}
+
+/** How the type picker groups engines; anything else is "Other". */
+const TYPE_GROUPS: Array<[string, string[]]> = [
+  ["Warehouses", ["bigquery", "clickhouse", "redshift"]],
+  [
+    "Databases",
+    ["postgresql", "cloudsql-postgres", "mysql", "mongodb", "mssql", "sqlite"],
+  ],
+  ["Cloudflare", ["cloudflare-d1", "cloudflare-kv"]],
+];
+
+/** The engines matching `search`, grouped in picker order, empty groups out. */
+function groupTypes<T extends { type: string; displayName?: string }>(
+  types: T[],
+  search: string,
+): Array<[string, T[]]> {
+  const q = search.trim().toLowerCase();
+  const matches = types.filter(
+    t =>
+      !q ||
+      t.type.toLowerCase().includes(q) ||
+      (t.displayName ?? "").toLowerCase().includes(q),
+  );
+  const known = new Set(TYPE_GROUPS.flatMap(([, list]) => list));
+  const groups: Array<[string, T[]]> = TYPE_GROUPS.map(([group, list]) => [
+    group,
+    list
+      .map(type => matches.find(t => t.type === type))
+      .filter((t): t is T => Boolean(t)),
+  ]);
+  groups.push(["Other", matches.filter(t => !known.has(t.type))]);
+  return groups.filter(([, list]) => list.length > 0);
 }
 
 interface CreateDatabaseDialogProps {
@@ -94,6 +130,9 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [step, setStep] = useState<"select" | "configure">("select");
+  // Editing a saved connection: its settings, and who may write through it.
+  const [tab, setTab] = useState<"connection" | "access">("connection");
+  const [typeSearch, setTypeSearch] = useState("");
 
   // Password visibility state (keyed by field name)
   const [showPassword, setShowPassword] = useState<Record<string, boolean>>({});
@@ -429,6 +468,8 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     setTestResult(null);
     setSavePhase("idle");
     setFailedTest({ open: false, values: null });
+    setTab("connection");
+    setTypeSearch("");
     onClose();
   };
 
@@ -586,6 +627,10 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
   }, [fetchTypes, open]);
 
   const selectedType = watch("type");
+  const selectedTypeInfo = (dbTypes || []).find(t => t.type === selectedType);
+  // Who may write lives with the saved connection; a local one is the
+  // Mako Agent's, outside Mako Cloud.
+  const showAccessTab = Boolean(databaseId) && !isEditingLocal;
 
   const handleTypeChange = async (newType: string) => {
     setValue("type", newType, { shouldValidate: true, shouldDirty: true });
@@ -629,69 +674,96 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
       <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
         {step === "select" ? (
           <>
-            <DialogTitle>Select Database Type</DialogTitle>
+            <DialogTitle sx={{ pb: 1 }}>New connection</DialogTitle>
             <DialogContent>
-              <Box sx={{ pt: 1 }}>
-                <Box
-                  sx={{
-                    display: "grid",
-                    gridTemplateColumns: {
-                      xs: "repeat(2, 1fr)",
-                      sm: "repeat(3, 1fr)",
-                    },
-                    gap: 2,
-                  }}
-                >
-                  {(dbTypes || []).map(t => (
-                    <Card
-                      key={t.type}
-                      variant="outlined"
-                      sx={{
-                        height: "100%",
-                        "&:hover": { borderColor: "primary.main" },
-                      }}
-                    >
-                      <CardActionArea
-                        onClick={() => handleTypeChange(t.type)}
-                        sx={{ height: "100%", p: 2 }}
+              <TextField
+                autoFocus
+                fullWidth
+                size="small"
+                placeholder="Search databases"
+                value={typeSearch}
+                onChange={e => setTypeSearch(e.target.value)}
+                sx={{ mt: 0.5, mb: 2 }}
+                slotProps={{
+                  input: {
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <SearchIcon fontSize="small" />
+                      </InputAdornment>
+                    ),
+                  },
+                }}
+              />
+              {groupTypes(dbTypes || [], typeSearch).map(([group, types]) => (
+                <Box key={group} sx={{ mb: 2 }}>
+                  <Typography
+                    variant="caption"
+                    sx={{ color: "text.secondary", display: "block", mb: 1 }}
+                  >
+                    {group}
+                  </Typography>
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: {
+                        xs: "repeat(2, 1fr)",
+                        sm: "repeat(3, 1fr)",
+                      },
+                      gap: 1,
+                    }}
+                  >
+                    {types.map(t => (
+                      <Card
+                        key={t.type}
+                        variant="outlined"
+                        sx={{
+                          borderRadius: 1.5,
+                          transition: "border-color 120ms",
+                          "&:hover": { borderColor: "primary.main" },
+                        }}
                       >
-                        <Box
+                        <CardActionArea
+                          onClick={() => handleTypeChange(t.type)}
                           sx={{
+                            px: 1.5,
+                            py: 1.25,
                             display: "flex",
-                            flexDirection: "column",
-                            alignItems: "center",
-                            gap: 1,
+                            justifyContent: "flex-start",
+                            gap: 1.25,
                           }}
                         >
                           <Avatar
                             src={t.iconUrl}
-                            alt={t.displayName}
-                            sx={{
-                              width: 40,
-                              height: 40,
-                              "& .MuiAvatar-img": {
-                                objectFit: "contain",
-                              },
-                            }}
+                            alt=""
                             variant="square"
+                            sx={{
+                              width: 24,
+                              height: 24,
+                              bgcolor: "transparent",
+                              color: "text.secondary",
+                              fontSize: 13,
+                              "& .MuiAvatar-img": { objectFit: "contain" },
+                            }}
                           >
                             {t.displayName?.[0]}
                           </Avatar>
-                          <Typography
-                            variant="body2"
-                            align="center"
-                            sx={{
-                              fontWeight: "medium",
-                            }}
-                          >
+                          <Typography variant="body2" noWrap>
                             {t.displayName || t.type}
                           </Typography>
-                        </Box>
-                      </CardActionArea>
-                    </Card>
-                  ))}
+                        </CardActionArea>
+                      </Card>
+                    ))}
+                  </Box>
                 </Box>
-              </Box>
+              ))}
+              {groupTypes(dbTypes || [], typeSearch).length === 0 && (
+                <Typography
+                  variant="body2"
+                  sx={{ color: "text.secondary", py: 3, textAlign: "center" }}
+                >
+                  No database matches "{typeSearch}".
+                </Typography>
+              )}
             </DialogContent>
             <DialogActions>
               <Button onClick={handleClose}>Cancel</Button>
@@ -699,464 +771,544 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
           </>
         ) : (
           <>
-            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <DialogTitle
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 1,
+                pb: showAccessTab ? 0.5 : 0,
+              }}
+            >
               {!databaseId && (
                 <IconButton onClick={handleBack} size="small" edge="start">
                   <ArrowBackIcon />
                 </IconButton>
               )}
-              {databaseId ? "Edit Database" : "Configure Database"}
-            </DialogTitle>
-            <DialogContent>
-              <Box
-                component="form"
-                autoComplete="off"
-                data-form-type="other"
-                data-lpignore="true"
-                data-1p-ignore
-                sx={{ pt: 1 }}
-                onSubmit={e => e.preventDefault()}
-              >
-                {error && (
-                  <Alert severity="error" sx={{ mb: 2 }}>
-                    {error}
-                  </Alert>
-                )}
-
-                <TextField
-                  fullWidth
-                  label="Database Name"
-                  {...register("name", { required: "Name is required" })}
-                  margin="normal"
-                  required
-                  placeholder="My Database"
-                  error={Boolean(errors.name)}
-                  helperText={errors.name?.message as string}
-                  autoComplete="off"
+              {selectedTypeInfo?.iconUrl && (
+                <Avatar
+                  src={selectedTypeInfo.iconUrl}
+                  alt=""
+                  variant="square"
+                  sx={{
+                    width: 22,
+                    height: 22,
+                    bgcolor: "transparent",
+                    "& .MuiAvatar-img": { objectFit: "contain" },
+                  }}
                 />
-
-                {/* Local-address banner: web only. Inside Mako Desktop the
-                  agent is bundled and routing is automatic, so nothing is
-                  shown. */}
-                {!isDesktop && looksLocal && (
-                  <Alert
-                    severity={
-                      databaseId && !isEditingLocal
-                        ? "warning"
-                        : agentStatus === "online"
-                          ? "info"
-                          : "warning"
-                    }
-                    sx={{ mt: 2 }}
-                  >
-                    {databaseId && !isEditingLocal
-                      ? "This address points at your local network, which Mako Cloud can't reach. Create a new connection instead — local addresses connect through the Mako Agent automatically."
-                      : agentStatus === "online"
-                        ? "Local database detected. It will connect through the Mako Agent on this machine — credentials stay local and are never sent to Mako Cloud."
-                        : "Local database detected, which Mako Cloud can't reach. Install Mako Desktop or run the Mako Agent on this machine to connect."}
-                  </Alert>
-                )}
-
-                {/* Hidden input to register 'type' as required for validation */}
-                <input
-                  type="hidden"
-                  {...register("type", {
-                    required: "Database type is required",
-                  })}
-                />
-
-                {/* Dynamic schema-driven form */}
-                {loading ? (
-                  <Box sx={{ display: "flex", justifyContent: "center", p: 4 }}>
-                    <CircularProgress />
-                  </Box>
-                ) : (
-                  selectedType &&
-                  schemas[selectedType]?.fields &&
-                  (() => {
-                    const allFields = schemas[selectedType].fields;
-                    const primaryFields = allFields.filter(f => !f.advanced);
-                    const advancedFields = allFields.filter(f => f.advanced);
-
-                    const advancedGroups = advancedFields.reduce<
-                      Record<string, typeof advancedFields>
-                    >((acc, f) => {
-                      const g = f.group || "Advanced";
-                      (acc[g] ||= []).push(f);
-                      return acc;
-                    }, {});
-
-                    const isFieldVisible = (
-                      field: (typeof allFields)[number],
-                    ) => {
-                      if (!field.visibleWhen) return true;
-                      const val = getNested(
-                        watchedConnection,
-                        field.visibleWhen.field,
-                      );
-                      return val === field.visibleWhen.equals;
-                    };
-
-                    const renderField = (field: (typeof allFields)[number]) => {
-                      if (!isFieldVisible(field)) return null;
-
-                      const fieldName =
-                        `connection.${field.name}` as `connection.${string}`;
-                      const requiredRule = field.required
-                        ? { required: `${field.label} is required` }
-                        : {};
-                      const fieldError =
-                        (getNested(errors, fieldName)?.message as string) ||
-                        undefined;
-
-                      switch (field.type) {
-                        case "boolean":
-                          return (
-                            <FormControl
-                              key={field.name}
-                              fullWidth
-                              margin="normal"
-                            >
-                              <Box
-                                sx={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                }}
-                              >
-                                <Typography sx={{ mr: 2 }}>
-                                  {field.label}
-                                </Typography>
-                                <Controller
-                                  control={control}
-                                  name={fieldName}
-                                  rules={requiredRule}
-                                  render={({
-                                    field: ctrlField,
-                                    fieldState,
-                                  }) => (
-                                    <input
-                                      type="checkbox"
-                                      checked={Boolean(ctrlField.value)}
-                                      onChange={e =>
-                                        ctrlField.onChange(e.target.checked)
-                                      }
-                                      aria-invalid={
-                                        fieldState.error ? "true" : "false"
-                                      }
-                                    />
-                                  )}
-                                />
-                              </Box>
-                              {fieldError ? (
-                                <Typography variant="caption" color="error">
-                                  {fieldError}
-                                </Typography>
-                              ) : (
-                                field.helperText && (
-                                  <Typography
-                                    variant="caption"
-                                    sx={{
-                                      color: "text.secondary",
-                                    }}
-                                  >
-                                    {field.helperText}
-                                  </Typography>
-                                )
-                              )}
-                            </FormControl>
-                          );
-                        case "textarea":
-                          return (
-                            <TextField
-                              key={field.name}
-                              fullWidth
-                              label={field.label}
-                              margin="normal"
-                              placeholder={field.placeholder}
-                              multiline
-                              rows={field.rows || 3}
-                              {...register(fieldName, requiredRule)}
-                              error={Boolean(fieldError)}
-                              helperText={fieldError ?? field.helperText}
-                              autoComplete="off"
-                            />
-                          );
-                        case "password":
-                          return (
-                            <TextField
-                              key={field.name}
-                              fullWidth
-                              type={
-                                showPassword[field.name] ? "text" : "password"
-                              }
-                              label={field.label}
-                              margin="normal"
-                              placeholder={field.placeholder}
-                              {...register(fieldName, requiredRule)}
-                              error={Boolean(fieldError)}
-                              helperText={fieldError ?? field.helperText}
-                              autoComplete="off"
-                              slotProps={{
-                                input: {
-                                  endAdornment: (
-                                    <InputAdornment position="end">
-                                      <IconButton
-                                        aria-label={
-                                          showPassword[field.name]
-                                            ? "Hide password"
-                                            : "Show password"
-                                        }
-                                        onClick={() =>
-                                          togglePasswordVisibility(field.name)
-                                        }
-                                        edge="end"
-                                        size="small"
-                                      >
-                                        {showPassword[field.name] ? (
-                                          <VisibilityOff fontSize="small" />
-                                        ) : (
-                                          <Visibility fontSize="small" />
-                                        )}
-                                      </IconButton>
-                                    </InputAdornment>
-                                  ),
-                                },
-                                htmlInput: {
-                                  "data-1p-ignore": true,
-                                  "data-lpignore": "true",
-                                  "data-form-type": "other",
-                                },
-                              }}
-                            />
-                          );
-                        case "number":
-                          return (
-                            <TextField
-                              key={field.name}
-                              fullWidth
-                              type="number"
-                              label={field.label}
-                              margin="normal"
-                              placeholder={field.placeholder}
-                              {...register(fieldName, {
-                                ...requiredRule,
-                                valueAsNumber: true,
-                              })}
-                              error={Boolean(fieldError)}
-                              helperText={fieldError ?? field.helperText}
-                              autoComplete="off"
-                            />
-                          );
-                        case "select":
-                          return (
-                            <FormControl
-                              key={field.name}
-                              fullWidth
-                              margin="normal"
-                              required={field.required}
-                              error={Boolean(fieldError)}
-                            >
-                              <InputLabel>{field.label}</InputLabel>
-                              <Controller
-                                control={control}
-                                name={fieldName}
-                                rules={requiredRule}
-                                render={({ field: ctrlField }) => (
-                                  <Select
-                                    label={field.label}
-                                    value={ctrlField.value ?? ""}
-                                    onChange={e =>
-                                      ctrlField.onChange(String(e.target.value))
-                                    }
-                                  >
-                                    {(field.options || []).map(opt => (
-                                      <MenuItem
-                                        key={opt.value}
-                                        value={opt.value}
-                                      >
-                                        {opt.label}
-                                      </MenuItem>
-                                    ))}
-                                  </Select>
-                                )}
-                              />
-                              {fieldError ? (
-                                <Typography variant="caption" color="error">
-                                  {fieldError}
-                                </Typography>
-                              ) : (
-                                field.helperText && (
-                                  <Typography
-                                    variant="caption"
-                                    sx={{
-                                      color: "text.secondary",
-                                    }}
-                                  >
-                                    {field.helperText}
-                                  </Typography>
-                                )
-                              )}
-                            </FormControl>
-                          );
-                        case "string":
-                        default:
-                          return (
-                            <TextField
-                              key={field.name}
-                              fullWidth
-                              label={field.label}
-                              margin="normal"
-                              placeholder={field.placeholder}
-                              {...register(fieldName, requiredRule)}
-                              error={Boolean(fieldError)}
-                              helperText={fieldError ?? field.helperText}
-                              autoComplete="off"
-                              slotProps={
-                                field.name === "username"
-                                  ? {
-                                      htmlInput: {
-                                        "data-1p-ignore": true,
-                                        "data-lpignore": "true",
-                                        "data-form-type": "other",
-                                      },
-                                    }
-                                  : undefined
-                              }
-                            />
-                          );
-                      }
-                    };
-
-                    return (
-                      <>
-                        {primaryFields.map(renderField)}
-                        {Object.entries(advancedGroups).map(
-                          ([group, fields]) => (
-                            <Accordion
-                              key={group}
-                              disableGutters
-                              elevation={0}
-                              sx={{
-                                mt: 2,
-                                border: 1,
-                                borderColor: "divider",
-                                borderRadius: 1,
-                                "&::before": { display: "none" },
-                              }}
-                            >
-                              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                <Typography variant="subtitle2">
-                                  {group}
-                                </Typography>
-                              </AccordionSummary>
-                              <AccordionDetails sx={{ pt: 0 }}>
-                                {fields.map(renderField)}
-                              </AccordionDetails>
-                            </Accordion>
-                          ),
-                        )}
-                      </>
-                    );
-                  })()
-                )}
-              </Box>
-            </DialogContent>
-            <DialogActions
-              sx={{
-                flexDirection: "column",
-                alignItems: "stretch",
-                gap: 1,
-                px: 3,
-                pb: 2,
-              }}
-            >
-              {/* Test connection result */}
-              {testResult && (
-                <Alert
-                  severity={testResult.success ? "success" : "error"}
-                  icon={
-                    testResult.success ? (
-                      <CheckCircleIcon fontSize="inherit" />
-                    ) : (
-                      <ErrorIcon fontSize="inherit" />
-                    )
-                  }
-                  sx={{ width: "100%" }}
-                >
-                  {testResult.success
-                    ? "Connection successful!"
-                    : testResult.error || "Connection failed"}
-                </Alert>
               )}
-
-              {/* Action buttons */}
-              <Box
+              <Box component="span" sx={{ flex: 1, minWidth: 0 }}>
+                {databaseId
+                  ? watch("name") || "Connection"
+                  : `New ${selectedTypeInfo?.displayName ?? "connection"}`}
+              </Box>
+            </DialogTitle>
+            {showAccessTab && (
+              <Tabs
+                value={tab}
+                onChange={(_, value) => setTab(value)}
                 sx={{
-                  display: "flex",
-                  justifyContent: "flex-end",
-                  gap: 1,
-                  width: "100%",
+                  px: 3,
+                  minHeight: 40,
+                  borderBottom: 1,
+                  borderColor: "divider",
+                  "& .MuiTab-root": { minHeight: 40, textTransform: "none" },
                 }}
               >
-                <Button onClick={handleClose} disabled={loading}>
-                  Cancel
-                </Button>
-                <Button
-                  onClick={handleTestConnection}
-                  disabled={loading || testingConnection}
-                  variant="outlined"
-                  startIcon={
-                    testingConnection ? <CircularProgress size={16} /> : null
-                  }
+                <Tab value="connection" label="Connection" />
+                <Tab value="access" label="Access" />
+              </Tabs>
+            )}
+            {tab === "access" && databaseId ? (
+              <>
+                <DialogContent>
+                  <ConnectionWritersPanel
+                    connectionId={databaseId}
+                    connectionName={watch("name") || "this connection"}
+                  />
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 2 }}>
+                  <Button onClick={handleClose}>Done</Button>
+                </DialogActions>
+              </>
+            ) : (
+              <>
+                <DialogContent>
+                  <Box
+                    component="form"
+                    autoComplete="off"
+                    data-form-type="other"
+                    data-lpignore="true"
+                    data-1p-ignore
+                    sx={{ pt: 1 }}
+                    onSubmit={e => e.preventDefault()}
+                  >
+                    {error && (
+                      <Alert severity="error" sx={{ mb: 2 }}>
+                        {error}
+                      </Alert>
+                    )}
+
+                    <TextField
+                      fullWidth
+                      label="Name"
+                      {...register("name", { required: "Name is required" })}
+                      margin="normal"
+                      required
+                      placeholder="My Database"
+                      error={Boolean(errors.name)}
+                      helperText={errors.name?.message as string}
+                      autoComplete="off"
+                    />
+
+                    {/* Local-address banner: web only. Inside Mako Desktop the
+                  agent is bundled and routing is automatic, so nothing is
+                  shown. */}
+                    {!isDesktop && looksLocal && (
+                      <Alert
+                        severity={
+                          databaseId && !isEditingLocal
+                            ? "warning"
+                            : agentStatus === "online"
+                              ? "info"
+                              : "warning"
+                        }
+                        sx={{ mt: 2 }}
+                      >
+                        {databaseId && !isEditingLocal
+                          ? "This address points at your local network, which Mako Cloud can't reach. Create a new connection instead — local addresses connect through the Mako Agent automatically."
+                          : agentStatus === "online"
+                            ? "Local database detected. It will connect through the Mako Agent on this machine — credentials stay local and are never sent to Mako Cloud."
+                            : "Local database detected, which Mako Cloud can't reach. Install Mako Desktop or run the Mako Agent on this machine to connect."}
+                      </Alert>
+                    )}
+
+                    {/* Hidden input to register 'type' as required for validation */}
+                    <input
+                      type="hidden"
+                      {...register("type", {
+                        required: "Database type is required",
+                      })}
+                    />
+
+                    {/* Dynamic schema-driven form */}
+                    {loading ? (
+                      <Box
+                        sx={{ display: "flex", justifyContent: "center", p: 4 }}
+                      >
+                        <CircularProgress />
+                      </Box>
+                    ) : (
+                      selectedType &&
+                      schemas[selectedType]?.fields &&
+                      (() => {
+                        const allFields = schemas[selectedType].fields;
+                        const primaryFields = allFields.filter(
+                          f => !f.advanced,
+                        );
+                        const advancedFields = allFields.filter(
+                          f => f.advanced,
+                        );
+
+                        const advancedGroups = advancedFields.reduce<
+                          Record<string, typeof advancedFields>
+                        >((acc, f) => {
+                          const g = f.group || "Advanced";
+                          (acc[g] ||= []).push(f);
+                          return acc;
+                        }, {});
+
+                        const isFieldVisible = (
+                          field: (typeof allFields)[number],
+                        ) => {
+                          if (!field.visibleWhen) return true;
+                          const val = getNested(
+                            watchedConnection,
+                            field.visibleWhen.field,
+                          );
+                          return val === field.visibleWhen.equals;
+                        };
+
+                        const renderField = (
+                          field: (typeof allFields)[number],
+                        ) => {
+                          if (!isFieldVisible(field)) return null;
+
+                          const fieldName =
+                            `connection.${field.name}` as `connection.${string}`;
+                          const requiredRule = field.required
+                            ? { required: `${field.label} is required` }
+                            : {};
+                          const fieldError =
+                            (getNested(errors, fieldName)?.message as string) ||
+                            undefined;
+
+                          switch (field.type) {
+                            case "boolean":
+                              return (
+                                <FormControl
+                                  key={field.name}
+                                  fullWidth
+                                  margin="normal"
+                                >
+                                  <Box
+                                    sx={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                    }}
+                                  >
+                                    <Typography sx={{ mr: 2 }}>
+                                      {field.label}
+                                    </Typography>
+                                    <Controller
+                                      control={control}
+                                      name={fieldName}
+                                      rules={requiredRule}
+                                      render={({
+                                        field: ctrlField,
+                                        fieldState,
+                                      }) => (
+                                        <input
+                                          type="checkbox"
+                                          checked={Boolean(ctrlField.value)}
+                                          onChange={e =>
+                                            ctrlField.onChange(e.target.checked)
+                                          }
+                                          aria-invalid={
+                                            fieldState.error ? "true" : "false"
+                                          }
+                                        />
+                                      )}
+                                    />
+                                  </Box>
+                                  {fieldError ? (
+                                    <Typography variant="caption" color="error">
+                                      {fieldError}
+                                    </Typography>
+                                  ) : (
+                                    field.helperText && (
+                                      <Typography
+                                        variant="caption"
+                                        sx={{
+                                          color: "text.secondary",
+                                        }}
+                                      >
+                                        {field.helperText}
+                                      </Typography>
+                                    )
+                                  )}
+                                </FormControl>
+                              );
+                            case "textarea":
+                              return (
+                                <TextField
+                                  key={field.name}
+                                  fullWidth
+                                  label={field.label}
+                                  margin="normal"
+                                  placeholder={field.placeholder}
+                                  multiline
+                                  rows={field.rows || 3}
+                                  {...register(fieldName, requiredRule)}
+                                  error={Boolean(fieldError)}
+                                  helperText={fieldError ?? field.helperText}
+                                  autoComplete="off"
+                                />
+                              );
+                            case "password":
+                              return (
+                                <TextField
+                                  key={field.name}
+                                  fullWidth
+                                  type={
+                                    showPassword[field.name]
+                                      ? "text"
+                                      : "password"
+                                  }
+                                  label={field.label}
+                                  margin="normal"
+                                  placeholder={field.placeholder}
+                                  {...register(fieldName, requiredRule)}
+                                  error={Boolean(fieldError)}
+                                  helperText={fieldError ?? field.helperText}
+                                  autoComplete="off"
+                                  slotProps={{
+                                    input: {
+                                      endAdornment: (
+                                        <InputAdornment position="end">
+                                          <IconButton
+                                            aria-label={
+                                              showPassword[field.name]
+                                                ? "Hide password"
+                                                : "Show password"
+                                            }
+                                            onClick={() =>
+                                              togglePasswordVisibility(
+                                                field.name,
+                                              )
+                                            }
+                                            edge="end"
+                                            size="small"
+                                          >
+                                            {showPassword[field.name] ? (
+                                              <VisibilityOff fontSize="small" />
+                                            ) : (
+                                              <Visibility fontSize="small" />
+                                            )}
+                                          </IconButton>
+                                        </InputAdornment>
+                                      ),
+                                    },
+                                    htmlInput: {
+                                      "data-1p-ignore": true,
+                                      "data-lpignore": "true",
+                                      "data-form-type": "other",
+                                    },
+                                  }}
+                                />
+                              );
+                            case "number":
+                              return (
+                                <TextField
+                                  key={field.name}
+                                  fullWidth
+                                  type="number"
+                                  label={field.label}
+                                  margin="normal"
+                                  placeholder={field.placeholder}
+                                  {...register(fieldName, {
+                                    ...requiredRule,
+                                    valueAsNumber: true,
+                                  })}
+                                  error={Boolean(fieldError)}
+                                  helperText={fieldError ?? field.helperText}
+                                  autoComplete="off"
+                                />
+                              );
+                            case "select":
+                              return (
+                                <FormControl
+                                  key={field.name}
+                                  fullWidth
+                                  margin="normal"
+                                  required={field.required}
+                                  error={Boolean(fieldError)}
+                                >
+                                  <InputLabel>{field.label}</InputLabel>
+                                  <Controller
+                                    control={control}
+                                    name={fieldName}
+                                    rules={requiredRule}
+                                    render={({ field: ctrlField }) => (
+                                      <Select
+                                        label={field.label}
+                                        value={ctrlField.value ?? ""}
+                                        onChange={e =>
+                                          ctrlField.onChange(
+                                            String(e.target.value),
+                                          )
+                                        }
+                                      >
+                                        {(field.options || []).map(opt => (
+                                          <MenuItem
+                                            key={opt.value}
+                                            value={opt.value}
+                                          >
+                                            {opt.label}
+                                          </MenuItem>
+                                        ))}
+                                      </Select>
+                                    )}
+                                  />
+                                  {fieldError ? (
+                                    <Typography variant="caption" color="error">
+                                      {fieldError}
+                                    </Typography>
+                                  ) : (
+                                    field.helperText && (
+                                      <Typography
+                                        variant="caption"
+                                        sx={{
+                                          color: "text.secondary",
+                                        }}
+                                      >
+                                        {field.helperText}
+                                      </Typography>
+                                    )
+                                  )}
+                                </FormControl>
+                              );
+                            case "string":
+                            default:
+                              return (
+                                <TextField
+                                  key={field.name}
+                                  fullWidth
+                                  label={field.label}
+                                  margin="normal"
+                                  placeholder={field.placeholder}
+                                  {...register(fieldName, requiredRule)}
+                                  error={Boolean(fieldError)}
+                                  helperText={fieldError ?? field.helperText}
+                                  autoComplete="off"
+                                  slotProps={
+                                    field.name === "username"
+                                      ? {
+                                          htmlInput: {
+                                            "data-1p-ignore": true,
+                                            "data-lpignore": "true",
+                                            "data-form-type": "other",
+                                          },
+                                        }
+                                      : undefined
+                                  }
+                                />
+                              );
+                          }
+                        };
+
+                        return (
+                          <>
+                            {primaryFields.map(renderField)}
+                            {Object.entries(advancedGroups).map(
+                              ([group, fields]) => (
+                                <Accordion
+                                  key={group}
+                                  disableGutters
+                                  elevation={0}
+                                  sx={{
+                                    mt: 2,
+                                    border: 1,
+                                    borderColor: "divider",
+                                    borderRadius: 1,
+                                    "&::before": { display: "none" },
+                                  }}
+                                >
+                                  <AccordionSummary
+                                    expandIcon={<ExpandMoreIcon />}
+                                  >
+                                    <Typography variant="subtitle2">
+                                      {group}
+                                    </Typography>
+                                  </AccordionSummary>
+                                  <AccordionDetails sx={{ pt: 0 }}>
+                                    {fields.map(renderField)}
+                                  </AccordionDetails>
+                                </Accordion>
+                              ),
+                            )}
+                          </>
+                        );
+                      })()
+                    )}
+                  </Box>
+                </DialogContent>
+                <DialogActions
+                  sx={{
+                    flexDirection: "column",
+                    alignItems: "stretch",
+                    gap: 1,
+                    px: 3,
+                    pb: 2,
+                  }}
                 >
-                  {testingConnection ? "Testing..." : "Test Connection"}
-                </Button>
-                <Button
-                  onClick={handleSubmit(onSubmit)}
-                  variant="contained"
-                  disabled={loading}
-                  startIcon={loading ? <CircularProgress size={16} /> : null}
-                >
-                  {loading
-                    ? savePhase === "testing"
-                      ? "Testing connection..."
-                      : "Saving..."
-                    : databaseId
-                      ? "Update Database"
-                      : "Create Database"}
-                </Button>
-              </Box>
-            </DialogActions>
+                  {/* Saving tested the connection and it failed: say so here,
+                and let the user fix it or keep it unverified. */}
+                  {failedTest.open && (
+                    <Alert
+                      severity="warning"
+                      sx={{ width: "100%" }}
+                      action={
+                        <Box sx={{ display: "flex", gap: 1 }}>
+                          <Button
+                            size="small"
+                            color="inherit"
+                            onClick={handleEditConnection}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            size="small"
+                            color="inherit"
+                            disabled={loading}
+                            onClick={() => void handleSaveAnyways()}
+                          >
+                            Save anyway
+                          </Button>
+                        </Box>
+                      }
+                    >
+                      Mako couldn&apos;t connect, so it isn&apos;t saved yet.
+                      {failedTest.error ? ` ${failedTest.error}` : ""}
+                    </Alert>
+                  )}
+
+                  {/* Test connection result */}
+                  {testResult && !failedTest.open && (
+                    <Alert
+                      severity={testResult.success ? "success" : "error"}
+                      icon={
+                        testResult.success ? (
+                          <CheckCircleIcon fontSize="inherit" />
+                        ) : (
+                          <ErrorIcon fontSize="inherit" />
+                        )
+                      }
+                      sx={{ width: "100%" }}
+                    >
+                      {testResult.success
+                        ? "Connection successful!"
+                        : testResult.error || "Connection failed"}
+                    </Alert>
+                  )}
+
+                  {/* Action buttons */}
+                  <Box
+                    sx={{
+                      display: "flex",
+                      justifyContent: "flex-end",
+                      gap: 1,
+                      width: "100%",
+                    }}
+                  >
+                    <Button onClick={handleClose} disabled={loading}>
+                      Cancel
+                    </Button>
+                    <Button
+                      onClick={handleTestConnection}
+                      disabled={loading || testingConnection}
+                      variant="outlined"
+                      startIcon={
+                        testingConnection ? (
+                          <CircularProgress size={16} />
+                        ) : null
+                      }
+                    >
+                      {testingConnection ? "Testing…" : "Test connection"}
+                    </Button>
+                    <Button
+                      onClick={handleSubmit(onSubmit)}
+                      variant="contained"
+                      disabled={loading}
+                      startIcon={
+                        loading ? <CircularProgress size={16} /> : null
+                      }
+                    >
+                      {loading
+                        ? savePhase === "testing"
+                          ? "Testing connection…"
+                          : "Saving…"
+                        : databaseId
+                          ? "Save"
+                          : "Create connection"}
+                    </Button>
+                  </Box>
+                </DialogActions>
+              </>
+            )}
           </>
         )}
       </Dialog>
-
-      {/* Connection test failed before save: let the user fix the config or
-        persist it unverified. Save anyways never counts as activation. */}
-      <ConfirmDialog
-        open={failedTest.open}
-        title="Connection test failed"
-        body={
-          <>
-            <Typography variant="body2" sx={{ mb: 1 }}>
-              Mako couldn&apos;t connect to this database, so we haven&apos;t
-              saved it yet. This can happen if the credentials are wrong, or if
-              the database isn&apos;t reachable from Mako (for example a private
-              network or an allowlist).
-            </Typography>
-            {failedTest.error && (
-              <Alert severity="error" sx={{ mt: 1 }}>
-                {failedTest.error}
-              </Alert>
-            )}
-          </>
-        }
-        cancelLabel="Edit connection string"
-        confirmLabel="Save anyways"
-        busy={loading}
-        onConfirm={() => void handleSaveAnyways()}
-        onCancel={handleEditConnection}
-      />
     </>
   );
 };

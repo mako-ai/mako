@@ -7,7 +7,7 @@ interface Props {
   children: React.ReactNode;
   /**
    * Max content width in px. Pass `"full"` for admin-style pages that should
-   * stretch to the parent container (data tables, dashboards, etc).
+   * stretch to the parent container (data tables, editors, etc).
    * Default: 900.
    */
   maxWidth?: number | "full";

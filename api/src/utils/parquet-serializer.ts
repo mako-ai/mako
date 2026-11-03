@@ -71,7 +71,7 @@ export async function writeParquetTempFile(options: {
     .build();
   const parquetBytes = parquetWasm.writeParquet(table, writerProps);
 
-  const safeBase = (options.filenameBase || "dashboard-export").replace(
+  const safeBase = (options.filenameBase || "query-export").replace(
     /[^a-zA-Z0-9._-]/g,
     "_",
   );

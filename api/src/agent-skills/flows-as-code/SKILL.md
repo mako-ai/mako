@@ -8,6 +8,8 @@ entities:
   - flows as code
   - connector_id
   - connection_id
+  - live
+  - resync
   - backfill_schedule
   - entities.layouts
   - partitionField
@@ -93,7 +95,6 @@ not mix). A Close → BigQuery CDC flow, the shape most production flows take:
 
 ```yaml
 name: ch_close → bigquery_write
-type: webhook                 # CDC = type: webhook + backfill_schedule. type: scheduled = polling on schedule.cron
 source:
   type: connector
   connection_id: <ObjectId of a kind: source connection from list_connections>
@@ -105,16 +106,17 @@ destination:
     create_if_not_exists: true
     partitioning: { enabled: false, require_partition_filter: false }
     clustering: { enabled: false, fields: [] }
-backfill_schedule:            # this is what makes a new CDC flow START — see "What live means"
-  cron: 0 3 * * *
+live:                         # how changes arrive between resyncs
+  poll: 'off'                 # a cron (e.g. 0 * * * *) or off — polling runs whenever it is on
+  # timezone: UTC             # the poll cron's timezone
+  webhook: 'on'               # on | off — webhooks only add speed on top of polling
+resync:                       # the periodic full re-read; also what makes a new flow START — see "What live means"
+  cron: 0 3 * * *             # or `resync: off`
   timezone: UTC
-  # entities: [users]       # optional: limit each scheduled backfill to these entities (default: all)
-webhook:
-  enabled: true
+  # entities: [users]       # optional: limit each resync to these entities (default: all)
 sync:
   mode: incremental           # full | incremental
   write_mode: append_dedup    # append_dedup | append | overwrite
-  engine: cdc                 # legacy | cdc
   delete_mode: soft
   batch_size: 2000
 entities:
@@ -137,7 +139,11 @@ pagination:
   keyset_direction: asc
 ```
 
-- Required: `name`; `type` ∈ {scheduled, webhook}; `source.connection_id`
+- Older files say `type`, `schedule`, `webhook: { enabled }`,
+  `backfill_schedule` and `sync.engine`: they still parse (forever) and mean
+  the same; `type: webhook` with no `webhook:` stanza means webhooks on. Mako
+  never rewrites a file just to change its format.
+- Required: `name`; `source.connection_id`
   (a source connection, under `type: connector`; older files say
   `connector_id`, which still parses) or `source.connection_id` +
   `database` + `query` (database source); `destination.connection_id`. A
@@ -158,14 +164,28 @@ if it carries the field the cron looks for:
 
 | File carries | What happens |
 | --- | --- |
-| `sync.engine: cdc` + `backfill_schedule:` | first backfill starts on the next scheduler tick (**≤5 min**); ingest/materialise of change events is workspace-wide and needs no per-flow registration |
-| `sync.engine: cdc`, no `backfill_schedule` | row sits at `idle` until a human presses Backfill in the UI |
-| `type: scheduled` + `schedule: { cron, timezone }` | runs on the cron |
-| `type: webhook` | row is *addressable* (endpoint minted, shown on the flow's page) but inbound deliveries are rejected with 400 until (a) the provider's signing secret is pasted in the UI — never from the file — and (b) the provider is pointed at the minted URL. Push first, then do both. |
+| `resync:` with a cron | first backfill starts on the next scheduler tick (**≤5 min**); ingest/materialise of change events is workspace-wide and needs no per-flow registration |
+| `resync: off` | row sits at `idle` until a human presses Backfill in the UI (or `flow_backfill` over MCP) |
+| `live.poll:` a cron | polls on the cron |
+| `live.webhook: on` | row is *addressable* (endpoint minted, shown on the flow's page). Stripe and Wise subscriptions are created on save where the token allows; for other providers inbound deliveries are rejected until (a) the provider's signing secret is pasted in the UI — never from the file — and (b) the provider is pointed at the minted URL. Push first, then do both. |
 
-Verify: there is no flow-status tool over MCP yet — open the Flows page:
-`streamState` should leave `idle` and a backfill run should appear; then
-`SELECT count(*)` in the destination via `execute_query`.
+**Incremental resync (Close).** A *scheduled* resync of a Close flow fetches
+leads, contacts, opportunities and every `activities:*` entity only where
+`date_updated` is at or after the start of that entity's last completed
+backfill minus 6 h. Every entity is still fetched in full at least every 7
+days, and whenever it has no completed full backfill on record. Other Close
+entities (users, custom fields, groups, statuses) are always fetched in full,
+and so is every manual Backfill. `write_mode: overwrite`/`append` flows are
+always full too. A resync upserts and never deletes rows. Deletions arrive
+through the live stream (webhooks). So a nightly
+`resync` over all entities is cheap, and it is a safety net on top of webhooks.
+Ops knobs (env): `CDC_INCREMENTAL_RESYNC=off`,
+`CDC_INCREMENTAL_RESYNC_OVERLAP_HOURS`, `CDC_FULL_RESYNC_INTERVAL_DAYS`.
+
+Verify: `flow_status` (or `mako sync status <name>`) shows each entity's state
+and the last runs — `streamState` should leave `idle` and a backfill run should
+appear (the Flows page shows the same); then `SELECT count(*)` in the
+destination via `execute_query`.
 
 ## Removing and renaming
 
@@ -180,12 +200,11 @@ Verify: there is no flow-status tool over MCP yet — open the Flows page:
 
 ## Creating the connection (the step the file cannot do)
 
-A flow file references a source connection that must already exist. **No
-MCP or CLI tool creates one**; `POST /api/workspaces/{id}/connectors` behind
-a signed-in session is the only construction site, and it takes the API key.
-So: ask the user to configure the connection in Mako (Sources → Add),
-`list_connections({ kind: "source" })` for its id, `probe_connection` to
-see it work, then write the file. Never write an API key into a repo file.
+A flow file references a source connection that must already exist. Ask the
+user to configure it in Mako (Sources → Add), or create it with the
+`create_connection` MCP tool (needs the `connections:write` grant and at least
+the member role). `list_connections({ kind: "source" })` for its id,
+`probe_connection` to see it work, then write the file. Never write an API key into a repo file.
 
 ## Gotchas that have bitten
 

@@ -467,24 +467,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{id}/settings/limits": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get workspace refresh concurrency limits */
-        get: operations["get_api_workspaces_id_settings_limits"];
-        /** Update workspace refresh concurrency limits */
-        put: operations["put_api_workspaces_id_settings_limits"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/workspaces/{id}/switch": {
         parameters: {
             query?: never;
@@ -552,6 +534,27 @@ export interface paths {
         get: operations["get_api_workspaces_id_auto_join"];
         /** Set domain auto-join */
         put: operations["put_api_workspaces_id_auto_join"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{id}/link-previews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * In-app link previews setting
+         * @description Whether in-app app links (/view/<workspace>/<app>) unfurl in chat apps with the app's title, description and thumbnail. Only workspace-tree apps visible to every member ever do; default on.
+         */
+        get: operations["get_api_workspaces_id_link_previews"];
+        /** Turn in-app link previews on or off */
+        put: operations["put_api_workspaces_id_link_previews"];
         post?: never;
         delete?: never;
         options?: never;
@@ -762,6 +765,24 @@ export interface paths {
         put?: never;
         /** POST /test-connection */
         post: operations["post_api_workspaces_workspaceId_databases_test_connection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/databases/{id}/writers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Who may write through this connection */
+        get: operations["get_api_workspaces_workspaceId_databases_id_writers"];
+        /** Change who may write through this connection */
+        put: operations["put_api_workspaces_workspaceId_databases_id_writers"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3081,355 +3102,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/dashboards": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** GET / */
-        get: operations["get_api_workspaces_workspaceId_dashboards"];
-        put?: never;
-        /** POST / */
-        post: operations["post_api_workspaces_workspaceId_dashboards"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** GET /{id} */
-        get: operations["get_api_workspaces_workspaceId_dashboards_id"];
-        /** PUT /{id} */
-        put: operations["put_api_workspaces_workspaceId_dashboards_id"];
-        post?: never;
-        /** DELETE /{id} */
-        delete: operations["delete_api_workspaces_workspaceId_dashboards_id"];
-        options?: never;
-        head?: never;
-        /** PATCH /{id} */
-        patch: operations["patch_api_workspaces_workspaceId_dashboards_id"];
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/version-comment": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** POST /{id}/version-comment */
-        post: operations["post_api_workspaces_workspaceId_dashboards_id_version_comment"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/refresh": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** POST /{id}/refresh */
-        post: operations["post_api_workspaces_workspaceId_dashboards_id_refresh"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/duplicate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** POST /{id}/duplicate */
-        post: operations["post_api_workspaces_workspaceId_dashboards_id_duplicate"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/lock": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** POST /{id}/lock */
-        post: operations["post_api_workspaces_workspaceId_dashboards_id_lock"];
-        /** DELETE /{id}/lock */
-        delete: operations["delete_api_workspaces_workspaceId_dashboards_id_lock"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/lock/heartbeat": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** POST /{id}/lock/heartbeat */
-        post: operations["post_api_workspaces_workspaceId_dashboards_id_lock_heartbeat"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/folders": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** POST /folders */
-        post: operations["post_api_workspaces_workspaceId_dashboards_folders"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/folders/{id}/rename": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** PATCH /folders/{id}/rename */
-        patch: operations["patch_api_workspaces_workspaceId_dashboards_folders_id_rename"];
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/folders/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** DELETE /folders/{id} */
-        delete: operations["delete_api_workspaces_workspaceId_dashboards_folders_id"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/folders/{id}/move": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** PATCH /folders/{id}/move */
-        patch: operations["patch_api_workspaces_workspaceId_dashboards_folders_id_move"];
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/move": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** PATCH /{id}/move */
-        patch: operations["patch_api_workspaces_workspaceId_dashboards_id_move"];
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/versions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** GET /{id}/versions */
-        get: operations["get_api_workspaces_workspaceId_dashboards_id_versions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/versions/{version}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** GET /{id}/versions/{version} */
-        get: operations["get_api_workspaces_workspaceId_dashboards_id_versions_version"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/versions/{version}/restore": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** POST /{id}/versions/{version}/restore */
-        post: operations["post_api_workspaces_workspaceId_dashboards_id_versions_version_restore"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/collaborators": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Dashboard collaborators */
-        get: operations["get_api_workspaces_workspaceId_dashboards_id_collaborators"];
-        put?: never;
-        /** Add a Dashboard collaborator */
-        post: operations["post_api_workspaces_workspaceId_dashboards_id_collaborators"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/collaborators/{userId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** Remove a Dashboard collaborator */
-        delete: operations["delete_api_workspaces_workspaceId_dashboards_id_collaborators_userId"];
-        options?: never;
-        head?: never;
-        /** Update a Dashboard collaborator's role */
-        patch: operations["patch_api_workspaces_workspaceId_dashboards_id_collaborators_userId"];
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/sharing": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** Update Dashboard general access */
-        patch: operations["patch_api_workspaces_workspaceId_dashboards_id_sharing"];
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/public-share": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Enable Dashboard public sharing */
-        post: operations["post_api_workspaces_workspaceId_dashboards_id_public_share"];
-        /** Disable Dashboard public sharing */
-        delete: operations["delete_api_workspaces_workspaceId_dashboards_id_public_share"];
-        options?: never;
-        head?: never;
-        /** Update Dashboard public sharing */
-        patch: operations["patch_api_workspaces_workspaceId_dashboards_id_public_share"];
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{id}/public-share/password": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Reveal Dashboard public-share password */
-        get: operations["get_api_workspaces_workspaceId_dashboards_id_public_share_password"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/workspaces/{workspaceId}/notebook/sources": {
         parameters: {
             query?: never;
@@ -3881,7 +3553,7 @@ export interface paths {
         put?: never;
         /**
          * Create an empty app folder
-         * @description Commits a `.gitkeep` so the folder exists on main. Workspace folders need an editing role; personal folders (`users/<me>/apps/…`) are the caller's own.
+         * @description Commits a `.gitkeep` so the folder exists on main. Workspace folders need an editing role; personal folders (`users/<handle>/apps/…`) are the caller's own.
          */
         post: operations["post_api_workspaces_workspaceId_apps_folders"];
         /** Delete an empty app folder */
@@ -3890,6 +3562,243 @@ export interface paths {
         head?: never;
         /** Rename or move an app folder (its apps keep their identity) */
         patch: operations["patch_api_workspaces_workspaceId_apps_folders"];
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Usage and popularity of the apps the caller can see
+         * @description Per app, over the last `days` UTC days (default 28): distinct viewers, viewers who are not the app's authors, their viewer-days, opens, active seconds, last open (anyone / non-author) and a popularity score — the sum over non-author viewers of distinct active days, each weighted 0.5^(age_days/14). Every visible app is listed, zeros when unviewed.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_usage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/recent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Apps the caller opened most recently */
+        get: operations["get_api_workspaces_workspaceId_apps_recent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/{id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report a view of the published app
+         * @description Sent by Mako's own app views: `open` once per view, `heartbeat` every 60 s while the page is visible (each worth 60 active seconds), both carrying the view's `sessionId`. Every accepted report lands in the raw event log; a repeat open inside the throttle window is logged flagged `throttled` and left out of the daily counters, a heartbeat flood is refused (429). API keys without a user are not viewers and are ignored. Answers 204.
+         */
+        post: operations["post_api_workspaces_workspaceId_apps_id_usage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/discovery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Apps home: every visible app with its discovery facts
+         * @description Owner, creation date, deployment, thumbnail, data freshness and health (failed deploy, failed binding refreshes) for every app the caller can see — the same visibility as the list. Popularity is the usage API's, joined on the id by the client.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_discovery"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/archived": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Archived apps the caller may see
+         * @description Apps under the repo's `archive/` tree (moved there by the lifecycle job), read from main: title, description and thumbnail from each mako.json, the original path Restore moves it back to, and when and by whom it was archived (the commit that added it). Same visibility as the list: workspace apps for members, a personal app only for its mapped owner. Newest archive first.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_archived"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/archived/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore an archived app to where it was
+         * @description Moves `archive/<...>` back to its original folder as one commit on main; the app keeps its id. The Workspace tree needs an editing role, a personal tree is its owner's alone (403). 404 when the archived app is not there or not visible; 409 when its original address is taken. The app gets a fresh lifecycle grace period, so it is not archived again straight away.
+         */
+        post: operations["post_api_workspaces_workspaceId_apps_archived_restore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/archived/thumbnail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * An archived app's thumbnail image
+         * @description The thumbnail an archived app ships, for its card on the Apps home's Archived chip; `v` is the blob oid (cache version). 404 when it ships none or the caller may not see it.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_archived_thumbnail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/feed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Apps home feed: shelves, then every other app ranked, paged
+         * @description Without `cursor`: the Popular and New shelves (`popular`, `fresh`) and the first page of the Recommended grid (`apps`), every visible app appearing exactly once across the three. The Recommended order is ranked server-side (popularity, recency, the caller's own reads, co-usage, quality, a per-viewer-per-day exploration jitter) and frozen for 24 h; pass `nextCursor` back for the next page until it is null. Same card shape and visibility as /discovery; visibility is re-checked on every page. 410 when the cursor's snapshot expired (reload the feed).
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_feed"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search apps
+         * @description Free-text search over each visible app's title, description, path, owner and the warehouse tables its bindings read (FROM/JOIN identifiers in bindings/*.sql, indexed per push). Word matches come first, ranked best first, with the fields that matched. Then, when embeddings are available, up to 12 apps those fields missed, closest in meaning first, with `matches: ["related"]`: apps whose search document (title, description, README, UI labels) is semantically close to the query, or contains its words.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_search"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/lifecycle/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the app lifecycle job would do now (admins)
+         * @description The daily lifecycle job's plan for this workspace, computed now and changing nothing: apps it would notify as stale, archive, or whose binding schedules it would pause or resume. `mode` says whether the job only logs this plan (dry-run, the default) or applies it.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_lifecycle_plan"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/{id}/verified": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Mark an app verified (or not) — workspace admins
+         * @description A workspace admin vouches for an app: the mark (with who and when) is shown on the app list as `verified`, and a verified app is never archived as stale.
+         */
+        put: operations["put_api_workspaces_workspaceId_apps_id_verified"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/{id}/share-with-workspace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move a personal app into the Workspace tree
+         * @description The explicit step that turns a personal app (`users/<me>/apps/…`) into workspace content: one commit on main moving its folder under `apps/` (or the given workspace folder) and writing the one-line description into mako.json. The app keeps its id, so its deployment, sharing and favourites follow it. Only the app's owner, with an editing role, can do this.
+         */
+        post: operations["post_api_workspaces_workspaceId_apps_id_share_with_workspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/workspaces/{workspaceId}/apps/{id}/move": {
@@ -4216,6 +4125,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/snapshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Serve a binding's preview snapshot (committed definition)
+         * @description The first N rows of the committed binding's stored parquet, in build order (schema + total row count), for `useQuery(name, { snapshot: true })` to paint before DuckDB-WASM loads. 404 when the binding was never built, was built before snapshots existed, or has a column type a snapshot cannot carry — callers wait for the parquet.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_id_bindings_name_snapshot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/materialize": {
         parameters: {
             query?: never;
@@ -4250,6 +4179,26 @@ export interface paths {
          * @description The laptop dev loop behind `makoData()`: send the local `bindings/<name>.sql` text and get back the parquet of exactly that query, run read-only through the workspace connection its front matter names. Text identical to the committed binding is served from (or materialized into) the app's stored artifact; anything else — an uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` against a dev dbt environment (per relation: ones the environment has not built read prod, unless `dbtDefer: false`) — is a draft: built and streamed back, reused for 30 minutes (same connection + rendered SQL) unless `refresh`, never stored as the app's artifact, so published viewers never see it. A draft that keeps failing answers 503 with Retry-After instead of re-running. May redirect to a short-lived signed artifact URL; follow redirects. With `async: true`, a build (not a stored artifact) answers 202 with a `jobId` to poll at `GET …/binding-jobs/{jobId}` instead.
          */
         post: operations["post_api_workspaces_workspaceId_apps_id_bindings_name_dev_build"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/dev-snapshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview snapshot of the artifact a local binding text maps to
+         * @description The laptop `makoData()` plugin's `__data/<name>.snapshot.json`: send the same body as `dev-build`, get the snapshot of exactly the stored artifact that `dev-build` would answer with for that text (the committed artifact, or a cached draft) — never another definition's. 404 when that text has no stored artifact yet (a build is needed) or the artifact has no snapshot. Never builds anything.
+         */
+        post: operations["post_api_workspaces_workspaceId_apps_id_bindings_name_dev_snapshot"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4745,6 +4694,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/apps/{id}/thumbnail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The app's own thumbnail image
+         * @description The image the app ships at its root (thumbnail.png, or .webp/.jpg/.jpeg/.svg) as of main; /apps/discovery says which apps have one (and its oid, the cache version). With `w`, a raster thumbnail comes back as a WebP at most that wide (snapped to 320/480/640/960/1200, never upscaled); SVG is always the original. Private caching: immutable for a year when `v` names the current blob, revalidate (ETag by oid and width) otherwise. 404 when the app ships none. SVG is served with a script-free, sandboxed CSP.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_id_thumbnail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/{id}/chats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List my chats with a published app
+         * @description The caller's own "chat with app" conversations about this app, newest first (without messages — load one through the chats API). Read access to the app is enough: these are the chats its live-link viewers have with it.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_id_chats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/apps/{id}/collaborators": {
         parameters: {
             query?: never;
@@ -4796,6 +4785,23 @@ export interface paths {
         head?: never;
         /** Update App general access */
         patch: operations["patch_api_workspaces_workspaceId_apps_id_sharing"];
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/{id}/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Turn chat with a published app on or off */
+        patch: operations["patch_api_workspaces_workspaceId_apps_id_chat"];
         trace?: never;
     };
     "/api/workspaces/{workspaceId}/apps/{id}/public-share": {
@@ -5128,15 +5134,15 @@ export interface paths {
         patch: operations["patch_api_workspaces_workspaceId_favourites_id"];
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}": {
+    "/api/workspaces/{workspaceId}/workflows": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List data sources for a dashboard */
-        get: operations["get_api_workspaces_workspaceId_data_sources_resourceType_resourceId"];
+        /** What is deployed, the workflows, schedules and recent runs */
+        get: operations["get_api_workspaces_workspaceId_workflows"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5145,15 +5151,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}/{dataSourceId}": {
+    "/api/workspaces/{workspaceId}/workflows/runs/{id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get one dashboard data source */
-        get: operations["get_api_workspaces_workspaceId_data_sources_resourceType_resourceId_dataSourceId"];
+        /** One run, deployed or sandbox (the caller's own): its steps in order, with status, output, error and logs. `wait` (seconds, at most 90) waits for it to end (`running: true` when it had not); `full` gives a sandbox run whole */
+        get: operations["get_api_workspaces_workspaceId_workflows_runs_id"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5162,7 +5168,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}/{dataSourceId}/settings": {
+    "/api/workspaces/{workspaceId}/workflows/{name}/flow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A deployed workflow's steps as its code defines them: each with the steps it waits for, its retries and timeout */
+        get: operations["get_api_workspaces_workspaceId_workflows_name_flow"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/workflows/{name}/cost": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A workflow's AI cost (its runs' model calls) over the last `days` days (default 30), in total and by day */
+        get: operations["get_api_workspaces_workspaceId_workflows_name_cost"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/workflows/runs/{id}/retry": {
         parameters: {
             query?: never;
             header?: never;
@@ -5171,15 +5211,32 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Retry a deployed run in place. With `step`: that step and the ones after it run again, on what the earlier steps kept; without, the whole run */
+        post: operations["post_api_workspaces_workspaceId_workflows_runs_id_retry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/workflows/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The files under workflows/, or one file's contents with ?path= */
+        get: operations["get_api_workspaces_workspaceId_workflows_files"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        /** Update materialization settings for a data source */
-        patch: operations["patch_api_workspaces_workspaceId_data_sources_resourceType_resourceId_dataSourceId_settings"];
+        patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}/refresh": {
+    "/api/workspaces/{workspaceId}/workflows/{name}/run": {
         parameters: {
             query?: never;
             header?: never;
@@ -5188,15 +5245,15 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Refresh all materialized data sources for a dashboard */
-        post: operations["post_api_workspaces_workspaceId_data_sources_resourceType_resourceId_refresh"];
+        /** Start a run of the deployed workflow (answers its runId), or with `sandbox` the caller's checkout in their sandbox. Answers the runId at once; follow it with GET /runs/{id}?wait= */
+        post: operations["post_api_workspaces_workspaceId_workflows_name_run"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}/{dataSourceId}/refresh": {
+    "/api/workspaces/{workspaceId}/workflows/{name}/triggers": {
         parameters: {
             query?: never;
             header?: never;
@@ -5204,144 +5261,8 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
-        /** Refresh one materialized data source for a dashboard */
-        post: operations["post_api_workspaces_workspaceId_data_sources_resourceType_resourceId_dataSourceId_refresh"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/materialization": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get dashboard materialization status */
-        get: operations["get_api_workspaces_workspaceId_dashboards_dashboardId_materialization"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/materialize": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Materialize a dashboard */
-        post: operations["post_api_workspaces_workspaceId_dashboards_dashboardId_materialize"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/data-sources/{dataSourceId}/materialization": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get data source materialization status */
-        get: operations["get_api_workspaces_workspaceId_dashboards_dashboardId_data_sources_dataSourceId_materialization"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/data-sources/{dataSourceId}/materialize": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Materialize a dashboard data source */
-        post: operations["post_api_workspaces_workspaceId_dashboards_dashboardId_data_sources_dataSourceId_materialize"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/materialization/runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List materialization runs */
-        get: operations["get_api_workspaces_workspaceId_dashboards_dashboardId_materialization_runs"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/materialization/runs/{runId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get a materialization run */
-        get: operations["get_api_workspaces_workspaceId_dashboards_dashboardId_materialization_runs_runId"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/data-sources/{dataSourceId}/materialization/runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List data source materialization runs */
-        get: operations["get_api_workspaces_workspaceId_dashboards_dashboardId_data_sources_dataSourceId_materialization_runs"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/data-sources/{dataSourceId}/materialization/artifact": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Stream a materialized data source artifact */
-        get: operations["get_api_workspaces_workspaceId_dashboards_dashboardId_data_sources_dataSourceId_materialization_artifact"];
-        put?: never;
+        /** Change what starts a workflow: `active` (its schedule and webhook), `webhook` (add: a new URL; remove) */
+        put: operations["put_api_workspaces_workspaceId_workflows_name_triggers"];
         post?: never;
         delete?: never;
         options?: never;
@@ -5400,6 +5321,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/share/{token}/og-image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Link-preview image of an open share
+         * @description The app's own raster thumbnail (thumbnail.png/.jpg/.webp), as a JPEG at most 1200 px wide and ~300 KB (so WhatsApp shows the large card), for Open Graph crawlers. Only for a share anyone can open (enabled, no password); otherwise — or when the app has no raster thumbnail — 404, and the share page points crawlers at the generic /og-default.png instead. Cached publicly by blob oid.
+         */
+        get: operations["get_api_share_token_og_image"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/share/{token}/artifacts/{artifactId}": {
         parameters: {
             query?: never;
@@ -5417,17 +5358,20 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/share/{token}/refresh": {
+    "/api/og/app-image/{workspaceId}/{appId}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Link-preview image of a workspace app
+         * @description The app's own raster thumbnail (thumbnail.png/.jpg/.webp), as a JPEG at most 1200 px wide and ~300 KB (so WhatsApp shows the large card), for Open Graph crawlers unfurling an in-app link. Only for a workspace-tree app visible to the whole workspace, while the workspace's link previews are on; otherwise — or for an SVG-only app — 404, and the page points crawlers at the generic /og-default.png. Cached publicly by blob oid.
+         */
+        get: operations["get_api_og_app_image_workspaceId_appId"];
         put?: never;
-        /** Refresh a public share snapshot */
-        post: operations["post_api_share_token_refresh"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -5618,6 +5562,23 @@ export interface paths {
         /** Set curated model defaults (admin) */
         put: operations["put_api_admin_catalog_defaults"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/workflows/cost-backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Backfill workflow AI costs: match older model calls to their run and step by time (a dry run unless dryRun is false) */
+        post: operations["post_api_admin_workflows_cost_backfill"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6031,257 +5992,6 @@ export interface components {
         };
         UsageByModel: components["schemas"]["UsageTotals"] & {
             modelId: string | null;
-        };
-        Dashboard: {
-            /** @example 507f1f77bcf86cd799439011 */
-            _id?: string;
-            /** @example 507f1f77bcf86cd799439011 */
-            workspaceId?: string;
-            title: string;
-            description?: string;
-            dataSources: {
-                id: string;
-                name: string;
-                tableRef: string;
-                /**
-                 * @default parquet
-                 * @enum {string}
-                 */
-                materialization: "live" | "parquet";
-                query: {
-                    /** @example 507f1f77bcf86cd799439011 */
-                    connectionId?: string;
-                    /** @enum {string} */
-                    language: "sql" | "javascript" | "mongodb";
-                    code: string;
-                    databaseId?: string;
-                    databaseName?: string;
-                    mongoOptions?: {
-                        collection?: string;
-                        /** @enum {string} */
-                        operation?: "find" | "aggregate" | "insertMany" | "updateMany" | "deleteMany" | "findOne" | "updateOne" | "deleteOne";
-                    };
-                };
-                origin?: {
-                    /** @enum {string} */
-                    type: "saved_console" | "local";
-                    /** @example 507f1f77bcf86cd799439011 */
-                    consoleId?: string;
-                    consoleName?: string;
-                    /** Format: date-time */
-                    importedAt?: string;
-                };
-                timeDimension?: string;
-                rowLimit?: number;
-                computedColumns?: {
-                    name: string;
-                    expression: string;
-                    /** @enum {string} */
-                    type: "quantitative" | "temporal" | "nominal" | "ordinal";
-                }[];
-                cache?: {
-                    /** Format: date-time */
-                    lastRefreshedAt?: string;
-                    rowCount?: number;
-                    byteSize?: number;
-                    parquetArtifactKey?: string;
-                    definitionHash?: string;
-                    artifactRevision?: string;
-                    parquetVersion?: string;
-                    /** Format: date-time */
-                    parquetBuiltAt?: string;
-                    /** @enum {string|null} */
-                    parquetBuildStatus?: "missing" | "queued" | "building" | "ready" | "error" | null;
-                    parquetLastError?: string;
-                    parquetUrl?: string;
-                } | null;
-            }[];
-            relationships: {
-                id: string;
-                from: {
-                    dataSourceId: string;
-                    column: string;
-                };
-                to: {
-                    dataSourceId: string;
-                    column: string;
-                };
-                /** @enum {string} */
-                type: "one-to-one" | "one-to-many" | "many-to-one" | "many-to-many";
-            }[];
-            widgets: {
-                id: string;
-                title?: string;
-                /** @enum {string} */
-                type: "chart" | "kpi" | "table";
-                dataSourceId: string;
-                localSql: string;
-                vegaLiteSpec?: {
-                    [key: string]: unknown;
-                };
-                kpiConfig?: {
-                    valueField?: string;
-                    format?: string;
-                    comparisonField?: string;
-                    comparisonLabel?: string;
-                };
-                tableConfig?: {
-                    columns?: string[];
-                    pageSize?: number;
-                };
-                crossFilter: {
-                    enabled: boolean;
-                    fields?: string[];
-                };
-                layouts: {
-                    lg: {
-                        x: number;
-                        y: number;
-                        w: number;
-                        h: number;
-                        minW?: number;
-                        minH?: number;
-                        custom?: boolean;
-                    };
-                    md?: {
-                        x: number;
-                        y: number;
-                        w: number;
-                        h: number;
-                        minW?: number;
-                        minH?: number;
-                        custom?: boolean;
-                    };
-                    sm?: {
-                        x: number;
-                        y: number;
-                        w: number;
-                        h: number;
-                        minW?: number;
-                        minH?: number;
-                        custom?: boolean;
-                    };
-                    xs?: {
-                        x: number;
-                        y: number;
-                        w: number;
-                        h: number;
-                        minW?: number;
-                        minH?: number;
-                        custom?: boolean;
-                    };
-                };
-            }[];
-            globalFilters: {
-                id: string;
-                /** @enum {string} */
-                type: "date-range" | "select" | "multi-select" | "search";
-                label: string;
-                dataSourceId: string;
-                column: string;
-                config: {
-                    [key: string]: unknown;
-                };
-                layout: {
-                    order: number;
-                    width?: number;
-                };
-            }[];
-            crossFilter: {
-                enabled: boolean;
-                /** @enum {string} */
-                resolution: "intersect" | "union";
-                /** @enum {string} */
-                engine?: "mosaic" | "legacy";
-            };
-            materializationSchedule: {
-                enabled: boolean;
-                cron: string | null;
-                timezone?: string;
-                dataFreshnessTtlMs?: number | null;
-            };
-            layout: {
-                columns: number;
-                rowHeight: number;
-            };
-            cache?: {
-                /** Format: date-time */
-                lastRefreshedAt?: string;
-            };
-            snapshots?: {
-                [key: string]: {
-                    version: string;
-                    /** Format: date-time */
-                    generatedAt?: string;
-                    rowCount: number;
-                    rows: {
-                        [key: string]: unknown;
-                    }[];
-                    fields: {
-                        name: string;
-                        type: string;
-                    }[];
-                };
-            };
-            version: number;
-            editLock?: {
-                userId: string;
-                userName: string;
-                /** Format: date-time */
-                lockedAt?: string;
-                /** Format: date-time */
-                expiresAt?: string;
-            } | null;
-            /** @example 507f1f77bcf86cd799439011 */
-            folderId?: string;
-            /** @enum {string} */
-            access: "private" | "workspace";
-            /** @enum {string} */
-            workspaceRole?: "viewer" | "editor";
-            sharedWith?: {
-                userId: string;
-                /** @enum {string} */
-                role: "viewer" | "editor";
-                /** Format: date-time */
-                addedAt?: string;
-            }[];
-            publicShare?: {
-                enabled: boolean;
-                token?: string;
-                hasPassword?: boolean;
-                /** Format: date-time */
-                createdAt?: string;
-            };
-            owner_id?: string;
-            createdBy: string;
-            /** Format: date-time */
-            createdAt?: string;
-            /** Format: date-time */
-            updatedAt?: string;
-            readOnly?: boolean;
-        };
-        CreateDashboardFolderRequest: {
-            name: string;
-            parentId?: string | null;
-            /** @enum {string} */
-            access?: "private" | "workspace";
-        };
-        RenameDashboardFolderRequest: {
-            name: string;
-        };
-        MoveDashboardFolderRequest: {
-            parentId?: string | null;
-            /** @enum {string} */
-            access?: "private" | "workspace";
-        };
-        MoveDashboardRequest: {
-            folderId?: string | null;
-            /** @enum {string} */
-            access?: "private" | "workspace";
-        };
-        RestoreDashboardVersionRequest: {
-            comment?: string;
-            clientId?: string;
         };
         NotebookReadRequest: {
             /** @example 507f1f77bcf86cd799439011 */
@@ -7853,92 +7563,6 @@ export interface operations {
             };
         };
     };
-    get_api_workspaces_id_settings_limits: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    put_api_workspaces_id_settings_limits: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
     post_api_workspaces_id_switch: {
         parameters: {
             query?: never;
@@ -8214,6 +7838,92 @@ export interface operations {
                      * @enum {string}
                      */
                     role?: "member" | "viewer";
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_id_link_previews: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    put_api_workspaces_id_link_previews: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    enabled: boolean;
                 };
             };
         };
@@ -8560,7 +8270,7 @@ export interface operations {
                     /** @enum {string} */
                     decision: "approve" | "request_changes" | "cancel";
                     planMarkdown?: string;
-                    grants?: ("artifact-write" | "warehouse-write" | "git-write" | "schedule-write")[];
+                    grants?: ("artifact-write" | "warehouse-write" | "git-write" | "schedule-write" | "workflows-run")[];
                 };
             };
         };
@@ -8951,6 +8661,99 @@ export interface operations {
             content: {
                 "application/json": {
                     [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_databases_id_writers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    put_api_workspaces_workspaceId_databases_id_writers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    writers: {
+                        /** @example workflow:crm-chat-issues */
+                        principal: string;
+                        /** @example mako_out.issue_labels */
+                        where?: string;
+                    }[];
                 };
             };
         };
@@ -16470,1330 +16273,6 @@ export interface operations {
             };
         };
     };
-    get_api_workspaces_workspaceId_dashboards: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_workspaces_workspaceId_dashboards: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    get_api_workspaces_workspaceId_dashboards_id: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Dashboard details. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @enum {boolean} */
-                        success: true;
-                        data: components["schemas"]["Dashboard"];
-                    };
-                };
-            };
-            /** @description Authentication required */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Access denied */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Dashboard not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Internal server error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    put_api_workspaces_workspaceId_dashboards_id: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    delete_api_workspaces_workspaceId_dashboards_id: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    patch_api_workspaces_workspaceId_dashboards_id: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_workspaces_workspaceId_dashboards_id_version_comment: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_workspaces_workspaceId_dashboards_id_refresh: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_workspaces_workspaceId_dashboards_id_duplicate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_workspaces_workspaceId_dashboards_id_lock: {
-        parameters: {
-            query?: {
-                force?: string;
-            };
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    delete_api_workspaces_workspaceId_dashboards_id_lock: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_workspaces_workspaceId_dashboards_id_lock_heartbeat: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_workspaces_workspaceId_dashboards_folders: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["CreateDashboardFolderRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    patch_api_workspaces_workspaceId_dashboards_folders_id_rename: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["RenameDashboardFolderRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    delete_api_workspaces_workspaceId_dashboards_folders_id: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    patch_api_workspaces_workspaceId_dashboards_folders_id_move: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["MoveDashboardFolderRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    patch_api_workspaces_workspaceId_dashboards_id_move: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["MoveDashboardRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    get_api_workspaces_workspaceId_dashboards_id_versions: {
-        parameters: {
-            query?: {
-                limit?: string;
-                offset?: string;
-            };
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    get_api_workspaces_workspaceId_dashboards_id_versions_version: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-                version: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_workspaces_workspaceId_dashboards_id_versions_version_restore: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-                version: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["RestoreDashboardVersionRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    get_api_workspaces_workspaceId_dashboards_id_collaborators: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_workspaces_workspaceId_dashboards_id_collaborators: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    userId: string;
-                    /** @enum {string} */
-                    role?: "viewer" | "editor";
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    delete_api_workspaces_workspaceId_dashboards_id_collaborators_userId: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-                userId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    patch_api_workspaces_workspaceId_dashboards_id_collaborators_userId: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-                userId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    /** @enum {string} */
-                    role?: "viewer" | "editor";
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    patch_api_workspaces_workspaceId_dashboards_id_sharing: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    /** @enum {string} */
-                    access?: "private" | "workspace";
-                    /** @enum {string} */
-                    workspaceRole?: "viewer" | "editor";
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_workspaces_workspaceId_dashboards_id_public_share: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    password?: string;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    delete_api_workspaces_workspaceId_dashboards_id_public_share: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    patch_api_workspaces_workspaceId_dashboards_id_public_share: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    password?: string | null;
-                    rotateToken?: boolean;
-                    token?: string;
-                    allowLiveQueries?: boolean;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    get_api_workspaces_workspaceId_dashboards_id_public_share_password: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
     get_api_workspaces_workspaceId_notebook_sources: {
         parameters: {
             query?: never;
@@ -19264,6 +17743,544 @@ export interface operations {
             };
         };
     };
+    get_api_workspaces_workspaceId_apps_usage: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_recent: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_apps_id_usage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    kind: "open" | "heartbeat";
+                    /**
+                     * @default app
+                     * @enum {string}
+                     */
+                    source?: "app" | "share" | "embed";
+                    sessionId?: string;
+                    /** @enum {string} */
+                    referrerKind?: "internal" | "external" | "direct";
+                    placement?: {
+                        /** @enum {string} */
+                        surface: "home";
+                        /** @enum {string} */
+                        shelf: "popular" | "new" | "recommended" | "recent" | "mine" | "attention" | "search";
+                        position: number;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_discovery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_archived: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_apps_archived_restore: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    path: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_archived_thumbnail: {
+        parameters: {
+            query: {
+                path: string;
+                v?: string;
+                w?: string;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_feed: {
+        parameters: {
+            query?: {
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_search: {
+        parameters: {
+            query: {
+                q: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_lifecycle_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    put_api_workspaces_workspaceId_apps_id_verified: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    verified: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_apps_id_share_with_workspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    description: string;
+                    folder?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     post_api_workspaces_workspaceId_apps_id_move: {
         parameters: {
             query?: never;
@@ -20113,6 +19130,48 @@ export interface operations {
             };
         };
     };
+    get_api_workspaces_workspaceId_apps_id_bindings_name_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     post_api_workspaces_workspaceId_apps_id_bindings_name_materialize: {
         parameters: {
             query?: {
@@ -20187,6 +19246,56 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_apps_id_bindings_name_dev_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    source: string;
+                    dbtEnvironment?: string;
+                    dbtDefer?: boolean;
+                };
+            };
+        };
+        responses: {
             /** @description Successful response */
             "2XX": {
                 headers: {
@@ -21359,6 +20468,93 @@ export interface operations {
             };
         };
     };
+    get_api_workspaces_workspaceId_apps_id_thumbnail: {
+        parameters: {
+            query?: {
+                /** @description The thumbnail's blob oid (cache version). */
+                v?: string;
+                /** @description Desired width in px; snapped to the nearest of 320, 480, 640, 960, 1200. Omit for the original. */
+                w?: string;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_id_chats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     get_api_workspaces_workspaceId_apps_id_collaborators: {
         parameters: {
             query?: never;
@@ -21557,6 +20753,53 @@ export interface operations {
                     access?: "private" | "workspace";
                     /** @enum {string} */
                     workspaceRole?: "viewer" | "editor";
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    patch_api_workspaces_workspaceId_apps_id_chat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    enabled: boolean;
                 };
             };
         };
@@ -22432,7 +21675,7 @@ export interface operations {
             header?: never;
             path: {
                 workspaceId: string;
-                kind: "app" | "console" | "notebook" | "dashboard";
+                kind: "app" | "console" | "notebook";
                 refId: string;
             };
             cookie?: never;
@@ -22480,7 +21723,7 @@ export interface operations {
             header?: never;
             path: {
                 workspaceId: string;
-                kind: "app" | "console" | "notebook" | "dashboard";
+                kind: "app" | "console" | "notebook";
                 refId: string;
             };
             cookie?: never;
@@ -22606,14 +21849,12 @@ export interface operations {
             };
         };
     };
-    get_api_workspaces_workspaceId_data_sources_resourceType_resourceId: {
+    get_api_workspaces_workspaceId_workflows: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 workspaceId: string;
-                resourceType: "dashboard";
-                resourceId: string;
             };
             cookie?: never;
         };
@@ -22648,15 +21889,16 @@ export interface operations {
             };
         };
     };
-    get_api_workspaces_workspaceId_data_sources_resourceType_resourceId_dataSourceId: {
+    get_api_workspaces_workspaceId_workflows_runs_id: {
         parameters: {
-            query?: never;
+            query?: {
+                wait?: number | null;
+                full?: "true" | "false";
+            };
             header?: never;
             path: {
                 workspaceId: string;
-                resourceType: "dashboard";
-                resourceId: string;
-                dataSourceId: string;
+                id: string;
             };
             cookie?: never;
         };
@@ -22691,29 +21933,104 @@ export interface operations {
             };
         };
     };
-    patch_api_workspaces_workspaceId_data_sources_resourceType_resourceId_dataSourceId_settings: {
+    get_api_workspaces_workspaceId_workflows_name_flow: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 workspaceId: string;
-                resourceType: "dashboard";
-                resourceId: string;
-                dataSourceId: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_workflows_name_cost: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_workflows_runs_id_retry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
             };
             cookie?: never;
         };
         requestBody?: {
             content: {
                 "application/json": {
-                    /** @enum {string} */
-                    materialization?: "live" | "parquet";
-                    schedule?: {
-                        enabled: boolean;
-                        cron: string | null;
-                        timezone?: string;
-                        dataFreshnessTtlMs?: number | null;
-                    } | null;
+                    step?: string;
                 };
             };
         };
@@ -22747,14 +22064,14 @@ export interface operations {
             };
         };
     };
-    post_api_workspaces_workspaceId_data_sources_resourceType_resourceId_refresh: {
+    get_api_workspaces_workspaceId_workflows_files: {
         parameters: {
-            query?: never;
+            query?: {
+                path?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
-                resourceType: "dashboard";
-                resourceId: string;
             };
             cookie?: never;
         };
@@ -22789,104 +22106,23 @@ export interface operations {
             };
         };
     };
-    post_api_workspaces_workspaceId_data_sources_resourceType_resourceId_dataSourceId_refresh: {
+    post_api_workspaces_workspaceId_workflows_name_run: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 workspaceId: string;
-                resourceType: "dashboard";
-                resourceId: string;
-                dataSourceId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    get_api_workspaces_workspaceId_dashboards_dashboardId_materialization: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                dashboardId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_workspaces_workspaceId_dashboards_dashboardId_materialize: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                dashboardId: string;
+                name: string;
             };
             cookie?: never;
         };
         requestBody?: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    input?: {
+                        [key: string]: unknown;
+                    };
+                    sandbox?: boolean;
                 };
             };
         };
@@ -22920,63 +22156,21 @@ export interface operations {
             };
         };
     };
-    get_api_workspaces_workspaceId_dashboards_dashboardId_data_sources_dataSourceId_materialization: {
+    put_api_workspaces_workspaceId_workflows_name_triggers: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 workspaceId: string;
-                dashboardId: string;
-                dataSourceId: string;
+                name: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_workspaces_workspaceId_dashboards_dashboardId_data_sources_dataSourceId_materialize: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                dashboardId: string;
-                dataSourceId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    active?: boolean;
+                    webhook?: boolean;
                 };
             };
         };
@@ -22988,179 +22182,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    get_api_workspaces_workspaceId_dashboards_dashboardId_materialization_runs: {
-        parameters: {
-            query?: {
-                limit?: string;
-            };
-            header?: never;
-            path: {
-                workspaceId: string;
-                dashboardId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    get_api_workspaces_workspaceId_dashboards_dashboardId_materialization_runs_runId: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                dashboardId: string;
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    get_api_workspaces_workspaceId_dashboards_dashboardId_data_sources_dataSourceId_materialization_runs: {
-        parameters: {
-            query?: {
-                limit?: string;
-            };
-            header?: never;
-            path: {
-                workspaceId: string;
-                dashboardId: string;
-                dataSourceId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    get_api_workspaces_workspaceId_dashboards_dashboardId_data_sources_dataSourceId_materialization_artifact: {
-        parameters: {
-            query?: {
-                rev?: string;
-            };
-            header?: never;
-            path: {
-                workspaceId: string;
-                dashboardId: string;
-                dataSourceId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Parquet artifact bytes. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/vnd.apache.parquet": string;
                 };
             };
             /** @description Invalid request */
@@ -23309,11 +22330,49 @@ export interface operations {
             };
         };
     };
+    get_api_share_token_og_image: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     get_api_share_token_artifacts_artifactId: {
         parameters: {
-            query?: {
-                rev?: string;
-            };
+            query?: never;
             header?: never;
             path: {
                 token: string;
@@ -23352,12 +22411,13 @@ export interface operations {
             };
         };
     };
-    post_api_share_token_refresh: {
+    get_api_og_app_image_workspaceId_appId: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                token: string;
+                workspaceId: string;
+                appId: string;
             };
             cookie?: never;
         };
@@ -23812,6 +22872,52 @@ export interface operations {
             content: {
                 "application/json": {
                     [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_admin_workflows_cost_backfill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    workspaceId?: string;
+                    days?: number;
+                    dryRun?: boolean;
                 };
             };
         };

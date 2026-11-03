@@ -14,8 +14,11 @@ import { User } from "../database/schema";
 import {
   loggers,
   enrichContextWithUser,
+  enrichContextWithWorkflow,
+  enrichContextWithWorkflowWorker,
   enrichContextWithWorkspace,
 } from "../logging";
+import { workflowIdentity } from "../workflows/worker-key";
 
 const logger = loggers.auth();
 
@@ -176,6 +179,21 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
           enrichContextWithUser(creator._id);
           // Enrich logging context with workspace ID (API key auth)
           enrichContextWithWorkspace(workspace._id.toString());
+          // Only the deployed worker's key may say which deployed workflow
+          // a request runs for, so the workflow writes as itself
+          // (access/connection-writes.ts). A sandbox run's key, which the
+          // code being tested can read, acts as its person; the worker
+          // naming no deployed workflow acts as no one listable.
+          const identity = workflowIdentity(
+            workspaceApiKey,
+            workspace,
+            c.req.header("x-mako-workflow"),
+          );
+          if (identity.kind === "workflow") {
+            enrichContextWithWorkflow(identity.name);
+          } else if (identity.kind === "worker") {
+            enrichContextWithWorkflowWorker();
+          }
 
           await next();
           return;

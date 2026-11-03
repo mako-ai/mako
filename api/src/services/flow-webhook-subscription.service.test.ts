@@ -41,6 +41,10 @@ type UpdateCall = Record<string, unknown>;
 function stubProvider(
   update: (options: UpdateCall) => Promise<unknown>,
   supportsUpdate = true,
+  provision?: {
+    create: (options: UpdateCall) => Promise<unknown>;
+    creates: UpdateCall[];
+  },
 ) {
   const calls: UpdateCall[] = [];
   const persisted: unknown[] = [];
@@ -51,9 +55,15 @@ function stubProvider(
   });
   (syncConnectorRegistry as any).getConnectorFor = async () => ({
     supportsWebhookSubscriptionUpdate: () => supportsUpdate,
+    supportsWebhookProvisioning: () => Boolean(provision),
     updateWebhookSubscription: async (options: UpdateCall) => {
       calls.push(options);
       return update(options);
+    },
+    createWebhookSubscription: async (options: UpdateCall) => {
+      if (!provision) throw new Error("must not be called");
+      provision.creates.push(options);
+      return provision.create(options);
     },
   });
   (Flow as any).updateOne = async (...args: unknown[]) => {
@@ -86,8 +96,14 @@ async function testSkipsFlowsThatWereNeverProvisioned() {
     throw new Error("must not be called");
   });
 
+  // A scheduled flow whose webhooks were never switched on: no endpoint.
   assert.deepEqual(
-    await syncFlowWebhookSubscription(webhookFlow({ type: "scheduled" })),
+    await syncFlowWebhookSubscription(
+      webhookFlow({
+        type: "scheduled",
+        webhookConfig: { enabled: true, totalReceived: 0 },
+      }),
+    ),
     { status: "skipped", reason: "not a webhook flow" },
   );
   assert.equal(
@@ -315,8 +331,137 @@ async function testWiseFlowRetargetsThroughTheService() {
   assert.equal(commits[0].providerWebhookId, "10:bal,10:t1,10:t2,10:t3,10:t4");
 }
 
+/** A scheduled flow with webhooks switched on is retargeted like a webhook flow. */
+async function testScheduledFlowWithWebhooksOnIsSynced() {
+  const { calls } = stubProvider(async () => ({
+    providerWebhookId: "we_old",
+    endpointUrl: ENDPOINT,
+  }));
+  const { deps } = stubCommit({ ok: true });
+  const result = await syncFlowWebhookSubscription(
+    webhookFlow({ type: "scheduled" }),
+    deps,
+  );
+  assert.equal(result.status, "updated");
+  assert.equal(calls.length, 1);
+}
+
+function unprovisioned(overrides: Record<string, unknown> = {}) {
+  return webhookFlow({
+    type: "scheduled",
+    webhookConfig: {
+      endpoint: ENDPOINT,
+      secret: "",
+      enabled: true,
+      totalReceived: 0,
+    },
+    ...overrides,
+  });
+}
+
+/** On save: the subscription already on the URL is adopted, nothing created. */
+async function testProvisioningAdoptsAnExistingSubscription() {
+  const creates: UpdateCall[] = [];
+  const { calls, persisted } = stubProvider(
+    async () => ({
+      providerWebhookId: "10:bal",
+      endpointUrl: ENDPOINT,
+      signingSecret: "production",
+    }),
+    true,
+    { creates, create: async () => ({}) },
+  );
+  const { commits, deps } = stubCommit({ ok: true });
+  const flow = unprovisioned();
+  const result = await syncFlowWebhookSubscription(flow, deps);
+
+  assert.deepEqual(result, {
+    status: "provisioned",
+    providerWebhookId: "10:bal",
+    adopted: true,
+  });
+  assert.equal(calls.length, 1, "looked up by URL first");
+  assert.equal(creates.length, 0, "never re-created");
+  assert.equal(commits[0].providerWebhookId, "10:bal");
+  assert.equal(flow.webhookConfig.secret, "production");
+  const last = persisted.at(-1) as unknown[];
+  assert.deepEqual(last[1], {
+    $set: {
+      "webhookConfig.secret": "production",
+      "webhookConfig.provisionError": null,
+    },
+  });
+}
+
+/** On save, with nothing on the URL yet: created once. */
+async function testProvisioningCreatesWhenNoneExists() {
+  const creates: UpdateCall[] = [];
+  stubProvider(async () => null, true, {
+    creates,
+    create: async () => ({
+      providerWebhookId: "we_new",
+      endpointUrl: ENDPOINT,
+      signingSecret: "whsec_new",
+    }),
+  });
+  const { deps } = stubCommit({ ok: true });
+  const result = await syncFlowWebhookSubscription(unprovisioned(), deps);
+  assert.deepEqual(result, {
+    status: "provisioned",
+    providerWebhookId: "we_new",
+    adopted: false,
+  });
+  assert.equal(creates.length, 1);
+}
+
+/** A refusal is stored on the flow; nothing else changes (polling carries on). */
+async function testProvisioningRefusalIsStored() {
+  const { persisted } = stubProvider(
+    async () => {
+      throw new Error("Wise refused: limited token");
+    },
+    true,
+    { creates: [], create: async () => ({}) },
+  );
+  const result = await syncFlowWebhookSubscription(unprovisioned());
+  assert.equal(result.status, "failed");
+  assert.match((result as { error: string }).error, /limited token/);
+  const set = ((persisted.at(-1) as unknown[])[1] as any).$set;
+  assert.equal(
+    set["webhookConfig.provisionError"].message,
+    "Wise refused: limited token",
+  );
+  assert.ok(set["webhookConfig.provisionError"].at instanceof Date);
+  assert.equal(Object.keys(set).length, 1, "only the error is written");
+}
+
+/** Close & co. cannot find a subscription by URL: never provisioned on save. */
+async function testConnectorsWithoutLookupAreNeverProvisionedOnSave() {
+  const creates: UpdateCall[] = [];
+  const { calls } = stubProvider(
+    async () => {
+      throw new Error("must not be called");
+    },
+    false,
+    { creates, create: async () => ({}) },
+  );
+  const result = await syncFlowWebhookSubscription(
+    unprovisioned({ type: "webhook" }),
+  );
+  assert.deepEqual(result, {
+    status: "skipped",
+    reason: "webhook not provisioned",
+  });
+  assert.equal(calls.length + creates.length, 0);
+}
+
 async function main() {
   testEntitySignatureIgnoresOrderAndDisabled();
+  await testScheduledFlowWithWebhooksOnIsSynced();
+  await testProvisioningAdoptsAnExistingSubscription();
+  await testProvisioningCreatesWhenNoneExists();
+  await testProvisioningRefusalIsStored();
+  await testConnectorsWithoutLookupAreNeverProvisionedOnSave();
   await testSkipsFlowsThatWereNeverProvisioned();
   await testNewIdIsCommittedToTheFlowFileThenIndexed();
   await testFailedCommitLeavesIndexUntouched();

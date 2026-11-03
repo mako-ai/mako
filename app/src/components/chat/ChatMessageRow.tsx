@@ -1,5 +1,8 @@
 import React, { useState } from "react";
-import { Box, ButtonBase, List, ListItem, Paper } from "@mui/material";
+import { Box, ButtonBase, List, ListItem } from "@mui/material";
+import { Message, MessageContent } from "../ui/message";
+import { Bubble, BubbleContent } from "../ui/bubble";
+import { MessageSources } from "./MessageSources";
 import { StreamingMarkdown } from "../StreamingMarkdown";
 import { StreamingToolCard, type ToolPartState } from "../StreamingToolCard";
 import { ClarifyingQuestionsCard } from "../ClarifyingQuestionsCard";
@@ -38,45 +41,6 @@ import { isRawMcpToolLabel } from "../../lib/local-acp-parts";
 // ── Memoized message row ─────────────────────────────────────────
 // Prevents completed messages from re-rendering on every streaming chunk.
 
-// User message — Beautiful UI chat style: right-aligned rounded bubble.
-const userMessageSx = {
-  flex: 1,
-  mt: 2,
-  minWidth: 0,
-  display: "flex",
-  justifyContent: "flex-end",
-} as const;
-const userMessagePaperSx = {
-  p: 1,
-  px: 1.5,
-  border: "none",
-  borderRadius: "14px",
-  backgroundColor: "var(--bui-inset)",
-  boxShadow: "var(--bui-shadow-hairline)",
-  overflow: "hidden",
-  width: "fit-content",
-  maxWidth: "88%",
-} as const;
-const assistantMessageSx = {
-  flex: 1,
-  // Without this a flex item's `min-width: auto` lets an over-wide child (a
-  // table, a long code line) stretch the row instead of scrolling inside its
-  // own container.
-  minWidth: 0,
-  // The row must clip runaway-wide content (tables, code) — but a plain
-  // overflow:hidden box also clips the BUI card shadows (1px ring + 6px
-  // blur) of full-width children at its left/right edges. Same clip-box
-  // trick as Beautiful UI: pad the box 8px so shadows have room inside the
-  // clip, and pull it back with matching negative margins so alignment is
-  // unchanged (top: the 8px padding replaces the old mt: 1).
-  overflow: "hidden",
-  p: "8px",
-  mx: "-8px",
-  mt: 0,
-  mb: "-8px",
-  fontSize: "0.875rem",
-  "& pre": { margin: 0 },
-} as const;
 const listItemSx = { p: 0 } as const;
 
 export const ChatMessageRow = React.memo(function ChatMessageRow({
@@ -125,52 +89,56 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
         .join("") || "";
 
     return (
-      <ListItem alignItems="flex-start" sx={listItemSx}>
-        <Box sx={userMessageSx}>
-          <Paper variant="outlined" sx={userMessagePaperSx}>
-            {fileParts.length > 0 && (
-              <Box
-                sx={{
-                  display: "flex",
-                  flexWrap: "wrap",
-                  gap: 1,
-                  mb: textContent ? 1 : 0,
-                }}
-              >
-                {fileParts.map((fp, i) => (
-                  // A clickable thumbnail is a control: wrap it in a real
-                  // button so it is focusable and operable by keyboard.
-                  <ButtonBase
-                    key={fp.url || i}
-                    onClick={() => setPreviewSrc(fp.url)}
-                    aria-label={`Open attached image ${i + 1}`}
+      <ListItem component="div" alignItems="flex-start" sx={listItemSx}>
+        <Message align="end" className="mt-5 mb-2">
+          <MessageContent>
+            <Bubble align="end" variant="muted" className="max-w-[88%]">
+              <BubbleContent>
+                {fileParts.length > 0 && (
+                  <Box
                     sx={{
-                      borderRadius: 1.5,
-                      overflow: "hidden",
-                      border: 1,
-                      borderColor: "divider",
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 1,
+                      mb: textContent ? 1 : 0,
                     }}
                   >
-                    <Box
-                      component="img"
-                      src={fp.url}
-                      alt=""
-                      loading="lazy"
-                      decoding="async"
-                      sx={{
-                        width: 56,
-                        height: 56,
-                        objectFit: "cover",
-                        display: "block",
-                      }}
-                    />
-                  </ButtonBase>
-                ))}
-              </Box>
-            )}
-            {textContent && <CollapsibleUserText text={textContent} />}
-          </Paper>
-        </Box>
+                    {fileParts.map((fp, i) => (
+                      // A clickable thumbnail is a control: wrap it in a real
+                      // button so it is focusable and operable by keyboard.
+                      <ButtonBase
+                        key={fp.url || i}
+                        onClick={() => setPreviewSrc(fp.url)}
+                        aria-label={`Open attached image ${i + 1}`}
+                        sx={{
+                          borderRadius: 1.5,
+                          overflow: "hidden",
+                          border: 1,
+                          borderColor: "divider",
+                        }}
+                      >
+                        <Box
+                          component="img"
+                          src={fp.url}
+                          alt=""
+                          loading="lazy"
+                          decoding="async"
+                          sx={{
+                            width: 56,
+                            height: 56,
+                            objectFit: "cover",
+                            display: "block",
+                          }}
+                        />
+                      </ButtonBase>
+                    ))}
+                  </Box>
+                )}
+                {textContent && <CollapsibleUserText text={textContent} />}
+              </BubbleContent>
+            </Bubble>
+          </MessageContent>
+        </Message>
         <ImagePreviewDialog
           src={previewSrc}
           onClose={() => setPreviewSrc(null)}
@@ -223,254 +191,272 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
     .join("\n\n");
 
   return (
-    <ListItem alignItems="flex-start" sx={listItemSx}>
-      <Box sx={assistantMessageSx}>
-        {parts.map((part, partIndex) => {
-          const partType = part.type as string;
+    <ListItem component="div" alignItems="flex-start" sx={listItemSx}>
+      <Message className="py-2 text-foreground">
+        {/* Keep card borders and focus rings inside the padded clip box. */}
+        <MessageContent className="-mx-2 -mb-2 w-[calc(100%+1rem)] flex-none gap-0 overflow-hidden p-2 [overflow-wrap:anywhere] [&_pre]:m-0">
+          {parts.map((part, partIndex) => {
+            const partType = part.type as string;
 
-          if (isToolPartType(partType)) {
-            // A tool row breaks a reasoning run visually, whether or not this
-            // particular tool part ends up rendering anything.
-            prevRenderedWasReasoning = false;
-            const toolName =
-              partType === "dynamic-tool"
-                ? (part.toolName as string)
-                : toolNameFromPartType(partType);
-            const rawState = part.state as string;
-            const cardState: ToolPartState =
-              rawState === "output-error"
-                ? "error"
-                : (part.state as ToolPartState);
-            const cardOutput =
-              rawState === "output-error"
-                ? {
-                    success: false,
-                    error:
-                      (part.errorText as string | undefined) ?? "Tool failed",
-                  }
-                : part.output;
-            const toolCallId = (part.toolCallId as string) || "";
-            const consoleToolPresentation = getConsoleToolPresentation(
-              toolName,
-              part.input,
-              cardOutput,
-              connectionIconById,
-              cardState,
-            );
-            // Key by toolCallId when available so reordering/insertion in the
-            // parts array doesn't remount completed tool cards. Falls back to
-            // a type+index tag for the (rare) case where toolCallId is missing.
-            const key = toolCallId
-              ? `tool-${toolCallId}`
-              : `tool-idx-${partIndex}`;
-
-            // MCP tool approval flow (Claude-style allow once / always allow).
-            // Approval states only occur for tools with `needsApproval` —
-            // in Mako that is exclusively MCP tools.
-            if (
-              rawState === "approval-requested" ||
-              rawState === "approval-responded" ||
-              rawState === "output-denied"
-            ) {
-              const approval = part.approval as
-                { id?: string; approved?: boolean } | undefined;
-              const resolution =
-                rawState === "approval-requested"
-                  ? "pending"
-                  : rawState === "output-denied" || approval?.approved === false
-                    ? "denied"
-                    : "approved";
-              return (
-                <McpApprovalCard
-                  key={key}
-                  toolName={toolName}
-                  input={part.input}
-                  approvalId={approval?.id ?? ""}
-                  resolution={resolution}
-                  onRespond={onMcpApprovalResponse}
-                />
+            if (isToolPartType(partType)) {
+              // A tool row breaks a reasoning run visually, whether or not this
+              // particular tool part ends up rendering anything.
+              prevRenderedWasReasoning = false;
+              const toolName =
+                partType === "dynamic-tool"
+                  ? (part.toolName as string)
+                  : toolNameFromPartType(partType);
+              const rawState = part.state as string;
+              const cardState: ToolPartState =
+                rawState === "output-error"
+                  ? "error"
+                  : (part.state as ToolPartState);
+              const cardOutput =
+                rawState === "output-error"
+                  ? {
+                      success: false,
+                      error:
+                        (part.errorText as string | undefined) ?? "Tool failed",
+                    }
+                  : part.output;
+              const toolCallId = (part.toolCallId as string) || "";
+              const consoleToolPresentation = getConsoleToolPresentation(
+                toolName,
+                part.input,
+                cardOutput,
+                connectionIconById,
+                cardState,
               );
-            }
+              // Key by toolCallId when available so reordering/insertion in the
+              // parts array doesn't remount completed tool cards. Falls back to
+              // a type+index tag for the (rare) case where toolCallId is missing.
+              const key = toolCallId
+                ? `tool-${toolCallId}`
+                : `tool-idx-${partIndex}`;
 
-            // Interactive plan-lifecycle tools: while pending they render in
-            // the docked panel above the composer (Cursor-style), NOT in the
-            // chat. Once resolved, a read-only summary appears inline here.
-            // Errors fall through to the generic tool card.
-            if (
-              toolName === "ask_clarifying_questions" ||
-              toolName === "submit_plan"
-            ) {
-              if (rawState === "output-available") {
-                if (toolName === "ask_clarifying_questions") {
+              // MCP tool approval flow (Claude-style allow once / always allow).
+              // Approval states only occur for tools with `needsApproval` —
+              // in Mako that is exclusively MCP tools.
+              if (
+                rawState === "approval-requested" ||
+                rawState === "approval-responded" ||
+                rawState === "output-denied"
+              ) {
+                const approval = part.approval as
+                  { id?: string; approved?: boolean } | undefined;
+                const resolution =
+                  rawState === "approval-requested"
+                    ? "pending"
+                    : rawState === "output-denied" ||
+                        approval?.approved === false
+                      ? "denied"
+                      : "approved";
+                return (
+                  <McpApprovalCard
+                    key={key}
+                    toolName={toolName}
+                    input={part.input}
+                    approvalId={approval?.id ?? ""}
+                    resolution={resolution}
+                    onRespond={onMcpApprovalResponse}
+                  />
+                );
+              }
+
+              // Interactive plan-lifecycle tools: while pending they render in
+              // the docked panel above the composer (Cursor-style), NOT in the
+              // chat. Once resolved, a read-only summary appears inline here.
+              // Errors fall through to the generic tool card.
+              if (
+                toolName === "ask_clarifying_questions" ||
+                toolName === "submit_plan"
+              ) {
+                if (rawState === "output-available") {
+                  if (toolName === "ask_clarifying_questions") {
+                    return (
+                      <ClarifyingQuestionsCard
+                        key={key}
+                        input={part.input as AskClarifyingQuestionsInput}
+                        output={part.output as AskClarifyingQuestionsOutput}
+                      />
+                    );
+                  }
                   return (
-                    <ClarifyingQuestionsCard
+                    <PlanCard
                       key={key}
-                      input={part.input as AskClarifyingQuestionsInput}
-                      output={part.output as AskClarifyingQuestionsOutput}
+                      toolCallId={toolCallId}
+                      input={part.input as SubmitPlanInput}
+                      output={part.output as SubmitPlanOutput}
                     />
                   );
                 }
+                if (rawState !== "output-error") {
+                  return null;
+                }
+              }
+
+              // Web search: search trace with expandable source links
+              // instead of the generic JSON card. Errors and denied states fall
+              // through to the generic card so failures stay visible.
+              if (
+                toolName === "web_search" &&
+                cardState !== "error" &&
+                !(
+                  cardState === "output-available" &&
+                  (cardOutput as { success?: boolean } | undefined)?.success ===
+                    false
+                )
+              ) {
                 return (
-                  <PlanCard
+                  <WebSearchCard
                     key={key}
-                    toolCallId={toolCallId}
-                    input={part.input as SubmitPlanInput}
-                    output={part.output as SubmitPlanOutput}
+                    state={cardState}
+                    input={part.input}
+                    output={cardOutput}
                   />
                 );
               }
-              if (rawState !== "output-error") {
-                return null;
-              }
-            }
 
-            // Web search: BUI "Search" trace (query chip + source links)
-            // instead of the generic JSON card. Errors and denied states fall
-            // through to the generic card so failures stay visible.
-            if (
-              toolName === "web_search" &&
-              cardState !== "error" &&
-              !(
-                cardState === "output-available" &&
-                (cardOutput as { success?: boolean } | undefined)?.success ===
-                  false
-              )
-            ) {
+              // Async dbt builds: once dbt_run_model has dispatched a run (output
+              // carries a runId), render a live run card that self-polls the run
+              // — decoupled from the agent turn, so it keeps updating after the
+              // turn ends and resumes on chat reload. While the dispatch is still
+              // in flight, or if it errored without a runId, fall through to the
+              // generic card.
+              if (
+                toolName === "dbt_run_model" &&
+                rawState === "output-available"
+              ) {
+                const dbtOutput = cardOutput as { runId?: string } | undefined;
+                const dbtInput = part.input as
+                  { projectId?: string; model?: string } | undefined;
+                if (dbtOutput?.runId && dbtInput?.projectId) {
+                  return (
+                    <DbtRunCard
+                      key={key}
+                      runId={dbtOutput.runId}
+                      projectId={dbtInput.projectId}
+                      label={dbtInput.model}
+                    />
+                  );
+                }
+              }
               return (
-                <WebSearchCard
+                <StreamingToolCard
                   key={key}
+                  toolCallId={toolCallId}
+                  toolName={toolName}
                   state={cardState}
                   input={part.input}
                   output={cardOutput}
+                  labelOverride={
+                    consoleToolPresentation?.title ||
+                    (typeof part.title === "string" &&
+                    part.title.trim() &&
+                    !isRawMcpToolLabel(part.title) &&
+                    // Don't override native labels with the raw tool id
+                    // (e.g. ACP "ToolSearch" === toolName).
+                    part.title.trim() !== toolName
+                      ? part.title
+                      : undefined)
+                  }
+                  leadingIconUrl={consoleToolPresentation?.iconUrl}
+                  leadingIconAlt={
+                    consoleToolPresentation ? "Database" : undefined
+                  }
+                  bodyPreview={
+                    consoleToolPresentation?.diff
+                      ? {
+                          content: consoleToolPresentation.diff,
+                          language: "diff",
+                        }
+                      : undefined
+                  }
+                  onTitleClick={
+                    consoleToolPresentation
+                      ? () =>
+                          onConsoleTitleClick(consoleToolPresentation.consoleId)
+                      : undefined
+                  }
+                  onDetailClick={() =>
+                    onToolClick({
+                      toolCallId,
+                      toolName: toolName || "",
+                      state: part.state as ToolInvocationInfo["state"],
+                      input: part.input,
+                      output: cardOutput,
+                    })
+                  }
                 />
               );
             }
 
-            // Async dbt builds: once dbt_run_model has dispatched a run (output
-            // carries a runId), render a live run card that self-polls the run
-            // — decoupled from the agent turn, so it keeps updating after the
-            // turn ends and resumes on chat reload. While the dispatch is still
-            // in flight, or if it errored without a runId, fall through to the
-            // generic card.
-            if (
-              toolName === "dbt_run_model" &&
-              rawState === "output-available"
-            ) {
-              const dbtOutput = cardOutput as { runId?: string } | undefined;
-              const dbtInput = part.input as
-                { projectId?: string; model?: string } | undefined;
-              if (dbtOutput?.runId && dbtInput?.projectId) {
-                return (
-                  <DbtRunCard
-                    key={key}
-                    runId={dbtOutput.runId}
-                    projectId={dbtInput.projectId}
-                    label={dbtInput.model}
-                  />
-                );
-              }
+            if (partType === "reasoning") {
+              const group = reasoningGroups.get(partIndex);
+              if (!group) return null;
+              const isGroupStreaming =
+                partIndex === streamingReasoningGroupStart;
+              // Skip empty reasoning groups unless they're the block currently
+              // streaming (a brand-new thinking block whose text hasn't arrived
+              // yet). This avoids rendering blank "Thinking process" blocks for
+              // empty reasoning parts loaded from history.
+              if (!group.text && !isGroupStreaming) return null;
+              const clustered = prevRenderedWasReasoning;
+              prevRenderedWasReasoning = true;
+              return (
+                <ReasoningDisplay
+                  clustered={clustered}
+                  key={`reasoning-group-${reasoningGroupOrdinals.get(partIndex) ?? partIndex}`}
+                  reasoningText={group.text}
+                  isStreaming={isGroupStreaming}
+                  collapseEmptyWhileStreaming={
+                    collapseEmptyReasoningWhileStreaming
+                  }
+                  paletteMode={paletteMode}
+                />
+              );
             }
-            return (
-              <StreamingToolCard
-                key={key}
-                toolCallId={toolCallId}
-                toolName={toolName}
-                state={cardState}
-                input={part.input}
-                output={cardOutput}
-                labelOverride={
-                  consoleToolPresentation?.title ||
-                  (typeof part.title === "string" &&
-                  part.title.trim() &&
-                  !isRawMcpToolLabel(part.title) &&
-                  // Don't override native labels with the raw tool id
-                  // (e.g. ACP "ToolSearch" === toolName).
-                  part.title.trim() !== toolName
-                    ? part.title
-                    : undefined)
-                }
-                leadingIconUrl={consoleToolPresentation?.iconUrl}
-                leadingIconAlt={
-                  consoleToolPresentation ? "Database" : undefined
-                }
-                bodyPreview={
-                  consoleToolPresentation?.diff
-                    ? {
-                        content: consoleToolPresentation.diff,
-                        language: "diff",
-                      }
-                    : undefined
-                }
-                onTitleClick={
-                  consoleToolPresentation
-                    ? () =>
-                        onConsoleTitleClick(consoleToolPresentation.consoleId)
-                    : undefined
-                }
-                onDetailClick={() =>
-                  onToolClick({
-                    toolCallId,
-                    toolName: toolName || "",
-                    state: part.state as ToolInvocationInfo["state"],
-                    input: part.input,
-                    output: cardOutput,
-                  })
-                }
-              />
-            );
-          }
 
-          if (partType === "reasoning") {
-            const group = reasoningGroups.get(partIndex);
-            if (!group) return null;
-            const isGroupStreaming = partIndex === streamingReasoningGroupStart;
-            // Skip empty reasoning groups unless they're the block currently
-            // streaming (a brand-new thinking block whose text hasn't arrived
-            // yet). This avoids rendering blank "Thinking process" blocks for
-            // empty reasoning parts loaded from history.
-            if (!group.text && !isGroupStreaming) return null;
-            const clustered = prevRenderedWasReasoning;
-            prevRenderedWasReasoning = true;
-            return (
-              <ReasoningDisplay
-                clustered={clustered}
-                key={`reasoning-group-${reasoningGroupOrdinals.get(partIndex) ?? partIndex}`}
-                reasoningText={group.text}
-                isStreaming={isGroupStreaming}
-                collapseEmptyWhileStreaming={
-                  collapseEmptyReasoningWhileStreaming
-                }
-                paletteMode={paletteMode}
-              />
-            );
-          }
+            if (partType === "text" && (part as { text?: string }).text) {
+              // Only the trailing text block of the actively streaming
+              // message is still growing — flag it so Streamdown knows to
+              // treat its last markdown block as incomplete. All earlier
+              // text blocks are static and can skip animation entirely.
+              const isTrailingStreamingText =
+                isLastPartText && partIndex === lastPartIndex;
+              prevRenderedWasReasoning = false;
+              return (
+                <StreamingMarkdown
+                  key={`text-${partIndex}`}
+                  isStreaming={isTrailingStreamingText}
+                >
+                  {(part as { text: string }).text}
+                </StreamingMarkdown>
+              );
+            }
 
-          if (partType === "text" && (part as { text?: string }).text) {
-            // Only the trailing text block of the actively streaming
-            // message is still growing — flag it so Streamdown knows to
-            // treat its last markdown block as incomplete. All earlier
-            // text blocks are static and can skip animation entirely.
-            const isTrailingStreamingText =
-              isLastPartText && partIndex === lastPartIndex;
-            prevRenderedWasReasoning = false;
-            return (
-              <StreamingMarkdown
-                key={`text-${partIndex}`}
-                isStreaming={isTrailingStreamingText}
-              >
-                {(part as { text: string }).text}
-              </StreamingMarkdown>
-            );
-          }
-
-          return null;
-        })}
-        {isStreaming && isLastMessage && <StreamingIndicator />}
-        {/* Copy is offered only once the turn has settled. */}
-        {!(isStreaming && isLastMessage) && (
-          <AssistantMessageActions text={assistantText} />
-        )}
-      </Box>
+            return null;
+          })}
+          <MessageSources
+            sources={parts.flatMap(part =>
+              part.type === "source-url" && typeof part.url === "string"
+                ? [
+                    {
+                      url: part.url,
+                      title:
+                        typeof part.title === "string" ? part.title : undefined,
+                    },
+                  ]
+                : [],
+            )}
+          />
+          {isStreaming && isLastMessage && <StreamingIndicator />}
+          {/* Copy is offered only once the turn has settled. */}
+          {!(isStreaming && isLastMessage) && (
+            <AssistantMessageActions text={assistantText} />
+          )}
+        </MessageContent>
+      </Message>
     </ListItem>
   );
 }, chatMessageRowArePropsEqual);

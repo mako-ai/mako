@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DASHBOARD_DATA_SOURCE_SEP, tabRevealTarget } from "./explorer-reveal";
+import { tabRevealTarget } from "./explorer-reveal";
 import type { ConsoleTab } from "../store/lib/types";
 
 function makeTab(overrides: Partial<ConsoleTab>): ConsoleTab {
@@ -24,25 +24,6 @@ describe("tabRevealTarget", () => {
     expect(tabRevealTarget(makeTab({ id: "c2", kind: undefined }))).toEqual({
       explorer: "consoles",
       nodeId: "c2",
-    });
-  });
-
-  it("maps dashboards and dashboard data sources to dashboard explorer rows", () => {
-    expect(
-      tabRevealTarget(
-        makeTab({ kind: "dashboard", metadata: { dashboardId: "d1" } }),
-      ),
-    ).toEqual({ explorer: "dashboards", nodeId: "d1" });
-    expect(
-      tabRevealTarget(
-        makeTab({
-          kind: "dashboard-data-source",
-          metadata: { dashboardId: "d1", dataSourceId: "ds1" },
-        }),
-      ),
-    ).toEqual({
-      explorer: "dashboards",
-      nodeId: `d1${DASHBOARD_DATA_SOURCE_SEP}ds1`,
     });
   });
 
@@ -76,8 +57,6 @@ describe("tabRevealTarget", () => {
   });
 
   it("returns null when required metadata is missing", () => {
-    expect(
-      tabRevealTarget(makeTab({ kind: "dashboard", metadata: {} })),
-    ).toBeNull();
+    expect(tabRevealTarget(makeTab({ kind: "app", metadata: {} }))).toBeNull();
   });
 });

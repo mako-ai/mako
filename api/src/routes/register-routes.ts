@@ -26,13 +26,11 @@ import { flowRoutes } from "./flows";
 import { usageRoutes } from "./usage";
 import { billingRoutes } from "./billing";
 import { stripeWebhookRoutes } from "./stripe-webhook";
-import { dashboardRoutes } from "./dashboards";
 import { notebookDataRoutes } from "./notebook-data";
 import { notebookRoutes } from "./notebooks";
 import { notebookSessionRoutes } from "./notebook-sessions";
 import { publicShareRoutes } from "./public-share";
-import { dashboardMaterializationRoutes } from "./dashboard-materialization";
-import { resourceDataSourceRoutes } from "./resource-data-sources";
+import { ogRoutes } from "./og";
 import { scheduledQueryRoutes } from "./scheduled-queries";
 import { notificationRulesRoutes } from "./notification-rules";
 import { devEmailPreviewRoutes } from "./dev-email-preview.routes";
@@ -46,6 +44,11 @@ import { appsGitRoutes } from "./apps-git";
 import { appsBoxRoutes } from "./apps-box";
 import { appsPreviewRoutes } from "./apps-preview";
 import { favouriteRoutes } from "./favourites";
+import {
+  workflowHookRoutes,
+  workflowRoutes,
+  workflowRuntimeRoutes,
+} from "./workflows";
 
 /**
  * Mounts every REST router onto the provided Hono app.
@@ -105,7 +108,6 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
 
   app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
   app.route("/api/workspaces/:workspaceId/billing", billingRoutes);
-  app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
   app.route("/api/workspaces/:workspaceId/notebook", notebookDataRoutes);
   app.route("/api/workspaces/:workspaceId/notebooks", notebookRoutes);
   app.route("/api/workspaces/:workspaceId/notebooks", notebookSessionRoutes);
@@ -114,10 +116,16 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   // The workspace repo itself (status, branches, commits, GitHub connect) —
   // the repo is workspace infrastructure; apps/consoles/dbt are lenses on it.
   app.route("/api/workspaces/:workspaceId/repo", workspaceRepoRoutes);
-  // One person's bookmark tree over apps/consoles/notebooks/dashboards. Not
+  // One person's bookmark tree over apps/consoles/notebooks. Not
   // part of any entity's surface: it stores a view and can never change an
   // entity's identity, folder, sharing or deployment.
   app.route("/api/workspaces/:workspaceId/favourites", favouriteRoutes);
+  app.route("/api/workspaces/:workspaceId/workflows", workflowRoutes);
+  // Worker pods only: `workflows/` source and model calls, keyed by the
+  // workspace's `workflows:runtime` API key.
+  app.route("/api/workflows/runtime", workflowRuntimeRoutes);
+  // Public: a workflow's webhook URL, which carries its own secret.
+  app.route("/api/workflows/hooks", workflowHookRoutes);
   app.route("/api/apps-preview", appsPreviewRoutes);
   // Intentionally public: the workspace repo over git's own HTTP protocol,
   // authorized by a scoped `mgt_` token. This is what makes a sandbox a
@@ -132,16 +140,10 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   // box from before the rename has been recycled.
   app.route("/api/apps-v2-git", appsGitRoutes);
   app.route("/api/apps-v2-box", appsBoxRoutes);
-  app.route(
-    "/api/workspaces/:workspaceId/data-sources",
-    resourceDataSourceRoutes,
-  );
-  app.route(
-    "/api/workspaces/:workspaceId/dashboards/:dashboardId",
-    dashboardMaterializationRoutes,
-  );
-  // Intentionally public: token-gated read-only shares (dashboards + apps).
+  // Intentionally public: token-gated read-only shares (apps).
   app.route("/api/share", publicShareRoutes);
+  // Intentionally public: link-preview images of workspace-wide apps.
+  app.route("/api/og", ogRoutes);
   app.route("/api/agent", agentRoutes);
   app.route("/api/admin", adminRoutes);
   app.route("/api/connectors", connectorRoutes);

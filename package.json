@@ -18,6 +18,7 @@
     "migrate": "tsx -r dotenv/config api/src/migrations/cli.ts",
     "query": "tsx api/src/sync/query-runner.ts",
     "backfill:descriptions": "tsx api/src/scripts/backfill-console-descriptions.ts",
+    "migrate:user-folders": "tsx api/src/scripts/migrate-user-folders-to-handles.ts",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",

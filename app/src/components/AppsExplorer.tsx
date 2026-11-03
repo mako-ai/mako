@@ -4,12 +4,12 @@
  * - **Starred**: this person's favourites, in folders of their own. A star is
  *   a shortcut, never a move; folders here are bookmark folders, kept in the
  *   database, instant, no commit.
+ * - **Personal**: this person's own apps under `users/<handle>/apps/`,
+ *   visible to nobody else — first, since new apps start here.
  * - **Workspace**: the real `apps/` tree of the repo. Folders are directories;
  *   dragging an app into one is a `git mv` on main (editors only). The app
  *   keeps its id, so its tab, deployment, sharing and everyone's stars
  *   follow it and nothing rebuilds.
- * - **Personal**: the same, under `users/<me>/apps/` — this person's own
- *   apps, visible to nobody else.
  *
  * Each app is a directory node whose children are its file tree (loaded
  * lazily from the durable worktree API); every file opens in its own editor
@@ -35,6 +35,8 @@ import {
   User as UserIcon,
   Users as SharedIcon,
   Braces as JsonFileIcon,
+  Clock as RecentIcon,
+  TrendingUp as PopularIcon,
   Database as BindingIcon,
   File as PlainFileIcon,
   FileCode as CodeFileIcon,
@@ -50,6 +52,8 @@ import {
   Trash2 as DeleteIcon,
   UserPlus as ShareMenuIcon,
   Wand2 as StampIcon,
+  BadgeCheck as VerifiedIcon,
+  Share2 as ShareWorkspaceIcon,
 } from "lucide-react";
 import LinkIcon from "./icons/GithubIcon";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -76,7 +80,7 @@ import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import ShareDialog from "./ShareDialog";
 import AppEnvDialog from "./AppEnvDialog";
-import { focusAppsFileTab, focusAppsTab } from "../apps-runtime/shell";
+import ShareWithWorkspaceDialog from "./ShareWithWorkspaceDialog";
 import {
   useExplorerRevealStore,
   selectRevealFor,
@@ -107,21 +111,47 @@ import {
   FolderNameDialog,
   isValidFolderName,
 } from "./apps-explorer/AppFolderDialogs";
+import {
+  buildShortcutSection,
+  parseShortcutRow,
+} from "./starred/shortcut-section";
+import {
+  selectDiscovery,
+  useAppsDiscoveryStore,
+} from "../store/appsDiscoveryStore";
+import { popularApps } from "../lib/apps-discovery";
+import {
+  focusAppsFileTab,
+  focusAppsHomeTab,
+  focusAppsTab,
+} from "../apps-runtime/shell";
+import { whenAppOpenSettled } from "../lib/app-open-gate";
 
 const AppIcon = TAB_KIND_ICONS["app"];
+const AppsHomeIcon = TAB_KIND_ICONS["apps-home"];
 
 const WORKSPACE_ROOT = "apps";
 const WORKSPACE_SECTION = "workspace";
 const PERSONAL_SECTION = "personal";
 const SHARED_SECTION = "shared-with-me";
 
+const RECENT_SECTION = "recently-viewed";
+const POPULAR_SECTION = "popular";
+/** Rows per shortcut section: a glance, not a second tree. */
+const SHORTCUT_LIMIT = 5;
+
 type ParsedNode =
-  | { kind: "app"; appId: string; pinned: boolean }
+  /** `pinned`: a Starred copy; `shortcut`: a Recently viewed / Popular one. */
+  | { kind: "app"; appId: string; pinned: boolean; shortcut?: boolean }
   | { kind: "dir" | "file"; appId: string; path: string }
   | { kind: "folder"; folderPath: string }
   | { kind: "starfolder"; favId: string };
 
 function parseNodeId(id: string): ParsedNode {
+  const shortcut = parseShortcutRow(id);
+  if (shortcut) {
+    return { kind: "app", appId: shortcut.refId, pinned: true, shortcut: true };
+  }
   const folderPath = folderPathFromNodeId(id);
   if (folderPath !== null) return { kind: "folder", folderPath };
   const favId = favouriteIdFromFolderRow(id);
@@ -249,7 +279,8 @@ export default function AppsExplorer() {
   const folders = useAppsStore(s => s.folders);
   const { user } = useAuth();
   const userId = user?.id;
-  const personalRoot = userId ? `users/${userId}/apps` : null;
+  // Named by the person's handle, which only the server knows (GET /apps).
+  const personalRoot = useAppsStore(s => s.personalRoot);
   const loading = useAppsStore(s => s.appsLoading);
   const error = useAppsStore(s => s.error);
   const clearError = useAppsStore(s => s.clearError);
@@ -270,6 +301,8 @@ export default function AppsExplorer() {
   const moveAppFolder = useAppsStore(s => s.moveAppFolder);
   const deleteAppFolder = useAppsStore(s => s.deleteAppFolder);
   const stampAppId = useAppsStore(s => s.stampAppId);
+  const setAppVerified = useAppsStore(s => s.setAppVerified);
+  const shareAppWithWorkspace = useAppsStore(s => s.shareAppWithWorkspace);
 
   const favourites = useFavouritesStore(selectFavourites(workspaceId));
   const fetchFavourites = useFavouritesStore(s => s.fetch);
@@ -281,6 +314,12 @@ export default function AppsExplorer() {
   const favouritesError = useFavouritesStore(s => s.error);
   const clearFavouritesError = useFavouritesStore(s => s.clearError);
   const starred = useMemo(() => starredRefs(favourites, "app"), [favourites]);
+
+  // Recently viewed + Popular come from the usage API; until it is deployed
+  // both 404 and their sections simply do not render.
+  const discovery = useAppsDiscoveryStore(selectDiscovery(workspaceId));
+  const fetchUsage = useAppsDiscoveryStore(s => s.fetchUsage);
+  const fetchRecent = useAppsDiscoveryStore(s => s.fetchRecent);
 
   const openGitHubSettings = useCallback(() => {
     const state = useConsoleStore.getState();
@@ -333,6 +372,7 @@ export default function AppsExplorer() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createFolder, setCreateFolder] = useState(WORKSPACE_ROOT);
   const [shareAppId, setShareAppId] = useState<string | null>(null);
+  const [shareWsAppId, setShareWsAppId] = useState<string | null>(null);
   const [envAppId, setEnvAppId] = useState<string | null>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialogState | null>(
     null,
@@ -353,20 +393,29 @@ export default function AppsExplorer() {
     if (workspaceId) {
       void fetchApps(workspaceId);
       void fetchFavourites(workspaceId);
+      void fetchUsage(workspaceId);
+      void fetchRecent(workspaceId);
     }
-  }, [workspaceId, fetchApps, fetchFavourites]);
+  }, [workspaceId, fetchApps, fetchFavourites, fetchUsage, fetchRecent]);
 
   // Green dots for live dev servers — discovery, refreshed while the
   // explorer is on screen.
   const appsLoaded = apps.length > 0;
   useEffect(() => {
     if (!workspaceId || !appsLoaded) return;
-    void fetchRunningDevApps(workspaceId);
+    // A sandbox round trip (4.8 s on prod): not ahead of the app being opened.
+    let cancelled = false;
+    void whenAppOpenSettled().then(() => {
+      if (!cancelled) void fetchRunningDevApps(workspaceId);
+    });
     const timer = setInterval(
       () => void fetchRunningDevApps(workspaceId),
       30_000,
     );
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, [workspaceId, appsLoaded, fetchRunningDevApps]);
 
   const appById = useMemo(() => new Map(apps.map(a => [a.id, a])), [apps]);
@@ -423,20 +472,40 @@ export default function AppsExplorer() {
       },
       { droppable: true },
     );
+    // Shortcuts, resolved against the same listing (so a private app the
+    // usage API mentions but this person cannot see never shows).
+    const shortcutRow = (appId: string) => {
+      const app = appById.get(appId);
+      return app
+        ? {
+            name: app.title,
+            path: appRootOf(app),
+            entityType: "app",
+            access: app.access,
+            owner_id: app.owner_id,
+          }
+        : undefined;
+    };
+    const recentSection = buildShortcutSection({
+      key: RECENT_SECTION,
+      label: "Recently viewed",
+      icon: <RecentIcon size={16} strokeWidth={1.5} />,
+      refIds: discovery.recent.map(r => r.appId),
+      resolve: shortcutRow,
+      limit: SHORTCUT_LIMIT,
+    });
+    const popularSection = buildShortcutSection({
+      key: POPULAR_SECTION,
+      label: "Popular",
+      icon: <PopularIcon size={16} strokeWidth={1.5} />,
+      refIds: popularApps(apps, discovery.usage, SHORTCUT_LIMIT).map(a => a.id),
+      resolve: shortcutRow,
+      limit: SHORTCUT_LIMIT,
+    });
     return [
       ...starredSection,
-      {
-        key: WORKSPACE_SECTION,
-        label: "Workspace",
-        icon: <GlobeIcon size={16} strokeWidth={1.5} />,
-        nodes: buildAppTree({
-          root: WORKSPACE_ROOT,
-          folders,
-          apps: treeApps(workspaceApps),
-          appChildren,
-        }),
-        droppableId: "__section_workspace",
-      },
+      ...recentSection,
+      ...popularSection,
       ...(personalRoot
         ? [
             {
@@ -453,6 +522,18 @@ export default function AppsExplorer() {
             },
           ]
         : []),
+      {
+        key: WORKSPACE_SECTION,
+        label: "Workspace",
+        icon: <GlobeIcon size={16} strokeWidth={1.5} />,
+        nodes: buildAppTree({
+          root: WORKSPACE_ROOT,
+          folders,
+          apps: treeApps(workspaceApps),
+          appChildren,
+        }),
+        droppableId: "__section_workspace",
+      },
       ...(sharedWithMe.length > 0
         ? [
             {
@@ -478,7 +559,17 @@ export default function AppsExplorer() {
           ]
         : []),
     ];
-  }, [apps, folders, favourites, appById, appChildren, personalRoot, userId]);
+  }, [
+    apps,
+    folders,
+    favourites,
+    appById,
+    appChildren,
+    personalRoot,
+    userId,
+    discovery.recent,
+    discovery.usage,
+  ]);
 
   /** An app in someone else's personal tree: readable, never movable here. */
   const isSharedWithMe = useCallback(
@@ -601,6 +692,9 @@ export default function AppsExplorer() {
       if (!workspaceId || !targetId) return;
       const dragged = parseNodeId(nodeId);
       const target = parseNodeId(targetId);
+      // Shortcut rows are views of a row below: nothing to drop onto.
+      if (target.kind === "app" && target.shortcut) return;
+      if (dragged.kind === "app" && dragged.shortcut) return;
       // A shared app can be starred (a pinned row is a view of it), never
       // filed: it is the owner's to move, and the server would refuse.
       if (
@@ -807,6 +901,7 @@ export default function AppsExplorer() {
   const handleDeleteNode = useCallback(
     (node: ResourceTreeNode) => {
       const parsed = parseNodeId(node.id);
+      if (parsed.kind === "app" && parsed.shortcut) return;
       if (parsed.kind === "app" && parsed.pinned) {
         handleToggleStar(parsed.appId);
       } else if (parsed.kind === "app") void handleDelete(parsed.appId);
@@ -971,6 +1066,41 @@ export default function AppsExplorer() {
           Environment variables…
         </MenuItem>,
       );
+      // Lifecycle + curation (app-lifecycle.service.ts on the API).
+      if (app?.scope === "private" && app.owner_id === user?.id) {
+        items.push(
+          <MenuItem
+            key="share-workspace"
+            onClick={() => {
+              helpers.closeMenu();
+              setShareWsAppId(appId);
+            }}
+          >
+            <ListItemIcon>
+              <ShareWorkspaceIcon size={16} />
+            </ListItemIcon>
+            Share with workspace…
+          </MenuItem>,
+        );
+      }
+      if (isWorkspaceAdmin && app?.scope === "workspace") {
+        items.push(
+          <MenuItem
+            key="verified"
+            onClick={() => {
+              helpers.closeMenu();
+              if (workspaceId) {
+                void setAppVerified(workspaceId, appId, !app.verified);
+              }
+            }}
+          >
+            <ListItemIcon>
+              <VerifiedIcon size={16} />
+            </ListItemIcon>
+            {app.verified ? "Remove verified mark" : "Mark as verified"}
+          </MenuItem>,
+        );
+      }
       if (app?.duplicateOf) {
         items.push(
           <MenuItem
@@ -1003,7 +1133,17 @@ export default function AppsExplorer() {
       );
       return items;
     },
-    [appById, starred, handleToggleStar, workspaceId, stampAppId, handleDelete],
+    [
+      appById,
+      starred,
+      handleToggleStar,
+      workspaceId,
+      stampAppId,
+      handleDelete,
+      user?.id,
+      isWorkspaceAdmin,
+      setAppVerified,
+    ],
   );
 
   const folderMenuItems = useCallback(
@@ -1163,6 +1303,9 @@ export default function AppsExplorer() {
           </MenuItem>,
         ];
       }
+      if (sectionKey !== WORKSPACE_SECTION && sectionKey !== PERSONAL_SECTION) {
+        return null;
+      }
       const root =
         sectionKey === PERSONAL_SECTION ? personalRoot : WORKSPACE_ROOT;
       if (!root) return null;
@@ -1172,6 +1315,9 @@ export default function AppsExplorer() {
   );
 
   const shareApp = shareAppId ? apps.find(a => a.id === shareAppId) : null;
+  const shareWsApp = shareWsAppId
+    ? apps.find(a => a.id === shareWsAppId)
+    : null;
   const envApp = envAppId ? apps.find(a => a.id === envAppId) : null;
 
   const folderOptions = useMemo(() => {
@@ -1194,13 +1340,20 @@ export default function AppsExplorer() {
 
   const actions = (
     <>
+      <Tooltip title="Apps home">
+        <IconButton size="small" onClick={() => focusAppsHomeTab()}>
+          <AppsHomeIcon size={20} strokeWidth={2} />
+        </IconButton>
+      </Tooltip>
       <Tooltip title={canCreate ? "New app" : "Link a GitHub repo first"}>
         <span>
           <IconButton
             size="small"
             disabled={!canCreate}
             onClick={() => {
-              setCreateFolder(WORKSPACE_ROOT);
+              // Personal by default: sharing with the workspace is a
+              // deliberate move, not where a new app starts.
+              setCreateFolder(personalRoot ?? WORKSPACE_ROOT);
               setCreateOpen(true);
             }}
           >
@@ -1216,6 +1369,8 @@ export default function AppsExplorer() {
             if (!workspaceId) return;
             void fetchApps(workspaceId);
             void fetchFavourites(workspaceId);
+            void fetchUsage(workspaceId);
+            void fetchRecent(workspaceId);
           }}
         >
           <RefreshIcon size={20} strokeWidth={2} />
@@ -1444,6 +1599,7 @@ export default function AppsExplorer() {
                     if (parsed.kind === "file" || parsed.kind === "dir") {
                       return false;
                     }
+                    if (parsed.kind === "app" && parsed.shortcut) return false;
                     if (parsed.kind === "app" && !parsed.pinned) {
                       return !isSharedWithMe(parsed.appId);
                     }
@@ -1549,6 +1705,18 @@ export default function AppsExplorer() {
         onConfirm={submitFolderDialog}
       />
 
+      {shareWsApp && workspaceId && (
+        <ShareWithWorkspaceDialog
+          open={!!shareWsAppId}
+          appTitle={shareWsApp.title}
+          initialDescription={shareWsApp.description}
+          onClose={() => setShareWsAppId(null)}
+          onSubmit={description =>
+            shareAppWithWorkspace(workspaceId, shareWsApp.id, description)
+          }
+        />
+      )}
+
       {shareApp && (
         <ShareDialog
           open={!!shareAppId}
@@ -1560,6 +1728,7 @@ export default function AppsExplorer() {
           access={shareApp.access ?? "workspace"}
           workspaceRole={shareApp.workspaceRole ?? "viewer"}
           publicShare={shareApp.publicShare}
+          chatEnabled={shareApp.chatEnabled === true}
           canManage={
             !shareApp.owner_id ||
             shareApp.owner_id === userId ||
@@ -1575,6 +1744,9 @@ export default function AppsExplorer() {
               }
               if (changes.publicShare) {
                 app.publicShare = changes.publicShare;
+              }
+              if (changes.chatEnabled !== undefined) {
+                app.chatEnabled = changes.chatEnabled;
               }
             });
             if (workspaceId) void fetchApps(workspaceId);

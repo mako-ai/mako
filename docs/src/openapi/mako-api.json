@@ -269,889 +269,6 @@
           }
         ]
       },
-      "Dashboard": {
-        "type": "object",
-        "properties": {
-          "_id": {
-            "type": "string",
-            "example": "507f1f77bcf86cd799439011"
-          },
-          "workspaceId": {
-            "type": "string",
-            "example": "507f1f77bcf86cd799439011"
-          },
-          "title": {
-            "type": "string"
-          },
-          "description": {
-            "type": "string"
-          },
-          "dataSources": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "name": {
-                  "type": "string"
-                },
-                "tableRef": {
-                  "type": "string"
-                },
-                "materialization": {
-                  "type": "string",
-                  "enum": [
-                    "live",
-                    "parquet"
-                  ],
-                  "default": "parquet"
-                },
-                "query": {
-                  "type": "object",
-                  "properties": {
-                    "connectionId": {
-                      "type": "string",
-                      "example": "507f1f77bcf86cd799439011"
-                    },
-                    "language": {
-                      "type": "string",
-                      "enum": [
-                        "sql",
-                        "javascript",
-                        "mongodb"
-                      ]
-                    },
-                    "code": {
-                      "type": "string"
-                    },
-                    "databaseId": {
-                      "type": "string"
-                    },
-                    "databaseName": {
-                      "type": "string"
-                    },
-                    "mongoOptions": {
-                      "type": "object",
-                      "properties": {
-                        "collection": {
-                          "type": "string"
-                        },
-                        "operation": {
-                          "type": "string",
-                          "enum": [
-                            "find",
-                            "aggregate",
-                            "insertMany",
-                            "updateMany",
-                            "deleteMany",
-                            "findOne",
-                            "updateOne",
-                            "deleteOne"
-                          ]
-                        }
-                      }
-                    }
-                  },
-                  "required": [
-                    "language",
-                    "code"
-                  ]
-                },
-                "origin": {
-                  "type": "object",
-                  "properties": {
-                    "type": {
-                      "type": "string",
-                      "enum": [
-                        "saved_console",
-                        "local"
-                      ]
-                    },
-                    "consoleId": {
-                      "type": "string",
-                      "example": "507f1f77bcf86cd799439011"
-                    },
-                    "consoleName": {
-                      "type": "string"
-                    },
-                    "importedAt": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  },
-                  "required": [
-                    "type"
-                  ]
-                },
-                "timeDimension": {
-                  "type": "string"
-                },
-                "rowLimit": {
-                  "type": "number"
-                },
-                "computedColumns": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "name": {
-                        "type": "string"
-                      },
-                      "expression": {
-                        "type": "string"
-                      },
-                      "type": {
-                        "type": "string",
-                        "enum": [
-                          "quantitative",
-                          "temporal",
-                          "nominal",
-                          "ordinal"
-                        ]
-                      }
-                    },
-                    "required": [
-                      "name",
-                      "expression",
-                      "type"
-                    ]
-                  }
-                },
-                "cache": {
-                  "type": [
-                    "object",
-                    "null"
-                  ],
-                  "properties": {
-                    "lastRefreshedAt": {
-                      "type": "string",
-                      "format": "date-time"
-                    },
-                    "rowCount": {
-                      "type": "number"
-                    },
-                    "byteSize": {
-                      "type": "number"
-                    },
-                    "parquetArtifactKey": {
-                      "type": "string"
-                    },
-                    "definitionHash": {
-                      "type": "string"
-                    },
-                    "artifactRevision": {
-                      "type": "string"
-                    },
-                    "parquetVersion": {
-                      "type": "string"
-                    },
-                    "parquetBuiltAt": {
-                      "type": "string",
-                      "format": "date-time"
-                    },
-                    "parquetBuildStatus": {
-                      "type": [
-                        "string",
-                        "null"
-                      ],
-                      "enum": [
-                        "missing",
-                        "queued",
-                        "building",
-                        "ready",
-                        "error",
-                        null
-                      ]
-                    },
-                    "parquetLastError": {
-                      "type": "string"
-                    },
-                    "parquetUrl": {
-                      "type": "string"
-                    }
-                  }
-                }
-              },
-              "required": [
-                "id",
-                "name",
-                "tableRef",
-                "query"
-              ]
-            }
-          },
-          "relationships": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "from": {
-                  "type": "object",
-                  "properties": {
-                    "dataSourceId": {
-                      "type": "string"
-                    },
-                    "column": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "dataSourceId",
-                    "column"
-                  ]
-                },
-                "to": {
-                  "type": "object",
-                  "properties": {
-                    "dataSourceId": {
-                      "type": "string"
-                    },
-                    "column": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "dataSourceId",
-                    "column"
-                  ]
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "one-to-one",
-                    "one-to-many",
-                    "many-to-one",
-                    "many-to-many"
-                  ]
-                }
-              },
-              "required": [
-                "id",
-                "from",
-                "to",
-                "type"
-              ]
-            }
-          },
-          "widgets": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "title": {
-                  "type": "string"
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "chart",
-                    "kpi",
-                    "table"
-                  ]
-                },
-                "dataSourceId": {
-                  "type": "string"
-                },
-                "localSql": {
-                  "type": "string"
-                },
-                "vegaLiteSpec": {
-                  "type": "object",
-                  "additionalProperties": {}
-                },
-                "kpiConfig": {
-                  "type": "object",
-                  "properties": {
-                    "valueField": {
-                      "type": "string"
-                    },
-                    "format": {
-                      "type": "string"
-                    },
-                    "comparisonField": {
-                      "type": "string"
-                    },
-                    "comparisonLabel": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "tableConfig": {
-                  "type": "object",
-                  "properties": {
-                    "columns": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    },
-                    "pageSize": {
-                      "type": "number"
-                    }
-                  }
-                },
-                "crossFilter": {
-                  "type": "object",
-                  "properties": {
-                    "enabled": {
-                      "type": "boolean"
-                    },
-                    "fields": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    }
-                  },
-                  "required": [
-                    "enabled"
-                  ]
-                },
-                "layouts": {
-                  "type": "object",
-                  "properties": {
-                    "lg": {
-                      "type": "object",
-                      "properties": {
-                        "x": {
-                          "type": "number"
-                        },
-                        "y": {
-                          "type": "number"
-                        },
-                        "w": {
-                          "type": "number"
-                        },
-                        "h": {
-                          "type": "number"
-                        },
-                        "minW": {
-                          "type": "number"
-                        },
-                        "minH": {
-                          "type": "number"
-                        },
-                        "custom": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "x",
-                        "y",
-                        "w",
-                        "h"
-                      ]
-                    },
-                    "md": {
-                      "type": "object",
-                      "properties": {
-                        "x": {
-                          "type": "number"
-                        },
-                        "y": {
-                          "type": "number"
-                        },
-                        "w": {
-                          "type": "number"
-                        },
-                        "h": {
-                          "type": "number"
-                        },
-                        "minW": {
-                          "type": "number"
-                        },
-                        "minH": {
-                          "type": "number"
-                        },
-                        "custom": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "x",
-                        "y",
-                        "w",
-                        "h"
-                      ]
-                    },
-                    "sm": {
-                      "type": "object",
-                      "properties": {
-                        "x": {
-                          "type": "number"
-                        },
-                        "y": {
-                          "type": "number"
-                        },
-                        "w": {
-                          "type": "number"
-                        },
-                        "h": {
-                          "type": "number"
-                        },
-                        "minW": {
-                          "type": "number"
-                        },
-                        "minH": {
-                          "type": "number"
-                        },
-                        "custom": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "x",
-                        "y",
-                        "w",
-                        "h"
-                      ]
-                    },
-                    "xs": {
-                      "type": "object",
-                      "properties": {
-                        "x": {
-                          "type": "number"
-                        },
-                        "y": {
-                          "type": "number"
-                        },
-                        "w": {
-                          "type": "number"
-                        },
-                        "h": {
-                          "type": "number"
-                        },
-                        "minW": {
-                          "type": "number"
-                        },
-                        "minH": {
-                          "type": "number"
-                        },
-                        "custom": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "x",
-                        "y",
-                        "w",
-                        "h"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "lg"
-                  ]
-                }
-              },
-              "required": [
-                "id",
-                "type",
-                "dataSourceId",
-                "localSql",
-                "crossFilter",
-                "layouts"
-              ]
-            }
-          },
-          "globalFilters": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "date-range",
-                    "select",
-                    "multi-select",
-                    "search"
-                  ]
-                },
-                "label": {
-                  "type": "string"
-                },
-                "dataSourceId": {
-                  "type": "string"
-                },
-                "column": {
-                  "type": "string"
-                },
-                "config": {
-                  "type": "object",
-                  "additionalProperties": {}
-                },
-                "layout": {
-                  "type": "object",
-                  "properties": {
-                    "order": {
-                      "type": "number"
-                    },
-                    "width": {
-                      "type": "number"
-                    }
-                  },
-                  "required": [
-                    "order"
-                  ]
-                }
-              },
-              "required": [
-                "id",
-                "type",
-                "label",
-                "dataSourceId",
-                "column",
-                "config",
-                "layout"
-              ]
-            }
-          },
-          "crossFilter": {
-            "type": "object",
-            "properties": {
-              "enabled": {
-                "type": "boolean"
-              },
-              "resolution": {
-                "type": "string",
-                "enum": [
-                  "intersect",
-                  "union"
-                ]
-              },
-              "engine": {
-                "type": "string",
-                "enum": [
-                  "mosaic",
-                  "legacy"
-                ]
-              }
-            },
-            "required": [
-              "enabled",
-              "resolution"
-            ]
-          },
-          "materializationSchedule": {
-            "type": "object",
-            "properties": {
-              "enabled": {
-                "type": "boolean"
-              },
-              "cron": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "timezone": {
-                "type": "string"
-              },
-              "dataFreshnessTtlMs": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "enabled",
-              "cron"
-            ]
-          },
-          "layout": {
-            "type": "object",
-            "properties": {
-              "columns": {
-                "type": "number"
-              },
-              "rowHeight": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "columns",
-              "rowHeight"
-            ]
-          },
-          "cache": {
-            "type": "object",
-            "properties": {
-              "lastRefreshedAt": {
-                "type": "string",
-                "format": "date-time"
-              }
-            }
-          },
-          "snapshots": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "object",
-              "properties": {
-                "version": {
-                  "type": "string"
-                },
-                "generatedAt": {
-                  "type": "string",
-                  "format": "date-time"
-                },
-                "rowCount": {
-                  "type": "number"
-                },
-                "rows": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": {}
-                  }
-                },
-                "fields": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "name": {
-                        "type": "string"
-                      },
-                      "type": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "name",
-                      "type"
-                    ]
-                  }
-                }
-              },
-              "required": [
-                "version",
-                "rowCount",
-                "rows",
-                "fields"
-              ]
-            }
-          },
-          "version": {
-            "type": "number"
-          },
-          "editLock": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "properties": {
-              "userId": {
-                "type": "string"
-              },
-              "userName": {
-                "type": "string"
-              },
-              "lockedAt": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "expiresAt": {
-                "type": "string",
-                "format": "date-time"
-              }
-            },
-            "required": [
-              "userId",
-              "userName"
-            ]
-          },
-          "folderId": {
-            "type": "string",
-            "example": "507f1f77bcf86cd799439011"
-          },
-          "access": {
-            "type": "string",
-            "enum": [
-              "private",
-              "workspace"
-            ]
-          },
-          "workspaceRole": {
-            "type": "string",
-            "enum": [
-              "viewer",
-              "editor"
-            ]
-          },
-          "sharedWith": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "userId": {
-                  "type": "string"
-                },
-                "role": {
-                  "type": "string",
-                  "enum": [
-                    "viewer",
-                    "editor"
-                  ]
-                },
-                "addedAt": {
-                  "type": "string",
-                  "format": "date-time"
-                }
-              },
-              "required": [
-                "userId",
-                "role"
-              ]
-            }
-          },
-          "publicShare": {
-            "type": "object",
-            "properties": {
-              "enabled": {
-                "type": "boolean"
-              },
-              "token": {
-                "type": "string"
-              },
-              "hasPassword": {
-                "type": "boolean"
-              },
-              "createdAt": {
-                "type": "string",
-                "format": "date-time"
-              }
-            },
-            "required": [
-              "enabled"
-            ]
-          },
-          "owner_id": {
-            "type": "string"
-          },
-          "createdBy": {
-            "type": "string"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "readOnly": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "title",
-          "dataSources",
-          "relationships",
-          "widgets",
-          "globalFilters",
-          "crossFilter",
-          "materializationSchedule",
-          "layout",
-          "version",
-          "access",
-          "createdBy"
-        ]
-      },
-      "CreateDashboardFolderRequest": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "parentId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "access": {
-            "type": "string",
-            "enum": [
-              "private",
-              "workspace"
-            ]
-          }
-        },
-        "required": [
-          "name"
-        ]
-      },
-      "RenameDashboardFolderRequest": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ]
-      },
-      "MoveDashboardFolderRequest": {
-        "type": "object",
-        "properties": {
-          "parentId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "access": {
-            "type": "string",
-            "enum": [
-              "private",
-              "workspace"
-            ]
-          }
-        }
-      },
-      "MoveDashboardRequest": {
-        "type": "object",
-        "properties": {
-          "folderId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "access": {
-            "type": "string",
-            "enum": [
-              "private",
-              "workspace"
-            ]
-          }
-        }
-      },
-      "RestoreDashboardVersionRequest": {
-        "type": "object",
-        "properties": {
-          "comment": {
-            "type": "string"
-          },
-          "clientId": {
-            "type": "string"
-          }
-        }
-      },
       "NotebookReadRequest": {
         "type": "object",
         "properties": {
@@ -3702,153 +2819,6 @@
         "operationId": "get_api_workspaces_id_settings_models"
       }
     },
-    "/api/workspaces/{id}/settings/limits": {
-      "get": {
-        "tags": [
-          "Workspaces"
-        ],
-        "summary": "Get workspace refresh concurrency limits",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_id_settings_limits"
-      },
-      "put": {
-        "tags": [
-          "Workspaces"
-        ],
-        "summary": "Update workspace refresh concurrency limits",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "put_api_workspaces_id_settings_limits"
-      }
-    },
     "/api/workspaces/{id}/switch": {
       "post": {
         "tags": [
@@ -4421,6 +3391,161 @@
           }
         },
         "operationId": "put_api_workspaces_id_auto_join"
+      }
+    },
+    "/api/workspaces/{id}/link-previews": {
+      "get": {
+        "tags": [
+          "Workspaces"
+        ],
+        "summary": "In-app link previews setting",
+        "description": "Whether in-app app links (/view/<workspace>/<app>) unfurl in chat apps with the app's title, description and thumbnail. Only workspace-tree apps visible to every member ever do; default on.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_id_link_previews"
+      },
+      "put": {
+        "tags": [
+          "Workspaces"
+        ],
+        "summary": "Turn in-app link previews on or off",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "put_api_workspaces_id_link_previews"
       }
     },
     "/api/workspaces/{id}/invites": {
@@ -5011,7 +4136,8 @@
                         "artifact-write",
                         "warehouse-write",
                         "git-write",
-                        "schedule-write"
+                        "schedule-write",
+                        "workflows-run"
                       ]
                     }
                   }
@@ -5766,6 +4892,194 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_databases_test_connection"
+      }
+    },
+    "/api/workspaces/{workspaceId}/databases/{id}/writers": {
+      "get": {
+        "tags": [
+          "Databases"
+        ],
+        "summary": "Who may write through this connection",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_databases_id_writers"
+      },
+      "put": {
+        "tags": [
+          "Databases"
+        ],
+        "summary": "Change who may write through this connection",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "writers": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "principal": {
+                          "type": "string",
+                          "pattern": "^(user:[A-Za-z0-9_-]+|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$",
+                          "example": "workflow:crm-chat-issues"
+                        },
+                        "where": {
+                          "type": "string",
+                          "pattern": "^[^.\\s]+(\\.[^.\\s]+)?$",
+                          "example": "mako_out.issue_labels"
+                        }
+                      },
+                      "required": [
+                        "principal"
+                      ]
+                    },
+                    "maxItems": 200
+                  }
+                },
+                "required": [
+                  "writers"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "put_api_workspaces_workspaceId_databases_id_writers"
       }
     },
     "/api/workspaces/{workspaceId}/databases/{id}/test": {
@@ -19724,2528 +19038,6 @@
         "operationId": "post_api_workspaces_workspaceId_billing_portal"
       }
     },
-    "/api/workspaces/{workspaceId}/dashboards": {
-      "get": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "GET /",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_dashboards"
-      },
-      "post": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "POST /",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_dashboards"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}": {
-      "get": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "GET /{id}",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Dashboard details.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "success": {
-                      "type": "boolean",
-                      "enum": [
-                        true
-                      ]
-                    },
-                    "data": {
-                      "$ref": "#/components/schemas/Dashboard"
-                    }
-                  },
-                  "required": [
-                    "success",
-                    "data"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Access denied",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Dashboard not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_dashboards_id"
-      },
-      "put": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "PUT /{id}",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "put_api_workspaces_workspaceId_dashboards_id"
-      },
-      "patch": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "PATCH /{id}",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_dashboards_id"
-      },
-      "delete": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "DELETE /{id}",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "delete_api_workspaces_workspaceId_dashboards_id"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/version-comment": {
-      "post": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "POST /{id}/version-comment",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_dashboards_id_version_comment"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/refresh": {
-      "post": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "POST /{id}/refresh",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_dashboards_id_refresh"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/duplicate": {
-      "post": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "POST /{id}/duplicate",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_dashboards_id_duplicate"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/lock": {
-      "post": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "POST /{id}/lock",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "force",
-            "in": "query"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_dashboards_id_lock"
-      },
-      "delete": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "DELETE /{id}/lock",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "delete_api_workspaces_workspaceId_dashboards_id_lock"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/lock/heartbeat": {
-      "post": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "POST /{id}/lock/heartbeat",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_dashboards_id_lock_heartbeat"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/folders": {
-      "post": {
-        "summary": "POST /folders",
-        "tags": [
-          "Dashboards"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateDashboardFolderRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_dashboards_folders"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/folders/{id}/rename": {
-      "patch": {
-        "summary": "PATCH /folders/{id}/rename",
-        "tags": [
-          "Dashboards"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RenameDashboardFolderRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_dashboards_folders_id_rename"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/folders/{id}": {
-      "delete": {
-        "summary": "DELETE /folders/{id}",
-        "tags": [
-          "Dashboards"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "delete_api_workspaces_workspaceId_dashboards_folders_id"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/folders/{id}/move": {
-      "patch": {
-        "summary": "PATCH /folders/{id}/move",
-        "tags": [
-          "Dashboards"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MoveDashboardFolderRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_dashboards_folders_id_move"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/move": {
-      "patch": {
-        "summary": "PATCH /{id}/move",
-        "tags": [
-          "Dashboards"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MoveDashboardRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_dashboards_id_move"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/versions": {
-      "get": {
-        "summary": "GET /{id}/versions",
-        "tags": [
-          "Dashboards"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "limit",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "offset",
-            "in": "query"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_dashboards_id_versions"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/versions/{version}": {
-      "get": {
-        "summary": "GET /{id}/versions/{version}",
-        "tags": [
-          "Dashboards"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "version",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_dashboards_id_versions_version"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/versions/{version}/restore": {
-      "post": {
-        "summary": "POST /{id}/versions/{version}/restore",
-        "tags": [
-          "Dashboards"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "version",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RestoreDashboardVersionRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_dashboards_id_versions_version_restore"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/collaborators": {
-      "get": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "List Dashboard collaborators",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_dashboards_id_collaborators"
-      },
-      "post": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "Add a Dashboard collaborator",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "userId": {
-                    "type": "string"
-                  },
-                  "role": {
-                    "type": "string",
-                    "enum": [
-                      "viewer",
-                      "editor"
-                    ]
-                  }
-                },
-                "required": [
-                  "userId"
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_dashboards_id_collaborators"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/collaborators/{userId}": {
-      "patch": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "Update a Dashboard collaborator's role",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "userId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "role": {
-                    "type": "string",
-                    "enum": [
-                      "viewer",
-                      "editor"
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_dashboards_id_collaborators_userId"
-      },
-      "delete": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "Remove a Dashboard collaborator",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "userId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "delete_api_workspaces_workspaceId_dashboards_id_collaborators_userId"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/sharing": {
-      "patch": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "Update Dashboard general access",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "access": {
-                    "type": "string",
-                    "enum": [
-                      "private",
-                      "workspace"
-                    ]
-                  },
-                  "workspaceRole": {
-                    "type": "string",
-                    "enum": [
-                      "viewer",
-                      "editor"
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_dashboards_id_sharing"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/public-share": {
-      "post": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "Enable Dashboard public sharing",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "password": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_dashboards_id_public_share"
-      },
-      "patch": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "Update Dashboard public sharing",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "password": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "rotateToken": {
-                    "type": "boolean"
-                  },
-                  "token": {
-                    "type": "string"
-                  },
-                  "allowLiveQueries": {
-                    "type": "boolean"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_dashboards_id_public_share"
-      },
-      "delete": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "Disable Dashboard public sharing",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "delete_api_workspaces_workspaceId_dashboards_id_public_share"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{id}/public-share/password": {
-      "get": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "Reveal Dashboard public-share password",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_dashboards_id_public_share_password"
-      }
-    },
     "/api/workspaces/{workspaceId}/notebook/sources": {
       "get": {
         "tags": [
@@ -24762,7 +21554,7 @@
           "Apps"
         ],
         "summary": "Create an empty app folder",
-        "description": "Commits a `.gitkeep` so the folder exists on main. Workspace folders need an editing role; personal folders (`users/<me>/apps/…`) are the caller's own.",
+        "description": "Commits a `.gitkeep` so the folder exists on main. Workspace folders need an editing role; personal folders (`users/<handle>/apps/…`) are the caller's own.",
         "security": [
           {
             "cookieAuth": []
@@ -25010,6 +21802,1093 @@
           }
         },
         "operationId": "delete_api_workspaces_workspaceId_apps_folders"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/usage": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Usage and popularity of the apps the caller can see",
+        "description": "Per app, over the last `days` UTC days (default 28): distinct viewers, viewers who are not the app's authors, their viewer-days, opens, active seconds, last open (anyone / non-author) and a popularity score — the sum over non-author viewers of distinct active days, each weighted 0.5^(age_days/14). Every visible app is listed, zeros when unviewed.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 400
+            },
+            "required": false,
+            "name": "days",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_usage"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/recent": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Apps the caller opened most recently",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_recent"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/usage": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Report a view of the published app",
+        "description": "Sent by Mako's own app views: `open` once per view, `heartbeat` every 60 s while the page is visible (each worth 60 active seconds), both carrying the view's `sessionId`. Every accepted report lands in the raw event log; a repeat open inside the throttle window is logged flagged `throttled` and left out of the daily counters, a heartbeat flood is refused (429). API keys without a user are not viewers and are ignored. Answers 204.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "open",
+                      "heartbeat"
+                    ]
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "app",
+                      "share",
+                      "embed"
+                    ],
+                    "default": "app"
+                  },
+                  "sessionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "referrerKind": {
+                    "type": "string",
+                    "enum": [
+                      "internal",
+                      "external",
+                      "direct"
+                    ]
+                  },
+                  "placement": {
+                    "type": "object",
+                    "properties": {
+                      "surface": {
+                        "type": "string",
+                        "enum": [
+                          "home"
+                        ]
+                      },
+                      "shelf": {
+                        "type": "string",
+                        "enum": [
+                          "popular",
+                          "new",
+                          "recommended",
+                          "recent",
+                          "mine",
+                          "attention",
+                          "search"
+                        ]
+                      },
+                      "position": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000
+                      }
+                    },
+                    "required": [
+                      "surface",
+                      "shelf",
+                      "position"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_id_usage"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/discovery": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Apps home: every visible app with its discovery facts",
+        "description": "Owner, creation date, deployment, thumbnail, data freshness and health (failed deploy, failed binding refreshes) for every app the caller can see — the same visibility as the list. Popularity is the usage API's, joined on the id by the client.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_discovery"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/archived": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Archived apps the caller may see",
+        "description": "Apps under the repo's `archive/` tree (moved there by the lifecycle job), read from main: title, description and thumbnail from each mako.json, the original path Restore moves it back to, and when and by whom it was archived (the commit that added it). Same visibility as the list: workspace apps for members, a personal app only for its mapped owner. Newest archive first.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_archived"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/archived/restore": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Restore an archived app to where it was",
+        "description": "Moves `archive/<...>` back to its original folder as one commit on main; the app keeps its id. The Workspace tree needs an editing role, a personal tree is its owner's alone (403). 404 when the archived app is not there or not visible; 409 when its original address is taken. The app gets a fresh lifecycle grace period, so it is not archived again straight away.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_archived_restore"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/archived/thumbnail": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "An archived app's thumbnail image",
+        "description": "The thumbnail an archived app ships, for its card on the Apps home's Archived chip; `v` is the blob oid (cache version). 404 when it ships none or the caller may not see it.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "required": true,
+            "name": "path",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "required": false,
+            "name": "v",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 8
+            },
+            "required": false,
+            "name": "w",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_archived_thumbnail"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/feed": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Apps home feed: shelves, then every other app ranked, paged",
+        "description": "Without `cursor`: the Popular and New shelves (`popular`, `fresh`) and the first page of the Recommended grid (`apps`), every visible app appearing exactly once across the three. The Recommended order is ranked server-side (popularity, recency, the caller's own reads, co-usage, quality, a per-viewer-per-day exploration jitter) and frozen for 24 h; pass `nextCursor` back for the next page until it is null. Same card shape and visibility as /discovery; visibility is re-checked on every page. 410 when the cursor's snapshot expired (reload the feed).",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_feed"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/search": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Search apps",
+        "description": "Free-text search over each visible app's title, description, path, owner and the warehouse tables its bindings read (FROM/JOIN identifiers in bindings/*.sql, indexed per push). Word matches come first, ranked best first, with the fields that matched. Then, when embeddings are available, up to 12 apps those fields missed, closest in meaning first, with `matches: [\"related\"]`: apps whose search document (title, description, README, UI labels) is semantically close to the query, or contains its words.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "q",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_search"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/lifecycle/plan": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "What the app lifecycle job would do now (admins)",
+        "description": "The daily lifecycle job's plan for this workspace, computed now and changing nothing: apps it would notify as stale, archive, or whose binding schedules it would pause or resume. `mode` says whether the job only logs this plan (dry-run, the default) or applies it.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_lifecycle_plan"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/verified": {
+      "put": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Mark an app verified (or not) — workspace admins",
+        "description": "A workspace admin vouches for an app: the mark (with who and when) is shown on the app list as `verified`, and a verified app is never archived as stale.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "verified": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "verified"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "put_api_workspaces_workspaceId_apps_id_verified"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/share-with-workspace": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Move a personal app into the Workspace tree",
+        "description": "The explicit step that turns a personal app (`users/<me>/apps/…`) into workspace content: one commit on main moving its folder under `apps/` (or the given workspace folder) and writing the one-line description into mako.json. The app keeps its id, so its deployment, sharing and favourites follow it. Only the app's owner, with an editing role, can do this.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "description": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  },
+                  "folder": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "description"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_id_share_with_workspace"
       }
     },
     "/api/workspaces/{workspaceId}/apps/{id}/move": {
@@ -26740,6 +24619,92 @@
         "operationId": "get_api_workspaces_workspaceId_apps_id_bindings_name_artifact"
       }
     },
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/snapshot": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Serve a binding's preview snapshot (committed definition)",
+        "description": "The first N rows of the committed binding's stored parquet, in build order (schema + total row count), for `useQuery(name, { snapshot: true })` to paint before DuckDB-WASM loads. 404 when the binding was never built, was built before snapshots existed, or has a column type a snapshot cannot carry — callers wait for the parquet.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_id_bindings_name_snapshot"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/materialize": {
       "post": {
         "tags": [
@@ -26961,6 +24926,120 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_apps_id_bindings_name_dev_build"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/dev-snapshot": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Preview snapshot of the artifact a local binding text maps to",
+        "description": "The laptop `makoData()` plugin's `__data/<name>.snapshot.json`: send the same body as `dev-build`, get the snapshot of exactly the stored artifact that `dev-build` would answer with for that text (the committed artifact, or a cached draft) — never another definition's. 404 when that text has no stored artifact yet (a build is needed) or the artifact has no snapshot. Never builds anything.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "source": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 524288
+                  },
+                  "dbtEnvironment": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "dbtDefer": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_id_bindings_name_dev_snapshot"
       }
     },
     "/api/workspaces/{workspaceId}/apps/{id}/binding-jobs/{jobId}": {
@@ -29249,6 +27328,182 @@
         "operationId": "get_api_workspaces_workspaceId_apps_id_eyes_shots_shot"
       }
     },
+    "/api/workspaces/{workspaceId}/apps/{id}/thumbnail": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "The app's own thumbnail image",
+        "description": "The image the app ships at its root (thumbnail.png, or .webp/.jpg/.jpeg/.svg) as of main; /apps/discovery says which apps have one (and its oid, the cache version). With `w`, a raster thumbnail comes back as a WebP at most that wide (snapped to 320/480/640/960/1200, never upscaled); SVG is always the original. Private caching: immutable for a year when `v` names the current blob, revalidate (ETag by oid and width) otherwise. 404 when the app ships none. SVG is served with a script-free, sandboxed CSP.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The thumbnail's blob oid (cache version)."
+            },
+            "required": false,
+            "description": "The thumbnail's blob oid (cache version).",
+            "name": "v",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Desired width in px; snapped to the nearest of 320, 480, 640, 960, 1200. Omit for the original."
+            },
+            "required": false,
+            "description": "Desired width in px; snapped to the nearest of 320, 480, 640, 960, 1200. Omit for the original.",
+            "name": "w",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_id_thumbnail"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/chats": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "List my chats with a published app",
+        "description": "The caller's own \"chat with app\" conversations about this app, newest first (without messages — load one through the chats API). Read access to the app is enough: these are the chats its live-link viewers have with it.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_id_chats"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps/{id}/collaborators": {
       "get": {
         "tags": [
@@ -29714,6 +27969,101 @@
           }
         },
         "operationId": "patch_api_workspaces_workspaceId_apps_id_sharing"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/chat": {
+      "patch": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Turn chat with a published app on or off",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patch_api_workspaces_workspaceId_apps_id_chat"
       }
     },
     "/api/workspaces/{workspaceId}/apps/{id}/public-share": {
@@ -31360,8 +29710,7 @@
               "enum": [
                 "app",
                 "console",
-                "notebook",
-                "dashboard"
+                "notebook"
               ]
             },
             "required": true,
@@ -31467,8 +29816,7 @@
               "enum": [
                 "app",
                 "console",
-                "notebook",
-                "dashboard"
+                "notebook"
               ]
             },
             "required": true,
@@ -31706,12 +30054,12 @@
         "operationId": "delete_api_workspaces_workspaceId_favourites_id"
       }
     },
-    "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}": {
+    "/api/workspaces/{workspaceId}/workflows": {
       "get": {
         "tags": [
-          "Data Sources"
+          "Workflows"
         ],
-        "summary": "List data sources for a dashboard",
+        "summary": "What is deployed, the workflows, schedules and recent runs",
         "security": [
           {
             "cookieAuth": []
@@ -31727,25 +30075,6 @@
             },
             "required": true,
             "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "enum": [
-                "dashboard"
-              ]
-            },
-            "required": true,
-            "name": "resourceType",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "resourceId",
             "in": "path"
           }
         ],
@@ -31791,15 +30120,15 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_data_sources_resourceType_resourceId"
+        "operationId": "get_api_workspaces_workspaceId_workflows"
       }
     },
-    "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}/{dataSourceId}": {
+    "/api/workspaces/{workspaceId}/workflows/runs/{id}": {
       "get": {
         "tags": [
-          "Data Sources"
+          "Workflows"
         ],
-        "summary": "Get one dashboard data source",
+        "summary": "One run, deployed or sandbox (the caller's own): its steps in order, with status, output, error and logs. `wait` (seconds, at most 90) waits for it to end (`running: true` when it had not); `full` gives a sandbox run whole",
         "security": [
           {
             "cookieAuth": []
@@ -31819,13 +30148,103 @@
           },
           {
             "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "required": false,
+            "name": "wait",
+            "in": "query"
+          },
+          {
+            "schema": {
               "type": "string",
               "enum": [
-                "dashboard"
+                "true",
+                "false"
               ]
             },
+            "required": false,
+            "name": "full",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_workflows_runs_id"
+      }
+    },
+    "/api/workspaces/{workspaceId}/workflows/{name}/flow": {
+      "get": {
+        "tags": [
+          "Workflows"
+        ],
+        "summary": "A deployed workflow's steps as its code defines them: each with the steps it waits for, its retries and timeout",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
             "required": true,
-            "name": "resourceType",
+            "name": "workspaceId",
             "in": "path"
           },
           {
@@ -31833,15 +30252,7 @@
               "type": "string"
             },
             "required": true,
-            "name": "resourceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "dataSourceId",
+            "name": "name",
             "in": "path"
           }
         ],
@@ -31887,15 +30298,15 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_data_sources_resourceType_resourceId_dataSourceId"
+        "operationId": "get_api_workspaces_workspaceId_workflows_name_flow"
       }
     },
-    "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}/{dataSourceId}/settings": {
-      "patch": {
+    "/api/workspaces/{workspaceId}/workflows/{name}/cost": {
+      "get": {
         "tags": [
-          "Data Sources"
+          "Workflows"
         ],
-        "summary": "Update materialization settings for a data source",
+        "summary": "A workflow's AI cost (its runs' model calls) over the last `days` days (default 30), in total and by day",
         "security": [
           {
             "cookieAuth": []
@@ -31915,13 +30326,89 @@
           },
           {
             "schema": {
-              "type": "string",
-              "enum": [
-                "dashboard"
-              ]
+              "type": "string"
             },
             "required": true,
-            "name": "resourceType",
+            "name": "name",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365
+            },
+            "required": false,
+            "name": "days",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_workflows_name_cost"
+      }
+    },
+    "/api/workspaces/{workspaceId}/workflows/runs/{id}/retry": {
+      "post": {
+        "tags": [
+          "Workflows"
+        ],
+        "summary": "Retry a deployed run in place. With `step`: that step and the ones after it run again, on what the earlier steps kept; without, the whole run",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
             "in": "path"
           },
           {
@@ -31929,15 +30416,7 @@
               "type": "string"
             },
             "required": true,
-            "name": "resourceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "dataSourceId",
+            "name": "id",
             "in": "path"
           }
         ],
@@ -31948,42 +30427,8 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "materialization": {
-                    "type": "string",
-                    "enum": [
-                      "live",
-                      "parquet"
-                    ]
-                  },
-                  "schedule": {
-                    "type": [
-                      "object",
-                      "null"
-                    ],
-                    "properties": {
-                      "enabled": {
-                        "type": "boolean"
-                      },
-                      "cron": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
-                      },
-                      "timezone": {
-                        "type": "string"
-                      },
-                      "dataFreshnessTtlMs": {
-                        "type": [
-                          "number",
-                          "null"
-                        ]
-                      }
-                    },
-                    "required": [
-                      "enabled",
-                      "cron"
-                    ]
+                  "step": {
+                    "type": "string"
                   }
                 }
               }
@@ -32032,199 +30477,15 @@
             }
           }
         },
-        "operationId": "patch_api_workspaces_workspaceId_data_sources_resourceType_resourceId_dataSourceId_settings"
+        "operationId": "post_api_workspaces_workspaceId_workflows_runs_id_retry"
       }
     },
-    "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}/refresh": {
-      "post": {
-        "tags": [
-          "Data Sources"
-        ],
-        "summary": "Refresh all materialized data sources for a dashboard",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "enum": [
-                "dashboard"
-              ]
-            },
-            "required": true,
-            "name": "resourceType",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "resourceId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_data_sources_resourceType_resourceId_refresh"
-      }
-    },
-    "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}/{dataSourceId}/refresh": {
-      "post": {
-        "tags": [
-          "Data Sources"
-        ],
-        "summary": "Refresh one materialized data source for a dashboard",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "enum": [
-                "dashboard"
-              ]
-            },
-            "required": true,
-            "name": "resourceType",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "resourceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "dataSourceId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_data_sources_resourceType_resourceId_dataSourceId_refresh"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/materialization": {
+    "/api/workspaces/{workspaceId}/workflows/files": {
       "get": {
         "tags": [
-          "Dashboards"
+          "Workflows"
         ],
-        "summary": "Get dashboard materialization status",
+        "summary": "The files under workflows/, or one file's contents with ?path=",
         "security": [
           {
             "cookieAuth": []
@@ -32246,9 +30507,9 @@
             "schema": {
               "type": "string"
             },
-            "required": true,
-            "name": "dashboardId",
-            "in": "path"
+            "required": false,
+            "name": "path",
+            "in": "query"
           }
         ],
         "responses": {
@@ -32293,15 +30554,15 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_dashboards_dashboardId_materialization"
+        "operationId": "get_api_workspaces_workspaceId_workflows_files"
       }
     },
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/materialize": {
+    "/api/workspaces/{workspaceId}/workflows/{name}/run": {
       "post": {
         "tags": [
-          "Dashboards"
+          "Workflows"
         ],
-        "summary": "Materialize a dashboard",
+        "summary": "Start a run of the deployed workflow (answers its runId), or with `sandbox` the caller's checkout in their sandbox. Answers the runId at once; follow it with GET /runs/{id}?wait=",
         "security": [
           {
             "cookieAuth": []
@@ -32324,7 +30585,7 @@
               "type": "string"
             },
             "required": true,
-            "name": "dashboardId",
+            "name": "name",
             "in": "path"
           }
         ],
@@ -32334,7 +30595,15 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "additionalProperties": {}
+                "properties": {
+                  "input": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  },
+                  "sandbox": {
+                    "type": "boolean"
+                  }
+                }
               }
             }
           }
@@ -32381,15 +30650,15 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_dashboards_dashboardId_materialize"
+        "operationId": "post_api_workspaces_workspaceId_workflows_name_run"
       }
     },
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/data-sources/{dataSourceId}/materialization": {
-      "get": {
+    "/api/workspaces/{workspaceId}/workflows/{name}/triggers": {
+      "put": {
         "tags": [
-          "Dashboards"
+          "Workflows"
         ],
-        "summary": "Get data source materialization status",
+        "summary": "Change what starts a workflow: `active` (its schedule and webhook), `webhook` (add: a new URL; remove)",
         "security": [
           {
             "cookieAuth": []
@@ -32412,110 +30681,24 @@
               "type": "string"
             },
             "required": true,
-            "name": "dashboardId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "dataSourceId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_dashboards_dashboardId_data_sources_dataSourceId_materialization"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/data-sources/{dataSourceId}/materialize": {
-      "post": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "Materialize a dashboard data source",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "dashboardId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "dataSourceId",
+            "name": "name",
             "in": "path"
           }
         ],
         "requestBody": {
-          "required": false,
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "additionalProperties": {}
+                "properties": {
+                  "active": {
+                    "type": "boolean"
+                  },
+                  "webhook": {
+                    "type": "boolean"
+                  }
+                }
               }
             }
           }
@@ -32562,354 +30745,7 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_dashboards_dashboardId_data_sources_dataSourceId_materialize"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/materialization/runs": {
-      "get": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "List materialization runs",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "dashboardId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "limit",
-            "in": "query"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_dashboards_dashboardId_materialization_runs"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/materialization/runs/{runId}": {
-      "get": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "Get a materialization run",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "dashboardId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "runId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_dashboards_dashboardId_materialization_runs_runId"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/data-sources/{dataSourceId}/materialization/runs": {
-      "get": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "List data source materialization runs",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "dashboardId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "dataSourceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "limit",
-            "in": "query"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_dashboards_dashboardId_data_sources_dataSourceId_materialization_runs"
-      }
-    },
-    "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/data-sources/{dataSourceId}/materialization/artifact": {
-      "get": {
-        "tags": [
-          "Dashboards"
-        ],
-        "summary": "Stream a materialized data source artifact",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "dashboardId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "dataSourceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "rev",
-            "in": "query"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Parquet artifact bytes.",
-            "content": {
-              "application/vnd.apache.parquet": {
-                "schema": {
-                  "type": "string",
-                  "format": "binary"
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_dashboards_dashboardId_data_sources_dataSourceId_materialization_artifact"
+        "operationId": "put_api_workspaces_workspaceId_workflows_name_triggers"
       }
     },
     "/api/share/{token}": {
@@ -33109,81 +30945,13 @@
         "operationId": "get_api_share_token_content"
       }
     },
-    "/api/share/{token}/artifacts/{artifactId}": {
+    "/api/share/{token}/og-image": {
       "get": {
         "tags": [
           "Public Shares"
         ],
-        "summary": "Stream a share snapshot artifact",
-        "security": [],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "token",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "artifactId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "rev",
-            "in": "query"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Parquet snapshot bytes.",
-            "content": {
-              "application/vnd.apache.parquet": {
-                "schema": {
-                  "type": "string",
-                  "format": "binary"
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_share_token_artifacts_artifactId"
-      }
-    },
-    "/api/share/{token}/refresh": {
-      "post": {
-        "tags": [
-          "Public Shares"
-        ],
-        "summary": "Refresh a public share snapshot",
+        "summary": "Link-preview image of an open share",
+        "description": "The app's own raster thumbnail (thumbnail.png/.jpg/.webp), as a JPEG at most 1200 px wide and ~300 KB (so WhatsApp shows the large card), for Open Graph crawlers. Only for a share anyone can open (enabled, no password); otherwise — or when the app has no raster thumbnail — 404, and the share page points crawlers at the generic /og-default.png instead. Cached publicly by blob oid.",
         "security": [],
         "parameters": [
           {
@@ -33237,7 +31005,141 @@
             }
           }
         },
-        "operationId": "post_api_share_token_refresh"
+        "operationId": "get_api_share_token_og_image"
+      }
+    },
+    "/api/share/{token}/artifacts/{artifactId}": {
+      "get": {
+        "tags": [
+          "Public Shares"
+        ],
+        "summary": "Stream a share snapshot artifact",
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "token",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "artifactId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Parquet snapshot bytes.",
+            "content": {
+              "application/vnd.apache.parquet": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_share_token_artifacts_artifactId"
+      }
+    },
+    "/api/og/app-image/{workspaceId}/{appId}": {
+      "get": {
+        "tags": [
+          "Public Shares"
+        ],
+        "summary": "Link-preview image of a workspace app",
+        "description": "The app's own raster thumbnail (thumbnail.png/.jpg/.webp), as a JPEG at most 1200 px wide and ~300 KB (so WhatsApp shows the large card), for Open Graph crawlers unfurling an in-app link. Only for a workspace-tree app visible to the whole workspace, while the workspace's link previews are on; otherwise — or for an SVG-only app — 404, and the page points crawlers at the generic /og-default.png. Cached publicly by blob oid.",
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{24}$"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{24}$"
+            },
+            "required": true,
+            "name": "appId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_og_app_image_workspaceId_appId"
       }
     },
     "/api/agent/models": {
@@ -33976,6 +31878,89 @@
           }
         },
         "operationId": "put_api_admin_catalog_defaults"
+      }
+    },
+    "/api/admin/workflows/cost-backfill": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Backfill workflow AI costs: match older model calls to their run and step by time (a dry run unless dryRun is false)",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "workspaceId": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{24}$"
+                  },
+                  "days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 90
+                  },
+                  "dryRun": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_admin_workflows_cost_backfill"
       }
     },
     "/api/connectors/types": {

@@ -92,7 +92,7 @@ function stripTrailingSemicolon(query: string): string {
  * Strip leading SQL comments (line `--` and block comments) so that
  * safety-check regexes can see the first real keyword.
  */
-function stripLeadingSqlComments(sql: string): string {
+export function stripLeadingSqlComments(sql: string): string {
   let s = sql;
   for (;;) {
     s = s.replace(/^\s+/, "");
@@ -117,7 +117,7 @@ function stripLeadingSqlComments(sql: string): string {
  * for write keywords. This prevents harmless text such as `SELECT 'UPDATE'`
  * from tripping the guard while keeping executable SQL tokens visible.
  */
-function maskSqlNonCode(sql: string): string {
+export function maskSqlNonCode(sql: string): string {
   let output = "";
 
   for (let index = 0; index < sql.length; index += 1) {

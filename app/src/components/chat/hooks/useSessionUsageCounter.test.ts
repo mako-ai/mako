@@ -93,7 +93,10 @@ describe("useSessionUsageCounter", () => {
     // against 76.8k persisted, and only became right on reload. The post-turn
     // reconcile REPLACES with the authoritative per-chat aggregate.
     vi.useFakeTimers();
-    const spy = vi.spyOn(api, "GET").mockResolvedValue({
+    // Spied through a loose shape: typing the spy against every GET in the
+    // OpenAPI client is more than tsc will instantiate (TS2589).
+    const client = api as unknown as { GET: (...args: unknown[]) => unknown };
+    const spy = vi.spyOn(client, "GET").mockResolvedValue({
       data: {
         chatId: "chat-a",
         totals: {

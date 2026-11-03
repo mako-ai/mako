@@ -5,8 +5,8 @@
  * Agents are explicitly imported - no auto-discovery magic.
  */
 
+import { appChatAgentFactory, appChatAgentMeta } from "./app-chat";
 import { consoleAgentFactory, consoleAgentMeta } from "./console";
-import { dashboardAgentFactory, dashboardAgentMeta } from "./dashboard";
 import { dbtAgentFactory, dbtAgentMeta } from "./dbt";
 import { flowAgentFactory, flowAgentMeta } from "./flow";
 import { unifiedAgentFactory, unifiedAgentMeta } from "./unified";
@@ -23,9 +23,9 @@ export * from "./types";
 const agents: Record<string, AgentRegistryEntry> = {
   unified: { factory: unifiedAgentFactory, meta: unifiedAgentMeta },
   console: { factory: consoleAgentFactory, meta: consoleAgentMeta },
-  dashboard: { factory: dashboardAgentFactory, meta: dashboardAgentMeta },
   flow: { factory: flowAgentFactory, meta: flowAgentMeta },
   dbt: { factory: dbtAgentFactory, meta: dbtAgentMeta },
+  app_chat: { factory: appChatAgentFactory, meta: appChatAgentMeta },
 };
 
 /**

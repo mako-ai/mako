@@ -9,11 +9,14 @@
  * subdirectories in it, worked on inside E2B sandboxes. Always available (no
  * feature flag).
  */
+import { withQueryLabels } from "../services/bigquery-labels";
 import { createRoute, z } from "@hono/zod-openapi";
 import { eyesShotKey } from "../apps/eyes.service";
 import { Types } from "mongoose";
 import {
+  APP_USAGE_PLACEMENT_SHELVES,
   AppProject,
+  Chat,
   GitHubInstallation,
   type IAppProject,
 } from "../database/workspace-schema";
@@ -65,7 +68,6 @@ import {
   fileVersions,
   forgetBoxCaches,
   gitPathsAction,
-  listAppFolders,
   listBranches,
   listFiles,
   mergeBranchToMain,
@@ -87,19 +89,58 @@ import {
   createAppFolder,
   deleteAppFolder,
   folderTargetFromPath,
-  listAppFolderPaths,
   moveAppFolder,
   moveProject,
   stampAppId,
   type AppFolderTarget,
 } from "../apps/worktree.service";
-import { loadAppsIndex, resolveAppRef } from "../apps/app-index.service";
-import { parseAppRepoPath } from "../apps/app-paths";
+import {
+  findAppInSnapshot,
+  loadAppsIndex,
+  resolveAppRef,
+  resolveIndexedAppRef,
+} from "../apps/app-index.service";
+import { getThumbnailVariant } from "../apps/thumbnail-variants.service";
+import {
+  acceptUsageBeat,
+  classifyUserAgent,
+  getRecentlyViewedApps,
+  recordAppUsage,
+  recordServedOpen,
+} from "../apps/app-usage.service";
+import {
+  homeUsageStats,
+  listHomeDiscoveryApps,
+  visibleHomeAppIds,
+} from "../apps/app-home-base.service";
+import { appTreeRoot, parseAppRepoPath } from "../apps/app-paths";
+import { loadOwnerDirectory } from "../apps/user-handles.service";
+import { searchDiscoveryApps } from "../apps/app-discovery.service";
+import {
+  appUsageScores,
+  prefetchQueryEmbedding,
+  relatedSignals,
+} from "../apps/app-search.service";
+import { FeedCursorError, getFeedPage } from "../apps/app-feed.service";
+import {
+  ArchiveRestoreError,
+  archivedThumbnail,
+  listArchivedApps,
+  restoreArchivedApp,
+} from "../apps/app-archive.service";
+import { readThumbnailBlob, thumbnailResponse } from "../apps/app-thumbnail";
+import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import {
   authorizeAppMove,
   authorizeFolderTarget,
+  canSeeIndexedApp,
 } from "../apps/app-authorization";
 import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
+import {
+  getAppLifecyclePlan,
+  setAppVerified,
+  verifiedAppIds,
+} from "../apps/app-lifecycle.service";
 import {
   APPS_EXEC_MAX_TIMEOUT_MS,
   previewStagingDir,
@@ -134,12 +175,22 @@ import { publishState } from "../apps/publish-state";
 import fs from "node:fs/promises";
 import { readBoxDir } from "../apps/box";
 import { mintPreviewGrant, mintPublishedGrant } from "../apps/preview.service";
+import { appOriginFor, tokenWindowMs } from "../apps/app-origin";
 import {
   resolveAppViewer,
   resolveAppViewerByEmail,
   type ViewerIdentity,
 } from "../apps/app-viewer.service";
 import { ensureAutoJoin } from "../services/auto-join.service";
+import {
+  anonymousViewerRedirect,
+  isPreviewCrawler,
+  liveViewerRedirect,
+} from "../apps/live-viewer-redirect";
+import { crawlerPreviewPage, publicOrigin } from "../services/share-og.service";
+import { getCookie } from "hono/cookie";
+import type { Context } from "hono";
+import { sessionManager } from "../auth/session";
 import {
   forgetTerminalCaches,
   killAllTerminalSessions,
@@ -163,8 +214,16 @@ import {
   materializeAppBinding,
   readBindings,
 } from "../apps/bindings.service";
-import { refreshBindingHttp } from "../apps/binding-refresh";
+import {
+  refreshBindingHttp,
+  refreshBindingProgress,
+} from "../apps/binding-refresh";
+import { wantsBindingProgress } from "../apps/binding-progress";
 import { DevBuildError, planDevBuild } from "../apps/binding-dev-build";
+import {
+  unregisteredDraftAccess,
+  unregisteredDraftProject,
+} from "../apps/unregistered-draft-app";
 import { installCommand } from "../apps/package-manager";
 import {
   getBindingJob,
@@ -178,13 +237,66 @@ import {
   listAppEnvVars,
   setAppEnvVar,
 } from "../apps/env.service";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import { getArtifactStore } from "../services/artifact-store.service";
+import {
+  serveJsonArtifact,
+  serveParquetArtifact,
+} from "../services/artifact-delivery.service";
+import { snapshotArtifactKey } from "../services/binding-snapshot";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { serverTiming, timed } from "../middleware/server-timing";
+import {
+  concurrencyLimit,
+  repoWorkPool,
+} from "../middleware/concurrency-limit";
 
 const logger = loggers.api("apps");
 
 export const appsRoutes = createRouter();
+
+async function anonymousLiveLinkToViewer(
+  c: Context,
+  next: () => Promise<void>,
+): Promise<Response | void> {
+  // A link-preview crawler gets the viewer page's tags right here, with a
+  // 200: WhatsApp (and others) do not follow the redirect for previews.
+  // Browsers keep the 302 below.
+  if (c.req.method === "GET" && isPreviewCrawler(c.req.header("user-agent"))) {
+    const viewerPath = liveViewerRedirect({
+      fetchDest: "document",
+      fetchMode: "navigate",
+      workspaceId: c.req.param("workspaceId"),
+      ref: c.req.param("id"),
+      path: c.req.path,
+      url: c.req.url,
+    });
+    if (viewerPath) {
+      const html = await timed("og.live", () =>
+        crawlerPreviewPage(
+          viewerPath,
+          publicOrigin(c.req.url, c.req.header("x-forwarded-proto")),
+        ),
+      );
+      return c.html(html, 200, { "Cache-Control": "no-cache" });
+    }
+  }
+  const target =
+    c.req.method === "GET"
+      ? anonymousViewerRedirect({
+          hasCredentials:
+            !!c.req.header("authorization") ||
+            !!getCookie(c, sessionManager.sessionCookieName),
+          accept: c.req.header("accept"),
+          userAgent: c.req.header("user-agent"),
+          workspaceId: c.req.param("workspaceId"),
+          ref: c.req.param("id"),
+          path: c.req.path,
+          url: c.req.url,
+        })
+      : null;
+  if (target) return c.redirect(target, 302);
+  await next();
+}
 
 const WorkspaceParam = z.object({
   workspaceId: z
@@ -194,6 +306,31 @@ const WorkspaceParam = z.object({
 const ProjectParam = WorkspaceParam.extend({
   id: z.string().openapi({ param: { name: "id", in: "path" } }),
 });
+
+// Step timings (Server-Timing + a log line when slow) for the Apps home's
+// reads — registered first so the total includes auth. The live link's
+// top-level page too: a crawler's link preview is built right there.
+for (const [route, label] of [
+  ["/", "apps.list"],
+  ["/discovery", "apps.discovery"],
+  ["/feed", "apps.feed"],
+  ["/usage", "apps.usage"],
+  ["/recent", "apps.recent"],
+  ["/search", "apps.search"],
+  ["/:id/thumbnail", "apps.thumbnail"],
+  ["/:id/live", "apps.live"],
+  ["/:id/live/", "apps.live"],
+] as const) {
+  appsRoutes.on("GET", route, serverTiming(label));
+}
+
+// A copied workspace link (`…/apps/<id>/live/`) opened without any session —
+// a person signed out, or a chat app's link-preview crawler — goes to the
+// viewer page instead of a 401: the page signs people in, and its HTML
+// carries the app's link-preview tags (share-og.service). Only the app's
+// top-level page, only for browsers and crawlers; API clients still get 401.
+appsRoutes.use("/:id/live/*", anonymousLiveLinkToViewer);
+appsRoutes.use("/:id/live", anonymousLiveLinkToViewer);
 
 appsRoutes.use("*", unifiedAuthMiddleware);
 
@@ -215,15 +352,18 @@ appsRoutes.use("*", async (c: AuthenticatedContext, next) => {
     } else if (user) {
       // A stranger from a trusted domain joins here — this is the request
       // their first click on a published app's link makes (apps.md §28).
-      const hasAccess =
-        (await workspaceService.hasAccess(workspaceId, user.id)) ||
-        (await ensureAutoJoin(workspaceId, user)) !== null;
-      if (!hasAccess) {
+      const member =
+        (await timed("auth.member", () =>
+          workspaceService.getMember(workspaceId, user.id),
+        )) ?? (await ensureAutoJoin(workspaceId, user));
+      if (!member) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
         );
       }
+      // Shared sharing handlers read the role from context for admin access.
+      c.set("memberRole", member.role);
     } else {
       return c.json({ success: false, error: "Unauthorized" }, 401);
     }
@@ -231,6 +371,13 @@ appsRoutes.use("*", async (c: AuthenticatedContext, next) => {
   }
   await next();
 });
+
+// Git walks and sandbox round trips: capped per instance (2026-10-19 — one
+// slow endpoint here starved the whole service). GET only, so a busy pool
+// never refuses a save.
+for (const route of ["/:id/branches", "/:id/files", "/:id/status"]) {
+  appsRoutes.on("GET", route, concurrencyLimit(repoWorkPool));
+}
 
 function actingUserId(c: AuthenticatedContext): string | undefined {
   return c.get("user")?.id;
@@ -241,7 +388,9 @@ async function memberRoleFor(
   userId: string | undefined,
 ): Promise<string | undefined> {
   if (!userId) return undefined;
-  const member = await workspaceService.getMember(workspaceId, userId);
+  const member = await timed("auth.role", () =>
+    workspaceService.getMember(workspaceId, userId),
+  );
   return member?.role;
 }
 
@@ -304,6 +453,90 @@ async function loadProject(
   return { project, userId };
 }
 
+/**
+ * The view token's fast path: an app id whose row is published and readable
+ * by the caller. One Mongo read, no repo index and no git.
+ *
+ * Opening an app in Mako asks for its token by id, and the full resolver
+ * spent 0.8–1.1 s on prod freshening the workspace mirror (a git fetch when
+ * the last one is over 3 s old) to learn what the row already holds. For an
+ * id, resolveProjectRef returns this same row: the index only corrects its
+ * path and slug, and neither the grant nor the ACL reads them. Anything else
+ * (a slug, a path, no row, unpublished, not readable) returns null and takes
+ * loadProject, so its answers and 404s stay exactly as they were.
+ */
+async function loadPublishedRowById(
+  c: AuthenticatedContext,
+): Promise<{ project: IAppProject; userId?: string } | null> {
+  const workspaceId = c.req.param("workspaceId") as string;
+  const id = c.req.param("id")?.trim() ?? "";
+  if (!/^[0-9a-f]{24}$/i.test(id) || !Types.ObjectId.isValid(workspaceId)) {
+    return null;
+  }
+  const row = await AppProject.findOne({
+    _id: new Types.ObjectId(id),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+  if (!row?.publishedSha) return null;
+  const userId = actingUserId(c);
+  if (userId) {
+    // The workspace middleware already read this member for this request.
+    const role =
+      c.get("memberRole") ?? (await memberRoleFor(workspaceId, userId));
+    if (!canReadResource(row, userId, role)) return null;
+  }
+  return { project: row, userId };
+}
+
+/**
+ * loadProject for the laptop dev-build loop (dev-build and its binding jobs):
+ * an app that is not on main yet — a new folder only in the developer's
+ * checkout — is a draft-only project (unregistered-draft-app.ts) instead of a
+ * 404, so `makoData()` shows data before anything is pushed. Every other
+ * answer of loadProject (a real app, a 403, a 404 for an app the caller may
+ * not see) is unchanged.
+ */
+async function loadDevBuildProject(
+  c: AuthenticatedContext,
+  opts: { checkWrite: boolean },
+): Promise<
+  | {
+      project: IAppProject;
+      userId?: string;
+      canWrite: boolean;
+      unregistered: boolean;
+    }
+  | { errorResponse: Response }
+> {
+  const loaded = await loadProject(c, { write: false });
+  if (!("errorResponse" in loaded)) {
+    const canWrite = opts.checkWrite
+      ? !("errorResponse" in (await loadProject(c, { write: true })))
+      : false;
+    return { ...loaded, canWrite, unregistered: false };
+  }
+  if (loaded.errorResponse.status !== 404) return loaded;
+  const workspaceId = c.req.param("workspaceId") as string;
+  const userId = actingUserId(c);
+  const access = unregisteredDraftAccess(
+    userId,
+    await memberRoleFor(workspaceId, userId),
+  );
+  if (access === "none") return loaded;
+  const project = await unregisteredDraftProject(
+    workspaceId,
+    c.req.param("id") ?? "",
+    userId,
+  );
+  if (!project) return loaded;
+  return {
+    project,
+    userId,
+    canWrite: access === "write",
+    unregistered: true,
+  };
+}
+
 function toProjectJson(
   p: IAppProject,
   manifest?: { title: string; description?: string },
@@ -322,6 +555,7 @@ function toProjectJson(
     defaultBranch: p.defaultBranch,
     publishedSha: p.publishedSha,
     publishedAt: p.publishedAt,
+    chatEnabled: p.chatEnabled === true,
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
   };
@@ -714,40 +948,46 @@ appsRoutes.openapi(
     try {
       const { workspaceId } = c.req.valid("param");
       const userId = actingUserId(c);
-      const role = await memberRoleFor(workspaceId, userId);
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
 
       // The REPO is the list. An app exists because a folder with a
-      // `mako.json` exists (anywhere under apps/ or users/<id>/apps/), so a
+      // `mako.json` exists (anywhere under apps/ or users/<handle>/apps/), so a
       // folder pushed from a local checkout shows up with no registration
       // step (§13). Mongo is consulted only for what cannot live in a repo
       // the customer can clone: visibility, the deployed sha, the share
       // token — and the derived index that makes this read one query.
-      const [folders, folderPaths] = await Promise.all([
-        listAppFolders(workspaceId),
-        listAppFolderPaths(workspaceId),
-      ]);
+      // One index read for both (each used to fetch and rev-parse on its own).
+      const snapshot = await timed("list.index", () =>
+        loadAppsIndex(workspaceId),
+      );
+      const folders = snapshot.apps.map(app => ({ ...app, id: app.appId }));
+      const folderPaths = snapshot.folders;
       // Keep the repo's agent-facing template current for whoever is looking
       // at it (throttled, off the request path — see workspace-template.ts).
       repoForWorkspace(workspaceId)
         .then(repoDir => ensureWorkspaceTemplateSoon(workspaceId, repoDir))
         .catch(() => undefined);
-      const docs = await AppProject.find({
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const [docs, verified] = await Promise.all([
+        timed("list.projects", () =>
+          AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) })
+            .select(
+              "_id access workspaceRole sharedWith owner_id createdBy publicShare publishedSha publishedAt chatEnabled",
+            )
+            .lean(),
+        ),
+        timed("list.verified", () => verifiedAppIds(workspaceId)),
+      ]);
       const stateById = new Map(docs.map(d => [d._id.toString(), d]));
 
       const apps = folders
-        .filter(folder => {
-          const state = stateById.get(folder.id);
-          if (state) return !userId || canReadResource(state, userId, role);
-          // No record yet means nothing has restricted it — a folder someone
-          // pushed is workspace content, visible like any other file in the
-          // repo. A folder in someone's personal tree is theirs alone.
-          if (folder.scope === "private") {
-            return !userId || folder.ownerId === userId;
-          }
-          return true;
-        })
+        // No record yet means nothing has restricted it — a folder someone
+        // pushed is workspace content, visible like any other file in the
+        // repo. A folder in someone's personal tree is theirs alone.
+        .filter(folder =>
+          canSeeIndexedApp(folder, stateById.get(folder.id), userId, role),
+        )
         .map(folder => {
           const state = stateById.get(folder.id);
           return {
@@ -771,20 +1011,38 @@ appsRoutes.openapi(
             publicShare: serializePublicShare(state?.publicShare),
             publishedSha: state?.publishedSha,
             publishedAt: state?.publishedAt,
+            chatEnabled: state?.chatEnabled === true,
             // A copied app that still declares its source's id: the index
             // filed it under its own derived id; the UI offers to stamp one.
             duplicateOf: folder.duplicateOf,
+            // A workspace admin vouched for it (app-lifecycle.service.ts).
+            verified: folder.scope === "workspace" && verified.has(folder.id),
           };
         });
       // Folders of the two trees the caller can see: the workspace tree, and
-      // their own personal tree (never anyone else's).
+      // their own personal tree (never anyone else's) — by the handle
+      // mapping, not by what the folder is called.
+      const directory = await timed("list.directory", () =>
+        loadOwnerDirectory(workspaceId, { forUserId: userId }),
+      );
+      const handle = directory.handleOf(userId);
+      const personalRoot = handle ? appTreeRoot("private", handle) : undefined;
       const visibleFolders = folderPaths.filter(p => {
         if (p.startsWith("apps/")) return true;
-        return !!userId && p.startsWith(`users/${userId}/apps`);
+        return (
+          !!personalRoot &&
+          (p === personalRoot || p.startsWith(`${personalRoot}/`))
+        );
       });
 
       return c.json(
-        { success: true as const, apps, folders: visibleFolders },
+        {
+          success: true as const,
+          apps,
+          folders: visibleFolders,
+          // Where the caller's own apps go: `users/<handle>/apps`.
+          ...(personalRoot ? { personalRoot } : {}),
+        },
         200,
       );
     } catch (error) {
@@ -816,7 +1074,7 @@ appsRoutes.openapi(
               description: z.string().optional(),
               /**
                * Folder to create it in: `apps` (default), `apps/Sales/CH`,
-               * or `users/<me>/apps[/…]` for a personal app.
+               * or `users/<my handle>/apps[/…]` for a personal app.
                */
               folder: z.string().optional(),
             }),
@@ -838,6 +1096,7 @@ appsRoutes.openapi(
           target,
           userId,
           await memberRoleFor(workspaceId, userId),
+          await loadOwnerDirectory(workspaceId, { forUserId: userId }),
         );
         if (denied) return c.json({ success: false, error: denied }, 403);
       }
@@ -882,7 +1141,7 @@ appsRoutes.openapi(
 // ---------------------------------------------------------------------------
 
 const FolderBody = z.object({
-  /** `apps/Sales/CH`, or `users/<me>/apps/Scratch`. */
+  /** `apps/Sales/CH`, or `users/<my handle>/apps/Scratch`. */
   path: z.string().min(1),
 });
 
@@ -893,7 +1152,7 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "Create an empty app folder",
     description:
-      "Commits a `.gitkeep` so the folder exists on main. Workspace folders need an editing role; personal folders (`users/<me>/apps/…`) are the caller's own.",
+      "Commits a `.gitkeep` so the folder exists on main. Workspace folders need an editing role; personal folders (`users/<handle>/apps/…`) are the caller's own.",
     security: AUTH_SECURITY,
     request: {
       params: WorkspaceParam,
@@ -914,6 +1173,7 @@ appsRoutes.openapi(
         target,
         userId,
         await memberRoleFor(workspaceId, userId),
+        await loadOwnerDirectory(workspaceId, { forUserId: userId }),
       );
       if (denied) return c.json({ success: false, error: denied }, 403);
       const created = await createAppFolder(workspaceId, target, { userId });
@@ -955,9 +1215,12 @@ appsRoutes.openapi(
       const role = await memberRoleFor(workspaceId, userId);
       const from = folderTargetFromPath(path);
       const target = folderTargetFromPath(to);
+      const directory = await loadOwnerDirectory(workspaceId, {
+        forUserId: userId,
+      });
       const denied =
-        authorizeFolderTarget(from, userId, role) ??
-        authorizeFolderTarget(target, userId, role);
+        authorizeFolderTarget(from, userId, role, directory) ??
+        authorizeFolderTarget(target, userId, role, directory);
       if (denied) return c.json({ success: false, error: denied }, 403);
       // Moving a folder moves every app in it, and a move into a personal
       // tree re-owns them: the caller must be allowed to write each one, as
@@ -1018,10 +1281,678 @@ appsRoutes.openapi(
         target,
         userId,
         await memberRoleFor(workspaceId, userId),
+        await loadOwnerDirectory(workspaceId, { forUserId: userId }),
       );
       if (denied) return c.json({ success: false, error: denied }, 403);
       await deleteAppFolder(workspaceId, target, { userId });
       return c.json({ success: true as const }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Usage — who opens which app (app-usage.service). The two reads are
+// registered before /{id} so "usage" and "recent" are never read as app refs.
+// Both report only apps the caller can see in the list.
+// ---------------------------------------------------------------------------
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/usage",
+    tags: ["Apps"],
+    summary: "Usage and popularity of the apps the caller can see",
+    description:
+      "Per app, over the last `days` UTC days (default 28): distinct viewers, viewers who are not the app's authors, their viewer-days, opens, active seconds, last open (anyone / non-author) and a popularity score — the sum over non-author viewers of distinct active days, each weighted 0.5^(age_days/14). Every visible app is listed, zeros when unviewed.",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      query: z.object({
+        days: z.coerce.number().int().min(1).max(400).optional(),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { days } = c.req.valid("query");
+      const userId = actingUserId(c);
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
+      const [stats, visible] = await Promise.all([
+        timed("usage.stats", () => homeUsageStats(workspaceId, { days })),
+        timed("usage.visible", () =>
+          visibleHomeAppIds(workspaceId, userId, role),
+        ),
+      ]);
+      const apps = [...stats.values()].filter(s => visible.has(s.appId));
+      return c.json({ success: true as const, apps }, 200);
+    } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true as const, apps: [] }, 200);
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/recent",
+    tags: ["Apps"],
+    summary: "Apps the caller opened most recently",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      query: z.object({
+        limit: z.coerce.number().int().min(1).max(100).optional(),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const limit = c.req.valid("query").limit ?? 20;
+      const userId = actingUserId(c);
+      if (!userId) return c.json({ success: true as const, apps: [] }, 200);
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
+      // Over-fetch: an app may have been deleted or made private since.
+      const [recent, visible] = await Promise.all([
+        getRecentlyViewedApps(workspaceId, userId, {
+          limit: Math.min(100, limit + 20),
+        }),
+        visibleHomeAppIds(workspaceId, userId, role),
+      ]);
+      const apps = recent.filter(r => visible.has(r.appId)).slice(0, limit);
+      return c.json({ success: true as const, apps }, 200);
+    } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true as const, apps: [] }, 200);
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/usage",
+    tags: ["Apps"],
+    summary: "Report a view of the published app",
+    description:
+      "Sent by Mako's own app views: `open` once per view, `heartbeat` every 60 s while the page is visible (each worth 60 active seconds), both carrying the view's `sessionId`. Every accepted report lands in the raw event log; a repeat open inside the throttle window is logged flagged `throttled` and left out of the daily counters, a heartbeat flood is refused (429). API keys without a user are not viewers and are ignored. Answers 204.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              kind: z.enum(["open", "heartbeat"]),
+              source: z.enum(["app", "share", "embed"]).default("app"),
+              /** Generated by the client per view; heartbeats repeat it. */
+              sessionId: z.string().min(1).max(64).optional(),
+              referrerKind: z
+                .enum(["internal", "external", "direct"])
+                .optional(),
+              /** The Apps home card it was opened from (opens only). */
+              placement: z
+                .object({
+                  surface: z.literal("home"),
+                  shelf: z.enum(APP_USAGE_PLACEMENT_SHELVES),
+                  position: z.number().int().min(0).max(10_000),
+                })
+                .optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId, id } = c.req.valid("param");
+      const { kind, source, sessionId, referrerKind, placement } =
+        c.req.valid("json");
+      const userId = actingUserId(c);
+      if (!userId) return c.body(null, 204);
+      const accepted = acceptUsageBeat(`${workspaceId}:${userId}:${id}`, kind);
+      if (!accepted && kind === "heartbeat") {
+        return c.json({ success: false, error: "Too many usage reports" }, 429);
+      }
+      // The index without a mirror fetch: a heartbeat a minute must not
+      // pull from GitHub. A miss (an app pushed seconds ago to another
+      // instance) falls back to the fetching resolve.
+      const app =
+        findAppInSnapshot(
+          await loadAppsIndex(workspaceId, { freshen: false }),
+          id,
+        ) ?? (await resolveAppRef(workspaceId, id));
+      if (!app) {
+        return c.json({ success: false, error: "App not found" }, 404);
+      }
+      const state = await AppProject.findOne({
+        _id: new Types.ObjectId(app.appId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      })
+        .select("access workspaceRole sharedWith owner_id createdBy")
+        .lean();
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
+      if (!canSeeIndexedApp(app, state, userId, role)) {
+        return c.json({ success: false, error: "App not found" }, 404);
+      }
+      await recordAppUsage({
+        workspaceId,
+        appId: app.appId,
+        userId,
+        kind,
+        source,
+        sessionId: sessionId ?? null,
+        referrerKind: referrerKind ?? null,
+        uaClass: classifyUserAgent(c.req.header("user-agent")),
+        throttled: !accepted,
+        placement: placement ?? null,
+      });
+      return c.body(null, 204);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Discovery — the Apps home and its search. Static paths, registered before
+// /{id} so the param route can't shadow them.
+// ---------------------------------------------------------------------------
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/discovery",
+    tags: ["Apps"],
+    summary: "Apps home: every visible app with its discovery facts",
+    description:
+      "Owner, creation date, deployment, thumbnail, data freshness and health (failed deploy, failed binding refreshes) for every app the caller can see — the same visibility as the list. Popularity is the usage API's, joined on the id by the client.",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const userId = actingUserId(c);
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
+      const apps = await listHomeDiscoveryApps(workspaceId, userId, role);
+      return c.json({ success: true as const, apps }, 200);
+    } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true as const, apps: [] }, 200);
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/archived",
+    tags: ["Apps"],
+    summary: "Archived apps the caller may see",
+    description:
+      "Apps under the repo's `archive/` tree (moved there by the lifecycle job), read from main: title, description and thumbnail from each mako.json, the original path Restore moves it back to, and when and by whom it was archived (the commit that added it). Same visibility as the list: workspace apps for members, a personal app only for its mapped owner. Newest archive first.",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const userId = actingUserId(c);
+      const role = await memberRoleFor(workspaceId, userId);
+      const apps = await listArchivedApps(workspaceId, userId, role);
+      return c.json({ success: true as const, apps }, 200);
+    } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true as const, apps: [] }, 200);
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/archived/restore",
+    tags: ["Apps"],
+    summary: "Restore an archived app to where it was",
+    description:
+      "Moves `archive/<...>` back to its original folder as one commit on main; the app keeps its id. The Workspace tree needs an editing role, a personal tree is its owner's alone (403). 404 when the archived app is not there or not visible; 409 when its original address is taken. The app gets a fresh lifecycle grace period, so it is not archived again straight away.",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({ path: z.string().min(1).max(1024) }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { path } = c.req.valid("json");
+      const userId = actingUserId(c);
+      const role = await memberRoleFor(workspaceId, userId);
+      const restored = await restoreArchivedApp(
+        workspaceId,
+        path,
+        userId,
+        role,
+      );
+      return c.json({ success: true as const, ...restored }, 200);
+    } catch (error) {
+      if (error instanceof ArchiveRestoreError) {
+        return c.json(
+          { success: false as const, error: error.message },
+          error.status,
+        );
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/archived/thumbnail",
+    tags: ["Apps"],
+    summary: "An archived app's thumbnail image",
+    description:
+      "The thumbnail an archived app ships, for its card on the Apps home's Archived chip; `v` is the blob oid (cache version). 404 when it ships none or the caller may not see it.",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      query: z.object({
+        path: z
+          .string()
+          .min(1)
+          .max(1024)
+          .openapi({ param: { name: "path", in: "query" } }),
+        v: z
+          .string()
+          .max(64)
+          .optional()
+          .openapi({ param: { name: "v", in: "query" } }),
+        w: z
+          .string()
+          .max(8)
+          .optional()
+          .openapi({ param: { name: "w", in: "query" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { path, v, w } = c.req.valid("query");
+      const userId = actingUserId(c);
+      const role = await memberRoleFor(workspaceId, userId);
+      const thumbnail = await archivedThumbnail(
+        workspaceId,
+        path,
+        userId,
+        role,
+      );
+      const res = thumbnail
+        ? await thumbnailResponse({
+            thumbnail,
+            v,
+            w,
+            ifNoneMatch: c.req.header("if-none-match"),
+            read: async () => {
+              const repoDir = await boundRepoDirIfExists(workspaceId);
+              return repoDir ? readThumbnailBlob(repoDir, thumbnail) : null;
+            },
+          })
+        : null;
+      if (!res) {
+        return c.json(
+          { success: false, error: "This app has no thumbnail" },
+          404,
+        );
+      }
+      return res;
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/feed",
+    tags: ["Apps"],
+    summary: "Apps home feed: shelves, then every other app ranked, paged",
+    description:
+      "Without `cursor`: the Popular and New shelves (`popular`, `fresh`) and the first page of the Recommended grid (`apps`), every visible app appearing exactly once across the three. The Recommended order is ranked server-side (popularity, recency, the caller's own reads, co-usage, quality, a per-viewer-per-day exploration jitter) and frozen for 24 h; pass `nextCursor` back for the next page until it is null. Same card shape and visibility as /discovery; visibility is re-checked on every page. 410 when the cursor's snapshot expired (reload the feed).",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      query: z.object({
+        cursor: z
+          .string()
+          .max(512)
+          .optional()
+          .openapi({ param: { name: "cursor", in: "query" } }),
+        limit: z.coerce
+          .number()
+          .int()
+          .min(1)
+          .max(60)
+          .optional()
+          .openapi({ param: { name: "limit", in: "query" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { cursor, limit } = c.req.valid("query");
+      const userId = actingUserId(c);
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
+      const page = await getFeedPage(workspaceId, userId, role, {
+        cursor: cursor || null,
+        limit,
+      });
+      return c.json({ success: true as const, ...page }, 200);
+    } catch (error) {
+      if (error instanceof FeedCursorError) {
+        return c.json(
+          { success: false as const, error: error.message },
+          error.status,
+        );
+      }
+      if (error instanceof RepoRequiredError) {
+        return c.json(
+          {
+            success: true as const,
+            popular: [],
+            fresh: [],
+            apps: [],
+            offset: 0,
+            nextCursor: null,
+            total: 0,
+            recommendedTotal: 0,
+          },
+          200,
+        );
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/search",
+    tags: ["Apps"],
+    summary: "Search apps",
+    description:
+      'Free-text search over each visible app\'s title, description, path, owner and the warehouse tables its bindings read (FROM/JOIN identifiers in bindings/*.sql, indexed per push). Word matches come first, ranked best first, with the fields that matched. Then, when embeddings are available, up to 12 apps those fields missed, closest in meaning first, with `matches: ["related"]`: apps whose search document (title, description, README, UI labels) is semantically close to the query, or contains its words.',
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      query: z.object({
+        q: z
+          .string()
+          .max(200)
+          .openapi({ param: { name: "q", in: "query" } }),
+        limit: z.coerce
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .openapi({ param: { name: "limit", in: "query" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { q, limit } = c.req.valid("query");
+      const userId = actingUserId(c);
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
+      prefetchQueryEmbedding(q);
+      const [visible, usage] = await Promise.all([
+        listHomeDiscoveryApps(workspaceId, userId, role),
+        appUsageScores(workspaceId),
+      ]);
+      const related = await relatedSignals(
+        workspaceId,
+        q,
+        visible.map(a => a.id),
+      );
+      const apps = searchDiscoveryApps(visible, q, {
+        limit: limit ?? 50,
+        usage,
+        related,
+      });
+      return c.json({ success: true as const, apps }, 200);
+    } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true as const, apps: [] }, 200);
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Lifecycle + curation (app-lifecycle.service.ts): the stale/unviewed plan,
+// the admin `verified` mark, and "Share with workspace".
+// ---------------------------------------------------------------------------
+
+function isWorkspaceAdminRole(role: string | undefined): boolean {
+  return role === "owner" || role === "admin";
+}
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/lifecycle/plan",
+    tags: ["Apps"],
+    summary: "What the app lifecycle job would do now (admins)",
+    description:
+      "The daily lifecycle job's plan for this workspace, computed now and changing nothing: apps it would notify as stale, archive, or whose binding schedules it would pause or resume. `mode` says whether the job only logs this plan (dry-run, the default) or applies it.",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const userId = actingUserId(c);
+      if (!isWorkspaceAdminRole(await memberRoleFor(workspaceId, userId))) {
+        return c.json(
+          { success: false, error: "Only workspace admins can see this" },
+          403,
+        );
+      }
+      const plan = await getAppLifecyclePlan(workspaceId);
+      return c.json({ success: true as const, plan }, 200);
+    } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: false, error: error.message }, 412);
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/verified",
+    tags: ["Apps"],
+    summary: "Mark an app verified (or not) — workspace admins",
+    description:
+      "A workspace admin vouches for an app: the mark (with who and when) is shown on the app list as `verified`, and a verified app is never archived as stale.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({ verified: z.boolean() }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const workspaceId = loaded.project.workspaceId.toString();
+      const userId = loaded.userId;
+      if (
+        !userId ||
+        !isWorkspaceAdminRole(await memberRoleFor(workspaceId, userId))
+      ) {
+        return c.json(
+          { success: false, error: "Only workspace admins can verify apps" },
+          403,
+        );
+      }
+      if (parseAppRepoPath(appRootFor(loaded.project))?.scope !== "workspace") {
+        return c.json(
+          {
+            success: false,
+            error: "Only apps in the Workspace tree can be verified",
+          },
+          400,
+        );
+      }
+      const { verified } = c.req.valid("json");
+      const result = await setAppVerified(
+        workspaceId,
+        loaded.project._id.toString(),
+        verified,
+        userId,
+      );
+      return c.json({ success: true as const, ...result }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/share-with-workspace",
+    tags: ["Apps"],
+    summary: "Move a personal app into the Workspace tree",
+    description:
+      "The explicit step that turns a personal app (`users/<me>/apps/…`) into workspace content: one commit on main moving its folder under `apps/` (or the given workspace folder) and writing the one-line description into mako.json. The app keeps its id, so its deployment, sharing and favourites follow it. Only the app's owner, with an editing role, can do this.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({
+              /** One line telling colleagues what the app is for. */
+              description: z.string().trim().min(1).max(300),
+              /** Workspace folder to file it in (default: `apps`). */
+              folder: z.string().min(1).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { description, folder } = c.req.valid("json");
+      const workspaceId = loaded.project.workspaceId.toString();
+      const userId = loaded.userId;
+      const source = parseAppRepoPath(appRootFor(loaded.project));
+      if (source?.scope !== "private") {
+        return c.json(
+          { success: false, error: "This app is already in the Workspace" },
+          409,
+        );
+      }
+      const target = folderTargetFromPath(folder ?? "apps");
+      if (target.scope !== "workspace") {
+        return c.json(
+          { success: false, error: "Pick a folder in the Workspace tree" },
+          400,
+        );
+      }
+      // `users/<handle>/` is the owner's tree through the handle mapping,
+      // never by the raw segment.
+      const denied = authorizeAppMove(
+        source,
+        target,
+        userId,
+        await memberRoleFor(workspaceId, userId),
+        await loadOwnerDirectory(workspaceId, { forUserId: userId }),
+      );
+      if (denied) return c.json({ success: false, error: denied }, 403);
+      const moved = await moveProject(loaded.project, target, {
+        userId,
+        description,
+      });
+      return c.json(
+        {
+          success: true as const,
+          ...moved,
+          app: toProjectJson(loaded.project, {
+            title: loaded.project.title,
+            description,
+          }),
+        },
+        200,
+      );
     } catch (error) {
       return handleError(c, error);
     }
@@ -1044,7 +1975,7 @@ appsRoutes.openapi(
         content: {
           "application/json": {
             schema: z.object({
-              /** Destination folder: `apps`, `apps/Sales`, `users/<me>/apps`. */
+              /** Destination folder: `apps`, `apps/Sales`, `users/<handle>/apps`. */
               folder: z.string().min(1),
               /** New folder name for the app itself (a rename). */
               name: z.string().min(1).optional(),
@@ -1065,7 +1996,13 @@ appsRoutes.openapi(
       const role = await memberRoleFor(workspaceId, userId);
       const target = folderTargetFromPath(folder);
       const source = parseAppRepoPath(appRootFor(loaded.project));
-      const denied = authorizeAppMove(source, target, userId, role);
+      const denied = authorizeAppMove(
+        source,
+        target,
+        userId,
+        role,
+        await loadOwnerDirectory(workspaceId, { forUserId: userId }),
+      );
       if (denied) return c.json({ success: false, error: denied }, 403);
       const moved = await moveProject(
         loaded.project,
@@ -1720,13 +2657,69 @@ appsRoutes.openapi(
         loaded.userId ?? "",
       );
       const response = key
-        ? await serveParquetArtifact(getDashboardArtifactStore(), key, {
+        ? await serveParquetArtifact(getArtifactStore(), key, {
             cacheControl: "no-store",
           })
         : null;
       if (!response) {
         return c.json(
           { success: false, error: `Binding "${name}" is not materialized` },
+          404,
+        );
+      }
+      return response;
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/bindings/{name}/snapshot",
+    tags: ["Apps"],
+    summary: "Serve a binding's preview snapshot (committed definition)",
+    description:
+      "The first N rows of the committed binding's stored parquet, in build " +
+      "order (schema + total row count), for `useQuery(name, { snapshot: " +
+      "true })` to paint before DuckDB-WASM loads. 404 when the binding was " +
+      "never built, was built before snapshots existed, or has a column " +
+      "type a snapshot cannot carry — callers wait for the parquet.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam.extend({
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { name } = c.req.valid("param");
+      if (!/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name)) {
+        return c.json({ success: false, error: "Invalid binding name" }, 400);
+      }
+      const parquetKey = await bindingArtifactKeyByName(
+        loaded.project,
+        name,
+        loaded.userId ?? "",
+      );
+      const response = parquetKey
+        ? await serveJsonArtifact(
+            getArtifactStore(),
+            snapshotArtifactKey(parquetKey),
+            { cacheControl: "no-store" },
+          )
+        : null;
+      if (!response) {
+        return c.json(
+          {
+            success: false,
+            error: `Snapshot for binding "${name}" is not available`,
+          },
           404,
         );
       }
@@ -1787,10 +2780,8 @@ appsRoutes.openapi(
           202,
         );
       }
-      const result = await materializeAppBinding(
-        loaded.project,
-        name,
-        loaded.userId ?? "api-key",
+      const result = await withQueryLabels({ mako_trigger: "manual" }, () =>
+        materializeAppBinding(loaded.project, name, loaded.userId ?? "api-key"),
       );
       return c.json({ success: true as const, ...result }, 200);
     } catch (error) {
@@ -1860,19 +2851,19 @@ appsRoutes.openapi(
         refresh,
         async: asyncBuild,
       } = c.req.valid("json");
-      const loaded = await loadProject(c, { write: false });
+      const loaded = await loadDevBuildProject(c, { checkWrite: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const writer = await loadProject(c, { write: true });
       const request = {
         project: loaded.project,
         name,
         actorId: loaded.userId ?? "api-key",
         userId: loaded.userId,
-        canWrite: !("errorResponse" in writer),
+        canWrite: loaded.canWrite,
         source,
         dbtEnvironment,
         dbtDefer,
         refresh,
+        unregistered: loaded.unregistered,
       };
       // Refusals and a stored artifact answer at once either way; only an
       // actual build is handed to a job when the caller can poll for it.
@@ -1886,6 +2877,7 @@ appsRoutes.openapi(
           actorId: request.actorId,
           userId: request.userId,
           canWrite: request.canWrite,
+          ...(loaded.unregistered ? { unregistered: true } : {}),
           request: { source, dbtEnvironment, dbtDefer, refresh },
         });
         return c.json(
@@ -1896,7 +2888,7 @@ appsRoutes.openapi(
       const result = plan.kind === "build" ? await plan.run() : plan;
       if (result.kind === "artifact") {
         const response = await serveParquetArtifact(
-          getDashboardArtifactStore(),
+          getArtifactStore(),
           result.artifactKey,
           {
             cacheControl: "no-store",
@@ -1945,6 +2937,90 @@ appsRoutes.openapi(
   },
 );
 
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/bindings/{name}/dev-snapshot",
+    tags: ["Apps"],
+    summary: "Preview snapshot of the artifact a local binding text maps to",
+    description:
+      "The laptop `makoData()` plugin's `__data/<name>.snapshot.json`: send " +
+      "the same body as `dev-build`, get the snapshot of exactly the stored " +
+      "artifact that `dev-build` would answer with for that text (the " +
+      "committed artifact, or a cached draft) — never another definition's. " +
+      "404 when that text has no stored artifact yet (a build is needed) or " +
+      "the artifact has no snapshot. Never builds anything.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam.extend({
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({
+              source: z
+                .string()
+                .min(1)
+                .max(512 * 1024),
+              dbtEnvironment: z.string().min(1).max(64).optional(),
+              dbtDefer: z.boolean().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { name } = c.req.valid("param");
+      const { source, dbtEnvironment, dbtDefer } = c.req.valid("json");
+      const loaded = await loadDevBuildProject(c, { checkWrite: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const notAvailable = () =>
+        c.json(
+          {
+            success: false,
+            error: `Snapshot for binding "${name}" is not available`,
+          },
+          404,
+        );
+      let plan: Awaited<ReturnType<typeof planDevBuild>>;
+      try {
+        plan = await planDevBuild({
+          project: loaded.project,
+          name,
+          actorId: loaded.userId ?? "api-key",
+          userId: loaded.userId,
+          canWrite: loaded.canWrite,
+          source,
+          dbtEnvironment,
+          dbtDefer,
+          refresh: false,
+          unregistered: loaded.unregistered,
+        });
+      } catch (error) {
+        // A refusal for a build is no snapshot either; the parquet request
+        // beside this one reports the reason.
+        if (error instanceof DevBuildError) return notAvailable();
+        throw error;
+      }
+      // "build": nothing stored for this text yet — do not start one here.
+      if (plan.kind !== "artifact") return notAvailable();
+      const response = await serveJsonArtifact(
+        getArtifactStore(),
+        snapshotArtifactKey(plan.artifactKey),
+        { cacheControl: "no-store" },
+      );
+      return response ?? notAvailable();
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
 const BindingJobParam = ProjectParam.extend({
   jobId: z.string().openapi({ param: { name: "jobId", in: "path" } }),
 });
@@ -1954,7 +3030,9 @@ async function loadBindingJob(
   c: AuthenticatedContext,
   jobId: string,
 ): Promise<{ job: BindingJobDoc } | { errorResponse: Response }> {
-  const loaded = await loadProject(c, { write: false });
+  // A dev-build job of an app not on main yet is polled under the same
+  // synthesized id it was queued under.
+  const loaded = await loadDevBuildProject(c, { checkWrite: false });
   if ("errorResponse" in loaded) return loaded;
   const job = await getBindingJob(loaded.project._id.toString(), jobId);
   // Another member's job is as good as missing: a draft job's result is
@@ -2029,7 +3107,7 @@ appsRoutes.openapi(
         );
       }
       const response = await serveParquetArtifact(
-        getDashboardArtifactStore(),
+        getArtifactStore(),
         job.result.artifactKey,
         {
           cacheControl: "no-store",
@@ -2217,6 +3295,7 @@ appsRoutes.openapi(
         scopeOf(loaded.project),
         branch,
         user?.email ? { name: user.email, email: user.email } : undefined,
+        user?.id,
       );
       return c.json({ success: true as const, result }, 200);
     } catch (error) {
@@ -3061,6 +4140,15 @@ appsRoutes.openapi(
  * published counterpart to the preview's token-gated data path.
  */
 async function serveLive(c: AuthenticatedContext): Promise<Response> {
+  const viewerPage = liveViewerRedirect({
+    fetchDest: c.req.header("sec-fetch-dest"),
+    fetchMode: c.req.header("sec-fetch-mode"),
+    workspaceId: c.req.param("workspaceId"),
+    ref: c.req.param("id"),
+    path: c.req.path,
+    url: c.req.url,
+  });
+  if (viewerPage) return c.redirect(viewerPage, 302);
   const loaded = await loadProject(c, { write: false });
   if ("errorResponse" in loaded) return loaded.errorResponse;
   const project = loaded.project;
@@ -3086,7 +4174,24 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
     sha,
     assetPath: rest.replace(/^\/+/, ""),
     viewer: viewerOf(c),
+    progress: wantsBindingProgress(c.req.header("accept")),
   });
+  if (response && loaded.userId) {
+    // A raw `/live/` page load or a frame on another site; the in-Mako views
+    // load from a view token and report themselves.
+    recordServedOpen({
+      workspaceId: project.workspaceId.toString(),
+      appId: projectId,
+      userId: loaded.userId,
+      viewerKey: loaded.userId,
+      fetchDest: c.req.header("sec-fetch-dest"),
+      contentType: response.headers.get("content-type"),
+      pageSource: "app",
+      userAgent: c.req.header("user-agent"),
+      referer: c.req.header("referer"),
+      host: c.req.header("host"),
+    });
+  }
   return response ?? c.json({ success: false, error: "Not found" }, 404);
 }
 
@@ -3110,7 +4215,9 @@ appsRoutes.openapi(
   }),
   async c => {
     try {
-      const loaded = await loadProject(c, { write: false });
+      const loaded =
+        (await loadPublishedRowById(c)) ??
+        (await loadProject(c, { write: false }));
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const sha = loaded.project.publishedSha;
       if (!sha) {
@@ -3119,21 +4226,29 @@ appsRoutes.openapi(
           404,
         );
       }
+      const projectId = loaded.project._id.toString();
+      // APPS_ORIGIN_BASE set: the app gets its own origin and a token that
+      // is stable for a window, so the browser cache can work (app-origin.ts).
+      const appOrigin = appOriginFor(projectId);
       const grant = mintPublishedGrant({
         workspaceId: loaded.project.workspaceId.toString(),
-        projectId: loaded.project._id.toString(),
+        projectId,
         sha,
         // Binds the token to this person: the cookie-free serving route
         // answers `__data/viewer.json` from it (apps.md §28).
         viewer: viewerOf(c) ?? undefined,
+        ...(appOrigin ? { stableWindowMs: tokenWindowMs() } : {}),
       });
       return c.json(
         {
           success: true as const,
           token: grant.token,
-          url: `/api/apps-preview/${grant.token}/`,
+          url: `${appOrigin ?? ""}/api/apps-preview/${grant.token}/`,
           sha,
           expiresAt: grant.expiresAt,
+          // Which app the ref named: the client may ask by slug before its
+          // app list has loaded, and files the token under this id.
+          appId: loaded.project._id.toString(),
         },
         200,
       );
@@ -3338,7 +4453,7 @@ appsRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { shot } = c.req.valid("param");
       const key = eyesShotKey(loaded.project._id.toString(), shot);
-      const store = getDashboardArtifactStore();
+      const store = getArtifactStore();
       const stream = await store.openReadStream(key);
       if (!stream) {
         return c.json({ success: false, error: "Screenshot not found" }, 404);
@@ -3361,13 +4476,131 @@ appsRoutes.openapi(
   },
 );
 
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/thumbnail",
+    tags: ["Apps"],
+    summary: "The app's own thumbnail image",
+    description:
+      "The image the app ships at its root (thumbnail.png, or .webp/.jpg/.jpeg/.svg) as of main; /apps/discovery says which apps have one (and its oid, the cache version). With `w`, a raster thumbnail comes back as a WebP at most that wide (snapped to 320/480/640/960/1200, never upscaled); SVG is always the original. Private caching: immutable for a year when `v` names the current blob, revalidate (ETag by oid and width) otherwise. 404 when the app ships none. SVG is served with a script-free, sandboxed CSP.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      query: z.object({
+        v: z.string().optional().openapi({
+          description: "The thumbnail's blob oid (cache version).",
+        }),
+        w: z.string().optional().openapi({
+          description:
+            "Desired width in px; snapped to the nearest of 320, 480, 640, 960, 1200. Omit for the original.",
+        }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const workspaceId = loaded.project.workspaceId.toString();
+      const appId = loaded.project._id.toString();
+      // The persisted index first: a fresh instance must not clone the
+      // mirror just to learn a blob oid the store already has a variant of.
+      const row = await timed(
+        "app.lookup",
+        async () =>
+          (await resolveIndexedAppRef(workspaceId, appId)) ??
+          (await resolveAppRef(workspaceId, appId)),
+      );
+      const thumbnail = row?.thumbnail;
+      const { v, w } = c.req.valid("query");
+      const res = thumbnail
+        ? await thumbnailResponse({
+            thumbnail,
+            v,
+            w,
+            ifNoneMatch: c.req.header("if-none-match"),
+            read: async () => {
+              const repoDir = await boundRepoDirIfExists(workspaceId);
+              return repoDir ? readThumbnailBlob(repoDir, thumbnail) : null;
+            },
+            variant: width =>
+              getThumbnailVariant(workspaceId, thumbnail, {
+                kind: "width",
+                width,
+              }),
+          })
+        : null;
+      if (!res) {
+        return c.json(
+          { success: false, error: "This app has no thumbnail" },
+          404,
+        );
+      }
+      return res;
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/chats",
+    tags: ["Apps"],
+    summary: "List my chats with a published app",
+    description:
+      'The caller\'s own "chat with app" conversations about this app, newest first (without messages — load one through the chats API). Read access to the app is enough: these are the chats its live-link viewers have with it.',
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      if (!loaded.userId) {
+        return c.json({ success: false, error: "Sign in to chat" }, 403);
+      }
+      const chats = await Chat.find(
+        {
+          workspaceId: loaded.project.workspaceId,
+          appId: loaded.project._id.toString(),
+          createdBy: loaded.userId,
+        },
+        { title: 1, updatedAt: 1, createdAt: 1, activeStreamId: 1 },
+      )
+        .sort({ updatedAt: -1 })
+        .limit(50)
+        .lean();
+      return c.json(
+        {
+          success: true as const,
+          chats: chats.map(chat => ({
+            id: chat._id.toString(),
+            title: chat.title,
+            createdAt: chat.createdAt,
+            updatedAt: chat.updatedAt,
+            streaming: !!chat.activeStreamId,
+          })),
+        },
+        200,
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
 appsRoutes.get("/:id/live", serveLive);
 appsRoutes.get("/:id/live/*", serveLive);
 
 /**
  * The published app's `POST __data/<name>/refresh` — the SDK's `refresh()`,
  * for a member viewing the app signed in (see binding-refresh.ts). Read
- * access is enough, as it is for a dashboard's refresh: the query that runs
+ * access is enough: the query that runs
  * is the owner's published SQL under the owner's connection, never the
  * viewer's. Rebuilds the binding AT the published commit, since that is the
  * artifact this viewer is reading.
@@ -3383,19 +4616,28 @@ appsRoutes.post("/:id/live/__data/:name/refresh", async c => {
         404,
       );
     }
-    const { status, body, headers } = await refreshBindingHttp({
+    const input = {
       project: loaded.project,
       name: c.req.param("name"),
       actorId: loaded.userId ?? "api-key",
       at: sha,
-    });
+    };
+    if (wantsBindingProgress(c.req.header("accept"))) {
+      return await withQueryLabels({ mako_trigger: "viewer" }, async () =>
+        refreshBindingProgress(input),
+      );
+    }
+    const { status, body, headers } = await withQueryLabels(
+      { mako_trigger: "viewer" },
+      () => refreshBindingHttp(input),
+    );
     return c.json(body, status, headers);
   } catch (error) {
     return handleError(c, error);
   }
 });
 
-// Sharing — the SAME primitive dashboards and consoles use, all three
+// Sharing — the SAME primitive consoles use, all three
 // surfaces of it: per-user collaborators (viewer/editor), general access
 // (private/workspace + workspace role) and public links (bcrypt password +
 // AES copy for reveal, token rotation, owner/admin gate). The v1 rip-out
@@ -3424,6 +4666,59 @@ registerSharingSettingsRoutes(appsRoutes, {
   resourceName: "App",
   load: loadShareableApp,
 });
+
+// "Chat with app" on/off — beside the other link settings, with the same
+// gate: the owner or a workspace admin.
+appsRoutes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/{id}/chat",
+    tags: ["Apps"],
+    summary: "Turn chat with a published app on or off",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({ enabled: z.boolean() }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const userId = actingUserId(c);
+      if (!userId) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
+      const { enabled } = c.req.valid("json");
+      const doc = await loadShareableApp(c);
+      if (!doc) {
+        return c.json({ success: false, error: "App not found" }, 404);
+      }
+      const workspaceId = c.req.param("workspaceId") as string;
+      const role = await memberRoleFor(workspaceId, userId);
+      if (!canManageSharing(doc, userId, role)) {
+        return c.json(
+          {
+            success: false,
+            error: "Only the owner or an admin can turn chat on or off",
+          },
+          403,
+        );
+      }
+      doc.chatEnabled = enabled;
+      await doc.save();
+      return c.json({ success: true as const, chatEnabled: enabled }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
 registerPublicShareRoutes(appsRoutes, {
   resourceName: "App",
   load: loadShareableApp,

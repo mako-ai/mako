@@ -45,7 +45,20 @@ export const WORKSPACE_API_KEY_SCOPES = [
   "git:write",
   "members:write",
   "connections:write",
+  // Start workflow runs and add webhooks over MCP: that executes the
+  // workspace's own workflow code, so a read-only key cannot.
+  "workflows:run",
+  "workflows:runtime",
 ] as const;
+
+/**
+ * Scopes Mako mints for its own machinery and a person can never put on a key
+ * they create. `workflows:runtime` belongs to a workspace's workflow
+ * worker: it reads `workflows/` source and receives the workspace's Hatchet
+ * token, so a hand-made key carrying it would hand that token out.
+ */
+export const INTERNAL_WORKSPACE_API_KEY_SCOPES: readonly WorkspaceApiKeyScope[] =
+  ["workflows:runtime"];
 
 export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
 
@@ -70,6 +83,11 @@ export function parseWorkspaceApiKeyScopes(
   const scopes = value.map(scope => {
     if (typeof scope !== "string" || !WORKSPACE_API_KEY_SCOPE_SET.has(scope)) {
       throw new Error(`Unsupported API key scope: ${String(scope)}`);
+    }
+    if (
+      INTERNAL_WORKSPACE_API_KEY_SCOPES.includes(scope as WorkspaceApiKeyScope)
+    ) {
+      throw new Error(`API key scope is reserved: ${scope}`);
     }
     return scope as WorkspaceApiKeyScope;
   });
@@ -152,6 +170,9 @@ export function capabilityGrantsFromScopes(
   }
   if (hasWorkspaceApiKeyScope(scopes, "connections:write")) {
     grants.push("connections-write");
+  }
+  if (hasWorkspaceApiKeyScope(scopes, "workflows:run")) {
+    grants.push("workflows-run");
   }
   return grants;
 }

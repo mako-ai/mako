@@ -15,6 +15,7 @@
  * fails for a reason other than "no such dataset" — keeps the previous
  * behaviour: everything renders to the dev schema.
  */
+import { withQueryLabels } from "../services/bigquery-labels";
 import { DBT_SCHEMA_TOKEN_RE } from "@mako/schemas";
 import type { IDatabaseConnection } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
@@ -179,10 +180,12 @@ export function devRelationListerFor(
     const found: DevRelationListing = new Map();
     for (const project of projects) {
       const dataset = project ? `${project}.${devSchema}` : devSchema;
-      const result = await runQuery(
-        connection,
-        `SELECT t.table_name, s.last_modified_time FROM \`${dataset}\`.INFORMATION_SCHEMA.TABLES t ` +
-          `LEFT JOIN \`${dataset}.__TABLES__\` s ON s.table_id = t.table_name`,
+      const result = await withQueryLabels({ mako_source: "dbt_defer" }, () =>
+        runQuery(
+          connection,
+          `SELECT t.table_name, s.last_modified_time FROM \`${dataset}\`.INFORMATION_SCHEMA.TABLES t ` +
+            `LEFT JOIN \`${dataset}.__TABLES__\` s ON s.table_id = t.table_name`,
+        ),
       );
       if (!result.success) {
         // No dev dataset yet: nothing was built there, all of it defers.

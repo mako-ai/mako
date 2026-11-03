@@ -34,6 +34,9 @@ import {
   flowFilePath,
   flowToFile,
   serializeFlowFile,
+  serializeFlowFileV1,
+  parseFlowFile,
+  sameFlowMeaning,
 } from "./flow-config-files";
 
 const logger = loggers.api("flow-config");
@@ -79,10 +82,22 @@ export async function commitFlowFile(
   if (!flow.slug || !flow.name?.trim()) {
     return { ok: true, changed: false };
   }
-  const contents = serializeFlowFile(flowToFile(flow));
+  const file = flowToFile(flow);
+  const contents = serializeFlowFile(file);
   const sha = blobOid(contents);
   if (flow.sourceBlobSha === sha) {
     return { ok: true, changed: false, sourceBlobSha: sha };
+  }
+  // The file on main may say the same thing in the older words (format 1:
+  // `type`, `schedule`, `webhook`, `backfill_schedule`). Then nothing changed
+  // but the format: leave it, so a save never rewrites a file for its format
+  // alone. It moves to format 2 the first time its meaning changes.
+  if (
+    flow.sourceBlobSha &&
+    (flow.sourceBlobSha === blobOid(serializeFlowFileV1(file)) ||
+      (await fileAtMainSaysTheSame(flow, file)))
+  ) {
+    return { ok: true, changed: false, sourceBlobSha: flow.sourceBlobSha };
   }
   try {
     await commitConfigToMain(
@@ -101,6 +116,33 @@ export async function commitFlowFile(
       error: message,
     });
     return { ok: false, changed: false, error: message };
+  }
+}
+
+/**
+ * The file this row was derived from (its blob is the row's sourceBlobSha) is
+ * still the one on main, and it means the same flow as `file` — whatever its
+ * format, comments or key spellings. Best-effort: any failure answers false,
+ * and the caller writes as before.
+ */
+async function fileAtMainSaysTheSame(
+  flow: IFlow,
+  file: ReturnType<typeof flowToFile>,
+): Promise<boolean> {
+  if (!flow.slug || !flow.sourceBlobSha) return false;
+  try {
+    const { readFlowFilesAtMain } = await import("./flow-sync.service");
+    const { files } = await readFlowFilesAtMain(flow.workspaceId.toString(), {
+      freshen: false,
+    });
+    const atMain = files.find(f => f.path === flowFilePath(flow.slug!));
+    if (!atMain || blobOid(atMain.contents) !== flow.sourceBlobSha) {
+      return false;
+    }
+    const parsed = parseFlowFile(atMain.contents);
+    return parsed !== null && sameFlowMeaning(parsed, file);
+  } catch {
+    return false;
   }
 }
 
@@ -205,7 +247,17 @@ export async function exportWorkspaceFlows(
       continue;
     }
     try {
-      const contents = serializeFlowFile(flowToFile(flow));
+      const file = flowToFile(flow);
+      const contents = serializeFlowFile(file);
+      // Same meaning already on main, in either format: nothing to write.
+      if (
+        flow.sourceBlobSha &&
+        (flow.sourceBlobSha === blobOid(contents) ||
+          flow.sourceBlobSha === blobOid(serializeFlowFileV1(file)))
+      ) {
+        skipped++;
+        continue;
+      }
       writes[flowFilePath(flow.slug)] = contents;
       shaBySlug.set(flow.slug, { id: flow._id, sha: blobOid(contents) });
     } catch (error) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatBytes, formatDuration } from "./format";
+import { formatBytes, formatDuration, formatUsd } from "./format";
 
 describe("formatDuration", () => {
   it("renders missing or invalid input as an em dash, never empty", () => {
@@ -42,5 +42,16 @@ describe("formatBytes", () => {
     expect(formatBytes(1536)).toBe("1.5 KB");
     expect(formatBytes(12 * 1024 * 1024)).toBe("12.0 MB");
     expect(formatBytes(3.8 * 1024 ** 3)).toBe("3.8 GB");
+  });
+});
+
+describe("formatUsd", () => {
+  it("shows cents, a floor for tiny costs, and a dash for none", () => {
+    expect(formatUsd(0.3141)).toBe("$0.31");
+    expect(formatUsd(12.4)).toBe("$12.40");
+    expect(formatUsd(0.0004)).toBe("<$0.01");
+    expect(formatUsd(0)).toBe("$0.00");
+    expect(formatUsd(undefined)).toBe("—");
+    expect(formatUsd(Number.NaN)).toBe("—");
   });
 });

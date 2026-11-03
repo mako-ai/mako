@@ -41,7 +41,13 @@ import {
 } from "./worktree.service";
 import { AppWorktree } from "../database/workspace-schema";
 import { getSandboxProvider } from "./sandbox/provider";
-import { repoDirFor, resolveCommit, initRepo } from "./repository.service";
+import {
+  commitTree,
+  repoDirFor,
+  resolveCommit,
+  initRepo,
+} from "./repository.service";
+import { runGit } from "./git";
 import { RepoRequiredError } from "./config";
 import { seededTemplateFiles } from "./workspace-template";
 import {
@@ -390,6 +396,73 @@ describe("commits", () => {
     );
     expect(branch?.aheadOfMain).toBe(1);
     expect(branch?.lastCommit?.subject).toBe("On a branch");
+  });
+
+  it("counts every branch's distance from main exactly as rev-list --count does", async () => {
+    // One graph walk replaced a `rev-list --count` per branch (573 of them on
+    // 2026-10-19). Stacked branches, a merge commit, a merged branch and main
+    // moving under them must all still give git's own answer.
+    const project = await makeProject();
+    const repoDir = repoDirFor(WS);
+    const main = await resolveCommit(repoDir, "refs/heads/main");
+    if (!main) throw new Error("project must have a main");
+    const tree = (
+      await runGit(["-C", repoDir, "rev-parse", `${main}^{tree}`])
+    ).stdout.trim();
+    const commit = (parents: string[], message: string) =>
+      commitTree(repoDir, { treeOid: tree, parents, message });
+    const setRef = (name: string, oid: string) =>
+      runGit(["-C", repoDir, "update-ref", `refs/heads/${name}`, oid]);
+
+    const a1 = await commit([main], "a1");
+    const a2 = await commit([a1], "a2");
+    const a3 = await commit([a2], "a3");
+    const b1 = await commit([main], "b1");
+    const merged = await commit([a3, b1], "merge b into a");
+    await setRef("t/merged", main);
+    await setRef("t/a1", a1);
+    await setRef("t/a3", a3);
+    await setRef("t/merge", merged);
+
+    const expectMatchesGit = async () => {
+      const branches = await listBranches(scopeOf(project));
+      for (const b of branches.filter(x => x.name.startsWith("t/"))) {
+        const { stdout } = await runGit([
+          "-C",
+          repoDir,
+          "rev-list",
+          "--count",
+          `refs/heads/main..refs/heads/${b.name}`,
+        ]);
+        expect([b.name, b.aheadOfMain]).toEqual([b.name, Number(stdout)]);
+      }
+      return new Map(branches.map(b => [b.name, b.aheadOfMain]));
+    };
+
+    let ahead = await expectMatchesGit();
+    expect(ahead.get("t/merged")).toBe(0);
+    expect(ahead.get("t/a1")).toBe(1);
+    expect(ahead.get("t/a3")).toBe(3);
+    expect(ahead.get("t/merge")).toBe(5);
+    expect(ahead.get("main")).toBe(0);
+
+    // Main fast-forwards onto a1: the cached answer must not survive it.
+    await setRef("main", a1);
+    ahead = await expectMatchesGit();
+    expect(ahead.get("t/a1")).toBe(0);
+    expect(ahead.get("t/a3")).toBe(2);
+
+    // A new commit on a branch is seen by the very next call.
+    await setRef("t/a1", await commit([a1], "a1 again"));
+    ahead = await expectMatchesGit();
+    expect(ahead.get("t/a1")).toBe(1);
+
+    // Concurrent callers get one consistent answer.
+    const [x, y] = await Promise.all([
+      listBranches(scopeOf(project)),
+      listBranches(scopeOf(project)),
+    ]);
+    expect(x).toEqual(y);
   });
 
   it("a commit racing someone else's does not lose either", async () => {

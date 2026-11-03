@@ -9,20 +9,17 @@ import {
   Typography,
 } from "@mui/material";
 import { Lock } from "lucide-react";
-import PublicDashboardViewer, {
-  type PublicDashboardContent,
-} from "../components/public/PublicDashboardViewer";
 
 /**
  * Anonymous viewer for public share links (/share/:token).
  *
  * Rendered outside AuthWrapper — no session, no workspace context. Talks to
- * the intentionally-public /api/share/:token endpoints directly (snapshot
- * data only; raw fetch on purpose, apiClient is session/workspace-bound).
+ * the intentionally-public /api/share/:token endpoints directly (published
+ * apps only; raw fetch on purpose, apiClient is session/workspace-bound).
  */
 
 interface ShareMeta {
-  type: "dashboard" | "app";
+  type: "app";
   title: string;
   passwordRequired: boolean;
   unlocked: boolean;
@@ -35,13 +32,7 @@ interface PublicAppContent {
   entry: string;
 }
 
-type ShareContent = PublicDashboardContent | PublicAppContent;
-
-function isPublicAppContent(
-  content: ShareContent,
-): content is PublicAppContent {
-  return "kind" in content && content.kind === "app";
-}
+type ShareContent = PublicAppContent;
 
 export default function PublicSharePage() {
   const { token = "" } = useParams<{ token: string }>();
@@ -96,9 +87,12 @@ export default function PublicSharePage() {
 
   // A git-backed app is already a complete built deployment. Navigate to its
   // token-gated entrypoint instead of framing it so the app owns the whole
-  // browser viewport and password cookies accompany its module assets.
+  // browser viewport. The server sandboxes that document (opaque origin, so
+  // app code never runs as Mako); a password share's assets and data ride
+  // on a grant the served HTML's <base> carries, since the sandboxed page
+  // cannot send the unlock cookie (api/src/routes/public-share.ts).
   useEffect(() => {
-    if (content && isPublicAppContent(content) && content.published) {
+    if (content?.published) {
       window.location.replace(content.entry);
     }
   }, [content]);
@@ -248,60 +242,43 @@ export default function PublicSharePage() {
     );
   }
 
-  if (isPublicAppContent(content)) {
-    if (!content.published) {
-      return (
-        <Box
-          sx={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            height: "100vh",
-            gap: 1,
-          }}
-        >
-          <Typography variant="h6">
-            This app has not been published yet
-          </Typography>
-          <Typography
-            variant="body2"
-            sx={{
-              color: "text.secondary",
-            }}
-          >
-            Ask the owner to publish it before sharing the link.
-          </Typography>
-        </Box>
-      );
-    }
-
+  if (!content.published) {
     return (
       <Box
         sx={{
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
           height: "100vh",
+          gap: 1,
         }}
       >
-        <CircularProgress />
+        <Typography variant="h6">
+          This app has not been published yet
+        </Typography>
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
+          Ask the owner to publish it before sharing the link.
+        </Typography>
       </Box>
     );
   }
 
   return (
-    <PublicDashboardViewer
-      token={token}
-      content={content}
-      reloadContent={async () => {
-        const next = await loadContent();
-        if (next && !isPublicAppContent(next)) {
-          setContent(next);
-          return next;
-        }
-        return null;
+    <Box
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        height: "100vh",
       }}
-    />
+    >
+      <CircularProgress />
+    </Box>
   );
 }

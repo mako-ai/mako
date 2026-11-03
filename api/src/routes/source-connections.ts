@@ -5,7 +5,7 @@
  * Deprecated alias: `/api/workspaces/:workspaceId/connectors`
  *
  * This is not the connector *catalog* (`routes/connectors.ts`, `/api/connectors`)
- * and not DuckDB dashboard data sources (`routes/resource-data-sources.ts`).
+ * and not an app's DuckDB data sources (bindings).
  */
 
 import { createRoute, z } from "@hono/zod-openapi";

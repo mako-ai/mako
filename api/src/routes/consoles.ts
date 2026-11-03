@@ -2321,6 +2321,12 @@ consoleRoutes.openapi(
         databaseId: savedConsole.databaseId,
         databaseName: savedConsole.databaseName,
         readOnly: queryAccess === "read",
+        labels: {
+          mako_source: "console",
+          mako_console: consoleId,
+          mako_trigger: apiKey ? "api" : "console_ui",
+          mako_user: user?.id ?? apiKey?.createdBy?.toString(),
+        },
       };
       const isPreviewMode = mode === "preview";
 
@@ -2617,6 +2623,13 @@ consoleRoutes.openapi(
       }
 
       const startTime = Date.now();
+      // Set on the query itself: the streaming export runs after this
+      // handler returns, outside any context it could enter.
+      const labels = {
+        mako_source: "export",
+        mako_console: consoleId,
+        mako_user: c.get("user")?.id,
+      };
 
       let query: any = savedConsole.code;
       if (
@@ -2676,6 +2689,7 @@ consoleRoutes.openapi(
                 signal: c.req.raw.signal,
                 onBatch: emitRows,
                 readOnly: true,
+                labels,
               },
             ),
         });
@@ -2688,6 +2702,7 @@ consoleRoutes.openapi(
           databaseId: savedConsole.databaseId,
           databaseName: savedConsole.databaseName,
           readOnly: true,
+          labels,
         },
       );
 

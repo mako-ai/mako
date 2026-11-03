@@ -1,7 +1,7 @@
 /**
  * The Starred tree's wiring for an explorer whose rows are entities with
- * their own folder tree (Notebooks, Dashboards). One implementation for both:
- * the two copies had already drifted (one starred folders on the header, one
+ * their own folder tree (Notebooks). One implementation for all of them:
+ * the copies had already drifted (one starred folders on the header, one
  * routed the header's "New Folder" to the real tree).
  *
  * Rows under Starred are VIEWS: their moves, renames and deletes go to the
@@ -181,7 +181,7 @@ export function useStarredTree(options: {
   /**
    * The Starred header's own menu: "New folder" creates a FAVOURITES folder.
    * Without this override ResourceTree's default item creates a real
-   * notebook/dashboard folder under My … instead.
+   * notebook folder under My … instead.
    */
   const getSectionContextMenuItems = useCallback(
     (sectionKey: string, helpers: { closeMenu: () => void }) => {

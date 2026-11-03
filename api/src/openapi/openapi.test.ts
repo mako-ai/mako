@@ -118,7 +118,6 @@ function testTightenedModulesHaveTypedResponses() {
     ["get", "/api/databases/types"],
     ["get", "/api/workspaces/{workspaceId}/usage/summary"],
     ["get", "/api/workspaces/{workspaceId}/custom-prompt"],
-    ["get", "/api/workspaces/{workspaceId}/dashboards/{id}"],
   ];
   for (const [method, path] of tightened) {
     const op = doc.paths[path]?.[method] as AnyObj | undefined;
@@ -150,7 +149,6 @@ function testErrorSchemaComponentExists() {
     schemas.GenericJsonResponse,
     "GenericJsonResponse schema component must be registered",
   );
-  assert.ok(schemas.Dashboard, "Dashboard schema component must be registered");
 }
 
 function testErrorResponsesAreTyped() {

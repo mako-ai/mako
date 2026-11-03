@@ -129,11 +129,15 @@ chatsRoutes.openapi(
         return c.json({ error: "Invalid workspace id" }, 400);
       }
 
-      // Filter by both workspaceId AND createdBy for privacy
+      // Filter by both workspaceId AND createdBy for privacy. App chats
+      // ("chat with app") live in their app's history, not this one.
       const chats = await Chat.find(
         {
           workspaceId: new ObjectId(workspaceId),
           createdBy: userId.toString(),
+          appId: { $exists: false },
+          // Agent runs from workflow steps are opened from their run.
+          source: { $ne: "workflow" },
         },
         { messages: 0 },
       ).sort({ updatedAt: -1 });

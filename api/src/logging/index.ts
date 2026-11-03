@@ -13,6 +13,8 @@ export {
   loggingMiddleware,
   enrichContextWithUser,
   enrichContextWithWorkspace,
+  enrichContextWithWorkflow,
+  enrichContextWithWorkflowWorker,
   getRequestContext,
 } from "./context";
 export type { RequestContext, HttpLoggingOptions } from "./context";

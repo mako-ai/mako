@@ -16,11 +16,6 @@ import {
 import { workspaceService } from "../services/workspace.service";
 import { readWorkspaceSelfDirectiveFile } from "../apps/workspace-prompt";
 import {
-  clampDashboardRefreshConcurrency,
-  DASHBOARD_REFRESH_CONCURRENCY_MAX,
-  DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
-} from "../services/workspace-refresh-limits.service";
-import {
   approveAcpPlanGrant,
   revokeAcpPlanGrant,
 } from "../services/acp-plan-grant.service";
@@ -95,6 +90,7 @@ const AutoJoinBody = jsonBody(
     role: z.enum(["member", "viewer"]).default("viewer"),
   }),
 );
+const LinkPreviewsBody = jsonBody(z.object({ enabled: z.boolean() }));
 const CreateInviteBody = jsonBody(
   z.object({ email: z.string(), role: MemberRole }),
 );
@@ -110,6 +106,7 @@ const AcpPlanDecisionBody = jsonBody(
           "warehouse-write",
           "git-write",
           "schedule-write",
+          "workflows-run",
         ]),
       )
       .optional(),
@@ -826,139 +823,6 @@ workspaceRoutes.openapi(
   },
 );
 
-function isFiniteNumberish(value: unknown): boolean {
-  if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value === "string") return Number.isFinite(parseInt(value, 10));
-  return false;
-}
-
-// Get workspace refresh / concurrency limits.
-workspaceRoutes.openapi(
-  createRoute({
-    method: "get",
-    path: "/{id}/settings/limits",
-    tags: ["Workspaces"],
-    summary: "Get workspace refresh concurrency limits",
-    security: AUTH_SECURITY,
-    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
-    request: { params: IdParam },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspace = c.get("workspace");
-      const dashboardRefreshConcurrency = clampDashboardRefreshConcurrency(
-        workspace.settings?.dashboardRefreshConcurrency ??
-          DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
-      );
-      return c.json({
-        success: true,
-        dashboardRefreshConcurrency,
-        dashboardRefreshConcurrencyMax: DASHBOARD_REFRESH_CONCURRENCY_MAX,
-        dashboardRefreshConcurrencyDefault:
-          DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
-      });
-    } catch (error) {
-      logger.error("Error fetching workspace limits settings", { error });
-      return c.json(
-        {
-          success: false,
-          error: "Failed to fetch workspace limits settings",
-        },
-        500,
-      );
-    }
-  },
-);
-
-// Update workspace refresh / concurrency limits.
-workspaceRoutes.openapi(
-  createRoute({
-    method: "put",
-    path: "/{id}/settings/limits",
-    tags: ["Workspaces"],
-    summary: "Update workspace refresh concurrency limits",
-    security: AUTH_SECURITY,
-    middleware: [
-      unifiedAuthMiddleware,
-      requireWorkspace,
-      requireWorkspaceRole(["owner", "admin"]),
-    ] as const,
-    request: { params: IdParam, body: JsonBody },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspace = c.get("workspace");
-      const workspaceId = c.req.param("id");
-
-      if (workspaceId !== workspace._id.toString()) {
-        return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
-      }
-
-      const body = (await c.req.json()) as {
-        dashboardRefreshConcurrency?: unknown;
-      };
-
-      if (body.dashboardRefreshConcurrency === undefined) {
-        return c.json(
-          { success: false, error: "Provide dashboardRefreshConcurrency" },
-          400,
-        );
-      }
-
-      if (
-        body.dashboardRefreshConcurrency !== undefined &&
-        !isFiniteNumberish(body.dashboardRefreshConcurrency)
-      ) {
-        return c.json(
-          {
-            success: false,
-            error: "dashboardRefreshConcurrency must be a number",
-          },
-          400,
-        );
-      }
-
-      const dashboardRefreshConcurrency = clampDashboardRefreshConcurrency(
-        body.dashboardRefreshConcurrency ??
-          workspace.settings?.dashboardRefreshConcurrency ??
-          DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
-      );
-      await Workspace.findByIdAndUpdate(workspaceId, {
-        $set: {
-          "settings.dashboardRefreshConcurrency": dashboardRefreshConcurrency,
-        },
-      });
-
-      logger.info("Updated workspace refresh limits", {
-        workspaceId,
-        dashboardRefreshConcurrency,
-      });
-
-      return c.json({
-        success: true,
-        dashboardRefreshConcurrency,
-        dashboardRefreshConcurrencyMax: DASHBOARD_REFRESH_CONCURRENCY_MAX,
-        dashboardRefreshConcurrencyDefault:
-          DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
-      });
-    } catch (error) {
-      logger.error("Error updating workspace limits settings", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to update workspace limits settings",
-        },
-        500,
-      );
-    }
-  },
-);
-
 // Delete workspace
 workspaceRoutes.openapi(
   createRoute({
@@ -1416,6 +1280,70 @@ workspaceRoutes.openapi(
         500,
       );
     }
+  },
+);
+
+// In-app link previews — read
+workspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/link-previews",
+    tags: ["Workspaces"],
+    summary: "In-app link previews setting",
+    description:
+      "Whether in-app app links (/view/<workspace>/<app>) unfurl in chat apps with the app's title, description and thumbnail. Only workspace-tree apps visible to every member ever do; default on.",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspace = c.get("workspace");
+    if (c.req.param("id") !== workspace._id.toString()) {
+      return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
+    }
+    const fresh = await Workspace.findById(workspace._id)
+      .select("settings.linkPreviews")
+      .lean();
+    return c.json({
+      success: true,
+      data: { enabled: fresh?.settings?.linkPreviews !== false },
+    });
+  },
+);
+
+// In-app link previews — write (owners and admins)
+workspaceRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/link-previews",
+    tags: ["Workspaces"],
+    summary: "Turn in-app link previews on or off",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdParam, body: LinkPreviewsBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspace = c.get("workspace");
+    if (c.req.param("id") !== workspace._id.toString()) {
+      return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
+    }
+    const { enabled } = c.req.valid("json");
+    await Workspace.updateOne(
+      { _id: workspace._id },
+      { $set: { "settings.linkPreviews": enabled } },
+    );
+    logger.info("Workspace link previews updated", {
+      workspaceId: workspace._id.toString(),
+      by: c.get("user")?.id,
+      enabled,
+    });
+    return c.json({ success: true, data: { enabled } });
   },
 );
 

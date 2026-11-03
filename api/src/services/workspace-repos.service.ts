@@ -3,7 +3,7 @@
  *
  * §10 (2026-07-16): ONE repo per workspace. The workspace IS a git repo;
  * `dbt/`, `apps/`, `consoles/`, `skills/` are folders at its root and
- * personal content lives under `users/<userId>/…`. The storage field is
+ * personal content lives under `users/<handle>/…`. The storage field is
  * still the `workspaceRepos` array for back-compat, but the service refuses
  * to hold more than one binding — `getWorkspaceRepo` is the read API.
  * (Legacy `appsRepo` read-time fallback kept until the 2026-07-15

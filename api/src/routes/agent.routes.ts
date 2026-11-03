@@ -4,6 +4,7 @@
  * Uses agent registry for multi-agent support
  */
 
+import { withToolQueryLabels } from "../agent-lib/tool-query-labels";
 import {
   readWorkspacePromptFile,
   readWorkspaceSelfDirectiveFile,
@@ -113,6 +114,7 @@ import {
 import { hasAttachedClients } from "../services/realtime-presence.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { commitAgentTurn } from "../apps/worktree.service";
+import { authorizeAppChat } from "../apps/app-chat.service";
 import { reportPubSubFailure } from "../services/pubsub.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
@@ -408,18 +410,11 @@ agentRoutes.openapi(
       kind: string;
       title: string;
       isActive: boolean;
-      dashboardId?: string;
       flowId?: string;
       notebookId?: string;
       connectionId?: string;
       databaseName?: string;
       dbtProjectId?: string;
-    }
-
-    interface OpenDashboardContext {
-      id: string;
-      title: string;
-      isActive: boolean;
     }
 
     const {
@@ -428,7 +423,6 @@ agentRoutes.openapi(
       workspaceId,
       openConsoles,
       openTabs,
-      openDashboards,
       consoleId,
       modelId,
       activeConsoleResults,
@@ -439,47 +433,29 @@ agentRoutes.openapi(
       tabKind,
       flowType,
       flowFormState,
-      activeDashboardContext,
       screenshotVisionAttachments,
+      appId,
+      appSearch,
     } = body as {
       messages?: UIMessage[];
       chatId?: string;
       workspaceId?: string;
       openConsoles?: OpenConsoleContext[];
       openTabs?: OpenTabContext[];
-      openDashboards?: OpenDashboardContext[];
       consoleId?: string;
       modelId?: string;
       activeConsoleResults?: ActiveConsoleResults;
       agentId?: string;
-      activeView?: "console" | "dashboard" | "flow-editor" | "empty";
-      activeExplorer?:
-        "databases" | "consoles" | "connectors" | "flows" | "dashboards" | null;
+      activeView?: "console" | "flow-editor" | "empty";
+      activeExplorer?: "databases" | "consoles" | "connectors" | "flows" | null;
       tabKind?: string;
       flowType?: string;
       flowFormState?: Record<string, unknown>;
       screenshotVisionAttachments?: ScreenshotVisionAttachment[];
-      activeDashboardContext?: {
-        dashboardId: string;
-        title: string;
-        dataSources: Array<{
-          id: string;
-          name: string;
-          tableRef?: string;
-          status?: "idle" | "loading" | "ready" | "error" | null;
-          rowsLoaded?: number;
-          error?: string | null;
-          columns: Array<{ name: string; type: string }>;
-          sampleRows?: Record<string, unknown>[];
-        }>;
-        widgets: Array<{
-          id: string;
-          title?: string;
-          type: string;
-          dataSourceId: string;
-        }>;
-        crossFilterEnabled: boolean;
-      };
+      /** "Chat with app" (agentId "app_chat"): the published app. */
+      appId?: string;
+      /** The app's query string as the viewer sees it (filters, tabs). */
+      appSearch?: string;
     };
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
@@ -515,6 +491,30 @@ agentRoutes.openapi(
 
     // Only enrich logging context after authorization succeeds
     enrichContextWithWorkspace(workspaceId);
+
+    // "Chat with app": the closed app_chat agent, offered to anyone who can
+    // read the app (its live-link audience), so it is gated on the app's own
+    // access check rather than on what a workspace member may do.
+    const isAppChat = agentId === "app_chat";
+    let appChat: AgentContext["appChat"];
+    if (isAppChat) {
+      if (!user || workspace) {
+        return c.json({ error: "App chat requires a signed-in user" }, 403);
+      }
+      const access = await authorizeAppChat(
+        workspaceId,
+        typeof appId === "string" ? appId : "",
+        user.id,
+      );
+      if (!access.ok) {
+        return c.json({ error: access.error }, access.status);
+      }
+      appChat = {
+        project: access.project,
+        title: access.title,
+        search: typeof appSearch === "string" ? appSearch : undefined,
+      };
+    }
 
     let canManageScheduledQueries = false;
     if (workspace) {
@@ -559,6 +559,27 @@ agentRoutes.openapi(
     const existingChat = await Chat.findById(chatId);
     const isNewChat = !existingChat;
 
+    // An app chat stays its viewer's, about its app, under its agent — the
+    // closed agent must not be steered onto someone else's chat, and an app
+    // chat must not be continued by an agent with workspace-wide tools.
+    if (existingChat) {
+      const boundAppId = existingChat.appId ?? null;
+      if (appChat) {
+        if (
+          existingChat.workspaceId.toString() !== workspaceId ||
+          existingChat.createdBy !== actorId ||
+          boundAppId !== appChat.project._id.toString()
+        ) {
+          return c.json({ error: "Cannot access chat" }, 403);
+        }
+      } else if (boundAppId) {
+        return c.json(
+          { error: "This chat belongs to an app; continue it from the app" },
+          400,
+        );
+      }
+    }
+
     // For new chats: create chat document immediately, then fire-and-forget title generation
     // IMPORTANT: Title generation uses generateText() which would interfere with the main
     // streamText() response if awaited. We fire-and-forget to keep streams separate.
@@ -568,6 +589,7 @@ agentRoutes.openapi(
         _id: new ObjectId(chatId),
         workspaceId: new ObjectId(workspaceId),
         createdBy: actorId,
+        ...(appChat ? { appId: appChat.project._id.toString() } : {}),
         title: "New Chat",
         titleGenerated: false,
         messages: [],
@@ -766,17 +788,6 @@ agentRoutes.openapi(
       }
     }
 
-    const dashboardContext =
-      activeView === "dashboard"
-        ? {
-            openDashboards,
-            activeDashboardContext,
-          }
-        : {
-            openDashboards: undefined,
-            activeDashboardContext: undefined,
-          };
-
     // MCP tools (Close CRM etc.): built from DB-cached tool definitions, so
     // this never blocks on remote MCP servers. Executions connect on demand.
     let mcpChatTools: Awaited<ReturnType<typeof buildMcpToolsForChat>> = {
@@ -833,7 +844,6 @@ agentRoutes.openapi(
       notebookId: openTabs?.find(t => t.isActive && t.kind === "notebook")
         ?.notebookId,
       openTabs,
-      openDashboards: dashboardContext.openDashboards,
       databases: workspaceDatabases.map(db => ({
         id: db._id.toString(),
         name: db.name,
@@ -847,13 +857,13 @@ agentRoutes.openapi(
       skillsBlock,
       dbtRulesBlock,
       activeConsoleResults,
-      activeDashboardContext: dashboardContext.activeDashboardContext,
       toolExecutionContext,
       canManageScheduledQueries,
       mcpTools: mcpChatTools.tools,
       mcpReadOnlyToolNames: mcpChatTools.readOnlyToolNames,
       mcpToolNames: mcpChatTools.allToolNames,
       mcpToolCatalog: mcpChatTools.catalog,
+      appChat,
     };
 
     // Create agent configuration.
@@ -910,7 +920,16 @@ agentRoutes.openapi(
     // replayed on every later step and turn, so one oversized output is
     // re-billed many times. Per-tool caps sit below this; it catches the
     // tool nobody capped yet.
-    tools = withToolOutputBackstop(withToolFailureObservation(tools));
+    tools = withToolOutputBackstop(
+      withToolFailureObservation(
+        withToolQueryLabels(tools, {
+          mako_trigger: "chat",
+          mako_chat: chatId,
+          mako_user: actorId,
+          mako_workspace: workspaceId,
+        }),
+      ),
+    );
 
     const modelDef = await getModelById(resolvedModelId);
     // Self-heal wrapper: if the catalog still classifies this model as manual
@@ -1067,7 +1086,7 @@ agentRoutes.openapi(
     const MAX_STEPS = 256;
 
     // "No client attached" fallback (issue #475): when a turn dead-ends on
-    // client-only tools (e.g. capture_screenshot, dashboard tools) and no
+    // client-only tools (e.g. capture_screenshot, console tools) and no
     // browser window is attached to the workspace, the server synthesizes the
     // tool results and continues the turn itself so the model can adapt
     // instead of the chat stalling until someone reattaches. Bounded so a

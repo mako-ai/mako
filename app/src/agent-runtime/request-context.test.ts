@@ -1,80 +1,27 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { buildChatRequestBody } from "./request-context";
-import { useDashboardStore } from "../store/dashboardStore";
-import { useDashboardRuntimeStore } from "../dashboard-runtime/store";
-import type { Dashboard } from "../dashboard-runtime/types";
+import type { ConsoleTab } from "../store/lib/types";
 
-const dashboardStoreBaseline = useDashboardStore.getState();
-const runtimeStoreBaseline = useDashboardRuntimeStore.getState();
-
-const baseDashboard = {
-  _id: "dash_1",
-  workspaceId: "ws_1",
-  title: "Revenue Dashboard",
-  description: "Quarterly revenue overview",
-  dataSources: [
-    {
-      id: "ds_1",
-      name: "Revenue",
-      tableRef: "revenue",
-      query: {
-        connectionId: "conn_1",
-        language: "sql" as const,
-        code: "select * from revenue",
-      },
-      sampleRows: [{ month: "2026-01", revenue: 100 }],
-    },
-  ],
-  widgets: [],
-  relationships: [],
-  globalFilters: [],
-  crossFilter: { enabled: true, resolution: "intersect", engine: "mosaic" },
-  materializationSchedule: { enabled: false, cron: null },
-  layout: { columns: 12, rowHeight: 80 },
-  version: 1,
-  access: "private",
-  createdBy: "user_1",
-  createdAt: "2026-04-12T00:00:00.000Z",
-  updatedAt: "2026-04-12T00:00:00.000Z",
-  cache: {},
-} as unknown as Dashboard;
-
-afterEach(() => {
-  useDashboardStore.setState(dashboardStoreBaseline, true);
-  useDashboardRuntimeStore.setState(runtimeStoreBaseline, true);
-});
+const consoleTab: ConsoleTab = {
+  id: "console_1",
+  title: "Revenue Query",
+  content: "select * from revenue",
+  isSaved: true,
+  kind: "console",
+  connectionId: "conn_1",
+  databaseName: "analytics",
+};
 
 describe("buildChatRequestBody", () => {
-  it("omits dashboard context on console turns", () => {
-    useDashboardStore.setState(state => {
-      state.openDashboards = { [baseDashboard._id]: baseDashboard };
-      state.activeDashboardId = baseDashboard._id;
-    }, false);
-
+  it("builds console context on console turns", () => {
     const requestBody = buildChatRequestBody({
       messages: [],
       workspaceId: "ws_1",
       modelId: "model_1",
       chatId: "chat_1",
-      tabs: [
-        {
-          id: "console_1",
-          title: "Revenue Query",
-          content: "select * from revenue",
-          kind: "console",
-          connectionId: "conn_1",
-          databaseName: "analytics",
-        },
-      ] as any,
+      tabs: [consoleTab],
       activeTabId: "console_1",
-      activeTab: {
-        id: "console_1",
-        title: "Revenue Query",
-        content: "select * from revenue",
-        kind: "console",
-        connectionId: "conn_1",
-        databaseName: "analytics",
-      } as any,
+      activeTab: consoleTab,
       activeView: "console",
       activeExplorer: "consoles",
       activeConsoleId: "console_1",
@@ -86,59 +33,54 @@ describe("buildChatRequestBody", () => {
         sampleRows: [{ month: "2026-01", revenue: 100 }],
         chartSpec: null,
       },
-      workspaceConnections: [{ id: "conn_1", type: "postgresql" }] as any,
-      pinnedDashboardId: baseDashboard._id,
     });
 
     expect(requestBody.openTabs).toHaveLength(1);
-    expect(requestBody).not.toHaveProperty("openDashboards");
-    expect(requestBody).not.toHaveProperty("activeDashboardContext");
+    expect(requestBody.openTabs[0]).toMatchObject({
+      id: "console_1",
+      kind: "console",
+      isActive: true,
+      connectionId: "conn_1",
+      databaseName: "analytics",
+    });
+    expect(requestBody.openConsoles).toHaveLength(1);
+    expect(requestBody.consoleId).toBe("console_1");
   });
 
-  it("includes pinned dashboard context on dashboard turns", () => {
-    useDashboardStore.setState(state => {
-      state.openDashboards = { [baseDashboard._id]: baseDashboard };
-      state.activeDashboardId = baseDashboard._id;
-    }, false);
+  it("carries entity ids for non-console tabs", () => {
+    const flowTab: ConsoleTab = {
+      id: "flow_tab_1",
+      title: "Nightly sync",
+      content: "",
+      isSaved: true,
+      kind: "flow-editor",
+      metadata: { flowId: "flow_1", flowType: "scheduled" },
+    };
+    const notebookTab: ConsoleTab = {
+      id: "nb_tab_1",
+      title: "Notes",
+      content: "",
+      isSaved: true,
+      kind: "notebook",
+      metadata: { notebookId: "nb_1" },
+    };
 
     const requestBody = buildChatRequestBody({
       messages: [],
       workspaceId: "ws_1",
-      modelId: "model_1",
-      chatId: "chat_1",
-      tabs: [
-        {
-          id: "dash_tab_1",
-          title: "Revenue Dashboard",
-          content: "",
-          kind: "dashboard",
-          metadata: { dashboardId: baseDashboard._id },
-        },
-      ] as any,
-      activeTabId: "dash_tab_1",
-      activeTab: {
-        id: "dash_tab_1",
-        title: "Revenue Dashboard",
-        content: "",
-        kind: "dashboard",
-        metadata: { dashboardId: baseDashboard._id },
-      } as any,
-      activeView: "dashboard",
-      activeExplorer: "dashboards",
-      workspaceConnections: [
-        { id: "conn_1", type: "postgresql", sqlDialect: "postgresql" },
-      ] as any,
-      pinnedDashboardId: baseDashboard._id,
+      tabs: [flowTab, notebookTab],
+      activeTabId: "flow_tab_1",
+      activeTab: flowTab,
+      activeView: "flow-editor",
+      activeExplorer: "flows",
     });
 
-    expect(requestBody).toHaveProperty("openDashboards");
-    expect(requestBody).toHaveProperty("activeDashboardContext");
-    expect(requestBody.activeDashboardContext).toMatchObject({
-      dashboardId: baseDashboard._id,
-      title: baseDashboard.title,
-    });
-    expect(requestBody.openDashboards).toEqual([
-      { id: baseDashboard._id, title: baseDashboard.title, isActive: true },
+    expect(requestBody.openConsoles).toEqual([]);
+    expect(requestBody.tabKind).toBe("flow-editor");
+    expect(requestBody.flowType).toBe("scheduled");
+    expect(requestBody.openTabs).toEqual([
+      expect.objectContaining({ id: "flow_tab_1", flowId: "flow_1" }),
+      expect.objectContaining({ id: "nb_tab_1", notebookId: "nb_1" }),
     ]);
   });
 });

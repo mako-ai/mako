@@ -27,12 +27,10 @@ import type { MaterializationScheduleValue } from "../lib/materializationSchedul
 import { formatRelativeTimeCompact } from "../utils/relative-time";
 
 /**
- * Shared materialization toolbar for app data bindings and dashboard data
- * sources. Both surfaces present the same controls — Refresh button, one
+ * Materialization toolbar for app data bindings: Refresh button, one
  * combined status/freshness chip, and a ⋮ menu holding the snapshot preview,
- * schedule, and history — so the two editors look and behave identically and
- * the (already crowded) data-source toolbar keeps a small footprint.
- * Surface-specific wiring (where the schedule/cache live, how history is
+ * schedule, and history, so the (already crowded) binding toolbar keeps a
+ * small footprint. Wiring (where the schedule/cache live, how history is
  * loaded) is passed in.
  */
 
@@ -124,8 +122,7 @@ export default function DataSourceMaterializationControls({
   );
 
   // Freshness: only meaningful once a snapshot exists. Stale when the
-  // artifact is older than the freshness window (default 24h, matching the
-  // dashboard canvas badge).
+  // artifact is older than the freshness window (default 24h).
   let freshness: { label: string; stale: boolean } | null = null;
   if (buildStatus === "ready" && builtAtMs) {
     const ageMs = Date.now() - builtAtMs;

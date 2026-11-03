@@ -101,9 +101,16 @@ just compilation.
 
 ## Tool guidance
 
-1. `app_list_apps` to resolve the app id, or `app_create_app` for a new
-   private project (full scaffold: package.json, vite.config.ts, src/).
-   After creating, `app_open_app` so the user watches it live.
+1. `app_list_apps` to resolve the app id. Before building something new,
+   `search_apps` with what it should do (topic, tables): if a close match
+   exists, show it and propose extending it rather than scaffolding a
+   near-copy. Then `app_create_app` (full scaffold: package.json,
+   vite.config.ts, src/). New apps are PERSONAL by default — they land in the
+   user's own `users/<handle>/apps/` (`app_list_apps` → `personalFolder`),
+   private to them. Pass a `folder` under `apps/…` only when the user
+   explicitly asks for a shared workspace app; sharing an existing one is a
+   deliberate move (`app_move_app` into `apps/…`) when they ask, never a
+   default. After creating, `app_open_app` so the user watches it live.
 2. Inspect with `app_status` (branch, uncommitted changes). Locate code with
    `app_glob` (paths, e.g. `src/**/*.tsx`) and `app_grep` (contents, regex) —
    both read straight from git so they work even when the sandbox is paused or
@@ -177,6 +184,7 @@ A binding is ONE file — `bindings/<name>.sql` (name = filename, no manifest):
 -- materialization: parquet                (default; only option today)
 -- schedule: 0 6 * * *                     (optional cron refresh)
 -- dbt_project: <id>                       (optional)
+-- row_limit: 3000000                      (optional; default 2,000,000, max 5,000,000)
 SELECT ...
 ```
 
@@ -187,10 +195,62 @@ it works before merging to main; errors come back verbatim
 (fix the SQL and retry). At runtime the preview
 serves each artifact at the APP-RELATIVE URL `__data/<name>.parquet`
 (no leading slash — use `new URL("__data/x.parquet", document.baseURI)`).
-Fetch and read with hyparquet or duckdb-wasm; artifacts are
-SNAPPY-compressed, so plain hyparquet works (no compressors bundle needed).
+Read data ONLY through `@makoai/app-sdk`. Never import
+`@duckdb/duckdb-wasm`, `hyparquet` or `apache-arrow` parquet readers in an
+app. A second engine costs a second ~1 s boot and a second copy of every
+binding. Use `useQuery` / `useDuckDB` first. For anything custom (SDK ≥ 2.8):
+- `useDuckDB(sql, { format: "arrow" })` returns the Arrow Table, not rows
+  (map layers, 100k+ rows).
+- `getDuckDB()` returns the page's shared engine, and `withConnection(conn => …)`
+  runs on a connection that is closed for you. Never close or terminate the
+  shared engine.
+- `ensureBinding(name)` loads a binding as a table and returns its name.
+  `unloadBinding(name)` frees it.
+- Memory is managed for you (SDK ≥ 2.12): past 1.5 GiB of tables, the least
+  recently read become views over their parquet and turn back into tables on
+  their next read. Do not unload bindings by hand to save memory.
+  `setBindingMemoryBudget(bytes)` changes the cap.
+- Past 2 GiB across open app tabs, Mako ends the DuckDB worker of the least
+  recently shown app (SDK ≥ 2.13). `getDuckDB()`, `withConnection()`,
+  `ensureBinding()` and `useDuckDB` SQL that writes (`CREATE TABLE`) keep the
+  worker for the page's life, so the heap never goes back. Stay read-only unless
+  the app needs them.
+- `fetchBindingBytes(name, { onProgress, fresh })` returns the raw parquet
+  bytes for a custom reader (register them with
+  `getDuckDB().registerFileBuffer`).
+
+Artifacts are ZSTD-compressed. DuckDB reads them as they are. Plain
+hyparquet throws "unsupported compression codec: ZSTD", one more reason
+not to bring your own reader.
+
+**Row limits.** A binding holds up to 2,000,000 rows unless its front
+matter says `-- row_limit: <n>` (`3000000`, `3_000_000` or `3M`), up to
+5,000,000. Operators can move both numbers. The build error states the
+ones in force. A query past its limit fails the build and never truncates.
+The app keeps its previous data. The error names the binding, the rows the
+query returned and the `-- row_limit:` that fits them. Set that value, or
+aggregate or shard the binding.
+
+Design for the browser, not the cap. Every binding downloads whole into
+the tab, and DuckDB-WASM holds it in memory. DuckDB-WASM stops at 3.1 GB
+per page, for all bindings together. A 43-column binding takes about 950
+bytes per row there, so 3.3M rows fill it. A 14-column one takes about 180
+bytes. Past about 1M rows, select only the columns the app reads and
+pre-aggregate in SQL (one row per day x country, not per event). Shard by
+year or country when a screen needs one slice at a time: `useDuckDB`
+downloads only the bindings its SQL names. `useQuery(name)` and row-format
+`useDuckDB` turn at most 500,000 result rows into JS objects and set
+`truncated: true` past that (`rowLimit` option). For a bigger binding,
+aggregate in `useDuckDB` SQL or ask for `{ format: "arrow" }`.
+
 After wiring a binding into the UI, `app_browse` is how you confirm the data
 actually loads — a failed `__data/...` fetch shows up in its failedRequests.
+
+**`useDuckDB` loads only what its SQL names (SDK ≥ 2.8).** Name bindings
+as tables (`from orders`, `join "my-binding"`) and only those download.
+Building a table name at runtime (`query_table('x')`) still works but costs
+one retry. A dashboard tab that never names the 10 MB binding never
+downloads it. Keep heavy bindings out of queries the first screen runs.
 
 **Refresh on demand (SDK ≥ 2.3).** `useQuery` / `useDuckDB` return
 `refresh()` and `refreshing`: `refresh()` rematerializes the binding (the
@@ -202,6 +262,30 @@ and the laptop alike (`POST __data/<name>/refresh`, answered by whoever
 serves the data). Public share links refuse it unless the owner enabled
 live queries for the link. Prefer this over a cron for "what is it now?"
 buttons; keep `-- schedule:` for data that must be fresh before anyone asks.
+
+**Loading captions (SDK ≥ 2.7.4).** Every hook returns `phase` while
+`loading` / `refreshing` (plus `rowsWritten`, `bytes`, `bytesTotal`).
+Caption spinners with `bindingPhaseLabel(q)`: "Building from warehouse"
+(the query is running; only refresh, laptop dev builds and live bindings
+build), "Getting download link" (the file exists; under a second),
+"Downloading", "Loading into DuckDB", "Running query". Do not wrap `fetch`
+to guess phases, and do not label the whole wait "signing": the SDK reads
+the real phase from the server (`Accept: application/x-ndjson` on the same
+request). `RefreshAllButton` already captions each source.
+
+**Preview rows while loading (SDK ≥ 2.9, opt-in).** `useQuery(name,
+{ snapshot: true })` adds `preview`: the first 500 rows (200 KiB cap) of
+the binding's last build, from `__data/<name>.snapshot.json`, available
+before DuckDB-WASM boots. `data` stays null and `loading` stays true until
+the full parquet is in; `preview` turns null when the rows arrive or the
+load fails. Render `preview.data` as a skeleton table or first paint only.
+It is the first N rows of the build stream in the query's own order (no
+ORDER BY guarantee), so never sum, count or filter it — KPIs, totals and
+charts read `data` or `useDuckDB`. Preview values have the same types as
+`data`. `preview` is null for builds older than this release (refresh the
+binding once), live bindings, laptop drafts still building, and bindings
+with DECIMAL/LIST/STRUCT columns. Leave the option off unless the page has
+a big table worth painting early; without it nothing changes.
 
 ## Who is looking: `useViewer()` (SDK ≥ 2.4)
 
@@ -231,6 +315,16 @@ version the app has. Apps created before 2026-09 may still import an older
 alias or a `file:` path: keep whatever the app's `package.json` already uses
 unless you are migrating it.
 
+## Thumbnail (Apps home card + link preview)
+
+Each app ships its own poster: `thumbnail.png`, 1200×750, at the app's root
+(also `.webp`/`.jpg`/`.svg`, first match wins). Nothing screenshots apps. PNG,
+because it is also the link preview of the app's public share (previews
+ignore SVG and crop to the centred 1200×630). New apps start with a
+placeholder `thumbnail.svg`. Before designing or replacing one, read
+`references/thumbnails.md` (`read_skill_resource("apps",
+"references/thumbnails.md")`): the recipe, the rules and how to render it.
+
 ## Styling & UI components
 
 **Default to the house style.** The SDK injects Mako's theme tokens (stone,
@@ -239,11 +333,17 @@ warm `--canvas`, `#527df2` `--brand`, `--positive`/`--warning`/`--negative`,
 every workspace app was re-forking: `PageHeader`, `Card`, `KpiRow` /
 `KpiTile`, `Button`, `StatusDot`, `MultiSelect` (filters), `FreshnessBadge`
 (data age per source), `RefreshAllButton` (rebuild every binding, with a
-progress modal). Import `@makoai/app-sdk/ui.css` before the app's own CSS.
+progress modal), `DataTable` (sortable, paged list with CSV export; SDK ≥ 2.11,
+rules in `references/ui-toolkit.md` "Tables"). Import `@makoai/app-sdk/ui.css` before the app's own CSS.
+Native `<select>`: the SDK base styles it (arrow inset 10px, 32px, tokens),
+because macOS otherwise draws the caret against the right border. Don't strip
+that with `appearance: none` unless you draw your own arrow with ≥10px inset;
+prefer shadcn `Select` in Tailwind apps.
 New apps are scaffolded on it. Do NOT paste a token block into an app or
 fork these components — override a single token, or ask for the kit to grow.
 
-For anything beyond the kit (tables, sheets, dialogs, command menus): Tailwind
+Every row-level list is a `DataTable`. For anything beyond the kit (sheets,
+dialogs, command menus): Tailwind
 v4 + shadcn/ui — install, mapping Tailwind onto the SDK's theme tokens, the
 cursor-pointer base rule, and v1-CDN migration notes — read
 `references/ui-toolkit.md`
@@ -253,6 +353,7 @@ cursor-pointer base rule, and v1-CDN migration notes — read
 
 Before adding any chart, read `references/charting.md`
 (`read_skill_resource("apps", "references/charting.md")`): recharts, the
-`--chart-N` theme tokens, date/money formatting, and the loading/error/empty
-states every chart card must render. Dates arrive from bindings as strings
+`--chart-N` theme tokens, the table tooltip every chart uses (`tableTooltip`
+from `@makoai/app-sdk/ui`, never recharts' default list), date/money
+formatting, and the loading/error/empty states every chart card must render. Dates arrive from bindings as strings
 (`YYYY-MM-DD` / ISO) since SDK 2.2 — do not assume numbers.

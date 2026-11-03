@@ -22,8 +22,8 @@ The pnpm workspace spans `app`, `api`, `docs`, and everything under `packages/*`
 
 | Package | Purpose |
 | ------- | ------- |
-| `@mako/agent-tools` | Shared agent tool definitions (console, dashboard, chart, data-source, dbt, flow, app) reused across surfaces |
-| `@mako/schemas` | Shared Zod/JSON schemas — app scaffold, dashboard, chart templates, flow form, table refs |
+| `@mako/agent-tools` | Shared agent tool definitions (console, chart, data-source, dbt, flow, app) reused across surfaces |
+| `@mako/schemas` | Shared Zod/JSON schemas — app scaffold, chart templates, flow form, table refs |
 | `@mako/local-agent` | localhost daemon (`127.0.0.1:41720`) that lets `app.mako.ai` query databases on the user's machine; credentials stay encrypted on disk |
 | `@mako/desktop` | Electron shell that loads the web app and bundles the local agent for on-machine database connections |
 
@@ -39,9 +39,7 @@ The pnpm workspace spans `app`, `api`, `docs`, and everything under `packages/*`
 | Routing   | React Router          |
 | Editor    | Monaco / CodeMirror   |
 
-Key UI: Console editor, Database explorer, Chat interface, Dashboard builder, Collection/View editors, Onboarding flow.
-
-Dashboard-specific: [DuckDB-WASM](https://duckdb.org/docs/api/wasm/overview) for in-browser SQL, [Mosaic](https://uwdata.github.io/mosaic/) for cross-filtering, [Vega-Lite](https://vega.github.io/vega-lite/) for charts.
+Key UI: Console editor, Database explorer, Chat interface, App editor, Collection/View editors, Onboarding flow.
 
 ### API Server (`api/`)
 
@@ -62,7 +60,7 @@ The API handles:
 
 ### AI Agent (`api/src/agent-lib/`)
 
-The agent system is a **single unified agent** that switches *expertise modes* mid-conversation (query, dashboard, sync flow, React app, transforms, notebook, explore) via the `enable_mode` tool. Each mode unlocks a domain-specific toolset on top of a small always-on core (memory, skill retrieval, web access, planning, tool discovery). See [AI Agent](/ai-agent/) for the full mode model.
+The agent system is a **single unified agent** that switches *expertise modes* mid-conversation (query, sync flow, React app, transforms, notebook, explore) via the `enable_mode` tool. Each mode unlocks a domain-specific toolset on top of a small always-on core (memory, skill retrieval, web access, planning, tool discovery). See [AI Agent](/ai-agent/) for the full mode model.
 
 The agent inspects real database schemas before writing anything — the cross-engine discovery family (`list_connections`, `list_databases`, `list_tables`, `inspect_table`) dispatches on connection type, SQL or MongoDB — and executes queries via `sql_execute_query` / `mongo_execute_query`. Results flow back to the chat and — critically — get placed directly in the console editor via `modify_console`.
 
@@ -75,18 +73,10 @@ PostgreSQL, MongoDB, BigQuery, MySQL, ClickHouse, Redshift, Cloud SQL (Postgres)
 Each driver implements `executeQuery()` and `inspectSchema()`. Connections are encrypted at rest and pooled per workspace.
 
 
-### Dashboard Engine (`app/src/dashboard-runtime/`, `api/src/services/dashboard-*`)
+### Apps (`api/src/apps/`)
 
-The dashboard system uses a split architecture:
+[Apps](/apps/) are Vite + React projects in the workspace git repo. Their data bindings (`bindings/<name>.sql`) execute server-side and are materialized into Parquet artifacts in the shared artifact store; the app reads them in the browser (hyparquet or DuckDB-WASM) through `@makoai/app-sdk`.
 
-| Layer   | Technology                  | Role                                               |
-| ------- | --------------------------- | -------------------------------------------------- |
-| Server  | DuckDB (`@duckdb/node-api`) | Executes source queries, builds Parquet artifacts   |
-| Browser | DuckDB-WASM                 | Loads Parquet files, runs widget SQL locally         |
-| Browser | Mosaic (`@uwdata/mosaic-core`) | Cross-filtering coordination between widgets     |
-| Browser | Vega-Lite                   | Chart rendering                                     |
-
-Data flows: database → server-side DuckDB → Parquet → browser DuckDB-WASM → Vega-Lite/tables/KPIs. See [Dashboards](/dashboards/) for the full breakdown.
 ### Authentication
 
 Lucia Auth with Arctic OAuth providers (Google, GitHub). Sessions stored in MongoDB. API key authentication available for programmatic access.

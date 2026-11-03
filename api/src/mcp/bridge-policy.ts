@@ -20,10 +20,7 @@ import {
 
 /** Why a tool is kept off the MCP surface. */
 export type McpBridgeExclusionWhy =
-  | "client-only"
-  | "security"
-  | "in-product-only"
-  | "deferred";
+  "client-only" | "security" | "in-product-only" | "deferred";
 
 export type McpBridgeEntry =
   | {
@@ -167,6 +164,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   app_status: bridge(),
   app_publish_status: bridge(),
   app_write_file: bridge(),
+  search_apps: bridge(),
 
   // ── MCP-only preview / render ─────────────────────────────────────────
   get_mcp_capabilities: mcpOnly(),
@@ -185,11 +183,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   ),
   get_chart_template: exclude(
     "client-only",
-    "Chart templates are a console/dashboard UI concern.",
-  ),
-  get_chart_templates: exclude(
-    "client-only",
-    "Dashboard chart template catalog; not part of the apps MCP loop.",
+    "Chart templates are a console chart UI concern.",
   ),
   modify_chart_spec: exclude(
     "client-only",
@@ -236,59 +230,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "Flow sync validation; MCP uses sql_execute_query for query checks.",
   ),
 
-  // ── Dashboards (client mutations + server search) ─────────────────────
-  add_data_source: exclude(
-    "client-only",
-    "Dashboard builder is browser-driven; MCP focuses on apps.",
-  ),
-  add_global_filter: exclude("client-only", "Dashboard builder UI."),
-  add_widget: exclude("client-only", "Dashboard builder UI."),
-  create_dashboard: exclude("client-only", "Dashboard builder UI."),
-  // NOT a connector tool, despite the name. This creates a DASHBOARD-LOCAL
-  // data source: a query materialized into the browser's DuckDB for widgets.
-  // It cannot create a Stripe/Close/GCS connector — that is
-  // `POST /workspaces/{id}/sources`, which no agent tool exposes. The old
-  // note here ("Dashboard builder UI.") was true and misleading: it reads as
-  // "the UI way to do the thing you want" rather than "a different thing",
-  // and it led an RFC to plan connector creation as a one-line
-  // reclassification. Use list_connectors / inspect_connector for connectors.
-  create_data_source: exclude(
-    "client-only",
-    "Creates a dashboard-local DuckDB data source in the browser — NOT a workspace connection. Connections are list_connections / inspect_connection; connector types are list_connectors.",
-  ),
-  dashboard_restore_version: exclude(
-    "deferred",
-    "Deprecated alias of restore_version; dashboard versioning stays in-product until dashboards are MCP-bridged.",
-  ),
-  dashboard_save_version: exclude(
-    "deferred",
-    "Deprecated alias of save_version; dashboard versioning stays in-product until dashboards are MCP-bridged.",
-  ),
-  enter_edit_mode: exclude("client-only", "Dashboard builder UI."),
-  get_dashboard_state: exclude(
-    "client-only",
-    "Reads open dashboard tab state.",
-  ),
-  import_console_as_data_source: exclude(
-    "client-only",
-    "Dashboard builder UI.",
-  ),
-  link_tables: exclude("client-only", "Dashboard builder UI."),
-  list_open_dashboards: exclude(
-    "client-only",
-    "Lists open dashboard tabs; MCP uses search_dashboards.",
-  ),
-  modify_widget: exclude("client-only", "Dashboard builder UI."),
-  open_dashboard: exclude("client-only", "Opens a dashboard tab."),
-  remove_global_filter: exclude("client-only", "Dashboard builder UI."),
-  remove_widget: exclude("client-only", "Dashboard builder UI."),
-  run_data_source_query: exclude("client-only", "Dashboard builder UI."),
-  search_dashboards: bridge(),
-  set_time_dimension: exclude("client-only", "Dashboard builder UI."),
-  // update_data_source_query migrated to the capability registry (dashboard
-  // domain) with a server leg — its bridge entry now derives from there.
-
-  // ── Shared DuckDB data-source primitives (client) ─────────────────────
+  // ── App DuckDB data-source primitives (client) ────────────────────────
   inspect_data_source: exclude(
     "client-only",
     "Inspects in-browser DuckDB materializations.",
@@ -320,6 +262,24 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // next to the discovery pair it completes: discover ids, write the file,
   // check it, then push.
   check_flow_files: bridge(),
+  // Workflows: look at what runs and at one run (reads Hatchet), and start a
+  // run. Starting one executes the workspace's own workflow code with its
+  // data access, so it is bridged like the other tools that act.
+  // The shell, file and git tools on a workflow folder: the app tools under
+  // another name (apps-tools.ts), bridged the same.
+  workflow_bash: bridge(),
+  workflow_commit: bridge(),
+  workflow_edit_file: bridge(),
+  workflow_glob: bridge(),
+  workflow_grep: bridge(),
+  workflow_merge_to_main: bridge(),
+  workflow_read_file: bridge(),
+  workflow_status: bridge(),
+  workflow_write_file: bridge(),
+  workflows_status: bridge(),
+  workflows_run: bridge(),
+  // A webhook URL starts runs, so it is no more than workflows_run already gives.
+  workflows_triggers: bridge(),
   query_duckdb: exclude(
     "client-only",
     "Queries in-browser DuckDB; MCP validates via sql_execute_query.",
@@ -375,17 +335,6 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // ── Version history ───────────────────────────────────────────────────
   browse_version_history: bridge(),
   get_version_snapshot: bridge(),
-  // Generic save/restore dispatches in the browser (dashboard drafts live in
-  // the open tab); MCP keeps the server-side app_save_version /
-  // app_restore_version pair instead.
-  restore_version: exclude(
-    "client-only",
-    "Dispatches in the browser (dashboard drafts live in the open tab); MCP uses app_restore_version.",
-  ),
-  save_version: exclude(
-    "client-only",
-    "Dispatches in the browser (dashboard drafts live in the open tab); MCP uses app_save_version.",
-  ),
 
   // ── Web ───────────────────────────────────────────────────────────────
   fetch_url: bridge({ openWorldHint: true }),

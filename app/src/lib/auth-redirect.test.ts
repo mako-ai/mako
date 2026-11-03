@@ -13,7 +13,7 @@ interface FakeLocation {
   href: string;
 }
 
-function stubBrowser(pathname = "/dashboard"): FakeLocation {
+function stubBrowser(pathname = "/c/console-1"): FakeLocation {
   const location: FakeLocation = { pathname, href: pathname };
   vi.stubGlobal("window", { location });
   vi.stubGlobal("localStorage", {
@@ -64,7 +64,7 @@ describe("handleUnauthorized", () => {
     await handleUnauthorized();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(location.href).toBe("/dashboard");
+    expect(location.href).toBe("/c/console-1");
   });
 
   it("retries transient failures and stays put when undetermined (deploy blip)", async () => {
@@ -82,7 +82,7 @@ describe("handleUnauthorized", () => {
     await done;
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(location.href).toBe("/dashboard");
+    expect(location.href).toBe("/c/console-1");
   });
 
   it("recovers via a later attempt: 503 then alive → no redirect", async () => {
@@ -98,7 +98,7 @@ describe("handleUnauthorized", () => {
     await done;
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(location.href).toBe("/dashboard");
+    expect(location.href).toBe("/c/console-1");
   });
 
   it("dedupes concurrent 401s into a single /auth/me probe", async () => {

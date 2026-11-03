@@ -1,13 +1,13 @@
 /**
  * Version-history routes shared by snapshot-versioned resource kinds
- * (dashboards via EntityVersion, notebooks via the notebook store). Each
+ * (notebooks via the notebook store; originally also dashboards). Each
  * kind used to hand-roll the same three handlers — list / get / restore —
  * with its own load-and-gate boilerplate and error envelope.
  *
  * The registrar owns the route shape and the handler shell (resource-op);
  * a `VersionBackend` owns loading, ACL gating, and version semantics, and
  * returns the exact payload its kind's frontend already expects (`versions`
- * + `total` and `version` for dashboards, `data` for notebooks) — response
+ * + `total` and `version` for EntityVersion kinds, `data` for notebooks) — response
  * envelopes and path-parameter names are deliberately contract-stable, so
  * each kind names its version path segment via `refParam`.
  *
@@ -50,12 +50,12 @@ export interface VersionBackend {
 }
 
 export interface VersionRoutesConfig {
-  /** OpenAPI tag, e.g. "Dashboards". */
+  /** OpenAPI tag, e.g. "Notebooks". */
   tag: string;
-  /** Prefix for OpenAPI schema names, e.g. "Dashboard". */
+  /** Prefix for OpenAPI schema names, e.g. "Notebook". */
   schemaPrefix: string;
   /**
-   * Name of the version path parameter — "version" (dashboards) or
+   * Name of the version path parameter — "version" (EntityVersion kinds) or
    * "versionId" (notebooks). Part of the public contract; keep stable.
    */
   refParam: string;
@@ -63,7 +63,7 @@ export interface VersionRoutesConfig {
   /** Per-route middleware for routers that don't mount auth router-level. */
   middleware?: readonly MiddlewareHandler[];
   actor?: "user-required" | "allow-system";
-  /** Declare limit/offset list-query params in the contract (dashboards). */
+  /** Declare limit/offset list-query params in the contract. */
   listQuery?: boolean;
   onError?: (c: Context, error: unknown) => Response | undefined;
 }

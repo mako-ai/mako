@@ -37,6 +37,7 @@ import {
 import { parseMcpOAuthScopes } from "../auth/mcp-oauth.service";
 import { mcpOAuthWellKnownRoutes } from "../routes/mcp-oauth.routes";
 import { effectiveSqlQueryAccess } from "../agent-lib/tools/sql-tools";
+import { requestContextStorage } from "../logging/context";
 import { sqlReadOnlyAccessError } from "../services/read-only-query.service";
 import {
   assertBridgePolicyCovers,
@@ -98,6 +99,7 @@ async function main() {
     "query:read",
     "warehouse:write",
     "connections:write",
+    "workflows:run",
   ];
   for (const requested of [
     undefined,
@@ -119,6 +121,7 @@ async function main() {
     "query:read",
     "warehouse:write",
     "connections:write",
+    "workflows:run",
   ]);
   // The scope names still map to their grants (stored keys keep parsing),
   // though every MCP session now holds these grants implicitly.
@@ -160,6 +163,45 @@ async function main() {
     effectiveSqlQueryAccess("none", { allowAgentWrites: true }),
     "none",
   );
+  // Being on the connection's writers list opens writes for that principal
+  // only, the way allowAgentWrites opens them for every key.
+  const asWorkflow = <T>(fn: () => T): T =>
+    requestContextStorage.run(
+      {
+        requestId: "t",
+        userId: "deployer",
+        workflow: "digest",
+        method: "POST",
+        path: "/api/mcp",
+        startTime: 0,
+      },
+      fn,
+    );
+  assert.equal(
+    asWorkflow(() =>
+      effectiveSqlQueryAccess("write-opt-in", {
+        writers: [{ principal: "workflow:digest" }],
+      }),
+    ),
+    "write",
+  );
+  assert.equal(
+    asWorkflow(() =>
+      effectiveSqlQueryAccess("write-opt-in", {
+        writers: [{ principal: "workflow:other" }],
+      }),
+    ),
+    "read",
+  );
+  assert.equal(
+    asWorkflow(() =>
+      effectiveSqlQueryAccess("read", {
+        writers: [{ principal: "workflow:digest" }],
+      }),
+    ),
+    "read",
+    "a list never upgrades a read-only key either",
+  );
   // REST endpoints have not adopted per-connection resolution: a
   // query:write key stays read there.
   assert.equal(
@@ -177,6 +219,11 @@ async function main() {
     ["warehouse-write"],
   );
   assert.deepEqual(capabilityGrantsFromScopes(["mcp", "query:read"]), []);
+  // Starting workflow runs is an opt-in for API keys, like warehouse:write.
+  assert.deepEqual(
+    capabilityGrantsFromScopes(["mcp", "query:read", "workflows:run"]),
+    ["workflows-run"],
+  );
   assert.deepEqual(
     capabilityGrantsFromScopes(["mcp", "query:read", "git:write"]),
     ["git-write"],
@@ -334,7 +381,6 @@ async function main() {
       "sql_execute_query",
       "mongo_list_connections",
       "search_consoles",
-      "search_dashboards",
       "search_skills",
       "list_skills",
       "get_relevant_skills",
@@ -544,6 +590,50 @@ async function main() {
     assert.ok(names.has("dbt_run_model"));
     assert.equal(names.has("dbt_create_project"), false);
     assert.equal(names.has("dbt_create_job"), false);
+  }
+
+  // Syncs: anyone may read them; a backfill or a trigger change is an
+  // owner/admin's call (as the flow routes), and needs warehouse-write.
+  for (const [role, mayAct] of [
+    ["viewer", false],
+    ["member", false],
+    ["admin", true],
+  ] as const) {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: `sync-${role}`, method: "tools/list" }],
+      ["mcp", "query:read", "warehouse:write"],
+      false,
+      undefined,
+      role,
+    );
+    const { tools } = res.result as {
+      tools: { name: string; annotations?: { readOnlyHint?: boolean } }[];
+    };
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    for (const read of ["flow_list", "flow_read", "flow_status"]) {
+      assert.ok(byName.has(read), `${read} must be listed for a ${role}`);
+      assert.equal(
+        byName.get(read)?.annotations?.readOnlyHint,
+        true,
+        `${read} is a read`,
+      );
+    }
+    for (const act of ["flow_backfill", "flow_update"]) {
+      assert.equal(
+        byName.has(act),
+        mayAct,
+        `${act} must ${mayAct ? "" : "not "}be listed for a ${role}`,
+      );
+    }
+  }
+  {
+    const capability = AGENT_CAPABILITY_BY_NAME.get("flow_backfill");
+    assert.equal(capability?.requiredGrant, "warehouse-write");
+    assert.equal(capability?.minimumWorkspaceRole, "admin");
+    assert.equal(
+      AGENT_CAPABILITY_BY_NAME.get("flow_update")?.requiredGrant,
+      "warehouse-write",
+    );
   }
 
   // 3a. Warehouse tools: exposed (destructive-annotated) and authorized for
@@ -1007,7 +1097,7 @@ async function main() {
       content: { text: string }[];
     };
     assert.equal(badIdResult.isError, true);
-    assert.match(badIdResult.content[0].text, /console, dashboard, app/);
+    assert.match(badIdResult.content[0].text, /console, app, or skill/);
 
     const [badKind] = await chatGptExchange([
       {

@@ -142,12 +142,10 @@ interface ChatProps {
   >;
 }
 
-type ChatActiveView = "dashboard" | "flow-editor" | "console" | "empty";
+type ChatActiveView = "flow-editor" | "console" | "empty";
 
 function normalizeChatActiveView(kind: ConsoleTab["kind"]): ChatActiveView {
-  return kind === "dashboard" || kind === "flow-editor" || kind === "console"
-    ? kind
-    : "empty";
+  return kind === "flow-editor" || kind === "console" ? kind : "empty";
 }
 
 // Claude-style floating round button used in the mobile pane headers. Each
@@ -256,10 +254,6 @@ const Chat: React.FC<ChatProps> = ({
   // Ref to capture the active console ID at the time the user submits a message
   // This prevents the race condition where user switches consoles while agent is thinking
   const capturedConsoleIdRef = useRef<string | null>(null);
-
-  // Ref to capture the active dashboard ID at submit time so switching tabs mid-turn
-  // doesn't cause the agent to read context from a different dashboard
-  const capturedDashboardIdRef = useRef<string | null>(null);
 
   // Session list / history menu state (fetch, delete, streaming indicator).
   // Called before useChat so onFinish can refresh the list via the ref.
@@ -421,9 +415,6 @@ const Chat: React.FC<ChatProps> = ({
           const activeTab = tabs.find(t => t.id === store.activeTabId);
           const computedActiveView = normalizeChatActiveView(activeTab?.kind);
           const workspaceId = workspaceIdRef.current;
-          const workspaceConnectionsForRequest = workspaceId
-            ? useSchemaStore.getState().connections[workspaceId] || []
-            : [];
 
           const flowFormState = dbFlowFormRefCurrent.current?.current
             ? dbFlowFormRefCurrent.current.current.getFormState()
@@ -458,8 +449,6 @@ const Chat: React.FC<ChatProps> = ({
             activeConsoleId: activeConsoleIdRef.current,
             activeConsoleResults,
             flowFormState,
-            workspaceConnections: workspaceConnectionsForRequest,
-            pinnedDashboardId: capturedDashboardIdRef.current,
           });
 
           return {
@@ -979,6 +968,19 @@ const Chat: React.FC<ChatProps> = ({
     setIsExistingChat(false);
   };
 
+  // A screen asked for a new chat with a first message written
+  // ("Ask Mako to fix"): start one and put the message in the composer.
+  const chatDraft = useUIStore(s => s.chatDraft);
+  const [composerDraft, setComposerDraft] = useState<typeof chatDraft>(null);
+  const createNewSessionRef = useRef(createNewSession);
+  createNewSessionRef.current = createNewSession;
+  useEffect(() => {
+    if (!chatDraft) return;
+    createNewSessionRef.current();
+    setComposerDraft(chatDraft);
+    useUIStore.getState().clearChatDraft();
+  }, [chatDraft]);
+
   const handleSelectSession = (id: string) => {
     cancelActiveClientToolCalls("session-change");
     manualStopRequestedRef.current = false;
@@ -1218,7 +1220,6 @@ const Chat: React.FC<ChatProps> = ({
     sendMessageRef,
     modelIdRef,
     capturedConsoleIdRef,
-    capturedDashboardIdRef,
     activeConsoleIdRef,
     pendingPlanToolCallIdRef,
     suppressNextAutoSendRef,
@@ -1653,6 +1654,7 @@ const Chat: React.FC<ChatProps> = ({
         editingPrompt={editingPrompt}
         onCancelEdit={handleCancelEditQueuedPrompt}
         planFeedbackMode={isPlanAwaitingFeedback}
+        draft={composerDraft}
       />
 
       <Snackbar

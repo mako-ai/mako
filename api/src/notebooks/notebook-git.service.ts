@@ -59,6 +59,8 @@ import {
 } from "./deepnote-file";
 import type { NotebookDoc } from "./types";
 
+import { ownerDirectoryFor } from "../apps/user-handles.service";
+
 const logger = loggers.api("notebook-git");
 
 /** Commit after this much quiet following an edit… */
@@ -77,11 +79,17 @@ async function repoDirIfExists(workspaceId: string): Promise<string | null> {
 
 async function uniqueNotebookPath(index: INotebookIndex): Promise<string> {
   const base = slugifyNotebookName(index.name);
+  const ownerHandle =
+    index.access === "private"
+      ? (
+          await ownerDirectoryFor(index.workspaceId.toString(), index.ownerId)
+        ).handleOf(index.ownerId)
+      : undefined;
   let slug = base;
   for (let i = 2; i < 100; i++) {
     const wanted = notebookRepoPath(slug, {
       access: index.access,
-      ownerId: index.ownerId,
+      ownerHandle,
     });
     const clash = await NotebookIndex.findOne({
       workspaceId: index.workspaceId,

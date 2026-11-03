@@ -108,6 +108,11 @@ jobs:
           pnpm --filter @mako/schemas run build
           pnpm --filter @mako/agent-tools run build
 
+      # worker-identity.db.test.ts runs the workflows runtime's own
+      # lib/mako.ts, which imports the runtime's packages, as the image does.
+      - name: Install workflows runtime packages
+        run: npm install --prefix deploy/workflows/runtime --no-audit --no-fund
+
       - name: App SDK version is published to npm
         # Scaffolds depend on `@makoai/app-sdk@^<vendored version>` (from
         # packages/app-sdk/package.json). An unpublished bump makes every

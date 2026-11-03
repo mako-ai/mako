@@ -12,7 +12,7 @@
  * Paths are PROJECT-relative (`models/foo.sql`), like every dbt file API.
  */
 import crypto from "node:crypto";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 
 export interface LocalOverlay {
   /** Commit of the workspace repo the files are relative to; absent = whole tree. */
@@ -138,7 +138,7 @@ export async function storeLocalOverlay(
 ): Promise<string> {
   const body = Buffer.from(JSON.stringify(overlay), "utf8");
   const key = overlayKey(workspaceId, body);
-  const store = getDashboardArtifactStore();
+  const store = getArtifactStore();
   if (!(await store.exists(key))) {
     await store.putBuffer(body, key, "application/json", { workspaceId });
   }
@@ -146,7 +146,7 @@ export async function storeLocalOverlay(
 }
 
 export async function loadLocalOverlay(key: string): Promise<LocalOverlay> {
-  const stream = await getDashboardArtifactStore().openReadStream(key);
+  const stream = await getArtifactStore().openReadStream(key);
   if (!stream) {
     throw new Error(
       "The uploaded dbt files for this run are gone; run `mako dbt run` again",

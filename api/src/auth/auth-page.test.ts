@@ -29,7 +29,8 @@ function consentFor(scope: string | undefined, clientName = "Mako CLI") {
   });
 }
 
-const ALL_SCOPES = "mcp query:read warehouse:write connections:write";
+const ALL_SCOPES =
+  "mcp query:read warehouse:write connections:write workflows:run";
 
 describe("MCP consent page", () => {
   // Connecting gives everything the person's role allows: no per-permission

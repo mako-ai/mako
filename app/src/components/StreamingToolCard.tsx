@@ -5,18 +5,16 @@ import React, {
   useCallback,
   useMemo,
 } from "react";
-import { Box, Typography, Collapse, CircularProgress } from "@mui/material";
+import { Box } from "@mui/material";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import {
   prism,
   tomorrow,
 } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { useTheme as useMuiTheme, keyframes } from "@mui/material/styles";
+import { useTheme as useMuiTheme } from "@mui/material/styles";
 import {
   BarChart3,
   Brain,
-  ChevronDown,
-  ChevronRight,
   Clock,
   Database,
   Download,
@@ -34,7 +32,6 @@ import {
   Table2,
   Trash2,
   Wrench,
-  X,
   ExternalLink,
 } from "lucide-react";
 import {
@@ -44,7 +41,17 @@ import {
 } from "../agent-runtime/client-tool-manifest";
 import { safeStringify } from "../lib/json-safe";
 import { getOutputSummary } from "./streaming-tool-card-summary";
-import { buiChipSx, buiShimmerLabelSx } from "./chat/bui-styles";
+import { Button } from "./ui/button";
+import {
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleTrigger,
+  TraceCollapsibleContent,
+  TraceLine,
+  TraceIcon,
+  TraceTitle,
+  TraceDescription,
+} from "./ui/trace";
 
 export type ToolPartState =
   | "input-streaming"
@@ -271,11 +278,6 @@ function hasDisplayableOutput(output: unknown): boolean {
 
 // ── Animations ───────────────────────────────────────────────
 
-const pulseKf = keyframes`
-  0%, 100% { opacity: 0.4; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.35); }
-`;
-
 // ── Component ────────────────────────────────────────────────
 
 // Terminal states: once the tool call reaches one of these, `input` and
@@ -366,7 +368,7 @@ export const StreamingToolCard = React.memo(
         // it": collapsing right at the finish transition (while this card is
         // still the streaming tail, before the next reasoning/tool/text part
         // appends) keeps the finished card fixed from then on. Because the body
-        // `<Collapse>` uses `timeout={0}`, the shrink is a single discrete
+        // Trace content collapses without animation, the shrink is a single discrete
         // frame that Virtuoso's bottom-pin (`totalListHeightChanged`) catches
         // in one shot. `isDone`/`isError`/`isActive` are monotonic (a terminal
         // card never goes back to active) and the memo comparator freezes
@@ -400,7 +402,7 @@ export const StreamingToolCard = React.memo(
     // Only build the heavy body strings when they will actually be rendered:
     // while the card is active (streaming the preview) or after the user
     // expands it. Collapsed history cards never pay this cost. The body itself
-    // is unmounted (Collapse `unmountOnExit`) so its DOM is gone too.
+    // is unmounted (TraceCollapsibleContent) so its DOM is gone too.
     const shouldRenderBody = (expanded || isActive) && hasVisibleBody;
 
     const code = useMemo(() => {
@@ -448,13 +450,8 @@ export const StreamingToolCard = React.memo(
         ? "json"
         : "text";
 
-    // A row must state its status ONCE. While the tool is live the chip carries
-    // the phase ("Generating…" / "Running…"); once it settles the chip carries
-    // only real information — the output summary ("12 rows") or the error.
-    // A successful tool with nothing to summarise shows NO chip at all: the
-    // label already goes to primary ink and the leading icon drops its accent
-    // tint when the tool settles, so a literal "Done" was the third redundant
-    // statement of the same fact.
+    // Show the active phase, then the output summary or error. A successful
+    // call without a summary needs no extra status label.
     const statusText = isStreaming
       ? "Generating…"
       : isExecuting
@@ -465,225 +462,86 @@ export const StreamingToolCard = React.memo(
             ? (outputSummary ?? "Error")
             : "";
 
-    const handleActivate = () => {
-      if (canExpand) {
-        setExpanded(prev => !prev);
-      } else {
-        onDetailClick?.();
-      }
-    };
+    const headerLine = (
+      <TraceLine
+        status={isError ? "error" : isActive ? "running" : undefined}
+        className="flex-1"
+      >
+        <TraceIcon>
+          {leadingIconUrl ? (
+            <img
+              src={leadingIconUrl}
+              alt={leadingIconAlt ?? ""}
+              className="size-4 object-contain"
+              draggable={false}
+            />
+          ) : (
+            renderToolIcon(config.icon)
+          )}
+        </TraceIcon>
+        <TraceTitle>{label}</TraceTitle>
+        {statusText && (
+          <TraceDescription className="max-w-[45%] shrink truncate text-xs">
+            {statusText}
+          </TraceDescription>
+        )}
+      </TraceLine>
+    );
 
     return (
-      <Box sx={{ my: 0.25 }}>
-        {/* Header — Beautiful UI "Tool Chips" row: icon that cross-fades to a
-            chevron, medium label, mono status chip, state affordance. */}
-        <Box
-          className="tool-card-header"
-          role="button"
-          tabIndex={0}
-          // Only claim expandability when the row really has a body; a row that
-          // merely opens the details dialog must not announce a closed
-          // disclosure. `role` + `tabIndex` (NOT `component="button"`) because
-          // the title below may itself be a real <button>, and nesting buttons
-          // is invalid HTML.
-          aria-expanded={canExpand ? expanded : undefined}
-          aria-label={statusText ? `${label}, ${statusText}` : label}
-          onClick={handleActivate}
-          onKeyDown={(event: React.KeyboardEvent<HTMLElement>) => {
-            if (event.key !== "Enter" && event.key !== " ") return;
-            if (event.target !== event.currentTarget) return;
-            // Space would otherwise scroll the chat list.
-            event.preventDefault();
-            handleActivate();
-          }}
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            gap: 1,
-            minHeight: 28,
-            px: 0.75,
-            mx: -0.75,
-            borderRadius: "8px",
-            cursor: "pointer",
-            userSelect: "none",
-            transition: "background-color 0.1s",
-            "&:hover": {
-              backgroundColor: "var(--bui-hover-2)",
-            },
-            "&:focus-visible": {
-              outline: "2px solid var(--bui-accent)",
-              outlineOffset: "1px",
-            },
-          }}
+      <Trace className="my-1">
+        <TraceCollapsible
+          open={expanded && hasVisibleBody}
+          onOpenChange={setExpanded}
         >
-          <Box
-            sx={{
-              position: "relative",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: ICON_SIZE + 3,
-              height: ICON_SIZE + 3,
-              flexShrink: 0,
-              color: isActive ? "var(--bui-accent)" : "var(--bui-ink-3)",
-              "& .tool-card-leading-icon, & .tool-card-chevron-icon": {
-                position: "absolute",
-                inset: 0,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                transition: "opacity 0.12s ease",
-              },
-              "& .tool-card-leading-icon": {
-                opacity: canExpand && expanded ? 0 : 1,
-              },
-              "& .tool-card-chevron-icon": {
-                opacity: canExpand ? (expanded ? 1 : 0) : 0,
-              },
-              ...(canExpand && {
-                ".tool-card-header:hover & .tool-card-leading-icon": {
-                  opacity: 0,
-                },
-                ".tool-card-header:hover & .tool-card-chevron-icon": {
-                  opacity: 1,
-                },
-              }),
-            }}
-          >
-            <Box className="tool-card-leading-icon">
-              {leadingIconUrl ? (
-                <Box
-                  component="img"
-                  src={leadingIconUrl}
-                  alt={leadingIconAlt ?? ""}
-                  sx={{
-                    width: ICON_SIZE + 3,
-                    height: ICON_SIZE + 3,
-                    objectFit: "contain",
-                    display: "block",
-                  }}
-                  draggable={false}
-                />
-              ) : (
-                // Prefer the tool manifest icon. A labelOverride alone (e.g. ACP
-                // human titles) must not force the terminal glyph — that made
-                // mcp__mako-workspace__* cards look worse than native Chat.
-                renderToolIcon(config.icon)
-              )}
-            </Box>
-            <Box className="tool-card-chevron-icon">
-              {expanded ? (
-                <ChevronDown size={14} />
-              ) : (
-                <ChevronRight size={14} />
-              )}
-            </Box>
-          </Box>
-
-          <Typography
-            component={onTitleClick ? "button" : "span"}
-            onClick={(event: React.MouseEvent<HTMLElement>) => {
-              if (!onTitleClick) return;
-              event.stopPropagation();
-              onTitleClick();
-            }}
-            variant="caption"
-            sx={{
-              fontWeight: 500,
-              flexShrink: 1,
-              minWidth: 0,
-              color: "var(--bui-ink)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              fontSize: "12.5px",
-              ...(isStreaming && buiShimmerLabelSx),
-              ...(onTitleClick && {
-                p: 0,
-                border: 0,
-                backgroundColor: "transparent",
-                textAlign: "left",
-                cursor: "pointer",
-                fontFamily: "inherit",
-                lineHeight: "inherit",
-                "&:hover": {
-                  textDecoration: "underline",
-                },
-              }),
-            }}
-          >
-            {label}
-          </Typography>
-
-          {statusText && (
-            <Box
-              component="span"
-              sx={{
-                ...buiChipSx,
-                flexShrink: 1,
-                maxWidth: 260,
-                ...(isError && {
-                  backgroundColor: "var(--bui-red-tint)",
-                  color: "var(--bui-red)",
-                }),
-              }}
-            >
-              {statusText}
-            </Box>
-          )}
-
-          {/* State rail. Stays mounted at a fixed minWidth in every state so
-              the row's inner width never jitters as the tool settles
-              (anti-bounce). A successful tool shows NOTHING here — the settled
-              label/icon already say it. The error ✗ earns its slot because the
-              error chip truncates at maxWidth 260. */}
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "flex-end",
-              ml: "auto",
-              pl: 0.5,
-              flexShrink: 0,
-              minWidth: 13,
-            }}
-          >
-            {isStreaming ? (
-              <Box
-                sx={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: "50%",
-                  backgroundColor: "var(--bui-accent)",
-                  animation: `${pulseKf} 1s infinite ease-in-out`,
-                }}
-              />
-            ) : isExecuting ? (
-              <CircularProgress size={12} thickness={5} />
-            ) : isError ? (
-              <X size={13} style={{ color: "var(--bui-red)" }} />
-            ) : null}
-          </Box>
-        </Box>
-
-        {/* Expandable body: code preview + output.
-            `unmountOnExit` removes the syntax-highlighted DOM (and its many
-            nodes) entirely when collapsed — critical for keeping the DOM small
-            in long chats on mobile Safari. */}
-        <Collapse in={expanded && hasVisibleBody} timeout={0} unmountOnExit>
-          {/* Detail rail (BUI expanded row): content hangs off a hairline
-              left rail aligned under the row icon. */}
-          <Box
-            sx={{
-              ml: "7px",
-              pl: 1.5,
-              py: 0.5,
-              borderLeft: "1px solid var(--bui-line-strong)",
-              display: "flex",
-              flexDirection: "column",
-              gap: 0.75,
-            }}
-          >
+          <div className="flex min-w-0 items-center gap-1">
+            {canExpand ? (
+              <TraceCollapsibleTrigger
+                className="min-h-7 flex-1"
+                aria-label={statusText ? `${label}, ${statusText}` : label}
+              >
+                {headerLine}
+              </TraceCollapsibleTrigger>
+            ) : onDetailClick ? (
+              <button
+                type="button"
+                className="min-h-7 min-w-0 flex-1 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={onDetailClick}
+                aria-label={statusText ? `${label}, ${statusText}` : label}
+              >
+                {headerLine}
+              </button>
+            ) : (
+              <div className="flex min-h-7 min-w-0 flex-1 items-center">
+                {headerLine}
+              </div>
+            )}
+            {onTitleClick && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                aria-label={`Open ${label}`}
+                title={`Open ${label}`}
+                onClick={onTitleClick}
+              >
+                <ExternalLink />
+              </Button>
+            )}
+            {canExpand && onDetailClick && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                aria-label={`Details for ${label}`}
+                title="Tool details"
+                onClick={onDetailClick}
+              >
+                <Eye />
+              </Button>
+            )}
+          </div>
+          <TraceCollapsibleContent className="flex flex-col gap-2">
             {/* Code preview */}
             {code.length > 0 && (
               <Box
@@ -727,9 +585,9 @@ export const StreamingToolCard = React.memo(
                 />
               </Box>
             )}
-          </Box>
-        </Collapse>
-      </Box>
+          </TraceCollapsibleContent>
+        </TraceCollapsible>
+      </Trace>
     );
   },
   (prev, next) => {

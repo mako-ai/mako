@@ -23,7 +23,8 @@
  */
 import fs from "node:fs/promises";
 import mongoose, { Schema, Types } from "mongoose";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
+import type { BindingPhase, BindingProgressEvent } from "./binding-progress";
 
 /**
  * A job's row lives this long past its last state change or heartbeat; a
@@ -57,6 +58,18 @@ export interface BindingJobResult {
   materializedAt?: string;
 }
 
+/**
+ * The running build's latest phase (binding-progress.ts), so the poller can
+ * say "querying the warehouse" rather than "running". In the row, not in
+ * memory: the worker and the poller are rarely the same instance.
+ */
+export interface BindingJobProgress {
+  phase: BindingPhase;
+  rowsWritten?: number;
+  bytes?: number;
+  at: Date;
+}
+
 export interface BindingJobDoc {
   _id: Types.ObjectId;
   workspaceId: string;
@@ -67,6 +80,11 @@ export interface BindingJobDoc {
   actorId: string;
   userId?: string;
   canWrite: boolean;
+  /**
+   * dev-build of an app not on main yet (unregistered-draft-app.ts): the
+   * worker synthesizes the same draft-only project the route did.
+   */
+  unregistered?: boolean;
   request: BindingJobRequest;
   status: BindingJobStatus;
   result?: BindingJobResult | null;
@@ -75,6 +93,7 @@ export interface BindingJobDoc {
   errorStatus?: number | null;
   /** Last proof of life from the worker (running jobs). */
   heartbeatAt?: Date | null;
+  progress?: BindingJobProgress | null;
   expiresAt: Date;
   createdAt?: Date;
   updatedAt?: Date;
@@ -93,6 +112,7 @@ const AppBindingJob =
         actorId: { type: String, required: true },
         userId: { type: String },
         canWrite: { type: Boolean, default: false },
+        unregistered: { type: Boolean },
         request: { type: Schema.Types.Mixed, default: {} },
         status: {
           type: String,
@@ -103,6 +123,7 @@ const AppBindingJob =
         error: { type: String },
         errorStatus: { type: Number },
         heartbeatAt: { type: Date },
+        progress: { type: Schema.Types.Mixed },
         expiresAt: { type: Date, required: true },
       },
       { collection: "app_binding_jobs", timestamps: true },
@@ -250,10 +271,30 @@ export async function heartbeatBindingJob(
 
 async function deleteQuietly(key: string): Promise<void> {
   try {
-    await getDashboardArtifactStore().delete(key);
+    await getArtifactStore().delete(key);
   } catch {
     // Missing already, or the store is unreachable: the prune retries.
   }
+}
+
+/** The worker's phase report. Running jobs only: never undoes a result. */
+export async function recordBindingJobProgress(
+  jobId: string,
+  event: BindingProgressEvent,
+  now: Date = new Date(),
+): Promise<void> {
+  const progress: BindingJobProgress = {
+    phase: event.phase,
+    ...(event.rowsWritten !== undefined
+      ? { rowsWritten: event.rowsWritten }
+      : {}),
+    ...(event.bytes !== undefined ? { bytes: event.bytes } : {}),
+    at: now,
+  };
+  await AppBindingJob.updateOne(
+    { _id: new Types.ObjectId(jobId), status: "running" },
+    { $set: { progress } },
+  );
 }
 
 /** The worker's read: by id alone (the event carries only the id). */
@@ -293,7 +334,7 @@ export async function storeJobDraft(
 ): Promise<string> {
   const key = jobDraftKey(job.projectId, job._id.toString());
   try {
-    await getDashboardArtifactStore().put(filePath, key, {
+    await getArtifactStore().put(filePath, key, {
       appProjectId: job.projectId,
       binding: job.name,
       draft: "true",
@@ -311,6 +352,17 @@ export function serializeBindingJob(job: BindingJobDoc) {
     binding: job.name,
     kind: job.kind,
     status: job.status,
+    ...(job.status === "running" && job.progress
+      ? {
+          phase: job.progress.phase,
+          ...(job.progress.rowsWritten !== undefined
+            ? { rowsWritten: job.progress.rowsWritten }
+            : {}),
+          ...(job.progress.bytes !== undefined
+            ? { bytes: job.progress.bytes }
+            : {}),
+        }
+      : {}),
     ...(job.result
       ? {
           build: job.result.build,

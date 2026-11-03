@@ -75,6 +75,22 @@ const ALL_CAPABILITY_GRANTS: ReadonlySet<CapabilityGrant> = new Set(
  */
 const PLAN_GRANT_GATING_ENABLED = false;
 
+/**
+ * What a turn nobody is watching (a workflow step's agent) may not use: the
+ * shell and what puts code on main or starts workflows. Its goal can carry
+ * text from outside (a webhook body), and it acts as the person who deployed
+ * the workflows. It reads, queries and works on consoles and apps' data.
+ */
+const HEADLESS_DENIED_TOOLS = new Set([
+  "app_bash",
+  "app_commit",
+  "app_merge_to_main",
+  "workflow_bash",
+  "workflow_commit",
+  "workflow_merge_to_main",
+  "workflows_triggers",
+]);
+
 /** Grants held by the native Chat surface for the current request. */
 export function nativeCapabilityGrants(
   modeState: ModeState,
@@ -467,8 +483,14 @@ export function buildUnifiedModeRuntime(params: {
   tabKind?: string;
   /** Gateway model id (e.g. "xai/grok-4.5") — drives the provider tool cap. */
   modelId?: string;
+  /**
+   * A turn nobody is watching (a workflow step). Tools that run in a browser
+   * or wait for a person have no `execute` here and would never return, so
+   * they are left out.
+   */
+  headless?: boolean;
 }): UnifiedModeRuntime {
-  const { context, messages, tabKind, modelId } = params;
+  const { context, messages, tabKind, modelId, headless } = params;
 
   const defaultMode = defaultExpertiseMode(context, tabKind);
   const modeState = deriveModeState(messages, defaultMode);
@@ -526,17 +548,29 @@ export function buildUnifiedModeRuntime(params: {
         context.workspaceId,
         context.userId,
       );
-      return member?.role ?? null;
+      const role = member?.role ?? null;
+      // Workflow code of any member runs as the person who set the worker
+      // up: it gets that person's data access, never their admin rights.
+      return headless && (role === "owner" || role === "admin")
+        ? "member"
+        : role;
     })();
     return liveRolePromise;
   };
+  const offered = {
+    ...domainTools,
+    ...clientPlanTools,
+    ...modeTools,
+    ...discoveryTools,
+  } as ToolSet;
   const tools: ToolSet = enforceCapabilityGrantsAtExecution(
-    {
-      ...domainTools,
-      ...clientPlanTools,
-      ...modeTools,
-      ...discoveryTools,
-    } as ToolSet,
+    headless
+      ? Object.fromEntries(
+          Object.entries(offered).filter(
+            ([name, tool]) => tool.execute && !HEADLESS_DENIED_TOOLS.has(name),
+          ),
+        )
+      : offered,
     () => nativeCapabilityGrants(modeState),
     liveRole,
   );

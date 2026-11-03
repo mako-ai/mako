@@ -116,14 +116,6 @@ export type RealtimeEvent =
     }
   // Project list/settings changed (create/patch/delete) — refetch projects.
   | { type: "dbt.project.updated"; projectId?: string; clientId?: string }
-  | {
-      type: "dashboard.updated";
-      dashboardId: string;
-      version: number;
-      updatedBy: string;
-      clientId?: string;
-      origin: "agent" | "save";
-    }
   // Notebook document changed (human or agent save). Open tabs pull the
   // authoritative notebook over HTTP when the carried version is newer than
   // what they hold; `clientId` suppresses the writer's own echo.

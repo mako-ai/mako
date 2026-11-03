@@ -3,7 +3,7 @@
  *
  * Owns the palette open/closed state and the server-backed console search
  * (network calls live in stores per the frontend guidelines). Everything
- * else the palette shows (open tabs, dashboards, apps, ...) is read from
+ * else the palette shows (open tabs, consoles, apps, ...) is read from
  * the owning domain stores at render time.
  */
 

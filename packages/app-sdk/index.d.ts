@@ -1,5 +1,88 @@
 import type * as React from "react";
 
+/**
+ * What a pending binding load is waiting on (SDK ≥ 2.7.4).
+ *
+ * - `requesting`: sent, the server has not said yet (or predates phases).
+ * - `queued`, `checking`, `querying_warehouse`, `writing_parquet`,
+ *   `uploading`: Mako is BUILDING the file from the warehouse (seconds to
+ *   minutes). Only a refresh, a laptop dev build or a sandbox live binding
+ *   builds; a published app never builds on a read.
+ * - `resolving`, `signing`: the file exists; Mako is finding it and signing
+ *   its download link (well under a second).
+ * - `downloading`, `loading_duckdb`, `running_sql`: the browser's own work.
+ */
+export type BindingPhase =
+  | "requesting"
+  | "queued"
+  | "checking"
+  | "querying_warehouse"
+  | "writing_parquet"
+  | "uploading"
+  | "resolving"
+  | "signing"
+  | "downloading"
+  | "loading_duckdb"
+  | "running_sql";
+
+/** The phases grouped by the wait a person cares about. */
+export type BindingStage =
+  | "waiting"
+  | "building"
+  | "linking"
+  | "downloading"
+  | "loading"
+  | "querying";
+
+/** One binding's progress while it loads or refreshes. */
+export interface BindingProgress {
+  phase: BindingPhase;
+  /** Rows written so far while building; null when the server does not say. */
+  rowsWritten?: number | null;
+  /** Building: the file's size. Downloading: bytes received so far. */
+  bytes?: number | null;
+  /** Downloading: the file's size, when the server sent Content-Length. */
+  bytesTotal?: number | null;
+}
+
+/** Several bindings at once (useDuckDB): the slowest wait, sums, a count. */
+export interface CombinedBindingProgress {
+  phase: BindingPhase;
+  rowsWritten: number | null;
+  bytes: number | null;
+  bytesTotal: number | null;
+  pending: number;
+}
+
+export const BINDING_PHASES: readonly BindingPhase[];
+export const BINDING_PHASE_LABELS: Record<BindingPhase, string>;
+/** "Building from warehouse", "Getting download link", "Downloading", "Loading into DuckDB", … */
+export const BINDING_STAGE_LABELS: Record<BindingStage, string>;
+export function bindingPhaseStage(phase: BindingPhase | string | null | undefined): BindingStage | null;
+/**
+ * A progress-bar caption: the stage label plus rows or bytes when known,
+ * e.g. "Building from warehouse · 120,000 rows", "Downloading · 3.1 of 10.0 MB".
+ * Empty when nothing is pending. Pass a hook's state (`bindingPhaseLabel(q)`)
+ * or a progress record.
+ */
+export function bindingPhaseLabel(
+  progress:
+    | BindingPhase
+    | {
+        phase: BindingPhase | null;
+        rowsWritten?: number | null;
+        bytes?: number | null;
+        bytesTotal?: number | null;
+      }
+    | null
+    | undefined,
+): string;
+
+/** One binding's progress, or null when it is not loading. */
+export function useBindingProgress(name: string): BindingProgress | null;
+/** Every pending binding's progress, by name. */
+export function useBindingProgress(): Record<string, BindingProgress>;
+
 /** What a refresh built — the server's answer to `POST __data/<name>/refresh`. */
 export interface RefreshResult {
   binding: string;
@@ -28,6 +111,17 @@ export interface QueryState<Row = Record<string, unknown>> {
   refreshing: boolean;
   truncated: boolean;
   /**
+   * What `loading` / `refreshing` is waiting on; null when neither is true.
+   * Caption it with `bindingPhaseLabel(phase)`.
+   */
+  phase: BindingPhase | null;
+  /** While building: rows written so far, when the server says. */
+  rowsWritten: number | null;
+  /** While building: file size; while downloading: bytes received. */
+  bytes: number | null;
+  /** While downloading: the file's size, when known. */
+  bytesTotal: number | null;
+  /**
    * Rematerialize the data behind this query and re-run it. Rejects with a
    * `RefreshError` — the rows on screen are untouched when it does.
    */
@@ -41,6 +135,56 @@ export interface DuckDBState<Row = Record<string, unknown>>
 export interface QueryOptions {
   rowLimit?: number | null;
 }
+export interface UseQueryOptions extends QueryOptions {
+  /**
+   * Opt in to the preview: fetch `__data/<name>.snapshot.json` (the first
+   * rows of the last build, no DuckDB-WASM needed) while the parquet loads,
+   * and expose it as `preview`. `data`, `loading`, `phase` and every other
+   * field behave exactly as without it. Default false.
+   */
+  snapshot?: boolean;
+}
+/**
+ * The first rows of the binding's last build, for a skeleton or a first
+ * paint. The first N rows of the build stream in the query's own order: not
+ * a sample, not sorted, not filtered. Never aggregate it.
+ */
+export interface QueryPreview<Row = Record<string, unknown>> {
+  /** At most a few hundred rows, typed exactly as `data` will be. */
+  data: Row[];
+  fields: string[];
+  /** Rows in the whole build, not in `data`. */
+  rowCount: number;
+  /** True when `data` holds fewer rows than `rowCount`. */
+  truncated: boolean;
+  /** ISO 8601, when the snapshot's build ran; null when unknown. */
+  builtAt: string | null;
+}
+export interface DuckDBOptions extends QueryOptions {
+  /**
+   * "arrow": `data` is DuckDB's Arrow Table as returned (no row objects, no
+   * date/BigInt normalization, `rowLimit` ignored). Default "rows".
+   */
+  format?: "rows" | "arrow";
+}
+
+/**
+ * The page's shared DuckDB-WASM engine (`AsyncDuckDB` from
+ * @duckdb/duckdb-wasm 1.29), typed loosely so the SDK needs no dependency.
+ * Never close() or terminate() it: every hook on the page reads from it.
+ */
+export interface SharedDuckDB {
+  connect(): Promise<DuckDBConnection>;
+  registerFileBuffer(name: string, buffer: Uint8Array): Promise<void>;
+  dropFile(name: string): Promise<void>;
+  [key: string]: unknown;
+}
+export interface DuckDBConnection {
+  /** Resolves with an Arrow Table. */
+  query(sql: string): Promise<any>;
+  close(): Promise<void>;
+  [key: string]: unknown;
+}
 export interface MakoLocation {
   pathname: string;
   search: string;
@@ -49,23 +193,172 @@ export interface MakoLocation {
   searchParams: URLSearchParams;
 }
 
-/** Rows of a named data binding (bindings/<name>.sql, materialized). */
+/**
+ * Rows of a named data binding (bindings/<name>.sql, materialized).
+ *
+ * With `{ snapshot: true }` the result also carries `preview`: the snapshot
+ * rows while `loading` is true and no error has arrived, null otherwise.
+ * `data` stays null until the full parquet is in, so code that sums or
+ * filters `data` never sees a prefix.
+ */
 export function useQuery<Row = Record<string, unknown>>(
   name: string,
-  opts?: QueryOptions,
-): QueryState<Row> & { refresh: () => Promise<RefreshResult> };
+  opts: UseQueryOptions & { snapshot: true },
+): QueryState<Row> & {
+  refresh: () => Promise<RefreshResult>;
+  /** The binding's own progress record (null when it is not loading). */
+  progress: BindingProgress | null;
+  preview: QueryPreview<Row> | null;
+};
+export function useQuery<Row = Record<string, unknown>>(
+  name: string,
+  opts?: UseQueryOptions,
+): QueryState<Row> & {
+  refresh: () => Promise<RefreshResult>;
+  /** The binding's own progress record (null when it is not loading). */
+  progress: BindingProgress | null;
+};
 
-/** Analytical SQL over the app's bindings; table names are binding names. */
+/** This package's version at runtime; pages also get `window.__MAKO_APP_SDK__`. */
+export const SDK_VERSION: string;
+
+/**
+ * Analytical SQL over the app's bindings; table names are binding names.
+ * Since 2.8 only the bindings the SQL names are downloaded (each decoded
+ * once into a DuckDB table); one it misses loads on DuckDB's "table does
+ * not exist" and the query re-runs. Catalog queries (SHOW TABLES,
+ * information_schema) load every binding.
+ */
 export function useDuckDB<Row = Record<string, unknown>>(
   sql: string,
-  opts?: QueryOptions,
-): DuckDBState<Row> & { refresh: () => Promise<RefreshResult[]> };
+  opts?: QueryOptions & { format?: "rows" },
+): DuckDBState<Row> & {
+  refresh: () => Promise<RefreshResult[]>;
+  /** The slowest pending binding's wait, with sums; null when none. */
+  progress: CombinedBindingProgress | null;
+  /** Every pending binding's progress, by name. */
+  bindings: Record<string, BindingProgress>;
+};
+export function useDuckDB(
+  sql: string,
+  opts: DuckDBOptions & { format: "arrow" },
+): Omit<DuckDBState, "data"> & {
+  /** The Arrow Table (apache-arrow 17) DuckDB returned. */
+  data: any | null;
+  refresh: () => Promise<RefreshResult[]>;
+  /** The slowest pending binding's wait, with sums; null when none. */
+  progress: CombinedBindingProgress | null;
+  /** Every pending binding's progress, by name. */
+  bindings: Record<string, BindingProgress>;
+};
+
+export interface RefreshOptions {
+  /**
+   * Every phase of this refresh: the build, then the reload (link,
+   * download, DuckDB), then `null` once it settles.
+   */
+  onProgress?: (progress: BindingProgress | null) => void;
+}
+
+/**
+ * The page's shared DuckDB, booted on first call. Use it for anything the
+ * hooks do not cover instead of importing @duckdb/duckdb-wasm, hyparquet or
+ * apache-arrow readers. Never close or terminate it. Calling it keeps the
+ * engine for the page's life: Mako cannot give this frame's heap back when the
+ * page runs short (see withConnection, ensureBinding and SQL that writes).
+ */
+export function getDuckDB(): Promise<SharedDuckDB>;
+
+/**
+ * Run `fn` on a fresh connection to the shared DuckDB; closed afterwards. Keeps
+ * the engine for the page's life, like getDuckDB().
+ */
+export function withConnection<T>(fn: (conn: DuckDBConnection) => Promise<T>): Promise<T>;
+
+/**
+ * Load a binding into the shared DuckDB as a table (once per page;
+ * concurrent callers share the download). Resolves with the table name.
+ * Each call counts as a read for eviction. Under memory pressure the table
+ * may become a view over its parquet (same name and rows, slower to query);
+ * a binding loaded this way is never dropped outright. Keeps the engine for the
+ * page's life, like getDuckDB().
+ */
+export function ensureBinding(name: string): Promise<string>;
+
+/** Drop a loaded binding's table (or view) to free memory; the next read reloads it. */
+export function unloadBinding(name: string): Promise<void>;
+
+/** 1.5 GiB: what binding tables may hold in DuckDB unless the app says otherwise. */
+export const DEFAULT_BINDING_MEMORY_BUDGET: number;
+/** 512 MiB: the compressed parquet copies kept for demoted bindings. */
+export const DEFAULT_BINDING_BLOB_BUDGET: number;
+
+/**
+ * Cap what bindings may hold in this frame's DuckDB, in bytes (default 1.5 GiB,
+ * half of the 3.1 GiB heap; queries need the rest). Tables an app made itself do
+ * not count. Checked with an estimate from parquet metadata before each load, so
+ * it can overshoot (measured: 1,700 MiB). Past it, the least recently read unpinned
+ * tables become views over a heap copy of their parquet, and a new binding lands as
+ * a view if that is not enough. A read promotes a view back to a table when it
+ * fits, without a download. `blobBytes` caps the parquet kept in JS memory (default
+ * 512 MiB); past it the oldest unpinned views are dropped and download again when
+ * read. `Infinity` turns a cap off. Resolves once the engine is back under the new
+ * cap, and ends any memory pressure.
+ */
+export function setBindingMemoryBudget(bytes: number, opts?: { blobBytes?: number }): Promise<void>;
+
+export interface BindingMemory {
+  /**
+   * The frame's whole heap now: duckdb_memory(), with an app's own tables, plus the
+   * parquet copies views read. Query scratch never shows.
+   */
+  usedBytes: number;
+  /** What the SDK placed, the figure the budget caps. It can pass the budget: the check is an estimate. */
+  bindingBytes: number;
+  budgetBytes: number;
+  blobBudgetBytes: number;
+  /** A query ran out of memory in the last minute: tables stay at what relief left. */
+  pressure: boolean;
+  /** Every loaded binding, least recently read first. */
+  bindings: {
+    name: string;
+    /** "table": decoded in the heap. "view": decoded from its parquet copy in the heap on each query. */
+    storage: "table" | "view";
+    /** Read by a mounted hook or a query in flight: evicted last. */
+    pinned: boolean;
+    /** The compressed copy kept for a demotion; null once dropped. */
+    parquetBytes: number | null;
+  }[];
+}
+
+/** What the binding tables hold right now, for a debug panel or a test. */
+export function getBindingMemory(): Promise<BindingMemory>;
+
+/**
+ * The binding's raw parquet bytes, not registered anywhere — for an app with
+ * its own reader (register them via getDuckDB().registerFileBuffer to use
+ * read_parquet options). Rejects like a failed load (`status`, message).
+ */
+export function fetchBindingBytes(
+  name: string,
+  opts?: {
+    fresh?: boolean;
+    /**
+     * The same phases a hook reports (requesting → resolving/signing or a
+     * build → downloading with `bytes` / `bytesTotal`), then `null`.
+     */
+    onProgress?: (progress: BindingProgress | null) => void;
+  },
+): Promise<Uint8Array>;
 
 /**
  * Rematerialize one binding on demand and reload it everywhere it is used.
  * Concurrent calls for the same binding share one request.
  */
-export function refreshBinding(name: string): Promise<RefreshResult>;
+export function refreshBinding(
+  name: string,
+  opts?: RefreshOptions,
+): Promise<RefreshResult>;
 
 /**
  * Refresh several bindings — all of them when `names` is omitted. Every one
@@ -127,3 +420,15 @@ export function useSearchParams(): [
   ) => void,
 ];
 export function navigate(to: string, opts?: { replace?: boolean }): void;
+/**
+ * The Mako shortcut a keydown stands for ("mod+k" for Cmd/Ctrl+K), or null.
+ * Inside Mako the SDK forwards these to the host, because a cross-origin
+ * app frame keeps its keystrokes from Mako's own listeners.
+ */
+export function hostShortcutFor(event: {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+}): "mod+k" | null;

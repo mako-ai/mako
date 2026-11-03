@@ -11,8 +11,17 @@
  * every definition change is: committed to `flows/<slug>.yml`
  * (`webhook.provider_webhook_id`), then mirrored into the Mongo index.
  *
+ * It also provisions: a flow whose webhook trigger is on but which was never
+ * provisioned (no signing secret yet) gets its subscription on save, for
+ * connectors that can find one by URL (`updateWebhookSubscription`). An
+ * existing subscription on the flow's URL is adopted; one is created only
+ * when none exists, so saving twice never makes a duplicate. Connectors that
+ * cannot look one up keep the explicit "Create in …" button.
+ *
  * Best-effort by design: a provider outage or a revoked key must not fail a
- * flow save or a repo push. Every outcome is returned and logged.
+ * flow save or a repo push. Every outcome is returned and logged; a refused
+ * provisioning is also stored on the flow (`webhookConfig.provisionError`).
+ * Polling is never affected: webhooks only add speed on top of it.
  */
 import { Types } from "mongoose";
 
@@ -22,6 +31,7 @@ import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { commitFlowFile } from "./flow-config.service";
+import { isWebhookFlow } from "./flow-triggers.service";
 
 export { flowEntitySignature } from "../sync-cdc/entity-selection";
 
@@ -29,6 +39,7 @@ const logger = loggers.api("flow-webhook-subscription");
 
 export type FlowWebhookSubscriptionSyncResult =
   | { status: "updated"; providerWebhookId: string }
+  | { status: "provisioned"; providerWebhookId: string; adopted: boolean }
   | { status: "skipped"; reason: string }
   | { status: "not_found" }
   | { status: "failed"; error: string };
@@ -44,16 +55,11 @@ export async function syncFlowWebhookSubscription(
   deps: FlowWebhookSubscriptionDeps = defaultDeps,
 ): Promise<FlowWebhookSubscriptionSyncResult> {
   const webhook = flow.webhookConfig;
-  if (flow.type !== "webhook") {
+  if (!isWebhookFlow(flow)) {
     return { status: "skipped", reason: "not a webhook flow" };
   }
   if (!webhook?.enabled || !webhook.endpoint) {
     return { status: "skipped", reason: "webhook trigger off" };
-  }
-  // No secret means the flow was never provisioned (or the secret was
-  // cleared): there is no subscription whose deliveries we could verify.
-  if (!webhook.secret) {
-    return { status: "skipped", reason: "webhook not provisioned" };
   }
   if (!flow.dataSourceId) {
     return { status: "skipped", reason: "no connector data source" };
@@ -68,10 +74,28 @@ export async function syncFlowWebhookSubscription(
     }
     const connector = await syncConnectorRegistry.getConnectorFor(source);
     if (!connector?.supportsWebhookSubscriptionUpdate()) {
-      return { status: "skipped", reason: "connector cannot update webhooks" };
+      // Close, PandaDoc, Calendly, Claap…: provisioned only by the explicit
+      // button, never on save (they cannot find a subscription by URL, so a
+      // second call could create a duplicate).
+      return {
+        status: "skipped",
+        reason: webhook.secret
+          ? "connector cannot update webhooks"
+          : "webhook not provisioned",
+      };
     }
 
     const { entities } = resolveConfiguredEntities(flow);
+
+    // No secret: never provisioned (or the secret was cleared). Adopt the
+    // subscription already on this URL, else create one.
+    if (!webhook.secret) {
+      if (!connector.supportsWebhookProvisioning()) {
+        return { status: "skipped", reason: "webhook not provisioned" };
+      }
+      return await provisionFlowWebhook(flow, connector, entities, deps);
+    }
+
     const updated = await connector.updateWebhookSubscription({
       endpointUrl: webhook.endpoint,
       enabledEntities: entities,
@@ -195,5 +219,89 @@ async function recordProviderWebhookId(
           : {}),
       },
     },
+  );
+}
+
+type SubscriptionConnector = NonNullable<
+  Awaited<ReturnType<typeof syncConnectorRegistry.getConnectorFor>>
+>;
+
+/**
+ * First subscription for a flow whose webhook trigger is on. Adopts what is
+ * already on the flow's URL (`updateWebhookSubscription` finds it by URL),
+ * creates only when nothing is there. A refusal is stored on the flow.
+ */
+async function provisionFlowWebhook(
+  flow: IFlow,
+  connector: SubscriptionConnector,
+  entities: string[],
+  deps: FlowWebhookSubscriptionDeps,
+): Promise<FlowWebhookSubscriptionSyncResult> {
+  const endpointUrl = flow.webhookConfig?.endpoint ?? "";
+  const flowId = String(flow._id);
+  try {
+    let result = await connector.updateWebhookSubscription({
+      endpointUrl,
+      enabledEntities: entities,
+      providerWebhookId: flow.webhookConfig?.providerWebhookId,
+    });
+    const adopted = Boolean(result);
+    if (!result) {
+      result = await connector.createWebhookSubscription({
+        endpointUrl,
+        enabledEntities: entities,
+      });
+    }
+
+    if (result.providerWebhookId !== flow.webhookConfig?.providerWebhookId) {
+      await recordProviderWebhookId(flow, result.providerWebhookId, deps);
+    }
+    if (!result.signingSecret) {
+      // An adopted Stripe endpoint never reveals its secret again.
+      const message =
+        "The webhook subscription exists, but the provider did not return its signing secret. " +
+        "Paste it into the Webhook Secret field, or re-provision with “Create in …” to make a new one.";
+      await storeProvisionError(flowId, message);
+      return { status: "failed", error: message };
+    }
+
+    if (flow.webhookConfig) flow.webhookConfig.secret = result.signingSecret;
+    await Flow.updateOne(
+      { _id: new Types.ObjectId(flowId) },
+      {
+        $set: {
+          "webhookConfig.secret": result.signingSecret,
+          "webhookConfig.provisionError": null,
+        },
+      },
+    );
+    logger.info("Webhook provisioned on save", {
+      flowId,
+      providerWebhookId: result.providerWebhookId,
+      adopted,
+    });
+    return {
+      status: "provisioned",
+      providerWebhookId: result.providerWebhookId,
+      adopted,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await storeProvisionError(flowId, message);
+    logger.warn("Webhook not provisioned on save; the flow keeps polling", {
+      flowId,
+      error: message,
+    });
+    return { status: "failed", error: message };
+  }
+}
+
+async function storeProvisionError(
+  flowId: string,
+  message: string,
+): Promise<void> {
+  await Flow.updateOne(
+    { _id: new Types.ObjectId(flowId) },
+    { $set: { "webhookConfig.provisionError": { message, at: new Date() } } },
   );
 }

@@ -88,8 +88,7 @@ export interface ProvisionWebhookOptions {
   enabledEntities?: string[];
 }
 
-export interface UpdateWebhookSubscriptionOptions
-  extends ProvisionWebhookOptions {
+export interface UpdateWebhookSubscriptionOptions extends ProvisionWebhookOptions {
   /** Id stored from an earlier provisioning, when known. */
   providerWebhookId?: string;
 }
@@ -145,10 +144,7 @@ export interface WebhookCapabilities {
  * - `none`           `since` is ignored entirely; every poll re-fetches everything
  */
 export type IncrementalMode =
-  | "native"
-  | "client-filter"
-  | "created-anchor"
-  | "none";
+  "native" | "client-filter" | "created-anchor" | "none";
 
 /**
  * Static, UI-facing description of a connector's ability to pull only
@@ -183,12 +179,7 @@ export interface IncrementalCapabilities {
 export type NormalizedCdcRecord = Omit<NormalizedCdcEvent, "runId">;
 
 export type ConnectorLogicalType =
-  | "string"
-  | "number"
-  | "integer"
-  | "boolean"
-  | "timestamp"
-  | "json";
+  "string" | "number" | "integer" | "boolean" | "timestamp" | "json";
 
 export interface ConnectorFieldSchema {
   type: ConnectorLogicalType;
@@ -498,6 +489,21 @@ export abstract class BaseConnector {
   extractWebhookData(_event: any): { id: string; data: any } | null {
     // Default implementation - connectors should override
     return null;
+  }
+
+  /**
+   * Optional async step after `extractWebhookCdcRecords`, for providers whose
+   * webhook payload only LINKS to data that must be fetched while the link is
+   * valid (e.g. Claap transcripts behind 24-hour signed URLs). Receives the
+   * extracted records and which entities the flow syncs, and returns the full
+   * list (the originals plus any fetched records). The webhook processor keeps
+   * the original records if this throws. Default: unchanged.
+   */
+  async enrichWebhookCdcRecords(
+    records: NormalizedCdcRecord[],
+    _options: { isEntityEnabled: (entity: string) => boolean },
+  ): Promise<NormalizedCdcRecord[]> {
+    return records;
   }
 
   /**

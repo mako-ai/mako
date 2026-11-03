@@ -226,6 +226,12 @@ jobs:
       KERNEL_PROVIDER: gke
       KERNEL_GKE_ENDPOINT: ${{ vars.DEV_KERNEL_GKE_ENDPOINT }}
       KERNEL_GKE_CA_CERT: ${{ vars.DEV_KERNEL_GKE_CA_CERT }}
+      # Workflows (deploy/workflows): previews share the dev Hatchet and
+      # cluster, so each PR prefixes its tenants and worker Deployments.
+      # The image's tag is resolved before the deploy (resolve-runtime-image.sh).
+      WORKFLOWS_RUNTIME_REPOSITORY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_DEV_PROJECT_ID }}/${{ vars.GCP_DEV_ARTIFACT_REPOSITORY }}/workflows-runtime
+      WORKFLOWS_NAME_PREFIX: pr-${{ needs.detect-changes.outputs.pr_number }}-
+      HATCHET_API_URL: ${{ vars.DEV_HATCHET_API_URL }}
       BILLING_ENABLED: "true"
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
@@ -539,12 +545,6 @@ jobs:
             db.query_executions.createIndex({ workspaceId: 1, status: 1 });
             db.query_executions.createIndex({ executedAt: 1 }, { expireAfterSeconds: 7776000 });
 
-            db.createCollection('materialization_runs');
-            db.materialization_runs.createIndex({ dashboardId: 1, dataSourceId: 1, requestedAt: -1 });
-            db.materialization_runs.createIndex({ workspaceId: 1, requestedAt: -1 });
-            db.materialization_runs.createIndex({ status: 1, lastHeartbeat: 1 });
-            db.materialization_runs.createIndex({ requestedAt: 1 }, { expireAfterSeconds: 2592000 });
-
             db.createCollection('chats');
             db.chats.createIndex({ workspaceId: 1 });
             db.chats.createIndex({ workspaceId: 1, title: 1 });
@@ -559,22 +559,6 @@ jobs:
             print('Empty collections with indexes created');
           "
 
-          # Reset stale materialization statuses inherited from production.
-          # Without this, dashboards stuck in "building" state from prod remain
-          # permanently stuck since the PR has no matching materialization runs.
-          echo "Resetting stale materialization statuses..."
-          mongosh "$EPHEMERAL_DB_URL" --quiet --eval "
-            const result = db.dashboards.updateMany(
-              { 'dataSources.cache.parquetBuildStatus': { \$in: ['building', 'queued'] } },
-              { \$set: {
-                'dataSources.\$[ds].cache.parquetBuildStatus': null,
-                'dataSources.\$[ds].cache.parquetLastError': null
-              }},
-              { arrayFilters: [{ 'ds.cache.parquetBuildStatus': { \$in: ['building', 'queued'] } }] }
-            );
-            print('Reset ' + result.modifiedCount + ' dashboard(s) with stale materialization status');
-          " || echo "⚠️ Failed to reset materialization statuses (non-fatal)"
-
       - name: Set database URL
         id: db-url
         run: |
@@ -583,6 +567,14 @@ jobs:
           else
             echo "db_url=${{ secrets.STAGING_DATABASE_URL }}" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Resolve workflows runtime image
+        run: |
+          # Tagged by the runtime's content, so the API moves worker pods to
+          # it when it starts; `:latest` never changes, so they never would.
+          IMAGE=$(deploy/workflows/resolve-runtime-image.sh "${WORKFLOWS_RUNTIME_REPOSITORY}")
+          echo "WORKFLOWS_RUNTIME_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "Workflows runtime image: ${IMAGE}"
 
       - name: Deploy to Cloud Run
         id: deploy
@@ -670,6 +662,11 @@ jobs:
             --set-env-vars KERNEL_PROVIDER=${KERNEL_PROVIDER} \
             --set-env-vars KERNEL_GKE_ENDPOINT=${KERNEL_GKE_ENDPOINT} \
             --set-env-vars KERNEL_GKE_CA_CERT=${KERNEL_GKE_CA_CERT} \
+            --set-env-vars WORKFLOWS_RUNTIME_IMAGE=${WORKFLOWS_RUNTIME_IMAGE} \
+            --set-env-vars WORKFLOWS_NAME_PREFIX=${WORKFLOWS_NAME_PREFIX} \
+            --set-env-vars HATCHET_API_URL=${HATCHET_API_URL} \
+            --set-env-vars HATCHET_CLIENT_TLS_STRATEGY=none \
+            --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest \
             --quiet
 
           # Get the Cloud Run URL
@@ -689,26 +686,19 @@ jobs:
 
           INNGEST_URL="${{ steps.deploy.outputs.cloud_run_url }}/api/inngest"
 
-          echo "Waiting for preview endpoint to become ready at ${INNGEST_URL}..."
-          for attempt in 1 2 3 4 5; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${INNGEST_URL}" 2>/dev/null || true)
-            if [ "${STATUS}" = "200" ]; then
-              echo "Preview endpoint is ready"
-              break
-            fi
-
-            if [ "${attempt}" = "5" ]; then
-              echo "Inngest sync failed after retries (non-fatal for PR previews)"
+          # Same as the production step: PUT until it takes. (Inngest v4
+          # answers an unsigned GET with 401, so a GET readiness gate never
+          # opens and the preview registers no functions.)
+          echo "Syncing Inngest app for branch environment pr-${PR_NUMBER} at ${INNGEST_URL}..."
+          for attempt in 1 2 3 4 5 6; do
+            if curl -X PUT "${INNGEST_URL}" --fail-with-body --silent --show-error; then
+              echo "Inngest sync complete"
               exit 0
             fi
-
-            echo "Attempt ${attempt}/5 returned HTTP ${STATUS:-unknown}; retrying in 10s..."
+            echo "Attempt ${attempt}/6 failed; retrying in 10s..."
             sleep 10
           done
-
-          echo "Syncing Inngest app for branch environment pr-${PR_NUMBER}..."
-          curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 5 -X PUT "${INNGEST_URL}"
-          echo "Inngest sync complete"
+          echo "::warning::Inngest sync failed after retries; preview functions are not registered"
 
       - name: Run migrations (ephemeral DB only)
         if: needs.detect-changes.outputs.migrations_changed == 'true' || needs.detect-changes.outputs.rebuild_ephemeral_db == 'true'
@@ -860,6 +850,9 @@ jobs:
       BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
       CLIENT_URL: https://app.mako.ai
       DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      # App lifecycle (stale notices, archive, paused schedules): unset = dry
+      # run everywhere; "all", or a comma-separated list of workspace ids.
+      APPS_LIFECYCLE_ENFORCE: ${{ vars.APPS_LIFECYCLE_ENFORCE }}
       ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
       GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
       GH_CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
@@ -909,6 +902,11 @@ jobs:
       KERNEL_PROVIDER: gke
       KERNEL_GKE_ENDPOINT: ${{ vars.KERNEL_GKE_ENDPOINT }}
       KERNEL_GKE_CA_CERT: ${{ vars.KERNEL_GKE_CA_CERT }}
+      # Workflows (deploy/workflows): the prod Hatchet behind its internal load
+      # balancer, and the runtime image the prod registry publishes from master.
+      # The image's tag is resolved before the deploy (resolve-runtime-image.sh).
+      WORKFLOWS_RUNTIME_REPOSITORY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ fromJSON(vars.GCP_PROD_DEPLOY_CONFIG).project_id }}/${{ fromJSON(vars.GCP_PROD_DEPLOY_CONFIG).artifact_repository }}/workflows-runtime
+      HATCHET_API_URL: ${{ vars.PROD_HATCHET_API_URL }}
       BILLING_ENABLED: "true"
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
@@ -1030,6 +1028,14 @@ jobs:
           provenance: false
           sbom: false
 
+      - name: Resolve workflows runtime image
+        run: |
+          # Tagged by the runtime's content, so the API moves worker pods to
+          # it when it starts; `:latest` never changes, so they never would.
+          IMAGE=$(deploy/workflows/resolve-runtime-image.sh "${WORKFLOWS_RUNTIME_REPOSITORY}")
+          echo "WORKFLOWS_RUNTIME_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "Workflows runtime image: ${IMAGE}"
+
       - name: Resolve existing Cloud Run URL
         id: cloud-run-before
         run: |
@@ -1058,6 +1064,8 @@ jobs:
             --subnet=mako-subnet \
             --vpc-egress=all-traffic \
             --set-env-vars BASE_URL=${BASE_URL} \
+            --set-env-vars API_RATE_LIMIT_MODE=enforce \
+            --set-env-vars "APPS_LIFECYCLE_ENFORCE=${APPS_LIFECYCLE_ENFORCE}" \
             --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \
             --set-env-vars CLIENT_URL=${CLIENT_URL} \
             --set-env-vars DASHBOARD_ARTIFACT_PREFIX=${DASHBOARD_ARTIFACT_PREFIX} \
@@ -1123,6 +1131,10 @@ jobs:
             --set-env-vars KERNEL_PROVIDER=${KERNEL_PROVIDER} \
             --set-env-vars KERNEL_GKE_ENDPOINT=${KERNEL_GKE_ENDPOINT} \
             --set-env-vars KERNEL_GKE_CA_CERT=${KERNEL_GKE_CA_CERT} \
+            --set-env-vars WORKFLOWS_RUNTIME_IMAGE=${WORKFLOWS_RUNTIME_IMAGE} \
+            --set-env-vars HATCHET_API_URL=${HATCHET_API_URL} \
+            --set-env-vars HATCHET_CLIENT_TLS_STRATEGY=none \
+            --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest \
             --quiet
 
       - name: Finalize Cloud Run direct URL

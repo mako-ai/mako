@@ -1,5 +1,5 @@
 /**
- * Public-link sharing management routes (dashboards + apps).
+ * Public-link sharing management routes (apps).
  *
  * Mounted on existing workspace-scoped routers (auth enforced upstream):
  *
@@ -20,7 +20,6 @@ import { canManageSharing } from "../../utils/resource-acl";
 import {
   encrypt,
   decrypt,
-  Dashboard,
   AppProject,
   type IPublicShare,
 } from "../../database/workspace-schema";
@@ -82,17 +81,13 @@ function slugify(text: string): string {
     .replace(/-+$/, "");
 }
 
-/** Tokens are resolved globally, so check both shareable collections. */
+/** Tokens are resolved globally across every shareable collection. */
 async function isShareTokenTaken(
   token: string,
   excludeId?: Types.ObjectId | string,
 ): Promise<boolean> {
   const filter = { "publicShare.token": token, _id: { $ne: excludeId } };
-  const [dashboard, app] = await Promise.all([
-    Dashboard.exists(filter),
-    AppProject.exists(filter),
-  ]);
-  return !!(dashboard || app);
+  return !!(await AppProject.exists(filter));
 }
 
 /**
@@ -215,7 +210,6 @@ export function registerPublicShareRoutes(
             : (existing?.passwordEncrypted ?? null),
           createdAt: existing?.createdAt || new Date(),
           createdBy: existing?.createdBy || userId,
-          lastPublicRefreshAt: existing?.lastPublicRefreshAt,
           allowLiveQueries: existing?.allowLiveQueries ?? false,
         };
         doc.markModified("publicShare");

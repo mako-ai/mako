@@ -4,7 +4,7 @@ import {
   IFlow,
   DatabaseConnection,
 } from "../../database/workspace-schema";
-import { performSync, SyncLogger } from "../../services/sync-executor.service";
+import type { SyncLogger } from "../../services/sync-executor.service";
 import {
   createDestinationWriter,
   executeDbSyncChunk,
@@ -35,8 +35,10 @@ import { syncBackfillEntityFunction } from "./sync-entity";
 import { emitFlowExecutionTerminalEvent } from "../../services/flow-run-notification.emit";
 import {
   buildScheduledFlowSelection,
+  deriveTriggerSet,
   hasScheduleTrigger,
   hasWebhookTrigger,
+  LEGACY_ENGINE_REMOVED,
 } from "../../services/flow-triggers.service";
 import { ensureFlowDerivedCache } from "../../services/flow-sync.service";
 
@@ -618,7 +620,7 @@ export const flowFunction = inngest.createFunction(
       if (isWebhookOnly && !backfill) {
         logger.error("CRITICAL: Webhook-only flow reached flow executor!", {
           flowId,
-          flowType: flow.type,
+          triggers: deriveTriggerSet(flow),
           dataSourceId: flow.dataSourceId,
           schedule: flow.schedule,
           webhookConfig: !!flow.webhookConfig,
@@ -629,13 +631,12 @@ export const flowFunction = inngest.createFunction(
         };
       }
 
-      // Legacy real-time webhook processing has been decommissioned: webhook
-      // flows must run on the CDC engine. A non-CDC webhook backfill can only
-      // happen for a flow that was never migrated to a CDC-capable destination.
-      if (backfill && isWebhookOnly && !isCdcEnabled) {
-        throw new Error(
-          `Webhook flow ${flowId} is not CDC-enabled. Legacy webhook backfill has been removed — migrate the flow to a CDC-capable destination (syncEngine=cdc with a tableDestination).`,
-        );
+      // CDC is the only engine for connector flows: the legacy engine has been
+      // removed. A connector flow that is not CDC-capable (no table
+      // destination, or a destination without a CDC adapter) fails here, before
+      // any work, instead of half-way through a run.
+      if (flow.sourceType !== "database" && !isCdcEnabled) {
+        throw new Error(`${LEGACY_ENGINE_REMOVED} (flow ${flowId})`);
       }
 
       if (isCdcBackfill) {
@@ -1386,155 +1387,11 @@ export const flowFunction = inngest.createFunction(
           });
         }
       } else {
-        // Fall back to non-chunked execution for connectors that don't support it
-        await throwIfExecutionCancelled("connector-before-non-chunked-sync");
-        await step.run("execute-sync", async () => {
-          // For non-chunked sync, we need to get the entities
-          const sourceConnection =
-            await sourceConnectionManager.getSourceConnection(
-              dataSourceId.toString(),
-            );
-          if (sourceConnection) {
-            // Inject flow queries into sourceConnection for GraphQL/PostHog connectors
-            // The registry maps connection -> config when creating the connector
-            const flowQueries = (flow as any).queries;
-            if (flowQueries && flowQueries.length > 0) {
-              sourceConnection.connection = {
-                ...sourceConnection.connection,
-                queries: flowQueries,
-              };
-            }
-
-            const connector =
-              await syncConnectorRegistry.getConnectorFor(sourceConnection);
-            if (connector) {
-              const availableEntities = connector
-                .getAvailableEntities()
-                .filter(e => typeof e === "string" && e.trim().length > 0);
-              const { entities: configuredEntities, hasExplicitSelection } =
-                resolveConfiguredEntities(flow);
-              const scopedBackfillEntities =
-                requestedBackfillEntities.length > 0
-                  ? requestedBackfillEntities
-                  : backfill &&
-                      flow.backfillState?.scope?.mode === "subset" &&
-                      Array.isArray(flow.backfillState.scope.entities)
-                    ? flow.backfillState.scope.entities
-                    : [];
-
-              if (hasExplicitSelection) {
-                const invalidEntities = configuredEntities.filter(
-                  e => !availableEntities.includes(e),
-                );
-                if (invalidEntities.length > 0) {
-                  throw new Error(
-                    `Invalid entities: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`,
-                  );
-                }
-
-                if (backfill && scopedBackfillEntities.length > 0) {
-                  const invalidScope = scopedBackfillEntities.filter(
-                    entity => !configuredEntities.includes(entity),
-                  );
-                  if (invalidScope.length > 0) {
-                    throw new Error(
-                      `Invalid backfill scope entities: ${invalidScope.join(", ")}. Configured entities: ${configuredEntities.join(", ")}`,
-                    );
-                  }
-                  syncedEntities = scopedBackfillEntities;
-                  return;
-                }
-              }
-
-              if (backfill && scopedBackfillEntities.length > 0) {
-                const invalidScope = scopedBackfillEntities.filter(
-                  entity => !availableEntities.includes(entity),
-                );
-                if (invalidScope.length > 0) {
-                  throw new Error(
-                    `Invalid backfill scope entities: ${invalidScope.join(", ")}. Available entities: ${availableEntities.join(", ")}`,
-                  );
-                }
-                syncedEntities = scopedBackfillEntities;
-                return;
-              }
-
-              syncedEntities = hasExplicitSelection
-                ? configuredEntities
-                : availableEntities;
-            }
-          }
-          logger.info("Starting non-chunked sync operation", {
-            flowId,
-            syncMode: flow.syncMode,
-            entitiesToSync: syncedEntities,
-          });
-
-          if (syncedEntities.length === 0) {
-            logger.info(
-              "No enabled entities selected; skipping sync execution",
-              {
-                flowId,
-              },
-            );
-            return { success: true, skipped: true };
-          }
-
-          try {
-            // Create a sync logger that wraps Inngest's logger
-            const syncLogger: SyncLogger = {
-              log: (level: string, message: string, metadata?: any) => {
-                const logData = {
-                  flowId,
-                  executionId, // Include executionId for database sink
-                  ...metadata,
-                };
-
-                // Call specific logger methods directly to avoid dynamic property access issues
-                switch (level) {
-                  case "debug":
-                    logger.debug(message, logData);
-                    break;
-                  case "info":
-                    logger.info(message, logData);
-                    // Track progress is handled by LogTape database sink
-                    break;
-                  case "warn":
-                    logger.warn(message, logData);
-                    break;
-                  case "error":
-                    logger.error(message, logData);
-                    break;
-                  default:
-                    logger.info(message, logData);
-                    break;
-                }
-                // Log to database is handled by LogTape database sink
-              },
-            };
-
-            await performSync(
-              dataSourceId.toString(),
-              flow.destinationDatabaseId.toString(),
-              flow.destinationDatabaseName,
-              syncedEntities,
-              flow.syncMode === "incremental",
-              syncLogger,
-              step, // Pass Inngest step for serverless-friendly retries
-              (flow as any).queries, // Pass flow queries for GraphQL/PostHog
-            );
-
-            logger.info("Sync operation completed successfully", { flowId });
-            return { success: true };
-          } catch (error: any) {
-            logger.error("Sync operation failed", {
-              flowId,
-              error: error.message,
-              stack: error.stack,
-            });
-            throw error;
-          }
-        });
+        // Every connector supports chunked fetching; the non-chunked legacy
+        // path (performSync into MongoDB collections) has been removed.
+        throw new Error(
+          `Connector for flow ${flowId} does not support chunked fetching, which CDC requires`,
+        );
       }
 
       // Post-backfill CDC state machine: complete the backfill, drain pending
@@ -1981,10 +1838,10 @@ export const flowSchedulerFunction = inngest.createFunction(
       const found = await Flow.find(buildScheduledFlowSelection());
       scheduleLogger.info("Found flows with enabled poll schedules", {
         count: found.length,
-        // Log flow types for debugging
-        flowTypes: found.map(f => ({
+        // Each flow's triggers, for debugging
+        flowTriggers: found.map(f => ({
           id: f._id.toString(),
-          type: f.type,
+          ...deriveTriggerSet(f),
         })),
       });
       return found.map(f => f.toObject() as IFlow);
@@ -2007,7 +1864,7 @@ export const flowSchedulerFunction = inngest.createFunction(
               "CRITICAL: Flow without poll schedule found in scheduler!",
               {
                 flowId: flow._id.toString(),
-                flowType: flow.type,
+                triggers: deriveTriggerSet(flow),
                 hasSchedule: !!flow.schedule,
                 hasCron: !!flow.schedule?.cron,
                 schedule: flow.schedule,
@@ -2184,8 +2041,13 @@ export const cdcScheduledBackfillFunction = inngest.createFunction(
         const entities = schedule?.entities?.length
           ? schedule.entities
           : undefined;
+        // trigger "scheduled": entities whose source can filter on update
+        // time fetch only what changed since their last completed backfill
+        // (with an overlap), and fall back to a full fetch at least weekly —
+        // see sync-cdc/backfill-fetch-mode.ts.
         await cdcBackfillService.startBackfill(workspaceId, flowId, {
           entities,
+          trigger: "scheduled",
           reason: entities
             ? `Scheduled backfill (${entities.join(", ")})`
             : "Scheduled full backfill",

@@ -20,6 +20,7 @@ import {
   listTree,
 } from "../../apps/repository.service";
 import type { SandboxExecContext } from "../../apps/sandbox/provider";
+import { ensureCommitLocally } from "../../apps/cloud-repo.service";
 import {
   CONNECTOR_NODE_VERSION,
   hasConnectorRuntime,
@@ -122,6 +123,8 @@ export async function readConnectorFolder(
   slug: string,
   commit: string,
 ): Promise<Map<string, Uint8Array>> {
+  // Another replica may index a commit before this replica has fetched it.
+  await ensureCommitLocally(workspaceId, commit);
   const repoDir = repoDirFor(workspaceId);
   if (!(await repoExists(repoDir))) {
     throw new Error(`Workspace ${workspaceId} has no repository`);

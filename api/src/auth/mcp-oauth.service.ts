@@ -17,6 +17,7 @@ import {
   McpOAuthToken,
 } from "../database/mcp-oauth-schema";
 import {
+  INTERNAL_WORKSPACE_API_KEY_SCOPES,
   type WorkspaceApiKeyScope,
   resolveWorkspaceApiKeyScopes,
 } from "./api-key-scopes";
@@ -41,6 +42,7 @@ export const MCP_OAUTH_SCOPES = [
   "query:read",
   "warehouse:write",
   "connections:write",
+  "workflows:run",
 ] as const satisfies readonly WorkspaceApiKeyScope[];
 
 /**
@@ -279,6 +281,11 @@ export async function refreshAccessToken(input: {
   const refreshToken = randomToken(MCP_REFRESH_TOKEN_PREFIX);
   // Rotate atomically in place: a failed write or wrong client must not
   // destroy a valid grant. Only one caller may consume each refresh token.
+  // Scopes are widened to today's MCP_OAUTH_SCOPES so a grant made before a
+  // scope existed (e.g. `workflows:run`) gets it on its next refresh, without
+  // a revoke and re-sign-in. Live workspace roles still decide what a viewer
+  // may do; internal scopes are never added (session-minted ACP grants never
+  // reach this point).
   const record = await McpOAuthToken.findOneAndUpdate(
     {
       refreshTokenHash: sha256(input.refreshToken),
@@ -288,15 +295,28 @@ export async function refreshAccessToken(input: {
         { refreshExpiresAt: { $gt: new Date() } },
       ],
     },
-    {
-      $set: {
-        accessTokenHash: sha256(accessToken),
-        refreshTokenHash: sha256(refreshToken),
-        accessExpiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_MS),
+    [
+      {
+        $set: {
+          accessTokenHash: sha256(accessToken),
+          refreshTokenHash: sha256(refreshToken),
+          accessExpiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_MS),
+          scopes: {
+            $setDifference: [
+              {
+                $setUnion: [
+                  { $ifNull: ["$scopes", []] },
+                  { $literal: [...MCP_OAUTH_SCOPES] },
+                ],
+              },
+              { $literal: [...INTERNAL_WORKSPACE_API_KEY_SCOPES] },
+            ],
+          },
+        },
       },
-      $unset: { refreshExpiresAt: "" },
-    },
-    { returnDocument: "after" },
+      { $unset: "refreshExpiresAt" },
+    ],
+    { returnDocument: "after", updatePipeline: true },
   );
   if (!record) throw new Error("invalid_grant: unknown or expired token");
   return {

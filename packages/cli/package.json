@@ -1,7 +1,7 @@
 {
   "name": "@makoai/cli",
   "version": "0.2.1",
-  "description": "Mako from your terminal: sign in once (mako login), run a workspace app locally with real data (mako dev), run dbt from your checkout (mako dbt run).",
+  "description": "Mako from your terminal: sign in once (mako login), run a workspace app locally with real data (mako dev), run dbt from your checkout (mako dbt run), test-run a workflow (mako workflow run).",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -21,18 +21,25 @@
   "files": [
     "bin",
     "src",
+    "runtime",
     "README.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
-    "@makoai/app-sdk": "workspace:*"
+    "@ai-sdk/gateway": "3.0.210",
+    "@ai-sdk/mcp": "1.0.91",
+    "@makoai/app-sdk": "workspace:*",
+    "ai": "6.0.301",
+    "tsx": "4.19.4",
+    "zod": "4.2.1"
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "prepack": "node -e \"require('fs').mkdirSync('runtime',{recursive:true});require('fs').copyFileSync('../../deploy/workflows/runtime/defaults/lib/mako.ts','runtime/mako.ts')\""
   }
 }

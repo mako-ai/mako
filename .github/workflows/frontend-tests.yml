@@ -1,6 +1,8 @@
 name: Frontend tests
 
-# The frontend suite, on frontend pull requests, and nothing else.
+# Frontend unit tests are required by the master branch ruleset. Run them on
+# every pull request so API-only changes do not wait for a check that path
+# filters prevent from starting.
 #
 # api-contract.yml is the only other workflow that runs tests on a pull
 # request, and it is a heavy job: the api tsx chain, agent-tools, the
@@ -26,11 +28,6 @@ on:
       - master
   pull_request:
     types: [opened, synchronize, reopened]
-    paths:
-      - "app/src/**"
-      - "app/package.json"
-      - "app/vite.config.ts"
-      - ".github/workflows/frontend-tests.yml"
 
 jobs:
   frontend:
@@ -56,3 +53,48 @@ jobs:
 
       - name: Frontend tests
         run: pnpm --filter app run test:unit
+
+  # The CLI (`mako login`, `mako dev`, `mako workflow run`, …) is published to
+  # npm from packages/cli; its node:test suite needs only the install too.
+  cli:
+    name: CLI tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: CLI tests
+        run: pnpm --filter @makoai/cli test
+
+      # node --test in packages/app-sdk: the Vite plugin, the UI helpers and
+      # the golden row-decoder test against real apache-arrow.
+      - name: App SDK tests
+        run: pnpm --filter @makoai/app-sdk test
+
+      # The CLI supports Node 22 (`engines`): `mako workflow run` must load a
+      # workflow's TypeScript there too, including 22.12-22.17, where Node
+      # does not strip types by default. --no-experimental-strip-types stands
+      # in for those on a patched 22.x (Node 20 is end-of-life).
+      # (`mako connector test` needs Node 22.18+ and says so; not run here.)
+      - name: Setup Node 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: mako workflow run tests on Node 22 without type stripping
+        working-directory: packages/cli
+        run: node --no-experimental-strip-types --test src/workflow.test.mjs

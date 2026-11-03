@@ -7,6 +7,7 @@ import {
   CdcEntityState,
 } from "../../database/workspace-schema";
 import { connectorRegistry } from "../../connectors/registry";
+import { loggers } from "../../logging";
 import type { BaseConnector } from "../../connectors/base/BaseConnector";
 import { Types } from "mongoose";
 import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
@@ -20,6 +21,8 @@ import { cdcConsumerService } from "../../sync-cdc/consumer";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
 import { cleanupStalePendingCdcEvents } from "../../sync-cdc/cdc-stale-pending-cleanup";
 import { reconcileOrphanedWebhookApplyStatus } from "../../sync-cdc/cdc-orphan-applystatus";
+
+const webhookFlowLogger = loggers.inngest("webhook-flow");
 
 const CDC_MATERIALIZE_CONCURRENCY = Math.max(
   parseInt(process.env.CDC_MATERIALIZE_CONCURRENCY || "8", 10) || 8,
@@ -56,8 +59,12 @@ type WebhookCdcRecord = {
  * enabled-entity filter, so callers can tell "extraction yielded nothing"
  * (genuine failure → retry) apart from "everything got filtered out as
  * disabled/unselected" (intentional drop).
+ *
+ * The connector's async `enrichWebhookCdcRecords` runs between extraction and
+ * the filter (e.g. Claap downloads transcripts the payload only links to). If
+ * it throws, the extracted records are applied on their own.
  */
-function buildWebhookCdcRecords(params: {
+async function buildWebhookCdcRecords(params: {
   connector: BaseConnector;
   sourceConnection: { id: string; name: string };
   flow: Parameters<typeof isEntityEnabledForFlow>[0];
@@ -67,15 +74,36 @@ function buildWebhookCdcRecords(params: {
     rawPayload: unknown;
     receivedAt: Date | string;
   };
-}): { records: WebhookCdcRecord[]; extractedCount: number } {
+}): Promise<{ records: WebhookCdcRecord[]; extractedCount: number }> {
   const { connector, sourceConnection, flow, webhookEvent } = params;
 
-  const rawRecords = (
+  const extractedRecords = (
     connector.extractWebhookCdcRecords(
       webhookEvent.rawPayload,
       webhookEvent.eventType,
     ) ?? []
   ).filter(record => record != null);
+
+  let rawRecords = extractedRecords;
+  if (extractedRecords.length > 0) {
+    try {
+      rawRecords = (
+        await connector.enrichWebhookCdcRecords(extractedRecords, {
+          isEntityEnabled: entity =>
+            isEntityEnabledForFlow(flow, entity, entity.split(":")[0]),
+        })
+      ).filter(record => record != null);
+    } catch (error) {
+      webhookFlowLogger.warn(
+        "Webhook record enrichment failed; applying extracted records only",
+        {
+          eventId: webhookEvent.eventId,
+          eventType: webhookEvent.eventType,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+  }
 
   const receivedAt = new Date(webhookEvent.receivedAt);
   const out: WebhookCdcRecord[] = [];
@@ -130,7 +158,7 @@ function buildWebhookCdcRecords(params: {
     });
   }
 
-  return { records: out, extractedCount: rawRecords.length };
+  return { records: out, extractedCount: extractedRecords.length };
 }
 
 /**
@@ -656,7 +684,7 @@ async function ingestPendingWebhookEvents(logger: {
 
       // Fan out into every entity the connector emits for this event
       // (e.g. Calendly invitee.created -> invitees + scheduled_events).
-      const { records, extractedCount } = buildWebhookCdcRecords({
+      const { records, extractedCount } = await buildWebhookCdcRecords({
         connector,
         sourceConnection: {
           id: sourceConnection.id,

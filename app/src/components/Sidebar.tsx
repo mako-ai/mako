@@ -22,11 +22,12 @@ import { useFlowStore } from "../store/flowStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
 import { useRepoStore } from "../store/repoStore";
+import { whenAppOpenSettled } from "../lib/app-open-gate";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent, resetIdentity } from "../lib/analytics";
 import { useIsMobile } from "../hooks/useIsMobile";
 import {
-  topNavigationItems,
+  useNavigationItems,
   bottomNavigationItems,
   type NavigationView,
 } from "../lib/explorer-nav";
@@ -88,16 +89,19 @@ function useRepoDirty(): boolean {
   );
   useEffect(() => {
     if (!workspaceId) return;
-    void fetchStatus(workspaceId);
+    // A git-backed read (5.1 s on prod): not ahead of the app being opened.
+    let cancelled = false;
+    void whenAppOpenSettled().then(() => {
+      if (!cancelled) void fetchStatus(workspaceId);
+    });
     const timer = setInterval(() => void fetchStatus(workspaceId), 30_000);
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, [workspaceId, fetchStatus]);
   return dirty;
 }
-
-const preloadDashboardsExplorer = () => {
-  void import("./DashboardsExplorer");
-};
 
 /**
  * Avatar button + dropdown (workspace switcher + sign out). Shared between the
@@ -226,6 +230,7 @@ export function SidebarUserMenu({
 }
 
 function Sidebar() {
+  const navigationItems = useNavigationItems();
   // `activeExplorer` is the explorer that's actually visible on the left
   // (null when the pane is collapsed). Use this — not `leftPane`, which is
   // the last-selected view retained across collapse — to decide which icon
@@ -290,7 +295,7 @@ function Sidebar() {
             alignItems: "center",
           }}
         >
-          {topNavigationItems.map(item => {
+          {navigationItems.map(item => {
             const Icon = item.icon;
             const isActive = activeExplorer === item.view;
 
@@ -304,21 +309,6 @@ function Sidebar() {
                   aria-current={isActive ? "true" : undefined}
                   data-open-explorer={isActive ? "true" : "false"}
                   onClick={() => handleNavigation(item.view as NavigationView)}
-                  onMouseEnter={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
-                  onFocus={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
-                  onTouchStart={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
                 >
                   <Icon size={24} strokeWidth={1.5} />
                   {item.view === "source-control" && repoDirty && (

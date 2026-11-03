@@ -55,6 +55,21 @@ export function focusAppsTab(
   return id;
 }
 
+/**
+ * Open (or focus) the Apps home — the full-screen catalogue of every app in
+ * the workspace (popular, new, recently viewed, mine, needs attention). One
+ * per window, like a settings section.
+ */
+export function focusAppsHomeTab(): string {
+  return useConsoleStore
+    .getState()
+    .focusOrOpenTab({ kind: "apps-home" }, () => ({
+      title: "Apps home",
+      content: "",
+      kind: "apps-home",
+    })) as string;
+}
+
 /** Open (or focus) a file of an Apps project in its own editor tab. */
 export function focusAppsFileTab(
   appId: string,
