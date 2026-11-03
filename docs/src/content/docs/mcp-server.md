@@ -61,7 +61,11 @@ Under the hood this is standard OAuth 2.1 for MCP: RFC 9728 protected-resource d
 
 ## Headless / CI: API keys
 
+<!-- <block name="default-api-key-scopes"> -->
+
 Where a browser sign-in isn't possible, use a workspace API key instead. Go to **Workspace Settings → API Keys → Create API Key** — new keys carry the `mcp` and `query:read` scopes and the key-created dialog shows ready-to-paste per-client snippets with the key filled in:
+
+<!-- </block> -->
 
 ```bash
 claude mcp add --transport http mako https://your-mako-host/api/mcp \
@@ -116,7 +120,9 @@ Read-only tools are annotated per the MCP spec (`readOnlyHint`), so well-behaved
 - **SQL is read-only unless double-gated otherwise.** By default SQL must be a single `SELECT`/`WITH` statement; enforcement also happens _inside the database_ where supported (PostgreSQL/Cloud SQL/Redshift read-only transactions, MySQL `START TRANSACTION READ ONLY`, ClickHouse `readonly=2`). Arbitrary MongoDB JavaScript is not exposed at all — Mongo is discovery/inspection only. SQL writes require an API key with the `query:write` scope **and** a connection a workspace admin marked `allowAgentWrites` — the key scope alone stays read-only against every other connection, the connection flag alone does nothing for read-scoped keys, and console runs, app data bindings, and materializations stay read-only regardless.
 - **Warehouse mutations are governed.** The write paths to a warehouse over MCP are dbt execution, which builds committed, reviewable model definitions, and sync backfills (`flow_backfill`), which re-read a source into the sync's configured destination — never ad-hoc SQL. dbt execution needs at least the member role, `flow_backfill` an owner or admin; viewers never see these tools.
 - **Creating connections stays narrow.** `create_connection` needs at least the member role, refuses connectors that declare no config schema (their secrets could not be encrypted) and unknown config keys, never returns or logs a config value, keeps nothing whose credential check fails, and cannot touch existing connections.
+  <!-- <block name="read-only-unsupported-engines"> -->
 - **Non-SQL engines fail closed** (MongoDB shell code, Cloudflare KV): the lexical analyzer cannot validate them, so read-only execution refuses them outright. SQL engines without a session-level read-only mode (BigQuery, MSSQL, Cloudflare D1) rely on the validated single-`SELECT`/`WITH` statement instead.
+  <!-- </block> -->
 - **MCP credentials are MCP-only.** OAuth access tokens and scoped keys are rejected on every other API endpoint, so an MCP credential can never be replayed against REST mutation routes.
 - **OAuth grants are least-privilege by construction**: public clients use mandatory PKCE, single-use authorization codes, rotating refresh tokens hashed at rest, and a binding to the one workspace chosen at consent. A grant gives everything the person's role allows; there are no per-permission consent options.
 - **Key management requires a browser session** — API keys cannot create or delete other API keys.
