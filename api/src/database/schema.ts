@@ -579,7 +579,16 @@ const ModelCatalogSnapshotSchema = new Schema(
     // the seed migration deletes them.
     _id: {
       type: String,
-      enum: ["gateway", "arena", "pricing", "curation", "capabilities"],
+      enum: [
+        // <block name="snapshot-id-enum" same-as="#/ModelCatalogSnapshotId" same-as-pattern='"(?P<value>[^"]+)"'>
+        "gateway",
+        "gateway-raw",
+        "arena",
+        "pricing",
+        "curation",
+        "capabilities",
+        // </block>
+      ],
     },
     data: { type: Schema.Types.Mixed, default: [] },
     fetchedAt: { type: Date, required: true },

@@ -39,6 +39,8 @@ npx wrangler@4.110.0 deploy \
 
 ## Cutover controls
 
+<!-- <block name="cutover-namespace" same-as="cloudflare/app-router/wrangler.jsonc:app-routing-kv-id" same-as-pattern="--namespace-id[ =](?P<value>[^\s\\]+)"> -->
+
 ```bash
 # Route production to an origin.
 npx wrangler@4.110.0 kv key put \
@@ -66,6 +68,8 @@ npx wrangler@4.110.0 kv key put \
   "route:app.mako.ai" \
   '{"origin":"https://mako-PROJECT_HASH-ew.a.run.app","maintenance":false}'
 ```
+
+<!-- </block> -->
 
 Deploy `wrangler.canary.jsonc` first; it cannot claim production traffic.
 Deploy `wrangler.jsonc` only after `route:app.mako.ai` points at the verified
