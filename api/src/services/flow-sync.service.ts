@@ -347,6 +347,43 @@ export function liveFlowToPlain(
   live: LiveFlow,
   workspaceId: string,
 ): Record<string, unknown> {
+  return withoutHalfDefinedConfigs(overlayFlow(live, workspaceId));
+}
+
+/**
+ * Mongoose materialises unset nested paths: a row that never had incremental
+ * or conflict settings reads back as `incrementalConfig: {}` and
+ * `conflictConfig: { strategy: "update" }`. The client's flow schema requires
+ * the keys inside those blocks, so one such row failed validation for the
+ * whole persisted flow list and it was never cached. An incremental block
+ * without its tracking column means "not incremental"; a conflict block
+ * defaults its key columns to none.
+ */
+function withoutHalfDefinedConfigs(
+  plain: Record<string, unknown>,
+): Record<string, unknown> {
+  const incremental = plain.incrementalConfig as
+    { trackingColumn?: unknown; trackingType?: unknown } | null | undefined;
+  if (
+    incremental &&
+    (!incremental.trackingColumn || !incremental.trackingType)
+  ) {
+    delete plain.incrementalConfig;
+  }
+  const conflict = plain.conflictConfig as
+    { keyColumns?: unknown; strategy?: unknown } | null | undefined;
+  if (conflict && !conflict.strategy) {
+    delete plain.conflictConfig;
+  } else if (conflict && !Array.isArray(conflict.keyColumns)) {
+    plain.conflictConfig = { ...conflict, keyColumns: [] };
+  }
+  return plain;
+}
+
+function overlayFlow(
+  live: LiveFlow,
+  workspaceId: string,
+): Record<string, unknown> {
   const base: Record<string, unknown> = live.row
     ? rowAsPlain(live.row)
     : {

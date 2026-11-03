@@ -56,6 +56,13 @@ export interface PreviewGrant {
    * on tokens minted before viewers existed.
    */
   viewer?: ViewerIdentity;
+  /**
+   * Set when a public share link minted this grant (`shareFingerprint` of
+   * the share token), not a signed-in viewer. The grant then carries the
+   * share's rules, not a member's: a refresh re-checks that the share is
+   * still on and allows live queries, and is throttled like the share route.
+   */
+  share?: string;
   expiresAt: number;
 }
 
@@ -139,6 +146,8 @@ interface PublishedTokenPayload {
   /** Viewer user id + email (apps.md §28). Absent on tokens minted before. */
   u?: string;
   e?: string;
+  /** Share fingerprint: present when a share link minted the token. */
+  sh?: string;
   /** Epoch milliseconds. */
   exp: number;
 }
@@ -171,17 +180,29 @@ export function mintPublishedGrant(input: {
    * token is never minted with less than PREVIEW_TTL_MS left.
    */
   stableWindowMs?: number;
+  /** Minted by a public share link: its `shareFingerprint`. */
+  share?: string;
+  /**
+   * Hard ceiling on the expiry (epoch ms): a password share's token never
+   * outlives the unlock that let the visitor in.
+   */
+  notAfter?: number;
 }): PreviewGrant {
   const now = Date.now();
-  const exp = input.stableWindowMs
+  const windowed = input.stableWindowMs
     ? stableWindow(now, input.stableWindowMs).end + PREVIEW_TTL_MS
     : now + PREVIEW_TTL_MS;
+  const exp =
+    input.notAfter !== undefined
+      ? Math.min(windowed, input.notAfter)
+      : windowed;
   const payload: PublishedTokenPayload = {
     v: 1,
     w: input.workspaceId,
     p: input.projectId,
     s: input.sha,
     ...(input.viewer ? { u: input.viewer.id, e: input.viewer.email } : {}),
+    ...(input.share ? { sh: input.share } : {}),
     exp,
   };
   const body = Buffer.from(JSON.stringify(payload), "utf8").toString(
@@ -194,8 +215,23 @@ export function mintPublishedGrant(input: {
     projectId: input.projectId,
     publishedSha: input.sha,
     ...(input.viewer ? { viewer: { ...input.viewer } } : {}),
+    ...(input.share ? { share: input.share } : {}),
     expiresAt: payload.exp,
   };
+}
+
+/**
+ * What a share-minted token stores instead of the share token itself: an
+ * HMAC of it. The token's payload is readable, and the share token is a
+ * lasting credential while the pub token lasts at most a window + 30 min,
+ * so the pub token must not reveal it. The HMAC still lets the serving
+ * route check that the share it came from is the app's CURRENT share.
+ */
+export function shareFingerprint(shareToken: string): string {
+  return createHmac("sha256", resolveSecret())
+    .update(`app-share:${shareToken}`)
+    .digest("base64url")
+    .slice(0, 22);
 }
 
 function resolvePublishedGrant(token: string): PreviewGrant | null {
@@ -242,12 +278,14 @@ function resolvePublishedGrant(token: string): PreviewGrant | null {
     }
     viewer = { id: payload.u, email: payload.e };
   }
+  if (payload.sh !== undefined && typeof payload.sh !== "string") return null;
   return {
     token,
     workspaceId: payload.w,
     projectId: payload.p,
     publishedSha: payload.s,
     ...(viewer ? { viewer } : {}),
+    ...(payload.sh ? { share: payload.sh } : {}),
     expiresAt: payload.exp,
   };
 }

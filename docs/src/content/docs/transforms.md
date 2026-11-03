@@ -100,7 +100,7 @@ by polling `GET /api/workspaces/:workspaceId/dbt/local-runs/:runId`; cancel with
 
 ## Jobs & schedules
 
-A **job** is a saved list of dbt commands (`build`, `test`, `seed`, `snapshot`, `source freshness`, `docs generate`, with `--select` / `--exclude` / `--full-refresh` flags) bound to an environment. Jobs can run:
+A **job** is a saved list of dbt commands (`build`, `test`, `seed`, `snapshot`, `source freshness`, `docs generate`, with `--select` / `--exclude` / `--full-refresh` flags; `--select` and `--exclude` accept several space-separated selectors, e.g. `run --select a b c --full-refresh`) bound to an environment. Jobs can run:
 
 - **Manually** — trigger from the UI or the agent (after explicit user confirmation).
 - **On a schedule** — set a cron expression; the scheduler picks up due jobs.

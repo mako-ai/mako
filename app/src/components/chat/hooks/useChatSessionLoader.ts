@@ -121,6 +121,14 @@ export function isPersistedSnapshotStale(
   return false;
 }
 
+/**
+ * The chat the panel showed when this page loaded. Restoring it is the panel
+ * coming back, not the user picking a chat, so it must not move focus.
+ * `undefined` until the first load, `null` once the panel leaves that chat:
+ * any later visit is a user pick, including a return to the same chat.
+ */
+let pageLoadChatId: string | null | undefined;
+
 export interface UseChatSessionLoaderArgs {
   chatId: string;
   isExistingChat: boolean;
@@ -321,20 +329,31 @@ export function useChatSessionLoader({
         // Restore consoles that were modified by the agent in this chat
         // The backend extracts console IDs from modify_console tool calls in
         // the messages and fetches those consoles from the database
+        //
+        // The chat restored when the page loads must not move focus: the
+        // URL (a deep link) or the persisted active tab already chose what
+        // the editor shows, and this async load lands after that. Only a
+        // chat picked from history brings its console forward.
+        const focus = targetChatId !== pageLoadChatId;
         if (data.consoles && data.consoles.length > 0) {
           const store = useConsoleStore.getState();
           for (const console of data.consoles) {
             // Check if console already exists in tabs (by ID)
             const exists = Boolean(store.tabs[console.id]);
             if (!exists) {
-              await store.openConsoleFromServer(currentWorkspaceId, console.id);
+              await store.openConsoleFromServer(
+                currentWorkspaceId,
+                console.id,
+                { focus },
+              );
             }
           }
 
-          // Set the first restored console as active and capture it for this chat
+          // Capture the first restored console for this chat (and, for a
+          // chat picked from history, make it the active tab)
           const firstConsole = data.consoles[0];
           if (firstConsole) {
-            store.setActiveTab(firstConsole.id);
+            if (focus) store.setActiveTab(firstConsole.id);
             capturedConsoleIdRef.current = firstConsole.id;
           }
         }
@@ -353,6 +372,8 @@ export function useChatSessionLoader({
     // slow load can't resume the wrong chat. (State staleness is handled
     // inside loadPersistedMessages via chatId re-checks.)
     let cancelled = false;
+    if (pageLoadChatId === undefined) pageLoadChatId = chatId;
+    else if (pageLoadChatId !== chatId) pageLoadChatId = null;
     const loadSession = async () => {
       if (!isExistingChat || !workspaceId) {
         return;

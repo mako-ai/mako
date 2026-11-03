@@ -28,6 +28,7 @@ import { createRouter } from "../openapi/core";
 import { appsRoutes } from "../routes/apps";
 import { publicShareRoutes, recordSharedAppOpen } from "../routes/public-share";
 import { anonIdFromCookie, resetUsageThrottle } from "./app-usage.service";
+import { invalidateOwnerDirectory } from "./user-handles.service";
 import { User } from "../database/schema";
 import {
   AppProject,
@@ -214,6 +215,86 @@ describe("app sharing authorization", () => {
         .status,
     ).toBe(403);
   });
+});
+
+describe("a personal app's row, through the sharing routes", () => {
+  const carol = new Types.ObjectId().toString();
+  const someone = new Types.ObjectId().toString();
+  const wsAdmin = new Types.ObjectId().toString();
+
+  beforeAll(async () => {
+    await User.create(
+      [
+        [carol, "carol"],
+        [someone, "someone"],
+        [wsAdmin, "ws-admin"],
+      ].map(([_id, name]) => ({ _id, email: `${name}@example.com` })),
+    );
+  });
+
+  beforeEach(async () => {
+    await WorkspaceMember.create([
+      { workspaceId, userId: carol, role: "member" },
+      { workspaceId, userId: someone, role: "member" },
+      { workspaceId, userId: wsAdmin, role: "admin" },
+    ]);
+    invalidateOwnerDirectory();
+  });
+
+  const row = (path: string) =>
+    AppProject.create({
+      workspaceId,
+      title: "Personal",
+      slug: path.split("/").pop(),
+      path,
+      access: "private",
+      createdBy: "",
+    });
+  const refused = async (userId: string) => {
+    identity.userId = userId;
+    const calls = [
+      await manage("public-share", "POST", { password: "test-password" }),
+      await manage("sharing", "PATCH", { access: "workspace" }),
+      await manage("collaborators", "POST", { userId, role: "editor" }),
+      await manage("chat", "PATCH", { enabled: true }),
+    ];
+    return calls.map(call => call.status);
+  };
+
+  it.each([
+    ["a member", () => someone],
+    ["an admin", () => wsAdmin],
+  ])(
+    "an ownerless row under a handle goes to the handle's owner when %s calls",
+    async (_role, actor) => {
+      project = await row("users/carol/apps/pushed");
+      expect(await refused(actor())).toEqual([403, 403, 403, 403]);
+      const saved = await AppProject.findById(project._id);
+      expect(saved?.owner_id).toBe(carol);
+      expect(saved?.access).toBe("private");
+      expect(saved?.publicShare?.enabled ?? false).toBe(false);
+      expect(saved?.sharedWith ?? []).toEqual([]);
+
+      identity.userId = carol;
+      expect((await manage("chat", "PATCH", { enabled: true })).status).toBe(
+        200,
+      );
+    },
+  );
+
+  it.each([
+    ["a member", () => someone],
+    ["an admin", () => wsAdmin],
+  ])(
+    "a row under a handle nobody holds stays ownerless when %s calls",
+    async (_role, actor) => {
+      project = await row("users/nobody/apps/orphan");
+      expect(await refused(actor())).toEqual([403, 403, 403, 403]);
+      const saved = await AppProject.findById(project._id);
+      expect(saved?.owner_id ?? undefined).toBeUndefined();
+      expect(saved?.createdBy || undefined).toBeUndefined();
+    },
+  );
 });
 
 describe("anonymous share viewers (usage)", () => {
