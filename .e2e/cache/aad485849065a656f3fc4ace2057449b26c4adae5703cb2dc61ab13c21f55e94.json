@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-04T10:54:01.822Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap button \"Connect GitHub repository\"",
+        "target": {
+          "role": "button",
+          "name": "Connect GitHub repository"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::05%20prepare%20real%20GitHub%20App%20installation%20%28CI%20fixture%3B%20excludes%20OAuth%29",
+      "targetId": "chromium",
+      "instructionDigest": "5add8d67bf540eb2235484a9446272627bd522a6b13ad683ee3fe7b453edc339"
+    },
+    "summary": "Opened the Add GitHub repository dialog and stopped before selecting or linking a repository.",
+    "startPath": "/settings/github",
+    "endPath": "/settings/github",
+    "endAnchors": [
+      {
+        "role": "heading",
+        "name": "Add GitHub repository"
+      },
+      {
+        "text": "GitHub account"
+      },
+      {
+        "role": "button",
+        "name": "Install on another GitHub account…"
+      },
+      {
+        "text": "Repository"
+      },
+      {
+        "role": "combobox",
+        "name": "Repository",
+        "placeholder": "Search repositories..."
+      },
+      {
+        "role": "button",
+        "name": "Open"
+      },
+      {
+        "text": "Mako root folder"
+      },
+      {
+        "role": "textbox",
+        "name": "Mako root folder"
+      }
+    ],
+    "endWaitMs": 11612
+  }
+}

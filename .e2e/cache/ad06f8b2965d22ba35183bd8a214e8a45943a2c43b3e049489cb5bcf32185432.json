@@ -1,0 +1,84 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-04T10:53:30.307Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "type",
+        "summary": "type \"mako-e2e+4ef75c9f-518a-408e-ab25-bec56b…\" into textbox \"youremail@email.com\"",
+        "target": {
+          "role": "textbox",
+          "name": "youremail@email.com",
+          "placeholder": "youremail@email.com"
+        },
+        "value": "{{param:/email}}"
+      },
+      {
+        "name": "typeSecret",
+        "summary": "fill secret \"signup.password\" into textbox \"Enter a unique password\"",
+        "target": {
+          "role": "textbox",
+          "name": "Enter a unique password",
+          "placeholder": "Enter a unique password",
+          "inputPurpose": "password"
+        },
+        "secret": "signup.password"
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Continue\"",
+        "target": {
+          "role": "button",
+          "name": "Continue"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::01%20create%20account%20and%20verify%20email",
+      "targetId": "chromium",
+      "instructionDigest": "07412fc860cc03a81b24de9f44ac78d29bdf66aff65694e288ee32c4d38f98db"
+    },
+    "summary": "Submitted the registration form and confirmed the email verification code form appeared for the provided email. Stopped before entering a code.",
+    "startPath": "/register",
+    "endPath": "/verify-email?email={{param:/email|uri}}",
+    "endAnchors": [
+      {
+        "role": "heading",
+        "name": "Verify Your Email"
+      },
+      {
+        "role": "textbox",
+        "name": "Email"
+      },
+      {
+        "text": "Verification Code"
+      },
+      {
+        "role": "textbox",
+        "name": "Verification Code",
+        "placeholder": "123456",
+        "inputPurpose": "one-time-code"
+      },
+      {
+        "role": "button",
+        "name": "Verify Email"
+      },
+      {
+        "role": "button",
+        "name": "Resend code"
+      },
+      {
+        "role": "link",
+        "name": "Back to Login"
+      },
+      {
+        "text": "We sent a verification code to . Enter the code below to verify your account."
+      }
+    ],
+    "endWaitMs": 11646
+  }
+}

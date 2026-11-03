@@ -1,0 +1,142 @@
+name: Mako E2E journey
+
+# Uses live AI and GitHub, with disposable local databases.
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Existing test repository accessible to the Mako App
+        required: true
+        default: mako-ai/test-workspace
+        type: string
+      record_cache:
+        description: Record replay actions for review and commit
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-journey-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  journey:
+    name: User journey (GitHub App fixture)
+    # Never expose test credentials to a fork's workflow/code.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mako
+          POSTGRES_PASSWORD: e2e-local-only
+          POSTGRES_DB: demo
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mako -d demo"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Check E2E types
+        run: pnpm test:e2e:check
+
+      - name: Start isolated MongoDB replica set
+        run: |
+          docker run --detach --name mako-e2e-mongo \
+            --publish 127.0.0.1:27017:27017 mongo:8 \
+            --replSet rs0 --bind_ip_all
+          for attempt in {1..30}; do
+            if docker exec mako-e2e-mongo mongosh --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec mako-e2e-mongo mongosh --quiet --eval \
+            'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+          for attempt in {1..30}; do
+            if docker exec mako-e2e-mongo mongosh --quiet --eval 'if (!db.hello().isWritablePrimary) quit(1)' >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Run Mako journey with GitHub installation fixture
+        env:
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+          GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
+          GITHUB_APP_SLUG: ${{ vars.MAKO_GITHUB_APP_SLUG }}
+          GITHUB_APP_CLIENT_ID: ${{ vars.MAKO_GITHUB_APP_CLIENT_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_GITHUB_APP_PRIVATE_KEY }}
+          MAKO_E2E_GITHUB_REPO: ${{ inputs.repository || 'mako-ai/test-workspace' }}
+          MAKO_E2E_GITHUB_AUTH: installation
+          MAKO_E2E_BASE_URL: http://localhost:5173
+          MAKO_E2E_MONGODB_URI: mongodb://127.0.0.1:27017/mako_e2e?replicaSet=rs0
+          DEMO_DATABASE_URL: postgresql://mako:e2e-local-only@127.0.0.1:5432/demo
+          MAKO_E2E_START_APP: "1"
+          MAKO_E2E_RECORD_CACHE: ${{ inputs.record_cache && '1' || '0' }}
+          E2E_TELEMETRY_DISABLED: "1"
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p .e2e/logs
+          node <<'JS'
+          for (const key of ['AI_GATEWAY_API_KEY', 'GITHUB_APP_ID', 'GITHUB_APP_SLUG', 'GITHUB_APP_CLIENT_ID', 'GITHUB_APP_PRIVATE_KEY']) {
+            if (!process.env[key]) throw new Error(`Missing ${key}; see tests/e2e/README.md`);
+          }
+          JS
+          export SESSION_SECRET="$(openssl rand -hex 32)"
+          export ENCRYPTION_KEY="$(openssl rand -hex 32)"
+          export APPS_GIT_ROOT="$RUNNER_TEMP/mako-e2e-git"
+          export APPS_SESSIONS_ROOT="$RUNNER_TEMP/mako-e2e-sessions"
+          pnpm test:e2e --reporter list,junit
+
+      # Upload runner-redacted diagnostics, never app logs or browser state.
+      - name: Save test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mako-e2e-results
+          path: |
+            .e2e/report.json
+            .e2e/junit.xml
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Save browser diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mako-e2e-artifacts
+          path: .e2e/artifacts
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Save replay recordings for review
+        if: ${{ success() && inputs.record_cache }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mako-e2e-cache
+          path: .e2e/cache
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7

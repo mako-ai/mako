@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-04T10:53:55.434Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap button \"Start Exploring\"",
+        "target": {
+          "role": "button",
+          "name": "Start Exploring"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::04%20connect%20demo%20database",
+      "targetId": "chromium",
+      "instructionDigest": "06568f75b88d4c0af22b8c199eb593b5e31d6df4704fe4e454bba3de767c44f0"
+    },
+    "summary": "Started Exploring and confirmed the workspace shows the Chinook Music Store connection. Stopped without opening GitHub settings or sending a chat.",
+    "startPath": "/",
+    "endPath": "/",
+    "endAnchors": [
+      {
+        "role": "button",
+        "name": "Databases"
+      },
+      {
+        "role": "button",
+        "name": "Source Control"
+      },
+      {
+        "role": "button",
+        "name": "Consoles"
+      },
+      {
+        "role": "button",
+        "name": "Flows"
+      },
+      {
+        "role": "button",
+        "name": "Transforms"
+      },
+      {
+        "role": "button",
+        "name": "Sources"
+      },
+      {
+        "role": "button",
+        "name": "Dashboards"
+      },
+      {
+        "role": "button",
+        "name": "Notebooks"
+      }
+    ],
+    "endWaitMs": 12516
+  }
+}

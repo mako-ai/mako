@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-04T10:57:58.174Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "typeSecret",
+        "summary": "fill secret \"verificationCode\" into textbox \"Verification Code\"",
+        "target": {
+          "role": "textbox",
+          "name": "Verification Code",
+          "placeholder": "123456",
+          "inputPurpose": "one-time-code"
+        },
+        "secret": "verificationCode"
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Verify Email\"",
+        "target": {
+          "role": "button",
+          "name": "Verify Email"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::01%20create%20account%20and%20verify%20email",
+      "targetId": "chromium",
+      "instructionDigest": "14f866c7b871767d394714750601b66d7a899a096f5b1055b1617fd6922be441"
+    },
+    "summary": "Verified the email successfully and confirmed the workspace creation form appeared.",
+    "startPath": "/verify-email?email={{param:/email|uri}}",
+    "endPath": "/",
+    "endAnchors": [
+      {
+        "role": "image",
+        "name": "Mako"
+      },
+      {
+        "role": "heading",
+        "name": "Query your data in seconds.",
+        "text": "Query your datain seconds."
+      },
+      {
+        "role": "heading",
+        "name": "Create your workspace"
+      },
+      {
+        "text": "Choose a name that represents your team, company, or project."
+      },
+      {
+        "text": "Workspace name"
+      },
+      {
+        "role": "textbox",
+        "name": "Workspace name",
+        "placeholder": "e.g., Acme Corp, Engineering Team, Personal"
+      },
+      {
+        "text": "A short label for your team or company — you can change it later"
+      },
+      {
+        "text": "What do you want to build? (optional)"
+      }
+    ],
+    "endWaitMs": 13699
+  }
+}

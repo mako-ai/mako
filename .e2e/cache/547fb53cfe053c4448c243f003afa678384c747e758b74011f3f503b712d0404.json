@@ -1,0 +1,62 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-04T10:54:51.182Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap button \"Run (⌘/Ctrl+Enter)\"",
+        "target": {
+          "role": "button",
+          "name": "Run (⌘/Ctrl+Enter)"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::08%20execute%20SQL%20and%20inspect%20results",
+      "targetId": "chromium",
+      "instructionDigest": "6e3d4b41703dc069d22d40a851cc9123c8ff8079486e56fedf0e6ff6fc7aa230"
+    },
+    "summary": "Ran the existing SQL without editing it. The Results table is displayed with one row: mako_e2e_answer = 42.",
+    "startPath": "/c/35d9e282328f815b9f357a4a",
+    "endPath": "/c/35d9e282328f815b9f357a4a",
+    "endAnchors": [
+      {
+        "role": "button",
+        "name": "table view"
+      },
+      {
+        "role": "button",
+        "name": "json view"
+      },
+      {
+        "role": "button",
+        "name": "chart view"
+      },
+      {
+        "role": "button",
+        "name": "Copy to clipboard"
+      },
+      {
+        "role": "button",
+        "name": "Download"
+      },
+      {
+        "text": "#"
+      },
+      {
+        "role": "button",
+        "name": "Previous"
+      },
+      {
+        "role": "button",
+        "name": "Next"
+      }
+    ],
+    "endWaitMs": 11950
+  }
+}

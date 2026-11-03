@@ -1,0 +1,67 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-04T10:53:35.413Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "type",
+        "summary": "type \"Mako E2E a2df81f0-21fe-4cd5-af08-912fbd…\" into textbox \"Workspace name\"",
+        "target": {
+          "role": "textbox",
+          "name": "Workspace name",
+          "placeholder": "e.g., Acme Corp, Engineering Team, Personal"
+        },
+        "value": "{{param:/name}}"
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Create Workspace\"",
+        "target": {
+          "role": "button",
+          "name": "Create Workspace"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::02%20create%20workspace",
+      "targetId": "chromium",
+      "instructionDigest": "8259eee6658f4f496822d58c85f09b262b6645fc373d2d3cd7c3303e893c8355"
+    },
+    "summary": "Created the workspace and confirmed that the “What’s your role?” question appeared. Stopped without answering onboarding questions.",
+    "startPath": "/",
+    "endPath": "/",
+    "endAnchors": [
+      {
+        "role": "heading",
+        "name": "What's your role?"
+      },
+      {
+        "text": "This helps us tailor your experience"
+      },
+      {
+        "text": "Developer / Engineer"
+      },
+      {
+        "text": "Data Analyst / Scientist"
+      },
+      {
+        "text": "Founder / Product Manager"
+      },
+      {
+        "text": "Engineering Manager / Team Lead"
+      },
+      {
+        "text": "Other"
+      },
+      {
+        "role": "button",
+        "name": "Next"
+      }
+    ],
+    "endWaitMs": 12283
+  }
+}
