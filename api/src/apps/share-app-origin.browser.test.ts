@@ -98,11 +98,15 @@ addEventListener("message", e => {
 });
 fetch("/api/share/${token}/content", { credentials: "include" })
   .then(r => r.json())
-  .then(({ data }) => {
+  .then(async ({ data }) => {
     if (!data.appUrl) return location.replace(data.entry);
+    const origin = new URL(data.appUrl, location.href).origin;
+    const reachable = origin !== location.origin && await fetch(origin + "/__mako/ping", { mode: "cors", credentials: "omit", cache: "no-store" })
+      .then(r => r.json())
+      .then(b => b.ok === true, () => false);
+    if (!reachable) return location.replace(data.entry);
     const f = document.createElement("iframe");
-    const foreign = new URL(data.appUrl, location.href).origin !== location.origin;
-    f.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox" + (foreign ? " allow-same-origin" : ""));
+    f.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin");
     f.src = data.appUrl;
     f.style.cssText = "border:0;width:100vw;height:100vh";
     document.body.appendChild(f);
@@ -254,12 +258,19 @@ describe.skipIf(!playwrightDir || !chromiumPath)(
       });
       const runs: Record<string, Array<Record<string, unknown>>> = {};
       try {
-        for (const mode of ["off", "on"] as const) {
+        for (const mode of ["off", "on", "blocked"] as const) {
           vi.stubEnv(
             "APPS_ORIGIN_BASE",
-            mode === "on" ? `http://${host("makoapps.test")}` : "",
+            mode === "off" ? "" : `http://${host("makoapps.test")}`,
           );
           const context = await browser.newContext();
+          // A proxy that blocks the whole apps domain.
+          if (mode === "blocked") {
+            await context.route(
+              /makoapps\.test/,
+              (route: { abort: () => Promise<void> }) => route.abort(),
+            );
+          }
           // A signed-in visitor: Mako's session cookie on Mako's origin.
           await context.addCookies([
             {
@@ -305,8 +316,9 @@ describe.skipIf(!playwrightDir || !chromiumPath)(
 
       const [off1, off2] = runs.off;
       const [on1, on2] = runs.on;
-      // Every load got its data, in both modes.
-      for (const run of [off1, off2, on1, on2]) {
+      const [blocked1, blocked2] = runs.blocked;
+      // Every load got its data, in every mode.
+      for (const run of [off1, off2, on1, on2, blocked1, blocked2]) {
         expect(run.sizes).toEqual([
           WASM.length,
           PARQUET.a.length,
@@ -322,6 +334,9 @@ describe.skipIf(!playwrightDir || !chromiumPath)(
       expect(on1.origin).toBe(`http://${id}.${host("makoapps.test")}`);
       expect(String(on2.url)).toBe(`${mako}/share/${SHARE}`);
       expect(on1.cookie).toBe("");
+      // Blocked: the flag is on, and the visitor lands where flag off lands.
+      expect(blocked1.origin).toBe("null");
+      expect(String(blocked2.url)).toContain(`/api/share/${SHARE}/app/`);
       // The point: the second visit is (almost) free on the app's origin.
       expect(Number(on2.mib)).toBeLessThan(0.05);
       expect(Number(off2.mib)).toBeGreaterThan(Number(on2.mib));

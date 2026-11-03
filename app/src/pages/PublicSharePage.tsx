@@ -9,7 +9,12 @@ import {
   Typography,
 } from "@mui/material";
 import { Lock } from "lucide-react";
-import { appFrameMessageOrigin, appFrameSandbox } from "../lib/app-frame";
+import {
+  appFrameMessageOrigin,
+  appFrameSandbox,
+  isForeignAppFrame,
+  reachableViewUrl,
+} from "../lib/app-frame";
 import { replaceLocation } from "../lib/replace-location";
 
 /**
@@ -25,7 +30,9 @@ import { replaceLocation } from "../lib/replace-location";
  *   share minted. This page frames it full screen with the same sandbox
  *   rules as inside Mako (app-frame.ts), so the browser cache works. The
  *   visitor stays on /share/<token>; the app's query is mirrored onto it.
- * - otherwise: navigate to `entry` on Mako's origin, as before.
+ *   The page frames it only after the host answers the probe (#1180): a proxy
+ *   that blocks the apps domain would fill the frame with its own error page.
+ * - otherwise, or when the probe fails: navigate to `entry` on Mako's origin.
  */
 
 interface ShareMeta {
@@ -56,6 +63,8 @@ export default function PublicSharePage() {
   const [password, setPassword] = useState("");
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [unlocking, setUnlocking] = useState(false);
+  // The app's own-origin URL, set once its host has answered the probe.
+  const [frameUrl, setFrameUrl] = useState<string | null>(null);
 
   const loadContent = useCallback(async (): Promise<ShareContent | null> => {
     const res = await fetch(`/api/share/${token}/content`, {
@@ -104,9 +113,20 @@ export default function PublicSharePage() {
   // on a grant the served HTML's <base> carries, since the sandboxed page
   // cannot send the unlock cookie (api/src/routes/public-share.ts).
   useEffect(() => {
-    if (content?.published && !content.appUrl) {
+    if (!content?.published) return;
+    if (!content.appUrl) {
       replaceLocation(content.entry);
+      return;
     }
+    let cancelled = false;
+    void reachableViewUrl(content.appUrl).then(url => {
+      if (cancelled) return;
+      if (isForeignAppFrame(url)) setFrameUrl(url);
+      else replaceLocation(content.entry);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [content]);
 
   // Framed on the app's own origin: the query the app boots with comes from
@@ -117,7 +137,7 @@ export default function PublicSharePage() {
   const [initialSearch] = useState(() => window.location.search);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [frameLoaded, setFrameLoaded] = useState(false);
-  const framed = !!(content?.published && content.appUrl);
+  const framed = !!frameUrl;
   useEffect(() => {
     if (!framed) return;
     const onMessage = (event: MessageEvent) => {
@@ -321,11 +341,11 @@ export default function PublicSharePage() {
     );
   }
 
-  if (content.appUrl) {
+  if (frameUrl) {
     const src =
-      content.appUrl +
+      frameUrl +
       (initialSearch
-        ? (content.appUrl.includes("?") ? "&" : "?") + initialSearch.slice(1)
+        ? (frameUrl.includes("?") ? "&" : "?") + initialSearch.slice(1)
         : "");
     return (
       <Box

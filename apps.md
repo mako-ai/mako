@@ -3584,6 +3584,12 @@ the app's `mako-app:navigate` messages are mirrored back onto it. Flag off,
   so the `/content` call that hands out `appUrl` records the open and sets
   the `mako_viewer` cookie, from the top-level share page as before.
 
+**Blocked visitors.** The page frames `appUrl` only after the host answers
+`/__mako/ping` (`reachableViewUrl`, #1180). A proxy that blocks the apps
+domain (Stifel's Zscaler) fails that probe within 4 s. The page then navigates
+to `entry`, the flag-off path. A blocked visitor counts as 2 opens: `/content`
+records one and the `entry` document records the other. We accept that count.
+
 **Removed.** `GET /api/share/<t>/artifacts/<artifactId>` had no caller:
 apps read data through `__data/`. The old `/app/` and `/u/<grant>/` routes
 stay: they serve the flag-off path and embeds of `/api/share/<t>/app/` on

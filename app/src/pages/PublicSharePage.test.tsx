@@ -6,15 +6,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const replaceLocation = vi.hoisted(() => vi.fn());
 vi.mock("../lib/replace-location", () => ({ replaceLocation }));
 
+import { resetAppHostProbes } from "../lib/app-frame";
 import PublicSharePage from "./PublicSharePage";
 
 const APP_URL =
   "https://23d9b603172c133a8427e812.makousercontent.com/api/apps-preview/pub.abc.sig/";
 
-function respond(content: Record<string, unknown>) {
+function respond(content: Record<string, unknown>, { blocked = false } = {}) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {
+      if (url.endsWith("/__mako/ping")) {
+        // A proxy's block page carries no CORS header, so the fetch rejects.
+        if (blocked) throw new TypeError("Failed to fetch");
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
       const body = url.endsWith("/content")
         ? { success: true, data: content }
         : {
@@ -51,6 +57,7 @@ const base = {
 describe("PublicSharePage", () => {
   beforeEach(() => {
     replaceLocation.mockReset();
+    resetAppHostProbes();
     window.history.replaceState(null, "", "/share/tok");
   });
   afterEach(() => {
@@ -80,11 +87,27 @@ describe("PublicSharePage", () => {
     expect(document.title).toBe("Pipeline");
   });
 
-  it("never adds allow-same-origin to a same-origin app URL", async () => {
+  it("navigates to the entry and frames nothing when a proxy blocks the app's host", async () => {
+    respond({ ...base, appUrl: APP_URL }, { blocked: true });
+    renderShare();
+    await waitFor(() =>
+      expect(replaceLocation).toHaveBeenCalledWith("/api/share/tok/app/"),
+    );
+    expect(replaceLocation).toHaveBeenCalledTimes(1);
+    expect(document.querySelector("iframe")).toBeNull();
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      `${new URL(APP_URL).origin}/__mako/ping`,
+      expect.objectContaining({ mode: "cors", credentials: "omit" }),
+    );
+  });
+
+  it("navigates to the entry and never frames a same-origin app URL", async () => {
     respond({ ...base, appUrl: "/api/apps-preview/pub.abc.sig/" });
     renderShare();
-    const frame = await screen.findByTitle("Pipeline");
-    expect(frame.getAttribute("sandbox")).not.toContain("allow-same-origin");
+    await waitFor(() =>
+      expect(replaceLocation).toHaveBeenCalledWith("/api/share/tok/app/"),
+    );
+    expect(document.querySelector("iframe")).toBeNull();
   });
 
   it("seeds the share URL's query into the frame and mirrors the app's navigation back", async () => {
