@@ -10,6 +10,7 @@ import {
   quoteString,
   readsCatalog,
   toPlainRows,
+  isReadOnlySql,
 } from "./data-core.js";
 
 // apache-arrow is a devDependency (the version duckdb-wasm 1.29 bundles).
@@ -335,4 +336,36 @@ test("retryDelayMs reads the tag, never the words", () => {
   assert.equal(retryDelayMs(tagged("network", { retryAfterMs: 900000 }), 0), 900000);
   assert.equal(retryDelayMs(new Error("Out of Memory Error: from a server"), 0), null);
   assert.equal(retryDelayMs(new TypeError("Failed to fetch"), 0), null);
+});
+
+test("isReadOnlySql: reads pass, and anything else keeps the engine", () => {
+  for (const sql of [
+    "SELECT 1 WHERE false",
+    "  -- a note\n/* and another */ select * from x",
+    "FROM x",
+    "WITH a AS (SELECT 1) SELECT * FROM a",
+    "(SELECT 1) UNION ALL (SELECT 2)",
+    "SHOW TABLES",
+    "DESCRIBE x",
+    "SELECT 'CREATE TABLE y; DROP TABLE z' AS s;",
+    'SELECT "update" FROM x',
+    "",
+  ]) {
+    assert.equal(isReadOnlySql(sql), true, sql);
+  }
+  for (const sql of [
+    "CREATE OR REPLACE TABLE journal_t AS SELECT * FROM journal",
+    "-- first a comment\n create view v as select 1",
+    "/* x */ INSERT INTO t VALUES (1)",
+    "SELECT 1; CREATE TABLE t (a INT)",
+    "WITH a AS (SELECT 1) INSERT INTO t SELECT * FROM a",
+    "SET threads = 1",
+    "PRAGMA enable_profiling",
+    "ATTACH 'x.db'",
+    "COPY x TO 'y.parquet'",
+    "BEGIN",
+    "something_new x",
+  ]) {
+    assert.equal(isReadOnlySql(sql), false, sql);
+  }
 });

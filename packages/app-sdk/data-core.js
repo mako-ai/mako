@@ -46,6 +46,23 @@ export function readsCatalog(sql) {
   return CATALOG_QUERY.test(String(sql));
 }
 
+const SQL_NOISE = /'(?:[^']|'')*'|"(?:[^"]|"")*"|--[^\n]*|\/\*[\s\S]*?\*\//g;
+const READ_STATEMENT = /^(?:\(|(?:SELECT|FROM|VALUES|TABLE|DESC|DESCRIBE|SHOW|SUMMARIZE|WITH)\b)/i;
+const WRITE_WORD = /\b(?:INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|MERGE)\b/i;
+
+/**
+ * Whether `sql` only reads. Anything it does not recognise counts as a write:
+ * the cost of a wrong "write" is a frame that keeps its engine, and the cost of
+ * a wrong "read" is an app that loses its tables on a release.
+ */
+export function isReadOnlySql(sql) {
+  return String(sql)
+    .replace(SQL_NOISE, " ")
+    .split(";")
+    .map(statement => statement.trim())
+    .every(s => s === "" || (READ_STATEMENT.test(s) && !(/^WITH\b/i.test(s) && WRITE_WORD.test(s))));
+}
+
 /**
  * The binding a DuckDB "Table with name X does not exist" error is about —
  * X itself when the index lists it, else its case-insensitive match (DuckDB

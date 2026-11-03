@@ -210,6 +210,11 @@ binding. Use `useQuery` / `useDuckDB` first. For anything custom (SDK ≥ 2.8):
   recently read become views over their parquet and turn back into tables on
   their next read. Do not unload bindings by hand to save memory.
   `setBindingMemoryBudget(bytes)` changes the cap.
+- Past 2 GiB across open app tabs, Mako ends the DuckDB worker of the least
+  recently shown app (SDK ≥ 2.13). `getDuckDB()`, `withConnection()`,
+  `ensureBinding()` and `useDuckDB` SQL that writes (`CREATE TABLE`) keep the
+  worker for the page's life, so the heap never goes back. Stay read-only unless
+  the app needs them.
 - `fetchBindingBytes(name, { onProgress, fresh })` returns the raw parquet
   bytes for a custom reader (register them with
   `getDuckDB().registerFileBuffer`).
