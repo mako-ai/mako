@@ -86,7 +86,12 @@ describe("apps-deploy-reconcile", () => {
     expect(sendEvent).toHaveBeenCalledWith("deploy", [
       {
         name: "apps/deploy.requested",
-        data: { workspaceId: "ws", appId: "app", sha: head, reason: "reconcile" },
+        data: {
+          workspaceId: "ws",
+          appId: "app",
+          sha: head,
+          reason: "reconcile",
+        },
       },
     ]);
   });

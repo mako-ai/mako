@@ -238,9 +238,9 @@ describe("a deploy that kept running after a newer commit went live", () => {
       return {} as never;
     });
 
-    await expect(deployOneApp(workspaceId, "sales", sha)).resolves.toMatchObject(
-      { outcome: "superseded" },
-    );
+    await expect(
+      deployOneApp(workspaceId, "sales", sha),
+    ).resolves.toMatchObject({ outcome: "superseded" });
 
     expect(setPublishedSha).not.toHaveBeenCalled();
     expect(deployBuild).not.toHaveBeenCalled();
