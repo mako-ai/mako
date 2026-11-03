@@ -109,6 +109,7 @@ import {
   APP_MANIFEST,
   APPS_DIR,
   FOLDER_KEEP_FILE,
+  USERS_DIR,
   WORKFLOWS_DIR,
   appRepoPath,
   parseAppRepoPath,
@@ -3286,9 +3287,16 @@ export async function ensureProjectRow(
     workspaceId: project.workspaceId,
   });
   if (existing) {
-    // First human to act on an ownerless row claims it (resource-acl reads
-    // owner_id, then createdBy).
-    if (owner && !existing.owner_id && !existing.createdBy) {
+    // An ownerless row gets its owner on the first act by a person (resource-acl
+    // reads owner_id, then createdBy). A personal row's owner is the mapping's
+    // answer. Outside a personal tree, a private row stays as it is: only a
+    // workspace-visible app takes the acting person as its owner.
+    if (
+      owner &&
+      !existing.owner_id &&
+      !existing.createdBy &&
+      (personal || existing.access !== "private")
+    ) {
       await AppProject.updateOne(
         {
           _id: existing._id,
@@ -3337,10 +3345,14 @@ export async function ensureProjectRow(
 async function personalTreeOwner(
   project: IAppProject,
 ): Promise<{ ownerId: string | undefined } | null> {
-  const location = parseAppRepoPath(appRootFor(project));
-  if (location?.scope !== "private") return null;
-  const directory = await loadOwnerDirectory(project.workspaceId.toString());
-  return { ownerId: directory.ownerOf(location.ownerHandle) ?? undefined };
+  const root = appRootFor(project);
+  const location = parseAppRepoPath(root);
+  if (location?.scope === "private") {
+    const directory = await loadOwnerDirectory(project.workspaceId.toString());
+    return { ownerId: directory.ownerOf(location.ownerHandle) ?? undefined };
+  }
+  // A path under users/ the parser refuses names no handle: it is nobody's.
+  return root.startsWith(`${USERS_DIR}/`) ? { ownerId: undefined } : null;
 }
 
 /**
