@@ -49,3 +49,25 @@ affects = 'docs/src/content/docs/mcp-server.md:default-api-key-scopes'
 [[block]]
 target = 'api/src/services/database-connection.service.ts#/READ_ONLY_UNSUPPORTED_TYPES'
 affects = 'docs/src/content/docs/mcp-server.md:read-only-unsupported-engines'
+
+# `mako_ai.__version__` must report the version that was published.
+[[block]]
+target = 'packages/mako-sdk-py/pyproject.toml#/project/version'
+same-as = 'packages/mako-sdk-py/src/mako_ai/__init__.py#/__version__'
+
+# Constants and types the agent docs list.
+[[block]]
+target = 'api/src/agent-lib/tool-catalog.ts#/MAX_ACTIVE_TOOLS'
+affects = 'docs/src/content/docs/ai-agent.md:tool-budgets'
+
+[[block]]
+target = 'api/src/agent-lib/tool-catalog.ts#/MAX_ACTIVE_TOOL_TOKENS'
+affects = 'docs/src/content/docs/ai-agent.md:tool-budgets'
+
+[[block]]
+target = 'api/src/agent-lib/tool-catalog.ts#/PROVIDER_TOOL_CAPS'
+affects = 'docs/src/content/docs/ai-agent.md:tool-budgets'
+
+[[block]]
+target = 'api/src/agents/modes/types.ts#/ExpertiseModeId'
+affects = 'docs/src/content/docs/ai-agent.md:expertise-modes'
