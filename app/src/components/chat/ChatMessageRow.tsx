@@ -192,7 +192,11 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
 
   return (
     <ListItem component="div" alignItems="flex-start" sx={listItemSx}>
-      <Message className="py-2 text-foreground">
+      <Message
+        className="py-2 text-foreground"
+        role="article"
+        aria-label="Assistant message"
+      >
         {/* Keep card borders and focus rings inside the padded clip box. */}
         <MessageContent className="-mx-2 -mb-2 w-[calc(100%+1rem)] flex-none gap-0 overflow-hidden p-2 [overflow-wrap:anywhere] [&_pre]:m-0">
           {parts.map((part, partIndex) => {
