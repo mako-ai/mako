@@ -327,6 +327,18 @@ export async function bindingArtifactKeyByName(
   });
 }
 
+/** git's wording for a path absent from a tree, and a sandbox's for a file. */
+function isFileMissingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const stderr =
+    error && typeof error === "object" && "stderr" in error
+      ? String((error as { stderr: unknown }).stderr)
+      : "";
+  return /does not exist in|exists on disk, but not in|no such file|enoent|file not found/i.test(
+    `${message}\n${stderr}`,
+  );
+}
+
 /**
  * ONE committed binding, parsed — the same narrow single-file read as
  * bindingArtifactKeyByName. Null when there is no such file or it names no
@@ -336,17 +348,23 @@ export async function readCommittedBinding(
   project: IAppProject,
   name: string,
   actorId: string,
+  /** Read the binding as of this commit rather than the actor's view. */
+  at?: string,
 ): Promise<AppBinding | null> {
   if (!NAME_RE.test(name)) return null;
   let file: { contents: string };
   try {
-    file = await readFile(project, `bindings/${name}.sql`, actorId);
-  } catch {
-    return null;
+    file = await readFile(project, `bindings/${name}.sql`, actorId, at);
+  } catch (error) {
+    // Only a file that is not there reads as "no such binding". A commit this
+    // instance cannot get says nothing about the binding, and the caller must
+    // not treat that as the binding being gone.
+    if (isFileMissingError(error)) return null;
+    throw error;
   }
   const legacy = parseBindingFrontMatter(file.contents).connection
     ? undefined
-    : (await legacyConnectionIds(project, actorId)).get(name);
+    : (await legacyConnectionIds(project, actorId, at)).get(name);
   return bindingFromSource(name, file.contents, legacy);
 }
 
@@ -799,6 +817,12 @@ export interface MaterializeOptions {
   keepFile?: boolean;
   /** Build this resolved binding rather than re-reading it (see buildBindingParquet). */
   resolved?: { binding: AppBinding; connection: IDatabaseConnection };
+  /**
+   * The binding, already read by the caller. Without it a build reads every
+   * file under bindings/ to find its own: 134 files cost 13 s per build on
+   * 2026-11-03, against 1.5-3 s for small apps.
+   */
+  binding?: AppBinding;
 }
 
 export interface MaterializeResult {
@@ -821,12 +845,20 @@ export async function materializeAppBinding(
   const startedAt = Date.now();
   let built;
   try {
+    const resolved =
+      opts.resolved ??
+      (opts.binding
+        ? {
+            binding: opts.binding,
+            connection: await bindingConnection(project, opts.binding),
+          }
+        : undefined);
     built = await buildBindingParquet(
       project,
       name,
       actorId,
       opts.at,
-      opts.resolved,
+      resolved,
     );
   } catch (error) {
     await recordBindingRun(projectId, name, {

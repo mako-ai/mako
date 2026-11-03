@@ -25,6 +25,14 @@ vi.mock("../services/artifact-store.service", () => ({
   getArtifactSourceStore: () => stores.source ?? null,
 }));
 
+const refreshes = vi.hoisted(() => ({
+  send: vi.fn(async (..._args: unknown[]) => undefined),
+}));
+
+vi.mock("../inngest/functions/apps-binding-refresh", () => ({
+  requestBindingRefreshes: refreshes.send,
+}));
+
 vi.mock("./bindings.service", () => ({
   bindingArtifactKey: vi.fn(
     (binding: { connectionId: string; name: string }) =>
@@ -99,6 +107,7 @@ import {
   ensureDeploymentBindings,
   readDeploymentAsset,
   serveDeploymentFile,
+  setPublishedSha,
 } from "./deployment.service";
 import {
   bindingArtifactKeyByName,
@@ -106,6 +115,7 @@ import {
   readBindingsTolerant,
   type AppBinding,
 } from "./bindings.service";
+import { AppProject } from "../database/workspace-schema";
 
 function mockStore(
   existingKeys: string[],
@@ -464,6 +474,7 @@ describe("deployment binding readiness", () => {
       required: ["sales"],
       reused: ["sales"],
       materialized: [],
+      refreshing: [],
       skipped: [],
     });
     expect(readBindingsTolerant).toHaveBeenCalledWith(project, "publish", sha);
@@ -474,11 +485,13 @@ describe("deployment binding readiness", () => {
     const result = await ensureDeploymentBindings(project, sha);
 
     expect(result.materialized).toEqual(["sales"]);
+    // The binding it read goes along: re-reading every file under bindings/
+    // per build cost 13 s each on a 134-binding app.
     expect(materializeAppBinding).toHaveBeenCalledWith(
       project,
       "sales",
       "publish",
-      { at: sha },
+      { at: sha, binding: stores.bindings[0] },
     );
   });
 
@@ -496,6 +509,177 @@ describe("deployment binding readiness", () => {
     // — its data URL 404s exactly as the serving path already isolates it.
     expect(result.materialized).toEqual(["sales"]);
     expect(result.skipped).toEqual(stores.skipped);
+  });
+
+  describe("the 2026-11-03 release: 134 bindings on an hourly cron", () => {
+    const hourly = { schedule: "55 * * * *", timezone: "UTC" };
+    const startedAt = new Date("2026-11-03T03:36:06Z");
+    const keyOf = (name: string) => `apps/bindings/warehouse/${name}.parquet`;
+    const binding = (name: string) => ({
+      name,
+      connectionId: "warehouse",
+      materialization: "parquet" as const,
+      code: `select '${name}'`,
+      sql: `select '${name}'`,
+      ...hourly,
+    });
+
+    /** 22 new bindings, 112 present and built before the 02:55 occurrence. */
+    function seedRelease() {
+      const fresh = Array.from({ length: 22 }, (_, i) => `new_${i}`);
+      const stale = Array.from({ length: 112 }, (_, i) => `old_${i}`);
+      stores.bindings = [...fresh, ...stale].map(binding);
+      stores.primary = mockStore(
+        stale.map(keyOf),
+        Object.fromEntries(
+          stale.map(name => [keyOf(name), new Date("2026-11-03T02:16:00Z")]),
+        ),
+      );
+      return { fresh, stale };
+    }
+
+    /** materializeAppBinding that yields, so concurrent calls overlap. */
+    function trackBuilds() {
+      const seen = { peak: 0, running: 0 };
+      vi.mocked(materializeAppBinding).mockImplementation(async () => {
+        seen.running += 1;
+        seen.peak = Math.max(seen.peak, seen.running);
+        await new Promise(resolve => setImmediate(resolve));
+        seen.running -= 1;
+        return {
+          artifactKey: "k",
+          rowCount: 1,
+          byteSize: 10,
+          materializedAt: new Date(),
+        };
+      });
+      return seen;
+    }
+
+    it("builds only the 22 absent artifacts, 2 at a time, and reports the other 112 for refresh", async () => {
+      const { fresh, stale } = seedRelease();
+      const builds = trackBuilds();
+
+      const result = await ensureDeploymentBindings(project, sha, {
+        now: startedAt,
+      });
+
+      expect(result.materialized).toEqual(fresh);
+      expect(result.refreshing).toEqual(stale);
+      expect(result.reused).toEqual([]);
+      expect(materializeAppBinding).toHaveBeenCalledTimes(22);
+      expect(builds.peak).toBe(2);
+      // Queued by the repoint: a refresh stands down for a commit not yet live.
+      expect(refreshes.send).not.toHaveBeenCalled();
+    });
+
+    it("judges every binding before the first build, so a :55 crossing during the builds changes nothing", async () => {
+      seedRelease();
+      const primary = stores.primary!;
+      let judgedBeforeFirstBuild = -1;
+      vi.mocked(materializeAppBinding).mockImplementation(async () => {
+        if (judgedBeforeFirstBuild < 0) {
+          judgedBeforeFirstBuild = vi.mocked(primary.getLastModified).mock.calls
+            .length;
+        }
+        return {
+          artifactKey: "k",
+          rowCount: 1,
+          byteSize: 10,
+          materializedAt: new Date(),
+        };
+      });
+
+      await ensureDeploymentBindings(project, sha, { now: startedAt });
+
+      expect(judgedBeforeFirstBuild).toBe(112);
+      expect(vi.mocked(primary.getLastModified).mock.calls.length).toBe(112);
+    });
+
+    it("reports every binding as prepared when the builds finish", async () => {
+      seedRelease();
+      trackBuilds();
+
+      await ensureDeploymentBindings(project, sha, { now: startedAt });
+
+      const progress = vi
+        .mocked(AppProject.updateOne)
+        .mock.calls.map(
+          call =>
+            (call[1] as { $set?: Record<string, unknown> }).$set?.[
+              "deployProgress.bindings"
+            ] as { prepared: number; total: number } | undefined,
+        )
+        .filter(Boolean);
+      expect(progress[0]).toEqual({ total: 134, prepared: 0 });
+      expect(progress.at(-1)).toEqual({ total: 134, prepared: 134 });
+    });
+
+    it("a failed build blocks the release, names the binding and starts nothing new", async () => {
+      const { fresh } = seedRelease();
+      vi.mocked(materializeAppBinding).mockImplementation(
+        async (_project, name) => {
+          if (name === fresh[1]) throw new Error("HTTP 401");
+          await new Promise(resolve => setImmediate(resolve));
+          return {
+            artifactKey: "k",
+            rowCount: 1,
+            byteSize: 10,
+            materializedAt: new Date(),
+          };
+        },
+      );
+
+      await expect(
+        ensureDeploymentBindings(project, sha, { now: startedAt }),
+      ).rejects.toThrow('Binding "new_1": HTTP 401');
+
+      // The two already running; the other 20 never start.
+      expect(materializeAppBinding).toHaveBeenCalledTimes(2);
+      expect(stores.primary!.putBuffer).not.toHaveBeenCalled();
+    });
+
+    it("a refresh that cannot be queued does not stop the repoint", async () => {
+      vi.mocked(AppProject.updateOne).mockResolvedValueOnce({
+        matchedCount: 1,
+      } as never);
+      refreshes.send.mockRejectedValueOnce(new Error("inngest down"));
+
+      await expect(
+        setPublishedSha(project, sha, { refreshing: ["old_0"] }),
+      ).resolves.toBe(true);
+    });
+
+    it("the repoint queues the refreshes once the release is live", async () => {
+      vi.mocked(AppProject.updateOne).mockResolvedValueOnce({
+        matchedCount: 1,
+      } as never);
+
+      await setPublishedSha(project, sha, { refreshing: ["old_0", "old_1"] });
+
+      expect(refreshes.send).toHaveBeenCalledWith(project, sha, [
+        "old_0",
+        "old_1",
+      ]);
+    });
+
+    it("a conditional repoint that lost queues nothing and says so", async () => {
+      vi.mocked(AppProject.updateOne).mockResolvedValueOnce({
+        matchedCount: 0,
+      } as never);
+
+      await expect(
+        setPublishedSha(project, sha, {
+          expected: "1".repeat(40),
+          refreshing: ["old_0"],
+        }),
+      ).resolves.toBe(false);
+
+      expect(vi.mocked(AppProject.updateOne).mock.calls[0][0]).toMatchObject({
+        publishedSha: "1".repeat(40),
+      });
+      expect(refreshes.send).not.toHaveBeenCalled();
+    });
   });
 
   describe("scheduled bindings", () => {
@@ -519,7 +703,7 @@ describe("deployment binding readiness", () => {
       expect(materializeAppBinding).not.toHaveBeenCalled();
     });
 
-    it("rebuilds an artifact older than the schedule's latest occurrence at the deployment sha", async () => {
+    it("goes live on an artifact older than the schedule's latest occurrence and refreshes it at the deployment sha", async () => {
       stores.bindings[0] = { ...stores.bindings[0], ...schedule };
       stores.primary = mockStore([key], {
         [key]: new Date("2026-09-07T12:00:00Z"),
@@ -530,16 +714,12 @@ describe("deployment binding readiness", () => {
       });
 
       expect(result.reused).toEqual([]);
-      expect(result.materialized).toEqual(["sales"]);
-      expect(materializeAppBinding).toHaveBeenCalledWith(
-        project,
-        "sales",
-        "publish",
-        { at: sha },
-      );
+      expect(result.materialized).toEqual([]);
+      expect(result.refreshing).toEqual(["sales"]);
+      expect(materializeAppBinding).not.toHaveBeenCalled();
     });
 
-    it("reproduces #992: a merge reverting the query to an older text must not serve yesterday's build", async () => {
+    it("#992: a merge reverting the query to an older text queues a refresh of that text, whatever the scheduler state says", async () => {
       // fr-sales-dashboard, binding fr_demos, "44 7 * * *" Europe/Paris.
       // Day 1 07:49: the scheduler built text A. Day 1 17:24: an edit to
       // text B was published. Day 2 07:47: the scheduler built B (main).
@@ -560,14 +740,8 @@ describe("deployment binding readiness", () => {
       });
 
       expect(result.reused).toEqual([]);
-      expect(result.materialized).toEqual(["sales"]);
-      expect(materializeAppBinding).toHaveBeenCalledTimes(1);
-      expect(materializeAppBinding).toHaveBeenCalledWith(
-        project,
-        "sales",
-        "publish",
-        { at: sha },
-      );
+      expect(result.refreshing).toEqual(["sales"]);
+      expect(materializeAppBinding).not.toHaveBeenCalled();
       expect(primary.getLastModified).toHaveBeenCalledTimes(1);
       expect(primary.getLastModified).toHaveBeenCalledWith(key);
     });
@@ -587,7 +761,7 @@ describe("deployment binding readiness", () => {
       expect(primary.getLastModified).not.toHaveBeenCalled();
     });
 
-    it("rebuilds when the store cannot say how old the artifact is", async () => {
+    it("refreshes when the store cannot say how old the artifact is", async () => {
       stores.bindings[0] = { ...stores.bindings[0], ...schedule };
       stores.primary = mockStore([key]);
 
@@ -595,8 +769,8 @@ describe("deployment binding readiness", () => {
         now: deployAt,
       });
 
-      expect(result.materialized).toEqual(["sales"]);
-      expect(materializeAppBinding).toHaveBeenCalledTimes(1);
+      expect(result.refreshing).toEqual(["sales"]);
+      expect(materializeAppBinding).not.toHaveBeenCalled();
     });
 
     it("keeps reusing an unscheduled binding's artifact however old it is", async () => {
@@ -697,7 +871,7 @@ describe("deployment binding readiness", () => {
       project,
       "sales",
       "publish",
-      { at: sha },
+      { at: sha, binding: stores.bindings[0] },
     );
   });
 });

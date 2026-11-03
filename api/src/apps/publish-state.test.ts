@@ -112,6 +112,33 @@ describe("readPublishState deploy progress", () => {
   });
 });
 
+describe("readPublishState refresh failures", () => {
+  it("lists tables of the live commit whose rebuild failed, and ignores older commits", async () => {
+    const old = await commit("apps/sales/App.tsx", "feat: v1");
+    const live = await commit("apps/sales/App.tsx", "feat: v2");
+    const at = new Date("2026-11-03T05:00:00Z");
+    const state = await readPublishState(repoDir, {
+      branch: "main",
+      appRoot: "apps/sales",
+      publishedSha: live,
+      publishedAt: null,
+      lastDeployError: null,
+      bindingRefreshErrors: {
+        deals: { sha: live, message: "boom", attempts: 3, at },
+        leads: { sha: old, message: "older", attempts: 1, at },
+      },
+    });
+    expect(state.bindingRefreshFailures).toEqual([
+      { binding: "deals", message: "boom", attempts: 3, at },
+    ]);
+  });
+
+  it("is empty when nothing failed", async () => {
+    const live = await commit("apps/sales/App.tsx", "feat: v1");
+    expect((await read(live)).bindingRefreshFailures).toEqual([]);
+  });
+});
+
 describe("readPublishState", () => {
   it("describes the published commit and reads up to date at the tip", async () => {
     const sha = await commit("apps/sales/App.tsx", "feat: seasonality");

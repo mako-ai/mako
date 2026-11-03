@@ -126,7 +126,24 @@ export default defineConfig({
       // Stale / unviewed apps: the planner, archive moves, the dry-run default.
       "src/apps/app-lifecycle.service.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
+      // One event, one build: scheduled vs after-publish, single-file read.
+      "src/inngest/functions/apps-binding-refresh-event.test.ts",
+      // A BigQuery result stream renews its token between pages.
+      "src/services/bigquery-stream-token.test.ts",
+      // The independent review of #1190: races, budget, status, refresh.
+      "src/apps/review1190-bindings.test.ts",
+      "src/apps/review1190-budget.test.ts",
+      "src/apps/review1190-guard.test.ts",
+      "src/apps/review1190-status.test.ts",
+      "src/inngest/functions/review1190-refresh.test.ts",
+      "src/services/review1190-token.test.ts",
+      "src/apps/review1190b-cas.test.ts",
+      "src/apps/review1190b-guard.test.ts",
+      "src/apps/review1190b-slots.test.ts",
+      "src/inngest/functions/review1190b-refresh.test.ts",
       "src/inngest/functions/apps-deploy.test.ts",
+      // The hourly reconcile leaves a progressing deploy of main alone.
+      "src/inngest/functions/apps-deploy-reconcile.test.ts",
       // A deploy's outcome as a GitHub commit status on the pushed sha.
       "src/apps/deploy-commit-status.test.ts",
       "src/inngest/functions/apps-deploy-status.test.ts",

@@ -101,6 +101,10 @@ import {
 import { freshenForServe } from "../../apps/cloud-repo.service";
 import { buildLogPath } from "../../apps/deployment.service";
 import { publishState } from "../../apps/publish-state";
+import {
+  describeDeployProgress,
+  isDeployInFlight,
+} from "../../apps/deploy-progress";
 import { getSandboxProvider } from "../../apps/sandbox/provider";
 import {
   devConsolePath,
@@ -1016,6 +1020,7 @@ function buildTools(
         "A push to the default branch builds and publishes automatically; when the branch is ahead of the published sha, " +
         "the newest commits are still building or the build/data preparation failed — `lastDeployError` then names the stage (bindings/build) and the error; app_build_log has the full build output. " +
         "While a deploy is in flight, `deploy` names its sha and stage (queued, bindings, build or publishing) with timestamps, `bindings` {prepared, total, current} during data preparation, a one-line `summary`, and `stalled` when the stage has had no progress for too long. " +
+        "`bindingRefreshFailures` lists tables of the live commit serving old numbers because their rebuild failed. " +
         "For the sandbox worktree's own git state, use app_status.",
       inputSchema: z.object({ appId: z.string() }),
       execute: async ({ appId }) => {
@@ -1039,10 +1044,12 @@ function buildTools(
         "the push webhook uses (single-build concurrency per app, so it never " +
         "races a push-triggered build) and returns immediately with the " +
         "enqueued sha — poll app_publish_status until publishedSha reaches it " +
-        "(typically under 2 minutes; required parquet bindings are prepared " +
-        "at that exact commit before it goes live, and a failing build or binding surfaces in " +
-        "app_build_log). Use when a push's automatic deploy did not land, or " +
-        "to force a redeploy of the current branch tip. Needs edit access to the app.",
+        "(typically under 2 minutes; only a parquet binding with no artifact at that " +
+        "exact commit blocks the release, a stale scheduled artifact goes live and " +
+        "refreshes behind it, and a failing build or binding surfaces in " +
+        "app_build_log). A deploy of this sha that is still progressing is left to " +
+        "finish and reported as `alreadyInFlight`. Use when a push's automatic deploy " +
+        "did not land, or to force a redeploy of the current branch tip. Needs edit access to the app.",
       inputSchema: z.object({ appId: z.string() }),
       execute: async ({ appId }) => {
         const loaded = await loadProject(appId, { write: true, deploy: true });
@@ -1061,6 +1068,20 @@ function buildTools(
           );
           if (!sha) {
             return { success: false, error: `branch ${branch} has no commits` };
+          }
+          if (isDeployInFlight(project.deployProgress, sha)) {
+            return {
+              success: true,
+              alreadyInFlight: true,
+              enqueued: { branch, sha },
+              deploy: describeDeployProgress(
+                project.deployProgress,
+                project.publishedSha ?? null,
+              ),
+              message:
+                "A deploy of this sha is already running. Poll app_publish_status " +
+                "until publishedSha reaches it.",
+            };
           }
           const { requestAppDeploys } =
             await import("../../inngest/functions/apps-deploy");

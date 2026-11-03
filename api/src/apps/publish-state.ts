@@ -56,6 +56,16 @@ export interface PublishState {
    */
   deploy: DeployProgressView | null;
   /**
+   * Stale artifacts of the live commit whose rebuild failed: the app is live
+   * but these tables hold old numbers. Empty when nothing failed.
+   */
+  bindingRefreshFailures: Array<{
+    binding: string;
+    message: string;
+    attempts: number;
+    at: Date;
+  }>;
+  /**
    * Set when main has app changes that are not live and nothing explains
    * it: no deploy in flight and no recorded failure. The push's deploy was
    * never enqueued or was lost; the hourly reconcile (at :17) or
@@ -73,6 +83,7 @@ export interface PublishStateInput {
   deployProgress?: IAppProject["deployProgress"] | null;
   /** Injectable clock for the deploy timings. */
   now?: Date;
+  bindingRefreshErrors?: IAppProject["bindingRefreshErrors"] | null;
 }
 
 async function gitOut(repoDir: string, args: string[]): Promise<string | null> {
@@ -179,6 +190,14 @@ export async function readPublishState(
     pendingCommits,
     lastDeployError,
     deploy,
+    bindingRefreshFailures: Object.entries(input.bindingRefreshErrors ?? {})
+      .filter(([, failure]) => failure.sha === publishedSha)
+      .map(([binding, { message, attempts, at }]) => ({
+        binding,
+        message,
+        attempts,
+        at,
+      })),
     ...(unexplained
       ? {
           note:
@@ -208,5 +227,6 @@ export async function publishState(
     publishedAt: project.publishedAt ?? null,
     lastDeployError: project.lastDeployError ?? null,
     deployProgress: project.deployProgress ?? null,
+    bindingRefreshErrors: project.bindingRefreshErrors ?? null,
   });
 }
