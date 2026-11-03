@@ -4,7 +4,7 @@ import { describe, test, type Cookie } from "@e2e-dev/web";
 import { credentials, expect, secrets, unique } from "e2e";
 import { prepareGitHubInstallation } from "./github-fixture";
 
-const installationFixture = process.env.MAKO_E2E_GITHUB_AUTH === "installation";
+const installationFixture = process.env.MAKO_E2E_GITHUB_AUTH === "fake";
 
 // Serial steps share the freshly registered user's browser, never an admin seed.
 describe("Mako new user", { serial: true }, () => {
@@ -126,7 +126,8 @@ describe("Mako new user", { serial: true }, () => {
           throw new Error("Fresh workspace missing from browser.");
         await prepareGitHubInstallation(workspaceId, repo);
         // No personal login in CI. Only the third-party OAuth navigation is
-        // blocked; Mako's sync URL, installation status and repository APIs stay real.
+        // blocked; Mako's sync URL, installation status and repository APIs
+        // stay real and call the loopback GitHub fake.
         await browser.route("https://github.com/login/**", route =>
           route.abort(),
         );

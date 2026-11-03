@@ -1,10 +1,11 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { config } from "dotenv";
 import type { E2EConfig } from "e2e";
 import { web } from "@e2e-dev/web";
 import { gateway } from "ai";
 import { registrationCode } from "./tests/e2e/verification";
 import { localTestDatabase } from "./tests/e2e/local-database";
+import { FAKE_AI_GATEWAY_URL, FAKE_GITHUB } from "./tests/e2e/fake-services";
 
 config({ path: ".env.e2e.local" });
 const baseURL = new URL(
@@ -17,12 +18,17 @@ if (startApp) {
   localTestDatabase(); // Reject shared DBs before spawning Mako.
 }
 const githubAuth = process.env.MAKO_E2E_GITHUB_AUTH ?? "oauth";
-if (!["oauth", "installation"].includes(githubAuth)) {
-  throw new Error("MAKO_E2E_GITHUB_AUTH must be oauth or installation.");
+if (!["oauth", "fake"].includes(githubAuth)) {
+  throw new Error("MAKO_E2E_GITHUB_AUTH must be oauth or fake.");
 }
-if (githubAuth === "installation" && !local) {
-  throw new Error("GitHub installation fixtures are restricted to localhost.");
+// A runner-started Mako talks only to loopback GitHub/AI fakes, so the fake
+// GitHub installation and a runner-started app always go together.
+if ((githubAuth === "fake") !== startApp) {
+  throw new Error(
+    "MAKO_E2E_GITHUB_AUTH=fake requires MAKO_E2E_START_APP=1 and vice versa.",
+  );
 }
+if (startApp) process.env.MAKO_E2E_GITHUB_REPO = FAKE_GITHUB.repo;
 const preview =
   baseURL.protocol === "https:" && /^pr-\d+\.mako\.ai$/.test(baseURL.hostname);
 if (!local && !preview)
@@ -85,6 +91,7 @@ export default {
               "all",
               "pnpm --filter api exec tsx src/index.ts",
               "pnpm --filter app exec vite --port 5173 --strictPort",
+              "pnpm exec tsx tests/e2e/fake-services.ts",
             ],
             startupTimeout: 90_000,
             log: ".e2e/logs/app.log",
@@ -94,11 +101,6 @@ export default {
                   // pnpm must retain its installed store and noninteractive mode.
                   "CI",
                   "PNPM_HOME",
-                  "AI_GATEWAY_API_KEY",
-                  "GITHUB_APP_ID",
-                  "GITHUB_APP_SLUG",
-                  "GITHUB_APP_CLIENT_ID",
-                  "GITHUB_APP_PRIVATE_KEY",
                   "DEMO_DATABASE_URL",
                   "SESSION_SECRET",
                   "ENCRYPTION_KEY",
@@ -110,6 +112,20 @@ export default {
                     : [[key, process.env[key]!]],
                 ),
               ),
+              // Never forward real GitHub App or AI credentials to Mako:
+              // a throwaway App key signs JWTs for the loopback GitHub fake,
+              // and Mako chat's model is the loopback AI Gateway fake.
+              GITHUB_API_BASE_URL: FAKE_GITHUB.apiBaseUrl,
+              GITHUB_APP_ID: FAKE_GITHUB.appId,
+              GITHUB_APP_SLUG: FAKE_GITHUB.appSlug,
+              GITHUB_APP_CLIENT_ID: FAKE_GITHUB.clientId,
+              GITHUB_APP_PRIVATE_KEY: generateKeyPairSync("rsa", {
+                modulusLength: 2048,
+                privateKeyEncoding: { type: "pkcs8", format: "pem" },
+                publicKeyEncoding: { type: "spki", format: "pem" },
+              }).privateKey,
+              AI_GATEWAY_BASE_URL: FAKE_AI_GATEWAY_URL,
+              AI_GATEWAY_API_KEY: "e2e-fake-gateway",
               DATABASE_URL: process.env.MAKO_E2E_MONGODB_URI!,
               NODE_ENV: "development",
               WEB_API_PORT: "8080",
