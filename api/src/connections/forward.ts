@@ -29,7 +29,7 @@ import {
 export class ConnectionRequestError extends Error {
   constructor(
     message: string,
-    public readonly status: 400 | 403 | 404 = 400,
+    public readonly status: 400 | 403 | 404 | 409 = 400,
   ) {
     super(message);
     this.name = "ConnectionRequestError";
@@ -226,18 +226,16 @@ function containsSecret(text: string, secrets: string[]): boolean {
 }
 
 /**
- * The values to search an answer for, longest first: each secret long enough
- * to search for (`secretValuesOf`) and the
- * encodings a credential is sent in (basic auth's base64, a query string's).
+ * The values to search an answer for, longest first: each stored secret long
+ * enough to search for (`secretValuesOf`), its URL encoding, and exactly what
+ * the credential put on the wire (`applyCredential`).
  */
-function searchableSecrets(secrets: string[]): string[] {
+function searchableSecrets(secrets: string[], sent: string[]): string[] {
   const values = secretValuesOf(secrets);
   return secretValuesOf([
     ...values,
-    ...values.flatMap(s => [
-      Buffer.from(`${s}:`).toString("base64"),
-      encodeURIComponent(s),
-    ]),
+    ...values.map(s => encodeURIComponent(s)),
+    ...sent,
   ]);
 }
 
@@ -306,7 +304,7 @@ export async function send(
     request.method === "GET" || request.method === "HEAD"
       ? undefined
       : encodeBody(request.body, callable, headers);
-  applyCredential(callable.credential(config), headers, url);
+  const sent = applyCredential(callable.credential(config), headers, url);
 
   const gate = rateGateOf(callable, connection);
   const answer = await throttledRequest(
@@ -322,20 +320,22 @@ export async function send(
     gate.minDelayMs,
     "proxy",
   );
-  return clean(answer, callable, config);
+  return clean(answer, callable, config, sent);
 }
 
 /**
  * The service's answer without the credential: auth headers, cookies, and
- * any header holding a secret value (also base64- or URL-encoded) are
- * removed; the value is redacted from the body.
+ * any header holding a secret value (URL-encoded too) or a value the
+ * credential was sent as are removed; those values are redacted from the
+ * body.
  */
 function clean(
   answer: SafeRequestResult,
   callable: CallableConnection,
   config: ForwardConnection["config"],
+  sent: string[],
 ): ForwardResult {
-  const secrets = searchableSecrets(secretsOf(callable, config));
+  const secrets = searchableSecrets(secretsOf(callable, config), sent);
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(answer.headers)) {
     const lower = name.toLowerCase();

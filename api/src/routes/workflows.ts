@@ -534,10 +534,22 @@ const asWorker =
     { person = false } = {},
   ) =>
   async (c: AuthenticatedContext) => {
-    const worker = workerOf(c) ?? (person ? personOf(c) : null);
-    return worker
-      ? handler(c, worker)
-      : c.json({ error: "Invalid worker key" }, 401);
+    const worker = workerOf(c);
+    if (worker) return handler(c, worker);
+    const self = person ? personOf(c) : null;
+    if (!self) return c.json({ error: "Invalid worker key" }, 401);
+    // A person acts as themselves only while they belong to the workspace:
+    // a key outlives its owner's membership, its rights do not.
+    if (!(await workspaceService.getMember(self.workspaceId, self.userId))) {
+      return c.json(
+        {
+          error:
+            "This key's owner is no longer a member of this workspace, so it cannot run workflow code here.",
+        },
+        403,
+      );
+    }
+    return handler(c, self);
   };
 
 /** The SQL, model and agent routes, which a person's own run calls too. */

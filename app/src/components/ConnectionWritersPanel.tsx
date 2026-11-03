@@ -8,8 +8,7 @@
  *
  * Both kinds of connection: a database (`where` is a schema or table) and a
  * source connection, written through Mako's proxy (a writer writes anywhere
- * there: the app offers no path limit, though the API honours a `where`
- * path; live reads can be turned off).
+ * there; live reads can be turned off).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -33,7 +32,6 @@ import {
   BookOpen,
   Database,
   Folder,
-  Link2,
   PenLine,
   Route,
   Table2,
@@ -60,11 +58,10 @@ type Who = { principal: string; label: string; kind: "person" | "workflow" };
 
 const ANYWHERE = "Anywhere";
 
-type Place = { text: string; kind: "anywhere" | "schema" | "table" | "path" };
+type Place = { text: string; kind: "anywhere" | "schema" | "table" };
 
 function whereLabel(where?: string | null): Place {
   if (!where) return { text: "Anywhere", kind: "anywhere" as const };
-  if (where.startsWith("/")) return { text: where, kind: "path" as const };
   return where.includes(".")
     ? { text: where, kind: "table" as const }
     : { text: where, kind: "schema" as const };
@@ -425,7 +422,7 @@ export default function ConnectionWritersPanel({
               )}
             />
             {/* A source writer writes anywhere through the connection: no
-                path limit to pick (the API still honours one, `where`). */}
+                place to pick. */}
             {!source && (
               <Autocomplete
                 size="small"
@@ -566,8 +563,6 @@ function PlaceChip({ place }: { place: Place }) {
   const icon =
     place.kind === "anywhere" ? (
       <Database size={14} />
-    ) : place.kind === "path" ? (
-      <Link2 size={14} />
     ) : place.kind === "schema" ? (
       <Folder size={14} />
     ) : (

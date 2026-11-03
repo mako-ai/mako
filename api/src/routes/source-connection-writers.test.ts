@@ -127,7 +127,7 @@ describe("source connection writers", () => {
     });
   });
 
-  it("lets a manager allow a workflow under one path and turn live reads on and off", async () => {
+  it("lets a manager allow a workflow and turn live reads on and off", async () => {
     const on = await req("PUT", `/${id}/writers`, {
       writers: [],
       liveReads: true,
@@ -137,18 +137,15 @@ describe("source connection writers", () => {
       (await (await req("GET", `/${id}/writers`)).json()).data.liveReads,
     ).toBe(true);
     const put = await req("PUT", `/${id}/writers`, {
-      writers: [{ principal: "workflow:fr-offer-to-cash", where: "/task/" }],
+      writers: [{ principal: "workflow:fr-offer-to-cash" }],
       liveReads: false,
     });
     expect(put.status).toBe(200);
     const stored = await SourceConnection.findById(id).lean();
     expect(stored?.writers).toMatchObject([
-      {
-        principal: "workflow:fr-offer-to-cash",
-        where: "/task/",
-        addedBy: "manager1",
-      },
+      { principal: "workflow:fr-offer-to-cash", addedBy: "manager1" },
     ]);
+    expect(stored?.writers?.[0].where).toBeUndefined();
     expect(stored?.liveReads).toBe(false);
   });
 
@@ -182,12 +179,14 @@ describe("source connection writers", () => {
   });
 
   it("shows who tried to write, and what the list does not cover", async () => {
+    // A `where` stored on a source writer (from before writers were
+    // connection-wide) is ignored: the writer writes anywhere.
     await SourceConnection.updateOne(
       { _id: id },
       {
         $set: {
           writers: [
-            { principal: "workflow:fr-offer-to-cash", where: "/task/" },
+            { principal: "workflow:fr-offer-to-cash", where: "/legacy/" },
           ],
         },
       },
@@ -206,6 +205,9 @@ describe("source connection writers", () => {
       event("worker:workflows", "POST /task/", false),
     ]);
     const { data } = await (await req("GET", `/${id}/writers`)).json();
+    expect(data.writers).toMatchObject([
+      { principal: "workflow:fr-offer-to-cash", where: null },
+    ]);
     const byPrincipal = Object.fromEntries(
       data.recent.map((r: { principal: string; uncovered: string[] }) => [
         r.principal,
@@ -213,9 +215,7 @@ describe("source connection writers", () => {
       ]),
     );
     expect(byPrincipal["workflow:other-flow"]).toEqual(["POST /task/"]);
-    expect(byPrincipal["workflow:fr-offer-to-cash"]).toEqual([
-      "PUT /lead/lead_1/",
-    ]);
+    expect(byPrincipal["workflow:fr-offer-to-cash"]).toEqual([]);
     // The worker naming no workflow cannot be listed, so it is not offered.
     expect(byPrincipal["worker:workflows"]).toBeUndefined();
   });

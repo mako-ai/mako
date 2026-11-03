@@ -104,6 +104,13 @@ describe("reads and writes", () => {
     expect(read("close", "DELETE", "/task/task_1/")).toBe(false);
   });
 
+  it("Close: the GET override reads only on a POST", () => {
+    const override = { headers: { "x-http-method-override": "GET" } };
+    for (const method of ["DELETE", "PUT", "PATCH"]) {
+      expect(read("close", method, "/lead/lead_1/", override)).toBe(false);
+    }
+  });
+
   it("Stripe and Wise: every POST writes", () => {
     expect(read("stripe", "POST", "/v1/customers/search")).toBe(false);
     expect(read("wise", "POST", "/v3/profiles/1/quotes")).toBe(false);
@@ -137,14 +144,26 @@ describe("reads and writes", () => {
   it("GraphQL: a mutation hidden after a query, or in a batch, is a write", () => {
     expect(isGraphqlQuery("query A { a } mutation B { b }")).toBe(false);
     expect(isGraphqlQuery("subscription { s }")).toBe(false);
-    expect(isGraphqlQuery('{ search(text: "mutation") { id } }')).toBe(true);
-    expect(isGraphqlQuery("{ a } # mutation in a comment")).toBe(true);
+    expect(isGraphqlQuery("{ a } # mutation in a comment")).toBe(false);
     expect(
       isGraphqlReadBody([{ query: "{ a }" }, { query: "mutation { b }" }]),
     ).toBe(false);
     expect(isGraphqlReadBody(JSON.stringify({ query: "{ a }" }))).toBe(true);
     expect(isGraphqlReadBody({})).toBe(false);
     expect(isGraphqlReadBody("not json")).toBe(false);
+  });
+
+  it("GraphQL: a mutation behind a \\r comment line or in a block string is a write", () => {
+    expect(isGraphqlQuery("{ a } # note\rmutation { b }")).toBe(false);
+    expect(
+      isGraphqlQuery('{ a(text: """ x """) } """\nmutation { b }\n"""'),
+    ).toBe(false);
+    expect(isGraphqlQuery('{ a(doc: """mutation { b }""") }')).toBe(false);
+  });
+
+  it("GraphQL: fail closed, a query that only mentions mutation in a string is a write", () => {
+    expect(isGraphqlQuery('{ search(text: "mutation") { id } }')).toBe(false);
+    expect(isGraphqlQuery("{ subscriptions { id } }")).toBe(true);
   });
 });
 
@@ -309,6 +328,27 @@ describe("no secret in any answer", () => {
     expect(result.headers).toEqual({
       "content-type": "application/json",
       "x-request-id": "req_1",
+    });
+  });
+
+  it("scrubs the exact basic-auth payload and header a Custom API sent", async () => {
+    const payload = Buffer.from("user:pass").toString("base64");
+    answering(200, { payload, header: `Basic ${payload}` });
+    const result = await forward(
+      connection("custom_api", {
+        base_url: "https://probo.example.com",
+        auth_type: "basic",
+        username: "user",
+        password: "pass",
+      }),
+      type("custom_api"),
+      { method: "GET", path: "/" },
+    );
+    const text = JSON.stringify(result);
+    expect(text).not.toContain(payload);
+    expect(result.body).toEqual({
+      payload: "[redacted]",
+      header: "[redacted]",
     });
   });
 

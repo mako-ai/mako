@@ -10,7 +10,10 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { decryptEncrypted, isEncryptedValue } from "../services/crypto.service";
-import { SourceConnection } from "../database/workspace-schema";
+import {
+  SourceConnection,
+  type IConnectionWriter,
+} from "../database/workspace-schema";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import {
   PROBE_DEFAULT_LIMIT,
@@ -1394,25 +1397,28 @@ export const dataSourceRoutes = sourceConnectionRoutes;
 
 // --- Who may write through this connection's proxy ---------------------------
 // The same Access tab as a database connection's (access/connection-writes.ts):
-// everyone reads; the listed people and workflows write, each anywhere or only
-// under one path. Anyone in the workspace may look; the connection's managers
-// (and the workspace owner) change it, in the app. Syncs are not concerned.
+// everyone reads (when live reads are on); the listed people and workflows
+// write, anywhere through the connection. Anyone in the workspace may look;
+// the connection's managers (and the workspace owner) change it, in the app.
+// Syncs are not concerned.
 
 const SourceWriterSchema = z.object({
   principal: z
     .string()
     .regex(LISTABLE_PRINCIPAL)
     .openapi({ example: "workflow:fr-offer-to-cash" }),
-  where: z
-    .string()
-    .regex(/^\/[^\s?#]{0,500}$/)
-    .optional()
-    .openapi({ example: "/task/" }),
 });
 
-/** A logged target (`POST /task/`) as the path the list is checked against. */
-function targetPath(target: string): string {
-  return target.slice(target.indexOf(" ") + 1);
+/**
+ * The list as the Access tab shows it, one entry per principal. A `where`
+ * stored on a source writer (the list's schema is shared with database
+ * connections) is ignored by the proxy, so it is not shown either.
+ */
+function publicSourceWriters(writers: IConnectionWriter[] | undefined) {
+  const seen = new Set<string>();
+  return publicWriters(writers)
+    .filter(w => !seen.has(w.principal) && seen.add(w.principal))
+    .map(w => ({ ...w, where: null }));
 }
 
 sourceConnectionRoutes.openapi(
@@ -1450,14 +1456,14 @@ sourceConnectionRoutes.openapi(
     return c.json({
       success: true,
       data: {
-        writers: publicWriters(row.writers),
+        writers: publicSourceWriters(row.writers),
         canEdit,
         // Absent (every connection older than the proxy) means off.
         liveReads: row.liveReads === true,
         // Whether the proxy can call this connection at all yet.
         callable: callableFor(row.type) !== null,
-        recent: await recentWriters(id, (principal, target) =>
-          mayWrite(row.writers, principal, targetPath(target)),
+        recent: await recentWriters(id, principal =>
+          mayWrite(row.writers, principal),
         ),
       },
     });

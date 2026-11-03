@@ -197,10 +197,12 @@ Paths are relative to the base URL and cannot leave it. `get`/`post`/`put`/
 headers, body }` at any status. GraphQL: `post("/", { query, variables })`.
 
 GETs, GraphQL queries and Close searches are reads: on once live reads are
-on in the connection's Access tab (a Custom API starts on). Anything else is
-a write: it needs this workflow on that tab's writers list (optionally under
-one path, `/task/`), and a refused one throws and shows there with Allow. Tell
-the user which connection and path to allow first. A test run writes as the
+on in the connection's Access tab (a Custom API starts on). A GraphQL
+document with the word `mutation` or `subscription` anywhere, even in a
+string or comment, is a write. Anything else is a write: it needs this
+workflow on that tab's writers list (a listed writer writes anywhere through
+the connection), and a refused one throws and shows there with Allow. Tell
+the user which connection to allow first. A test run writes as the
 person running it. A step can be retried: look for the record before
 creating it, or send the service's idempotency header, the same on every
 retry: ``post(path, body, { headers: { "Idempotency-Key": `offer-${id}` } })``.

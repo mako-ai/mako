@@ -12373,8 +12373,6 @@ export interface operations {
                     writers: {
                         /** @example workflow:fr-offer-to-cash */
                         principal: string;
-                        /** @example /task/ */
-                        where?: string;
                     }[];
                     liveReads?: boolean;
                 };
@@ -12960,8 +12958,6 @@ export interface operations {
                     writers: {
                         /** @example workflow:fr-offer-to-cash */
                         principal: string;
-                        /** @example /task/ */
-                        where?: string;
                     }[];
                     liveReads?: boolean;
                 };

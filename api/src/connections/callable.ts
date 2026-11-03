@@ -41,29 +41,42 @@ export type Credential =
   /** No credential (a public API). */
   | { type: "none" };
 
-/** Add `credential` to a request's headers (lower-case names) or URL. */
+/**
+ * Add `credential` to a request's headers (lower-case names) or URL, and
+ * return every value it put on the wire (a whole header value, a basic-auth
+ * payload, a query value as encoded), to scrub exactly those from the answer.
+ */
 export function applyCredential(
   credential: Credential,
   headers: Record<string, string>,
   url: URL,
-): void {
+): string[] {
   switch (credential.type) {
-    case "bearer":
-      headers.authorization = `Bearer ${credential.token}`;
-      return;
+    case "bearer": {
+      const header = `Bearer ${credential.token}`;
+      headers.authorization = header;
+      return [header, credential.token];
+    }
     case "api_key_header":
       headers[credential.header.toLowerCase()] = credential.token;
-      return;
+      return [credential.token];
     case "api_key_query":
       url.searchParams.set(credential.param, credential.token);
-      return;
-    case "basic":
-      headers.authorization = `Basic ${Buffer.from(
+      return [
+        credential.token,
+        // As the query string carries it.
+        new URLSearchParams([["v", credential.token]]).toString().slice(2),
+      ];
+    case "basic": {
+      const payload = Buffer.from(
         `${credential.username}:${credential.password}`,
-      ).toString("base64")}`;
-      return;
+      ).toString("base64");
+      const header = `Basic ${payload}`;
+      headers.authorization = header;
+      return [header, payload];
+    }
     case "none":
-      return;
+      return [];
   }
 }
 
@@ -157,18 +170,14 @@ function trimSlash(url: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Whether a GraphQL document only queries. Strings and comments are removed
- * first; then any `mutation` or `subscription` word makes it a write, even a
- * field of that name: a read counted as a write is refused, never the
- * other way round.
+ * Whether a GraphQL document only queries. Fail closed: the word `mutation`
+ * or `subscription` anywhere (an operation, a field, a comment, a string)
+ * makes it a write. Comments and strings are not parsed away: a read counted
+ * as a write is refused, never the other way round.
  */
 export function isGraphqlQuery(document: unknown): boolean {
   if (typeof document !== "string" || !document.trim()) return false;
-  const bare = document
-    .replace(/"""[\s\S]*?"""/g, '""')
-    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
-    .replace(/#[^\n]*/g, "");
-  return !/\b(mutation|subscription)\b/.test(bare);
+  return !/\b(mutation|subscription)\b/.test(document);
 }
 
 /** A GraphQL POST body (one operation, or a batch) that only queries. */
@@ -209,14 +218,14 @@ const close: CallableConnection = {
     password: "",
   }),
   reads(request) {
-    // Close reads a POST as a GET when told so (the connector lists leads
-    // that way), and its search API only searches.
+    // Only a POST can be a read here: Close reads a POST as a GET when told
+    // so (the connector lists leads that way), and its search API only
+    // searches. Any other method writes, whatever its headers say.
+    if (request.method !== "POST") return false;
     if (request.headers["x-http-method-override"]?.toUpperCase() === "GET") {
       return true;
     }
-    return (
-      request.method === "POST" && /^\/data\/search\/?$/.test(request.path)
-    );
+    return /^\/data\/search\/?$/.test(request.path);
   },
   rateGate(connection) {
     // The connector's own gate: keyed by the key, at least 500 ms apart.

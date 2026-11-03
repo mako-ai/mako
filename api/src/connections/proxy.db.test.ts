@@ -9,8 +9,9 @@
  * on, a read passes for an unlisted workflow; an unlisted write is refused
  * and recorded; a listed `workflow:<name>` writes; a person's own run acts as
  * the person, whatever workflow it names; agents and unidentified callers
- * only read. What is a read, where a path may go and that no answer carries
- * the key are pinned without a database in callable.test.ts.
+ * only read; a name two connections share is refused. What is a read, where
+ * a path may go and that no answer carries the key are pinned without a
+ * database in callable.test.ts.
  *
  * Needs the runtime's packages: npm install --prefix deploy/workflows/runtime
  *
@@ -38,7 +39,7 @@ import { loggingMiddleware } from "../logging";
 import { workflowRuntimeRoutes } from "../routes/workflows";
 import { encryptString } from "../services/crypto.service";
 import { databaseConnectionService } from "../services/database-connection.service";
-import { setTransportForTests } from "./forward";
+import { ConnectionRequestError, setTransportForTests } from "./forward";
 import { connectorRegistry } from "../connectors/registry";
 import { createSourceConnection } from "../connectors/source-connection-create.service";
 import { connectionRequest } from "./proxy.service";
@@ -154,8 +155,16 @@ async function main() {
       config: { api_key: encryptString(CLOSE_KEY) },
       settings,
       createdBy: "deployer",
-      writers: [{ principal: "workflow:fr-offer-to-cash", where: "/task/" }],
+      writers: [{ principal: "workflow:fr-offer-to-cash" }],
     });
+    const twin = {
+      workspaceId: ws,
+      type: "close",
+      config: { api_key: encryptString(CLOSE_KEY) },
+      settings,
+      createdBy: "deployer",
+      liveReads: true,
+    };
     const running = new AsyncLocalStorage<string>();
     (globalThis as { makoWorkflow?: unknown }).makoWorkflow = running;
     const load = async (apiKey: string): Promise<Mako> => {
@@ -223,7 +232,7 @@ async function main() {
     assert.equal(recorded[0].target, "POST /task/");
     assert.equal(recorded[0].allowed, false);
 
-    // The listed workflow writes, within its path, as itself.
+    // The listed workflow writes, as itself.
     assert.equal(
       await running.run("fr-offer-to-cash", () =>
         attempt(() =>
@@ -244,14 +253,14 @@ async function main() {
     assert.equal(recorded[1].principal, "workflow:fr-offer-to-cash");
     assert.equal(recorded[1].allowed, true);
 
-    // Outside its path, the same workflow is refused.
-    assert.match(
-      await running.run("fr-offer-to-cash", () =>
-        attempt(() =>
+    // A listed writer writes anywhere through the connection: no path limit.
+    assert.equal(
+      (
+        await running.run("fr-offer-to-cash", () =>
           worker.connection("ch_close").request("DELETE", "/lead/lead_1/"),
-        ),
-      ),
-      /not allowed to write/,
+        )
+      ).status,
+      200,
     );
 
     // A person's own run acts as the person: the workflow it names grants nothing.
@@ -316,6 +325,31 @@ async function main() {
       (error: Error) => error.message,
     );
     assert.match(elsewhere, /^No connection/);
+
+    // Two connections with one name: a name is refused, the id still works.
+    const [dupA] = await SourceConnection.create([
+      { ...twin, name: "dup_name" },
+      { ...twin, name: "dup_name" },
+    ]);
+    const byName = await connectionRequest({
+      workspaceId: String(ws),
+      connection: "dup_name",
+      request: { method: "GET", path: "/lead/" },
+    }).then(
+      () => null,
+      (error: ConnectionRequestError) => error,
+    );
+    assert.equal(byName?.status, 409);
+    assert.equal(
+      byName?.message,
+      "Several connections are called dup_name; use its id.",
+    );
+    const byId = await connectionRequest({
+      workspaceId: String(ws),
+      connection: String(dupA._id),
+      request: { method: "GET", path: "/lead/" },
+    });
+    assert.equal(byId.status, 200);
 
     // Live reads turned off again: reads are refused.
     await SourceConnection.updateOne(

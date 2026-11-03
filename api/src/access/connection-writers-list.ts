@@ -1,8 +1,9 @@
 /**
  * The writers list as the Access tab reads and changes it, for both kinds of
  * connection: database connections (writes are SQL, `where` is a schema or
- * table) and source connections (writes go through the proxy, `where` is a
- * path). Who wrote lately comes from the shared write log.
+ * table) and source connections (writes go through the proxy; a writer
+ * writes anywhere, a stored `where` is ignored). Who wrote lately comes from
+ * the shared write log.
  */
 import { Types } from "mongoose";
 import type { IConnectionWriter } from "../database/workspace-schema";

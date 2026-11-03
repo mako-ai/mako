@@ -33,6 +33,7 @@ import { workflowRuntimeRoutes } from "./workflows";
 
 const WORKER_KEY = "revops_worker_runtime_person_tests_";
 const NO_RUN_KEY = "revops_person_without_run_scope_xx";
+const MARC_RUN_KEY = "revops_marc_run_key_person_tests_";
 const SCHEMA = `mako_rp_${Date.now().toString(36)}`;
 const WRITE = (table: string) =>
   `INSERT INTO ${SCHEMA}.${table} (id) VALUES (1)`;
@@ -101,6 +102,12 @@ async function main() {
       apiKeys: [
         key(workerKeyName(), WORKER_KEY, WORKER_KEY_SCOPES, "deployer"),
         key("Marc's MCP", NO_RUN_KEY, ["mcp", "query:write"], "marc"),
+        key(
+          "Marc's runs",
+          MARC_RUN_KEY,
+          ["mcp", "query:read", "workflows:run"],
+          "marc",
+        ),
       ],
       workflows: {
         live: { sha: "a".repeat(40), tree: "t", names: ["billing-sync"] },
@@ -217,6 +224,17 @@ async function main() {
     // And a key needs the workflows:run grant for the runtime routes at all.
     res = await query(NO_RUN_KEY, "SELECT 1 AS one");
     assert.equal(res.status, 403);
+
+    // A person's own key works while its owner is a member, and stops when
+    // they leave the workspace; the worker's key is not concerned.
+    res = await query(MARC_RUN_KEY, "SELECT 1 AS one");
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    await WorkspaceMember.deleteOne({ workspaceId: ws, userId: "marc" });
+    res = await query(MARC_RUN_KEY, "SELECT 1 AS one");
+    assert.equal(res.status, 403, JSON.stringify(res.body));
+    assert.match(res.body.error, /no longer a member of this workspace/);
+    res = await query(WORKER_KEY, "SELECT 1 AS one", "billing-sync");
+    assert.equal(res.status, 200, JSON.stringify(res.body));
 
     console.log(
       `workflow runtime person tests passed${postgresUrl ? " (real Postgres)" : ""}`,

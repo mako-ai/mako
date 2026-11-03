@@ -11,8 +11,10 @@
  * (the same list and the same identity rule as database connections,
  * access/connection-writes.ts): a deployed workflow writes as
  * `workflow:<name>`, a person's own run as `user:<id>`, and a request that
- * identifies no one writes nothing. Agents only read. A writer may be limited
- * to one path (`where: "/task/"`). Every write is recorded in the write log,
+ * identifies no one writes nothing. Agents only read. A listed writer writes
+ * anywhere through the connection: a `where` stored on a source writer (the
+ * list's schema is shared with database connections, where it limits a
+ * schema or table) is ignored. Every write is recorded in the write log,
  * allowed or not; every read is logged.
  */
 import { Types } from "mongoose";
@@ -54,22 +56,21 @@ export interface ConnectionRequestResult extends ForwardResult {
   read: boolean;
 }
 
-/** A path writer `where` covers: itself and everything under it. */
-function coversPath(where: string, path: string): boolean {
-  const prefix = where.replace(/\/+$/, "");
-  return path === prefix || path.startsWith(`${prefix}/`);
-}
-
-/** Whether `principal` may send the write `path` under `writers`. */
+/**
+ * Whether `principal` may write through a source connection with `writers`:
+ * it is listed. A stored `where` is ignored (see the header).
+ */
 export function mayWrite(
   writers: IConnectionWriter[] | undefined,
   principal: string,
-  path: string,
 ): boolean {
-  const mine = (writers ?? []).filter(w => w.principal === principal);
-  return mine.some(w => !w.where || coversPath(w.where, path));
+  return (writers ?? []).some(w => w.principal === principal);
 }
 
+/**
+ * The connection `idOrName` names in the workspace: by id first, else by
+ * name, refused when several share that name.
+ */
 async function findConnection(
   workspaceId: string,
   idOrName: string,
@@ -83,7 +84,17 @@ async function findConnection(
     });
     if (byId) return byId;
   }
-  return SourceConnection.findOne({ workspaceId: workspace, name: idOrName });
+  const byName = await SourceConnection.find({
+    workspaceId: workspace,
+    name: idOrName,
+  }).limit(2);
+  if (byName.length > 1) {
+    throw new ConnectionRequestError(
+      `Several connections are called ${idOrName}; use its id.`,
+      409,
+    );
+  }
+  return byName[0] ?? null;
 }
 
 function recordProxyWrite(
@@ -177,7 +188,7 @@ export async function connectionRequest(
         403,
       );
     }
-    const allowed = mayWrite(row.writers, principal, path);
+    const allowed = mayWrite(row.writers, principal);
     recordProxyWrite(row, principal, target, allowed);
     if (!allowed) {
       logger.warn("Refused a connection write", where);
