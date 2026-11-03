@@ -204,7 +204,15 @@ binding. Use `useQuery` / `useDuckDB` first. For anything custom (SDK ≥ 2.8):
 - `getDuckDB()` returns the page's shared engine, and `withConnection(conn => …)`
   runs on a connection that is closed for you. Never close or terminate the
   shared engine.
-- `ensureBinding(name)` loads a binding as a table and returns its name.
+- A binding's name is a view (SDK ≥ 2.14). `SELECT`, `DESCRIBE` and joins work.
+  `INSERT`, `ALTER`, `DROP TABLE` and `CREATE OR REPLACE TABLE <binding>` fail:
+  copy it into a table with another name to write. That copy is uncompressed.
+- Write repeated CTEs over big bindings as `WITH u AS NOT MATERIALIZED (...)`
+  (SDK ≥ 2.14). DuckDB 1.4 holds a CTE read twice in scratch, whole: 12M rows
+  over 23 columns ran out of memory where 1.1 answered.
+- `ORDER BY` every query whose row order matters, and never read `any_value` for
+  a stable pick. The engine's row order changed in SDK 2.14.
+- `ensureBinding(name)` loads a binding and returns its name.
   `unloadBinding(name)` frees it.
 - Memory is managed for you (SDK ≥ 2.12): past 1.5 GiB of tables, the least
   recently read become views over their parquet and turn back into tables on

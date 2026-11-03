@@ -6,7 +6,7 @@
 // (a view's parquet copy sits in the heap outside duckdb_memory(), as measured).
 // A query whose SQL matches `oom` fails with DuckDB's Out of Memory message,
 // `oomTimes` times (default once). One matching `crash` traps like a corrupt heap.
-// parquet_metadata() estimates `estimate`, or `tableBytes` when unset. Like DuckDB, CREATE OR REPLACE refuses to
+// parquet_metadata() estimates `estimate`, or `tableBytes` when unset. Like the SDK, a binding is always a view over a table in mako_tables (`stores`) or a parquet (`views`). Formerly: CREATE OR REPLACE refused to
 // swap a view for a table or back.
 const state = (globalThis.__fakeDuck ??= {
   boots: 0,
@@ -14,7 +14,8 @@ const state = (globalThis.__fakeDuck ??= {
   files: new Map(),
   handles: new Map(),
   open: 0,
-  tables: new Set(),
+  tables: new Set(), // binding names backed by a stored table
+  stores: new Set(), // tables in mako_tables
   views: new Map(), // name -> file it reads
   tableBytes: 0,
   oom: null,
@@ -40,6 +41,7 @@ export class AsyncDuckDB {
   async terminate() {
     state.terminated = (state.terminated ?? 0) + 1;
     state.tables.clear();
+    state.stores.clear();
     state.views.clear();
     state.files.clear();
     state.handles.clear();
@@ -76,25 +78,34 @@ export class AsyncDuckDB {
           throw new Error("Catalog Error: Table with name " + state.missing + " does not exist!");
         }
         if (/FROM duckdb_memory\(\)/.test(sql)) {
-          return result(state.tables.size * state.tableBytes + (state.appBytes ?? 0), [{ name: "bytes", type: "Float64" }]);
+          return result(state.stores.size * state.tableBytes + (state.appBytes ?? 0), [{ name: "bytes", type: "Float64" }]);
         }
         if (/parquet_metadata\(/.test(sql)) {
           return result(state.estimate ?? state.tableBytes, [{ name: "estimate", type: "Float64" }]);
         }
-        const t = /^CREATE OR REPLACE TABLE "(.+?)"/.exec(sql);
-        if (t) {
-          if (state.views.has(t[1])) throw new Error("Catalog Error: Existing object " + t[1] + " is of type View, trying to replace with type Table");
-          state.tables.add(t[1]);
+        // An app's own table: counted in memory, never a binding.
+        const app = /^CREATE (?:OR REPLACE )?TABLE "?(\w+)"? /.exec(sql);
+        if (app) state.stores.add("app:" + app[1]);
+        const store = /^CREATE TABLE mako_tables\.main\."(.+?)" AS /.exec(sql);
+        if (store) state.stores.add(store[1]);
+        const dropStore = /^DROP TABLE IF EXISTS mako_tables\.main\."(.+?)"/.exec(sql);
+        if (dropStore) state.stores.delete(dropStore[1]);
+        const onStore = /^CREATE OR REPLACE VIEW "(.+?)" AS SELECT \* FROM mako_tables\.main\."(.+?)"/.exec(sql);
+        if (onStore) {
+          if (!state.stores.has(onStore[2])) throw new Error("Catalog Error: Table with name " + onStore[2] + " does not exist");
+          state.views.delete(onStore[1]);
+          state.tables.add(onStore[1]);
         }
         const v = /^CREATE OR REPLACE VIEW "(.+?)" AS SELECT \* FROM read_parquet\('(.+?)'\)/.exec(sql);
         if (v) {
-          if (state.tables.has(v[1])) throw new Error("Catalog Error: Existing object " + v[1] + " is of type Table, trying to replace with type View");
+          state.tables.delete(v[1]);
           state.views.set(v[1], v[2]);
         }
-        const d = /^DROP TABLE IF EXISTS "(.+?)"/.exec(sql);
-        if (d) state.tables.delete(d[1]);
         const dv = /^DROP VIEW IF EXISTS "(.+?)"/.exec(sql);
-        if (dv) state.views.delete(dv[1]);
+        if (dv) {
+          state.views.delete(dv[1]);
+          state.tables.delete(dv[1]);
+        }
         if (sql === "FAIL") throw new Error("boom");
         return result(undefined);
       },

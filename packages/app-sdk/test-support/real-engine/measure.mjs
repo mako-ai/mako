@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Real duckdb-wasm 1.29.0 in headless Chromium, driving real useDuckDB hooks
+// Real duckdb-wasm (the version the SDK under test pins) in headless Chromium, driving real useDuckDB hooks
 // over synthetic 23-column parquet shards. Never opens a visible window. Not
 // part of `node --test`: it needs a browser, the CDN and several GiB of RAM.
 //
-//   node test-support/real-engine/measure.mjs <scenario> [--sdk dir] [--rows n] [--shards n]
+//   node test-support/real-engine/measure.mjs <scenario> [--sdk dir] [--rows n] [--shards n] [--shape not_materialized]
 //
 // Scenarios: sequence (A then B, A+B over the heap), race (B while A is in
 // flight), overlarge (one pinned set over the heap), failedfetch, recover (a full
@@ -158,7 +158,9 @@ async function ensureShards(names, rows) {
 }
 
 // The dedupe the app's query does: a row in a newer shard's time span loses.
-const source = names => `(with u as (${names.map((n, k) => `select *, ${k} as _shard from "${n}"`).join(" union all ")}),
+// --shape not_materialized stops 1.32 from holding the whole union in scratch.
+const uAs = opt("shape", "") === "not_materialized" ? "u as not materialized" : "u as";
+const source = names => `(with ${uAs} (${names.map((n, k) => `select *, ${k} as _shard from "${n}"`).join(" union all ")}),
   r as (select _shard, min(t) as mn, max(t) as mx from u group by _shard)
   select * exclude (_shard) from u where not exists (select 1 from r where r._shard < u._shard and u.t between r.mn and r.mx))`;
 
