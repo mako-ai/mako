@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
   events: [] as string[],
+  role: null as string | null,
+  canWrite: true,
   project: {
     _id: { toString: () => "6a9411eb4c8b33609a65e665" },
     workspaceId: { toString: () => "6a9411eb4c8b33609a65e666" },
@@ -19,12 +21,20 @@ vi.mock("../../database/workspace-schema", () => ({
 }));
 
 vi.mock("../../services/workspace.service", () => ({
-  workspaceService: { getMember: vi.fn(async () => null) },
+  workspaceService: {
+    getMember: vi.fn(async () => (state.role ? { role: state.role } : null)),
+  },
 }));
 
 vi.mock("../../utils/resource-acl", () => ({
   canReadResource: vi.fn(() => true),
-  canWriteResource: vi.fn(() => true),
+  canWriteResource: vi.fn(() => state.canWrite),
+}));
+
+vi.mock("../../inngest/functions/apps-deploy", () => ({
+  requestAppDeploys: vi.fn(async (_ws: string, ids: string[], sha: string) => {
+    state.events.push(`deploy:${ids.join(",")}@${sha}`);
+  }),
 }));
 
 vi.mock("../../apps/cloud-repo.service", () => ({
@@ -94,7 +104,7 @@ vi.mock("../../apps/bindings.service", () => ({
 vi.mock("../../apps/repository.service", () => ({
   DEFAULT_BRANCH: "main",
   repoDirFor: vi.fn(() => "/repo"),
-  resolveCommit: vi.fn(),
+  resolveCommit: vi.fn(async () => "c".repeat(40)),
 }));
 
 vi.mock("../../apps/git", () => ({ runGit: vi.fn() }));
@@ -133,6 +143,8 @@ const tools = () =>
 
 beforeEach(() => {
   state.events = [];
+  state.role = null;
+  state.canWrite = true;
   vi.clearAllMocks();
 });
 
@@ -172,5 +184,55 @@ describe("app tool repository consistency", () => {
       "catch-up",
       "materialize",
     ]);
+  });
+});
+
+// 2026-10-30: app_publish answered "App … not found" for an app that
+// app_list_apps listed and app_publish_status read. The caller (a workspace
+// member) could see the workspace app but its general access was view-only,
+// and the write check reported that as "not found". Deploying still needs
+// edit access; only the message changes.
+describe("app tool access", () => {
+  const asMember = () =>
+    createAppsTools({
+      workspaceId: "6a9411eb4c8b33609a65e666",
+      userId: "u2",
+    }) as unknown as Record<string, Executable>;
+
+  it("a member with view-only access gets view-only, not not found", async () => {
+    state.role = "member";
+    state.canWrite = false;
+    const result = await asMember().app_publish.execute({
+      appId: "6a9411eb4c8b33609a65e665",
+    });
+    expect(result.success).toBe(false);
+    expect(String(result.error)).toContain(
+      "You can view app 6a9411eb4c8b33609a65e665 but not deploy it",
+    );
+    expect(String(result.error)).toContain("workspace role: member");
+    expect(state.events.some(e => e.startsWith("deploy:"))).toBe(false);
+  });
+
+  it("an editor still deploys", async () => {
+    state.role = "member";
+    state.canWrite = true;
+    const result = await asMember().app_publish.execute({
+      appId: "6a9411eb4c8b33609a65e665",
+    });
+    expect(result.success).toBe(true);
+    expect(state.events).toContain(
+      `deploy:6a9411eb4c8b33609a65e665@${"c".repeat(40)}`,
+    );
+  });
+
+  it("says view-only instead of not found when a viewer tries to deploy", async () => {
+    state.role = "viewer";
+    state.canWrite = false;
+    const result = await asMember().app_publish.execute({
+      appId: "6a9411eb4c8b33609a65e665",
+    });
+    expect(result.success).toBe(false);
+    expect(String(result.error)).toContain("You can view app");
+    expect(String(result.error)).not.toContain("not found");
   });
 });

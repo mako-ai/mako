@@ -3486,7 +3486,12 @@ through the existing token route instead of a new Worker.
 - An app host answers one thing (`middleware/apps-host-gate.ts`): that
   app's files under a `pub.` token minted for that app. Any other path, and
   another app's token, is a 404. Responses carry `frame-ancestors <CLIENT_URL>`,
-  no X-Frame-Options, no Set-Cookie, `Referrer-Policy: no-referrer`.
+  no X-Frame-Options, no Set-Cookie, `Referrer-Policy: strict-origin`: the
+  token in the path never leaves, the origin does, because browser API keys
+  (Google Places/Maps) are restricted by referrer and refuse a request with
+  none. An app framed from Mako's own origin (the fallback) has an opaque
+  origin, and Chromium sends no Referer at all from it, whatever the policy:
+  referrer-restricted keys only work on the app host.
 - The frame gets `allow-same-origin` only when its URL is cross-origin to
   the page (`app/src/lib/app-frame.ts`). Message listeners check
   `event.origin` on top of `event.source`.

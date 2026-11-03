@@ -117,6 +117,13 @@ vi.mock("./deployment.service", () => ({
   setPublishedSha: vi.fn(async () => state.events.push("publish")),
 }));
 
+vi.mock("./deploy-progress", () => ({
+  markDeployStage: vi.fn(async (_p, _sha, stage: string) =>
+    state.events.push(`stage:${stage}`),
+  ),
+  clearDeployProgress: vi.fn(async () => state.events.push("clear-progress")),
+}));
+
 import { deployOneApp, deployTargetForPush } from "./deploy-on-push";
 import {
   clearPublishedSha,
@@ -187,9 +194,12 @@ describe("atomic app deployment", () => {
       deployOneApp(workspaceId, "sales", sha),
     ).resolves.toMatchObject({ outcome: "built" });
 
+    // The build stage is recorded before the sandbox boots, so a slow box
+    // reads as "build", not as an unexplained wait.
     expect(state.events).toEqual([
       "ensure-commit",
       "bindings",
+      "stage:build",
       "worktree",
       "checkout",
       "build",
@@ -225,7 +235,11 @@ describe("an app whose folder left main", () => {
     ).resolves.toMatchObject({ outcome: "gone" });
 
     expect(clearPublishedSha).toHaveBeenCalledWith(state.project);
-    expect(state.events).toEqual(["ensure-commit", "unpublish"]);
+    expect(state.events).toEqual([
+      "ensure-commit",
+      "unpublish",
+      "clear-progress",
+    ]);
     expect(ensureWorktree).not.toHaveBeenCalled();
   });
 
