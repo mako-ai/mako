@@ -52,8 +52,9 @@ import {
   useSourceConnectionEntitiesStore,
   type SourceConnectionWriters,
 } from "../store/sourceConnectionEntitiesStore";
+import { initials } from "../lib/initials";
 
-export type ConnectionKind = "database" | "source";
+type ConnectionKind = "database" | "source";
 
 type Who = { principal: string; label: string; kind: "person" | "workflow" };
 
@@ -95,12 +96,6 @@ async function writePlaces(
   return [...new Set(places.map(n => n.label))];
 }
 
-function initials(text: string) {
-  const name = text.split("@")[0] ?? text;
-  const parts = name.split(/[._-]+/).filter(Boolean);
-  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "?";
-}
-
 export default function ConnectionWritersPanel({
   connectionId,
   connectionName,
@@ -118,6 +113,7 @@ export default function ConnectionWritersPanel({
   const getSourceWriters = useSourceConnectionEntitiesStore(s => s.getWriters);
   const setSourceWriters = useSourceConnectionEntitiesStore(s => s.setWriters);
   const getWriters = source ? getSourceWriters : getDatabaseWriters;
+  const setWriters = source ? setSourceWriters : setDatabaseWriters;
   const ensureTreeRoot = useSchemaStore(s => s.ensureTreeRoot);
   const ensureTreeChildren = useSchemaStore(s => s.ensureTreeChildren);
   const fetchWorkflows = useWorkflowsStore(s => s.fetchOverview);
@@ -153,7 +149,7 @@ export default function ConnectionWritersPanel({
     void load();
     void loadMembers?.();
     void fetchWorkflows(workspaceId);
-    // A source connection has no schemas: its places are paths.
+    // A source connection has no schemas, so no place to pick.
     if (source) return;
     void writePlaces(
       workspaceId,
@@ -217,16 +213,7 @@ export default function ConnectionWritersPanel({
         principal: w.principal,
         ...(w.where ? { where: w.where } : {}),
       }));
-      if (source) {
-        await setSourceWriters(
-          workspaceId,
-          connectionId,
-          writers,
-          nextLiveReads,
-        );
-      } else {
-        await setDatabaseWriters(workspaceId, connectionId, writers);
-      }
+      await setWriters(workspaceId, connectionId, writers, nextLiveReads);
       await load();
       return true;
     } catch (err) {

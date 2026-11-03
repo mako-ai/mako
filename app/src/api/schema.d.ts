@@ -1814,8 +1814,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Who configures this source connection */
-        get: operations["get_api_workspaces_workspaceId_connections_sources_id_managers"];
+        get?: never;
         /** Change who configures this source connection */
         put: operations["put_api_workspaces_workspaceId_connections_sources_id_managers"];
         post?: never;
@@ -1972,8 +1971,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Who configures this source connection */
-        get: operations["get_api_workspaces_workspaceId_connectors_id_managers"];
+        get?: never;
         /** Change who configures this source connection */
         put: operations["put_api_workspaces_workspaceId_connectors_id_managers"];
         post?: never;
@@ -12271,47 +12269,6 @@ export interface operations {
             };
         };
     };
-    get_api_workspaces_workspaceId_connections_sources_id_managers: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
     put_api_workspaces_workspaceId_connections_sources_id_managers: {
         parameters: {
             query?: never;
@@ -12869,47 +12826,6 @@ export interface operations {
                 };
             };
         };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    get_api_workspaces_workspaceId_connectors_id_managers: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
         responses: {
             /** @description Successful response */
             "2XX": {

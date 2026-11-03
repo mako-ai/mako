@@ -28,45 +28,31 @@ import { workspaceService } from "../services/workspace.service";
 
 export type WorkspaceRole = "owner" | "admin" | "member" | "viewer";
 
-/** The caller's role in the workspace, or null for no member. */
-export async function roleIn(
-  workspaceId: string,
-  userId: string | undefined,
-): Promise<WorkspaceRole | null> {
-  if (!userId) return null;
-  const member = await workspaceService.getMember(workspaceId, userId);
-  return (member?.role as WorkspaceRole | undefined) ?? null;
-}
-
 export function mayCreateSourceConnection(role: WorkspaceRole | null): boolean {
   return role === "owner" || role === "admin" || role === "member";
 }
 
-/** Looks up a workspace role, once per user id per request. */
-export type RoleOf = (userId: string) => Promise<WorkspaceRole | null>;
-
 /** The workspace's roles and its owners, looked up once per request. */
 export interface People {
-  roleOf: RoleOf;
+  /** A user's workspace role, or null for no member. */
+  roleOf: (userId: string) => Promise<WorkspaceRole | null>;
   owners: () => Promise<string[]>;
 }
 
-export function roleLookup(workspaceId: string): RoleOf {
-  const seen = new Map<string, Promise<WorkspaceRole | null>>();
-  return userId => {
-    let role = seen.get(userId);
-    if (!role) {
-      role = roleIn(workspaceId, userId);
-      seen.set(userId, role);
-    }
-    return role;
-  };
-}
-
 export function peopleOf(workspaceId: string): People {
+  const roles = new Map<string, Promise<WorkspaceRole | null>>();
   let owners: Promise<string[]> | undefined;
   return {
-    roleOf: roleLookup(workspaceId),
+    roleOf: userId => {
+      let role = roles.get(userId);
+      if (!role) {
+        role = workspaceService
+          .getMember(workspaceId, userId)
+          .then(m => (m?.role as WorkspaceRole | undefined) ?? null);
+        roles.set(userId, role);
+      }
+      return role;
+    },
     owners: () => (owners ??= workspaceService.getOwnerIds(workspaceId)),
   };
 }
@@ -107,26 +93,28 @@ export interface Caller extends People {
 
 /**
  * Whether the caller may configure `connection`: edit it, replace or reveal
- * its key, disable or delete it, and change its managers.
+ * its key, disable or delete it, and change its managers. Pass its
+ * {@link actingManagers} when already looked up.
  */
 export async function mayChangeSourceConnection(
   caller: Caller,
   connection: { managers?: unknown; createdBy?: unknown },
+  managers?: string[],
 ): Promise<boolean> {
   const { role, userId } = caller;
   if (!userId || !role || role === "viewer") return false;
   if (role === "owner") return true;
-  const managers = await actingManagers(connection, caller);
-  return managers.includes(String(userId));
+  return (managers ?? (await actingManagers(connection, caller))).includes(
+    userId,
+  );
 }
 
 export const VIEWER_REFUSAL =
   "Viewers can see source connections but not create or change them. Ask an admin for the member role.";
 
-export const NOT_A_MANAGER_REFUSAL =
-  "Only this connection's managers can change it. Ask one of them, or the workspace owner, to add you.";
-
 /** The refusal for a caller `mayChangeSourceConnection` turned down. */
 export function changeRefusal(role: WorkspaceRole | null): string {
-  return role === "viewer" || !role ? VIEWER_REFUSAL : NOT_A_MANAGER_REFUSAL;
+  return role === "viewer" || !role
+    ? VIEWER_REFUSAL
+    : "Only this connection's managers can change it. Ask one of them, or the workspace owner, to add you.";
 }

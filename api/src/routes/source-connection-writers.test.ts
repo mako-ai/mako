@@ -1,8 +1,8 @@
 /**
- * The Access tab of a source connection: everyone may look, its managers and
- * the workspace owner change who writes (in the app only; an admin who is not
- * a manager cannot), and the write log shows who tried, with what the list
- * does not cover.
+ * The Access tab of a source connection: everyone may look, the people who
+ * configure it change who writes (in the app only; who configures is tested
+ * in source-connection-roles.test.ts), and the write log shows who tried,
+ * with what the list does not cover.
  *
  * Real routes + real Mongo (mongodb-memory-server); auth and workspace roles
  * are mocked.
@@ -152,18 +152,16 @@ describe("source connection writers", () => {
     expect(stored?.liveReads).toBe(false);
   });
 
-  it("refuses a change from an API key, an admin who is not a manager, or for a stranger", async () => {
-    const body = { writers: [{ principal: "workflow:x" }] };
+  it("refuses a change from an API key, or for a stranger", async () => {
     who.authType = "apiKey";
-    expect((await req("PUT", `/${id}/writers`, body)).status).toBe(403);
+    expect(
+      (
+        await req("PUT", `/${id}/writers`, {
+          writers: [{ principal: "workflow:x" }],
+        })
+      ).status,
+    ).toBe(403);
     who.authType = "session";
-    who.userId = "admin1";
-    who.role = "admin";
-    expect((await req("PUT", `/${id}/writers`, body)).status).toBe(403);
-    who.userId = "member2";
-    who.role = "member";
-    expect((await req("PUT", `/${id}/writers`, body)).status).toBe(403);
-    who.userId = "manager1";
     expect(
       (
         await req("PUT", `/${id}/writers`, {
@@ -181,27 +179,6 @@ describe("source connection writers", () => {
     expect(
       (await SourceConnection.findById(id).lean())?.writers,
     ).toBeUndefined();
-  });
-
-  it("someone who is not a manager sees the list but cannot edit it", async () => {
-    for (const [userId, role] of [
-      ["admin1", "admin"],
-      ["member2", "member"],
-    ]) {
-      who.userId = userId;
-      who.role = role;
-      const { data } = await (await req("GET", `/${id}/writers`)).json();
-      expect(data.canEdit).toBe(false);
-    }
-  });
-
-  it("the workspace owner can always change it", async () => {
-    who.userId = "owner1";
-    who.role = "owner";
-    expect(
-      (await req("PUT", `/${id}/writers`, { writers: [], liveReads: true }))
-        .status,
-    ).toBe(200);
   });
 
   it("shows who tried to write, and what the list does not cover", async () => {

@@ -3,7 +3,7 @@
  * at a time per key, first come first served within a lane, sync first.
  */
 import { describe, expect, it } from "vitest";
-import { throttledRequest } from "../connectors/rate-gate";
+import { throttledRequest } from "./rate-gate";
 
 describe("rate gate", () => {
   it("runs one request at a time per key, in order", async () => {

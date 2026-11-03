@@ -4,23 +4,68 @@
  * Code, not stored. For each connection type the proxy may call
  * (connections/proxy.service.ts), its call profile says where requests go
  * (`baseUrl`, a path must stay under it), which credential it sends and how
- * (`credential`, one of the credential types in credential-types.ts), which
- * requests other than GET, HEAD and OPTIONS only read (`reads`), and its
- * vendor's idempotency header. Built-in connectors keep their own client and
- * auth for syncing; nothing here is used by a sync.
+ * (`credential`), and which requests other than GET, HEAD and OPTIONS only
+ * read (`reads`). Built-in connectors keep their own client and auth for
+ * syncing; nothing here is used by a sync.
  *
  * A type is listed here only when it is safe to forward arbitrary paths
  * under its base URL with its credential.
  */
 import type { ISourceConnection } from "../database/workspace-schema";
-import {
-  CREDENTIAL_TYPES,
-  credentialHeaders,
-  credentialSecrets,
-  type Credential,
-  type CredentialTypeId,
-} from "./credential-types";
 import { CUSTOM_API_TYPE } from "./kinds";
+
+// ---------------------------------------------------------------------------
+// Credential types: how a key is sent with a request
+// ---------------------------------------------------------------------------
+
+/**
+ * Four ways, whatever the service: a bearer token, an API key in a header or
+ * in the query string, or basic auth. A connector fixes its own (Close sends
+ * its key as basic auth, Stripe and Wise as a bearer token); a Custom API
+ * connection picks one.
+ */
+const CREDENTIAL_TYPES = [
+  "bearer",
+  "api_key_header",
+  "api_key_query",
+  "basic",
+] as const;
+type CredentialTypeId = (typeof CREDENTIAL_TYPES)[number];
+
+/** One filled-in credential, as a request needs it. */
+export type Credential =
+  | { type: "bearer"; token: string }
+  | { type: "api_key_header"; token: string; header: string }
+  | { type: "api_key_query"; token: string; param: string }
+  | { type: "basic"; username: string; password: string }
+  /** No credential (a public API). */
+  | { type: "none" };
+
+/** Add `credential` to a request's headers (lower-case names) or URL. */
+export function applyCredential(
+  credential: Credential,
+  headers: Record<string, string>,
+  url: URL,
+): void {
+  switch (credential.type) {
+    case "bearer":
+      headers.authorization = `Bearer ${credential.token}`;
+      return;
+    case "api_key_header":
+      headers[credential.header.toLowerCase()] = credential.token;
+      return;
+    case "api_key_query":
+      url.searchParams.set(credential.param, credential.token);
+      return;
+    case "basic":
+      headers.authorization = `Basic ${Buffer.from(
+        `${credential.username}:${credential.password}`,
+      ).toString("base64")}`;
+      return;
+    case "none":
+      return;
+  }
+}
 
 /** What a request asks, to tell a read from a write. */
 export interface RequestShape {
@@ -34,6 +79,7 @@ export interface RequestShape {
 }
 
 type Config = ISourceConnection["config"];
+type GateConnection = Pick<ISourceConnection, "_id" | "config" | "settings">;
 
 export interface CallableConnection {
   type: string;
@@ -43,17 +89,14 @@ export interface CallableConnection {
   credential(config: Config): Credential;
   /** A request other than GET, HEAD or OPTIONS that only reads. */
   reads?(request: RequestShape, config: Config): boolean;
-  /** The vendor's idempotency header, set from the caller's key when given. */
-  idempotencyHeader?: string;
   /** How an object body is sent. Default JSON. */
   bodyEncoding?: "json" | "form";
   /**
    * The rate gate a request waits at (connectors/rate-gate.ts): the same key
    * as the built-in connector's, where it has one, so sync and proxy share it.
+   * Default: one gate per connection (`rateGateOf`).
    */
-  rateGate(
-    connection: Pick<ISourceConnection, "_id" | "config" | "settings">,
-  ): { key: string; minDelayMs: number };
+  rateGate?(connection: GateConnection): { key: string; minDelayMs: number };
   /** Stored secrets the credential does not carry, also never passed back. */
   otherSecrets?(config: Config): string[];
 }
@@ -72,15 +115,33 @@ export function isReadRequest(
 
 /** Every value that must never appear in an answer. */
 export function secretsOf(callable: CallableConnection, config: Config) {
-  return [
-    ...credentialSecrets(callable.credential(config)),
-    ...(callable.otherSecrets?.(config) ?? []),
-  ].filter(Boolean);
+  const credential = callable.credential(config);
+  const carried =
+    credential.type === "none"
+      ? []
+      : credential.type === "basic"
+        ? [credential.password, credential.username]
+        : [credential.token];
+  return [...carried, ...(callable.otherSecrets?.(config) ?? [])].filter(
+    Boolean,
+  );
 }
 
-/** Header names the credential may travel in. */
-export function secretHeadersOf(callable: CallableConnection, config: Config) {
-  return credentialHeaders(callable.credential(config));
+/** The rate gate of `connection`: its profile's, else one per connection. */
+export function rateGateOf(
+  callable: CallableConnection,
+  connection: GateConnection,
+): { key: string; minDelayMs: number } {
+  return (
+    callable.rateGate?.(connection) ?? {
+      key: connectionGateKey(connection),
+      minDelayMs: Number(connection.settings?.rate_limit_delay_ms) || 0,
+    }
+  );
+}
+
+function connectionGateKey(connection: GateConnection): string {
+  return `connection:${String(connection._id)}`;
 }
 
 function text(value: unknown): string {
@@ -89,16 +150,6 @@ function text(value: unknown): string {
 
 function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
-}
-
-function defaultGate(connection: Pick<ISourceConnection, "_id" | "settings">): {
-  key: string;
-  minDelayMs: number;
-} {
-  return {
-    key: `connection:${String(connection._id)}`,
-    minDelayMs: Number(connection.settings?.rate_limit_delay_ms) || 0,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +221,7 @@ const close: CallableConnection = {
   rateGate(connection) {
     // The connector's own gate: keyed by the key, at least 500 ms apart.
     return {
-      key: text(connection.config?.api_key),
+      key: text(connection.config?.api_key) || connectionGateKey(connection),
       minDelayMs: Math.max(
         500,
         Number(connection.settings?.rate_limit_delay_ms) || 200,
@@ -184,9 +235,7 @@ const stripe: CallableConnection = {
   baseUrl: config =>
     trimSlash(text(config.api_base_url) || "https://api.stripe.com"),
   credential: config => ({ type: "bearer", token: text(config.api_key) }),
-  idempotencyHeader: "idempotency-key",
   bodyEncoding: "form",
-  rateGate: connection => defaultGate(connection),
 };
 
 const wise: CallableConnection = {
@@ -194,7 +243,6 @@ const wise: CallableConnection = {
   baseUrl: config =>
     trimSlash(text(config.api_base_url) || "https://api.wise.com"),
   credential: config => ({ type: "bearer", token: text(config.api_key) }),
-  rateGate: connection => defaultGate(connection),
   otherSecrets: config => [text(config.sca_private_key)],
 };
 
@@ -203,9 +251,7 @@ const wise: CallableConnection = {
 // ---------------------------------------------------------------------------
 
 /** The credential type a Custom API connection picked; bearer when unset. */
-export function customApiCredentialType(
-  config: Config,
-): CredentialTypeId | "none" {
+function customApiCredentialType(config: Config): CredentialTypeId | "none" {
   const picked = text(config.auth_type) as CredentialTypeId | "none";
   return picked === "none" || CREDENTIAL_TYPES.includes(picked as never)
     ? picked
@@ -253,7 +299,6 @@ export const customApi: CallableConnection = {
       isGraphqlReadBody(request.body)
     );
   },
-  rateGate: connection => defaultGate(connection),
 };
 
 const CALLABLE = new Map<string, CallableConnection>(

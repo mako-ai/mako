@@ -2,8 +2,8 @@
  * Send one request to a connection's service with its credential, and give
  * back what the service answered without the credential in it.
  *
- * The path must stay under the connection's base URL (connections/callable.ts). The request goes
- * through the SSRF-hardened `safeRequest` (no private addresses, no
+ * The path must stay under the connection's base URL (connections/callable.ts).
+ * The request goes through the SSRF-hardened `safeRequest` (no private addresses, no
  * redirects followed) and waits at the key's rate gate. Response headers the
  * credential may travel in, cookies, and any header or body text holding a
  * secret value are removed.
@@ -14,13 +14,15 @@ import {
   safeRequest,
   type SafeRequestResult,
 } from "../services/safe-fetch.service";
-import { throttledRequest, type RateGateLane } from "../connectors/rate-gate";
+import { throttledRequest } from "../connectors/rate-gate";
+import { redactSecrets, secretValuesOf } from "./redact";
 import type { ISourceConnection } from "../database/workspace-schema";
-import { applyCredential, type OutgoingRequest } from "./credential-types";
 import {
-  secretHeadersOf,
+  applyCredential,
+  rateGateOf,
   secretsOf,
   type CallableConnection,
+  type RequestShape,
 } from "./callable";
 
 /** A caller mistake or a refusal: the message is safe to show. */
@@ -43,8 +45,6 @@ export interface ForwardInput {
   query?: Record<string, QueryValue | undefined>;
   headers?: Record<string, string>;
   body?: unknown;
-  /** Sent as the vendor's idempotency header, where it has one. */
-  idempotencyKey?: string;
 }
 
 export interface ForwardResult {
@@ -55,7 +55,7 @@ export interface ForwardResult {
 }
 
 /** The connection as the proxy needs it, config already decrypted. */
-export type ForwardConnection = Pick<
+type ForwardConnection = Pick<
   ISourceConnection,
   "_id" | "type" | "config" | "settings"
 >;
@@ -122,15 +122,16 @@ const RESPONSE_HEADER_BLOCKLIST = new Set([
 const MAX_PATH_LENGTH = 2048;
 
 /**
- * The full URL of `path` under `baseUrl`, or a refusal. The path is resolved
- * as a URL would be (dot segments, encoded dots) and must land on the same
- * origin, under the base path.
+ * The full URL of `path` under `baseUrl`, and the path relative to it as the
+ * read/write rules see it; or a refusal. The path is resolved as a URL would
+ * be (dot segments, encoded dots) and must land on the same origin, under the
+ * base path.
  */
 export function urlUnder(
   baseUrl: string,
   path: string,
   query?: ForwardInput["query"],
-): URL {
+): { url: URL; path: string } {
   if (!baseUrl) {
     throw new ConnectionRequestError("This connection has no base URL.");
   }
@@ -181,13 +182,7 @@ export function urlUnder(
       url.searchParams.append(name, String(one));
     }
   }
-  return url;
-}
-
-/** A path relative to `baseUrl` as the read/write rules see it. */
-export function relativePath(baseUrl: string, url: URL): string {
-  const basePath = new URL(baseUrl).pathname.replace(/\/+$/, "");
-  return url.pathname.slice(basePath.length) || "/";
+  return { url, path: url.pathname.slice(basePath.length) || "/" };
 }
 
 /** `a[b][0]=c`, as Stripe reads a form body. */
@@ -234,27 +229,56 @@ export function callerHeaders(
   return out;
 }
 
-function redact(text: string, secrets: string[]): string {
-  let out = text;
-  for (const secret of secrets) {
-    if (secret) out = out.split(secret).join("[redacted]");
-  }
-  return out;
-}
-
 function containsSecret(text: string, secrets: string[]): boolean {
-  return secrets.some(secret => !!secret && text.includes(secret));
+  return secrets.some(secret => text.includes(secret));
 }
 
-/** Values long enough to search for: a one-letter "secret" would mangle every body. */
-export function searchableSecrets(secrets: string[]): string[] {
-  const values = secrets.filter(s => s.length >= 6);
-  // Also the encodings a credential is sent in.
-  const encoded = values.flatMap(s => [
-    Buffer.from(`${s}:`).toString("base64"),
-    encodeURIComponent(s),
+/**
+ * The values to search an answer for, longest first: each secret long enough
+ * to search for (`secretValuesOf`) and the
+ * encodings a credential is sent in (basic auth's base64, a query string's).
+ */
+function searchableSecrets(secrets: string[]): string[] {
+  const values = secretValuesOf(secrets);
+  return secretValuesOf([
+    ...values,
+    ...values.flatMap(s => [
+      Buffer.from(`${s}:`).toString("base64"),
+      encodeURIComponent(s),
+    ]),
   ]);
-  return [...new Set([...values, ...encoded])].filter(s => s.length >= 6);
+}
+
+/** A request checked and resolved: allowed method, path under the base URL. */
+export interface ResolvedRequest extends RequestShape {
+  url: URL;
+}
+
+/**
+ * Check `input` against `callable` and resolve it: the method is allowed,
+ * the path stays under the base URL, the caller's headers are filtered.
+ */
+export function resolveRequest(
+  callable: CallableConnection,
+  config: ForwardConnection["config"],
+  input: ForwardInput,
+): ResolvedRequest {
+  const method = input.method.toUpperCase();
+  if (!ALLOWED_METHODS.has(method)) {
+    throw new ConnectionRequestError(`Method ${input.method} is not allowed.`);
+  }
+  const { url, path } = urlUnder(
+    callable.baseUrl(config ?? {}),
+    input.path,
+    input.query,
+  );
+  return {
+    method,
+    url,
+    path,
+    headers: callerHeaders(input.headers),
+    body: input.body,
+  };
 }
 
 /**
@@ -262,65 +286,60 @@ export function searchableSecrets(secrets: string[]): string[] {
  * its answer without any credential in it. Errors from the network are
  * thrown; every HTTP status is returned.
  */
-export async function forward(
+export function forward(
   connection: ForwardConnection,
   callable: CallableConnection,
   input: ForwardInput,
-  options: {
-    signal?: AbortSignal;
-    lane?: RateGateLane;
-    timeoutMs?: number;
-  } = {},
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<ForwardResult> {
-  const method = input.method.toUpperCase();
-  if (!ALLOWED_METHODS.has(method)) {
-    throw new ConnectionRequestError(`Method ${input.method} is not allowed.`);
-  }
-  const config = connection.config ?? {};
-  const url = urlUnder(callable.baseUrl(config), input.path, input.query);
-  const headers = callerHeaders(input.headers);
-  if (input.idempotencyKey && callable.idempotencyHeader) {
-    headers[callable.idempotencyHeader] = input.idempotencyKey;
-  }
-  const request: OutgoingRequest = {
-    method,
-    url,
-    headers,
-    body:
-      method === "GET" || method === "HEAD"
-        ? undefined
-        : encodeBody(input.body, callable, headers),
-  };
-  applyCredential(request, callable.credential(config));
+  return send(
+    connection,
+    callable,
+    resolveRequest(callable, connection.config, input),
+    options,
+  );
+}
 
-  const gate = callable.rateGate(connection);
+/** `forward` for a request already resolved (`resolveRequest`). */
+export async function send(
+  connection: ForwardConnection,
+  callable: CallableConnection,
+  request: ResolvedRequest,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<ForwardResult> {
+  const config = connection.config ?? {};
+  const url = new URL(request.url);
+  const headers = { ...request.headers };
+  const body =
+    request.method === "GET" || request.method === "HEAD"
+      ? undefined
+      : encodeBody(request.body, callable, headers);
+  applyCredential(callable.credential(config), headers, url);
+
+  const gate = rateGateOf(callable, connection);
   const answer = await throttledRequest(
-    gate.key || `connection:${String(connection._id)}`,
+    gate.key,
     () =>
-      transport(request.url.toString(), {
+      transport(url.toString(), {
         method: request.method,
-        headers: request.headers,
-        body: request.body,
+        headers,
+        body,
         signal: options.signal,
         timeoutMs: options.timeoutMs,
       }),
     gate.minDelayMs,
-    options.lane ?? "proxy",
+    "proxy",
   );
   return clean(answer, callable, config);
 }
 
 /** The service's answer, without the credential in its headers or body. */
-export function clean(
+function clean(
   answer: SafeRequestResult,
   callable: CallableConnection,
   config: ForwardConnection["config"],
 ): ForwardResult {
-  const { headers, text } = cleanAnswer(
-    answer,
-    secretsOf(callable, config),
-    secretHeadersOf(callable, config),
-  );
+  const { headers, text } = cleanAnswer(answer, secretsOf(callable, config));
   const type = headers["content-type"] ?? "";
   let body: unknown = text;
   if (/\bjson\b/i.test(type) && text) {
@@ -334,25 +353,31 @@ export function clean(
 }
 
 /**
- * An answer's headers and text without the credential: headers it may travel
- * in, cookies, and any header or text holding a secret value (also base64-
- * or URL-encoded) are removed.
+ * An answer's headers and text without the credential: auth headers,
+ * cookies, and any header holding a secret value (also base64- or
+ * URL-encoded) are removed; the value is redacted from the text.
  */
 export function cleanAnswer(
   answer: SafeRequestResult,
   secretValues: string[],
-  secretHeaders: string[],
+  /** More header names to drop (sandbox-fetch passes its own). */
+  droppedHeaders: string[] = [],
 ): { headers: Record<string, string>; text: string } {
   const secrets = searchableSecrets(secretValues);
   const dropped = new Set([
     ...RESPONSE_HEADER_BLOCKLIST,
-    ...secretHeaders.map(h => h.toLowerCase()),
+    ...droppedHeaders.map(h => h.toLowerCase()),
   ]);
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(answer.headers)) {
     const lower = name.toLowerCase();
-    if (dropped.has(lower) || containsSecret(value, secrets)) continue;
+    if (dropped.has(lower) || containsSecret(value, secrets)) {
+      continue;
+    }
     headers[lower] = value;
   }
-  return { headers, text: redact(answer.body.toString("utf8"), secrets) };
+  return {
+    headers,
+    text: redactSecrets(answer.body.toString("utf8"), secrets),
+  };
 }

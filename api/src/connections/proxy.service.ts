@@ -1,6 +1,6 @@
 /**
- * The connection proxy: workflows, agents and (later) custom connectors call
- * a service through a source connection without ever seeing its credential.
+ * The connection proxy: workflows and agents call a service through a source
+ * connection without ever seeing its credential.
  *
  * Reads are live reads: on only where an admin turned them on in the Access
  * tab (a new Custom API connection starts on; every older connection, with
@@ -29,10 +29,8 @@ import { getRequestContext } from "../logging/context";
 import { callableFor, isReadRequest } from "./callable";
 import {
   ConnectionRequestError,
-  forward,
-  relativePath,
-  urlUnder,
-  callerHeaders,
+  resolveRequest,
+  send,
   type ForwardInput,
   type ForwardResult,
 } from "./forward";
@@ -139,23 +137,12 @@ export async function connectionRequest(
     );
   }
   const config = loaded.connection ?? {};
-  const method = params.request.method.toUpperCase();
-  const baseUrl = callable.baseUrl(config);
-  // Refuses a path outside the base URL before anything else.
-  const url = urlUnder(baseUrl, params.request.path, params.request.query);
-  const path = relativePath(baseUrl, url);
-  const read = isReadRequest(
-    callable,
-    {
-      method,
-      path,
-      headers: callerHeaders(params.request.headers),
-      body: params.request.body,
-    },
-    config,
-  );
+  // Refuses a method or a path outside the base URL before anything else.
+  const request = resolveRequest(callable, config, params.request);
+  const { path } = request;
+  const read = isReadRequest(callable, request, config);
   const principal = actingPrincipal(params.actor);
-  const target = `${method} ${path}`;
+  const target = `${request.method} ${path}`;
   const where = {
     workspaceId: params.workspaceId,
     connectionId: String(row._id),
@@ -204,7 +191,7 @@ export async function connectionRequest(
     logger.info("Connection write", where);
   }
 
-  const answer = await forward(
+  const answer = await send(
     {
       _id: row._id,
       type: row.type,
@@ -212,8 +199,8 @@ export async function connectionRequest(
       settings: loaded.settings as ISourceConnection["settings"],
     },
     callable,
-    params.request,
-    { signal: params.signal, lane: "proxy" },
+    request,
+    { signal: params.signal },
   );
   return { ...answer, read };
 }

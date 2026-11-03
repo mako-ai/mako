@@ -21,14 +21,11 @@ interface SourceConnectionEntity {
    * workspace owner. Being an admin is not enough.
    */
   canEdit?: boolean;
-  /** User ids that configure it (its creator unless a manager changed it). */
+  /**
+   * User ids that configure it: its managers who can act today, else the
+   * workspace owner.
+   */
   managers?: string[];
-}
-
-/** Who configures a source connection, and whether the caller may change it. */
-export interface SourceConnectionManagers {
-  managers: string[];
-  canEdit: boolean;
 }
 
 interface ApiResponse<T> {
@@ -70,11 +67,7 @@ interface EntitiesState {
     workspaceId: string,
     connectorId: string,
   ) => Promise<{ success: boolean; error: string | null }>;
-  /** Who configures the connection (its Managers tab). */
-  getManagers: (
-    workspaceId: string,
-    connectorId: string,
-  ) => Promise<SourceConnectionManagers>;
+  /** Change who configures the connection, then refresh its row. */
   setManagers: (
     workspaceId: string,
     connectorId: string,
@@ -302,18 +295,6 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
         };
       }
     },
-    getManagers: async (workspaceId, connectorId) => {
-      const res = unwrapBody(
-        await api.GET(
-          "/api/workspaces/{workspaceId}/connections/sources/{id}/managers",
-          { params: { path: { workspaceId, id: connectorId } } },
-        ),
-      ) as ApiResponse<SourceConnectionManagers>;
-      if (!res.success || !res.data) {
-        throw new Error(res.error ?? "Couldn't load the managers.");
-      }
-      return res.data;
-    },
     setManagers: async (workspaceId, connectorId, managers) => {
       const res = unwrapBody(
         await api.PUT(
@@ -335,7 +316,9 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
           },
         ),
       ) as ApiResponse<SourceConnectionEntity>;
-      if (fresh.success && fresh.data) get().upsert(fresh.data);
+      if (fresh.success && fresh.data) {
+        get().upsert({ ...fresh.data, workspaceId });
+      }
     },
     getWriters: async (workspaceId, connectorId) => {
       const res = unwrapBody(

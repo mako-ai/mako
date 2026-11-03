@@ -25,6 +25,6 @@ export const SOURCE_CONNECTION_KIND_LABEL: Record<
   string
 > = {
   custom: "Custom API",
-  builtin: "Built-in",
+  builtin: "Native",
   workspace: "Workspace",
 };

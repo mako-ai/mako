@@ -13,7 +13,7 @@ import {
   isReadRequest,
   type CallableConnection,
 } from "./callable";
-import { isSyncSource, sourceConnectionKind } from "./kinds";
+import { sourceConnectionKind } from "./kinds";
 import {
   ConnectionRequestError,
   callerHeaders,
@@ -153,9 +153,13 @@ describe("paths stay under the base URL", () => {
 
   it("joins a path and a query", () => {
     expect(
-      urlUnder(base, "/lead/", { limit: 2, tag: ["a", "b"] }).toString(),
+      urlUnder(base, "/lead/", { limit: 2, tag: ["a", "b"] }).url.toString(),
     ).toBe("https://api.example.com/v1/lead/?limit=2&tag=a&tag=b");
-    expect(urlUnder(base, "/").toString()).toBe("https://api.example.com/v1");
+    expect(urlUnder(base, "/lead/").path).toBe("/lead/");
+    expect(urlUnder(base, "/")).toMatchObject({ path: "/" });
+    expect(urlUnder(base, "/").url.toString()).toBe(
+      "https://api.example.com/v1",
+    );
   });
 
   it("refuses a path that leaves the base URL", () => {
@@ -192,13 +196,13 @@ describe("each credential is added the type's way", () => {
     );
   });
 
-  it("Stripe: Bearer, a form body, the idempotency header", async () => {
+  it("Stripe: Bearer, a form body, the caller's idempotency header", async () => {
     const sent = answering(200, { id: "cus_1" });
     await forward(connection("stripe", { api_key: KEY }), type("stripe"), {
       method: "POST",
       path: "/v1/customers",
       body: { email: "a@b.c", metadata: { source: "mako" } },
-      idempotencyKey: "run-1-step-2",
+      headers: { "Idempotency-Key": "run-1-step-2" },
     });
     expect(sent[0].headers.authorization).toBe(`Bearer ${KEY}`);
     expect(sent[0].headers["idempotency-key"]).toBe("run-1-step-2");
@@ -308,8 +312,8 @@ describe("no secret in any answer", () => {
     });
   });
 
-  it("drops a Custom API's own key header", async () => {
-    answering(200, "ok", { "content-type": "text/plain", "x-probo-key": "x" });
+  it("drops a header echoing a Custom API's key", async () => {
+    answering(200, "ok", { "content-type": "text/plain", "x-probo-key": KEY });
     const result = await forward(
       connection("custom_api", {
         base_url: "https://probo.example.com",
@@ -334,7 +338,6 @@ describe("the Custom API connection", () => {
   it("is never a sync source", () => {
     const c = conn({ base_url: "https://x.example.com" });
     expect(c.getAvailableEntities()).toEqual([]);
-    expect(isSyncSource("custom_api")).toBe(false);
   });
 
   it("tests with GET on the test path, or { __typename } for GraphQL", async () => {
@@ -383,8 +386,6 @@ describe("kinds of source connection", () => {
     expect(sourceConnectionKind("rest")).toBe("builtin");
     expect(sourceConnectionKind("graphql")).toBe("builtin");
     expect(sourceConnectionKind("ws:close-tasks")).toBe("workspace");
-    expect(isSyncSource("close")).toBe(true);
-    expect(isSyncSource("ws:close-tasks")).toBe(true);
   });
 
   it("an unknown credential type on a Custom API falls back to bearer", async () => {

@@ -841,6 +841,13 @@ workflowRuntimeRoutes.post(
       value && typeof value === "object" && !Array.isArray(value)
         ? (value as Record<string, never>)
         : undefined;
+    // `idempotencyKey`: what an older lib/mako sent; now a plain header.
+    const headers: Record<string, string> = {
+      ...(typeof body.idempotencyKey === "string"
+        ? { "idempotency-key": body.idempotencyKey.slice(0, 255) }
+        : {}),
+      ...record(body.headers),
+    };
     try {
       return c.json(
         await connectionRequest({
@@ -850,12 +857,8 @@ workflowRuntimeRoutes.post(
             method: body.method,
             path: body.path,
             query: record(body.query),
-            headers: record(body.headers),
+            headers,
             body: body.body,
-            idempotencyKey:
-              typeof body.idempotencyKey === "string"
-                ? body.idempotencyKey.slice(0, 255)
-                : undefined,
           },
           signal: c.req.raw.signal,
         }),

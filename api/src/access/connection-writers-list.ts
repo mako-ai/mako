@@ -7,14 +7,15 @@
 import { Types } from "mongoose";
 import type { IConnectionWriter } from "../database/workspace-schema";
 import { ConnectionWriteEvent } from "./connection-write-event";
+import { principalsOutsideWorkspace } from "./connection-writes";
 
 /** A principal that can be put on a writers list. */
 export const LISTABLE_PRINCIPAL =
   /^(user:[A-Za-z0-9_-]+|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$/;
 
-export const RECENT_WRITES_DAYS = 30;
+const RECENT_WRITES_DAYS = 30;
 
-export interface RecentWriter {
+interface RecentWriter {
   principal: string;
   count: number;
   lastAt: Date;
@@ -103,4 +104,32 @@ export function nextWriters(
     addedBy: before.get(key)?.addedBy ?? userId,
     addedAt: before.get(key)?.addedAt ?? now,
   }));
+}
+
+/**
+ * People decide who writes, in the app: never an API key, MCP client or
+ * agent, whatever it is asked.
+ */
+export const WRITERS_IN_APP_ONLY = "Writers can only be changed in the app";
+
+/** The person who may change a writers list (signed in to the app), or null. */
+export function writersEditor(
+  authType: unknown,
+  user: { id?: string } | undefined,
+): string | null {
+  return authType === "session" && user?.id ? user.id : null;
+}
+
+/** Why `writers` cannot be listed, or null: each must be in the workspace. */
+export async function writersOutsideRefusal(
+  workspaceId: string,
+  writers: { principal: string }[],
+): Promise<string | null> {
+  const strangers = await principalsOutsideWorkspace(
+    workspaceId,
+    writers.map(w => w.principal),
+  );
+  return strangers.length > 0
+    ? `${strangers.join(", ")} is not a member of this workspace`
+    : null;
 }

@@ -20,8 +20,3 @@ export function sourceConnectionKind(type: string): SourceConnectionKind {
   if (type.startsWith("ws:")) return "workspace";
   return "builtin";
 }
-
-/** Whether a flow may sync from a connection of `type`. */
-export function isSyncSource(type: string): boolean {
-  return sourceConnectionKind(type) !== "custom";
-}

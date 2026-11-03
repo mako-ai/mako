@@ -168,7 +168,7 @@ function SourceConnectionExplorer() {
     );
   };
 
-  // Built-in, Workspace or Custom API, from the type alone.
+  // Native, Workspace or Custom API, from the type alone.
   const getKindBadge = (node: ResourceTreeNode) => {
     const src = connectorById.get(node.id);
     if (!src) return null;

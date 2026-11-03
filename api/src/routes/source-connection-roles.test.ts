@@ -52,7 +52,6 @@ vi.mock("../services/workspace.service", () => ({
       const role = userId === who.userId ? who.role : who.others[userId];
       return role ? { role } : null;
     }),
-    isAdmin: vi.fn(async () => who.role === "owner" || who.role === "admin"),
     getOwnerIds: vi.fn(async () => ["owner1"]),
   },
 }));
@@ -152,11 +151,11 @@ const reveal = (id: string) =>
   req("POST", `/${id}/reveal-secret`, { field: "api_key" });
 const setManagers = (id: string, managers: string[]) =>
   req("PUT", `/${id}/managers`, { managers });
-const managersOfRow = async (id: string) =>
-  (await (await req("GET", `/${id}/managers`)).json()).data as {
-    managers: string[];
-    canEdit: boolean;
-  };
+const managersOfRow = async (id: string) => {
+  const { managers, canEdit } = (await (await req("GET", `/${id}`)).json())
+    .data as { managers: string[]; canEdit: boolean };
+  return { managers, canEdit };
+};
 
 describe("viewer", () => {
   beforeEach(() => as("viewer", "viewer1"));
@@ -348,7 +347,11 @@ describe("managers list", () => {
 
   it("refuses viewers, strangers and an empty list", async () => {
     as("member", "member1");
-    expect((await setManagers(mine, ["member1", "viewer2"])).status).toBe(400);
+    const viewer = await setManagers(mine, ["member1", "viewer2"]);
+    expect(viewer.status).toBe(400);
+    expect((await viewer.json()).error).toBe(
+      "Managers must be members or admins of this workspace, not viewers.",
+    );
     expect((await setManagers(mine, ["member1", "stranger"])).status).toBe(400);
     expect((await setManagers(mine, [])).status).toBe(400);
     expect((await managersOfRow(mine)).managers).toEqual(["member1"]);
@@ -364,8 +367,10 @@ describe("managers list", () => {
 
   it("is changed in the app only, never with an API key", async () => {
     as("member", "member1", "api_key");
-    expect((await setManagers(mine, ["member1", "member2"])).status).toBe(403);
-    expect((await managersOfRow(mine)).canEdit).toBe(false);
+    const res = await setManagers(mine, ["member1", "member2"]);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/only be changed in the app/);
+    expect((await managersOfRow(mine)).managers).toEqual(["member1"]);
   });
 
   it("cannot be set through the ordinary update", async () => {

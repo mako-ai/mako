@@ -245,10 +245,11 @@ export type ConnectionRequestOptions = {
     string,
     string | number | boolean | Array<string | number | boolean>
   >;
-  /** Extra headers. Authorization is Mako's: it adds the stored credential. */
+  /**
+   * Extra headers, e.g. Stripe's `Idempotency-Key`. Authorization is Mako's:
+   * it adds the stored credential.
+   */
   headers?: Record<string, string>;
-  /** The vendor's idempotency key (Stripe's Idempotency-Key), when it has one. */
-  idempotencyKey?: string;
 };
 
 export type ConnectionResponse<T = unknown> = {

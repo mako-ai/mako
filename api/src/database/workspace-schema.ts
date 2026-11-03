@@ -389,8 +389,8 @@ export interface ISourceConnection extends Document {
   /**
    * On: workflows and agents may read the service live through the proxy.
    * Absent or false: off, so a connection made before the proxy existed
-   * shows no more than its synced tables until an admin turns this on. A new
-   * Custom API connection is created with it on.
+   * shows no more than its synced tables until a manager or the workspace
+   * owner turns this on. A new Custom API connection is created with it on.
    */
   liveReads?: boolean;
   createdBy: string;

@@ -8,9 +8,9 @@
  * Pins: live reads are off on a connection that never had the field; once
  * on, a read passes for an unlisted workflow; an unlisted write is refused
  * and recorded; a listed `workflow:<name>` writes; a person's own run acts as
- * the person, whatever workflow it names; a path outside the base URL is
- * refused; agents and unidentified callers only read; no answer carries the
- * key.
+ * the person, whatever workflow it names; agents and unidentified callers
+ * only read. What is a read, where a path may go and that no answer carries
+ * the key are pinned without a database in callable.test.ts.
  *
  * Needs the runtime's packages: npm install --prefix deploy/workflows/runtime
  *
@@ -46,7 +46,6 @@ import { connectionRequest } from "./proxy.service";
 const WORKER_KEY = "revops_worker_proxy_key_tests_only";
 const PERSON_KEY = "revops_person_proxy_key_tests_only";
 const CLOSE_KEY = "api_closekey_do_not_leak_4f9a2c";
-const PROBO_TOKEN = "probo_token_do_not_leak_8d1e7b";
 
 type Connection = {
   get: (path: string, options?: unknown) => Promise<unknown>;
@@ -93,17 +92,10 @@ async function main() {
       headers: options.headers,
       body: options.body,
     });
-    // A careless service echoing what it was sent.
     return {
       status: 200,
-      headers: {
-        "content-type": "application/json",
-        "x-echo-auth": options.headers.authorization ?? "",
-        "set-cookie": "s=1",
-      },
-      body: Buffer.from(
-        JSON.stringify({ ok: true, youSent: options.headers, url }),
-      ),
+      headers: { "content-type": "application/json" },
+      body: Buffer.from(JSON.stringify({ ok: true })),
     };
   });
 
@@ -164,20 +156,6 @@ async function main() {
       createdBy: "deployer",
       writers: [{ principal: "workflow:fr-offer-to-cash", where: "/task/" }],
     });
-    await SourceConnection.create({
-      workspaceId: ws,
-      name: "probo",
-      type: "custom_api",
-      config: {
-        base_url: "https://api.probo.example.com/graphql",
-        auth_type: "bearer",
-        token: encryptString(PROBO_TOKEN),
-        graphql: true,
-      },
-      settings,
-      createdBy: "deployer",
-    });
-
     const running = new AsyncLocalStorage<string>();
     (globalThis as { makoWorkflow?: unknown }).makoWorkflow = running;
     const load = async (apiKey: string): Promise<Mako> => {
@@ -225,31 +203,6 @@ async function main() {
     assert.equal(
       sent[0].headers.authorization,
       `Basic ${Buffer.from(`${CLOSE_KEY}:`).toString("base64")}`,
-    );
-    // No secret in the answer: not in its headers, not echoed in its body.
-    const text = JSON.stringify(lead);
-    assert.ok(!text.includes(CLOSE_KEY), "the key is not in the answer");
-    assert.ok(
-      !text.includes(Buffer.from(`${CLOSE_KEY}:`).toString("base64")),
-      "the encoded key is not in the answer",
-    );
-    assert.equal(lead.headers["set-cookie"], undefined);
-    assert.equal(lead.headers["x-echo-auth"], undefined);
-
-    // Close's list-as-POST is a read too.
-    assert.equal(
-      await running.run("other-flow", () =>
-        attempt(() =>
-          worker.connection(String(close._id)).post(
-            "/lead/",
-            { _params: {} },
-            {
-              headers: { "x-http-method-override": "GET" },
-            },
-          ),
-        ),
-      ),
-      "ok",
     );
     assert.equal((await events(0)).length, 0, "reads are not in the write log");
 
@@ -301,16 +254,6 @@ async function main() {
       /not allowed to write/,
     );
 
-    // A path outside the base URL is refused for everyone, before sending.
-    const sentBefore = sent.length;
-    assert.match(
-      await running.run("fr-offer-to-cash", () =>
-        attempt(() => worker.connection("ch_close").get("/../../admin")),
-      ),
-      /must stay under the connection's base URL/,
-    );
-    assert.equal(sent.length, sentBefore);
-
     // A person's own run acts as the person: the workflow it names grants nothing.
     const person = await load(PERSON_KEY);
     assert.match(
@@ -330,28 +273,6 @@ async function main() {
         attempt(() => person.connection("ch_close").get("/me/")),
       ),
       "ok",
-    );
-
-    // GraphQL on an http connection: a query reads, a mutation writes.
-    assert.equal(
-      await running.run("other-flow", () =>
-        attempt(() =>
-          worker.connection("probo").post("/", { query: "{ viewer { id } }" }),
-        ),
-      ),
-      "ok",
-    );
-    assert.equal(sent.at(-1)?.url, "https://api.probo.example.com/graphql");
-    assert.equal(sent.at(-1)?.headers.authorization, `Bearer ${PROBO_TOKEN}`);
-    assert.match(
-      await running.run("other-flow", () =>
-        attempt(() =>
-          worker
-            .connection("probo")
-            .post("/", { query: "mutation { deleteUser(id: 1) }" }),
-        ),
-      ),
-      /not allowed to write to probo/,
     );
 
     // An agent only reads, whoever it acts for.

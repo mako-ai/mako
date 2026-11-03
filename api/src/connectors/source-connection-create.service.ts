@@ -39,6 +39,17 @@ export class SecretEncryptionError extends Error {
 }
 
 /**
+ * Whether a config field holds a credential, encrypted at rest. The one rule:
+ * `applySchemaEncryption` encrypts by it and `inspect_connection` reports it.
+ */
+export function isSecretField(field: {
+  encrypted?: boolean;
+  type?: string;
+}): boolean {
+  return field.encrypted === true || field.type === "password";
+}
+
+/**
  * Encrypt every field the connector's own schema marks as a secret.
  *
  * Fails CLOSED. This used to catch the encryption error and store the value
@@ -72,9 +83,7 @@ export function applySchemaEncryption(
         continue;
       }
 
-      const requiresEncryption =
-        field.encrypted === true || field.type === "password";
-      if (requiresEncryption && typeof val === "string" && val) {
+      if (isSecretField(field) && typeof val === "string" && val) {
         try {
           target[key] = encryptString(val);
         } catch (error) {

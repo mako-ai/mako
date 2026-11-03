@@ -38,6 +38,7 @@ import {
   probeConnection,
 } from "../../connectors/probe.service";
 import { connectorRegistry } from "../../connectors/registry";
+import { isSecretField } from "../../connectors/source-connection-create.service";
 import { listWorkspaceConnectors } from "../../connectors/workspace/catalog";
 import { isWorkspaceConnectorType } from "../../connectors/workspace/SandboxedConnector";
 import {
@@ -52,6 +53,8 @@ import { ConnectionRequestError } from "../../connections/forward";
 
 const logger = loggers.api("connector-tools");
 
+export { isSecretField };
+
 /** A live answer longer than this comes back cut, marked `truncated`. */
 const CALL_CONNECTION_MAX_CHARS = 40_000;
 
@@ -65,21 +68,10 @@ export interface ConnectorConfigField {
 }
 
 /**
- * Describe a connector's config fields without their values.
- *
- * `secret` mirrors exactly the rule `applySchemaEncryption` uses to decide
- * what to encrypt (`encrypted === true || type === "password"`), so what an
- * agent is told is a secret is the same set the route protects. If those two
- * ever disagree, the honest failure is here — hence the shared predicate
- * rather than a second hand-written list.
+ * Describe a connector's config fields without their values. `secret` is
+ * `isSecretField`, the rule `applySchemaEncryption` encrypts by, so what an
+ * agent is told is a secret is the same set the route protects.
  */
-export function isSecretField(field: {
-  encrypted?: boolean;
-  type?: string;
-}): boolean {
-  return field.encrypted === true || field.type === "password";
-}
-
 function describeFields(fields: unknown): ConnectorConfigField[] {
   if (!Array.isArray(fields)) return [];
   return fields.map(raw => {
@@ -522,15 +514,15 @@ export function createConnectorTools(workspaceId: string) {
     }),
     call_connection: tool({
       description: [
-        "Send one READ request to a service through a SOURCE connection (a Close account, a Stripe key, a Custom API connection): Mako adds the stored credential, which you never see, and returns the service's status, headers and body. Works only where an admin turned live reads on in the connection's Access tab.",
-        "Reads only: GET, and the POSTs that only read (a GraphQL query on a Custom API connection with GraphQL on, a Close search or a Close POST with header x-http-method-override: GET). Any write is refused: writes belong to a workflow on the connection's writers list.",
-        "`path` is relative to the connection's base URL (Close: /lead/, Stripe: /v1/customers, a Custom API: whatever its address serves) and cannot leave it. Prefer the synced tables for anything the warehouse already holds: this reads live.",
+        "Send one READ request through a SOURCE connection (Close, Stripe, a Custom API): Mako adds the credential, which you never see, and returns status, headers and body. Needs live reads on in the connection's Access tab.",
+        "Reads: GET, a GraphQL query (Custom API with GraphQL on), a Close search or a Close POST with x-http-method-override: GET. Writes are refused; they belong to a workflow on the writers list.",
+        "`path` is under the connection's base URL (Close: /lead/, Stripe: /v1/customers). Prefer synced tables: this reads live.",
       ].join("\n"),
       inputSchema: z.object({
         connectionId: z
           .string()
           .describe("Source connection id or name from list_connections."),
-        method: z.enum(["GET", "POST", "HEAD"]).default("GET"),
+        method: z.enum(["GET", "POST"]).default("GET"),
         path: z
           .string()
           .describe('Path under the base URL, starting with "/".'),
@@ -553,7 +545,7 @@ export function createConnectorTools(workspaceId: string) {
         body,
       }: {
         connectionId: string;
-        method: "GET" | "POST" | "HEAD";
+        method: "GET" | "POST";
         path: string;
         query?: Record<string, string | number | boolean>;
         headers?: Record<string, string>;

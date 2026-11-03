@@ -557,7 +557,9 @@ function SourceConnectionForm({
     } = field;
     const fieldType = type === "password" ? "password" : "text";
 
-    const shouldShowDecrypt = encrypted === true || type === "password";
+    // Revealing a key is a manager's act: no eye on a read-only form.
+    const shouldShowDecrypt =
+      !readOnly && (encrypted === true || type === "password");
 
     const isNested = name.includes(".");
 
@@ -570,7 +572,13 @@ function SourceConnectionForm({
           rules={{ required }}
           render={({ field }) => (
             <FormControlLabel
-              control={<Switch {...field} checked={field.value ?? false} />}
+              control={
+                <Switch
+                  {...field}
+                  checked={field.value ?? false}
+                  disabled={readOnly}
+                />
+              }
               label={label}
             />
           )}
@@ -588,7 +596,7 @@ function SourceConnectionForm({
           render={({ field }) => (
             <FormControl fullWidth margin="normal" variant="outlined">
               <InputLabel>{label}</InputLabel>
-              <Select {...field} label={label}>
+              <Select {...field} label={label} disabled={readOnly}>
                 {options.map(opt => {
                   const val =
                     typeof opt.value === "boolean"
@@ -622,6 +630,7 @@ function SourceConnectionForm({
             render={({ field, fieldState }) => (
               <TextField
                 {...field}
+                disabled={readOnly}
                 fullWidth
                 margin="normal"
                 multiline
@@ -711,6 +720,7 @@ function SourceConnectionForm({
           render={({ field, fieldState }) => (
             <TextField
               {...field}
+              disabled={readOnly}
               fullWidth
               margin="normal"
               type={showDecryptedFields[name] ? "text" : fieldType}
@@ -826,6 +836,7 @@ function SourceConnectionForm({
               <IconButton
                 size="small"
                 color="error"
+                disabled={readOnly}
                 onClick={() => remove(index)}
               >
                 <DeleteIcon fontSize="small" />
@@ -842,6 +853,7 @@ function SourceConnectionForm({
               const hasError = !!fieldState.error;
 
               const commonTextProps = {
+                disabled: readOnly,
                 fullWidth: true,
                 margin: "normal" as const,
                 label: subField.label,
@@ -890,7 +902,11 @@ function SourceConnectionForm({
                     render={({ field }) => (
                       <FormControl fullWidth margin="normal" variant="outlined">
                         <InputLabel>{subField.label}</InputLabel>
-                        <Select {...field} label={subField.label}>
+                        <Select
+                          {...field}
+                          label={subField.label}
+                          disabled={readOnly}
+                        >
                           {(subField.options || []).map(opt => {
                             const val =
                               typeof opt.value === "boolean"
@@ -931,6 +947,7 @@ function SourceConnectionForm({
                     key={fieldPath}
                     control={
                       <Switch
+                        disabled={readOnly}
                         checked={Boolean(
                           (item as Record<string, unknown>)[subField.name],
                         )}
@@ -965,6 +982,7 @@ function SourceConnectionForm({
         <Button
           variant="outlined"
           size="small"
+          disabled={readOnly}
           onClick={() => append(createNewItem())}
         >
           Add Query
@@ -981,7 +999,12 @@ function SourceConnectionForm({
         control={control}
         rules={{ required: true }}
         render={({ field }) => (
-          <Select {...field} variant="outlined" size="small">
+          <Select
+            {...field}
+            variant="outlined"
+            size="small"
+            disabled={readOnly}
+          >
             {connectorTypes.map(connector => (
               <MenuItem key={connector.type} value={connector.type}>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -1015,6 +1038,7 @@ function SourceConnectionForm({
         render={({ field, fieldState }) => (
           <TextField
             {...field}
+            disabled={readOnly}
             fullWidth
             margin="normal"
             label="Name"
@@ -1073,6 +1097,7 @@ function SourceConnectionForm({
           render={({ field, fieldState }) => (
             <TextField
               {...field}
+              disabled={readOnly}
               fullWidth
               label="Sync Batch Size"
               type="number"
@@ -1093,6 +1118,7 @@ function SourceConnectionForm({
           render={({ field, fieldState }) => (
             <TextField
               {...field}
+              disabled={readOnly}
               fullWidth
               label="Rate Limit Delay (ms)"
               type="number"
@@ -1115,6 +1141,7 @@ function SourceConnectionForm({
           render={({ field }) => (
             <TextField
               {...field}
+              disabled={readOnly}
               fullWidth
               label="Max Retries"
               type="number"
@@ -1131,6 +1158,7 @@ function SourceConnectionForm({
           render={({ field }) => (
             <TextField
               {...field}
+              disabled={readOnly}
               fullWidth
               label="Timeout (ms)"
               type="number"

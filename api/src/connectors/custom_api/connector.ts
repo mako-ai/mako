@@ -4,7 +4,7 @@ import {
   FetchOptions,
 } from "../base/BaseConnector";
 import { customApi } from "../../connections/callable";
-import { ConnectionRequestError, forward } from "../../connections/forward";
+import { forward } from "../../connections/forward";
 
 /**
  * A Custom API connection: an address, a credential type and its key, and an
@@ -116,30 +116,9 @@ export class CustomApiConnector extends BaseConnector {
     };
   }
 
-  validateConfig() {
-    const errors: string[] = [];
-    const config = this.dataSource.config ?? {};
-    const base = typeof config.base_url === "string" ? config.base_url : "";
-    try {
-      const url = new URL(base);
-      if (url.protocol !== "https:" && url.protocol !== "http:") {
-        errors.push("The address must start with https://");
-      }
-    } catch {
-      errors.push("An address is required");
-    }
-    return { valid: errors.length === 0, errors };
-  }
-
   async testConnection(): Promise<ConnectionTestResult> {
-    const validation = this.validateConfig();
-    if (!validation.valid) {
-      return {
-        success: false,
-        message: "Invalid configuration",
-        details: validation.errors,
-      };
-    }
+    // A missing or non-http(s) address is refused by the proxy's own check
+    // (connections/forward.ts `urlUnder`), with a message the form shows.
     const config = this.dataSource.config ?? {};
     const testPath =
       typeof config.test_path === "string" && config.test_path.trim()
@@ -173,10 +152,7 @@ export class CustomApiConnector extends BaseConnector {
     } catch (error) {
       return {
         success: false,
-        message:
-          error instanceof ConnectionRequestError || error instanceof Error
-            ? error.message
-            : "The request failed",
+        message: error instanceof Error ? error.message : "The request failed",
       };
     }
   }
