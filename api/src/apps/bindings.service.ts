@@ -200,6 +200,12 @@ import {
   type BuiltParquetFile,
 } from "../services/parquet-build.service";
 import { globFiles, readFile } from "./worktree.service";
+import { ParquetRowLimitError } from "../utils/streaming-parquet-builder";
+import {
+  bindingRowLimitMessage,
+  parquetRowLimits,
+  resolveBindingRowLimit,
+} from "../utils/parquet-row-limit";
 import { resolveDbtBoundCode } from "../dbt/dbt-environments.service";
 import { reportBindingPhase } from "./binding-progress";
 import { loggers } from "../logging";
@@ -226,6 +232,14 @@ export interface AppBinding {
   /** `-- database:` / `-- database_name:` for connections that need one selected. */
   databaseId?: string;
   databaseName?: string;
+  /**
+   * `-- row_limit:` as written (e.g. `3000000`, `3M`). Resolved and checked
+   * against PARQUET_MAX_ROW_LIMIT at build time (resolveBindingRowLimit), so
+   * a typo fails that binding's build with a message, never its serving.
+   * Absent = PARQUET_ROW_LIMIT. Not part of the artifact identity: a build
+   * that succeeds holds the whole result whatever the limit was.
+   */
+  rowLimit?: string;
   /** The whole file, front matter included. */
   sql: string;
   /** The executable part: the file with its leading comment block removed. */
@@ -344,12 +358,15 @@ export function normalizeBindingText(text: string): string {
 /**
  * Do two bindings produce the same data? Everything that decides the result
  * (connection, database, dbt link, materialization mode, the query), with line
- * endings normalised so a CRLF checkout of the same file still matches.
+ * endings normalised so a CRLF checkout of the same file still matches. The
+ * row limit counts too: it decides whether a build succeeds, so a draft that
+ * only raises it must build with its own limit, not the committed one.
  * Scheduling fields do not change the data and are ignored.
  */
 export function sameBindingDefinition(a: AppBinding, b: AppBinding): boolean {
   return (
     a.connectionId === b.connectionId &&
+    (a.rowLimit?.trim() ?? "") === (b.rowLimit?.trim() ?? "") &&
     (a.databaseId ?? "") === (b.databaseId ?? "") &&
     (a.databaseName ?? "") === (b.databaseName ?? "") &&
     (a.dbtProjectId ?? "") === (b.dbtProjectId ?? "") &&
@@ -413,6 +430,7 @@ async function legacyConnectionIds(
  *   -- materialization: parquet                (default)
  *   -- schedule: 0 6 * * *                     (optional, cron)
  *   -- dbt_project: <id>                       (optional)
+ *   -- row_limit: 3000000                      (optional, rows; also 3M)
  *
  * The block ends at the first non-comment line; unknown keys are ignored.
  * Stays valid SQL for every editor/highlighter, and — unlike a central
@@ -558,6 +576,7 @@ export function bindingFromSource(
     dbtProjectId: meta.dbt_project,
     databaseId: meta.database,
     databaseName: meta.database_name,
+    rowLimit: meta.row_limit ?? meta.rowlimit,
     sql: source,
     code: stripBindingFrontMatter(source),
   };
@@ -701,25 +720,71 @@ export async function buildResolvedBindingParquet(
     mako_binding: binding.name,
     mako_workspace: project.workspaceId?.toString(),
   };
-  return withQueryLabels(labels, () =>
-    buildQueryParquetFile({
-      connection,
-      executableQuery: code,
-      databaseId: binding.databaseId,
-      databaseName: binding.databaseName,
-      filenameBase: `appv2-${project._id.toString()}-${binding.name}`,
-      schemaProbe: isMongo ? "lenient" : "strict",
-      // An app reads its binding as the WHOLE result: DuckDB in the page sums
-      // it, so a parquet cut at the row limit would be summed as if complete
-      // (a 526,470-row binding was served as exactly 500,000 rows and every
-      // total on the page read ~5% short). Fail the build instead; the binding
-      // keeps serving its previous artifact and the run records why.
-      onRowLimit: "fail",
-      // Only app bindings take the configurable codec (default ZSTD). The
-      // CDC and sync loaders call the builder without it and stay SNAPPY.
-      writeOptions: appBindingParquetWriteOptions(),
-    }),
+  const limits = parquetRowLimits();
+  // Before any query runs: a bad `-- row_limit:` fails here, by name.
+  const rowLimit = resolveBindingRowLimit(
+    binding.name,
+    binding.rowLimit,
+    limits,
   );
+  try {
+    return await withQueryLabels(labels, () =>
+      buildQueryParquetFile({
+        connection,
+        executableQuery: code,
+        databaseId: binding.databaseId,
+        databaseName: binding.databaseName,
+        filenameBase: `appv2-${project._id.toString()}-${binding.name}`,
+        schemaProbe: isMongo ? "lenient" : "strict",
+        rowLimit,
+        // An app reads its binding as the WHOLE result: DuckDB in the page
+        // sums it, so a parquet cut at the row limit would be summed as if
+        // complete (a 526,470-row binding was served as exactly 500,000 rows
+        // and every total on the page read ~5% short). Fail the build
+        // instead; the binding keeps serving its previous artifact and the
+        // run records why.
+        onRowLimit: "fail",
+        // Past the limit, keep counting (nothing more is written) up to the
+        // hard maximum, so the error says how many rows the query returned
+        // and which `-- row_limit:` would fit them.
+        countRowsUpTo: limits.maxRowLimit,
+        // Only app bindings take the configurable codec (default ZSTD). The
+        // CDC and sync loaders call the builder without it and stay SNAPPY.
+        writeOptions: appBindingParquetWriteOptions(),
+      }),
+    );
+  } catch (error) {
+    if (error instanceof ParquetRowLimitError) {
+      throw new BindingRowLimitError(
+        bindingRowLimitMessage({
+          bindingName: binding.name,
+          rowLimit,
+          rowCount: error.rowCount,
+          exact: error.exact,
+          maxRowLimit: limits.maxRowLimit,
+        }),
+        error,
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * A binding's query returned more rows than its row limit. The message names
+ * the binding, its row count and the fix; `cause` keeps the builder's numbers.
+ */
+export class BindingRowLimitError extends Error {
+  readonly rowLimit: number;
+  readonly rowCount: number;
+  readonly exact: boolean;
+  constructor(message: string, cause: ParquetRowLimitError) {
+    super(message, { cause });
+    this.name = "BindingRowLimitError";
+    this.rowLimit = cause.rowLimit;
+    this.rowCount = cause.rowCount;
+    this.exact = cause.exact;
+  }
 }
 
 export interface MaterializeOptions {

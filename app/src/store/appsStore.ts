@@ -26,6 +26,7 @@ import {
   healAppsTabs,
   reconcileAppsTabs,
 } from "../apps-runtime/shell";
+import { reachableViewUrl } from "../lib/app-frame";
 import { onRealtimeEvent } from "./lib/realtime-channel";
 import { useConsoleStore } from "./consoleStore";
 import { useUIStore } from "./uiStore";
@@ -1570,8 +1571,9 @@ export const useAppsStore = create<AppsStore>()(
               appId?: string;
             };
             const appId = body.appId ?? ref;
+            const url = body.url ? await reachableViewUrl(body.url) : undefined;
             set(s => {
-              s.viewUrlByApp[appId] = body.url;
+              s.viewUrlByApp[appId] = url;
               s.viewUrlErrorByApp[appId] = undefined;
               s.viewTokenByApp[appId] =
                 body.sha && body.expiresAt

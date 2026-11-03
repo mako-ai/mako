@@ -14,14 +14,7 @@ import * as dotenv from "dotenv";
 dotenv.config({ quiet: true });
 
 import mongoose from "mongoose";
-import { Workspace } from "../database/workspace-schema";
-import {
-  matchCallsToSteps,
-  readStepWindows,
-  readUnattributedCalls,
-  saveMatches,
-} from "../workflows/cost-backfill";
-import { tenantOfToken } from "../workflows/hatchet";
+import { backfillWorkflowCosts } from "../workflows/cost-backfill";
 
 function parseArgs() {
   const args = {
@@ -47,44 +40,18 @@ async function main() {
   const args = parseArgs();
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not set");
   await mongoose.connect(process.env.DATABASE_URL);
-  const since = new Date(Date.now() - args.days * 864e5);
-  const workspaces = await Workspace.find({
-    "workflows.hatchetToken": { $exists: true },
-    ...(args.workspaceId ? { _id: args.workspaceId } : {}),
-  })
-    .select("name workflows.hatchetToken")
-    .lean();
+  const reports = await backfillWorkflowCosts(args);
   console.log(
-    `${args.dryRun ? "Dry run: " : ""}${workspaces.length} workspace(s), calls since ${since.toISOString()}`,
+    `${args.dryRun ? "Dry run: " : ""}${reports.length} workspace(s)`,
   );
-  for (const workspace of workspaces) {
-    const workspaceId = String(workspace._id);
-    const calls = await readUnattributedCalls(workspaceId, since);
-    if (calls.length === 0) continue;
-    const tenant = tenantOfToken(workspace.workflows?.hatchetToken);
-    if (!tenant) continue;
-    let steps;
-    try {
-      steps = await readStepWindows(tenant, since);
-    } catch (error) {
-      console.log(
-        `${workspace.name}: Hatchet did not answer (${String(error)})`,
-      );
-      continue;
-    }
-    const { matched, ambiguous, unmatched } = matchCallsToSteps(calls, steps);
-    const cost = (ids: Set<string>) =>
-      calls
-        .filter(call => ids.has(call.id))
-        .reduce((sum, call) => sum + call.costUsd, 0);
-    const matchedIds = new Set(matched.map(m => m.call.id));
-    const saved = args.dryRun ? 0 : await saveMatches(matched);
+  for (const r of reports) {
     console.log(
       [
-        `${workspace.name} (${workspaceId}): ${calls.length} calls, ${steps.length} steps`,
-        `  matched   ${matched.length} (${usd(cost(matchedIds))})${args.dryRun ? "" : `, saved ${saved}`}`,
-        `  ambiguous ${ambiguous.length} (${usd(cost(new Set(ambiguous.map(c => c.id))))}): overlapping runs, left as they are`,
-        `  unmatched ${unmatched.length} (${usd(cost(new Set(unmatched.map(c => c.id))))}): in no run's step`,
+        `${r.workspace} (${r.workspaceId}): ${r.calls} calls, ${r.steps} steps`,
+        ...(r.error ? [`  ${r.error}`] : []),
+        `  matched   ${r.matched.calls} (${usd(r.matched.costUsd)})${args.dryRun ? "" : `, saved ${r.saved}`}`,
+        `  ambiguous ${r.ambiguous.calls} (${usd(r.ambiguous.costUsd)}): overlapping runs, left as they are`,
+        `  unmatched ${r.unmatched.calls} (${usd(r.unmatched.costUsd)}): in no run's step`,
       ].join("\n"),
     );
   }

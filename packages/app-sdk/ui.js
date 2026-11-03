@@ -11,9 +11,44 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { bindingPhaseLabel, refreshBinding, useBindingProgress } from "./index.js";
-import { formatSeconds as fmtSecs, normalizeTone, refreshOrder } from "./ui-core.js";
+import {
+  COLUMN_WIDTHS,
+  columnLayout,
+  compareValues,
+  csvCell,
+  csvDate,
+  csvToTsv,
+  defaultColumnWidth,
+  formatSeconds as fmtSecs,
+  nextSort,
+  normalizeTone,
+  pageSlice,
+  pageToSync,
+  refreshOrder,
+  serializeResetKey,
+  sortRows,
+  toCsv,
+  tooltipSeriesRows,
+} from "./ui-core.js";
 
-export { normalizeTone, refreshOrder };
+export {
+  COLUMN_WIDTHS,
+  columnLayout,
+  compareValues,
+  csvCell,
+  csvDate,
+  csvToTsv,
+  defaultColumnWidth,
+  nextSort,
+  normalizeTone,
+  pageSlice,
+  pageToSync,
+  refreshOrder,
+  serializeResetKey,
+  sortRows,
+  toCsv,
+  tooltipSeriesRows,
+};
 
 const h = React.createElement;
 
@@ -195,6 +230,376 @@ export function KpiTile({ label, value, delta, tone, hint, className }) {
 /** A row of KPI tiles that wraps. */
 export function KpiRow({ className, children }) {
   return h("div", { className: cx("mk-kpi-row", className) }, children);
+}
+
+// ---------------------------------------------------------------------------
+// Chart tooltips: a table, never a coloured "name : value" list
+// ---------------------------------------------------------------------------
+
+function TooltipRow({ row, className }) {
+  return h(
+    "tr",
+    { className },
+    h(
+      "th",
+      { scope: "row" },
+      h("span", { className: "mk-tip-swatch", style: { background: row.color ?? "transparent" } }),
+      row.label,
+    ),
+    ...(row.cells ?? []).map((c, i) => h("td", { key: i }, c)),
+  );
+}
+
+/**
+ * The house chart tooltip: a bold title, small muted column headers, one row
+ * per series with a 9px swatch in the series colour and the label in the
+ * popover's text colour, right-aligned tabular numbers, then a bold `total`
+ * row under a rule. `after` rows follow the total, apart (a value on another
+ * axis, such as an average next to a rate).
+ */
+export function TableTooltip({ title, columns = [], rows = [], total, after, className }) {
+  return h(
+    "div",
+    { className: cx("mk-tip", className) },
+    title != null && h("div", { className: "mk-tip-title" }, title),
+    h(
+      "table",
+      null,
+      columns.length > 0 &&
+        h("thead", null, h("tr", null, h("th", null), ...columns.map(c => h("th", { key: c }, c)))),
+      h(
+        "tbody",
+        null,
+        ...rows.map(r => h(TooltipRow, { key: r.key ?? r.label, row: r })),
+        total && h(TooltipRow, { key: "__total", row: total, className: cx("mk-tip-total", rows.length > 0 && "mk-tip-rule") }),
+        ...(after ?? []).map((r, i) =>
+          h(TooltipRow, { key: `__after_${r.key ?? r.label}`, row: r, className: i === 0 ? "mk-tip-rule" : undefined }),
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * A recharts `<Tooltip content={…} />` from a builder: `build(datum, label)`
+ * gets the hovered data row and the axis label and returns TableTooltip props
+ * (or null to show nothing).
+ */
+export function tableTooltip(build) {
+  return function TableTooltipContent({ active, payload, label }) {
+    const datum = payload?.[0]?.payload;
+    if (!active || !datum) return null;
+    const props = build(datum, label);
+    return props ? h(TableTooltip, props) : null;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// DataTable: sortable, paged, sticky header, CSV export
+// ---------------------------------------------------------------------------
+
+const IconSort = ({ dir }) =>
+  svg(
+    12,
+    2,
+    [
+      h("path", {
+        key: "p",
+        d:
+          dir === "asc"
+            ? "m5 12 7-7 7 7M12 19V5"
+            : dir === "desc"
+              ? "M12 5v14M19 12l-7 7-7-7"
+              : "m21 16-4 4-4-4M17 20V4M3 8l4-4 4 4M7 4v16",
+      }),
+    ],
+    dir ? undefined : "mk-dt-faint",
+  );
+
+/** A value that is controlled when `value !== undefined`, local state otherwise. */
+function useControlled(value, initial, onChange) {
+  const [local, setLocal] = React.useState(initial);
+  const controlled = value !== undefined;
+  const set = React.useCallback(
+    next => {
+      if (!controlled) setLocal(next);
+      onChange?.(next);
+    },
+    [controlled, onChange],
+  );
+  return [controlled ? value : local, set];
+}
+
+/**
+ * Download CSV text (from `toCsv`) as `filename` (".csv" added when missing).
+ * Mako's app frames allow downloads, so this works inside Mako and out.
+ * Returns "downloaded", or "failed" when the browser refused.
+ */
+export function saveCsv(filename, text) {
+  if (typeof document === "undefined") return "failed";
+  try {
+    const name = /\.csv$/i.test(filename) ? filename : `${filename}.csv`;
+    const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8;" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return "downloaded";
+  } catch {
+    return "failed";
+  }
+}
+
+const fmtCount = n => n.toLocaleString("en-US");
+// A click on a link, button or field inside a row is that control's, not the row's.
+const INTERACTIVE = "a,button,input,select,textarea,label,[role=button]";
+
+/**
+ * The house data table: click-to-sort headers, a sticky header (and first
+ * column with `sticky`), right-aligned tabular numbers, and a pager footer
+ * ("1–50 of 312 customers", rows per page, « ‹ Page x of y › »). Sort, page
+ * and page size are each controlled (`sort` + `onSortChange`, …) or left to
+ * the table. Pass the filter state as `resetKey`: when it changes the table
+ * goes back to page 1. `fill` makes the card fill its parent's height with the
+ * body scrolling inside; `exportFilename` adds an "Export CSV" button.
+ *
+ * Columns have fixed widths (`table-layout: fixed` and a `<colgroup>`), from
+ * each column's `width` or a default by kind (see `columnLayout`). The rows
+ * on screen never change a width, so sorting, filtering and paging never
+ * shift the layout. Cells ellipsize at their width with the full value on hover.
+ */
+export function DataTable({
+  rows = [],
+  columns,
+  rowKey,
+  title,
+  description,
+  actions,
+  sort: sortProp,
+  defaultSort = null,
+  onSortChange,
+  page: pageProp,
+  onPageChange,
+  pageSize: pageSizeProp,
+  defaultPageSize = 50,
+  onPageSizeChange,
+  pageSizes = [25, 50, 100],
+  noun = "rows",
+  empty = "No rows match these filters.",
+  fill = false,
+  maxHeight,
+  onRowClick,
+  rowLabel,
+  resetKey,
+  exportFilename,
+  className,
+  style,
+}) {
+  const [sort, setSort] = useControlled(sortProp, defaultSort, onSortChange);
+  const [rawPage, setRawPage] = useControlled(pageProp, 1, onPageChange);
+  const [pageSize, setPageSize] = useControlled(pageSizeProp, defaultPageSize, onPageSizeChange);
+  // A page size outside the list (defaultPageSize={200}) still shows as the selected option.
+  const sizeOptions = pageSizes.includes(pageSize) ? pageSizes : [...pageSizes, pageSize].sort((a, b) => a - b);
+  const [note, setNote] = React.useState(null);
+  const scrollRef = React.useRef(null);
+
+  const sorted = React.useMemo(() => sortRows(rows, columns, sort), [rows, columns, sort]);
+  const layout = React.useMemo(() => columnLayout(columns), [columns]);
+  const { page, pageCount, start, end } = pageSlice(sorted.length, rawPage, pageSize);
+  const visible = sorted.slice(start, end);
+
+  const goTo = p => {
+    if (p !== rawPage) setRawPage(p);
+    scrollRef.current?.scrollTo?.({ top: 0 });
+  };
+
+  // Back to page 1 when the filters change, as the caller states them in
+  // `resetKey`. Row identity never resets the page: a load, a background
+  // refresh or rows rebuilt inline keep it.
+  const key = serializeResetKey(resetKey);
+  const prevKey = React.useRef(key);
+  React.useEffect(() => {
+    if (prevKey.current === key) return;
+    prevKey.current = key;
+    if (rawPage !== 1) goTo(1);
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A page past the end (rows shrank, a stale URL) shows the last page; report
+  // it so a controlled page matches. Skipped while there are no rows yet.
+  const syncTo = pageToSync(rawPage, sorted.length, pageSize);
+  React.useEffect(() => {
+    if (syncTo != null) setRawPage(syncTo);
+  }, [syncTo]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  React.useEffect(() => {
+    if (!note) return undefined;
+    const t = setTimeout(() => setNote(null), 8000);
+    return () => clearTimeout(t);
+  }, [note]);
+
+  const sortBy = col => {
+    setSort(nextSort(sort, col));
+    goTo(1);
+  };
+  const exportCsv = () => {
+    const res = saveCsv(exportFilename, toCsv(sorted, columns));
+    setNote(res === "failed" ? "The browser blocked the download. Open the app in a new tab and export again." : null);
+  };
+
+  const cellClass = (col, extra) =>
+    cx(col.num && "mk-dt-num", col.align === "right" && "mk-dt-num", col.align === "center" && "mk-dt-center", col.sticky && "mk-dt-pin", extra);
+
+  const head = h(
+    "thead",
+    null,
+    h(
+      "tr",
+      null,
+      ...columns.map(col => {
+        const active = sort?.id === col.id;
+        const text = typeof col.label === "string" ? col.label : col.id;
+        const label =
+          col.sortable === false
+            ? h("span", { className: "mk-dt-label", title: col.hint ?? text }, h("span", { className: "mk-dt-th-text" }, col.label))
+            : h(
+                "button",
+                {
+                  type: "button",
+                  className: "mk-dt-sort",
+                  onClick: () => sortBy(col),
+                  title: `${col.hint ?? text} · click to sort`,
+                },
+                h("span", { className: "mk-dt-th-text" }, col.label),
+                h(IconSort, { dir: active ? sort.dir : null }),
+              );
+        return h(
+          "th",
+          {
+            key: col.id,
+            scope: "col",
+            className: cellClass(col, active && "mk-dt-sorted"),
+            "aria-sort": col.sortable === false ? undefined : active ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
+          },
+          label,
+        );
+      }),
+    ),
+  );
+
+  // Every cell ellipsizes at its column's width, with the raw value (text or
+  // a number) as the hover title. `truncate: false` wraps instead.
+  const cell = (col, row) => {
+    const v = col.value(row);
+    const content = col.render ? col.render(row) : v;
+    if (col.truncate === false) return h("div", { className: "mk-dt-wrap" }, content);
+    const title = typeof v === "string" || typeof v === "number" || typeof v === "bigint" ? String(v) : undefined;
+    return h("div", { className: "mk-dt-cell", title: title || undefined }, content);
+  };
+
+  const body = h(
+    "tbody",
+    null,
+    visible.length === 0
+      ? h("tr", { key: "__empty" }, h("td", { colSpan: columns.length, className: "mk-dt-empty" }, empty))
+      : visible.map((row, i) => {
+          const key = rowKey ? rowKey(row) : (row?.id ?? start + i);
+          const click = onRowClick
+            ? {
+                tabIndex: 0,
+                className: "mk-dt-click",
+                "aria-label": rowLabel ? rowLabel(row) : undefined,
+                onClick: e => {
+                  if (!e.target.closest?.(INTERACTIVE)) onRowClick(row, e);
+                },
+                onKeyDown: e => {
+                  if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
+                    e.preventDefault();
+                    onRowClick(row, e);
+                  }
+                },
+              }
+            : null;
+          return h(
+            "tr",
+            { key, ...click },
+            ...columns.map(col => h("td", { key: col.id, className: cellClass(col) || undefined }, cell(col, row))),
+          );
+        }),
+  );
+
+  const footer = h(
+    "footer",
+    { className: "mk-dt-foot" },
+    h(
+      "span",
+      { "aria-live": "polite" },
+      sorted.length
+        ? [h("b", { key: "r" }, `${fmtCount(start + 1)}–${fmtCount(end)}`), " of ", h("b", { key: "t" }, fmtCount(sorted.length)), ` ${noun}`]
+        : `No ${noun}`,
+    ),
+    h(
+      "div",
+      { className: "mk-dt-nav" },
+      pageSizes.length > 1 &&
+        h(
+          "select",
+          {
+            className: "mk-dt-size",
+            "aria-label": "Rows per page",
+            value: pageSize,
+            onChange: e => {
+              setPageSize(Number(e.target.value));
+              goTo(1);
+            },
+          },
+          ...sizeOptions.map(n => h("option", { key: n, value: n }, `${n} per page`)),
+        ),
+      h(Button, { size: "sm", "aria-label": "First page", disabled: page <= 1, onClick: () => goTo(1) }, "«"),
+      h(Button, { size: "sm", "aria-label": "Previous page", disabled: page <= 1, onClick: () => goTo(page - 1) }, "‹"),
+      h("span", { className: "mk-dt-page" }, `Page ${page} of ${pageCount}`),
+      h(Button, { size: "sm", "aria-label": "Next page", disabled: page >= pageCount, onClick: () => goTo(page + 1) }, "›"),
+      h(Button, { size: "sm", "aria-label": "Last page", disabled: page >= pageCount, onClick: () => goTo(pageCount) }, "»"),
+    ),
+  );
+
+  const exportButton =
+    exportFilename != null &&
+    h(
+      Button,
+      { key: "__export", disabled: !sorted.length, onClick: exportCsv, title: "Export every row on every page, as sorted" },
+      "Export CSV",
+    );
+
+  return h(
+    Card,
+    {
+      title,
+      description,
+      actions: actions != null || exportButton ? h(React.Fragment, null, actions, exportButton) : undefined,
+      className: cx("mk-dt", fill && "mk-dt--fill", className),
+      style,
+    },
+    note && h("p", { className: "mk-dt-note", role: "status" }, note),
+    h(
+      "div",
+      { className: "mk-dt-scroll", ref: scrollRef, style: !fill && maxHeight != null ? { maxHeight } : undefined },
+      h(
+        "table",
+        { className: "mk-dt-table", style: { minWidth: layout.minWidth } },
+        h(
+          "colgroup",
+          null,
+          ...layout.cols.map(c => h("col", { key: c.id, style: c.width ? { width: c.width } : undefined })),
+        ),
+        head,
+        body,
+      ),
+    ),
+    footer,
+  );
 }
 
 // ---------------------------------------------------------------------------

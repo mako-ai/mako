@@ -5,6 +5,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { api } from "../api/client";
+import { reachableViewUrl } from "../lib/app-frame";
 
 export interface AppViewerState {
   status: "loading" | "ready" | "error";
@@ -83,7 +84,8 @@ export const useAppViewerStore = create<AppViewerStoreState>()(
         const title =
           (meta.data as { app?: { title?: string } } | undefined)?.app?.title ||
           "App";
-        const viewUrl = (token.data as { url?: string } | undefined)?.url;
+        const tokenUrl = (token.data as { url?: string } | undefined)?.url;
+        const viewUrl = tokenUrl ? await reachableViewUrl(tokenUrl) : undefined;
         const chatEnabled =
           (meta.data as { app?: { chatEnabled?: boolean } } | undefined)?.app
             ?.chatEnabled === true;

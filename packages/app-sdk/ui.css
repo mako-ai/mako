@@ -45,6 +45,48 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
 
+/* ---- Native <select> ------------------------------------------------------
+ * macOS draws the native dropdown arrow flush against the right border, so
+ * every unstyled <select> looked broken. The base takes the arrow over: no
+ * native appearance, a chevron in the --muted-foreground token 10px in from
+ * the right edge, 28px of right padding so the text never runs under it, and
+ * the MultiSelect trigger's box (32px, 14px text, border, radius, shadow).
+ * Tokens carry it into dark mode.
+ *
+ * It lives in @layer base so the app always wins: unlayered app CSS beats any
+ * layered rule, and Tailwind v4 utilities sit in a later layer. Inside base it
+ * outranks Tailwind's preflight. List boxes ([multiple], [size]) keep the
+ * native look. A select with appearance-none in its classes (shadcn's
+ * NativeSelect) draws its own arrow and is left alone.
+ */
+@layer base {
+  select:not([multiple], [size], [class*="appearance-none"]) {
+    appearance: none;
+    cursor: pointer;
+    height: 32px;
+    padding: 0 28px 0 12px;
+    font-size: 14px;
+    color: var(--foreground);
+    background-color: var(--background);
+    background-image:
+      linear-gradient(45deg, transparent calc(50% - 1px), var(--muted-foreground) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 1px)),
+      linear-gradient(135deg, transparent calc(50% - 1px), var(--muted-foreground) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 1px));
+    background-position: right 15px center, right 10px center;
+    background-size: 5px 5px;
+    background-repeat: no-repeat;
+    border: 1px solid var(--border);
+    border-radius: var(--mk-radius-md);
+    box-shadow: var(--mk-shadow-xs);
+    transition: background-color .15s var(--mk-ease), border-color .15s var(--mk-ease);
+  }
+  select:not([multiple], [size], [class*="appearance-none"]):hover:not(:disabled) { background-color: var(--accent); }
+  select:not([multiple], [size], [class*="appearance-none"]):focus-visible { outline: none; border-color: var(--ring); box-shadow: var(--mk-ring-focus); }
+  select:not([multiple], [size], [class*="appearance-none"]):disabled { cursor: not-allowed; opacity: .5; }
+  @media (max-width: 640px) {
+    select:not([multiple], [size], [class*="appearance-none"]) { height: 38px; }
+  }
+}
+
 /* ---- Tones --------------------------------------------------------------- */
 .mk-dot { display: inline-block; width: 6px; height: 6px; border-radius: 999px; flex-shrink: 0; background: var(--muted-foreground); }
 .mk-dot.mk-tone-ok { background: var(--positive); }
@@ -120,6 +162,96 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
     position: fixed; top: auto; left: 0 !important; right: 0 !important; bottom: 0; max-width: none;
     max-height: 70vh; overflow: auto; border-radius: var(--mk-radius-xl) var(--mk-radius-xl) 0 0; border-bottom: 0;
   }
+}
+
+/* ---- Chart tooltip (TableTooltip) ---------------------------------------- */
+.mk-tip {
+  background: var(--popover); color: var(--popover-foreground);
+  border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--mk-shadow-md);
+  padding: 8px 10px; font-size: 12px; line-height: 1.4; white-space: nowrap;
+}
+.mk-tip-title { font-weight: 600; margin-bottom: 4px; }
+.mk-tip table { border-collapse: collapse; }
+.mk-tip thead th { color: var(--muted-foreground); font-weight: 500; text-align: right; padding-left: 12px; }
+.mk-tip tbody th { text-align: left; font-weight: 400; padding-top: 2px; }
+.mk-tip td { text-align: right; padding: 2px 0 0 12px; font-variant-numeric: tabular-nums; }
+.mk-tip-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+.mk-tip-total th, .mk-tip-total td { font-weight: 600; }
+.mk-tip-rule th, .mk-tip-rule td { border-top: 1px solid var(--border); padding-top: 3px; }
+
+/* ---- DataTable ----------------------------------------------------------- */
+/* A card whose table scrolls inside it: a sticky header, an optional pinned
+ * first column, hover on the cells (so a pinned cell follows its row), and a
+ * pager footer. `.mk-dt--fill` fills the parent's height (give the parent one,
+ * e.g. a 100dvh flex column); otherwise the body scrolls past 70vh. */
+.mk-dt { display: flex; flex-direction: column; padding: 0; overflow: hidden; min-width: 0; }
+.mk-dt > .mk-card-head { flex: none; flex-wrap: wrap; margin: 0; padding: 16px 16px 12px; }
+.mk-dt .mk-card-actions { flex-wrap: wrap; }
+.mk-dt--fill { flex: 1 1 auto; height: 100%; min-height: 320px; }
+.mk-dt-note { flex: none; margin: 0; padding: 0 16px 10px; font-size: 12px; color: var(--muted-foreground); }
+.mk-dt-scroll { overflow: auto; max-height: 70vh; border-top: 1px solid var(--border); scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.mk-dt > .mk-dt-scroll:first-child { border-top: 0; }
+.mk-dt--fill .mk-dt-scroll { flex: 1 1 auto; min-height: 0; max-height: none; }
+/* Fixed layout: the <colgroup> sets every width, so the rows on screen never
+ * resize a column. The table fills the card; its inline min-width (the sum of
+ * the columns) makes it scroll sideways in a narrower card. */
+.mk-dt-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.mk-dt-table th, .mk-dt-table td {
+  padding: 7px 10px; text-align: left; white-space: nowrap; vertical-align: middle; overflow: hidden;
+  border-bottom: 1px solid var(--mk-row-line); background: var(--card);
+}
+.mk-dt-table thead th {
+  position: sticky; top: 0; z-index: 2; padding: 0; border-bottom: 0;
+  font-size: 12px; font-weight: 500; color: var(--muted-foreground);
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+.mk-dt-table thead th.mk-dt-sorted { color: var(--foreground); }
+.mk-dt-label { display: flex; padding: 8px 10px; }
+.mk-dt-sort {
+  appearance: none; display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; padding: 8px 10px;
+  font: inherit; color: inherit; background: none; border: 0; text-align: inherit; white-space: nowrap;
+}
+/* A long header label ellipsizes; the sort icon beside it never shrinks. */
+.mk-dt-th-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-dt-sort:hover { color: var(--foreground); }
+.mk-dt-sort:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: var(--mk-radius-sm); }
+.mk-dt-sort svg { flex: none; }
+.mk-dt-faint { opacity: .35; }
+.mk-dt-table .mk-dt-num { text-align: right; font-variant-numeric: tabular-nums; }
+.mk-dt-table th.mk-dt-num :is(.mk-dt-sort, .mk-dt-label) { justify-content: flex-end; }
+.mk-dt-table .mk-dt-center { text-align: center; }
+.mk-dt-table th.mk-dt-center :is(.mk-dt-sort, .mk-dt-label) { justify-content: center; }
+/* The pinned column: solid background and a hairline on its right edge. */
+.mk-dt-table .mk-dt-pin { position: sticky; left: 0; z-index: 1; box-shadow: inset -1px 0 0 var(--border); }
+/* The corner cell is pinned both ways and keeps BOTH borders: one box-shadow
+ * would otherwise override the other and drop the header's bottom rule. */
+.mk-dt-table thead th.mk-dt-pin { z-index: 3; box-shadow: inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border); }
+.mk-dt-table tbody tr:hover > td { background: color-mix(in srgb, var(--muted) 50%, var(--card)); }
+.mk-dt-table tbody tr:last-child > td { border-bottom: 0; }
+.mk-dt-click { cursor: pointer; }
+.mk-dt-click:focus-visible { outline: none; }
+.mk-dt-click:focus-visible > td { background: color-mix(in srgb, var(--muted) 70%, var(--card)); }
+.mk-dt-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A render() that returns blocks (a name over its links) ellipsizes each line. */
+.mk-dt-cell :where(div, p) { overflow: hidden; text-overflow: ellipsis; }
+/* `truncate: false`: the text wraps inside the column; the width still holds. */
+.mk-dt-wrap { white-space: normal; overflow-wrap: anywhere; }
+.mk-dt-table td.mk-dt-empty { text-align: center; color: var(--muted-foreground); padding: 48px 10px; white-space: normal; }
+.mk-dt-foot {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground);
+}
+.mk-dt-foot b { font-weight: 500; color: var(--foreground); font-variant-numeric: tabular-nums; }
+.mk-dt-nav { display: flex; align-items: center; gap: 4px; }
+.mk-dt-nav .mk-btn { width: 28px; padding: 0; }
+/* The rows-per-page select takes its look from the native <select> base above. */
+.mk-dt-size { margin-right: 8px; }
+.mk-dt-page { padding: 0 6px; font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) {
+  /* Phones: the page scrolls as usual and the table keeps a scroll box of its own. */
+  .mk-dt--fill { height: auto; }
+  .mk-dt--fill .mk-dt-scroll { max-height: 70vh; }
+  .mk-dt-nav .mk-btn { width: 38px; }
 }
 
 /* ---- MultiSelect --------------------------------------------------------- */

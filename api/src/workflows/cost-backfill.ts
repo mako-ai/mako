@@ -6,11 +6,13 @@
  * few seconds' slack (Hatchet's and Mako's clocks) only when none does. One
  * such step: a match. Several (two runs overlapping): ambiguous, left as it
  * is rather than guessed. None: not a deployed run's (a person's own test
- * run, say). Used by scripts/backfill-workflow-ai-costs.ts.
+ * run, say). Run by a super admin (routes/admin.routes.ts) or
+ * scripts/backfill-workflow-ai-costs.ts.
  */
 import { Types } from "mongoose";
 import { LlmUsage } from "../database/schema";
-import { tenantJson, type WorkspaceTenant } from "./hatchet";
+import { Workspace } from "../database/workspace-schema";
+import { tenantJson, tenantOfToken, type WorkspaceTenant } from "./hatchet";
 
 /** One step of one run, as Hatchet ran it. */
 export interface StepWindow {
@@ -145,4 +147,76 @@ export async function saveMatches(
     })),
   );
   return result.modifiedCount;
+}
+
+const round = (usd: number) => Math.round(usd * 1e6) / 1e6;
+
+/** What a backfill found (and, unless a dry run, saved) for one workspace. */
+export interface BackfillReport {
+  workspaceId: string;
+  workspace: string;
+  calls: number;
+  steps: number;
+  matched: { calls: number; costUsd: number };
+  ambiguous: { calls: number; costUsd: number };
+  unmatched: { calls: number; costUsd: number };
+  saved: number;
+  error?: string;
+}
+
+/**
+ * Backfill the workspaces that run workflows (or just `workspaceId`): their
+ * model calls of the last `days` days without a run, matched by time.
+ */
+export async function backfillWorkflowCosts(options: {
+  workspaceId?: string;
+  days: number;
+  dryRun: boolean;
+}): Promise<BackfillReport[]> {
+  const since = new Date(Date.now() - options.days * 864e5);
+  const workspaces = await Workspace.find({
+    "workflows.hatchetToken": { $exists: true },
+    ...(options.workspaceId
+      ? { _id: new Types.ObjectId(options.workspaceId) }
+      : {}),
+  })
+    .select("name workflows.hatchetToken")
+    .lean();
+  const reports: BackfillReport[] = [];
+  for (const workspace of workspaces) {
+    const workspaceId = String(workspace._id);
+    const calls = await readUnattributedCalls(workspaceId, since);
+    const tenant = tenantOfToken(workspace.workflows?.hatchetToken);
+    if (calls.length === 0 || !tenant) continue;
+    const report: BackfillReport = {
+      workspaceId,
+      workspace: workspace.name,
+      calls: calls.length,
+      steps: 0,
+      matched: { calls: 0, costUsd: 0 },
+      ambiguous: { calls: 0, costUsd: 0 },
+      unmatched: { calls: 0, costUsd: 0 },
+      saved: 0,
+    };
+    reports.push(report);
+    let steps: StepWindow[];
+    try {
+      steps = await readStepWindows(tenant, since);
+    } catch (error) {
+      report.error = `Hatchet did not answer: ${error instanceof Error ? error.message : String(error)}`;
+      continue;
+    }
+    const { matched, ambiguous, unmatched } = matchCallsToSteps(calls, steps);
+    const costById = new Map(calls.map(call => [call.id, call.costUsd]));
+    const total = (ids: string[]) => ({
+      calls: ids.length,
+      costUsd: round(ids.reduce((sum, id) => sum + (costById.get(id) ?? 0), 0)),
+    });
+    report.steps = steps.length;
+    report.matched = total(matched.map(m => m.call.id));
+    report.ambiguous = total(ambiguous.map(c => c.id));
+    report.unmatched = total(unmatched.map(c => c.id));
+    if (!options.dryRun) report.saved = await saveMatches(matched);
+  }
+  return reports;
 }

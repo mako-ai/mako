@@ -29,12 +29,10 @@ import { databaseConnectionService } from "./database-connection.service";
 import { isWrite } from "../access/connection-writes";
 import { checkPreviewQuerySafety } from "./query-pagination.service";
 import { reportBindingPhase } from "../apps/binding-progress";
+import { parquetRowLimits } from "../utils/parquet-row-limit";
 import { loggers } from "../logging";
 
 const logger = loggers.api("parquet-build");
-
-/** Default/maximum rows materialized into a single Parquet artifact. */
-export const PARQUET_ROW_LIMIT = 500_000;
 
 const STREAM_BATCH_SIZE = 5000;
 
@@ -83,10 +81,12 @@ export interface BuildQueryParquetFileInput {
   executableQuery: ExecutableQuery;
   databaseId?: string;
   databaseName?: string;
-  /** Capped at PARQUET_ROW_LIMIT-style limits by the caller; default 500k. */
+  /** Default: PARQUET_ROW_LIMIT (parquetRowLimits().defaultRowLimit). */
   rowLimit?: number;
   /** See StreamingParquetOptions.onRowLimit; default `truncate`. */
   onRowLimit?: "truncate" | "fail";
+  /** See StreamingParquetOptions.countRowsUpTo. */
+  countRowsUpTo?: number;
   /** Local temp-file name base, e.g. `app-{appId}-{bindingId}`. */
   filenameBase: string;
   /**
@@ -174,8 +174,9 @@ export async function buildQueryParquetFile(
 
   return await buildParquetFromBatches({
     filenameBase,
-    rowLimit: input.rowLimit ?? PARQUET_ROW_LIMIT,
+    rowLimit: input.rowLimit ?? parquetRowLimits().defaultRowLimit,
     onRowLimit: input.onRowLimit,
+    countRowsUpTo: input.countRowsUpTo,
     writeOptions: input.writeOptions,
     fields,
     onBatchInserted: async totalRows => {

@@ -89,16 +89,115 @@ Never import `@duckdb/duckdb-wasm`, `hyparquet` or `apache-arrow` parquet
 readers in an app. Use the page's engine through the SDK:
 
 ```ts
-import { getDuckDB, withConnection, ensureBinding, unloadBinding, fetchBindingBytes, useDuckDB } from "@makoai/app-sdk";
+import { getDuckDB, withConnection, ensureBinding, unloadBinding, fetchBindingBytes, useDuckDB, getBindingMemory, setBindingMemoryBudget } from "@makoai/app-sdk";
 
 const big = useDuckDB("select lat, lng from listings", { format: "arrow" }); // data: Arrow Table
 const table = await ensureBinding("valuations");          // loaded once, returns "valuations"
 const n = await withConnection(c => c.query(`select count(*) from ${table}`));
 await unloadBinding("valuations");                         // free its memory
 const bytes = await fetchBindingBytes("valuations", { onProgress: p => p && console.log(p.phase, p.bytes, p.bytesTotal) });
+const mem = await getBindingMemory();                      // { usedBytes, budgetBytes, bindings }
+await setBindingMemoryBudget(800 * 1024 ** 2);             // cap binding tables at 800 MiB
 const db = await getDuckDB();                              // shared: never close() or terminate()
 await db.registerFileBuffer("valuations.parquet", bytes);  // read_parquet with your own options
 ```
+
+### Memory: least recently read goes first (2.12)
+
+Each app frame has its own DuckDB with a 3.1 GiB heap. Before 2.12 every
+binding table stayed in it for good, and an app with many bindings ran out
+of memory. Now bindings aim to stay under a 1.5 GiB budget, and the rest of the
+heap is for queries.
+
+| 8 panels over 15 shards (6M rows, 23 columns) | Heap for bindings | All 8 panels |
+| --- | --- | --- |
+| Tables | 2,068 MiB | 5.3 s |
+| Views over the parquet in the heap | about 150 MiB | 7.4 s |
+
+- The budget counts what the SDK placed. Your own tables do not shrink it.
+- A new table lands if the parquet's metadata says it fits, after evicting tables
+  no one holds, least recently read first. It is an estimate, so the budget can
+  overshoot (measured: 1,700 MiB against 1,536).
+- A mostly empty heap lets one table past the budget, up to twice its size. An
+  app with one large parquet keeps table speed.
+- A binding that does not fit lands as a view: same name, same rows, slower. A
+  later read makes it a table when there is room, with no download.
+- A table you changed loses the change when it becomes a view. The view reads the
+  parquet again. Copy a binding to your own table before you `UPDATE` or `ALTER` it.
+- The parquet stays in JS memory as a Blob, so a table can become a view with no
+  download. Past 512 MiB of Blobs, the oldest unpinned views are dropped and
+  download again on their next read. If a Blob stops being readable, its table is
+  dropped and downloads again on its next read.
+- Parquet copies in the heap stop at 2.5 GiB. Past it, the least recently read view
+  goes, even a pinned one, and downloads again on its next read. A parquet with no
+  room fails with a clear error.
+- A binding a mounted `useQuery`/`useDuckDB` reads is pinned: it goes last.
+  `ensureBinding` bindings can become views but are never dropped.
+- "Out of Memory" on a hook's query demotes unpinned tables, then the pinned tables
+  that query reads, and runs again until it answers or none is left. Other panels'
+  tables stay. For the next minute no table grows back past what is left, then
+  pinned views promote by themselves. `withConnection` does not retry: your `fn`
+  may not be safe to run twice.
+- A mounted hook whose query still fails on memory reruns after 1, 2, 4, 8 and 15 s,
+  then waits. Another hook letting go of its bindings, a budget change, or the tab
+  coming back starts one more run. A hidden tab never reruns. The error stays up
+  until a run answers.
+- Do not `registerFileHandle` a Blob with `BROWSER_FILEREADER`. In duckdb-wasm
+  1.29.0 its size is lost when the allocator returns a pointer past 2 GiB, and
+  reads fail with "too small to be a Parquet file". Use `registerFileBuffer`.
+- A hook's query can name at most 50 bindings. A double-read `UNION ALL` of about 60
+  overflows the WASM stack and breaks the engine for every panel, so the SDK refuses
+  it with a clear error. `withConnection` and `getDuckDB()` have no such check.
+- If the engine traps anyway, a hook's query restarts it, at most once a minute and
+  3 times a page. Every panel reruns and every binding downloads again. A
+  `getDuckDB()` handle held across a restart is dead: call it again.
+
+`setBindingMemoryBudget(bytes)` changes the 1.5 GiB default. `getBindingMemory()`
+shows what is loaded, oldest first, `bindingBytes` against the budget, `usedBytes`
+for the whole heap, and `pressure`.
+
+### Failed downloads (2.12)
+
+- A page runs at most 12 downloads at once, and one after a failure.
+- A rejected fetch, a 429 or a 503 closes a page-wide gate for 1, 3, 9, 27, then
+  60 s, with jitter. Past 3 failures in a row, a request while it is closed fails
+  at once with no network. Any other answer opens it.
+- A download tries 3 times, on the first request and on the signed download alike,
+  and only until headers arrive. A `retryAfterMs` up to 30 s sets the wait.
+- A mounted hook then reruns after 5, 20 and 60 s, or after `retryAfterMs` if that
+  is longer. Then it waits for the tab or the network to come back, or for another
+  request to get an answer.
+- A failed build never runs again by itself: not a `failed` event, whatever its
+  text, and not a build stream cut halfway. Other HTTP statuses and SQL errors stay
+  as they are too. A new query or a reload asks again.
+- A failed `__data/index.json` is kept for 10 s. A query that needs no binding still
+  answers. A query that fails then shows the index failure and retries.
+
+### Memory across apps (2.13)
+
+Inside Mako, each app frame posts what its heap holds. Past 2 GiB across the
+open app tabs, Mako asks the least recently shown ones to release, and asks a
+busy frame again 10 s later. A WASM heap never shrinks, so a release ends that
+frame's DuckDB worker. Its rows stay on screen and its parquet stays as Blobs.
+The next query there boots a new engine and reloads its parquet with no
+download. A reboot takes 0.6 s on the app's own origin and 0.6 to 2.6 s in an
+opaque frame, which has no HTTP cache and fetches the 35 MiB WASM again.
+
+- A frame keeps its engine for the page's life once app code calls
+  `getDuckDB()`, `withConnection()` or `ensureBinding()`, or sends `useDuckDB`
+  SQL that is not a plain read (`CREATE TABLE`, `SET`, anything the SDK does
+  not recognise). Only that worker has what they made. Mako counts its heap and
+  asks another frame, so an app that needs to be a good neighbour sticks to
+  read-only `useQuery` and `useDuckDB`.
+- A release is not a crash. It does not count toward the 3 restarts a page gets,
+  reruns no panel and leaves the download gate as it is. A parked binding reads
+  with no network even while the gate is closed.
+- Frames on an older SDK, the dev-mode preview and apps that boot their own
+  DuckDB send no report. Mako cannot count or ask them. An app gets 2.13 on its
+  next commit.
+- A report covers tables and parquet copies. Query scratch stays in the heap
+  unseen, so the real heap is larger (1037 MiB reported, about 1500 MiB in the
+  renderer).
 
 ### Loading cost (2.8)
 
@@ -107,8 +206,12 @@ await db.registerFileBuffer("valuations.parquet", bytes);  // read_parquet with 
   and the query re-runs. `SHOW TABLES` / `information_schema` load all.
 - Each binding is decoded once into a DuckDB table and its file buffer is
   freed. A refresh swaps the table in one commit, so a running query never
-  sees it missing. A table costs about 3x the parquet in memory (10 MB of
-  parquet, 149k rows: 33 MB).
+  sees it missing. A table costs about 15 bytes a cell (400k rows x 23 columns:
+  138 MiB from a 10 MiB parquet).
+- Tables are evicted least recently read first (2.12). Over the memory
+  budget (default 1.5 GiB of DuckDB's 3.1 GiB heap), the oldest table becomes
+  a view over its compressed parquet. Its next read turns it back into a table
+  without a download when it fits. See Memory above.
 - The DuckDB engine and its parquet extension start loading on the first
   data hook render, in parallel with the first binding download.
 - Rows decode column by column: 149k rows x 16 columns in 190 ms, down
@@ -209,7 +312,7 @@ The kit is the dashboard furniture every app was re-forking:
 import "@makoai/app-sdk/ui.css"; // before ./styles.css, so the app wins
 import {
   PageHeader, Card, KpiRow, KpiTile, Button, StatusDot,
-  MultiSelect, FreshnessBadge, RefreshAllButton,
+  MultiSelect, FreshnessBadge, RefreshAllButton, DataTable,
 } from "@makoai/app-sdk/ui";
 
 <PageHeader
@@ -262,9 +365,146 @@ import {
   and declare it once (`src/vite-env.d.ts`):
   `declare const __APP_BINDING_NAMES__: string[];`
 
+### Chart tooltips: `TableTooltip` (2.10+)
+
+Every chart tooltip is a table, never recharts' coloured `name : value` list:
+a bold title, small muted column headers, one row per series with a 9px
+swatch in the series colour and the label in plain text, right-aligned
+tabular numbers, and a bold total row under a rule.
+
+```tsx
+import { tableTooltip, tooltipSeriesRows } from "@makoai/app-sdk/ui";
+
+const SEGMENTS = [ // bottom-up, as stacked; drives the bars AND the tooltip
+  { key: "new", label: "New", color: "var(--positive)" },
+  { key: "churn", label: "Churn", color: "var(--negative)" },
+];
+
+<Tooltip
+  content={tableTooltip((d) => ({
+    title: d.month,
+    columns: ["MRR", "Orgs", "% of start"],
+    rows: tooltipSeriesRows(d, SEGMENTS, { stacked: true }).map((r) => ({
+      ...r, cells: [fmtEur(r.value), fmtInt(d[`orgs_${r.key}`]), fmtPct(r.value / d.start)],
+    })),
+    total: { label: "Net change", cells: [fmtEur(d.net), fmtInt(d.netOrgs), fmtPct(d.net / d.start)] },
+  }))}
+/>
+```
+
+- `tooltipSeriesRows(datum, series, { stacked })` puts the rows in reading
+  order (a stack's top segment first, lines highest first) and drops empty
+  values.
+- `total` is the stack total, "All selected", or the base the % is of.
+  `after` rows follow it, apart: a value on another axis.
+- Precompute what the tooltip shows (totals, counts, bases) in each data row.
+  The builder only reads and formats.
+- On a chart with an HTML overlay (a donut's centre label), lift the tooltip:
+  `<Tooltip wrapperStyle={{ zIndex: 20 }} … />`.
+
+### Data tables: `DataTable` (2.11+)
+
+`DataTable` is the table the best workspace dashboards converged on: a card
+with click-to-sort headers, a sticky header, an optional pinned first column,
+right-aligned tabular numbers, fixed column widths, a pager footer ("1–50 of
+312 customers", 25 / 50 / 100 per page, « ‹ Page 2 of 7 › »), an empty state
+and CSV export.
+
+```tsx
+import { DataTable, type DataTableColumn } from "@makoai/app-sdk/ui";
+
+const COLUMNS: DataTableColumn<Customer>[] = [
+  { id: "name", label: "Customer", value: c => c.name, sticky: true, width: 260,
+    render: c => <><div>{c.name}</div><SystemLinks c={c} /></> },
+  { id: "paid", label: "Paid on", value: c => c.paidDay, date: true, render: c => fmtDay(c.paidDay) },
+  { id: "mrr", label: "MRR", num: true, value: c => c.mrr, render: c => fmtEur(c.mrr) },
+  { id: "links", label: "Links", value: () => null, sortable: false, csv: false, width: 120, render: c => <Links c={c} /> },
+];
+
+<DataTable
+  title={`${fmtInt(list.length)} customers not onboarded`}
+  actions={<input className="search" value={q} onChange={e => setQ(e.target.value)} />}
+  rows={list}
+  resetKey={q}
+  columns={COLUMNS}
+  noun="customers"
+  empty="No customers match these filters."
+  defaultSort={{ id: "mrr", dir: "desc" }}
+  exportFilename="onboarding-customers"
+  fill
+/>
+```
+
+- **Columns.** `value(row)` is what the column sorts by and exports;
+  `render(row)` is what the cell shows. `num` right-aligns with tabular
+  figures and sorts largest first on the first click (text sorts A→Z). Empty
+  values (null, "", NaN) sort last both ways. `sticky` (pin the first column),
+  `sortable: false`, `hint` (header hover text), `csv` (`false` to leave a
+  column out, a function for a readable cell such as a level name). Numeric
+  strings ("1.25", "-10") sort as numbers.
+- **Widths: no layout shift.** The table uses `table-layout: fixed` and a
+  `<colgroup>`, so a column's width never depends on the rows on screen.
+  Sorting, filtering, paging, the empty state and loading all keep the same
+  widths. Each column is exactly its `width` (px as a number, or any CSS
+  length such as `"12rem"`). Defaults by kind: `num` or right-aligned 96px,
+  `date: true` 110px, the first or sticky column 240px, other text 140px.
+  When the card is wider than the sum, the `grow: true` columns take the extra
+  space. Without one, the first column grows. `minWidth` sets a growing
+  column's floor. When the card is narrower than the sum, the table scrolls
+  sideways inside the card. `columnLayout(columns)` returns the widths the
+  table renders.
+- **Cells stay on one line.** A cell ellipsizes at its column's width with the
+  raw value (text or number) as the hover title. Headers ellipsize too, and
+  the sort icon stays visible. `truncate: false` wraps a cell's text inside
+  its column instead: the width holds and the row grows.
+- **Sort, page, page size** are each uncontrolled by default or controlled with
+  `sort` + `onSortChange`, `page` (1-based) + `onPageChange`, `pageSize` +
+  `onPageSizeChange`, so an app can keep them in the URL. Pass your filter
+  state as `resetKey` (e.g. `resetKey={{ q, owners }}`): when it changes the
+  table goes back to page 1. A sort or page-size click resets the page too.
+  New row objects never do, so a load or a background refresh keeps the page.
+  A page past the end shows the last page and reports it through
+  `onPageChange`. The table scrolls to the top on a page change. `rows`
+  defaults to `[]`, so a table can render while its data loads.
+- **Page size.** 50 rows by default, with 25 / 50 / 100 in the select.
+  `defaultPageSize={100}` opens on 100 rows. `pageSizes` sets the choices (one
+  entry hides the select). A size outside the list still shows as the selected
+  option.
+- **Height.** `fill` makes the card fill its parent's height and the body
+  scroll inside it, with the pager always in view: give the parent a height
+  (e.g. `<main style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>`).
+  On phones it falls back to a 70vh scroll box. Without `fill` the body scrolls
+  past `maxHeight` (default 70vh).
+- **Rows.** `onRowClick(row)` makes rows clickable (and Enter or Space on a
+  focused row); clicks on links and buttons inside a cell stay theirs.
+  `rowLabel(row)` names a clickable row for screen readers. `rowKey` defaults
+  to `row.id`.
+- **CSV.** `exportFilename` adds an "Export CSV" button that downloads every
+  row on every page, as sorted. Mako's app frames allow downloads. Numbers
+  export as is. Text starting with `=`, `+`, `-`, `@`, tab or CR gets a
+  leading apostrophe so a spreadsheet never runs it. A Date at local or UTC
+  midnight exports as `YYYY-MM-DD`, any other Date as a UTC ISO timestamp. For
+  your own button: `saveCsv(filename, toCsv(rows, columns))` returns
+  `"downloaded"` or `"failed"`.
+- Pure helpers for custom tables: `sortRows`, `compareValues`, `nextSort`,
+  `pageSlice`, `pageToSync`, `toCsv`, `csvCell`, `csvDate`, `csvToTsv`.
+
 `ui.css` is plain CSS (no Tailwind needed; it coexists with Tailwind) and
 every kit class is prefixed `mk-`. It also sets the house base: Inter 14px on
 the warm `--canvas`.
+
+**Native `<select>` (2.11.1+).** macOS draws the native dropdown arrow flush
+against the right border. `ui.css` styles every single-line `<select>` like the
+MultiSelect trigger: 32px tall, 14px text, a token-coloured chevron 10px in
+from the right, 28px of right padding, hover and focus rings, dark mode from
+the tokens. It stays a native select, so keyboard and screen readers work as
+before. The rule sits in `@layer base`, so any rule of the app wins (plain CSS
+and Tailwind utilities alike). `[multiple]` and `[size]` list boxes keep the
+native look. A select with `appearance-none` in its classes (shadcn's
+`NativeSelect`) draws its own arrow and is left alone. Setting
+`appearance: none` or a `padding` shorthand in your own CSS takes the chevron or
+its 28px gap away: draw your own arrow at least 10px from the edge, or leave
+the base alone.
 
 ## In `vite.config.ts`
 

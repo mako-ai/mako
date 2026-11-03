@@ -3,6 +3,7 @@ import path from "path";
 import { promises as fsPromises } from "fs";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { loggers } from "../logging";
+import { DEFAULT_PARQUET_ROW_LIMIT, fmtRows } from "./parquet-row-limit";
 import {
   SNAPPY_WRITE_OPTIONS,
   buildParquetCopySql,
@@ -51,6 +52,7 @@ export interface StreamingParquetResult {
 
 export interface StreamingParquetOptions {
   filenameBase?: string;
+  /** Default DEFAULT_PARQUET_ROW_LIMIT. */
   rowLimit?: number;
   /**
    * What to do when the source yields more than `rowLimit` rows.
@@ -61,6 +63,12 @@ export interface StreamingParquetOptions {
    * complete.
    */
   onRowLimit?: "truncate" | "fail";
+  /**
+   * With `onRowLimit: "fail"`: once past the limit, keep reading (without
+   * writing) until the stream ends or this many rows have arrived, so the
+   * error can say how many rows the query returned. Unset = stop at once.
+   */
+  countRowsUpTo?: number;
   fields?: FieldMeta[];
   onBatchInserted?: (totalRows: number) => Promise<void>;
   /**
@@ -78,15 +86,25 @@ export interface StreamingParquetOptions {
  */
 export class ParquetRowLimitError extends Error {
   readonly rowLimit: number;
-  constructor(rowLimit: number) {
+  /** Rows the source yielded before the build stopped reading. */
+  readonly rowCount: number;
+  /** True when `rowCount` is the query's whole result (the stream ended). */
+  readonly exact: boolean;
+  constructor(
+    rowLimit: number,
+    { rowCount, exact }: { rowCount?: number; exact?: boolean } = {},
+  ) {
+    const count = rowCount ?? rowLimit;
     super(
-      `Query returned more than ${rowLimit.toLocaleString("en-US")} rows, the most one ` +
-        `parquet artifact may hold. Nothing was stored, so readers keep the previous ` +
+      `Query returned ${exact ? "" : "more than "}${fmtRows(count)} rows. ` +
+        `This parquet artifact may hold ${fmtRows(rowLimit)}. Nothing was stored, so readers keep the previous ` +
         `build rather than a silently truncated one. Narrow the query, or split it ` +
         `into several bindings that each stay under the limit.`,
     );
     this.name = "ParquetRowLimitError";
     this.rowLimit = rowLimit;
+    this.rowCount = count;
+    this.exact = exact ?? false;
   }
 }
 
@@ -293,9 +311,14 @@ export async function buildParquetFromBatches(
     process.env.SYNC_PARQUET_DUCKDB_THREADS,
     DEFAULT_DUCKDB_THREADS,
   );
+  const limit = options.rowLimit ?? DEFAULT_PARQUET_ROW_LIMIT;
   let totalRows = 0;
   let truncated = false;
   let limitExceeded: ParquetRowLimitError | null = null;
+  // With onRowLimit "fail" + countRowsUpTo: rows seen past the limit, counted
+  // but never written.
+  let countingPastLimit = false;
+  let seenRows = 0;
   let tableCreated = false;
   let columns: string[] = [];
   let columnTypeMap = new Map<string, DuckDBColumnType>();
@@ -309,12 +332,36 @@ export async function buildParquetFromBatches(
 
     const insertBatch = async (rows: Record<string, unknown>[]) => {
       if (rows.length === 0) return;
+      if (limitExceeded) throw limitExceeded;
+      if (countingPastLimit) {
+        seenRows += rows.length;
+        if (seenRows > (options.countRowsUpTo ?? 0)) {
+          limitExceeded = new ParquetRowLimitError(limit, {
+            rowCount: options.countRowsUpTo,
+            exact: false,
+          });
+          throw limitExceeded;
+        }
+        return;
+      }
 
-      const limit = options.rowLimit ?? 500000;
       const remaining = limit - totalRows;
       if (remaining < rows.length) {
         if (options.onRowLimit === "fail") {
-          limitExceeded = new ParquetRowLimitError(limit);
+          seenRows = totalRows + rows.length;
+          if (
+            options.countRowsUpTo !== undefined &&
+            options.countRowsUpTo > limit &&
+            seenRows <= options.countRowsUpTo
+          ) {
+            // Keep reading to learn the real size; write nothing more.
+            countingPastLimit = true;
+            return;
+          }
+          limitExceeded = new ParquetRowLimitError(limit, {
+            rowCount: Math.min(seenRows, options.countRowsUpTo ?? limit),
+            exact: false,
+          });
           throw limitExceeded;
         }
         truncated = true;
@@ -387,10 +434,23 @@ export async function buildParquetFromBatches(
       }
     };
 
-    await options.streamBatches(insertBatch);
+    try {
+      await options.streamBatches(insertBatch);
+    } catch (error) {
+      // Drivers report a throw from the batch callback as their own stream
+      // failure (a plain Error with the message). The limit is the cause.
+      if (limitExceeded) throw limitExceeded;
+      throw error;
+    }
     // A driver that swallowed the throw above must not turn it into a
     // complete-looking artifact.
     if (limitExceeded) throw limitExceeded;
+    if (countingPastLimit) {
+      throw new ParquetRowLimitError(limit, {
+        rowCount: seenRows,
+        exact: true,
+      });
+    }
 
     if (!tableCreated) {
       // Zero rows: the query's schema (from the probe) still defines the
@@ -420,7 +480,7 @@ export async function buildParquetFromBatches(
     if (truncated) {
       logger.warn("Parquet artifact truncated at its row limit", {
         filenameBase: safeBase,
-        rowLimit: options.rowLimit ?? 500000,
+        rowLimit: limit,
       });
     }
     logger.info("Built parquet file via streaming DuckDB pipeline", {
