@@ -4797,6 +4797,27 @@ const AppEnvVarSchema = new Schema<IAppEnvVar>(
   { _id: false },
 );
 
+/** Stages of an app deploy, in order (apps/deploy-progress.ts). */
+export const APP_DEPLOY_STAGES = [
+  "queued",
+  "bindings",
+  "build",
+  "publishing",
+] as const;
+export type AppDeployStage = (typeof APP_DEPLOY_STAGES)[number];
+
+export interface IAppDeployProgress {
+  sha: string;
+  stage: AppDeployStage;
+  /** When this sha's deploy was requested (or first seen running). */
+  startedAt: Date;
+  stageStartedAt: Date;
+  /** Heartbeat: last write of any kind for this deploy. */
+  updatedAt: Date;
+  /** Parquet bindings for this sha: how many are ready, which is running. */
+  bindings?: { total: number; prepared: number; current?: string };
+}
+
 /**
  * An Apps project: control-plane record for one git-backed app.
  * One bare repo per project (per-app ACLs make the repo the authorization
@@ -4857,6 +4878,14 @@ export interface IAppProject extends Document {
     message: string;
     at: Date;
   };
+  /**
+   * Where the in-flight deploy of `sha` is (apps/deploy-progress.ts). Set
+   * when a deploy is enqueued, moved through bindings → build → publishing,
+   * and cleared when that sha goes live or fails (lastDeployError then
+   * holds the reason). `updatedAt` is a heartbeat: each binding prepared
+   * bumps it, so a stage with no heartbeat for long reads as stalled.
+   */
+  deployProgress?: IAppDeployProgress;
   /**
    * Anonymous read-only link to the PUBLISHED deployment, optionally password
    * protected. Same primitive v1 apps used, so the management
@@ -4919,6 +4948,34 @@ const AppProjectSchema = new Schema<IAppProject>(
           },
           message: { type: String, required: true },
           at: { type: Date, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
+    deployProgress: {
+      type: new Schema(
+        {
+          sha: { type: String, required: true },
+          stage: {
+            type: String,
+            enum: APP_DEPLOY_STAGES,
+            required: true,
+          },
+          startedAt: { type: Date, required: true },
+          stageStartedAt: { type: Date, required: true },
+          updatedAt: { type: Date, required: true },
+          bindings: {
+            type: new Schema(
+              {
+                total: { type: Number, required: true },
+                prepared: { type: Number, required: true },
+                current: { type: String },
+              },
+              { _id: false },
+            ),
+            default: undefined,
+          },
         },
         { _id: false },
       ),
