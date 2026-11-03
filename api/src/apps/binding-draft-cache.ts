@@ -66,9 +66,16 @@ export interface DraftDefinition {
    * or null. Part of the hash: rebuilding a dev model is a new draft.
    */
   devModifiedAt?: number | null;
+  /**
+   * `-- row_limit:` as written. Part of the hash only when set (drafts
+   * without one keep their hash): raising the limit after a draft failed on
+   * it is a new draft, not one the failure backoff refuses.
+   */
+  rowLimit?: string;
 }
 
 export function draftHash(d: DraftDefinition): string {
+  const rowLimit = d.rowLimit?.trim();
   return createHash("sha256")
     .update(
       [
@@ -77,6 +84,7 @@ export function draftHash(d: DraftDefinition): string {
         d.databaseName ?? "",
         d.renderedCode,
         d.devModifiedAt == null ? "" : String(d.devModifiedAt),
+        ...(rowLimit ? [`row_limit=${rowLimit}`] : []),
       ]
         .map(part => `${part.length}:${part}`)
         .join("|"),

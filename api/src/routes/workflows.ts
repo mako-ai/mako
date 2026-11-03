@@ -24,8 +24,10 @@ import {
 } from "../auth/api-key-scopes";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { checkBillingLimits } from "../billing/usage-limit.middleware";
+import { type IWorkflowRunRef } from "../database/schema";
 import { AppProject, Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { getRequestContext } from "../logging/context";
 import {
   AuthenticatedContext,
   requireWorkspace,
@@ -36,6 +38,7 @@ import { workspaceService } from "../services/workspace.service";
 import { runStepAgent } from "../workflows/agent";
 import {
   HatchetError,
+  isHatchetId,
   readWorkspaceTenant,
   requireTenant,
   startRun,
@@ -52,6 +55,7 @@ import {
   retryRun,
 } from "../workflows/runs";
 import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
+import { readWorkflowCost } from "../workflows/costs";
 import { isSandboxRunId, startSandboxRun } from "../workflows/sandbox";
 import { waitForRun } from "../workflows/status";
 import { isWebhookSecret, setTriggers } from "../workflows/webhook";
@@ -194,6 +198,30 @@ workflowRoutes.openapi(
     const { workspaceId, name } = c.req.valid("param");
     const flow = await readWorkflowFlow(await requireTenant(workspaceId), name);
     return c.json({ success: true as const, ...flow }, 200);
+  },
+);
+
+workflowRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{name}/cost",
+    tags: ["Workflows"],
+    summary:
+      "A workflow's AI cost (its runs' model calls) over the last `days` days (default 30), in total and by day",
+    security: AUTH_SECURITY,
+    request: {
+      params: NameParam,
+      query: z.object({
+        days: z.coerce.number().int().min(1).max(365).optional(),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    const { workspaceId, name } = c.req.valid("param");
+    const { days } = c.req.valid("query");
+    const cost = await readWorkflowCost(workspaceId, name, days ?? 30);
+    return c.json({ success: true as const, ...cost }, 200);
   },
 );
 
@@ -449,6 +477,20 @@ export function languageModelGatewayBase(
 
 type Worker = { workspaceId: string; userId: string };
 
+/**
+ * The run and step a deployed worker's request comes from: the workflow is
+ * the one Mako checked (X-Mako-Workflow, logging/context.ts), the run and step
+ * what the worker sends with it (worker.mjs). A model call's cost is counted
+ * against them; a person's own run sends none.
+ */
+function workflowRunOf(c: Context): IWorkflowRunRef | undefined {
+  const workflowId = getRequestContext()?.workflow;
+  const runId = c.req.header("X-Mako-Run");
+  if (!workflowId || !runId || !isHatchetId(runId)) return undefined;
+  const step = c.req.header("X-Mako-Step")?.trim().slice(0, 100);
+  return { workflowId, runId, ...(step ? { step } : {}) };
+}
+
 // Mako's own auth resolves the key; a session or a key without the worker's
 // scope is turned away here (scoped-key-routes.ts already refuses the latter).
 workflowRuntimeRoutes.use("*", unifiedAuthMiddleware);
@@ -584,6 +626,7 @@ async function forwardToGateway(
     }
   });
   const startedAt = Date.now();
+  const workflowRun = workflowRunOf(c);
   const decision = kind === "decision-model";
   if (decision && !headers.has("ai-gateway-protocol-version")) {
     // `@ai-sdk/gateway` sends it; a plain fetch from a step does not.
@@ -635,6 +678,7 @@ async function forwardToGateway(
       totalTokens: inputTokens + outputTokens,
       durationMs: Date.now() - startedAt,
       ...(Number.isFinite(costUsd) ? { costUsd } : {}),
+      workflowRun,
     });
   }
   return new Response(body, {
@@ -687,6 +731,7 @@ workflowRuntimeRoutes.post(
     return c.json(
       await runStepAgent({
         ...worker,
+        workflowRun: workflowRunOf(c),
         goal: body.goal,
         modelId: typeof body.model === "string" ? body.model : undefined,
         maxSteps: typeof body.maxSteps === "number" ? body.maxSteps : undefined,

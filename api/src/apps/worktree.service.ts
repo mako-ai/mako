@@ -3274,7 +3274,16 @@ export async function ensureProjectRow(
   // ownerless; otherwise the auto-deploy of every repo-imported folder would
   // stamp the literal "publish" as owner_id, nobody could ever restrict or
   // share it, and a private access setting would lock out even admins.
-  const owner = isUserActor(actorId) ? actorId : undefined;
+  // A personal app (users/<handle>/apps/…) already knows its owner from the
+  // handle mapping (projectFromIndexRow sets owner_id); that owner wins over
+  // whoever happens to act. Dropping it made every personal app first seen
+  // by the push-deploy worker private to nobody: invisible to its own owner.
+  const owner =
+    project.access === "private" && project.owner_id
+      ? project.owner_id
+      : isUserActor(actorId)
+        ? actorId
+        : undefined;
   const existing = await AppProject.findOne({
     _id: project._id,
     workspaceId: project.workspaceId,

@@ -184,6 +184,7 @@ A binding is ONE file — `bindings/<name>.sql` (name = filename, no manifest):
 -- materialization: parquet                (default; only option today)
 -- schedule: 0 6 * * *                     (optional cron refresh)
 -- dbt_project: <id>                       (optional)
+-- row_limit: 3000000                      (optional; default 2,000,000, max 5,000,000)
 SELECT ...
 ```
 
@@ -205,6 +206,15 @@ binding. Use `useQuery` / `useDuckDB` first. For anything custom (SDK ≥ 2.8):
   shared engine.
 - `ensureBinding(name)` loads a binding as a table and returns its name.
   `unloadBinding(name)` frees it.
+- Memory is managed for you (SDK ≥ 2.12): past 1.5 GiB of tables, the least
+  recently read become views over their parquet and turn back into tables on
+  their next read. Do not unload bindings by hand to save memory.
+  `setBindingMemoryBudget(bytes)` changes the cap.
+- Past 2 GiB across open app tabs, Mako ends the DuckDB worker of the least
+  recently shown app (SDK ≥ 2.13). `getDuckDB()`, `withConnection()`,
+  `ensureBinding()` and `useDuckDB` SQL that writes (`CREATE TABLE`) keep the
+  worker for the page's life, so the heap never goes back. Stay read-only unless
+  the app needs them.
 - `fetchBindingBytes(name, { onProgress, fresh })` returns the raw parquet
   bytes for a custom reader (register them with
   `getDuckDB().registerFileBuffer`).
@@ -212,6 +222,27 @@ binding. Use `useQuery` / `useDuckDB` first. For anything custom (SDK ≥ 2.8):
 Artifacts are ZSTD-compressed. DuckDB reads them as they are. Plain
 hyparquet throws "unsupported compression codec: ZSTD", one more reason
 not to bring your own reader.
+
+**Row limits.** A binding holds up to 2,000,000 rows unless its front
+matter says `-- row_limit: <n>` (`3000000`, `3_000_000` or `3M`), up to
+5,000,000. Operators can move both numbers. The build error states the
+ones in force. A query past its limit fails the build and never truncates.
+The app keeps its previous data. The error names the binding, the rows the
+query returned and the `-- row_limit:` that fits them. Set that value, or
+aggregate or shard the binding.
+
+Design for the browser, not the cap. Every binding downloads whole into
+the tab, and DuckDB-WASM holds it in memory. DuckDB-WASM stops at 3.1 GB
+per page, for all bindings together. A 43-column binding takes about 950
+bytes per row there, so 3.3M rows fill it. A 14-column one takes about 180
+bytes. Past about 1M rows, select only the columns the app reads and
+pre-aggregate in SQL (one row per day x country, not per event). Shard by
+year or country when a screen needs one slice at a time: `useDuckDB`
+downloads only the bindings its SQL names. `useQuery(name)` and row-format
+`useDuckDB` turn at most 500,000 result rows into JS objects and set
+`truncated: true` past that (`rowLimit` option). For a bigger binding,
+aggregate in `useDuckDB` SQL or ask for `{ format: "arrow" }`.
+
 After wiring a binding into the UI, `app_browse` is how you confirm the data
 actually loads — a failed `__data/...` fetch shows up in its failedRequests.
 
@@ -302,11 +333,17 @@ warm `--canvas`, `#527df2` `--brand`, `--positive`/`--warning`/`--negative`,
 every workspace app was re-forking: `PageHeader`, `Card`, `KpiRow` /
 `KpiTile`, `Button`, `StatusDot`, `MultiSelect` (filters), `FreshnessBadge`
 (data age per source), `RefreshAllButton` (rebuild every binding, with a
-progress modal). Import `@makoai/app-sdk/ui.css` before the app's own CSS.
+progress modal), `DataTable` (sortable, paged list with CSV export; SDK ≥ 2.11,
+rules in `references/ui-toolkit.md` "Tables"). Import `@makoai/app-sdk/ui.css` before the app's own CSS.
+Native `<select>`: the SDK base styles it (arrow inset 10px, 32px, tokens),
+because macOS otherwise draws the caret against the right border. Don't strip
+that with `appearance: none` unless you draw your own arrow with ≥10px inset;
+prefer shadcn `Select` in Tailwind apps.
 New apps are scaffolded on it. Do NOT paste a token block into an app or
 fork these components — override a single token, or ask for the kit to grow.
 
-For anything beyond the kit (tables, sheets, dialogs, command menus): Tailwind
+Every row-level list is a `DataTable`. For anything beyond the kit (sheets,
+dialogs, command menus): Tailwind
 v4 + shadcn/ui — install, mapping Tailwind onto the SDK's theme tokens, the
 cursor-pointer base rule, and v1-CDN migration notes — read
 `references/ui-toolkit.md`
@@ -316,6 +353,7 @@ cursor-pointer base rule, and v1-CDN migration notes — read
 
 Before adding any chart, read `references/charting.md`
 (`read_skill_resource("apps", "references/charting.md")`): recharts, the
-`--chart-N` theme tokens, date/money formatting, and the loading/error/empty
-states every chart card must render. Dates arrive from bindings as strings
+`--chart-N` theme tokens, the table tooltip every chart uses (`tableTooltip`
+from `@makoai/app-sdk/ui`, never recharts' default list), date/money
+formatting, and the loading/error/empty states every chart card must render. Dates arrive from bindings as strings
 (`YYYY-MM-DD` / ISO) since SDK 2.2 — do not assume numbers.

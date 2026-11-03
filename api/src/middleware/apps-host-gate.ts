@@ -15,6 +15,11 @@ import { resolvePreviewGrant } from "../apps/preview.service";
  *
  * - Only `/api/apps-preview/<pub token>[/…]`. Login, the REST API, MCP, the
  *   SPA: all 404, so the apps domain can never become a second app.mako.ai.
+ * - Plus `/__mako/ping`: a constant answer Mako's client fetches (CORS,
+ *   no credentials) before framing an app here. A corporate proxy that
+ *   blocks the apps domain (Zscaler and the like) answers that fetch with
+ *   its own page and no CORS header, so the client falls back to Mako's
+ *   origin instead of framing the proxy's block page (app-frame.ts).
  * - Only a published (`pub.`) token whose app is THIS host's app. A token
  *   for app B on app A's host would run B's code inside A's origin, next to
  *   A's storage; it 404s. (Static build previews are per-instance and stay
@@ -29,6 +34,19 @@ import { resolvePreviewGrant } from "../apps/preview.service";
 export async function appsHostGate(c: Context, next: Next) {
   const appId = appIdFromHost(requestHost(name => c.req.header(name)));
   if (!appId) return next();
+
+  if (c.req.path === APP_HOST_PING_PATH) {
+    const headers = new Headers({
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    });
+    const client = clientOrigin();
+    if (client) headers.set("Access-Control-Allow-Origin", client);
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: appHostHeaders(headers),
+    });
+  }
 
   if (!allowedOnAppHost(c.req.path, appId)) {
     return new Response(
@@ -58,6 +76,19 @@ export async function appsHostGate(c: Context, next: Next) {
 }
 
 const PREFIX = "/api/apps-preview/";
+
+/** The reachability probe an app host answers without a token. */
+export const APP_HOST_PING_PATH = "/__mako/ping";
+
+function clientOrigin(): string | null {
+  try {
+    return process.env.CLIENT_URL
+      ? new URL(process.env.CLIENT_URL).origin
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 /** True when `path` is a published asset URL for `appId`'s own token. */
 export function allowedOnAppHost(path: string, appId: string): boolean {
