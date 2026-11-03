@@ -89,16 +89,115 @@ Never import `@duckdb/duckdb-wasm`, `hyparquet` or `apache-arrow` parquet
 readers in an app. Use the page's engine through the SDK:
 
 ```ts
-import { getDuckDB, withConnection, ensureBinding, unloadBinding, fetchBindingBytes, useDuckDB } from "@makoai/app-sdk";
+import { getDuckDB, withConnection, ensureBinding, unloadBinding, fetchBindingBytes, useDuckDB, getBindingMemory, setBindingMemoryBudget } from "@makoai/app-sdk";
 
 const big = useDuckDB("select lat, lng from listings", { format: "arrow" }); // data: Arrow Table
 const table = await ensureBinding("valuations");          // loaded once, returns "valuations"
 const n = await withConnection(c => c.query(`select count(*) from ${table}`));
 await unloadBinding("valuations");                         // free its memory
 const bytes = await fetchBindingBytes("valuations", { onProgress: p => p && console.log(p.phase, p.bytes, p.bytesTotal) });
+const mem = await getBindingMemory();                      // { usedBytes, budgetBytes, bindings }
+await setBindingMemoryBudget(800 * 1024 ** 2);             // cap binding tables at 800 MiB
 const db = await getDuckDB();                              // shared: never close() or terminate()
 await db.registerFileBuffer("valuations.parquet", bytes);  // read_parquet with your own options
 ```
+
+### Memory: least recently read goes first (2.12)
+
+Each app frame has its own DuckDB with a 3.1 GiB heap. Before 2.12 every
+binding table stayed in it for good, and an app with many bindings ran out
+of memory. Now bindings aim to stay under a 1.5 GiB budget, and the rest of the
+heap is for queries.
+
+| 8 panels over 15 shards (6M rows, 23 columns) | Heap for bindings | All 8 panels |
+| --- | --- | --- |
+| Tables | 2,068 MiB | 5.3 s |
+| Views over the parquet in the heap | about 150 MiB | 7.4 s |
+
+- The budget counts what the SDK placed. Your own tables do not shrink it.
+- A new table lands if the parquet's metadata says it fits, after evicting tables
+  no one holds, least recently read first. It is an estimate, so the budget can
+  overshoot (measured: 1,700 MiB against 1,536).
+- A mostly empty heap lets one table past the budget, up to twice its size. An
+  app with one large parquet keeps table speed.
+- A binding that does not fit lands as a view: same name, same rows, slower. A
+  later read makes it a table when there is room, with no download.
+- A table you changed loses the change when it becomes a view. The view reads the
+  parquet again. Copy a binding to your own table before you `UPDATE` or `ALTER` it.
+- The parquet stays in JS memory as a Blob, so a table can become a view with no
+  download. Past 512 MiB of Blobs, the oldest unpinned views are dropped and
+  download again on their next read. If a Blob stops being readable, its table is
+  dropped and downloads again on its next read.
+- Parquet copies in the heap stop at 2.5 GiB. Past it, the least recently read view
+  goes, even a pinned one, and downloads again on its next read. A parquet with no
+  room fails with a clear error.
+- A binding a mounted `useQuery`/`useDuckDB` reads is pinned: it goes last.
+  `ensureBinding` bindings can become views but are never dropped.
+- "Out of Memory" on a hook's query demotes unpinned tables, then the pinned tables
+  that query reads, and runs again until it answers or none is left. Other panels'
+  tables stay. For the next minute no table grows back past what is left, then
+  pinned views promote by themselves. `withConnection` does not retry: your `fn`
+  may not be safe to run twice.
+- A mounted hook whose query still fails on memory reruns after 1, 2, 4, 8 and 15 s,
+  then waits. Another hook letting go of its bindings, a budget change, or the tab
+  coming back starts one more run. A hidden tab never reruns. The error stays up
+  until a run answers.
+- Do not `registerFileHandle` a Blob with `BROWSER_FILEREADER`. In duckdb-wasm
+  1.29.0 its size is lost when the allocator returns a pointer past 2 GiB, and
+  reads fail with "too small to be a Parquet file". Use `registerFileBuffer`.
+- A hook's query can name at most 50 bindings. A double-read `UNION ALL` of about 60
+  overflows the WASM stack and breaks the engine for every panel, so the SDK refuses
+  it with a clear error. `withConnection` and `getDuckDB()` have no such check.
+- If the engine traps anyway, a hook's query restarts it, at most once a minute and
+  3 times a page. Every panel reruns and every binding downloads again. A
+  `getDuckDB()` handle held across a restart is dead: call it again.
+
+`setBindingMemoryBudget(bytes)` changes the 1.5 GiB default. `getBindingMemory()`
+shows what is loaded, oldest first, `bindingBytes` against the budget, `usedBytes`
+for the whole heap, and `pressure`.
+
+### Failed downloads (2.12)
+
+- A page runs at most 12 downloads at once, and one after a failure.
+- A rejected fetch, a 429 or a 503 closes a page-wide gate for 1, 3, 9, 27, then
+  60 s, with jitter. Past 3 failures in a row, a request while it is closed fails
+  at once with no network. Any other answer opens it.
+- A download tries 3 times, on the first request and on the signed download alike,
+  and only until headers arrive. A `retryAfterMs` up to 30 s sets the wait.
+- A mounted hook then reruns after 5, 20 and 60 s, or after `retryAfterMs` if that
+  is longer. Then it waits for the tab or the network to come back, or for another
+  request to get an answer.
+- A failed build never runs again by itself: not a `failed` event, whatever its
+  text, and not a build stream cut halfway. Other HTTP statuses and SQL errors stay
+  as they are too. A new query or a reload asks again.
+- A failed `__data/index.json` is kept for 10 s. A query that needs no binding still
+  answers. A query that fails then shows the index failure and retries.
+
+### Memory across apps (2.13)
+
+Inside Mako, each app frame posts what its heap holds. Past 2 GiB across the
+open app tabs, Mako asks the least recently shown ones to release, and asks a
+busy frame again 10 s later. A WASM heap never shrinks, so a release ends that
+frame's DuckDB worker. Its rows stay on screen and its parquet stays as Blobs.
+The next query there boots a new engine and reloads its parquet with no
+download. A reboot takes 0.6 s on the app's own origin and 0.6 to 2.6 s in an
+opaque frame, which has no HTTP cache and fetches the 35 MiB WASM again.
+
+- A frame keeps its engine for the page's life once app code calls
+  `getDuckDB()`, `withConnection()` or `ensureBinding()`, or sends `useDuckDB`
+  SQL that is not a plain read (`CREATE TABLE`, `SET`, anything the SDK does
+  not recognise). Only that worker has what they made. Mako counts its heap and
+  asks another frame, so an app that needs to be a good neighbour sticks to
+  read-only `useQuery` and `useDuckDB`.
+- A release is not a crash. It does not count toward the 3 restarts a page gets,
+  reruns no panel and leaves the download gate as it is. A parked binding reads
+  with no network even while the gate is closed.
+- Frames on an older SDK, the dev-mode preview and apps that boot their own
+  DuckDB send no report. Mako cannot count or ask them. An app gets 2.13 on its
+  next commit.
+- A report covers tables and parquet copies. Query scratch stays in the heap
+  unseen, so the real heap is larger (1037 MiB reported, about 1500 MiB in the
+  renderer).
 
 ### Loading cost (2.8)
 
@@ -107,8 +206,12 @@ await db.registerFileBuffer("valuations.parquet", bytes);  // read_parquet with 
   and the query re-runs. `SHOW TABLES` / `information_schema` load all.
 - Each binding is decoded once into a DuckDB table and its file buffer is
   freed. A refresh swaps the table in one commit, so a running query never
-  sees it missing. A table costs about 3x the parquet in memory (10 MB of
-  parquet, 149k rows: 33 MB).
+  sees it missing. A table costs about 15 bytes a cell (400k rows x 23 columns:
+  138 MiB from a 10 MiB parquet).
+- Tables are evicted least recently read first (2.12). Over the memory
+  budget (default 1.5 GiB of DuckDB's 3.1 GiB heap), the oldest table becomes
+  a view over its compressed parquet. Its next read turns it back into a table
+  without a download when it fits. See Memory above.
 - The DuckDB engine and its parquet extension start loading on the first
   data hook render, in parallel with the first binding download.
 - Rows decode column by column: 149k rows x 16 columns in 190 ms, down

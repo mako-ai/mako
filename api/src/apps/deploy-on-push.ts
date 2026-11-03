@@ -39,6 +39,7 @@ import {
   setPublishedSha,
 } from "./deployment.service";
 import { ensureCommitLocally } from "./cloud-repo.service";
+import { clearDeployProgress, markDeployStage } from "./deploy-progress";
 import { DEFAULT_BRANCH, resolveCommit } from "./repository.service";
 
 const logger = loggers.api("apps-deploy-on-push");
@@ -189,6 +190,7 @@ export async function deployOneApp(
     discovered.publishedSha !== sha &&
     (await isAncestorCommit(repoDir, sha, discovered.publishedSha))
   ) {
+    await clearDeployProgress(discovered, sha);
     return { app: appRef, sha, outcome: "superseded" };
   }
   // Where the app's folder sat AT this commit — not where main has it now. A
@@ -208,6 +210,7 @@ export async function deployOneApp(
         await import("../inngest/functions/apps-deploy");
       await requestAppDeploys(workspaceId, [appId], head, "push");
     }
+    await clearDeployProgress(discovered, sha);
     return { app: appRef, sha, outcome: "superseded" };
   }
   // The folder may have been deleted in this very push. A row that survived
@@ -229,6 +232,7 @@ export async function deployOneApp(
         sha,
       });
     }
+    await clearDeployProgress(discovered, sha);
     return { app: appRef, sha, outcome: "gone" };
   }
   // Auto-deploying a repo-imported folder is a publish action, so materialize
@@ -260,6 +264,7 @@ export async function deployOneApp(
     return { app: appRef, sha, outcome: "already-built" };
   }
 
+  await markDeployStage(project, sha, "build");
   const handle = await ensureWorktree(project, PUBLISH_ACTOR, {
     branch: project.defaultBranch || "main",
   });

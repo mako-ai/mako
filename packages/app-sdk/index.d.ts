@@ -263,21 +263,76 @@ export interface RefreshOptions {
 /**
  * The page's shared DuckDB, booted on first call. Use it for anything the
  * hooks do not cover instead of importing @duckdb/duckdb-wasm, hyparquet or
- * apache-arrow readers. Never close or terminate it.
+ * apache-arrow readers. Never close or terminate it. Calling it keeps the
+ * engine for the page's life: Mako cannot give this frame's heap back when the
+ * page runs short (see withConnection, ensureBinding and SQL that writes).
  */
 export function getDuckDB(): Promise<SharedDuckDB>;
 
-/** Run `fn` on a fresh connection to the shared DuckDB; closed afterwards. */
+/**
+ * Run `fn` on a fresh connection to the shared DuckDB; closed afterwards. Keeps
+ * the engine for the page's life, like getDuckDB().
+ */
 export function withConnection<T>(fn: (conn: DuckDBConnection) => Promise<T>): Promise<T>;
 
 /**
  * Load a binding into the shared DuckDB as a table (once per page;
  * concurrent callers share the download). Resolves with the table name.
+ * Each call counts as a read for eviction. Under memory pressure the table
+ * may become a view over its parquet (same name and rows, slower to query);
+ * a binding loaded this way is never dropped outright. Keeps the engine for the
+ * page's life, like getDuckDB().
  */
 export function ensureBinding(name: string): Promise<string>;
 
-/** Drop a loaded binding's table to free memory; the next read reloads it. */
+/** Drop a loaded binding's table (or view) to free memory; the next read reloads it. */
 export function unloadBinding(name: string): Promise<void>;
+
+/** 1.5 GiB: what binding tables may hold in DuckDB unless the app says otherwise. */
+export const DEFAULT_BINDING_MEMORY_BUDGET: number;
+/** 512 MiB: the compressed parquet copies kept for demoted bindings. */
+export const DEFAULT_BINDING_BLOB_BUDGET: number;
+
+/**
+ * Cap what bindings may hold in this frame's DuckDB, in bytes (default 1.5 GiB,
+ * half of the 3.1 GiB heap; queries need the rest). Tables an app made itself do
+ * not count. Checked with an estimate from parquet metadata before each load, so
+ * it can overshoot (measured: 1,700 MiB). Past it, the least recently read unpinned
+ * tables become views over a heap copy of their parquet, and a new binding lands as
+ * a view if that is not enough. A read promotes a view back to a table when it
+ * fits, without a download. `blobBytes` caps the parquet kept in JS memory (default
+ * 512 MiB); past it the oldest unpinned views are dropped and download again when
+ * read. `Infinity` turns a cap off. Resolves once the engine is back under the new
+ * cap, and ends any memory pressure.
+ */
+export function setBindingMemoryBudget(bytes: number, opts?: { blobBytes?: number }): Promise<void>;
+
+export interface BindingMemory {
+  /**
+   * The frame's whole heap now: duckdb_memory(), with an app's own tables, plus the
+   * parquet copies views read. Query scratch never shows.
+   */
+  usedBytes: number;
+  /** What the SDK placed, the figure the budget caps. It can pass the budget: the check is an estimate. */
+  bindingBytes: number;
+  budgetBytes: number;
+  blobBudgetBytes: number;
+  /** A query ran out of memory in the last minute: tables stay at what relief left. */
+  pressure: boolean;
+  /** Every loaded binding, least recently read first. */
+  bindings: {
+    name: string;
+    /** "table": decoded in the heap. "view": decoded from its parquet copy in the heap on each query. */
+    storage: "table" | "view";
+    /** Read by a mounted hook or a query in flight: evicted last. */
+    pinned: boolean;
+    /** The compressed copy kept for a demotion; null once dropped. */
+    parquetBytes: number | null;
+  }[];
+}
+
+/** What the binding tables hold right now, for a debug panel or a test. */
+export function getBindingMemory(): Promise<BindingMemory>;
 
 /**
  * The binding's raw parquet bytes, not registered anywhere — for an app with
