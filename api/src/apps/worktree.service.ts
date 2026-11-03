@@ -109,6 +109,7 @@ import {
   APP_MANIFEST,
   APPS_DIR,
   FOLDER_KEEP_FILE,
+  USERS_DIR,
   WORKFLOWS_DIR,
   appRepoPath,
   parseAppRepoPath,
@@ -3275,24 +3276,28 @@ export async function ensureProjectRow(
   // ownerless; otherwise the auto-deploy of every repo-imported folder would
   // stamp the literal "publish" as owner_id, nobody could ever restrict or
   // share it, and a private access setting would lock out even admins.
-  // A personal app (users/<handle>/apps/…) already knows its owner from the
-  // handle mapping (projectFromIndexRow sets owner_id); that owner wins over
-  // whoever happens to act. Dropping it made every personal app first seen
-  // by the push-deploy worker private to nobody: invisible to its own owner.
-  const owner =
-    project.access === "private" && project.owner_id
-      ? project.owner_id
-      : isUserActor(actorId)
-        ? actorId
-        : undefined;
+  const actor = isUserActor(actorId) ? actorId : undefined;
+  // A folder under users/<handle>/apps belongs to its owner (§29). The owner
+  // is the handle mapping's answer for the folder, whoever's action creates
+  // or first touches the row. A segment the mapping does not know is nobody's:
+  // the row stays ownerless.
+  const personal = await personalTreeOwner(project);
+  const owner = personal ? personal.ownerId : actor;
   const existing = await AppProject.findOne({
     _id: project._id,
     workspaceId: project.workspaceId,
   });
   if (existing) {
-    // First human to act on an ownerless row claims it (resource-acl reads
-    // owner_id, then createdBy).
-    if (owner && !existing.owner_id && !existing.createdBy) {
+    // An ownerless row gets its owner on the first act by a person (resource-acl
+    // reads owner_id, then createdBy). A personal row's owner is the mapping's
+    // answer. Outside a personal tree, a private row stays as it is: only a
+    // workspace-visible app takes the acting person as its owner.
+    if (
+      owner &&
+      !existing.owner_id &&
+      !existing.createdBy &&
+      (personal || existing.access !== "private")
+    ) {
       await AppProject.updateOne(
         {
           _id: existing._id,
@@ -3318,7 +3323,7 @@ export async function ensureProjectRow(
       slug: project.slug,
       path: project.path ?? appRootFor(project),
       description: project.description,
-      access: project.access ?? "workspace",
+      access: personal ? "private" : (project.access ?? "workspace"),
       createdBy: project.createdBy || owner || "",
       ...(owner ? { owner_id: owner } : {}),
       defaultBranch: project.defaultBranch || DEFAULT_BRANCH,
@@ -3331,6 +3336,24 @@ export async function ensureProjectRow(
     if (winner) return winner;
     throw new Error("Could not persist the app's project row");
   }
+}
+
+/**
+ * For an app in a personal tree (`users/<handle>/apps/…`): its owner by the
+ * workspace's handle mapping (undefined when the segment is nobody's). Null
+ * for a workspace-tree app, whose row keeps going to the acting person.
+ */
+async function personalTreeOwner(
+  project: IAppProject,
+): Promise<{ ownerId: string | undefined } | null> {
+  const root = appRootFor(project);
+  const location = parseAppRepoPath(root);
+  if (location?.scope === "private") {
+    const directory = await loadOwnerDirectory(project.workspaceId.toString());
+    return { ownerId: directory.ownerOf(location.ownerHandle) ?? undefined };
+  }
+  // A path under users/ the parser refuses names no handle: it is nobody's.
+  return root.startsWith(`${USERS_DIR}/`) ? { ownerId: undefined } : null;
 }
 
 /**

@@ -61,7 +61,7 @@ For anything the hooks do not cover, use the SDK's escape hatches (2.8+) on the 
 | Your own SQL session | `getDuckDB()` returns the shared engine (never close or terminate it). `withConnection(conn => conn.query(sql))` |
 | A binding as a table | `await ensureBinding("orders")` returns `"orders"`. `unloadBinding(name)` frees it |
 | Raw parquet bytes | `fetchBindingBytes(name, { onProgress, fresh })` |
-| Memory cap for binding tables | `setBindingMemoryBudget(bytes)` (default 1.5 GiB; least recently read tables become views over their parquet, SDK 2.12) |
+| Memory cap for binding tables | `setBindingMemoryBudget(bytes)` (default 1.5 GiB; least recently read tables become views over their parquet, SDK 2.12; tables are compressed from SDK 2.14) |
 | Memory across app tabs | Past 2 GiB, Mako ends the DuckDB worker of the least recently shown read-only app (SDK 2.13). `getDuckDB()`, `withConnection()`, `ensureBinding()` or `useDuckDB` SQL that writes keep that app's worker for the page's life |
 
 `refresh()` POSTs to `__data/<name>/refresh`, the data URL's sibling, so the same server that serves the data rebuilds it — signed-in viewers can always refresh; a public share link only when its owner enabled live queries, throttled per binding. A refused refresh rejects with `status` 403/429 (with `retryAfterMs`), a failed query with 502 and its error message.
@@ -96,13 +96,16 @@ The SDK also ships a small UI kit — plain ESM and plain CSS (no Tailwind requi
 ```tsx
 import "@makoai/app-sdk/ui.css"; // before ./styles.css, so the app wins
 import { PageHeader, Card, KpiRow, KpiTile, Button, StatusDot,
-  MultiSelect, FreshnessBadge, RefreshAllButton } from "@makoai/app-sdk/ui";
+  MultiSelect, FreshnessBadge, RefreshAllButton, DataTable } from "@makoai/app-sdk/ui";
 ```
 
 - `PageHeader`, `Card`, `KpiRow` / `KpiTile`, `Button`, `StatusDot` — page furniture.
 - `MultiSelect` — controlled filter; an empty selection means "all" unless `emptyMeansAll={false}`. On phones the menu is a bottom sheet.
+- `DataTable` (SDK 2.11+) — the house data table: click-to-sort headers, sticky header, optional pinned first column, right-aligned tabular numbers, a pager footer (25 / 50 / 100 per page), an empty state and CSV export. Columns are declared with `value` (sort/CSV value) and an optional `render`; see the SDK README for the full props.
 - `FreshnessBadge` — presentational: the app decides what "fresh" means and passes a `tone`, a `headline` and per-source rows.
 - `RefreshAllButton` — rebuilds every binding (`refreshBinding`) a few at a time, with a progress modal. Feed it the binding names through a build-time `__APP_BINDING_NAMES__` define in `vite.config.ts` (the scaffold sets this up).
+
+Native `<select>` elements get a token-coloured inset chevron from `ui.css` (SDK 2.11.1+), so they match the `MultiSelect` trigger on macOS; a select with `appearance-none` in its classes draws its own arrow and is left alone.
 
 ## SDK Versions
 
@@ -183,7 +186,7 @@ Workspace admins can mark a workspace app **verified** (context-menu toggle, `PU
 
 ## Usage and popularity
 
-Every view of a published app is recorded: the in-Mako app tab and the `/view/` page report an `open` plus a heartbeat every 60 seconds while the app is visible (the dev preview never reports), and share links, raw `/live/` links and embeds are counted server-side when their HTML entry is served. Viewers on share links and embeds are keyed by a first-party random cookie (`mako_viewer`), not their IP address; crawlers and link unfurlers are logged as bots and counted nowhere.
+Every view of a published app is recorded: the in-Mako app tab and the `/view/` page report an `open` plus a heartbeat every 60 seconds while the app is visible (the dev preview never reports), and share links, raw `/live/` links and embeds are counted server-side: a share link when its page opens the app, the others when their HTML entry is served. Viewers on share links and embeds are keyed by a first-party random cookie (`mako_viewer`), not their IP address; crawlers and link unfurlers are logged as bots and counted nowhere.
 
 Counts roll up per viewer per UTC day (`app_usage_daily`), and every event is also kept raw (`app_usage_events`, 13-month TTL). `GET /api/workspaces/:wid/apps/usage?days=28` returns per app the viewers, non-author viewers, visit-days, opens, active seconds, last opens and a **popularity score**: the sum over non-author viewers of their distinct active days, each weighted by `0.5^(age_days/14)`. `GET .../apps/recent` returns the caller's recently viewed apps. The Apps home cards show visit-days (person-days in the last 28 days, authors included, plus anonymous viewers) and "Data last refreshed" for the app's current bindings only.
 
@@ -256,6 +259,10 @@ preview the app as a specific workspace member during `pnpm dev`.
 - A binding is the app's whole data, so one past its row limit (2,000,000 by default, `-- row_limit:` up to 5,000,000) **fails its build** instead of being silently cut. The run records the error, and the previously built artifact keeps being served. The error names the binding, the rows its query returned and the `-- row_limit:` that would fit them. Raise the limit, or aggregate or shard the binding's SQL.
 - The sandbox is an isolated microVM per workspace; app code and shell commands never run in Mako's API process.
 - The preview iframe is sandboxed; app code receives query *results* only — never credentials.
+- App frames are sandboxed but keep `allow-downloads`, so an app can save the files it builds (an Excel or CSV export).
+- Published apps can open links in a new tab (`target="_blank"`): the frame keeps `allow-popups` and `allow-popups-to-escape-sandbox`, so the opened tab is a normal, unsandboxed page. The app frame itself stays sandboxed.
+- App frames are cross-origin to Mako, so their keystrokes never reach Mako's own listeners. The SDK forwards Cmd/Ctrl+K to Mako (a `mako-app:shortcut` message) so the command palette opens while an app has focus; it needs `@makoai/app-sdk` 2.9.1 or newer, which published apps pick up on their next deploy.
+- If a corporate proxy blocks the apps domain, the app frame would show the proxy's error page. Before framing an app on its own origin, Mako probes `GET /__mako/ping` on the app host (CORS for `CLIENT_URL`, no credentials, 4 s timeout). If the probe fails, it frames the same token path from Mako's own origin instead and remembers that for every app host for the rest of the page load.
 
 ## API Surface
 

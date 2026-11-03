@@ -322,7 +322,7 @@ export interface BindingMemory {
   /** Every loaded binding, least recently read first. */
   bindings: {
     name: string;
-    /** "table": decoded in the heap. "view": decoded from its parquet copy in the heap on each query. */
+    /** "table": held compressed in the heap. "view": decoded from its parquet copy in the heap on each query. */
     storage: "table" | "view";
     /** Read by a mounted hook or a query in flight: evicted last. */
     pinned: boolean;

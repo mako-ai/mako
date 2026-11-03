@@ -51,6 +51,13 @@ test("withConnection closes the connection, also on error", opts, async () => {
   assert.equal(duck().open, before);
 });
 
+test("boot pins UTC and attaches the compressed database", opts, async () => {
+  await sdk.getDuckDB();
+  const sql = duck().sql;
+  assert.ok(sql.includes("SET GLOBAL TimeZone='UTC'"), "1.32 reads the browser's zone otherwise");
+  assert.ok(sql.includes("ATTACH ':memory:' AS mako_tables (COMPRESS)"));
+});
+
 test("ensureBinding loads a table once and returns its name", opts, async () => {
   fetches.length = 0;
   const names = await Promise.all([sdk.ensureBinding("sales"), sdk.ensureBinding("sales")]);
@@ -58,7 +65,9 @@ test("ensureBinding loads a table once and returns its name", opts, async () => 
   assert.equal(await sdk.ensureBinding("sales"), "sales");
   assert.deepEqual(fetches, ["__data/sales.parquet"]);
   assert.ok(duck().tables.has("sales"));
-  assert.ok(duck().sql.some(q => q.startsWith('CREATE OR REPLACE TABLE "sales" AS SELECT * FROM read_parquet(')));
+  assert.ok(duck().sql.some(q => /^CREATE TABLE mako_tables\.main\."t\d+" AS SELECT \* FROM read_parquet\(/.test(q)));
+  assert.ok(duck().sql.some(q => /^CREATE OR REPLACE VIEW "sales" AS SELECT \* FROM mako_tables\.main\."t\d+"$/.test(q)));
+  assert.ok(duck().sql.includes("CHECKPOINT mako_tables"));
   assert.equal(duck().files.size, 0, "the file buffer is dropped once the table exists");
 });
 
@@ -236,10 +245,9 @@ test("a read bumps a binding: a demoted one comes back as a table, no download",
   assert.deepEqual(fetches, [], "promoted from its Blob");
   assert.deepEqual(await storage(), { m_a: "table", m_b: "view", m_c: "table" });
   assert.ok(duck().tables.has("m_a") && !duck().views.has("m_a"));
-  const swap = duck().sql.findIndex(q => q === 'DROP VIEW IF EXISTS "m_a"');
-  assert.equal(duck().sql[swap - 1], "BEGIN TRANSACTION", "the view is swapped for the table in one commit");
-  assert.match(duck().sql[swap + 1], /^CREATE OR REPLACE TABLE "m_a"/);
-  assert.equal(duck().sql[swap + 2], "COMMIT");
+  const swap = duck().sql.findLastIndex(q => q.startsWith('CREATE OR REPLACE VIEW "m_a" AS SELECT * FROM mako_tables'));
+  assert.ok(swap > 0, "one CREATE OR REPLACE VIEW swaps it: the name is never missing");
+  assert.equal(duck().sql[swap - 1], "CHECKPOINT mako_tables", "compressed before readers reach it");
   // Bumping m_c makes m_a the oldest table: the next load demotes it.
   await sdk.ensureBinding("m_c");
   await sdk.ensureBinding("m_d");
@@ -271,21 +279,38 @@ test("ensureBinding's views are never dropped, even past the Blob budget", opts,
   assert.deepEqual(Object.keys(s).sort(), ["m_h", "m_i"], "still readable by name");
 });
 
+test("a failed CHECKPOINT leaves the binding readable as a table", opts, async () => {
+  await freshMemory(Infinity);
+  duck().oom = /^CHECKPOINT/;
+  assert.equal(await sdk.ensureBinding("m_s"), "m_s");
+  assert.equal((await storage()).m_s, "table");
+});
+
+test("a view that fails on its table drops the table and lands on the parquet", opts, async () => {
+  await freshMemory(Infinity);
+  const before = duck().stores.size;
+  duck().oom = /^CREATE OR REPLACE VIEW "m_t" AS SELECT \* FROM mako_tables/;
+  duck().oomTimes = 2;
+  assert.equal(await sdk.ensureBinding("m_t"), "m_t");
+  assert.equal((await storage()).m_t, "view");
+  assert.equal(duck().stores.size, before);
+});
+
 test("Out of Memory on a load demotes older tables and retries once", opts, async () => {
   await freshMemory(Infinity);
   await sdk.ensureBinding("m_j");
   await sdk.ensureBinding("m_k");
-  duck().oom = /^CREATE OR REPLACE TABLE "m_l"/;
+  duck().oom = /^CREATE TABLE mako_tables/;
   await sdk.ensureBinding("m_l");
   const s = await storage();
   assert.equal(s.m_l, "table");
   assert.equal(s.m_j, "view", "the oldest went first");
-  assert.equal(duck().sql.filter(q => q.startsWith('CREATE OR REPLACE TABLE "m_l"')).length, 2);
+  assert.equal(duck().sql.filter(q => q.startsWith('CREATE OR REPLACE VIEW "m_l" AS SELECT * FROM mako_tables')).length, 1);
 });
 
 test("Out of Memory with nothing to free: the load lands as a view", opts, async () => {
   await freshMemory(Infinity);
-  duck().oom = /^CREATE OR REPLACE TABLE "m_m"/;
+  duck().oom = /^CREATE TABLE mako_tables/;
   assert.equal(await sdk.ensureBinding("m_m"), "m_m");
   assert.deepEqual(await storage(), { m_m: "view" });
 });
@@ -295,7 +320,7 @@ test("metadata says a table cannot fit: a view, with no decode", opts, async () 
   duck().estimate = 1e12;
   await sdk.ensureBinding("m_n");
   assert.deepEqual(await storage(), { m_n: "view" });
-  assert.ok(!duck().sql.some(q => q.startsWith('CREATE OR REPLACE TABLE "m_n"')));
+  assert.ok(!duck().sql.some(q => q.startsWith('CREATE OR REPLACE VIEW "m_n" AS SELECT * FROM mako_tables')));
   duck().estimate = undefined;
   await freshMemory(sdk.DEFAULT_BINDING_MEMORY_BUDGET);
 });

@@ -173,6 +173,32 @@ for the whole heap, and `pressure`.
 - A failed `__data/index.json` is kept for 10 s. A query that needs no binding still
   answers. A query that fails then shows the index failure and retries.
 
+### Compressed tables on DuckDB 1.4 (2.14)
+
+The engine moved from duckdb-wasm 1.29.0 (DuckDB 1.1.1) to 1.32.0 (DuckDB 1.4.3).
+Binding tables live in `ATTACH ':memory:' (COMPRESS)`, and a view with the
+binding's name reads them.
+
+| Stored as tables, real parquet | 1.29.0 | 1.32.0 | Saved |
+| --- | --- | --- | --- |
+| Web Performance 7d, 10.9M rows | 3,003 MiB | 176 MiB | 94.1% |
+| Traffic Performance, 2.4M rows | 977 MiB | 75 MiB | 92.4% |
+| Financial Model, 489k rows | 153 MiB | 26 MiB | 83.1% |
+| INTL Sales, 1.9M rows | 601 MiB | 109 MiB | 81.9% |
+| Who's Looking, 198k rows | 33 MiB | 10 MiB | 69.1% |
+
+- Very long strings stay uncompressed: `comps_*`, at 720 KB a row, saved 0%.
+- A table you create is uncompressed: it lives in the default database.
+- A binding's name is a view. `INSERT`, `ALTER`, `DROP TABLE` and
+  `CREATE OR REPLACE TABLE <binding>` fail: copy it into a table with another name.
+- A CTE read twice is held whole in scratch, and no setting stops that. Write
+  `WITH u AS NOT MATERIALIZED (...)` over big bindings: 1.29.0 parses it too.
+- `TIMESTAMPTZ` reads UTC, as it did on 1.29.0: the SDK runs
+  `SET GLOBAL TimeZone='UTC'` at boot.
+- Boot also fetches ICU from extensions.duckdb.org. If that fails the boot fails,
+  and a hook retries at 5, 20 and 60 s.
+- Row order changes where a query has no `ORDER BY`, and so does `any_value`.
+
 ### Memory across apps (2.13)
 
 Inside Mako, each app frame posts what its heap holds. Past 2 GiB across the

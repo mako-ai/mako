@@ -3,17 +3,11 @@ import ipaddr from "ipaddr.js";
 
 type UndiciModule = typeof import("undici");
 
-const BLOCKED_IP_RANGES = new Set([
-  "private",
-  "loopback",
-  "linkLocal",
-  "uniqueLocal",
-  "reserved",
-  "unspecified",
-  "broadcast",
-  "multicast",
-  "carrierGradeNat",
-]);
+/**
+ * Request headers that are never sent, whatever the caller passes: they are
+ * only meaningful to cloud metadata services.
+ */
+const BLOCKED_REQUEST_HEADER = /^(metadata-flavor$|x-google-)/i;
 
 const DEFAULT_HEADERS = {
   "user-agent": "Mozilla/5.0 (compatible; MakoAgent/1.0; +https://mako.dev)",
@@ -42,17 +36,42 @@ export class SafeFetchError extends Error {
   }
 }
 
-/** Reject private, loopback, link-local, and other non-public IP ranges. */
+/** Strip a URL hostname's IPv6 brackets (`[::1]` → `::1`). */
+function unbracket(hostname: string): string {
+  return hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+}
+
+/** Drop request headers that only cloud metadata services act on. */
+export function stripBlockedRequestHeaders(
+  headers: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (!BLOCKED_REQUEST_HEADER.test(name)) out[name] = value;
+  }
+  return out;
+}
+
+/**
+ * Allow only globally routable unicast addresses. An IPv4-mapped IPv6
+ * address (`::ffff:a.b.c.d`) is judged as the IPv4 address it reaches.
+ */
 export function assertPublicIp(ip: string): void {
   let addr: ipaddr.IPv4 | ipaddr.IPv6;
   try {
-    addr = ipaddr.parse(ip);
+    addr = ipaddr.parse(unbracket(ip));
   } catch {
     throw new SafeFetchError(`Invalid IP address: ${ip}`);
   }
 
+  if (addr instanceof ipaddr.IPv6 && addr.isIPv4MappedAddress()) {
+    addr = addr.toIPv4Address();
+  }
+
   const range = addr.range();
-  if (BLOCKED_IP_RANGES.has(range)) {
+  if (range !== "unicast") {
     throw new SafeFetchError(`Blocked IP range (${range}): ${ip}`);
   }
 
@@ -77,7 +96,7 @@ function assertAllowedHostname(hostname: string): void {
     throw new SafeFetchError(`Blocked hostname: ${hostname}`);
   }
 
-  if (ipaddr.isValid(hostname)) {
+  if (ipaddr.isValid(unbracket(hostname))) {
     assertPublicIp(hostname);
   }
 }
@@ -87,7 +106,10 @@ async function resolveAndValidateHostname(
 ): Promise<{ address: string; family: 4 | 6 }> {
   assertAllowedHostname(hostname);
 
-  const results = await dnsLookup(hostname, { all: true, verbatim: true });
+  const results = await dnsLookup(unbracket(hostname), {
+    all: true,
+    verbatim: true,
+  });
   if (results.length === 0) {
     throw new SafeFetchError(
       `DNS lookup returned no addresses for ${hostname}`,
@@ -129,6 +151,13 @@ function createPinnedAgent(
         // Node 22+ expects an array of { address, family }; older Node accepts
         // (err, address, family). Passing both shapes keeps CI (Node 20) and
         // local dev (Node 22+) working with pinned DNS resolution.
+        // Re-check the address actually connected to.
+        try {
+          assertPublicIp(validatedIp);
+        } catch (error) {
+          callback(error as NodeJS.ErrnoException, []);
+          return;
+        }
         callback(null, [{ address: validatedIp, family }]);
       },
     },
@@ -222,7 +251,7 @@ export async function safeFetch(
         method: "GET",
         redirect: "manual",
         signal,
-        headers: DEFAULT_HEADERS,
+        headers: stripBlockedRequestHeaders({ ...DEFAULT_HEADERS }),
         dispatcher: agent,
       });
 
