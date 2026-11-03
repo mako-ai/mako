@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router";
 import {
   Box,
@@ -9,6 +9,13 @@ import {
   Typography,
 } from "@mui/material";
 import { Lock } from "lucide-react";
+import {
+  appFrameMessageOrigin,
+  appFrameSandbox,
+  isForeignAppFrame,
+  reachableViewUrl,
+} from "../lib/app-frame";
+import { replaceLocation } from "../lib/replace-location";
 
 /**
  * Anonymous viewer for public share links (/share/:token).
@@ -16,6 +23,16 @@ import { Lock } from "lucide-react";
  * Rendered outside AuthWrapper — no session, no workspace context. Talks to
  * the intentionally-public /api/share/:token endpoints directly (published
  * apps only; raw fetch on purpose, apiClient is session/workspace-bound).
+ *
+ * Two ways to show the app, chosen by the server:
+ * - `appUrl` (per-app origins on, apps.md §31): the app lives on its own
+ *   foreign origin, `https://<appId>.makousercontent.com`, under a token the
+ *   share minted. This page frames it full screen with the same sandbox
+ *   rules as inside Mako (app-frame.ts), so the browser cache works. The
+ *   visitor stays on /share/<token>; the app's query is mirrored onto it.
+ *   The page frames it only after the host answers the probe (#1180): a proxy
+ *   that blocks the apps domain would fill the frame with its own error page.
+ * - otherwise, or when the probe fails: navigate to `entry` on Mako's origin.
  */
 
 interface ShareMeta {
@@ -30,6 +47,8 @@ interface PublicAppContent {
   title: string;
   published: boolean;
   entry: string;
+  /** The app on its own origin, when the server serves it there. */
+  appUrl?: string;
 }
 
 type ShareContent = PublicAppContent;
@@ -44,6 +63,8 @@ export default function PublicSharePage() {
   const [password, setPassword] = useState("");
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [unlocking, setUnlocking] = useState(false);
+  // The app's own-origin URL, set once its host has answered the probe.
+  const [frameUrl, setFrameUrl] = useState<string | null>(null);
 
   const loadContent = useCallback(async (): Promise<ShareContent | null> => {
     const res = await fetch(`/api/share/${token}/content`, {
@@ -92,10 +113,61 @@ export default function PublicSharePage() {
   // on a grant the served HTML's <base> carries, since the sandboxed page
   // cannot send the unlock cookie (api/src/routes/public-share.ts).
   useEffect(() => {
-    if (content?.published) {
-      window.location.replace(content.entry);
+    if (!content?.published) return;
+    if (!content.appUrl) {
+      replaceLocation(content.entry);
+      return;
     }
+    let cancelled = false;
+    void reachableViewUrl(content.appUrl).then(url => {
+      if (cancelled) return;
+      if (isForeignAppFrame(url)) setFrameUrl(url);
+      else replaceLocation(content.entry);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [content]);
+
+  // Framed on the app's own origin: the query the app boots with comes from
+  // this page's URL, and the app's own navigation (filters, tabs) is
+  // mirrored back onto it so the address bar stays a link to what is shown.
+  // Only the app's frame, at its own origin, is believed, and only the query
+  // is taken.
+  const [initialSearch] = useState(() => window.location.search);
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const [frameLoaded, setFrameLoaded] = useState(false);
+  const framed = !!frameUrl;
+  useEffect(() => {
+    if (!framed) return;
+    const onMessage = (event: MessageEvent) => {
+      const frame = frameRef.current;
+      if (!frame || event.source !== frame.contentWindow) return;
+      if (event.origin !== appFrameMessageOrigin(frame.src)) return;
+      const data = event.data as { type?: unknown; search?: unknown } | null;
+      if (
+        data?.type !== "mako-app:navigate" ||
+        typeof data.search !== "string"
+      ) {
+        return;
+      }
+      const search =
+        data.search === "" || data.search.startsWith("?")
+          ? data.search
+          : `?${data.search}`;
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${window.location.pathname}${search}`,
+      );
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [framed]);
+
+  useEffect(() => {
+    if (framed && content?.title) document.title = content.title;
+  }, [framed, content?.title]);
 
   const handleUnlock = async () => {
     setUnlocking(true);
@@ -265,6 +337,54 @@ export default function PublicSharePage() {
         >
           Ask the owner to publish it before sharing the link.
         </Typography>
+      </Box>
+    );
+  }
+
+  if (frameUrl) {
+    const src =
+      frameUrl +
+      (initialSearch
+        ? (frameUrl.includes("?") ? "&" : "?") + initialSearch.slice(1)
+        : "");
+    return (
+      <Box
+        sx={{
+          position: "fixed",
+          inset: 0,
+          bgcolor: "background.default",
+        }}
+      >
+        {/* allow-same-origin is added only because src is cross-origin to
+            this page (app-frame.ts): the app gets its own origin, never
+            Mako's. */}
+        <iframe
+          ref={frameRef}
+          title={content.title || "App"}
+          src={src}
+          sandbox={appFrameSandbox(src)}
+          onLoad={() => setFrameLoaded(true)}
+          style={{
+            border: 0,
+            width: "100%",
+            height: "100%",
+            display: "block",
+          }}
+        />
+        {!frameLoaded && (
+          <Box
+            sx={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              pointerEvents: "none",
+            }}
+          >
+            <CircularProgress />
+          </Box>
+        )}
       </Box>
     );
   }

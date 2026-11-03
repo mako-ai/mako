@@ -90,7 +90,10 @@ test("forwards raw webhook body and signature during maintenance", async () => {
     upstreamRequest.url,
     "https://old-origin.run.app/api/webhooks/workspace-id/flow-id?source=test",
   );
-  assert.equal(upstreamRequest.headers.get("Stripe-Signature"), "signature-value");
+  assert.equal(
+    upstreamRequest.headers.get("Stripe-Signature"),
+    "signature-value",
+  );
   assert.equal(upstreamRequest.headers.get("X-Forwarded-Host"), "app.mako.ai");
   assert.equal(upstreamRequest.headers.get("X-Forwarded-Proto"), "https");
   assert.equal(await upstreamRequest.text(), rawBody);
@@ -207,4 +210,25 @@ test("app hosts proxy only the published asset route, to app.mako.ai's origin", 
     env,
   );
   assert.equal(badLabel.status, 404);
+});
+
+test("the bare apps domain is an unsupported host, never proxied", async () => {
+  const env = {
+    ...createEnv({ "route:app.mako.ai": route("https://origin.run.app") }),
+    APPS_DOMAIN: "makousercontent.com",
+  };
+  let upstream;
+  globalThis.fetch = async request => {
+    upstream = request;
+    return new Response("ok");
+  };
+  for (const path of ["/", "/api/apps-preview/pub.x.y/", "/api/auth/me"]) {
+    const response = await worker.fetch(
+      new Request(`https://makousercontent.com${path}`),
+      env,
+    );
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: "unsupported_host" });
+  }
+  assert.equal(upstream, undefined);
 });
