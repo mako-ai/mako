@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-10-04T10:53:55.434Z",
+  "createdAt": "2026-11-03T12:34:53.878Z",
   "payload": {
     "actions": [
       {
@@ -21,7 +21,7 @@
       "targetId": "chromium",
       "instructionDigest": "06568f75b88d4c0af22b8c199eb593b5e31d6df4704fe4e454bba3de767c44f0"
     },
-    "summary": "Started Exploring and confirmed the workspace shows the Chinook Music Store connection. Stopped without opening GitHub settings or sending a chat.",
+    "summary": "Selected Start Exploring. The workspace now shows the Chinook Music Store database connection in the Databases pane; stopped without opening GitHub settings or sending a chat.",
     "startPath": "/",
     "endPath": "/",
     "endAnchors": [
@@ -51,13 +51,13 @@
       },
       {
         "role": "button",
-        "name": "Dashboards"
+        "name": "Notebooks"
       },
       {
         "role": "button",
-        "name": "Notebooks"
+        "name": "Apps"
       }
     ],
-    "endWaitMs": 12516
+    "endWaitMs": 12445
   }
 }

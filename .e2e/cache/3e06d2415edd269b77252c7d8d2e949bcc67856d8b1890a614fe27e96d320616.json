@@ -1,0 +1,93 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-11-03T12:37:48.577Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap button (1 of 1)",
+        "target": {
+          "role": "button",
+          "position": {
+            "index": 0,
+            "of": 1
+          }
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Open Console\"",
+        "target": {
+          "role": "button",
+          "name": "Open Console"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap combobox \"Select connection\"",
+        "target": {
+          "role": "combobox",
+          "name": "Select connection",
+          "placeholder": "Select connection"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap option \"postgresql Chinook Music Store\"",
+        "target": {
+          "role": "option",
+          "name": "postgresql Chinook Music Store"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::08%20execute%20SQL%20and%20inspect%20results",
+      "targetId": "chromium",
+      "instructionDigest": "2d62266da83d0426058bee9b77183e3493b91eac185b743830868ab2bc4d849b"
+    },
+    "summary": "Closed the GitHub settings tab, opened a new SQL Console from the no-tab center pane, and selected the Chinook Music Store connection. The console is open with the connection selector showing Chinook Music Store.",
+    "startPath": "/settings/github",
+    "endPath": "/c/6ae9d593937157fe74e84da8",
+    "endAnchors": [
+      {
+        "role": "image",
+        "name": "db icon"
+      },
+      {
+        "name": "New Console"
+      },
+      {
+        "role": "button",
+        "name": "Unsaved console"
+      },
+      {
+        "role": "button",
+        "name": "​ Run (⌘/Ctrl+Enter)",
+        "text": "Run (⌘/Ctrl+Enter)"
+      },
+      {
+        "role": "button",
+        "name": "​ Schedule",
+        "text": "Schedule"
+      },
+      {
+        "role": "image",
+        "name": "postgresql"
+      },
+      {
+        "role": "combobox",
+        "name": "Select connection",
+        "placeholder": "Select connection"
+      },
+      {
+        "role": "button",
+        "name": "Clear"
+      }
+    ],
+    "endWaitMs": 11967
+  }
+}

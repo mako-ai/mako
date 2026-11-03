@@ -104,7 +104,7 @@ describe("Mako new user", { serial: true }, () => {
 
   test(
     installationFixture
-      ? "05 prepare real GitHub App installation (CI fixture; excludes OAuth)"
+      ? "05 connect fake GitHub App installation (CI fixture; excludes OAuth)"
       : "05 connect GitHub account through OAuth",
     async ({ app, browser, screen, agent }) => {
       const statePath = process.env.MAKO_E2E_GITHUB_STATE;
@@ -241,7 +241,7 @@ describe("Mako new user", { serial: true }, () => {
     agent,
   }) => {
     await agent.act(
-      "Open a SQL Console and select the Chinook Music Store connection.",
+      "Open a SQL Console and select the Chinook Music Store connection. Close the GitHub settings tab first if it is open; with no tab open, the center pane offers Open Console.",
     );
     await expect(
       screen.getByRole("button", "Run (⌘/Ctrl+Enter)", { exact: true }),

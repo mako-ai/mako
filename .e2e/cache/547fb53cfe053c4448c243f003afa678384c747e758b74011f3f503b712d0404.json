@@ -1,14 +1,15 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-10-04T10:54:51.182Z",
+  "createdAt": "2026-11-03T12:37:48.578Z",
   "payload": {
     "actions": [
       {
         "name": "tap",
-        "summary": "tap button \"Run (⌘/Ctrl+Enter)\"",
+        "summary": "tap button \"​ Run (⌘/Ctrl+Enter)\"",
         "target": {
           "role": "button",
-          "name": "Run (⌘/Ctrl+Enter)"
+          "name": "​ Run (⌘/Ctrl+Enter)",
+          "text": "Run (⌘/Ctrl+Enter)"
         }
       }
     ],
@@ -21,9 +22,9 @@
       "targetId": "chromium",
       "instructionDigest": "6e3d4b41703dc069d22d40a851cc9123c8ff8079486e56fedf0e6ff6fc7aa230"
     },
-    "summary": "Ran the existing SQL without editing it. The Results table is displayed with one row: mako_e2e_answer = 42.",
-    "startPath": "/c/35d9e282328f815b9f357a4a",
-    "endPath": "/c/35d9e282328f815b9f357a4a",
+    "summary": "Ran the SQL already in the console without editing it. The Results panel now displays a table with one result: mako_e2e_answer = 42.",
+    "startPath": "/c/6ae9d593937157fe74e84da8",
+    "endPath": "/c/6ae9d593937157fe74e84da8",
     "endAnchors": [
       {
         "role": "button",
@@ -43,7 +44,8 @@
       },
       {
         "role": "button",
-        "name": "Download"
+        "name": "​ Download",
+        "text": "Download"
       },
       {
         "text": "#"
@@ -57,6 +59,6 @@
         "name": "Next"
       }
     ],
-    "endWaitMs": 11950
+    "endWaitMs": 12040
   }
 }

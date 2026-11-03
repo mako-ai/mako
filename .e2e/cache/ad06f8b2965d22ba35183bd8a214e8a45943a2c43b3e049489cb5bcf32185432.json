@@ -1,11 +1,11 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-10-04T10:53:30.307Z",
+  "createdAt": "2026-11-03T12:34:29.657Z",
   "payload": {
     "actions": [
       {
         "name": "type",
-        "summary": "type \"mako-e2e+4ef75c9f-518a-408e-ab25-bec56b…\" into textbox \"youremail@email.com\"",
+        "summary": "type \"mako-e2e+7ef455a0-6270-4906-827e-cd3816…\" into textbox \"youremail@email.com\"",
         "target": {
           "role": "textbox",
           "name": "youremail@email.com",
@@ -42,7 +42,7 @@
       "targetId": "chromium",
       "instructionDigest": "07412fc860cc03a81b24de9f44ac78d29bdf66aff65694e288ee32c4d38f98db"
     },
-    "summary": "Submitted the registration form and confirmed the email verification code form appeared for the provided email. Stopped before entering a code.",
+    "summary": "Submitted the registration form with the provided email and password. The Verify Your Email screen is visible for that email with a Verification Code field; stopped before entering a code.",
     "startPath": "/register",
     "endPath": "/verify-email?email={{param:/email|uri}}",
     "endAnchors": [
@@ -60,8 +60,7 @@
       {
         "role": "textbox",
         "name": "Verification Code",
-        "placeholder": "123456",
-        "inputPurpose": "one-time-code"
+        "placeholder": "123456"
       },
       {
         "role": "button",
@@ -79,6 +78,6 @@
         "text": "We sent a verification code to . Enter the code below to verify your account."
       }
     ],
-    "endWaitMs": 11646
+    "endWaitMs": 13499
   }
 }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-10-04T10:57:58.174Z",
+  "createdAt": "2026-11-03T12:34:29.658Z",
   "payload": {
     "actions": [
       {
@@ -9,8 +9,7 @@
         "target": {
           "role": "textbox",
           "name": "Verification Code",
-          "placeholder": "123456",
-          "inputPurpose": "one-time-code"
+          "placeholder": "123456"
         },
         "secret": "verificationCode"
       },
@@ -32,7 +31,7 @@
       "targetId": "chromium",
       "instructionDigest": "14f866c7b871767d394714750601b66d7a899a096f5b1055b1617fd6922be441"
     },
-    "summary": "Verified the email successfully and confirmed the workspace creation form appeared.",
+    "summary": "Verified the email successfully; the workspace creation form is now visible. Stopped without creating a workspace.",
     "startPath": "/verify-email?email={{param:/email|uri}}",
     "endPath": "/",
     "endAnchors": [
@@ -67,6 +66,6 @@
         "text": "What do you want to build? (optional)"
       }
     ],
-    "endWaitMs": 13699
+    "endWaitMs": 14321
   }
 }
