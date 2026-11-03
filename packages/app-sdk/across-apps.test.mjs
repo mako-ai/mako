@@ -421,3 +421,29 @@ test("an unreadable parked Blob downloads again", opts, async () => {
     Blob.prototype.arrayBuffer = read;
   }
 });
+
+test("a query that traps two engines stops running, and other queries still answer", opts, async () => {
+  const sdk = await freshSdk("culprit");
+  const trapping = "SELECT 'culprit' AS x";
+  duck().crash = /culprit/;
+  duck().crashTimes = 99;
+  for (let i = 0; i < 2; i++) {
+    const r = await mount(() => sdk.useDuckDB(trapping));
+    await pause(40);
+    await r.unmount();
+  }
+  const sql = () => duck().sql.filter(q => q.includes("culprit")).length;
+  const ran = sql();
+  assert.ok(ran >= 2, "it trapped twice");
+  const third = await mount(() => sdk.useDuckDB(trapping));
+  await pause(40);
+  assert.match(third.seen.at(-1).error, /crashed the data engine twice/);
+  assert.equal(sql(), ran, "it never reached the engine");
+  await third.unmount();
+  duck().crash = null;
+  duck().crashTimes = undefined;
+  const other = await mount(() => sdk.useDuckDB("SELECT 1 AS other"));
+  await pause(40);
+  assert.equal(other.seen.at(-1).error, null);
+  await other.unmount();
+});
