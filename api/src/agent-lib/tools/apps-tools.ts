@@ -268,7 +268,7 @@ function buildTools(
 
   const loadProject = async (
     appId: string,
-    opts: { write: boolean },
+    opts: { write: boolean; deploy?: boolean },
   ): Promise<LoadResult> => {
     if (!appId) {
       return { error: `Invalid app: ${appId}. Use app_list_apps first.` };
@@ -290,11 +290,21 @@ function buildTools(
     }
     if (userId) {
       const role = await memberRole();
-      const allowed = opts.write
-        ? canWriteResource(project, userId, role)
-        : canReadResource(project, userId, role);
-      if (!allowed) {
+      // An app the caller cannot see is "not found", so a private app's
+      // existence never leaks. One they CAN see but not change says so:
+      // "not found" for an app app_list_apps just listed sends agents
+      // hunting for a lookup bug that is a permission.
+      if (!canReadResource(project, userId, role)) {
         return { error: `App ${appId} not found. Use app_list_apps.` };
+      }
+      const allowed = !opts.write || canWriteResource(project, userId, role);
+      if (!allowed) {
+        return {
+          error:
+            `You can view app ${appId} but not ${opts.deploy ? "deploy" : "change"} it: ` +
+            `your access is view-only (workspace role: ${role ?? "none"}). ` +
+            "Ask its owner to share it with you as an editor.",
+        };
       }
     }
     return { project };
@@ -1005,6 +1015,7 @@ function buildTools(
         "What is LIVE for this app: the published deployment's commit sha vs the tip of the default branch. " +
         "A push to the default branch builds and publishes automatically; when the branch is ahead of the published sha, " +
         "the newest commits are still building or the build/data preparation failed — `lastDeployError` then names the stage (bindings/build) and the error; app_build_log has the full build output. " +
+        "While a deploy is in flight, `deploy` names its sha and stage (queued, bindings, build or publishing) with timestamps, `bindings` {prepared, total, current} during data preparation, a one-line `summary`, and `stalled` when the stage has had no progress for too long. " +
         "For the sandbox worktree's own git state, use app_status.",
       inputSchema: z.object({ appId: z.string() }),
       execute: async ({ appId }) => {
@@ -1031,10 +1042,10 @@ function buildTools(
         "(typically under 2 minutes; required parquet bindings are prepared " +
         "at that exact commit before it goes live, and a failing build or binding surfaces in " +
         "app_build_log). Use when a push's automatic deploy did not land, or " +
-        "to force a redeploy of the current branch tip.",
+        "to force a redeploy of the current branch tip. Needs edit access to the app.",
       inputSchema: z.object({ appId: z.string() }),
       execute: async ({ appId }) => {
-        const loaded = await loadProject(appId, { write: true });
+        const loaded = await loadProject(appId, { write: true, deploy: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
           const project = loaded.project;

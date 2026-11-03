@@ -68,6 +68,7 @@ import {
   ensureCommitLocally,
   fetchFromCloud,
   mirrorPushNow,
+  mirrorPushDefaultBranchNow,
   reconcileMirrorDeletionsForTests,
   resolveMirrorTarget,
   freshenForServe,
@@ -158,6 +159,15 @@ async function headOf(repoDir: string): Promise<string | null> {
   ])
     .then(r => r.stdout.trim())
     .catch(() => null);
+}
+
+async function waitForFile(file: string): Promise<void> {
+  await vi.waitFor(
+    async () => {
+      await expect(fs.stat(file)).resolves.toBeDefined();
+    },
+    { timeout: 5000, interval: 20 },
+  );
 }
 
 describe("resolveMirrorTarget", () => {
@@ -347,6 +357,181 @@ describe("adoptConnectedRepo", () => {
 });
 
 describe("pushes to a connected repo", () => {
+  it.each(["default-then-all", "all-then-default"] as const)(
+    "drains distinct queued push scopes without deadlock (%s)",
+    async order => {
+      const remoteDir = await makeBareRemote("acme", `queue-${order}`);
+      state.binding = { owner: "acme", repo: `queue-${order}` };
+      await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+      await adoptConnectedRepo(workspaceId, state.binding);
+
+      const repoDir = repoDirFor(workspaceId);
+      const base = await headOf(repoDir);
+      if (!base) throw new Error("seeded repo must have a head");
+      await runGit([
+        "-C",
+        repoDir,
+        "update-ref",
+        "refs/heads/feat/active",
+        base,
+      ]);
+
+      // The remote feature branch is ahead of the local one. A later all-ref
+      // push must reject it, while a default-branch push remains valid.
+      const featureWork = await fs.mkdtemp(
+        path.join(tmpRoot, "remote-feature-"),
+      );
+      await fs.writeFile(path.join(featureWork, "feature.txt"), "remote\n");
+      const featureTree = await snapshotDirToTree(remoteDir, featureWork);
+      const remoteFeature = await commitTree(remoteDir, {
+        treeOid: featureTree,
+        parents: [base],
+        message: "remote feature",
+      });
+      await fs.rm(featureWork, { recursive: true, force: true });
+      await runGit([
+        "-C",
+        remoteDir,
+        "update-ref",
+        "refs/heads/feat/active",
+        remoteFeature,
+      ]);
+      await runGit([
+        "-C",
+        remoteDir,
+        "update-ref",
+        `refs/heads/${DEFAULT_BRANCH}`,
+        base,
+      ]);
+      await commitFiles(
+        repoDir,
+        { "apps/first/mako.json": "{}" },
+        "first local app create",
+      );
+      const started = path.join(tmpRoot, `hook-${workspaceId}.started`);
+      const release = path.join(tmpRoot, `hook-${workspaceId}.release`);
+      const calls = path.join(tmpRoot, `hook-${workspaceId}.calls`);
+      const hook = path.join(remoteDir, "hooks", "pre-receive");
+      await fs.writeFile(
+        hook,
+        `#!/bin/sh\nprintf x >> '${calls}'\nprintf started > '${started}'\nwhile [ ! -f '${release}' ]; do sleep 0.02; done\nexit 0\n`,
+        { mode: 0o755 },
+      );
+      await fs.chmod(hook, 0o755);
+
+      try {
+        const active = mirrorPushDefaultBranchNow(workspaceId);
+        await waitForFile(started);
+        // Land a second commit while the first push is blocked. Only the
+        // queued default-scope retry can mirror this commit.
+        const localMain = await commitFiles(
+          repoDir,
+          { "apps/new/mako.json": "{}" },
+          "local app create",
+        );
+
+        let defaultOne!: Promise<void>;
+        let defaultTwo!: Promise<void>;
+        let all!: Promise<void>;
+        if (order === "default-then-all") {
+          defaultOne = mirrorPushDefaultBranchNow(workspaceId);
+          defaultTwo = mirrorPushDefaultBranchNow(workspaceId);
+          all = mirrorPushNow(workspaceId);
+        } else {
+          all = mirrorPushNow(workspaceId);
+          defaultOne = mirrorPushDefaultBranchNow(workspaceId);
+          defaultTwo = mirrorPushDefaultBranchNow(workspaceId);
+        }
+        const allResult = all.then(
+          () => null,
+          error => error,
+        );
+        // Same-scope callers share the queued operation; the distinct scopes
+        // remain independent if the all-ref operation rejects. Since public
+        // async wrappers adopt the scheduler promise, the hook count below
+        // proves both default callers coalesced.
+        await fs.writeFile(release, "go");
+
+        await expect(active).resolves.toBeUndefined();
+        await expect(defaultOne).resolves.toBeUndefined();
+        await expect(defaultTwo).resolves.toBeUndefined();
+        expect(await allResult).toBeInstanceOf(Error);
+        expect((await fs.readFile(calls, "utf8")).length).toBe(2);
+        expect(await headOf(remoteDir)).toBe(localMain);
+        expect(
+          (
+            await runGit([
+              "-C",
+              remoteDir,
+              "rev-parse",
+              "refs/heads/feat/active",
+            ])
+          ).stdout.trim(),
+        ).toBe(remoteFeature);
+      } finally {
+        await fs.writeFile(release, "go");
+      }
+    },
+    15000,
+  );
+
+  it("pushes the default branch without touching an active remote feature branch", async () => {
+    const remoteDir = await makeBareRemote("acme", "create-main-only");
+    state.binding = { owner: "acme", repo: "create-main-only" };
+    await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+    await adoptConnectedRepo(workspaceId, state.binding);
+
+    const repoDir = repoDirFor(workspaceId);
+    const base = await headOf(repoDir);
+    if (!base) throw new Error("seeded repo must have a head");
+    const branch = "refs/heads/feat/win-radar-deals";
+    await runGit(["-C", repoDir, "update-ref", branch, base]);
+
+    const workDir = await fs.mkdtemp(path.join(tmpRoot, "remote-feature-"));
+    let remoteFeature: string;
+    try {
+      await fs.writeFile(path.join(workDir, "active-feature.txt"), "keep\n");
+      const treeOid = await snapshotDirToTree(remoteDir, workDir);
+      remoteFeature = await commitTree(remoteDir, {
+        treeOid,
+        parents: [base],
+        message: "active feature branch commit",
+      });
+    } finally {
+      await fs.rm(workDir, { recursive: true, force: true });
+    }
+    await runGit(["-C", remoteDir, "update-ref", branch, remoteFeature]);
+
+    const createdMain = await commitFiles(
+      repoDir,
+      { "apps/new/mako.json": "{}" },
+      "create app scaffold",
+    );
+    await mirrorPushDefaultBranchNow(workspaceId);
+
+    expect(await headOf(remoteDir)).toBe(createdMain);
+    expect(
+      (
+        await runGit(["-C", remoteDir, "rev-parse", "--verify", branch])
+      ).stdout.trim(),
+    ).toBe(remoteFeature);
+    expect(
+      (
+        await runGit(["-C", repoDir, "rev-parse", "--verify", branch])
+      ).stdout.trim(),
+    ).toBe(base);
+    expect(
+      (
+        await runGit([
+          "-C",
+          repoDir,
+          "rev-parse",
+          `refs/remotes/mirror/${DEFAULT_BRANCH}`,
+        ])
+      ).stdout.trim(),
+    ).toBe(createdMain);
+  });
+
   it("never force-pushes a diverged customer branch", async () => {
     const remoteDir = await makeBareRemote("acme", "site");
     state.binding = { owner: "acme", repo: "site" };
