@@ -108,9 +108,11 @@ async function proxyRequest(request, targetUrl, publicUrl) {
 // Per-app origins (api/src/apps/app-origin.ts): `<appId>.<APPS_DOMAIN>`
 // hosts serve one published app each, from the same origin as app.mako.ai.
 // Off unless the APPS_DOMAIN var is set. The edge only lets the published
-// asset route through; the API enforces the rest (token scope per app).
+// asset route and the client's reachability ping (app/src/lib/app-frame.ts)
+// through; the API enforces the rest (token scope per app).
 const APP_HOST_LABEL = /^[0-9a-f]{24}$/;
 const APP_HOST_PATH_PREFIX = "/api/apps-preview/pub.";
+const APP_HOST_PING_PATH = "/__mako/ping";
 const APP_HOST_ROUTE_KEY = "route:app.mako.ai";
 
 function isAppHost(hostname, env) {
@@ -130,7 +132,11 @@ export default {
     if (!SUPPORTED_HOSTS.has(publicUrl.hostname) && !appHost) {
       return jsonResponse(404, { error: "unsupported_host" });
     }
-    if (appHost && !publicUrl.pathname.startsWith(APP_HOST_PATH_PREFIX)) {
+    if (
+      appHost &&
+      !publicUrl.pathname.startsWith(APP_HOST_PATH_PREFIX) &&
+      publicUrl.pathname !== APP_HOST_PING_PATH
+    ) {
       return jsonResponse(404, { error: "not_found" });
     }
 
