@@ -13,19 +13,27 @@ export type CapabilityRisk = "read" | "write" | "destructive";
 
 export type CapabilityGrant =
   | "artifact-write"
+  | "connections-write"
   | "git-write"
   | "members-write"
   | "schedule-write"
-  | "warehouse-write";
+  | "warehouse-write"
+  | "workflows-run";
 
 export const CAPABILITY_GRANTS = [
   "artifact-write",
+  // Store a new credential (a source connection) in the workspace. Held by
+  // every external MCP/CLI credential; the member role gates it.
+  "connections-write",
   "git-write",
   // Who can reach the workspace at all — the only grant that can widen the
   // set of people holding every other one. Never implicit on any surface.
   "members-write",
   "schedule-write",
   "warehouse-write",
+  // Start a workflow run or give a workflow a webhook: that executes the
+  // workspace's own code. An explicit per-key scope (`workflows:run`).
+  "workflows-run",
 ] as const satisfies readonly CapabilityGrant[];
 
 export type CapabilityResultKind = "data" | "artifact" | "run" | "ui-effect";

@@ -10,6 +10,7 @@ import Stripe from "stripe";
 import { Workspace } from "../database/workspace-schema";
 import {
   isBillingEnabled,
+  STRIPE_BILLING_API_VERSION,
   getStripeSecretKey,
   getStripeWebhookSecret,
 } from "../billing/config";
@@ -49,7 +50,9 @@ stripeWebhookRoutes.openapi(
     let event: Stripe.Event;
 
     try {
-      const stripe = new Stripe(getStripeSecretKey());
+      const stripe = new Stripe(getStripeSecretKey(), {
+        apiVersion: STRIPE_BILLING_API_VERSION,
+      });
 
       const rawBody = await c.req.text();
       const signature = c.req.header("stripe-signature");

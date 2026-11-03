@@ -59,21 +59,39 @@ export default function FolderInfoModal({
       <DialogContent sx={{ pt: 1 }}>
         <Stack spacing={2}>
           <Box>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+                mb: 0.5,
+              }}
+            >
               Name
             </Typography>
             <Typography variant="body2">{folder?.name ?? "—"}</Typography>
           </Box>
 
           <Box>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+                mb: 0.5,
+              }}
+            >
               Created by
             </Typography>
             <Typography variant="body2">{ownerName}</Typography>
           </Box>
 
           <Box>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+                mb: 0.5,
+              }}
+            >
               Created at
             </Typography>
             <Typography variant="body2">
@@ -82,7 +100,13 @@ export default function FolderInfoModal({
           </Box>
 
           <Box>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+                mb: 0.5,
+              }}
+            >
               Access
             </Typography>
             <Chip

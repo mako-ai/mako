@@ -309,7 +309,12 @@ export function WorkspaceMembers() {
                     />
                   </TableCell>
                   <TableCell>
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        color: "text.secondary",
+                      }}
+                    >
                       {row.status === "active" ? "Joined" : "Expires"}{" "}
                       {formattedDate}
                     </Typography>
@@ -419,8 +424,11 @@ export function WorkspaceMembers() {
           </FormControl>
           <Typography
             variant="caption"
-            color="text.secondary"
-            sx={{ mt: 2, display: "block" }}
+            sx={{
+              color: "text.secondary",
+              mt: 2,
+              display: "block",
+            }}
           >
             An invitation email will be sent to the provided address.
           </Typography>
@@ -516,8 +524,11 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
       </Typography>
       <Typography
         variant="caption"
-        color="text.secondary"
-        sx={{ display: "block", mb: 1.5 }}
+        sx={{
+          color: "text.secondary",
+          display: "block",
+          mb: 1.5,
+        }}
       >
         People who sign in with an email on these domains become members the
         first time they open the workspace or one of its apps — no invitation

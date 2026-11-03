@@ -3,10 +3,18 @@
  * Supports PostgreSQL, MySQL, BigQuery, SQLite, and Cloudflare D1 with a single tool surface.
  */
 
+import {
+  actingPrincipal,
+  notAWriterRefusal,
+  recordWrite,
+} from "../../access/connection-writes";
 import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
-import { DatabaseConnection } from "../../database/workspace-schema";
+import {
+  DatabaseConnection,
+  type IDatabaseConnection,
+} from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { queryExecutionService } from "../../services/query-execution.service";
 import { sqlReadOnlyAccessError } from "../../services/read-only-query.service";
@@ -14,7 +22,11 @@ import type { QueryAccess } from "../../auth/api-key-scopes";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
 import {
-  truncateSamples,
+  QUERY_RESULT_DEFAULT_ROWS,
+  QUERY_RESULT_MAX_ROWS,
+  formatRowsForModel,
+} from "./shared/query-result-format";
+import {
   truncateQueryResults,
   MAX_SAMPLE_ROWS,
   AGENT_QUERY_TIMEOUT_MS,
@@ -35,6 +47,14 @@ import {
   escapeSqliteIdentifier,
 } from "./shared/sql-dialects";
 import { MYSQL_SYSTEM_DATABASES_SET } from "../../databases/drivers/mysql/driver";
+
+/** Budget for inspect_table's sample rows: enough to show the data's shape. */
+const INSPECT_SAMPLE_MAX_CHARS = 8_000;
+
+const SQL_MORE_ROWS_HINT =
+  "To see more: aggregate or filter in SQL, pass maxRows (up to " +
+  `${QUERY_RESULT_MAX_ROWS}), or put the query in a console and run_console ` +
+  "so the user gets the full result in the results panel.";
 
 // LIMIT enforcement (kept local as it has sql-tools specific logic)
 const needsDefaultLimit = (sql: string): boolean => {
@@ -123,6 +143,14 @@ const executeQuerySchema = z.object({
         "For Cloudflare D1, pass the database UUID from list_databases.",
     ),
   query: z.string().describe("The SQL query to execute"),
+  maxRows: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      `Rows to show in the result table (default ${QUERY_RESULT_DEFAULT_ROWS}, at most ${QUERY_RESULT_MAX_ROWS}). Prefer aggregating in SQL over raising this.`,
+    ),
 });
 
 // ============================================================================
@@ -133,7 +161,9 @@ async function listSqlConnectionsImpl(workspaceId: string) {
 
   const databases = await DatabaseConnection.find({
     workspaceId: workspaceObjectId,
-    type: { $in: Array.from(ALL_SQL_TYPES) },
+    type: {
+      $in: Array.from(ALL_SQL_TYPES) as IDatabaseConnection["type"][],
+    },
   }).sort({ name: 1 });
 
   return databases.map(db => {
@@ -145,11 +175,9 @@ async function listSqlConnectionsImpl(workspaceId: string) {
     let displayInfo: string;
     if (dialect === "postgresql" || dialect === "mysql") {
       const host = (connection.host || connection.instanceConnectionName) as
-        | string
-        | undefined;
+        string | undefined;
       const dbName = (connection.database || connection.db) as
-        | string
-        | undefined;
+        string | undefined;
       displayInfo = `${host || "unknown-host"}/${dbName || "unknown-db"}`;
     } else if (dialect === "bigquery") {
       displayInfo = (connection.project_id as string) || "unknown-project";
@@ -544,7 +572,7 @@ async function inspectTableInner(
     types: string[];
     nullable?: boolean;
     defaultValue?: string;
-  }> = [];
+  }>;
   let samples: unknown[] = [];
   let entityKind: "table" | "view" = "table";
 
@@ -842,19 +870,20 @@ async function inspectTableInner(
     }
   }
 
-  const { samples: truncatedSamples, _note } = truncateSamples(
-    samples,
-    MAX_SAMPLE_ROWS,
-  );
-
+  // Sample rows as one markdown table (column names once, cells shortened)
+  // under a small budget: they show the data's shape, not the data.
+  const sampleTable = formatRowsForModel(samples, {
+    maxRows: MAX_SAMPLE_ROWS,
+    maxChars: INSPECT_SAMPLE_MAX_CHARS,
+  });
   return {
     sqlDialect: dialect,
     entityKind,
     entityName: tableName,
     database: databaseName,
     fields: columns,
-    samples: truncatedSamples,
-    _note,
+    samples: sampleTable.table,
+    ...(sampleTable.note ? { _note: sampleTable.note } : {}),
   };
 }
 
@@ -877,29 +906,52 @@ function compactQueryFields(fields: unknown): unknown {
 
 /**
  * Resolve "write-opt-in" (the query:write scope) against one connection:
- * write only where a workspace admin set allowAgentWrites, read everywhere
- * else. A plain "read" key can never be upgraded by the connection flag.
+ * write where the acting person or workflow is on its writers list (or a
+ * workspace admin set allowAgentWrites), read everywhere else. A plain "read" key can never be upgraded by the connection flag.
  * Exported for tests.
  */
 export function effectiveSqlQueryAccess(
   queryAccess: QueryAccess,
-  connection: { allowAgentWrites?: boolean },
+  connection: {
+    allowAgentWrites?: boolean;
+    writers?: { principal: string }[];
+  },
 ): QueryAccess {
   if (queryAccess !== "write-opt-in") return queryAccess;
-  return connection.allowAgentWrites === true ? "write" : "read";
+  if (connection.allowAgentWrites === true) return "write";
+  // Being on the connection's writers list is the same opt-in, for that
+  // principal only; where it may write is checked when the query runs
+  // (access/connection-writes.ts).
+  const acting = actingPrincipal();
+  return acting && connection.writers?.some(w => w.principal === acting)
+    ? "write"
+    : "read";
 }
 
-async function executeQueryImpl(
+/** A SQL query cleared to run: its connection, and how to run it there. */
+export interface SqlQueryTarget {
+  database: IDatabaseConnection;
+  dialect: ReturnType<typeof getDialect>;
+  databaseName?: string;
+  /** Driver options naming the target database. */
+  options: { databaseName?: string; databaseId?: string };
+  /** Run read-only: the key or the connection's writers list allow no write. */
+  readOnly: boolean;
+}
+
+/**
+ * The access checks every SQL query from an agent or a workflow passes before
+ * it runs (sql_execute_query and the workflow runtime's /query): the key's
+ * query access, the connection's writers list for a write, and the target
+ * database. Throws with the reason a query may not run.
+ */
+export async function resolveSqlQueryTarget(
   connectionId: string,
   requestedDatabase: string | undefined,
   query: string,
   workspaceId: string,
-  userId?: string,
-  toolExecutionContext?: AgentToolExecutionContext,
-  queryAccess: QueryAccess = "write",
-) {
-  const startTime = Date.now();
-
+  queryAccess: QueryAccess,
+): Promise<SqlQueryTarget> {
   if (typeof query !== "string" || query.trim().length === 0) {
     throw new Error("'query' must be a non-empty string");
   }
@@ -915,15 +967,13 @@ async function executeQueryImpl(
   const dialect = getDialect(database.type);
   const effectiveAccess = effectiveSqlQueryAccess(queryAccess, database);
   if (queryAccess === "write-opt-in" && effectiveAccess === "read") {
-    const accessError = sqlReadOnlyAccessError(query);
-    if (accessError) {
-      // Agents relay this verbatim, so the error is the docs: say why AND
-      // how to fix it.
-      throw new Error(
-        `${accessError} This API key has the query:write scope, but this ` +
-          "connection has not opted into agent writes — a workspace admin " +
-          "must enable allowAgentWrites on the connection first.",
-      );
+    if (sqlReadOnlyAccessError(query)) {
+      // The key may write, the connection's writers list decides who: say
+      // who Mako saw, and record the refusal so the Access tab offers Allow.
+      // Agents relay this verbatim, so the error is the docs.
+      const principal = actingPrincipal();
+      if (principal) recordWrite(database, principal, query, false);
+      throw new Error(notAWriterRefusal(principal, database.name));
     }
   }
 
@@ -938,8 +988,7 @@ async function executeQueryImpl(
   if (!databaseName) {
     if (dialect === "postgresql" || dialect === "mysql") {
       databaseName = (connection.database ?? connection.db) as
-        | string
-        | undefined;
+        string | undefined;
     } else if (dialect === "sqlite") {
       databaseName = connection.database_id as string | undefined;
     }
@@ -955,14 +1004,110 @@ async function executeQueryImpl(
     );
   }
 
-  const safeQuery = appendLimitIfMissing(query);
-
-  let options: Record<string, string> = {};
+  let options: SqlQueryTarget["options"] = {};
   if ((dialect === "postgresql" || dialect === "mysql") && databaseName) {
     options = { databaseName };
   } else if (dialect === "sqlite" && databaseName) {
     options = { databaseId: databaseName };
   }
+
+  return {
+    database,
+    dialect,
+    databaseName,
+    options,
+    readOnly: effectiveAccess === "read",
+  };
+}
+
+/**
+ * Record a finished SQL query in the workspace's query history
+ * (fire-and-forget), with its error classified.
+ */
+export function trackSqlExecution(input: {
+  userId: string;
+  workspaceId: string;
+  target: SqlQueryTarget;
+  source: "agent";
+  result: {
+    success: boolean;
+    error?: string;
+    rowCount?: number;
+    data?: unknown;
+  };
+  startTime: number;
+}): void {
+  const { result, target } = input;
+  const rowCount = result.success
+    ? (result.rowCount ??
+      (Array.isArray(result.data) ? result.data.length : undefined))
+    : undefined;
+
+  let errorType: string | undefined;
+  if (!result.success) {
+    const errorMsg = result.error?.toLowerCase() || "";
+    if (errorMsg.includes("syntax")) {
+      errorType = "syntax";
+    } else if (errorMsg.includes("timeout") || errorMsg.includes("timed out")) {
+      errorType = "timeout";
+    } else if (
+      errorMsg.includes("connection") ||
+      errorMsg.includes("connect")
+    ) {
+      errorType = "connection";
+    } else if (
+      errorMsg.includes("permission") ||
+      errorMsg.includes("access denied")
+    ) {
+      errorType = "permission";
+    } else {
+      errorType = "unknown";
+    }
+  }
+
+  const executionStatus: "success" | "error" | "timeout" = result.success
+    ? "success"
+    : errorType === "timeout"
+      ? "timeout"
+      : "error";
+
+  queryExecutionService.track({
+    userId: input.userId,
+    workspaceId: new Types.ObjectId(input.workspaceId),
+    connectionId: target.database._id,
+    databaseName: target.databaseName,
+    source: input.source,
+    databaseType: target.database.type,
+    queryLanguage: "sql",
+    status: executionStatus,
+    executionTimeMs: Date.now() - input.startTime,
+    rowCount,
+    errorType,
+  });
+}
+
+async function executeQueryImpl(
+  connectionId: string,
+  requestedDatabase: string | undefined,
+  query: string,
+  workspaceId: string,
+  userId?: string,
+  toolExecutionContext?: AgentToolExecutionContext,
+  queryAccess: QueryAccess = "write",
+  maxRows?: number,
+) {
+  const startTime = Date.now();
+
+  const target = await resolveSqlQueryTarget(
+    connectionId,
+    requestedDatabase,
+    query,
+    workspaceId,
+    queryAccess,
+  );
+  const { database, dialect, databaseName, options } = target;
+
+  const safeQuery = appendLimitIfMissing(query);
 
   const { executionId, signal, release } = registerAgentExecution(
     toolExecutionContext,
@@ -982,7 +1127,7 @@ async function executeQueryImpl(
             ...options,
             executionId: registeredExecutionId,
             signal,
-            readOnly: effectiveAccess === "read",
+            readOnly: target.readOnly,
           },
         ),
       { signal },
@@ -990,57 +1135,29 @@ async function executeQueryImpl(
 
     // Track successful/error query execution (fire-and-forget)
     if (userId) {
-      const rowCount = result.success
-        ? (result.rowCount ??
-          (Array.isArray(result.data) ? result.data.length : undefined))
-        : undefined;
-
-      let errorType: string | undefined;
-      if (!result.success) {
-        const errorMsg = result.error?.toLowerCase() || "";
-        if (errorMsg.includes("syntax")) {
-          errorType = "syntax";
-        } else if (
-          errorMsg.includes("timeout") ||
-          errorMsg.includes("timed out")
-        ) {
-          errorType = "timeout";
-        } else if (
-          errorMsg.includes("connection") ||
-          errorMsg.includes("connect")
-        ) {
-          errorType = "connection";
-        } else if (
-          errorMsg.includes("permission") ||
-          errorMsg.includes("access denied")
-        ) {
-          errorType = "permission";
-        } else {
-          errorType = "unknown";
-        }
-      }
-
-      let executionStatus: "success" | "error" | "timeout" | "cancelled" =
-        result.success ? "success" : "error";
-      if (!result.success && errorType === "timeout") {
-        executionStatus = "timeout";
-      } else if (!result.success && errorType === "cancelled") {
-        executionStatus = "cancelled";
-      }
-
-      queryExecutionService.track({
+      trackSqlExecution({
         userId,
-        workspaceId: new Types.ObjectId(workspaceId),
-        connectionId: database._id,
-        databaseName,
+        workspaceId,
+        target,
         source: "agent",
-        databaseType: database.type,
-        queryLanguage: "sql",
-        status: executionStatus,
-        executionTimeMs: Date.now() - startTime,
-        rowCount,
-        errorType,
+        result,
+        startTime,
       });
+    }
+
+    if (result && result.success && Array.isArray(result.data)) {
+      // Result sets go to the model as one markdown table (column names
+      // once) under a row/char budget — see query-result-format.ts.
+      return {
+        success: true,
+        rowCount: result.rowCount ?? result.data.length,
+        ...formatRowsForModel(result.data, {
+          fields: result.fields,
+          maxRows,
+          moreHint: SQL_MORE_ROWS_HINT,
+        }),
+        sqlDialect: dialect,
+      };
     }
 
     if (result && result.success && result.data) {
@@ -1207,9 +1324,9 @@ export const createSqlToolsV2 = (
 
     sql_execute_query: tool({
       description:
-        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. The 'database' parameter is optional: when omitted, the query runs against the connection's default database (Postgres/MySQL) — for BigQuery/ClickHouse fully qualify tables (dataset.table) or pass the dataset as 'database'. IMPORTANT for Cloudflare D1: use the UUID from list_databases 'id' field as the database parameter.",
+        "Execute a SQL query and return results as a markdown table, fenced as untrusted data (columns with types listed separately; long cells shortened; `note` says what was left out). Shows up to 50 rows by default within a size budget — pass maxRows for more, but prefer aggregating in SQL. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. The 'database' parameter is optional: when omitted, the query runs against the connection's default database (Postgres/MySQL) — for BigQuery/ClickHouse fully qualify tables (dataset.table) or pass the dataset as 'database'. IMPORTANT for Cloudflare D1: use the UUID from list_databases 'id' field as the database parameter.",
       inputSchema: executeQuerySchema,
-      execute: async ({ connectionId, database, query }) => {
+      execute: async ({ connectionId, database, query, maxRows }) => {
         try {
           return await executeQueryImpl(
             connectionId,
@@ -1219,6 +1336,7 @@ export const createSqlToolsV2 = (
             userId,
             toolExecutionContext,
             queryAccess,
+            maxRows,
           );
         } catch (error) {
           return {

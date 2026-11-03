@@ -6,7 +6,7 @@
  * `discover`, because a manifest that restates them is a manifest that drifts
  * from them.
  */
-import yaml from "js-yaml";
+import { loadYaml } from "../../utils/yaml";
 
 /** The runtimes that exist. Only `node` runs today; the rest are named so a
  * folder declaring one gets a straight answer instead of a parse error. */
@@ -29,8 +29,7 @@ export interface ConnectorFile {
 }
 
 export type ParseResult =
-  | { ok: true; value: ConnectorFile }
-  | { ok: false; reason: string };
+  { ok: true; value: ConnectorFile } | { ok: false; reason: string };
 
 const SLUG = /^[a-z][a-z0-9-]*$/;
 
@@ -47,7 +46,7 @@ export function isValidSlug(slug: string): boolean {
 export function parseConnectorFile(contents: string): ParseResult {
   let parsed: unknown;
   try {
-    parsed = yaml.load(contents);
+    parsed = loadYaml(contents);
   } catch (error) {
     return {
       ok: false,

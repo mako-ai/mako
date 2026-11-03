@@ -60,11 +60,7 @@ type CalendlyListResponse<T = Record<string, unknown>> = {
 };
 
 type SimpleEntity =
-  | "users"
-  | "groups"
-  | "event_types"
-  | "scheduled_events"
-  | "contacts";
+  "users" | "groups" | "event_types" | "scheduled_events" | "contacts";
 
 const SIMPLE_ENTITY_PATH: Record<SimpleEntity, string> = {
   users: "/organization_memberships",
@@ -256,7 +252,6 @@ export class CalendlyConnector extends BaseConnector {
     maxRetries = 5,
   ): Promise<T> {
     let attempt = 0;
-    // eslint-disable-next-line no-constant-condition
     while (true) {
       try {
         return await fn();
@@ -619,8 +614,7 @@ export class CalendlyConnector extends BaseConnector {
     ).map(ev => (typeof ev === "string" ? { uri: ev } : ev));
     // Legacy state may have an in-progress event; requeue it (full re-drain).
     const legacyEventUri = state?.metadata?.currentEventUri as
-      | string
-      | undefined;
+      string | undefined;
     if (legacyEventUri) {
       pendingEvents = [{ uri: legacyEventUri }, ...pendingEvents];
     }
@@ -939,6 +933,7 @@ export class CalendlyConnector extends BaseConnector {
     } catch (error) {
       throw new Error(
         `Failed to create Calendly webhook subscription: ${formatCalendlyApiError(error)}`,
+        { cause: error },
       );
     }
   }

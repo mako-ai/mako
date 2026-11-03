@@ -338,7 +338,7 @@ async function grantEnforcement() {
     {
       name: "browse_version_history",
       source: { kind: "builtin", domain: "version-history" },
-      description: "Browse saved versions of a console or dashboard.",
+      description: "Browse saved versions of a console.",
       readOnly: true,
       tier: "deferred",
     },
@@ -446,7 +446,7 @@ async function endToEnd() {
     !step.activeTools.some(n => n.startsWith("mcp_slack_tool_")),
     "no MCP tool active before loading",
   );
-  const inventoryMsg = step.system.map(m => m.content).join("\n");
+  const inventoryMsg = step.instructions.map(m => m.content).join("\n");
   assert.ok(
     inventoryMsg.includes("Slack (200 tools via MCP)"),
     "inventory block lists the server",
@@ -525,9 +525,9 @@ async function endToEnd() {
     Object.keys(seeingRuntime.tools).includes("capture_screenshot"),
     "a vision model keeps it",
   );
-  // The other dashboard tools are unaffected by the gate.
+  // The other client tools are unaffected by the gate.
   assert.ok(
-    Object.keys(blindRuntime.tools).includes("list_open_dashboards"),
+    Object.keys(blindRuntime.tools).includes("list_data_sources"),
     "the gate removes only the screenshot tool",
   );
 

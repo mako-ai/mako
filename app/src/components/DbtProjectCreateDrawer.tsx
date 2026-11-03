@@ -142,13 +142,15 @@ export default function DbtProjectCreateDrawer({
       open={open}
       onClose={handleClose}
       sx={{ zIndex: theme => theme.zIndex.modal }}
-      PaperProps={{
-        sx: {
-          width: { xs: "100%", sm: DRAWER_WIDTH },
-          maxWidth: "100vw",
-          display: "flex",
-          flexDirection: "column",
-          boxShadow: theme => theme.shadows[16],
+      slotProps={{
+        paper: {
+          sx: {
+            width: { xs: "100%", sm: DRAWER_WIDTH },
+            maxWidth: "100vw",
+            display: "flex",
+            flexDirection: "column",
+            boxShadow: theme => theme.shadows[16],
+          },
         },
       }}
     >
@@ -167,7 +169,12 @@ export default function DbtProjectCreateDrawer({
       >
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
           <PlusIcon size={18} strokeWidth={1.75} />
-          <Typography variant="subtitle1" fontWeight={600}>
+          <Typography
+            variant="subtitle1"
+            sx={{
+              fontWeight: 600,
+            }}
+          >
             New dbt project
           </Typography>
         </Box>
@@ -191,14 +198,22 @@ export default function DbtProjectCreateDrawer({
           <DbtVersionSelect value={dbtVersion} onChange={setDbtVersion} />
         </Box>
 
-        <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 1.5 }}>
+        <Typography
+          variant="subtitle2"
+          sx={{
+            fontWeight: 600,
+            mb: 1.5,
+          }}
+        >
           Environments
         </Typography>
         <Typography
           variant="caption"
-          color="text.secondary"
-          display="block"
-          sx={{ mb: 1.5 }}
+          sx={{
+            color: "text.secondary",
+            display: "block",
+            mb: 1.5,
+          }}
         >
           Creates a <strong>dev</strong> and <strong>prod</strong> environment.
           Add more later in project settings.
@@ -223,8 +238,10 @@ export default function DbtProjectCreateDrawer({
           <Typography
             variant="caption"
             color="error"
-            display="block"
-            sx={{ mb: 2 }}
+            sx={{
+              display: "block",
+              mb: 2,
+            }}
           >
             Add a Postgres, BigQuery, ClickHouse, MySQL, Redshift or SQL Server
             connection in Databases first.

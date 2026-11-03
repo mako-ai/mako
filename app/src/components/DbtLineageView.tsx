@@ -350,13 +350,15 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
             onKeyDown={e => {
               if (e.key === "Enter") applySelector();
             }}
-            InputProps={{
-              startAdornment: (
-                <InputAdornment position="start">
-                  <FilterIcon size={14} />
-                </InputAdornment>
-              ),
-              sx: { fontSize: "0.8rem" },
+            slotProps={{
+              input: {
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <FilterIcon size={14} />
+                  </InputAdornment>
+                ),
+                sx: { fontSize: "0.8rem" },
+              },
             }}
           />
           <Tooltip title="Focus the graph on the selected nodes">
@@ -373,8 +375,10 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
           )}
           <Typography
             variant="caption"
-            color="text.secondary"
-            sx={{ whiteSpace: "nowrap" }}
+            sx={{
+              color: "text.secondary",
+              whiteSpace: "nowrap",
+            }}
           >
             {appliedSelector
               ? `${visibleCount} / ${totalCount}`
@@ -461,8 +465,11 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
           ) : (
             <Typography
               variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", mb: 1.5 }}
+              sx={{
+                color: "text.secondary",
+                display: "block",
+                mb: 1.5,
+              }}
             >
               No description in the manifest.
             </Typography>
@@ -471,8 +478,11 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
           {selectedNode.owner && (
             <Typography
               variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", mb: 0.5 }}
+              sx={{
+                color: "text.secondary",
+                display: "block",
+                mb: 0.5,
+              }}
             >
               Owner: {selectedNode.owner}
             </Typography>
@@ -494,8 +504,10 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
               <Divider sx={{ my: 1 }} />
               <Typography
                 variant="caption"
-                color="text.secondary"
-                sx={{ fontWeight: 600 }}
+                sx={{
+                  color: "text.secondary",
+                  fontWeight: 600,
+                }}
               >
                 Columns ({selectedNode.columns.length})
               </Typography>
@@ -517,8 +529,10 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
                     {col.description && (
                       <Typography
                         variant="caption"
-                        color="text.secondary"
-                        sx={{ display: "block" }}
+                        sx={{
+                          color: "text.secondary",
+                          display: "block",
+                        }}
                       >
                         {col.description}
                       </Typography>

@@ -35,17 +35,15 @@ import {
 import {
   DndContext,
   DragOverlay,
-  PointerSensor,
   closestCenter,
   pointerWithin,
-  useSensor,
-  useSensors,
   type CollisionDetection,
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { filterTree } from "../store/lib/tree-helpers";
+import { useDragSensors } from "../hooks/useDragSensors";
 import {
   DraggableFolderScope,
   DraggableTreeItem,
@@ -395,11 +393,7 @@ function ResourceTreeInner(
     getFolderExpansionKey,
   });
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 8 },
-    }),
-  );
+  const sensors = useDragSensors(8);
 
   useEffect(() => {
     setSectionExpanded(prev => {
@@ -853,7 +847,7 @@ function ResourceTreeInner(
         event.key.toLowerCase() === "d" &&
         focusItem &&
         enableDuplicate &&
-        (!focusItem.isDirectory || focusItem.entityType === "dashboard")
+        !focusItem.isDirectory
       ) {
         event.preventDefault();
         onDuplicateItem?.(focusItem);
@@ -1222,7 +1216,7 @@ function ResourceTreeInner(
                 <Folder size={16} strokeWidth={1.5} />
               );
               // Explorers can suppress a folder's icon by returning null from
-              // getItemIcon (e.g. dashboards show an icon only on dashboards,
+              // getItemIcon (e.g. to show an icon only on entity rows,
               // not on their containing folders). Collapse the icon column so
               // the label sits right after the chevron, like console folders.
               if (!folderIcon) return null;
@@ -1236,13 +1230,15 @@ function ResourceTreeInner(
               primary={
                 isRenaming ? renderInlineRenameInput(node.id) : node.name
               }
-              primaryTypographyProps={{
-                variant: "body2",
-                sx: {
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  fontWeight: 500,
+              slotProps={{
+                primary: {
+                  variant: "body2",
+                  sx: {
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    fontWeight: 500,
+                  },
                 },
               }}
             />
@@ -1296,8 +1292,8 @@ function ResourceTreeInner(
                   ) : childItems.length === 0 ? (
                     <Typography
                       variant="caption"
-                      color="text.disabled"
                       sx={{
+                        color: "text.disabled",
                         pl: 1.5 + (depth + 1) * 1.5 + 2.75,
                         py: 0,
                         minHeight: rowHeight,
@@ -1382,7 +1378,7 @@ function ResourceTreeInner(
               minWidth: iconColWidth,
               // In hideFolderIcon mode the file icon occupies the chevron
               // column. Use the same trailing gap as normal icon rows so
-              // connector/database/dashboard explorer text starts consistently.
+              // connector/database explorer text starts consistently.
               mr: 0.75,
             }}
           >
@@ -1390,12 +1386,14 @@ function ResourceTreeInner(
           </ListItemIcon>
           <MuiListItemText
             primary={isRenaming ? renderInlineRenameInput(node.id) : node.name}
-            primaryTypographyProps={{
-              variant: "body2",
-              sx: {
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
+            slotProps={{
+              primary: {
+                variant: "body2",
+                sx: {
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                },
               },
             }}
           />
@@ -1516,13 +1514,15 @@ function ResourceTreeInner(
         ) : null}
         <MuiListItemText
           primary={section.label}
-          primaryTypographyProps={{
-            variant: "body2",
-            sx: {
-              fontWeight: 600,
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
+          slotProps={{
+            primary: {
+              variant: "body2",
+              sx: {
+                fontWeight: 600,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              },
             },
           }}
         />
@@ -1658,35 +1658,31 @@ function ResourceTreeInner(
                   Rename
                 </MenuItem>
               ),
-              enableDuplicate &&
-                (!item.isDirectory || item.entityType === "dashboard") && (
-                  <MenuItem
-                    key="duplicate"
-                    onClick={() => {
-                      setContextMenu(null);
-                      onDuplicateItem?.(item);
-                    }}
-                  >
-                    <Copy size={14} style={{ marginRight: 8 }} />
-                    Duplicate
-                  </MenuItem>
-                ),
-              enableNewFolder &&
-                item.isDirectory &&
-                item.entityType !== "dashboard" &&
-                canManage && (
-                  <MenuItem
-                    key="subfolder"
-                    onClick={async () => {
-                      setContextMenu(null);
-                      onExpandFolder(getExpansionKey(item));
-                      await triggerCreateFolder(item.id, item.access);
-                    }}
-                  >
-                    <FolderPlus size={14} style={{ marginRight: 8 }} />
-                    New Subfolder
-                  </MenuItem>
-                ),
+              enableDuplicate && !item.isDirectory && (
+                <MenuItem
+                  key="duplicate"
+                  onClick={() => {
+                    setContextMenu(null);
+                    onDuplicateItem?.(item);
+                  }}
+                >
+                  <Copy size={14} style={{ marginRight: 8 }} />
+                  Duplicate
+                </MenuItem>
+              ),
+              enableNewFolder && item.isDirectory && canManage && (
+                <MenuItem
+                  key="subfolder"
+                  onClick={async () => {
+                    setContextMenu(null);
+                    onExpandFolder(getExpansionKey(item));
+                    await triggerCreateFolder(item.id, item.access);
+                  }}
+                >
+                  <FolderPlus size={14} style={{ marginRight: 8 }} />
+                  New Subfolder
+                </MenuItem>
+              ),
               enableMove && canManage && onMoveRequest && (
                 <MenuItem
                   key="move"

@@ -128,7 +128,12 @@ export function ForgotPasswordPage({ onBackToLogin }: ForgotPasswordPageProps) {
       </form>
 
       <Box sx={{ textAlign: "center", mt: 4 }}>
-        <Typography variant="body2" color="text.secondary">
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           Remember your password?{" "}
           <Link
             component="button"

@@ -71,7 +71,12 @@ function UsageBar({
     <Box sx={{ mb: 1.5 }}>
       <Box sx={{ display: "flex", justifyContent: "space-between", mb: 0.5 }}>
         <Typography variant="body2">{label}</Typography>
-        <Typography variant="body2" color="text.secondary">
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           {detail}
         </Typography>
       </Box>
@@ -189,7 +194,13 @@ export default function SettingsSandbox() {
           </span>
         </Tooltip>
       </Box>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+      <Typography
+        variant="body2"
+        sx={{
+          color: "text.secondary",
+          mb: 2,
+        }}
+      >
         Your workspace&apos;s machine: every terminal, dev server and agent
         shell runs inside it. Committed work lives in the repository and
         survives anything; the machine itself is disposable.
@@ -226,14 +237,24 @@ export default function SettingsSandbox() {
               alignItems: "center",
             }}
           >
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Sandbox ID
             </Typography>
             <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
               {stats.sandboxId}
             </Typography>
 
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Connect
             </Typography>
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
@@ -256,7 +277,12 @@ export default function SettingsSandbox() {
               </Tooltip>
             </Box>
 
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Uptime
             </Typography>
             <Typography variant="body2">
@@ -266,7 +292,12 @@ export default function SettingsSandbox() {
                 : ""}
             </Typography>
 
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Active sessions
             </Typography>
             <Box>
@@ -286,7 +317,12 @@ export default function SettingsSandbox() {
               </Tooltip>
             </Box>
 
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Load average
             </Typography>
             <Typography variant="body2" sx={{ fontFamily: "monospace" }}>

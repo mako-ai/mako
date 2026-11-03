@@ -25,7 +25,7 @@ import {
   recordDraftBuilt,
   recordDraftFailed,
 } from "./binding-draft-cache";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -113,7 +113,7 @@ describe("draft reuse", () => {
     // The caller still owns (and streams) the local file.
     await expect(fs.access(file)).resolves.toBeUndefined();
     expect(key.startsWith(`apps/drafts/${PROJECT}/${hash}-`)).toBe(true);
-    expect(await getDashboardArtifactStore().exists(key)).toBe(true);
+    expect(await getArtifactStore().exists(key)).toBe(true);
     expect(
       await lookupDraft(PROJECT, hash, new Date(now.getTime() + 60_000)),
     ).toEqual({ kind: "hit", key, rowCount: 3, builtAt: now });
@@ -131,7 +131,7 @@ describe("draft reuse", () => {
     const now = new Date();
     const [a, b] = await Promise.all([keep(hash, now), keep(hash, now)]);
     expect(a).not.toBe(b);
-    const store = getDashboardArtifactStore();
+    const store = getArtifactStore();
     expect(await store.exists(a)).toBe(true);
     expect(await store.exists(b)).toBe(true);
   });
@@ -140,7 +140,7 @@ describe("draft reuse", () => {
     const hash = draftHash({ connectionId: "c1", renderedCode: "select 3" });
     const now = new Date();
     const key = await keep(hash, now);
-    await getDashboardArtifactStore().delete(key);
+    await getArtifactStore().delete(key);
     await forgetDraftBuild(PROJECT, key);
     expect(await lookupDraft(PROJECT, hash, now)).toEqual({ kind: "miss" });
   });
@@ -151,7 +151,7 @@ describe("draft reuse", () => {
     const old = await keep(hash, t0, "a");
     const later = new Date(t0.getTime() + DRAFT_TTL_MS + 1000);
     const fresh = await keep(hash, later, "a");
-    const store = getDashboardArtifactStore();
+    const store = getArtifactStore();
     expect(await store.exists(old)).toBe(false);
     expect(await store.exists(fresh)).toBe(true);
     expect(await rows().countDocuments({ key: old })).toBe(0);

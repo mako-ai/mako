@@ -167,9 +167,8 @@ function ConsoleExplorer(
           if (data.databaseId || data.databaseName) {
             updateDatabase(result.id, data.databaseId, data.databaseName);
           }
-          const { computeConsoleStateHash } = await import(
-            "../utils/stateHash"
-          );
+          const { computeConsoleStateHash } =
+            await import("../utils/stateHash");
           const savedStateHash =
             data.savedStateHash ??
             (data.lastDraftOrigin === "agent"
@@ -238,9 +237,8 @@ function ConsoleExplorer(
 
           updateFilePath(consoleId, node.path);
 
-          const { computeConsoleStateHash } = await import(
-            "../utils/stateHash"
-          );
+          const { computeConsoleStateHash } =
+            await import("../utils/stateHash");
           const savedStateHash =
             data.savedStateHash ??
             (data.lastDraftOrigin === "agent"
@@ -540,8 +538,12 @@ function ConsoleExplorer(
                 <Box sx={{ px: 1, pb: 1 }}>
                   <Typography
                     variant="caption"
-                    color="text.secondary"
-                    sx={{ px: 0.5, pb: 0.5, display: "block" }}
+                    sx={{
+                      color: "text.secondary",
+                      px: 0.5,
+                      pb: 0.5,
+                      display: "block",
+                    }}
                   >
                     Also matched by description
                   </Typography>
@@ -558,15 +560,18 @@ function ConsoleExplorer(
                         <ListItemText
                           primary={result.title}
                           secondary={result.description || result.language}
-                          primaryTypographyProps={{
-                            variant: "body2",
-                            noWrap: true,
-                            fontSize: "0.8rem",
-                          }}
-                          secondaryTypographyProps={{
-                            variant: "caption",
-                            noWrap: true,
-                            fontSize: "0.7rem",
+                          slotProps={{
+                            primary: {
+                              variant: "body2",
+                              noWrap: true,
+                              sx: { fontSize: "0.8rem" },
+                            },
+
+                            secondary: {
+                              variant: "caption",
+                              noWrap: true,
+                              sx: { fontSize: "0.7rem" },
+                            },
                           }}
                         />
                       </ListItemButton>
@@ -577,7 +582,12 @@ function ConsoleExplorer(
 
               {noMatches && (
                 <Box sx={{ px: 2, py: 1 }}>
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: "text.secondary",
+                    }}
+                  >
                     No consoles found
                   </Typography>
                 </Box>

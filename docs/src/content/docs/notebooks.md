@@ -39,7 +39,7 @@ Reads stream **Arrow IPC** back into pandas zero-copy. Queries must be read-only
 
 ## Folders & Organization
 
-Notebooks are organized like dashboards and consoles: a **My Notebooks** section (private to you) and a **Workspace** section (shared), each supporting arbitrarily nested folders. Create, rename, and delete folders in the explorer; drag notebooks between folders or move them via `PATCH /api/workspaces/:wid/notebooks/:id/move` (set `folderId` and/or `access`). Folder structure updates in real time for everyone in the workspace.
+Notebooks are organized like consoles: a **My Notebooks** section (private to you) and a **Workspace** section (shared), each supporting arbitrarily nested folders. Create, rename, and delete folders in the explorer; drag notebooks between folders or move them via `PATCH /api/workspaces/:wid/notebooks/:id/move` (set `folderId` and/or `access`). Folder structure updates in real time for everyone in the workspace.
 
 ## Building Notebooks with the AI Agent
 

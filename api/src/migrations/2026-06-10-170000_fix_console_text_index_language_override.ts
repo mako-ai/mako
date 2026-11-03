@@ -6,7 +6,7 @@ const log = loggers.migration();
 export const description =
   "Recreate console_text_search with language_override so console saves work " +
   "(the default override field 'language' collides with the console language " +
-  "column: MongoDB rejects writes with \"language override unsupported: sql\")";
+  'column: MongoDB rejects writes with "language override unsupported: sql")';
 
 const TEXT_INDEX_NAME = "console_text_search";
 const LANGUAGE_OVERRIDE = "_textSearchLanguage";
@@ -14,7 +14,7 @@ const LANGUAGE_OVERRIDE = "_textSearchLanguage";
 export async function up(db: Db): Promise<void> {
   const col = db.collection("savedconsoles");
 
-  let indexes: Array<Record<string, unknown>> = [];
+  let indexes: Array<Record<string, unknown>>;
   try {
     indexes = (await col.indexes()) as Array<Record<string, unknown>>;
   } catch {

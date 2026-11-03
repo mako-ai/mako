@@ -407,20 +407,29 @@ export function FlowRunNotificationsSection({
     <Box sx={{ mt: compact ? 0 : 2 }}>
       <Stack
         direction="row"
-        alignItems="center"
-        justifyContent="space-between"
-        sx={{ mb: 1 }}
-        flexWrap="wrap"
-        gap={1}
+        sx={{
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 1,
+          mb: 1,
+        }}
       >
-        <Typography variant="subtitle2" color="text.secondary">
+        <Typography
+          variant="subtitle2"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           Run notifications
         </Typography>
         <Stack
           direction="row"
-          alignItems="center"
           spacing={0.5}
-          flexWrap="wrap"
+          sx={{
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
         >
           <Button
             size="small"
@@ -447,9 +456,11 @@ export function FlowRunNotificationsSection({
       {!canManage && (
         <Typography
           variant="caption"
-          color="text.secondary"
-          display="block"
-          sx={{ mb: 1 }}
+          sx={{
+            color: "text.secondary",
+            display: "block",
+            mb: 1,
+          }}
         >
           Only workspace admins can edit notifications.
         </Typography>
@@ -467,7 +478,12 @@ export function FlowRunNotificationsSection({
 
       <Stack spacing={1}>
         {(rules ?? []).length === 0 ? (
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             No notifications yet. Notify on success or failure via email,
             webhook, or Slack.
           </Typography>
@@ -476,14 +492,25 @@ export function FlowRunNotificationsSection({
             <Card key={rule.id} variant="outlined">
               <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
                 <Stack spacing={0.75}>
-                  <Stack direction="row" alignItems="center" spacing={1}>
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    sx={{
+                      alignItems: "center",
+                    }}
+                  >
                     <NotifyIcon fontSize="small" color="action" />
                     <Typography variant="subtitle2">
                       {channelTitle(rule.channel.type)}
                     </Typography>
                     <Chip size="small" label={triggersLabel(rule.triggers)} />
                   </Stack>
-                  <Typography variant="body2" color="text.secondary">
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      color: "text.secondary",
+                    }}
+                  >
                     {ruleSummary(rule)}
                   </Typography>
                 </Stack>
@@ -537,11 +564,13 @@ export function FlowRunNotificationsSection({
         fullWidth
         maxWidth="sm"
         scroll="paper"
-        PaperProps={{
-          sx: {
-            maxHeight: "min(560px, 85vh)",
-            display: "flex",
-            flexDirection: "column",
+        slotProps={{
+          paper: {
+            sx: {
+              maxHeight: "min(560px, 85vh)",
+              display: "flex",
+              flexDirection: "column",
+            },
           },
         }}
       >
@@ -554,7 +583,13 @@ export function FlowRunNotificationsSection({
             pr: 1,
           }}
         >
-          <Typography component="span" variant="h6" fontWeight={600}>
+          <Typography
+            component="span"
+            variant="h6"
+            sx={{
+              fontWeight: 600,
+            }}
+          >
             Delivery log
           </Typography>
           <IconButton
@@ -566,17 +601,33 @@ export function FlowRunNotificationsSection({
           </IconButton>
         </DialogTitle>
         <DialogContent dividers sx={{ flex: 1, overflow: "auto", py: 2 }}>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+              mb: 2,
+            }}
+          >
             Notification send attempts for this{" "}
             {resourceType === "flow" ? "flow" : "scheduled query"}, newest first
             (up to 100).
           </Typography>
           {deliveryLogLoading ? (
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Loading…
             </Typography>
           ) : deliveryLogItems.length === 0 ? (
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               No deliveries yet. Entries appear after a run finishes and a
               notification is sent.
             </Typography>
@@ -596,8 +647,10 @@ export function FlowRunNotificationsSection({
                   key={d.id}
                   component="li"
                   variant="body2"
-                  color="text.secondary"
-                  sx={{ wordBreak: "break-word" }}
+                  sx={{
+                    color: "text.secondary",
+                    wordBreak: "break-word",
+                  }}
                 >
                   {formatDeliveryLine(d)}
                 </Typography>
@@ -785,7 +838,12 @@ export function FlowRunNotificationsSection({
         <DialogTitle>Send test</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Sends a sample payload so you can verify the channel.
             </Typography>
             <FormControl fullWidth size="small">

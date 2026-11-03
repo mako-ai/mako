@@ -5,7 +5,11 @@
 
 import { generateText } from "ai";
 import { propagateAttributes } from "@langfuse/tracing";
-import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
+import {
+  buildProviderOptions,
+  getModel,
+  systemProviderOptions,
+} from "../agent-lib/ai-gateway";
 import { getUtilityModelId } from "../agent-lib/ai-models";
 import { trackUsage } from "./llm-usage.service";
 import { loggers } from "../logging";
@@ -49,28 +53,24 @@ export const generateChatTitle = async (
         traceName: "title-generation",
         userId: ctx?.userEmail ?? ctx?.userId,
         tags: ["type:title_generation"],
-        metadata: ctx ? { workspaceId: ctx.workspaceId } : undefined,
+        metadata: {
+          workspaceId: ctx?.workspaceId ?? "unknown",
+          invocationType: "title_generation",
+        },
       },
       () =>
         generateText({
           model: getModel(modelId),
-          system: TITLE_SYSTEM_PROMPT,
+          instructions: TITLE_SYSTEM_PROMPT,
           prompt: userMessageContent.substring(0, 2000),
-          providerOptions: {
-            ...buildProviderOptions({
-              userId: ctx?.userId ?? "unknown",
-              workspaceId: ctx?.workspaceId ?? "unknown",
-              invocationType: "title_generation",
-            }),
-          },
-          experimental_telemetry: {
-            isEnabled: true,
-            functionId: "title-generation",
-            metadata: {
-              workspaceId: ctx?.workspaceId ?? "unknown",
-              invocationType: "title_generation",
-            },
-          },
+          providerOptions: ctx
+            ? buildProviderOptions({
+                userId: ctx.userId,
+                workspaceId: ctx.workspaceId,
+                invocationType: "title_generation",
+              })
+            : systemProviderOptions("title_generation"),
+          telemetry: { functionId: "title-generation" },
         }),
     );
 

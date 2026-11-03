@@ -23,9 +23,8 @@ async function main(): Promise<void> {
   await mongoose.connect(mongo.getUri());
   try {
     const { Flow } = await import("../database/workspace-schema");
-    const { flowToFile, serializeFlowFile, parseFlowFile } = await import(
-      "./flow-config-files"
-    );
+    const { flowToFile, serializeFlowFile, parseFlowFile } =
+      await import("./flow-config-files");
 
     // Every DocumentArray on the model populated at once.
     const doc = await Flow.create({
@@ -117,6 +116,41 @@ async function main(): Promise<void> {
       `unset layout hints must be omitted, not serialized:\n${reassigned}`,
     );
     assert.ok(parseFlowFile(reassigned), "reassigned document parses back");
+
+    // A scheduled flow never switched to webhooks: Mongoose materialises
+    // `webhookConfig.enabled: true` on it, but with no endpoint it writes no
+    // webhook stanza — its file is exactly what it was before webhooks could
+    // be switched on for any flow.
+    const scheduled = await Flow.create({
+      workspaceId: new Types.ObjectId(),
+      type: "scheduled",
+      name: "sway → warehouse",
+      slug: "sway-warehouse",
+      sourceType: "connector",
+      dataSourceId: new Types.ObjectId(),
+      destinationDatabaseId: new Types.ObjectId(),
+      createdBy: "u1",
+      schedule: { enabled: true, cron: "0 * * * *", timezone: "UTC" },
+    });
+    assert.equal(
+      scheduled.webhookConfig?.enabled,
+      true,
+      "the Mongoose default",
+    );
+    const plain = serializeFlowFile(flowToFile(scheduled));
+    assert.ok(
+      !plain.includes("webhook:"),
+      `no webhook key expected:\n${plain}`,
+    );
+
+    // Webhooks switched on (endpoint minted): `live.webhook: on` appears and
+    // the poll stays — polling carries on, webhooks add speed.
+    scheduled.set("webhookConfig.endpoint", "https://x/api/webhooks/w/f");
+    const hybrid = serializeFlowFile(flowToFile(scheduled));
+    assert.ok(!/^type:/m.test(hybrid), hybrid);
+    assert.ok(hybrid.includes("webhook: 'on'"), hybrid);
+    assert.ok(hybrid.includes("poll: 0 * * * *"), hybrid);
+    assert.equal(parseFlowFile(hybrid)?.webhookEnabled, true);
 
     console.log("flow-config mongoose-safety tests passed");
   } finally {

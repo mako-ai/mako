@@ -146,7 +146,13 @@ function McpConnectSection({
       <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
         Use this key with MCP (headless / CI)
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+      <Typography
+        variant="body2"
+        sx={{
+          color: "text.secondary",
+          mb: 1,
+        }}
+      >
         Interactive agents can connect without a key — see &quot;Connect an AI
         agent&quot; on the API Keys page (they sign in instead). Use these
         key-based setups where a browser sign-in isn&apos;t possible. The key is
@@ -174,7 +180,13 @@ function McpConnectSection({
           />
         ))}
       </Tabs>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+      <Typography
+        variant="body2"
+        sx={{
+          color: "text.secondary",
+          mb: 1,
+        }}
+      >
         {active.instruction}
       </Typography>
       {active.deeplink && (
@@ -227,12 +239,21 @@ function McpConnectSection({
       </Box>
       <Typography
         variant="body2"
-        color="text.secondary"
-        sx={{ mt: 2, mb: 0.5 }}
+        sx={{
+          color: "text.secondary",
+          mt: 2,
+          mb: 0.5,
+        }}
       >
         Then ask it something:
       </Typography>
-      <Stack direction="row" alignItems="flex-start" spacing={0.5}>
+      <Stack
+        direction="row"
+        spacing={0.5}
+        sx={{
+          alignItems: "flex-start",
+        }}
+      >
         <Box
           sx={{
             flex: 1,
@@ -384,7 +405,13 @@ export function ApiKeyManager() {
           <Typography variant="subtitle2" gutterBottom sx={{ fontWeight: 600 }}>
             Workspace ID
           </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+              mb: 1,
+            }}
+          >
             Use this value as{" "}
             <Box component="span" sx={{ fontFamily: "monospace" }}>
               :workspaceId
@@ -400,9 +427,11 @@ export function ApiKeyManager() {
           </Typography>
           <Stack
             direction="row"
-            alignItems="center"
             spacing={1}
-            sx={{ flexWrap: "wrap" }}
+            sx={{
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
           >
             <Box
               component="code"
@@ -571,10 +600,22 @@ export function ApiKeyManager() {
           </Alert>
           {workspaceId && (
             <Box sx={{ mb: 2 }}>
-              <Typography variant="body2" color="text.secondary" gutterBottom>
+              <Typography
+                variant="body2"
+                gutterBottom
+                sx={{
+                  color: "text.secondary",
+                }}
+              >
                 Workspace ID
               </Typography>
-              <Stack direction="row" alignItems="center" spacing={1}>
+              <Stack
+                direction="row"
+                spacing={1}
+                sx={{
+                  alignItems: "center",
+                }}
+              >
                 <Box
                   component="code"
                   sx={{
@@ -603,7 +644,13 @@ export function ApiKeyManager() {
             </Box>
           )}
           <Box sx={{ mb: 2 }}>
-            <Typography variant="body2" color="text.secondary" gutterBottom>
+            <Typography
+              variant="body2"
+              gutterBottom
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               API Key Name
             </Typography>
             <Typography variant="body1" sx={{ fontWeight: 500 }}>
@@ -611,7 +658,13 @@ export function ApiKeyManager() {
             </Typography>
           </Box>
           <Box>
-            <Typography variant="body2" color="text.secondary" gutterBottom>
+            <Typography
+              variant="body2"
+              gutterBottom
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               API Key
             </Typography>
             <Box
@@ -658,7 +711,12 @@ export function ApiKeyManager() {
             />
           )}
           <Box sx={{ mt: 3 }}>
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Or use it against the REST API directly:
             </Typography>
             <Box
@@ -678,8 +736,10 @@ export function ApiKeyManager() {
               <>
                 <Typography
                   variant="body2"
-                  color="text.secondary"
-                  sx={{ mt: 2 }}
+                  sx={{
+                    color: "text.secondary",
+                    mt: 2,
+                  }}
                 >
                   Example endpoint (replace BASE_URL with your API host):
                 </Typography>

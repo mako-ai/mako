@@ -41,16 +41,10 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          # 22, not 20, because of ONE suite: the workspace-connector specs
-          # execute a real connector, and a connector is TypeScript imported
-          # without a build step. Node strips types from a `.ts` import from
-          # 22.6 (with a flag) and 22.18 (without one); on 20 it cannot, and
-          # every one of those specs fails with `Unknown file extension
-          # ".ts"`. The sandbox that runs connectors in production is on 22 for
-          # the same reason, so this is CI matching the runtime rather than a
-          # preference. The API image itself is still node:20-slim — it never
-          # imports a connector, it ships the code to a box that does.
-          node-version: 22
+          # Matches the API image (node:24-bookworm-slim). The workspace-
+          # connector specs also need >= 22.18: they import a real connector,
+          # which is TypeScript loaded without a build step (type stripping).
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -98,16 +92,10 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          # 22, not 20, because of ONE suite: the workspace-connector specs
-          # execute a real connector, and a connector is TypeScript imported
-          # without a build step. Node strips types from a `.ts` import from
-          # 22.6 (with a flag) and 22.18 (without one); on 20 it cannot, and
-          # every one of those specs fails with `Unknown file extension
-          # ".ts"`. The sandbox that runs connectors in production is on 22 for
-          # the same reason, so this is CI matching the runtime rather than a
-          # preference. The API image itself is still node:20-slim — it never
-          # imports a connector, it ships the code to a box that does.
-          node-version: 22
+          # Matches the API image (node:24-bookworm-slim). The workspace-
+          # connector specs also need >= 22.18: they import a real connector,
+          # which is TypeScript loaded without a build step (type stripping).
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -119,6 +107,11 @@ jobs:
         run: |
           pnpm --filter @mako/schemas run build
           pnpm --filter @mako/agent-tools run build
+
+      # worker-identity.db.test.ts runs the workflows runtime's own
+      # lib/mako.ts, which imports the runtime's packages, as the image does.
+      - name: Install workflows runtime packages
+        run: npm install --prefix deploy/workflows/runtime --no-audit --no-fund
 
       - name: App SDK version is published to npm
         # Scaffolds depend on `@makoai/app-sdk@^<vendored version>` (from

@@ -68,7 +68,13 @@ export function GitFileDiffView({
             <CircularProgress size={20} />
           </Box>
         ) : binary ? (
-          <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+              p: 2,
+            }}
+          >
             Binary file — no text diff.
           </Typography>
         ) : (

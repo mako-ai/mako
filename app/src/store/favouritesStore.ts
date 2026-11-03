@@ -16,7 +16,7 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { api, toErrorMessage, unwrapBody } from "../api";
 
-export type FavouriteKind = "app" | "console" | "notebook" | "dashboard";
+export type FavouriteKind = "app" | "console" | "notebook";
 
 export interface Favourite {
   id: string;

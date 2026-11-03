@@ -1,5 +1,5 @@
 import mongoose, { Schema, Document, Types } from "mongoose";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 import { encryptString, decryptString } from "../services/crypto.service";
 import { loggers } from "../logging";
 import {
@@ -94,12 +94,7 @@ export interface IWorkspaceBilling {
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
   subscriptionStatus:
-    | "active"
-    | "past_due"
-    | "canceled"
-    | "trialing"
-    | "incomplete"
-    | null;
+    "active" | "past_due" | "canceled" | "trialing" | "incomplete" | null;
   currentPeriodStart: Date | null;
   currentPeriodEnd: Date | null;
   usageQuotaUsd: number;
@@ -123,17 +118,19 @@ export interface IWorkspace extends Document {
     billingTier: "free" | "pro" | "enterprise";
     disabledModelIds?: string[];
     /**
-     * Max concurrent scheduled/manual dashboard artifact refreshes for this
-     * workspace. Clamped to [1, DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
-     */
-    dashboardRefreshConcurrency?: number;
-    /**
      * Domain auto-join (apps.md §28): a signed-in person whose email domain
      * is listed becomes a member on first contact with the workspace — no
      * invitation — with this access role. How someone clicks a published
      * app's link, signs in, and is simply in.
      */
     autoJoin?: IWorkspaceAutoJoin;
+    /**
+     * Whether in-app app links (`/view/<workspace>/<app>`) unfurl with the
+     * app's title, description and thumbnail in chat apps (Open Graph,
+     * share-og.service). Only workspace-wide apps ever do. Default on;
+     * `false` makes every in-app link preview generic.
+     */
+    linkPreviews?: boolean;
   };
   billing: IWorkspaceBilling;
   apiKeys?: IWorkspaceApiKey[];
@@ -142,12 +139,49 @@ export interface IWorkspace extends Document {
    * detail: apps (and later consoles, dbt projects) mount into these. Mako
    * stores nothing in Mongo except these links: the repos themselves are the
    * durable store. Layout inside a repo: `<makoRoot>/apps/<app>` for
-   * workspace content, `<makoRoot>/users/<userId>/apps/<app>` for personal.
+   * workspace content, `<makoRoot>/users/<handle>/apps/<app>` for personal.
    * The model allows N repos; the product default is one.
    */
   workspaceRepos?: IWorkspaceRepoBinding[];
   /** @deprecated pre-workspaceRepos single binding — migrated at read time. */
   appsRepo?: IWorkspaceRepoBinding;
+  /**
+   * Workflows as code (docs/src/content/docs/workflows.md). Mako stores how to reach
+   * the workspace's Hatchet tenant and which commit its worker runs.
+   * Workflows and schedules live in git; runs and logs live in Hatchet.
+   */
+  workflows?: IWorkspaceWorkflows;
+}
+
+/**
+ * One deployed version of `workflows/`: the commit the worker should run,
+ * the commit it reports running, and the last commit it could not start.
+ */
+export interface IWorkflowSlot {
+  sha: string;
+  tree: string;
+  /** The workflow folders at that commit: what the screen lists. */
+  names: string[];
+  running?: { sha: string };
+  failed?: { sha: string; error: string };
+}
+
+export interface IWorkspaceWorkflows {
+  /**
+   * The workspace's Hatchet API token, encrypted like connection secrets.
+   * Absent when the installation shares one token (HATCHET_CLIENT_TOKEN).
+   */
+  hatchetToken?: string;
+  /** `workflows/` on main. */
+  live?: IWorkflowSlot;
+  /**
+   * Workflows whose triggers are on. A workflow starts off: it runs only
+   * when started by hand, until an admin activates it and its schedule and
+   * webhook go live. A sandbox never has triggers.
+   */
+  active?: string[];
+  /** Workflows with a webhook turned on: name → its URL's secret, encrypted. */
+  webhooks?: Record<string, string>;
 }
 
 export interface IWorkspaceRepoBinding {
@@ -274,10 +308,26 @@ export interface IDatabaseConnection extends Document {
    * access is unaffected. Set it on connections created for agent writes.
    */
   allowAgentWrites?: boolean;
+  /**
+   * Who may write through this connection (access/connection-writes.ts).
+   * Absent or empty: no one. Everyone
+   * may always read; system jobs (syncs, flows, dbt) are not concerned.
+   */
+  writers?: IConnectionWriter[];
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
   lastConnectedAt?: Date;
+}
+
+/** One principal allowed to write, optionally only to one schema or table. */
+export interface IConnectionWriter {
+  /** `user:<id>` or `workflow:<name>`; `group:` fits the same field later. */
+  principal: string;
+  /** Absent: anywhere. `finance`: that schema or dataset. `finance.invoices`: that table. */
+  where?: string;
+  addedBy?: string;
+  addedAt?: Date;
 }
 
 /** @deprecated Use IDatabaseConnection instead */
@@ -363,15 +413,14 @@ export interface IConsoleFolder extends Document {
 export type ConsoleAccessLevel = "private" | "workspace";
 
 /**
- * Google Workspace-style sharing primitives, shared by dashboards, consoles
- * and apps.
+ * Google Workspace-style sharing primitives, shared by consoles and apps.
  *
  * - `sharedWith` entries grant a specific user `viewer` (read) or `editor`
  *   (read + write) access regardless of the resource's `access` scope.
  * - `workspaceRole` is the role every workspace member gets when the
  *   resource's `access` is "workspace" (workspace members with the `viewer`
  *   member role are always capped to viewer).
- * - `publicShare` (dashboards + apps only) exposes the resource read-only at
+ * - `publicShare` (apps only) exposes the resource read-only at
  *   /share/:token, optionally protected by a bcrypt-hashed password. Public
  *   viewers see materialized snapshot artifacts by default. When the owner
  *   opts in with `allowLiveQueries`, an app's public viewer may also re-run the
@@ -396,8 +445,6 @@ export interface IPublicShare {
   passwordEncrypted?: string | null;
   createdAt?: Date;
   createdBy?: string;
-  /** Throttle marker for the anonymous "Refresh data" action (dashboards). */
-  lastPublicRefreshAt?: Date;
   /**
    * Apps only. When true, the public viewer may execute the app's published
    * live bindings server-side (read-only, row-capped, rate-limited) instead of
@@ -617,10 +664,7 @@ export interface INotificationRule extends Document {
 }
 
 export type NotificationDeliveryStatus =
-  | "pending"
-  | "sent"
-  | "failed"
-  | "skipped";
+  "pending" | "sent" | "failed" | "skipped";
 
 export interface INotificationDelivery extends Document {
   _id: Types.ObjectId;
@@ -735,8 +779,16 @@ export interface IChat extends Document {
   }>;
   activeAgent?: "mongo" | "bigquery" | "triage"; // Pinned specialist for this thread
   pinnedConsoleId?: string; // Console ID that this chat session is bound to
+  /**
+   * "Chat with app": the published app (AppProject id) this chat is about.
+   * Set at creation; such a chat only ever runs the closed app_chat agent
+   * and lives in the app's chat history, not the workspace's.
+   */
+  appId?: string;
   createdBy: string;
   titleGenerated: boolean;
+  /** Set on a run of Mako's agent from a workflow step: kept, not listed. */
+  source?: "workflow";
   // Resume pointer for in-flight turns: the resumable-stream ID clients can
   // reattach to via GET /api/agent/chat/:chatId/stream. Null when idle.
   activeStreamId?: string | null;
@@ -906,20 +958,11 @@ export type SyncEngine = "legacy" | "cdc";
 
 /** @deprecated Use StreamState + BackfillStatus instead */
 export type SyncState =
-  | "idle"
-  | "backfill"
-  | "catchup"
-  | "live"
-  | "paused"
-  | "degraded";
+  "idle" | "backfill" | "catchup" | "live" | "paused" | "degraded";
 
 export type StreamState = "idle" | "active" | "paused" | "error";
 export type BackfillStatus =
-  | "idle"
-  | "running"
-  | "paused"
-  | "completed"
-  | "error";
+  "idle" | "running" | "paused" | "completed" | "error";
 
 export interface ISyncStateMeta {
   lastEvent?: string;
@@ -934,7 +977,11 @@ export interface ISyncStateMeta {
 export interface IFlow extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
-  type: "scheduled" | "webhook"; // Required field
+  /**
+   * Retired: what drives a flow is its trigger set (services/flow-triggers).
+   * Documents written before carry it; new code never writes it.
+   */
+  type?: "scheduled" | "webhook";
 
   /**
    * Editable display name. Absent on rows created before names existed —
@@ -995,12 +1042,26 @@ export interface IFlow extends Document {
     enabled: boolean;
     cron?: string;
     timezone?: string;
+    /** Scope each scheduled backfill to these entities; empty = all. */
+    entities?: string[];
     lastRunAt?: Date;
   };
   webhookConfig?: {
     endpoint: string;
     secret: string;
+    /**
+     * Provider-side id of the subscription that POSTs to `endpoint` (Stripe
+     * `we_…`), stored at provisioning so later entity changes update that
+     * subscription in place instead of creating a duplicate. Authoritative in
+     * `flows/<slug>.yml` (`webhook.provider_webhook_id`); mirrored here.
+     */
+    providerWebhookId?: string;
     lastReceivedAt?: Date;
+    /**
+     * Why the provider refused the last automatic provisioning (on save).
+     * Cleared on success. Polling carries on regardless.
+     */
+    provisionError?: { message: string; at: Date } | null;
     totalReceived: number;
     enabled: boolean;
   };
@@ -1043,6 +1104,12 @@ export interface IFlow extends Document {
       mode: "all" | "subset";
       entities?: string[];
     };
+    /**
+     * What started this run. Only "scheduled" runs (backfillSchedule) may
+     * fetch incrementally — see sync-cdc/backfill-fetch-mode.ts. Absent on
+     * runs started before this field existed: treated as manual (full).
+     */
+    trigger?: "scheduled" | "manual";
   };
 
   lastRunAt?: Date;
@@ -1164,6 +1231,14 @@ export interface ICdcEntityState extends Document {
   runId?: string;
   backfillStartedAt?: Date;
   backfillCompletedAt?: Date;
+  /**
+   * `backfillState.startedAt` of the last backfill run in which this entity
+   * completed (full or incremental) — the anchor of the next incremental
+   * scheduled resync. See sync-cdc/backfill-fetch-mode.ts.
+   */
+  lastBackfillRunStartedAt?: Date;
+  /** Same, for the last run in which this entity was fetched in FULL. */
+  lastFullBackfillRunStartedAt?: Date;
   lastIngestSeq: number;
   lastMaterializedSeq: number;
   lastMaterializedAt?: Date;
@@ -1267,6 +1342,14 @@ export interface IConnectionVerification extends Document {
 /**
  * Workspace Schema
  */
+const WorkflowSlotFields = {
+  sha: String,
+  tree: String,
+  names: { type: [String], default: undefined },
+  running: { type: { sha: String }, _id: false },
+  failed: { type: { sha: String, error: String }, _id: false },
+};
+
 const WorkspaceSchema = new Schema<IWorkspace>(
   {
     name: {
@@ -1301,11 +1384,6 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         default: "free",
       },
       disabledModelIds: [{ type: String }],
-      dashboardRefreshConcurrency: {
-        type: Number,
-        default: 2,
-        min: 1,
-      },
       autoJoin: {
         type: new Schema(
           {
@@ -1320,6 +1398,7 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         ),
         required: false,
       },
+      linkPreviews: { type: Boolean, required: false },
     },
     billing: {
       stripeCustomerId: { type: String, default: null },
@@ -1367,6 +1446,16 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         ),
       ],
       default: undefined,
+    },
+    workflows: {
+      type: {
+        hatchetToken: { type: String },
+        live: { type: WorkflowSlotFields, _id: false },
+        active: { type: [String], default: undefined },
+        webhooks: { type: Schema.Types.Mixed },
+      },
+      default: undefined,
+      _id: false,
     },
     appsRepo: {
       type: {
@@ -1486,7 +1575,7 @@ const WorkspaceInviteSchema = new Schema<IWorkspaceInvite>({
     type: String,
     required: true,
     unique: true,
-    default: () => uuidv4().replace(/-/g, ""),
+    default: () => randomUUID().replace(/-/g, ""),
   },
   role: {
     type: String,
@@ -1558,6 +1647,20 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
     allowAgentWrites: {
       type: Boolean,
       default: false,
+    },
+    writers: {
+      type: [
+        new Schema<IConnectionWriter>(
+          {
+            principal: { type: String, required: true },
+            where: { type: String },
+            addedBy: { type: String },
+            addedAt: { type: Date },
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
     },
     createdBy: {
       type: String,
@@ -1705,7 +1808,7 @@ ConsoleFolderSchema.index({ workspaceId: 1, ownerId: 1, isPrivate: 1 });
 ConsoleFolderSchema.index({ workspaceId: 1, access: 1 });
 
 /**
- * Shared sharing sub-schemas (dashboards, consoles, apps).
+ * Shared sharing sub-schemas (consoles, apps).
  */
 const ResourceShareEntrySchema = new Schema<IResourceShareEntry>(
   {
@@ -1725,7 +1828,6 @@ const PublicShareSchema = new Schema<IPublicShare>(
     passwordEncrypted: { type: String, default: null },
     createdAt: { type: Date },
     createdBy: { type: String },
-    lastPublicRefreshAt: { type: Date },
     allowLiveQueries: { type: Boolean, default: false },
   },
   { _id: false },
@@ -2108,6 +2210,10 @@ const ChatSchema = new Schema<IChat>(
       type: String,
       required: false,
     },
+    appId: {
+      type: String,
+      required: false,
+    },
     createdBy: {
       type: String,
       ref: "User",
@@ -2117,6 +2223,7 @@ const ChatSchema = new Schema<IChat>(
       type: Boolean,
       default: false,
     },
+    source: { type: String, enum: ["workflow"] },
     activeStreamId: {
       type: String,
       default: null,
@@ -2222,6 +2329,10 @@ const ChatSchema = new Schema<IChat>(
 ChatSchema.index({ workspaceId: 1 });
 ChatSchema.index({ workspaceId: 1, title: 1 });
 ChatSchema.index({ workspaceId: 1, createdBy: 1 }); // For user-specific chat queries
+ChatSchema.index(
+  { workspaceId: 1, appId: 1, createdBy: 1, updatedAt: -1 },
+  { partialFilterExpression: { appId: { $type: "string" } } },
+); // An app's chat history, per viewer
 
 /**
  * Chat Attachment Schema
@@ -2288,10 +2399,11 @@ const FlowSchema = new Schema<IFlow>(
       ref: "Workspace",
       required: true,
     },
+    // Retired (see IFlow.type): kept so older documents still load.
     type: {
       type: String,
       enum: ["scheduled", "webhook"],
-      required: true,
+      required: false,
     },
     // Display name (editable) and slug (minted once; the `flows/<slug>.yml`
     // filename identity — see RFC #904). Both optional: rows predating names
@@ -2379,14 +2491,18 @@ const FlowSchema = new Schema<IFlow>(
       },
       cron: {
         type: String,
-        // Requiredness stays keyed to `type` for back-compat: webhook flows
-        // carry the default `schedule.enabled: true` with no cron. Under the
-        // unified trigger model, "cron present when schedule is enabled" is
-        // enforced at the route boundary independent of `type` (see
-        // routes/flows.ts) and a poll trigger only exists when a cron is set
-        // (see services/flow-triggers.service.ts).
+        // A flow with webhooks carries the default `schedule.enabled: true`
+        // with no cron (it may have no poll schedule at all); any other flow
+        // whose schedule is on needs its cron. An older document's retired
+        // `type: "webhook"` counts as webhooks, so it saves as it always did.
+        // The route boundary enforces the same (routes/flows.ts), and a poll
+        // trigger only exists when a cron is set (flow-triggers.service.ts).
         required: function () {
-          return this.type === "scheduled" && this.schedule?.enabled;
+          return Boolean(
+            this.schedule?.enabled &&
+            !this.webhookConfig?.endpoint &&
+            this.type !== "webhook",
+          );
         },
         validate: {
           validator: function (v: string) {
@@ -2425,6 +2541,7 @@ const FlowSchema = new Schema<IFlow>(
         type: String,
         default: "UTC",
       },
+      entities: { type: [String], default: undefined },
       lastRunAt: Date,
     },
     webhookConfig: {
@@ -2436,7 +2553,14 @@ const FlowSchema = new Schema<IFlow>(
       secret: {
         type: String,
       },
+      providerWebhookId: {
+        type: String,
+      },
       lastReceivedAt: Date,
+      provisionError: {
+        message: String,
+        at: Date,
+      },
       totalReceived: {
         type: Number,
         default: 0,
@@ -2474,10 +2598,13 @@ const FlowSchema = new Schema<IFlow>(
       enum: ["append_dedup", "append", "overwrite"],
       default: "append_dedup",
     },
+    // CDC is the only engine for connector flows (the legacy engine has
+    // been removed). "legacy" remains only as the label of database-source
+    // flows, which have their own write path.
     syncEngine: {
       type: String,
       enum: ["legacy", "cdc"],
-      default: "legacy",
+      default: "cdc",
       required: true,
     },
     syncState: {
@@ -2595,6 +2722,7 @@ const FlowSchema = new Schema<IFlow>(
         },
         entities: [String],
       },
+      trigger: { type: String, enum: ["scheduled", "manual"] },
     },
     lastRunAt: Date,
     lastSuccessAt: Date,
@@ -2911,6 +3039,8 @@ const CdcEntityStateSchema = new Schema<ICdcEntityState>(
     runId: String,
     backfillStartedAt: Date,
     backfillCompletedAt: Date,
+    lastBackfillRunStartedAt: Date,
+    lastFullBackfillRunStartedAt: Date,
     lastIngestSeq: { type: Number, default: 0 },
     lastMaterializedSeq: { type: Number, default: 0 },
     lastMaterializedAt: Date,
@@ -3300,269 +3430,9 @@ NotificationDeliverySchema.index(
   { expireAfterSeconds: 7776000 },
 );
 
-export interface IMaterializationRun extends Document {
-  workspaceId: Types.ObjectId;
-  dashboardId: Types.ObjectId;
-  dataSourceId: string;
-  runId: string;
-  triggerType: "manual" | "schedule" | "dashboard_update";
-  lastHeartbeat?: Date;
-  workerId?: string;
-  stage?: string;
-  attempt?: number;
-  status: "queued" | "building" | "ready" | "error" | "abandoned" | "cancelled";
-  requestedAt: Date;
-  startedAt?: Date;
-  finishedAt?: Date;
-  artifactKey?: string;
-  version?: string;
-  definitionHash?: string;
-  artifactRevision?: string;
-  rowCount?: number;
-  byteSize?: number;
-  error?: string;
-  events: Array<{
-    type: string;
-    timestamp: Date;
-    message: string;
-    metadata?: Record<string, unknown>;
-  }>;
-}
-
-const MaterializationRunSchema = new Schema<IMaterializationRun>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    dashboardId: {
-      type: Schema.Types.ObjectId,
-      ref: "Dashboard",
-      required: true,
-    },
-    dataSourceId: { type: String, required: true },
-    runId: { type: String, required: true, unique: true },
-    triggerType: {
-      type: String,
-      enum: ["manual", "schedule", "dashboard_update"],
-      required: true,
-    },
-    status: {
-      type: String,
-      enum: ["queued", "building", "ready", "error", "abandoned", "cancelled"],
-      required: true,
-    },
-    requestedAt: { type: Date, required: true, default: Date.now },
-    startedAt: { type: Date },
-    finishedAt: { type: Date },
-    lastHeartbeat: { type: Date },
-    workerId: { type: String },
-    stage: { type: String },
-    attempt: { type: Number, default: 1 },
-    artifactKey: { type: String },
-    version: { type: String },
-    definitionHash: { type: String },
-    artifactRevision: { type: String },
-    rowCount: { type: Number },
-    byteSize: { type: Number },
-    error: { type: String },
-    events: [
-      {
-        type: { type: String, required: true },
-        timestamp: { type: Date, required: true },
-        message: { type: String, required: true },
-        metadata: { type: Schema.Types.Mixed },
-      },
-    ],
-  },
-  {
-    collection: "materialization_runs",
-    timestamps: false,
-  },
-);
-
-MaterializationRunSchema.index({
-  dashboardId: 1,
-  dataSourceId: 1,
-  requestedAt: -1,
-});
-MaterializationRunSchema.index({ workspaceId: 1, requestedAt: -1 });
-MaterializationRunSchema.index({ status: 1, lastHeartbeat: 1 });
-MaterializationRunSchema.index(
-  { requestedAt: 1 },
-  { expireAfterSeconds: 7 * 24 * 60 * 60 },
-);
-
-/**
- * Dashboard model interface (AI-native dashboard engine)
- */
-export interface IDashboard extends Document {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
-  title: string;
-  description?: string;
-  /**
-   * Client-supplied creation idempotency key (the agent toolCallId). Multiple
-   * windows attached to the same chat stream each dispatch the same
-   * create_dashboard call; the unique partial index on
-   * { workspaceId, creationIdempotencyKey } makes the second insert a
-   * duplicate, and the create route returns the existing dashboard instead.
-   */
-  creationIdempotencyKey?: string;
-
-  dataSources: IDashboardDataSource[];
-
-  relationships: Array<{
-    id: string;
-    from: { dataSourceId: string; column: string };
-    to: { dataSourceId: string; column: string };
-    type: "one-to-one" | "one-to-many" | "many-to-one" | "many-to-many";
-  }>;
-
-  widgets: Array<{
-    id: string;
-    title?: string;
-    type: "chart" | "kpi" | "table";
-    dataSourceId: string;
-    localSql: string;
-    vegaLiteSpec?: Record<string, unknown>;
-    kpiConfig?: {
-      valueField: string;
-      format?: string;
-      comparisonField?: string;
-      comparisonLabel?: string;
-    };
-    tableConfig?: { columns?: string[]; pageSize?: number };
-    crossFilter: { enabled: boolean; fields?: string[] };
-    layouts: {
-      lg: {
-        x: number;
-        y: number;
-        w: number;
-        h: number;
-        minW?: number;
-        minH?: number;
-      };
-      md?: {
-        x: number;
-        y: number;
-        w: number;
-        h: number;
-        minW?: number;
-        minH?: number;
-      };
-      sm?: {
-        x: number;
-        y: number;
-        w: number;
-        h: number;
-        minW?: number;
-        minH?: number;
-      };
-      xs?: {
-        x: number;
-        y: number;
-        w: number;
-        h: number;
-        minW?: number;
-        minH?: number;
-      };
-    };
-  }>;
-
-  globalFilters: Array<{
-    id: string;
-    type: "date-range" | "select" | "multi-select" | "search";
-    label: string;
-    dataSourceId: string;
-    column: string;
-    config: Record<string, unknown>;
-    layout: { order: number; width?: number };
-  }>;
-
-  crossFilter: {
-    enabled: boolean;
-    resolution: "intersect" | "union";
-    engine?: "mosaic" | "legacy";
-  };
-
-  materializationSchedule: {
-    enabled: boolean;
-    cron: string | null;
-    timezone?: string;
-    dataFreshnessTtlMs?: number | null;
-  };
-
-  layout: {
-    columns: number;
-    rowHeight: number;
-  };
-
-  cache: {
-    lastRefreshedAt?: Date;
-  };
-
-  snapshots?: Record<
-    string,
-    {
-      version: string;
-      generatedAt: Date;
-      rowCount: number;
-      rows: Record<string, unknown>[];
-      fields: Array<{ name: string; type: string }>;
-    }
-  >;
-
-  version: number;
-  versionHistory: Array<{
-    version: number;
-    snapshot: Record<string, unknown>;
-    createdAt: Date;
-    createdBy: string;
-    message?: string;
-  }>;
-
-  editLock?: {
-    userId: string;
-    userName: string;
-    lockedAt: Date;
-    expiresAt: Date;
-  };
-
-  /**
-   * Last published definition snapshot (draft/published split, mirrors
-   * MakoApp). The top-level definition fields are the working draft; `published`
-   * is what public/shared viewers render. Set on every explicit save (which
-   * also creates a version); a restore reverts the draft only, leaving
-   * `published` until the next save. Absent until first save — readers fall
-   * back to the live definition for back-compat. Shape = buildDashboardSnapshot.
-   */
-  published?: Record<string, unknown>;
-  /** EntityVersion number that was published into `published`. */
-  publishedVersion?: number;
-  publishedAt?: Date;
-
-  folderId?: Types.ObjectId;
-  access: "private" | "workspace";
-  /** Role granted to workspace members when access is "workspace". */
-  workspaceRole?: ResourceShareRole;
-  /**
-   * Per-user collaborators (viewer/editor), independent of the `access`
-   * level. Editors can read + write; viewers can only read.
-   */
-  sharedWith?: IResourceShareEntry[];
-  /** Public link sharing (read-only, snapshot data, optional password). */
-  publicShare?: IPublicShare;
-  owner_id?: string;
-  createdBy: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
 /**
  * NotebookFolder model interface — organizational folders for notebooks
- * (My Notebooks vs Workspace sections mirror dashboards/consoles).
+ * (My Notebooks vs Workspace sections mirror consoles).
  */
 export interface INotebookFolder extends Document {
   _id: Types.ObjectId;
@@ -3594,388 +3464,6 @@ export interface INotebookIndex extends Document {
   sharedWith?: IResourceShareEntry[];
   updatedAt: Date;
 }
-
-/**
- * DashboardFolder model interface
- */
-export interface IDashboardFolder extends Document {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
-  name: string;
-  parentId?: Types.ObjectId;
-  ownerId?: string;
-  access: "private" | "workspace";
-  createdAt: Date;
-}
-
-export interface IDashboardQueryDefinition {
-  connectionId: Types.ObjectId;
-  language: "sql" | "javascript" | "mongodb";
-  code: string;
-  databaseId?: string;
-  databaseName?: string;
-  mongoOptions?: {
-    collection?: string;
-    operation?:
-      | "find"
-      | "aggregate"
-      | "insertMany"
-      | "updateMany"
-      | "deleteMany"
-      | "findOne"
-      | "updateOne"
-      | "deleteOne";
-  };
-}
-
-export interface IDashboardDataSourceOrigin {
-  type: "saved_console" | "local";
-  consoleId?: Types.ObjectId;
-  consoleName?: string;
-  importedAt?: Date;
-  /** Agent toolCallId that created this data source (creation idempotency). */
-  createdByToolCallId?: string;
-}
-
-export interface IDashboardDataSource {
-  id: string;
-  name: string;
-  tableRef: string;
-  query: IDashboardQueryDefinition;
-  origin?: IDashboardDataSourceOrigin;
-  timeDimension?: string;
-  rowLimit?: number;
-  /**
-   * How the data reaches widgets. `parquet` (default) materializes to a cached
-   * artifact; `live` streams the query server-side into DuckDB on every load.
-   */
-  materialization: "live" | "parquet";
-  computedColumns?: Array<{
-    name: string;
-    expression: string;
-    type: "quantitative" | "temporal" | "nominal" | "ordinal";
-  }>;
-  cache?: {
-    lastRefreshedAt?: Date;
-    rowCount?: number;
-    byteSize?: number;
-    parquetArtifactKey?: string;
-    definitionHash?: string;
-    artifactRevision?: string;
-    parquetVersion?: string;
-    parquetBuiltAt?: Date;
-    parquetBuildStatus?: "missing" | "queued" | "building" | "ready" | "error";
-    parquetLastError?: string;
-    parquetUrl?: string;
-  };
-}
-
-/**
- * Dashboard Schema
- */
-const DashboardSchema = new Schema<IDashboard>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    title: { type: String, required: true },
-    description: { type: String },
-    creationIdempotencyKey: { type: String },
-
-    dataSources: [
-      {
-        id: { type: String, required: true },
-        name: { type: String, required: true },
-        tableRef: { type: String, required: true },
-        query: {
-          connectionId: {
-            type: Schema.Types.ObjectId,
-            ref: "DatabaseConnection",
-            required: true,
-          },
-          language: {
-            type: String,
-            enum: ["sql", "javascript", "mongodb"],
-            required: true,
-          },
-          code: { type: String, required: true },
-          databaseId: { type: String },
-          databaseName: { type: String },
-          mongoOptions: {
-            collection: { type: String },
-            operation: {
-              type: String,
-              enum: [
-                "find",
-                "aggregate",
-                "insertMany",
-                "updateMany",
-                "deleteMany",
-                "findOne",
-                "updateOne",
-                "deleteOne",
-              ],
-            },
-          },
-        },
-        origin: {
-          type: {
-            type: String,
-            enum: ["saved_console", "local"],
-          },
-          consoleId: {
-            type: Schema.Types.ObjectId,
-            ref: "SavedConsole",
-          },
-          consoleName: { type: String },
-          importedAt: { type: Date },
-          createdByToolCallId: { type: String },
-        },
-        timeDimension: { type: String },
-        rowLimit: { type: Number },
-        materialization: {
-          type: String,
-          enum: ["live", "parquet"],
-          default: "parquet",
-        },
-        computedColumns: [
-          {
-            name: { type: String, required: true },
-            expression: { type: String, required: true },
-            type: {
-              type: String,
-              enum: ["quantitative", "temporal", "nominal", "ordinal"],
-              required: true,
-            },
-          },
-        ],
-        cache: {
-          lastRefreshedAt: { type: Date },
-          rowCount: { type: Number },
-          byteSize: { type: Number },
-          parquetArtifactKey: { type: String },
-          definitionHash: { type: String },
-          artifactRevision: { type: String },
-          parquetVersion: { type: String },
-          parquetBuiltAt: { type: Date },
-          parquetBuildStatus: {
-            type: String,
-            enum: ["missing", "queued", "building", "ready", "error", null],
-          },
-          parquetLastError: { type: String },
-        },
-      },
-    ],
-
-    relationships: [
-      {
-        id: { type: String, required: true },
-        from: {
-          dataSourceId: { type: String, required: true },
-          column: { type: String, required: true },
-        },
-        to: {
-          dataSourceId: { type: String, required: true },
-          column: { type: String, required: true },
-        },
-        type: {
-          type: String,
-          enum: ["one-to-one", "one-to-many", "many-to-one", "many-to-many"],
-          required: true,
-        },
-      },
-    ],
-
-    widgets: [
-      {
-        id: { type: String, required: true },
-        title: { type: String },
-        type: {
-          type: String,
-          enum: ["chart", "kpi", "table"],
-          required: true,
-        },
-        dataSourceId: { type: String, required: true },
-        localSql: { type: String, required: true },
-        vegaLiteSpec: { type: Schema.Types.Mixed },
-        kpiConfig: {
-          valueField: { type: String },
-          format: { type: String },
-          comparisonField: { type: String },
-          comparisonLabel: { type: String },
-        },
-        tableConfig: {
-          columns: [{ type: String }],
-          pageSize: { type: Number },
-        },
-        crossFilter: {
-          enabled: { type: Boolean, default: true },
-          fields: [{ type: String }],
-        },
-        layouts: {
-          lg: {
-            x: { type: Number, required: true },
-            y: { type: Number, required: true },
-            w: { type: Number, required: true },
-            h: { type: Number, required: true },
-            minW: { type: Number },
-            minH: { type: Number },
-          },
-          md: {
-            x: { type: Number },
-            y: { type: Number },
-            w: { type: Number },
-            h: { type: Number },
-            minW: { type: Number },
-            minH: { type: Number },
-            custom: { type: Boolean },
-          },
-          sm: {
-            x: { type: Number },
-            y: { type: Number },
-            w: { type: Number },
-            h: { type: Number },
-            minW: { type: Number },
-            minH: { type: Number },
-            custom: { type: Boolean },
-          },
-          xs: {
-            x: { type: Number },
-            y: { type: Number },
-            w: { type: Number },
-            h: { type: Number },
-            minW: { type: Number },
-            minH: { type: Number },
-            custom: { type: Boolean },
-          },
-        },
-      },
-    ],
-
-    globalFilters: [
-      {
-        id: { type: String, required: true },
-        type: {
-          type: String,
-          enum: ["date-range", "select", "multi-select", "search"],
-          required: true,
-        },
-        label: { type: String, required: true },
-        dataSourceId: { type: String, required: true },
-        column: { type: String, required: true },
-        config: { type: Schema.Types.Mixed, default: {} },
-        layout: {
-          order: { type: Number, default: 0 },
-          width: { type: Number },
-        },
-      },
-    ],
-
-    crossFilter: {
-      enabled: { type: Boolean, default: true },
-      resolution: {
-        type: String,
-        enum: ["intersect", "union"],
-        default: "intersect",
-      },
-      engine: {
-        type: String,
-        enum: ["mosaic", "legacy"],
-        default: "mosaic",
-      },
-    },
-
-    materializationSchedule: {
-      enabled: { type: Boolean, default: true },
-      cron: { type: String, default: "0 0 * * *" },
-      timezone: { type: String, default: "UTC" },
-      dataFreshnessTtlMs: { type: Number, default: null },
-    },
-
-    layout: {
-      columns: { type: Number, default: 12 },
-      rowHeight: { type: Number, default: 80 },
-    },
-
-    cache: {
-      lastRefreshedAt: { type: Date },
-    },
-
-    snapshots: { type: Schema.Types.Mixed, default: {} },
-
-    version: { type: Number, default: 1 },
-    versionHistory: [
-      {
-        version: { type: Number, required: true },
-        snapshot: { type: Schema.Types.Mixed, required: true },
-        createdAt: { type: Date, default: Date.now },
-        createdBy: { type: String, required: true },
-        message: { type: String },
-      },
-    ],
-
-    editLock: {
-      userId: { type: String },
-      userName: { type: String },
-      lockedAt: { type: Date },
-      expiresAt: { type: Date },
-    },
-
-    // Draft/published split (mirrors MakoApp): `published` holds the last
-    // committed definition snapshot (Mixed — same shape as
-    // buildDashboardSnapshot). Public/shared viewers render this.
-    published: { type: Schema.Types.Mixed, default: undefined },
-    publishedVersion: { type: Number },
-    publishedAt: { type: Date },
-
-    folderId: {
-      type: Schema.Types.ObjectId,
-      ref: "DashboardFolder",
-    },
-    access: {
-      type: String,
-      enum: ["private", "workspace"],
-      default: "private",
-    },
-    workspaceRole: {
-      type: String,
-      enum: ["viewer", "editor"],
-      default: "viewer",
-    },
-    sharedWith: {
-      type: [ResourceShareEntrySchema],
-      default: [],
-    },
-    publicShare: { type: PublicShareSchema, default: undefined },
-    owner_id: { type: String },
-    createdBy: { type: String, required: true },
-  },
-  {
-    collection: "dashboards",
-    timestamps: true,
-  },
-);
-
-DashboardSchema.index({ workspaceId: 1 });
-DashboardSchema.index({ workspaceId: 1, createdBy: 1 });
-DashboardSchema.index({ workspaceId: 1, access: 1, owner_id: 1 });
-DashboardSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
-DashboardSchema.index(
-  { "publicShare.token": 1 },
-  { unique: true, sparse: true },
-);
-// Creation idempotency (see IDashboard.creationIdempotencyKey). Partial (not
-// sparse): a sparse COMPOUND index still indexes docs that have workspaceId
-// but no key, which would make every keyless dashboard collide.
-DashboardSchema.index(
-  { workspaceId: 1, creationIdempotencyKey: 1 },
-  {
-    unique: true,
-    partialFilterExpression: { creationIdempotencyKey: { $type: "string" } },
-  },
-);
 
 /**
  * NotebookFolder Schema
@@ -4058,42 +3546,6 @@ NotebookIndexSchema.index({ workspaceId: 1, notebookId: 1 }, { unique: true });
 NotebookIndexSchema.index({ workspaceId: 1, folderId: 1 });
 NotebookIndexSchema.index({ workspaceId: 1, access: 1, ownerId: 1 });
 
-/**
- * DashboardFolder Schema
- */
-const DashboardFolderSchema = new Schema<IDashboardFolder>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    name: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    parentId: {
-      type: Schema.Types.ObjectId,
-      ref: "DashboardFolder",
-    },
-    ownerId: {
-      type: String,
-      ref: "User",
-    },
-    access: {
-      type: String,
-      enum: ["private", "workspace"],
-      default: "private",
-    },
-  },
-  {
-    timestamps: { createdAt: true, updatedAt: false },
-  },
-);
-
-DashboardFolderSchema.index({ workspaceId: 1, parentId: 1 });
-
 // Models
 export const Workspace = mongoose.model<IWorkspace>(
   "Workspace",
@@ -4120,10 +3572,12 @@ export const SourceConnection = mongoose.model<ISourceConnection>(
 /** @deprecated use SourceConnection */
 export const Connector = SourceConnection;
 /**
- * EntityVersion — immutable append-only version snapshots for consoles and dashboards.
+ * EntityVersion — immutable append-only version snapshots for consoles.
+ * (The collection also still holds rows from the removed dashboards feature,
+ * `entityType: "dashboard"`; nothing reads them.)
  * Every explicit save creates a new version record; history is never rewritten.
  */
-export type VersionableEntityType = "console" | "dashboard";
+export type VersionableEntityType = "console";
 
 export interface IEntityVersion extends Document {
   _id: Types.ObjectId;
@@ -4148,7 +3602,7 @@ const EntityVersionSchema = new Schema<IEntityVersion>(
     },
     entityType: {
       type: String,
-      enum: ["console", "dashboard"],
+      enum: ["console"],
       required: true,
     },
     entityId: {
@@ -4258,14 +3712,6 @@ export const NotificationDelivery = mongoose.model<INotificationDelivery>(
   "NotificationDelivery",
   NotificationDeliverySchema,
 );
-export const MaterializationRun = mongoose.model<IMaterializationRun>(
-  "MaterializationRun",
-  MaterializationRunSchema,
-);
-export const DashboardFolder = mongoose.model<IDashboardFolder>(
-  "DashboardFolder",
-  DashboardFolderSchema,
-);
 export const NotebookFolder = mongoose.model<INotebookFolder>(
   "NotebookFolder",
   NotebookFolderSchema,
@@ -4273,10 +3719,6 @@ export const NotebookFolder = mongoose.model<INotebookFolder>(
 export const NotebookIndex = mongoose.model<INotebookIndex>(
   "NotebookIndex",
   NotebookIndexSchema,
-);
-export const Dashboard = mongoose.model<IDashboard>(
-  "Dashboard",
-  DashboardSchema,
 );
 
 // Skills are files in the workspace repo (apps.md §27); no model.
@@ -4717,11 +4159,7 @@ DbtJobSchema.index({ "scheduledRun.nextAt": 1, enabled: 1 }, { sparse: true });
 export const DbtJob = mongoose.model<IDbtJob>("DbtJob", DbtJobSchema);
 
 export type DbtRunStatus =
-  | "queued"
-  | "running"
-  | "success"
-  | "error"
-  | "cancelled";
+  "queued" | "running" | "success" | "error" | "cancelled";
 
 export interface IDbtRunLogLine {
   ts: Date;
@@ -5005,10 +4443,7 @@ export type McpAuthPerformer = "workspace" | "user";
 export type McpToolRestriction = "always" | "ask" | "block";
 export type McpWriteScope = "read" | "write_safe" | "write_destructive";
 export type McpServerStatus =
-  | "created"
-  | "awaiting_auth"
-  | "connected"
-  | "error";
+  "created" | "awaiting_auth" | "connected" | "error";
 
 export interface IMcpCachedTool {
   name: string;
@@ -5374,12 +4809,12 @@ export interface IAppProject extends Document {
   /**
    * The app's own folder name — the last segment of `path`, and its URL
    * handle. Not unique per workspace any more: `apps/sales/report` and
-   * `users/<id>/apps/report` may coexist. Optional only for pre-migration docs.
+   * `users/<handle>/apps/report` may coexist. Optional only for pre-migration docs.
    */
   slug?: string;
   /**
    * Repo-relative folder the app lives in (`apps/sales/report`,
-   * `users/<id>/apps/scratch`). Maintained by the apps index sync from the
+   * `users/<handle>/apps/scratch`). Maintained by the apps index sync from the
    * tree at main; a move in git updates it here. Absent on legacy rows until
    * the backfill migration, where it is `apps/<slug>`.
    */
@@ -5402,6 +4837,11 @@ export interface IAppProject extends Document {
   cloudRepo?: { owner: string; repo: string };
   /** Commit SHA of the last published deployment (§13.3). */
   publishedSha?: string;
+  /**
+   * "Chat with app" on the live link. Off unless `true` — the owner (or a
+   * workspace admin) opts each app in from the Share dialog.
+   */
+  chatEnabled?: boolean;
   /** When publishedSha was last repointed (publish or rollback). */
   publishedAt?: Date;
   /**
@@ -5419,7 +4859,7 @@ export interface IAppProject extends Document {
   };
   /**
    * Anonymous read-only link to the PUBLISHED deployment, optionally password
-   * protected. Same primitive dashboards and v1 apps use, so the management
+   * protected. Same primitive v1 apps used, so the management
    * routes and the /api/share/:token consumption side are shared verbatim.
    */
   publicShare?: IPublicShare;
@@ -5466,6 +4906,7 @@ const AppProjectSchema = new Schema<IAppProject>(
       default: undefined,
     },
     publishedSha: { type: String },
+    chatEnabled: { type: Boolean },
     publishedAt: { type: Date },
     lastDeployError: {
       type: new Schema(
@@ -5491,7 +4932,7 @@ const AppProjectSchema = new Schema<IAppProject>(
 
 AppProjectSchema.index({ workspaceId: 1, updatedAt: -1 });
 // Anonymous share lookup is by token alone, so it must be indexed and unique
-// across the collection — same shape as v1 apps and dashboards.
+// across the collection — same shape as v1 apps.
 AppProjectSchema.index(
   { "publicShare.token": 1 },
   { unique: true, sparse: true },
@@ -5526,10 +4967,7 @@ export const AppProject = mongoose.model<IAppProject>(
  * own outcome already recorded.
  */
 export type AppDeployCommitState =
-  | "pending"
-  | "success"
-  | "failure"
-  | "superseded";
+  "pending" | "success" | "failure" | "superseded";
 
 export interface IAppDeployCommitStatus extends Document {
   workspaceId: Types.ObjectId;
@@ -5569,6 +5007,221 @@ export const AppDeployCommitStatus = mongoose.model<IAppDeployCommitStatus>(
   AppDeployCommitStatusSchema,
 );
 
+/**
+ * Who looked at which app, rolled up per UTC day (app-usage.service). One row
+ * per (workspace, app, viewer, day), bumped with `$inc` upserts, so a viewer
+ * who keeps an app open all day is one row, not a row per heartbeat.
+ * `userId` is a person's id, `anon:<hash>` for an anonymous share-link or
+ * embed viewer carrying Mako's first-party anonymous cookie, or null for an
+ * anonymous viewer nobody can tell apart (backfilled from logs, or a frame
+ * whose cookie could not be set) — those collapse into one row per app per
+ * day. `appId` is the app identity (manifest id), never its path, so a move
+ * keeps the history.
+ */
+export interface IAppUsageDaily extends Document {
+  workspaceId: Types.ObjectId;
+  appId: string;
+  userId: string | null;
+  /** UTC day, `YYYY-MM-DD`. */
+  day: string;
+  opens: number;
+  activeSeconds: number;
+  /** Opens by where the app was opened. */
+  sources: { app?: number; share?: number; embed?: number };
+  firstAt: Date;
+  lastAt: Date;
+}
+
+const AppUsageDailySchema = new Schema<IAppUsageDaily>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    appId: { type: String, required: true },
+    userId: { type: String, default: null },
+    day: { type: String, required: true },
+    opens: { type: Number, default: 0 },
+    activeSeconds: { type: Number, default: 0 },
+    sources: {
+      type: new Schema(
+        { app: Number, share: Number, embed: Number },
+        { _id: false },
+      ),
+      default: {},
+    },
+    firstAt: { type: Date, required: true },
+    lastAt: { type: Date, required: true },
+  },
+  { collection: "app_usage_daily", versionKey: false },
+);
+
+AppUsageDailySchema.index(
+  { workspaceId: 1, appId: 1, userId: 1, day: 1 },
+  { unique: true },
+);
+// The window scan behind the popularity stats.
+AppUsageDailySchema.index({ workspaceId: 1, day: 1 });
+// "Recently viewed" for one person.
+AppUsageDailySchema.index({ workspaceId: 1, userId: 1, lastAt: -1 });
+
+export const AppUsageDaily = mongoose.model<IAppUsageDaily>(
+  "AppUsageDaily",
+  AppUsageDailySchema,
+);
+
+/**
+ * Every view event, append-only (app-usage.service): the raw log the daily
+ * rollup above is derived from, kept so ranking can be re-derived from
+ * scratch — "opened every day" vs "opened once by mistake" is a question
+ * about events, not counters. Nothing is dropped here: a reload burst the
+ * rollup's throttle refused is kept with `throttled: true`, a bot with
+ * `uaClass: "bot"`. Expires after ~13 months.
+ */
+export type AppUsageUaClass = "desktop" | "mobile" | "bot" | "unknown";
+export type AppUsageReferrerKind = "internal" | "external" | "direct";
+export const APP_USAGE_PLACEMENT_SHELVES = [
+  "popular",
+  "new",
+  "recommended",
+  "recent",
+  "mine",
+  "attention",
+  "search",
+] as const;
+export interface AppUsagePlacement {
+  surface: "home";
+  shelf: (typeof APP_USAGE_PLACEMENT_SHELVES)[number];
+  position: number;
+}
+
+export interface IAppUsageEvent extends Document {
+  workspaceId: Types.ObjectId;
+  appId: string;
+  at: Date;
+  kind: "open" | "heartbeat";
+  source: "app" | "share" | "embed";
+  /** Signed-in viewer, else null. */
+  userId: string | null;
+  /** `anon:<hash>` of the first-party anonymous cookie, else null. */
+  anonId: string | null;
+  /** One per view: an open and its heartbeats share it. */
+  sessionId: string | null;
+  referrerKind?: AppUsageReferrerKind | null;
+  uaClass: AppUsageUaClass;
+  /** Refused by the rollup's throttle (a reload burst, a double mount). */
+  throttled?: boolean;
+  /**
+   * Where in Mako the view was opened from, when it was a card on the Apps
+   * home: the shelf or grid, and the card's 0-based position in it — so
+   * click-through per position can be computed from this log later.
+   */
+  placement?: AppUsagePlacement;
+  /**
+   * Reconstructed from history rather than recorded live: `cloud-run`
+   * (request logs) or `posthog` (page views), by a one-off backfill of
+   * Mako's hosted workspaces in October 2026.
+   */
+  backfill?: "cloud-run" | "posthog";
+}
+
+/** ~13 months: a year of history plus a month to compare it with. */
+export const APP_USAGE_EVENT_TTL_SECONDS = 400 * 24 * 60 * 60;
+
+const AppUsageEventSchema = new Schema<IAppUsageEvent>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    appId: { type: String, required: true },
+    at: { type: Date, required: true },
+    kind: { type: String, enum: ["open", "heartbeat"], required: true },
+    source: { type: String, enum: ["app", "share", "embed"], required: true },
+    userId: { type: String, default: null },
+    anonId: { type: String, default: null },
+    sessionId: { type: String, default: null },
+    referrerKind: { type: String, enum: ["internal", "external", "direct"] },
+    uaClass: {
+      type: String,
+      enum: ["desktop", "mobile", "bot", "unknown"],
+      required: true,
+    },
+    throttled: { type: Boolean },
+    placement: {
+      type: new Schema(
+        {
+          surface: { type: String, enum: ["home"] },
+          shelf: { type: String, enum: APP_USAGE_PLACEMENT_SHELVES },
+          position: Number,
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
+    backfill: { type: String, enum: ["cloud-run", "posthog"] },
+  },
+  { collection: "app_usage_events", versionKey: false },
+);
+
+AppUsageEventSchema.index({ workspaceId: 1, appId: 1, at: 1 });
+AppUsageEventSchema.index({ workspaceId: 1, userId: 1, at: 1 });
+AppUsageEventSchema.index(
+  { at: 1 },
+  { expireAfterSeconds: APP_USAGE_EVENT_TTL_SECONDS },
+);
+
+export const AppUsageEvent = mongoose.model<IAppUsageEvent>(
+  "AppUsageEvent",
+  AppUsageEventSchema,
+);
+
+/**
+ * One person's Apps home feed, frozen when its first page was served
+ * (app-feed.service): the Recommended order, so scrolling never repeats or
+ * skips an app however usage moves underneath. The cursor names the
+ * snapshot; pages re-check visibility on read. Expires after a day.
+ */
+export interface IAppFeedSnapshot extends Document {
+  workspaceId: Types.ObjectId;
+  /** The viewer it was ranked for; null for a caller without a user. */
+  userId: string | null;
+  popular: string[];
+  fresh: string[];
+  recommended: string[];
+  createdAt: Date;
+}
+
+export const APP_FEED_SNAPSHOT_TTL_SECONDS = 24 * 60 * 60;
+
+const AppFeedSnapshotSchema = new Schema<IAppFeedSnapshot>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    userId: { type: String, default: null },
+    popular: { type: [String], default: [] },
+    fresh: { type: [String], default: [] },
+    recommended: { type: [String], default: [] },
+    createdAt: { type: Date, required: true },
+  },
+  { collection: "app_feed_snapshots", versionKey: false },
+);
+
+AppFeedSnapshotSchema.index(
+  { createdAt: 1 },
+  { expireAfterSeconds: APP_FEED_SNAPSHOT_TTL_SECONDS },
+);
+
+export const AppFeedSnapshot = mongoose.model<IAppFeedSnapshot>(
+  "AppFeedSnapshot",
+  AppFeedSnapshotSchema,
+);
+
 // ---------------------------------------------------------------------------
 // Apps index — derived from the tree at main, rebuilt on every push
 // ---------------------------------------------------------------------------
@@ -5585,12 +5238,12 @@ export interface IAppIndexEntry extends Document {
   workspaceId: Types.ObjectId;
   /** The app's identity (24 hex): manifest `id`, or derived from the path. */
   appId: string;
-  /** Repo-relative folder: `apps/sales/report`, `users/<id>/apps/x`. */
+  /** Repo-relative folder: `apps/sales/report`, `users/<handle>/apps/x`. */
   path: string;
   /** Last path segment — the URL handle. */
   slug: string;
   scope: "workspace" | "private";
-  /** Owner of the `users/<id>/apps` tree, for `private`. */
+  /** Owner of the `users/<handle>/apps` tree (resolved userId), for `private`. */
   ownerId?: string;
   /** git tree oid of the folder: equal ⇒ identical content ⇒ no rebuild. */
   treeOid: string;
@@ -5606,6 +5259,19 @@ export interface IAppIndexEntry extends Document {
   duplicateOf?: string;
   /** Scheduled bindings, so the scheduler never opens the repo. */
   schedules: Array<{ binding: string; cron: string; timezone?: string }>;
+  /** Tables the app's bindings read (`FROM`/`JOIN`) — search input. */
+  tables?: string[];
+  /** Binding names on main — which binding state rows are current. */
+  bindings?: string[];
+  /** Who first committed the app's manifest, and when (discovery). */
+  authorEmail?: string;
+  firstCommitAt?: Date;
+  /**
+   * The app's own `thumbnail.{png,webp,jpg,jpeg,svg}` at its root, when it
+   * ships one: the file name and its blob oid (content-addressed, so the
+   * Apps home caches it forever under `?v=<oid>`).
+   */
+  thumbnail?: { file: string; oid: string };
   /** The main commit this row was built from. */
   indexedSha: string;
   createdAt: Date;
@@ -5646,6 +5312,20 @@ const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
       ],
       default: [],
     },
+    tables: { type: [String], default: undefined },
+    bindings: { type: [String], default: undefined },
+    authorEmail: { type: String },
+    firstCommitAt: { type: Date },
+    thumbnail: {
+      type: new Schema(
+        {
+          file: { type: String, required: true },
+          oid: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     indexedSha: { type: String, required: true },
   },
   { collection: "app_index", timestamps: true },
@@ -5657,6 +5337,9 @@ AppIndexEntrySchema.index({ appId: 1 }, { unique: true });
 AppIndexEntrySchema.index({ workspaceId: 1, appId: 1 });
 AppIndexEntrySchema.index({ workspaceId: 1, path: 1 }, { unique: true });
 AppIndexEntrySchema.index({ workspaceId: 1, slug: 1 });
+// Link previews of `/apps/<slug>` tab URLs carry no workspace: find the
+// app by its folder name across workspaces (share-og.service).
+AppIndexEntrySchema.index({ slug: 1, scope: 1 });
 
 export const AppIndexEntry = mongoose.model<IAppIndexEntry>(
   "AppIndexEntry",
@@ -5698,11 +5381,134 @@ export const AppIndexHead = mongoose.model<IAppIndexHead>(
   AppIndexHeadSchema,
 );
 
+/**
+ * One app's embedding for semantic search (app-embeddings.service): the
+ * vector of its search document (app-embedding-doc.ts) and the document's
+ * hash, so an app is re-embedded only when what it says changed. Derived
+ * and disposable like the index: drop it and the next index read refills it.
+ * Scanned per workspace in memory (a hundred apps), so no vector index.
+ */
+export interface IAppEmbedding extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  appId: string;
+  /** Path and tree the document was built from: equal ⇒ skip rebuilding. */
+  path: string;
+  treeOid: string;
+  docHash: string;
+  /** Embedding model label (getEmbeddingModelName): another ⇒ re-embed. */
+  embeddingModel: string;
+  vector: number[];
+  /** The document's distinct words (app-search tokenize), for search. */
+  terms?: string[];
+  updatedAt: Date;
+}
+
+const AppEmbeddingSchema = new Schema<IAppEmbedding>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    appId: { type: String, required: true },
+    path: { type: String, required: true },
+    treeOid: { type: String, required: true },
+    docHash: { type: String, required: true },
+    embeddingModel: { type: String, required: true },
+    vector: { type: [Number], required: true },
+    terms: { type: [String], default: undefined },
+  },
+  { collection: "app_embeddings", timestamps: true },
+);
+
+AppEmbeddingSchema.index({ workspaceId: 1, appId: 1 }, { unique: true });
+
+export const AppEmbedding = mongoose.model<IAppEmbedding>(
+  "AppEmbedding",
+  AppEmbeddingSchema,
+);
+
+// ---------------------------------------------------------------------------
+// App lifecycle + curation — keyed by app id, not by project row
+// ---------------------------------------------------------------------------
+
+/**
+ * Curation and lifecycle state of one app (app-lifecycle.service.ts). Keyed
+ * by the app's id, NOT its `AppProject` row: most apps are folders that never
+ * got a row, and an admin must be able to verify one (or the lifecycle job
+ * pause one) without materializing state it does not need.
+ *
+ * Nothing here is derived from git; nothing in git is derived from it. The
+ * archive move itself is a commit — `archivedFrom` / `archivedTo` are only a
+ * receipt, so a restore knows where the folder came from.
+ */
+export interface IAppLifecycleState extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  appId: string;
+  /** Marked verified by a workspace admin: who and when. */
+  verifiedAt?: Date;
+  verifiedBy?: string;
+  /** When the job first found the app stale and told its owner. */
+  staleSince?: Date;
+  /** Who the stale notice went to (emails), for the plan report. */
+  staleNotifiedTo?: string[];
+  /** Binding schedules skipped by the scheduler since then (unviewed). */
+  schedulesPausedAt?: Date;
+  /** The archive commit's receipt. */
+  archivedAt?: Date;
+  archivedFrom?: string;
+  archivedTo?: string;
+  /**
+   * Restored from `archive/` by someone (Apps home → Archived → Restore):
+   * the planner gives it a fresh grace period from here.
+   */
+  restoredAt?: Date;
+  restoredBy?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AppLifecycleStateSchema = new Schema<IAppLifecycleState>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    appId: { type: String, required: true },
+    verifiedAt: { type: Date },
+    verifiedBy: { type: String },
+    staleSince: { type: Date },
+    staleNotifiedTo: { type: [String], default: undefined },
+    schedulesPausedAt: { type: Date },
+    archivedAt: { type: Date },
+    archivedFrom: { type: String },
+    archivedTo: { type: String },
+    restoredAt: { type: Date },
+    restoredBy: { type: String },
+  },
+  { collection: "app_lifecycle", timestamps: true },
+);
+
+AppLifecycleStateSchema.index({ workspaceId: 1, appId: 1 }, { unique: true });
+// The binding scheduler reads the paused set on every tick.
+AppLifecycleStateSchema.index(
+  { schedulesPausedAt: 1 },
+  { partialFilterExpression: { schedulesPausedAt: { $exists: true } } },
+);
+
+export const AppLifecycleState = mongoose.model<IAppLifecycleState>(
+  "AppLifecycleState",
+  AppLifecycleStateSchema,
+);
+
 // ---------------------------------------------------------------------------
 // Favourites — one person's bookmark tree, never a location
 // ---------------------------------------------------------------------------
 
-export type FavouriteKind = "app" | "console" | "notebook" | "dashboard";
+export type FavouriteKind = "app" | "console" | "notebook";
 
 /**
  * Browser-bookmark shape (Firefox's `moz_bookmarks`): folders and items are
@@ -5741,7 +5547,9 @@ const FavouriteSchema = new Schema<IFavourite>(
     parentId: { type: String, default: null },
     type: { type: String, enum: ["folder", "item"], required: true },
     title: { type: String, trim: true },
-    kind: { type: String, enum: ["app", "console", "notebook", "dashboard"] },
+    // "dashboard" rows from the removed dashboards feature may still exist;
+    // listFavourites() filters them out.
+    kind: { type: String, enum: ["app", "console", "notebook"] },
     refId: { type: String },
     position: { type: Number, required: true, default: 0 },
   },
@@ -5812,4 +5620,58 @@ AppWorktreeSchema.index({ workspaceId: 1, userId: 1 }, { unique: true });
 export const AppWorktree = mongoose.model<IAppWorktree>(
   "AppWorktree",
   AppWorktreeSchema,
+);
+
+// ---------------------------------------------------------------------------
+// Personal folder handles — `users/<handle>/…` in the workspace repo
+// ---------------------------------------------------------------------------
+
+/**
+ * The readable name of one person's tree in a workspace repo:
+ * `joan@realadvisor.com` → `users/joan/`. A handle is the ONLY thing a
+ * `users/<segment>/` folder resolves through — a folder named anything else
+ * is nobody's tree — so who owns a personal app, console or notebook is
+ * decided by this mapping, never by what a folder happens to be called.
+ *
+ * Its own collection rather than a field on the membership: a handle must
+ * outlive the membership. When someone leaves, their `users/joan/` stays in
+ * git; if the handle went with the membership doc, the next `joan@…` to join
+ * would inherit that tree. Rows are never deleted, so a returning member
+ * gets their handle (and their folder) back, and a newcomer gets `joan-2`.
+ */
+export interface IWorkspaceUserHandle extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  userId: string;
+  handle: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const WorkspaceUserHandleSchema = new Schema<IWorkspaceUserHandle>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    userId: { type: String, ref: "User", required: true },
+    handle: { type: String, required: true },
+  },
+  { collection: "workspace_user_handles", timestamps: true },
+);
+
+// One handle per person per workspace, one person per handle.
+WorkspaceUserHandleSchema.index(
+  { workspaceId: 1, userId: 1 },
+  { unique: true },
+);
+WorkspaceUserHandleSchema.index(
+  { workspaceId: 1, handle: 1 },
+  { unique: true },
+);
+
+export const WorkspaceUserHandle = mongoose.model<IWorkspaceUserHandle>(
+  "WorkspaceUserHandle",
+  WorkspaceUserHandleSchema,
 );

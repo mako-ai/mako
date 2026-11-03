@@ -1,5 +1,5 @@
 import { useState, FormEvent, useEffect, useRef, useCallback } from "react";
-import { useSearchParams, useNavigate } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router";
 import {
   Box,
   Paper,
@@ -52,7 +52,7 @@ export function VerifyEmailPage() {
             navigate("/");
           }
         }, 2000);
-      } catch (err) {
+      } catch {
         // Error will be shown in UI
       }
     },
@@ -104,7 +104,7 @@ export function VerifyEmailPage() {
           navigate("/");
         }
       }, 2000);
-    } catch (err) {
+    } catch {
       // Error displayed in UI
     }
   };
@@ -119,7 +119,7 @@ export function VerifyEmailPage() {
     try {
       await resendVerification(email);
       setResendSuccess(true);
-    } catch (err) {
+    } catch {
       // Error displayed in UI
     } finally {
       setResendLoading(false);
@@ -153,10 +153,19 @@ export function VerifyEmailPage() {
           <Typography variant="h5" gutterBottom>
             Email Verified!
           </Typography>
-          <Typography color="text.secondary" sx={{ mb: 2 }}>
+          <Typography
+            sx={{
+              color: "text.secondary",
+              mb: 2,
+            }}
+          >
             Your email has been verified successfully.
           </Typography>
-          <Typography color="text.secondary">
+          <Typography
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             Redirecting you{hasInviteRedirect() ? " to the invitation" : ""}...
           </Typography>
         </Paper>
@@ -189,7 +198,12 @@ export function VerifyEmailPage() {
           <Typography variant="h4" component="h1" gutterBottom>
             Verify Your Email
           </Typography>
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             We sent a verification code to{" "}
             <strong>{email || "your email"}</strong>. Enter the code below to
             verify your account.
@@ -231,11 +245,13 @@ export function VerifyEmailPage() {
             disabled={loading}
             autoComplete="one-time-code"
             placeholder="123456"
-            inputProps={{
-              maxLength: 6,
-              style: { letterSpacing: "0.5em", textAlign: "center" },
-            }}
             autoFocus
+            slotProps={{
+              htmlInput: {
+                maxLength: 6,
+                style: { letterSpacing: "0.5em", textAlign: "center" },
+              },
+            }}
           />
 
           <Button
@@ -255,7 +271,12 @@ export function VerifyEmailPage() {
         </form>
 
         <Box sx={{ textAlign: "center", mt: 2 }}>
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             Didn&apos;t receive the code?{" "}
             <Link
               component="button"

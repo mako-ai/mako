@@ -294,7 +294,12 @@ export default function SettingsAdmin() {
               </Tooltip>
             </Box>
           </Box>
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             Pulls the latest model list + pricing from the Vercel AI Gateway.
             Any validation errors are shown below. <strong>Hard refresh</strong>{" "}
             validates each model row independently — dropping only malformed
@@ -304,8 +309,11 @@ export default function SettingsAdmin() {
           {data?.gatewayFetchedAt && (
             <Typography
               variant="caption"
-              color="text.secondary"
-              sx={{ mt: 1, display: "block" }}
+              sx={{
+                color: "text.secondary",
+                mt: 1,
+                display: "block",
+              }}
             >
               Gateway snapshot:{" "}
               {new Date(data.gatewayFetchedAt).toLocaleString()}
@@ -314,8 +322,10 @@ export default function SettingsAdmin() {
           {data?.curationUpdatedAt && (
             <Typography
               variant="caption"
-              color="text.secondary"
-              sx={{ display: "block" }}
+              sx={{
+                color: "text.secondary",
+                display: "block",
+              }}
             >
               Curation updated:{" "}
               {new Date(data.curationUpdatedAt).toLocaleString()}
@@ -344,7 +354,13 @@ export default function SettingsAdmin() {
           <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
             Curated models
           </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+              mb: 2,
+            }}
+          >
             Toggle visibility per model and assign each one to a tier.
             Workspaces on the free plan only see models assigned to the free
             tier. The <strong>Fast</strong> model powers cheap utility tasks
@@ -370,7 +386,12 @@ export default function SettingsAdmin() {
           {loading ? (
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
               <CircularProgress size={18} />
-              <Typography variant="body2" color="text.secondary">
+              <Typography
+                variant="body2"
+                sx={{
+                  color: "text.secondary",
+                }}
+              >
                 Loading catalog...
               </Typography>
             </Box>
@@ -448,9 +469,11 @@ export default function SettingsAdmin() {
                         </Typography>
                         <Typography
                           variant="caption"
-                          color="text.secondary"
                           noWrap
-                          sx={{ display: "block" }}
+                          sx={{
+                            color: "text.secondary",
+                            display: "block",
+                          }}
                         >
                           {m.id}
                         </Typography>
@@ -568,7 +591,12 @@ export default function SettingsAdmin() {
                   {filteredModels.length === 0 && !loading && (
                     <TableRow>
                       <TableCell colSpan={8} align="center">
-                        <Typography variant="body2" color="text.secondary">
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            color: "text.secondary",
+                          }}
+                        >
                           No models match the current filter.
                         </Typography>
                       </TableCell>
@@ -586,7 +614,12 @@ export default function SettingsAdmin() {
           <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
             Cross-workspace insights
           </Typography>
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             Workspace activity, usage leaderboards, and other platform-wide
             stats will land here.
           </Typography>

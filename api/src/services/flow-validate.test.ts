@@ -52,7 +52,6 @@ for (const [label, contents] of [
   ["not a mapping", "- just\n- a list\n"],
   ["no name", VALID.replace("name: stripe → bigquery", "name: ''")],
   ["bad type", VALID.replace("type: webhook", "type: streaming")],
-  ["missing type", VALID.replace("type: webhook\n", "")],
 ] as const) {
   const result = parseFlowFileResult(contents);
   assert.equal(result.ok, false, `${label} must be rejected`);
@@ -67,7 +66,8 @@ for (const [label, contents] of [
 // The reason must name the field, or it is no better than null.
 assert.match(reasons["no name"], /name/i);
 assert.match(reasons["bad type"], /type/i);
-assert.match(reasons["missing type"], /type/i);
+// `type:` is retired: a file without it is valid.
+assert.ok(parseFlowFileResult(VALID.replace("type: webhook\n", "")).ok);
 // And a wrong value should say what was found, so the author sees the typo.
 assert.match(reasons["bad type"], /streaming/);
 assert.match(reasons["bad yaml"], /YAML/i);

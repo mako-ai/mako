@@ -81,8 +81,8 @@ export const DBT_CAPABILITIES = [
   // Validation runs are async (queue + poll dbt_get_run) since #755, so they
   // are safe on the stateless external MCP surface. Read-risk validation
   // bridges for every key; warehouse-mutating runs additionally require the
-  // warehouse-write grant, which external MCP only derives from an explicit
-  // warehouse:write API-key scope.
+  // warehouse-write grant, which every external MCP/CLI credential holds —
+  // their minimumWorkspaceRole is what keeps viewers out.
   define({
     name: "dbt_parse",
     pack: "dbt-validation",

@@ -6,11 +6,9 @@
 // the run request. The log streams here; the exit code is dbt's outcome.
 //
 // Authority: this runs YOUR uploaded dbt code with the target environment's
-// warehouse credentials — and dbt code (macros, hooks, schema configs) can
-// reach beyond your schema. So it needs `warehouse:write`
-// (`mako login --warehouse-write`, its own consent option), targets
-// your own environment unless you pass --env, and never production. The
-// server enforces all of it — the CLI only explains.
+// warehouse credentials. Any `mako login` may (at least the member role in
+// the workspace); it targets your own environment unless you pass --env, and
+// never production. The server enforces all of it — the CLI only explains.
 import { getAccessToken, findCredential } from "@makoai/app-sdk/credentials";
 import { collectLocalDbtChanges } from "./dbt-files.js";
 
@@ -24,26 +22,29 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const USAGE =
   "usage: mako dbt <run|build|test> -s <selector> [--env <name>] [--full-refresh] [--no-defer] [--project <id>]";
 
-/** Can this stored login run dbt at all? */
-export function loginCanRunDbt(entry) {
-  if (!entry || !Array.isArray(entry.scopes)) return true; // unknown: let the server decide
-  return entry.scopes.includes("warehouse:write");
+/**
+ * Can this stored login run dbt at all? Any login can; there is no separate
+ * warehouse opt-in any more, and the server checks the workspace role.
+ */
+export function loginCanRunDbt(_entry) {
+  return true;
 }
 
 export const NEEDS_WAREHOUSE_WRITE =
-  "running dbt from your checkout needs the warehouse:write scope — the uploaded dbt code runs " +
-  "with the environment's warehouse credentials, and macros, hooks and schema configs can reach " +
-  'beyond your schema. Run `mako login --warehouse-write` and keep "Allow warehouse execution" ticked.';
+  "this login cannot run dbt here — run `mako login` again for this workspace.";
 
 async function request(ctx, token, method, pathname, body) {
-  const res = await fetch(`${ctx.apiUrl}/api/workspaces/${ctx.workspaceId}/dbt${pathname}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${token}`,
-      ...(body ? { "content-type": "application/json" } : {}),
+  const res = await fetch(
+    `${ctx.apiUrl}/api/workspaces/${ctx.workspaceId}/dbt${pathname}`,
+    {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...(body ? { "content-type": "application/json" } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
     },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  );
   const text = await res.text();
   let json = null;
   try {
@@ -62,9 +63,12 @@ async function request(ctx, token, method, pathname, body) {
 }
 
 function explainRefusal(error) {
-  // The scoped-route gate answers before the dbt route can: a login without
-  // warehouse:write never reaches it.
-  if (error.status === 403 && /restricted to the \/api\/mcp endpoint/.test(error.serverMessage ?? "")) {
+  // The scoped-route gate answers before the dbt route can: a credential that
+  // is not an MCP/CLI login never reaches it.
+  if (
+    error.status === 403 &&
+    /restricted to the \/api\/mcp endpoint/.test(error.serverMessage ?? "")
+  ) {
     return NEEDS_WAREHOUSE_WRITE;
   }
   return error.serverMessage ?? error.message;
@@ -74,7 +78,8 @@ function printStepSummary(run, io) {
   const steps = run.stepResults ?? [];
   if (steps.length === 0) return;
   const counts = {};
-  for (const step of steps) counts[step.status] = (counts[step.status] ?? 0) + 1;
+  for (const step of steps)
+    counts[step.status] = (counts[step.status] ?? 0) + 1;
   io.log(
     `\n${steps.length} node${steps.length === 1 ? "" : "s"}: ` +
       Object.entries(counts)
@@ -83,12 +88,20 @@ function printStepSummary(run, io) {
   );
   for (const step of steps) {
     if (step.status === "error" || step.status === "fail") {
-      io.log(`  ✗ ${step.name}${step.message ? ` — ${step.message.split("\n")[0]}` : ""}`);
+      io.log(
+        `  ✗ ${step.name}${step.message ? ` — ${step.message.split("\n")[0]}` : ""}`,
+      );
     }
   }
 }
 
-export async function dbt(ctx, positional, flags, io = { log: console.log }, deps = {}) {
+export async function dbt(
+  ctx,
+  positional,
+  flags,
+  io = { log: console.log },
+  deps = {},
+) {
   const collect = deps.collect ?? collectLocalDbtChanges;
   const sub = positional[0];
   if (!DBT_COMMANDS.includes(sub)) {
@@ -105,11 +118,15 @@ export async function dbt(ctx, positional, flags, io = { log: console.log }, dep
     return 2;
   }
   if (!ctx.repoRoot) {
-    io.log("run inside a workspace checkout (no .mako/workspace.json or .git above this folder)");
+    io.log(
+      "run inside a workspace checkout (no .mako/workspace.json or .git above this folder)",
+    );
     return 2;
   }
   if (!ctx.workspaceId) {
-    io.log("which workspace? this checkout has no .mako/workspace.json — pass --workspace <id>");
+    io.log(
+      "which workspace? this checkout has no .mako/workspace.json — pass --workspace <id>",
+    );
     return 2;
   }
 
@@ -146,7 +163,11 @@ export async function dbt(ctx, positional, flags, io = { log: console.log }, dep
       select,
       ...(typeof flags.env === "string" ? { environment: flags.env } : {}),
       ...(flags["full-refresh"] ? { fullRefresh: true } : {}),
-      ...(flags.defer === false ? { defer: false } : flags.defer === true ? { defer: true } : {}),
+      ...(flags.defer === false
+        ? { defer: false }
+        : flags.defer === true
+          ? { defer: true }
+          : {}),
       ...(local.branch ? { sourceLabel: local.branch } : {}),
       ...(local.baseSha ? { baseSha: local.baseSha } : {}),
       files: local.files,
@@ -183,13 +204,23 @@ export async function dbt(ctx, positional, flags, io = { log: console.log }, dep
     for (;;) {
       if (interrupted && !cancelSent) {
         cancelSent = true;
-        await request(ctx, token, "POST", `/local-runs/${started.runId}/cancel`).catch(error =>
+        await request(
+          ctx,
+          token,
+          "POST",
+          `/local-runs/${started.runId}/cancel`,
+        ).catch(error =>
           io.log(`could not cancel: ${error.serverMessage ?? error.message}`),
         );
       }
       let body;
       try {
-        body = await request(ctx, token, "GET", `/local-runs/${started.runId}?logsSince=${cursor}`);
+        body = await request(
+          ctx,
+          token,
+          "GET",
+          `/local-runs/${started.runId}?logsSince=${cursor}`,
+        );
       } catch (error) {
         // A transient blip must not abandon a run that is still going.
         if (error.status && error.status < 500) {
@@ -201,7 +232,8 @@ export async function dbt(ctx, positional, flags, io = { log: console.log }, dep
       }
       const run = body.run;
       // The server keeps the last lines only; say so rather than skip silently.
-      if (run.logsSkipped) io.log(`… ${run.logsSkipped} log lines not retained …`);
+      if (run.logsSkipped)
+        io.log(`… ${run.logsSkipped} log lines not retained …`);
       for (const entry of run.logs ?? []) io.log(entry.line);
       cursor = run.logCursor ?? cursor;
       if (TERMINAL.has(run.status)) {

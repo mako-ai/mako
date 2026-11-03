@@ -1,6 +1,5 @@
 import bcrypt from "bcrypt";
-import { randomInt } from "crypto";
-import { v4 as uuidv4 } from "uuid";
+import { randomInt, randomUUID } from "crypto";
 import { sessionManager, ValidatedSession, ValidatedUser } from "./session";
 import {
   User,
@@ -8,7 +7,7 @@ import {
   EmailVerification,
   Session,
 } from "../database/schema";
-import type { OAuthProvider } from "./arctic";
+import type { OAuthProvider } from "./oauth-providers";
 import { workspaceService } from "../services/workspace.service";
 import { emailService } from "../services/email.service";
 import {
@@ -27,7 +26,7 @@ const logger = loggers.auth();
  * Generate a random ID (replacement for Lucia's generateId)
  */
 function generateId(length: number = 15): string {
-  const id = uuidv4().replace(/-/g, "");
+  const id = randomUUID().replace(/-/g, "");
   return id.substring(0, length);
 }
 

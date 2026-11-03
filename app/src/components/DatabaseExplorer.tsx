@@ -463,7 +463,7 @@ function DatabaseExplorer({
       if (!info || info.type !== "node") return null;
       const { kind, metadata } = info.node;
 
-      let text: string | null = null;
+      let text: string | null;
       switch (kind) {
         case "column":
           text = metadata?.columnType ? String(metadata.columnType) : null;
@@ -620,8 +620,7 @@ function DatabaseExplorer({
       const schema = (treeNode.metadata?.schema as string) || "public";
       const table = (treeNode.metadata?.table as string) || treeNode.label;
       const databaseName = treeNode.metadata?.databaseName as
-        | string
-        | undefined;
+        string | undefined;
       const databaseId = treeNode.metadata?.databaseId as string | undefined;
 
       const { tabs, openTab, setActiveTab } = useConsoleStore.getState();
@@ -800,8 +799,10 @@ function DatabaseExplorer({
                 </Typography>
                 <Typography
                   variant="body2"
-                  color="text.secondary"
-                  sx={{ mt: 0.5 }}
+                  sx={{
+                    color: "text.secondary",
+                    mt: 0.5,
+                  }}
                 >
                   Connect a database to start exploring and querying your data.
                 </Typography>

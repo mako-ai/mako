@@ -54,11 +54,12 @@ export function CollapsibleUserText({ text }: { text: string }) {
       <Typography
         ref={textRef}
         variant="body2"
-        color="text.primary"
         onClick={canToggle ? toggle : undefined}
         sx={{
+          color: "text.primary",
           ...userMessageTextSx,
           ...(canToggle && { cursor: "pointer" }),
+
           ...(!expanded && {
             display: "-webkit-box",
             WebkitBoxOrient: "vertical",

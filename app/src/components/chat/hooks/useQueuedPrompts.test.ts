@@ -76,7 +76,6 @@ function buildArgs(overrides: Partial<UseQueuedPromptsArgs> = {}): Harness {
     ) as unknown as UseQueuedPromptsArgs["sendMessageRef"],
     modelIdRef: makeRef<string | undefined>("model-x"),
     capturedConsoleIdRef: makeRef<string | null>(null),
-    capturedDashboardIdRef: makeRef<string | null>(null),
     activeConsoleIdRef: makeRef<string | null>(null),
     pendingPlanToolCallIdRef: makeRef<string | null>(null),
     suppressNextAutoSendRef: makeRef(false),

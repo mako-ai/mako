@@ -35,7 +35,7 @@ import mongoose from "mongoose";
 
 const envPath = path.resolve(__dirname, "../../../.env");
 if (fs.existsSync(envPath)) {
-  dotenv.config({ path: envPath });
+  dotenv.config({ path: envPath, quiet: true });
 }
 
 const TOP_N = Number(process.env.CDC_DIAG_TOP_N || 20);

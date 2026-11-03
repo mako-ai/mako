@@ -239,22 +239,22 @@ describe("consoleStore focusOrOpenTab — the one open-or-focus primitive", () =
   it("opens when nothing matches, focuses (without reopening) when it does", () => {
     const store = useConsoleStore.getState();
     const first = store.focusOrOpenTab(
-      { kind: "dashboard", metadata: { dashboardId: "d1" } },
+      { kind: "notebook", metadata: { notebookId: "n1" } },
       () => ({
         title: "Sales",
         content: "",
-        kind: "dashboard",
-        metadata: { dashboardId: "d1" },
+        kind: "notebook",
+        metadata: { notebookId: "n1" },
       }),
     );
     expect(first).not.toBeNull();
     const again = store.focusOrOpenTab(
-      { kind: "dashboard", metadata: { dashboardId: "d1" } },
+      { kind: "notebook", metadata: { notebookId: "n1" } },
       () => ({
         title: "Sales",
         content: "",
-        kind: "dashboard",
-        metadata: { dashboardId: "d1" },
+        kind: "notebook",
+        metadata: { notebookId: "n1" },
       }),
     );
     expect(again).toBe(first);

@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
-import { BrowserRouter } from "react-router-dom";
+import { BrowserRouter } from "react-router";
 import CssBaseline from "@mui/material/CssBaseline";
 import { LicenseInfo } from "@mui/x-license";
 import { muiXTelemetrySettings } from "@mui/x-telemetry";

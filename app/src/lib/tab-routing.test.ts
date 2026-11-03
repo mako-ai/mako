@@ -30,14 +30,6 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     kind: "flow-editor",
     metadata: { flowId: "flow-1" },
   }),
-  dashboard: baseTab({
-    kind: "dashboard",
-    metadata: { dashboardId: "dash-1" },
-  }),
-  "dashboard-data-source": baseTab({
-    kind: "dashboard-data-source",
-    metadata: { dashboardId: "dash-1", dataSourceId: "ds_1" },
-  }),
   "table-data": baseTab({
     kind: "table-data",
     connectionId: "651234567890abcdef1234",
@@ -45,6 +37,10 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     metadata: { schema: "public", table: "users" },
   }),
   notebook: baseTab({ kind: "notebook", metadata: { notebookId: "nb-1" } }),
+  workflow: baseTab({
+    kind: "workflow",
+    metadata: { workflowId: "daily-digest" },
+  }),
   app: baseTab({
     kind: "app",
     metadata: { appId: "66f000000000000000000001" },
@@ -53,6 +49,7 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     kind: "app-file",
     metadata: { appId: "66f000000000000000000001", path: "src/App.tsx" },
   }),
+  "apps-home": baseTab({ kind: "apps-home" }),
   "app-diff": baseTab({
     kind: "app-diff",
     metadata: {
@@ -61,25 +58,18 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
       mode: "working",
     },
   }),
-  "console-diff": baseTab({
-    kind: "console-diff",
+  "history-diff": baseTab({
+    kind: "history-diff",
     metadata: {
-      appId: "66f000000000000000000001",
-      path: "apps/x/src/App.tsx",
-      mode: "working",
+      entity: "flow",
+      id: "66f000000000000000000001",
+      path: "flows/leads.yml",
+      sha: "abc1234",
     },
   }),
   "repo-diff": baseTab({
     kind: "repo-diff",
     metadata: { path: "consoles/revenue.sql", mode: "working" },
-  }),
-  "notebook-diff": baseTab({
-    kind: "notebook-diff",
-    metadata: {
-      notebookId: "nb-1",
-      path: "notebooks/revenue.deepnote",
-      sha: "abc1234",
-    },
   }),
   plan: baseTab({ kind: "plan", metadata: { chatId: "chat-1" } }),
   settings: baseTab({ kind: "settings", settingsSection: "models" }),
@@ -125,11 +115,10 @@ describe("tab-routing", () => {
   );
 
   it("keeps nested routes from being captured by their parent patterns", () => {
-    // /d/:id/data/:dsId must not be treated as a dashboard URL, and
-    // /a/:id/file|data/... must not be treated as an app URL — hydration
+    // /apps/:id/file/... must not be treated as an app URL — hydration
     // relies on the parent patterns being anchored.
-    const dsUrl = tabUrlPath("t", FIXTURES["dashboard-data-source"]) as string;
-    expect(dsUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS.dashboard);
+    const appFileUrl = tabUrlPath("t", FIXTURES["app-file"]) as string;
+    expect(appFileUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS.app);
 
     // /x/:id/file|job|runs must not be captured by the bare console pattern.
     const dbtFileUrl = tabUrlPath("t", FIXTURES["dbt-file"]) as string;

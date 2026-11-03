@@ -100,9 +100,7 @@ export const DBT_SERVER_MUTATION_TOOLS = new Set<string>([
 // event so frequency / affected tools are queryable. Correlate with the
 // server's `mako.agent` logs (and the resume-endpoint 204 reasons) via chatId.
 export type StreamInterruptionPath =
-  | "orphan-rescue"
-  | "stream-error"
-  | "wake-resume";
+  "orphan-rescue" | "stream-error" | "wake-resume";
 
 export function reportStreamInterruption(detail: {
   path: StreamInterruptionPath;

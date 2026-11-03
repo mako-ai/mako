@@ -320,8 +320,10 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
               onKeyDown={e => {
                 if (e.key === "Enter") void handleRunCommand();
               }}
-              InputProps={{
-                sx: { fontFamily: "monospace", fontSize: "0.8rem" },
+              slotProps={{
+                input: {
+                  sx: { fontFamily: "monospace", fontSize: "0.8rem" },
+                },
               }}
             />
             <Tooltip
@@ -406,7 +408,12 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
               <Box>
                 {problems === null || busy === "parse" ? (
                   <Box sx={{ p: 2 }}>
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        color: "text.secondary",
+                      }}
+                    >
                       {busy === "parse"
                         ? "Parsing project…"
                         : "Press Re-parse."}
@@ -414,7 +421,12 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
                   </Box>
                 ) : problems.length === 0 ? (
                   <Box sx={{ p: 2 }}>
-                    <Typography variant="caption" color="success.main">
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        color: "success.main",
+                      }}
+                    >
                       No problems — project parses cleanly.
                     </Typography>
                   </Box>

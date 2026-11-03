@@ -7,11 +7,13 @@ import { status } from "./status.js";
 import { publish } from "./publish.js";
 import { connector } from "./connector.js";
 import { dbt } from "./dbt.js";
+import { sync } from "./sync.js";
 import { whoami } from "./whoami.js";
+import { workflow } from "./workflow.js";
 
 const HELP = `mako — Mako from your terminal
 
-  mako login   [--api-url <url>] [--no-browser] [--warehouse-write]
+  mako login   [--api-url <url>] [--no-browser]
                                                   sign in once (OAuth, browser), for this workspace checkout
   mako logout                                     forget the stored credential for this host/workspace
   mako whoami                                     show which host/workspace you are signed in to (refreshes an expired token)
@@ -22,8 +24,12 @@ const HELP = `mako — Mako from your terminal
   mako connector probe <id|name> [--entity <e>]   run a configured connector live: check + one page, written nowhere
   mako dbt run|build|test -s <selector> [--env <name>] [--full-refresh] [--no-defer]
                                                   run dbt in Mako's runner on this checkout's dbt/ (uncommitted
-                                                  edits included); default: your personal environment;
-                                                  needs \`mako login --warehouse-write\`
+                                                  edits included); default: your personal environment
+  mako sync ls | status <sync> | backfill <sync> | set <sync> [--poll <cron|off>] [--webhook on|off] [--resync <cron|off>]
+                                                  the workspace's syncs: list, per-entity status, backfill now, triggers
+  mako workflow run <name> [--input '<json>'] [--task <step>] [--out <file>]
+                                                  test-run workflows/<name> here against real Mako (no engine);
+                                                  --task reruns one step from the last run's saved outputs
 
 Run inside a workspace checkout; the host comes from --api-url, MAKO_API_URL,
 the repo's .env, or defaults to https://app.mako.ai. An API key in .env
@@ -60,6 +66,10 @@ export async function main(argv, io = { log: console.log }) {
       return connector(ctx, positional, flags, io);
     case "dbt":
       return dbt(ctx, positional, flags, io);
+    case "sync":
+      return sync(ctx, positional, flags, io);
+    case "workflow":
+      return workflow(ctx, positional, flags, io);
     default:
       io.log(`unknown command "${command}"\n\n${HELP}`);
       return 2;

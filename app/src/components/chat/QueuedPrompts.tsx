@@ -21,7 +21,6 @@ export interface QueuedPrompt {
   text: string;
   files?: FileUIPart[];
   consoleId: string | null;
-  dashboardId: string | null;
 }
 
 interface QueuedPromptListProps {

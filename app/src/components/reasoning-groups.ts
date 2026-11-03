@@ -28,9 +28,7 @@ function partText(p: Part): string {
 function partSignature(p: Part): string | null {
   const meta = p.providerMetadata as Record<string, unknown> | undefined | null;
   const anthropic = meta?.anthropic as
-    | Record<string, unknown>
-    | undefined
-    | null;
+    Record<string, unknown> | undefined | null;
   const sig = anthropic?.signature;
   return typeof sig === "string" && sig.length > 0 ? sig : null;
 }

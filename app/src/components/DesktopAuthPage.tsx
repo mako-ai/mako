@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Box, Button, Link, Typography } from "@mui/material";
 import CircularProgress from "@mui/material/CircularProgress";
 import LaunchIcon from "@mui/icons-material/Launch";
-import { Navigate, useSearchParams } from "react-router-dom";
+import { Navigate, useSearchParams } from "react-router";
 import { useAuth } from "../hooks/useAuth";
 import { authClient } from "../lib/auth-client";
 import { AuthLayout } from "./AuthLayout";
@@ -105,7 +105,12 @@ export function DesktopAuthPage() {
           This link is missing its sign-in challenge. Please open it from the
           Mako desktop app by choosing a sign-in option there.
         </Alert>
-        <Typography variant="body2" color="text.secondary">
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           Looking for the web app?{" "}
           <Link href="/login" sx={{ textDecoration: "none" }}>
             Log in here
@@ -147,7 +152,12 @@ export function DesktopAuthPage() {
           }}
         >
           <CircularProgress size={24} />
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             Preparing your desktop sign-in…
           </Typography>
         </Box>
@@ -169,7 +179,12 @@ export function DesktopAuthPage() {
           >
             Open Mako
           </Button>
-          <Typography variant="caption" color="text.secondary">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             This link is single-use and expires in {handoff.expiresIn} seconds.
             You can close this tab once the app opens.
           </Typography>
@@ -211,7 +226,12 @@ export function DesktopAuthPage() {
       )}
 
       <Box sx={{ mt: 4 }}>
-        <Typography variant="body2" color="text.secondary">
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           Nothing happening? Make sure the Mako desktop app is installed, or{" "}
           <Link href="/" sx={{ textDecoration: "none" }}>
             continue in the browser

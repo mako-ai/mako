@@ -94,37 +94,57 @@ app "should" render when you can check what it DOES render.
    new state in an `app_browse` screenshot. If you claim "the badge now
    says Live", a screenshot must have shown it.
 
-For an app with NO dev session running, `npm run build` via `app_bash` is
+For an app with NO dev session running, `pnpm build` via `app_bash` is
 the correctness check before telling the user it works. When a dev session IS
 running, prefer looking (`app_browse`) — it verifies runtime behavior, not
 just compilation.
 
 ## Tool guidance
 
-1. `app_list_apps` to resolve the app id, or `app_create_app` for a new
-   private project (full scaffold: package.json, vite.config.ts, src/).
-   After creating, `app_open_app` so the user watches it live.
+1. `app_list_apps` to resolve the app id. Before building something new,
+   `search_apps` with what it should do (topic, tables): if a close match
+   exists, show it and propose extending it rather than scaffolding a
+   near-copy. Then `app_create_app` (full scaffold: package.json,
+   vite.config.ts, src/). New apps are PERSONAL by default — they land in the
+   user's own `users/<handle>/apps/` (`app_list_apps` → `personalFolder`),
+   private to them. Pass a `folder` under `apps/…` only when the user
+   explicitly asks for a shared workspace app; sharing an existing one is a
+   deliberate move (`app_move_app` into `apps/…`) when they ask, never a
+   default. After creating, `app_open_app` so the user watches it live.
 2. Inspect with `app_status` (branch, uncommitted changes). Locate code with
    `app_glob` (paths, e.g. `src/**/*.tsx`) and `app_grep` (contents, regex) —
    both read straight from git so they work even when the sandbox is paused or
    dead. Read files with `app_read_file` (line-numbered by default, so you can
    anchor edits precisely). `app_bash` also works for ad-hoc exploration.
+   Tool output is capped before it enters the context: `app_read_file` returns
+   at most 2000 lines / ~50k chars per call (pass `offset`/`limit`; the result
+   gives `nextOffset` when more remains), `app_grep` returns at most 200
+   matches (narrow the pattern if `truncated` is set), and `app_bash` keeps
+   only the head and tail of long output (stdout 16k chars, stderr 8k) — when
+   cut, the full output is saved in the sandbox and the result names the path,
+   so `grep`/`tail`/`sed` it instead of re-running the command.
 3. Edit with `app_edit_file` (anchored oldString/newString; re-read after a
    failed anchor) or `app_write_file` for new files / full rewrites. Deletes
    and renames go through `app_bash` (`rm`, `mv`) — the flush picks them up.
 4. `app_bash` runs real bash in the app's sandbox (E2B microVM). **cwd is the
    app's own folder** (`apps/<slug>`), not the repo root — `package.json` and
-   `src/` are right there. `npm install <pkg>`, `npm run build`, `node`,
+   `src/` are right there. `pnpm add <pkg>`, `pnpm build`, `node`,
    `git log/diff/status`. The sandbox has a real remote with credentials, so
    `git commit` and `git push` in the shell are legitimate — commits you make
    there are auto-pushed after the command. Prefer `app_commit` for
    checkpoints (it commits AND pushes in one step) and rely on the automatic
    end-of-turn commit for everything else.
 5. Dev servers are managed by `app_open_app`, not by the shell: do NOT
-   background `vite` or `npm run dev` from `app_bash` — a shell-started
+   background `vite` or `pnpm dev` from `app_bash` — a shell-started
    server is invisible to the preview controls and gets replaced. If
-   `app_open_app` fails on missing dependencies, run `npm install` via
+   `app_open_app` fails on missing dependencies, run `pnpm install` via
    `app_bash` and call `app_open_app` again.
+   **Package manager: pnpm.** New apps pin it (`"packageManager": "pnpm@…"`)
+   and commit `pnpm-lock.yaml`; Mako installs with whatever the app's folder
+   says. Never run `npm install` in a pnpm app — it ignores `pnpm-lock.yaml`
+   and writes a competing `package-lock.json`. An app still on
+   `package-lock.json` installs with npm until converted: `pnpm import`,
+   delete `package-lock.json`, add the `packageManager` field, commit.
 6. `app_list_branches` / `app_merge_to_main` manage the branch model; merge
    only when the user asks for the changes to land on main.
 
@@ -164,6 +184,7 @@ A binding is ONE file — `bindings/<name>.sql` (name = filename, no manifest):
 -- materialization: parquet                (default; only option today)
 -- schedule: 0 6 * * *                     (optional cron refresh)
 -- dbt_project: <id>                       (optional)
+-- row_limit: 3000000                      (optional; default 2,000,000, max 5,000,000)
 SELECT ...
 ```
 
@@ -174,10 +195,62 @@ it works before merging to main; errors come back verbatim
 (fix the SQL and retry). At runtime the preview
 serves each artifact at the APP-RELATIVE URL `__data/<name>.parquet`
 (no leading slash — use `new URL("__data/x.parquet", document.baseURI)`).
-Fetch and read with hyparquet or duckdb-wasm; artifacts are
-SNAPPY-compressed, so plain hyparquet works (no compressors bundle needed).
+Read data ONLY through `@makoai/app-sdk`. Never import
+`@duckdb/duckdb-wasm`, `hyparquet` or `apache-arrow` parquet readers in an
+app. A second engine costs a second ~1 s boot and a second copy of every
+binding. Use `useQuery` / `useDuckDB` first. For anything custom (SDK ≥ 2.8):
+- `useDuckDB(sql, { format: "arrow" })` returns the Arrow Table, not rows
+  (map layers, 100k+ rows).
+- `getDuckDB()` returns the page's shared engine, and `withConnection(conn => …)`
+  runs on a connection that is closed for you. Never close or terminate the
+  shared engine.
+- `ensureBinding(name)` loads a binding as a table and returns its name.
+  `unloadBinding(name)` frees it.
+- Memory is managed for you (SDK ≥ 2.12): past 1.5 GiB of tables, the least
+  recently read become views over their parquet and turn back into tables on
+  their next read. Do not unload bindings by hand to save memory.
+  `setBindingMemoryBudget(bytes)` changes the cap.
+- Past 2 GiB across open app tabs, Mako ends the DuckDB worker of the least
+  recently shown app (SDK ≥ 2.13). `getDuckDB()`, `withConnection()`,
+  `ensureBinding()` and `useDuckDB` SQL that writes (`CREATE TABLE`) keep the
+  worker for the page's life, so the heap never goes back. Stay read-only unless
+  the app needs them.
+- `fetchBindingBytes(name, { onProgress, fresh })` returns the raw parquet
+  bytes for a custom reader (register them with
+  `getDuckDB().registerFileBuffer`).
+
+Artifacts are ZSTD-compressed. DuckDB reads them as they are. Plain
+hyparquet throws "unsupported compression codec: ZSTD", one more reason
+not to bring your own reader.
+
+**Row limits.** A binding holds up to 2,000,000 rows unless its front
+matter says `-- row_limit: <n>` (`3000000`, `3_000_000` or `3M`), up to
+5,000,000. Operators can move both numbers. The build error states the
+ones in force. A query past its limit fails the build and never truncates.
+The app keeps its previous data. The error names the binding, the rows the
+query returned and the `-- row_limit:` that fits them. Set that value, or
+aggregate or shard the binding.
+
+Design for the browser, not the cap. Every binding downloads whole into
+the tab, and DuckDB-WASM holds it in memory. DuckDB-WASM stops at 3.1 GB
+per page, for all bindings together. A 43-column binding takes about 950
+bytes per row there, so 3.3M rows fill it. A 14-column one takes about 180
+bytes. Past about 1M rows, select only the columns the app reads and
+pre-aggregate in SQL (one row per day x country, not per event). Shard by
+year or country when a screen needs one slice at a time: `useDuckDB`
+downloads only the bindings its SQL names. `useQuery(name)` and row-format
+`useDuckDB` turn at most 500,000 result rows into JS objects and set
+`truncated: true` past that (`rowLimit` option). For a bigger binding,
+aggregate in `useDuckDB` SQL or ask for `{ format: "arrow" }`.
+
 After wiring a binding into the UI, `app_browse` is how you confirm the data
 actually loads — a failed `__data/...` fetch shows up in its failedRequests.
+
+**`useDuckDB` loads only what its SQL names (SDK ≥ 2.8).** Name bindings
+as tables (`from orders`, `join "my-binding"`) and only those download.
+Building a table name at runtime (`query_table('x')`) still works but costs
+one retry. A dashboard tab that never names the 10 MB binding never
+downloads it. Keep heavy bindings out of queries the first screen runs.
 
 **Refresh on demand (SDK ≥ 2.3).** `useQuery` / `useDuckDB` return
 `refresh()` and `refreshing`: `refresh()` rematerializes the binding (the
@@ -189,6 +262,30 @@ and the laptop alike (`POST __data/<name>/refresh`, answered by whoever
 serves the data). Public share links refuse it unless the owner enabled
 live queries for the link. Prefer this over a cron for "what is it now?"
 buttons; keep `-- schedule:` for data that must be fresh before anyone asks.
+
+**Loading captions (SDK ≥ 2.7.4).** Every hook returns `phase` while
+`loading` / `refreshing` (plus `rowsWritten`, `bytes`, `bytesTotal`).
+Caption spinners with `bindingPhaseLabel(q)`: "Building from warehouse"
+(the query is running; only refresh, laptop dev builds and live bindings
+build), "Getting download link" (the file exists; under a second),
+"Downloading", "Loading into DuckDB", "Running query". Do not wrap `fetch`
+to guess phases, and do not label the whole wait "signing": the SDK reads
+the real phase from the server (`Accept: application/x-ndjson` on the same
+request). `RefreshAllButton` already captions each source.
+
+**Preview rows while loading (SDK ≥ 2.9, opt-in).** `useQuery(name,
+{ snapshot: true })` adds `preview`: the first 500 rows (200 KiB cap) of
+the binding's last build, from `__data/<name>.snapshot.json`, available
+before DuckDB-WASM boots. `data` stays null and `loading` stays true until
+the full parquet is in; `preview` turns null when the rows arrive or the
+load fails. Render `preview.data` as a skeleton table or first paint only.
+It is the first N rows of the build stream in the query's own order (no
+ORDER BY guarantee), so never sum, count or filter it — KPIs, totals and
+charts read `data` or `useDuckDB`. Preview values have the same types as
+`data`. `preview` is null for builds older than this release (refresh the
+binding once), live bindings, laptop drafts still building, and bindings
+with DECIMAL/LIST/STRUCT columns. Leave the option off unless the page has
+a big table worth painting early; without it nothing changes.
 
 ## Who is looking: `useViewer()` (SDK ≥ 2.4)
 
@@ -206,19 +303,49 @@ and branch the UI on the result. Never propose adding such fields to Mako
 users or members. Every binding the app can read is downloaded whole into
 the browser, so this shapes the UI; it is not access control — say so
 when the user asks for "hiding" data. `MAKO_VIEWER_AS=<email>` in the
-repo's `.env` previews the app as another member during `npm run dev`.
+repo's `.env` previews the app as another member during `pnpm dev`.
 
 ## The SDK's name
 
-New apps depend on `@makoai/app-sdk` (npm) — vendored at `packages/app-sdk`.
-Apps created before 2026-09 import the same package as `@makoai/app-sdk`
-(older alias): keep whatever the app's `package.json` already uses.
+Apps depend on `@makoai/app-sdk` from npm with a caret range
+(`"^2.7.0"`); Mako's deploys move every app to the newest release inside that
+range, so never vendor or copy the package into the repo. Its README
+(`node_modules/@makoai/app-sdk/README.md` after an install) documents the
+version the app has. Apps created before 2026-09 may still import an older
+alias or a `file:` path: keep whatever the app's `package.json` already uses
+unless you are migrating it.
+
+## Thumbnail (Apps home card + link preview)
+
+Each app ships its own poster: `thumbnail.png`, 1200×750, at the app's root
+(also `.webp`/`.jpg`/`.svg`, first match wins). Nothing screenshots apps. PNG,
+because it is also the link preview of the app's public share (previews
+ignore SVG and crop to the centred 1200×630). New apps start with a
+placeholder `thumbnail.svg`. Before designing or replacing one, read
+`references/thumbnails.md` (`read_skill_resource("apps",
+"references/thumbnails.md")`): the recipe, the rules and how to render it.
 
 ## Styling & UI components
 
-For Tailwind v4 + shadcn/ui in an app — install, mapping Tailwind onto the
-SDK's theme tokens, the cursor-pointer base rule, the multi-select
-filter-dropdown pattern, and v1-CDN migration notes — read
+**Default to the house style.** The SDK injects Mako's theme tokens (stone,
+warm `--canvas`, `#527df2` `--brand`, `--positive`/`--warning`/`--negative`,
+`--chart-1…5`; light and dark), and `@makoai/app-sdk/ui` is the dashboard kit
+every workspace app was re-forking: `PageHeader`, `Card`, `KpiRow` /
+`KpiTile`, `Button`, `StatusDot`, `MultiSelect` (filters), `FreshnessBadge`
+(data age per source), `RefreshAllButton` (rebuild every binding, with a
+progress modal), `DataTable` (sortable, paged list with CSV export; SDK ≥ 2.11,
+rules in `references/ui-toolkit.md` "Tables"). Import `@makoai/app-sdk/ui.css` before the app's own CSS.
+Native `<select>`: the SDK base styles it (arrow inset 10px, 32px, tokens),
+because macOS otherwise draws the caret against the right border. Don't strip
+that with `appearance: none` unless you draw your own arrow with ≥10px inset;
+prefer shadcn `Select` in Tailwind apps.
+New apps are scaffolded on it. Do NOT paste a token block into an app or
+fork these components — override a single token, or ask for the kit to grow.
+
+Every row-level list is a `DataTable`. For anything beyond the kit (sheets,
+dialogs, command menus): Tailwind
+v4 + shadcn/ui — install, mapping Tailwind onto the SDK's theme tokens, the
+cursor-pointer base rule, and v1-CDN migration notes — read
 `references/ui-toolkit.md`
 (`read_skill_resource("apps", "references/ui-toolkit.md")`).
 
@@ -226,6 +353,7 @@ filter-dropdown pattern, and v1-CDN migration notes — read
 
 Before adding any chart, read `references/charting.md`
 (`read_skill_resource("apps", "references/charting.md")`): recharts, the
-`--chart-N` theme tokens, date/money formatting, and the loading/error/empty
-states every chart card must render. Dates arrive from bindings as strings
+`--chart-N` theme tokens, the table tooltip every chart uses (`tableTooltip`
+from `@makoai/app-sdk/ui`, never recharts' default list), date/money
+formatting, and the loading/error/empty states every chart card must render. Dates arrive from bindings as strings
 (`YYYY-MM-DD` / ISO) since SDK 2.2 — do not assume numbers.

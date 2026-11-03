@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import yaml from "js-yaml";
+import { loadYaml } from "../../utils/yaml";
 import { FIELD_PATHS, generateFieldDocs } from "@mako/schemas";
 import { extractEntities } from "../entity-extraction";
 
@@ -77,7 +77,7 @@ function parseFrontmatter(content: string): {
     return { data: {}, body: content.trim() };
   }
 
-  const parsed = yaml.load(match[1]);
+  const parsed = loadYaml(match[1]);
 
   return {
     data:

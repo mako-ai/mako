@@ -201,10 +201,23 @@ export function CodingAgentsPanel() {
 
           {provider && (
             <Box>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  color: "text.secondary",
+                  mb: 1,
+                }}
+              >
                 {provider.description}
               </Typography>
-              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Stack
+                direction="row"
+                spacing={1}
+                useFlexGap
+                sx={{
+                  flexWrap: "wrap",
+                }}
+              >
                 <Chip
                   size="small"
                   label={
@@ -267,8 +280,10 @@ export function CodingAgentsPanel() {
           <Stack
             direction="row"
             spacing={1}
-            alignItems="center"
-            flexWrap="wrap"
+            sx={{
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
           >
             <Button
               variant="contained"
@@ -305,7 +320,12 @@ export function CodingAgentsPanel() {
                   ? `Already signed in (${provider?.authProduct || "provider"})`
                   : `Sign in with ${provider?.authProduct || "provider"}`}
             </Button>
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               {!acpSupportsAdapterEnsure(acpStatus)
                 ? "One-click Update isn’t available on this Local Agent — the button shows the npm command to run in Terminal."
                 : readyProviders.length > 0
@@ -316,7 +336,13 @@ export function CodingAgentsPanel() {
             </Typography>
           </Stack>
 
-          <Typography variant="caption" color="text.secondary" component="div">
+          <Typography
+            variant="caption"
+            component="div"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             {selectedProviderId === "codex" ? (
               <>
                 Prefer the CLI? Run <code>codex</code> login (ChatGPT), or{" "}
@@ -412,7 +438,12 @@ export function CodingAgentsPanel() {
             >
               <Box>
                 <Typography variant="body2">{p.label}</Typography>
-                <Typography variant="caption" color="text.secondary">
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: "text.secondary",
+                  }}
+                >
                   {p.adapterFound
                     ? p.adapterCommand || "adapter on PATH"
                     : p.installHint}

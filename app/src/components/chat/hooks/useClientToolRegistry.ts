@@ -44,7 +44,7 @@ export function useClientToolRegistry({
   // Dispatch dedupe by toolCallId (see ToolDispatchGate). Resumable-stream
   // replays and concurrent stream consumers re-deliver `tool-input-available`
   // chunks for calls this page already dispatched — without this gate a single
-  // create_dashboard call executed once per consumer (the triplicate-dashboard
+  // create call executed once per consumer (the triplicate-entity
   // incident). Reset on chat switch; the session loader seeds it from raw
   // history.
   const toolDispatchGateRef = useRef(new ToolDispatchGate());

@@ -175,8 +175,10 @@ export function ConnectionSelector({
           helperText={helperText}
           variant={isCompact ? "standard" : "outlined"}
           slotProps={{
+            ...params.slotProps,
+
             input: {
-              ...params.InputProps,
+              ...params.slotProps.input,
               disableUnderline: isCompact,
               startAdornment: value ? (
                 <Box
@@ -216,14 +218,15 @@ export function ConnectionSelector({
                   {isLoading ? (
                     <CircularProgress color="inherit" size={14} />
                   ) : null}
-                  {params.InputProps.endAdornment}
+                  {params.slotProps.input.endAdornment}
                 </>
               ),
             },
+
             htmlInput: {
-              ...params.inputProps,
+              ...params.slotProps.htmlInput,
               style: {
-                ...params.inputProps?.style,
+                ...params.slotProps.htmlInput?.style,
                 fontSize: "0.8125rem",
                 padding: isCompact ? "2px 0" : undefined,
               },

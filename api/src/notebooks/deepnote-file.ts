@@ -12,11 +12,13 @@
  * rendered outputs stay in the hot store document and the artifact store.
  *
  * Paths: `notebooks/<slug>.deepnote` for workspace-visible notebooks,
- * `users/<ownerId>/notebooks/<slug>.deepnote` for private ones — the same
- * owner-first layout consoles use.
+ * `users/<handle>/notebooks/<slug>.deepnote` for private ones — the same
+ * owner-first layout consoles use (the handle is the owner's personal
+ * folder name, user-handles.ts; ownership itself lives on the index row).
  */
 import { createHash, randomUUID } from "node:crypto";
-import yaml from "js-yaml";
+import * as yaml from "js-yaml";
+import { loadYaml } from "../utils/yaml";
 import { deepnoteFileSchema } from "@deepnote/blocks";
 import type { NotebookBlock, NotebookDoc } from "./types";
 
@@ -39,10 +41,13 @@ export function slugifyNotebookName(name: string): string {
 
 export function notebookRepoPath(
   slug: string,
-  owner?: { access: "private" | "workspace"; ownerId: string },
+  owner?: { access: "private" | "workspace"; ownerHandle?: string },
 ): string {
   if (owner && owner.access === "private") {
-    return `users/${owner.ownerId}/${NOTEBOOKS_ROOT}/${slug}${NOTEBOOK_FILE_EXTENSION}`;
+    if (!owner.ownerHandle) {
+      throw new Error("A private notebook needs its owner's handle");
+    }
+    return `users/${owner.ownerHandle}/${NOTEBOOKS_ROOT}/${slug}${NOTEBOOK_FILE_EXTENSION}`;
   }
   return `${NOTEBOOKS_ROOT}/${slug}${NOTEBOOK_FILE_EXTENSION}`;
 }
@@ -137,7 +142,7 @@ export interface ParsedNotebookFile {
 export function parseNotebookFile(contents: string): ParsedNotebookFile | null {
   let raw: unknown;
   try {
-    raw = yaml.load(contents);
+    raw = loadYaml(contents);
   } catch {
     return null;
   }

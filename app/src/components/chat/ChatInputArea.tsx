@@ -1,14 +1,28 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { useWorkspace } from "../../contexts/workspace-context";
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { useOptionalWorkspace } from "../../contexts/workspace-context";
+import { ArrowUp, LoaderCircle, Plus, Square, X } from "lucide-react";
 import {
-  Box,
-  IconButton,
-  Paper,
-  TextField,
-  Tooltip,
-  Typography,
-} from "@mui/material";
-import { ArrowUp, ImagePlus, X } from "lucide-react";
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupTextarea,
+} from "../ui/input-group";
+import {
+  Attachment,
+  AttachmentMedia,
+  AttachmentContent,
+  AttachmentTitle,
+  AttachmentActions,
+  AttachmentAction,
+  AttachmentTrigger,
+} from "../ui/attachment";
+import { Button } from "../ui/button";
 import type { FileUIPart } from "ai";
 import { ModelSelector } from "../ModelSelector";
 import { SessionUsageBadge } from "./SessionUsageBadge";
@@ -41,6 +55,14 @@ interface ChatInputAreaProps {
   chatId: string;
   /** Selected model runs locally, so its turns are not metered. */
   isLocalAgent?: boolean;
+  /** Overrides the default composer placeholder. */
+  placeholder?: string;
+  /** Text a screen wrote for this chat: replaces the composer's text. */
+  draft?: { text: string; at: number } | null;
+  /** Model picker and usage badge (off where the server picks the model). */
+  showModelControls?: boolean;
+  /** Image attachments (off where the server does not accept them). */
+  allowAttachments?: boolean;
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -65,12 +87,18 @@ export const ChatInputArea = React.memo(
     planFeedbackMode = false,
     chatId,
     isLocalAgent = false,
+    placeholder = "Ask Mako...",
+    showModelControls = true,
+    allowAttachments = true,
+    draft,
   }: ChatInputAreaProps) => {
     const [input, setInput] = useState("");
     const [images, setImages] = useState<ImageAttachment[]>([]);
     const [previewSrc, setPreviewSrc] = useState<string | null>(null);
     const [isPreparingSubmission, setIsPreparingSubmission] = useState(false);
-    const inputRef = useRef<HTMLInputElement>(null);
+    const inputRef = useRef<HTMLTextAreaElement>(null);
+    const submissionRef = useRef(false);
+    const [submissionError, setSubmissionError] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const imagesRef = useRef<ImageAttachment[]>([]);
     // When entering edit mode, load the queued prompt's text into the composer
@@ -82,7 +110,7 @@ export const ChatInputArea = React.memo(
     // Onboarding hands the user's "what do you want to build?" answer to
     // the composer through this key — their first prompt, where it belongs
     // (users used to type it into the workspace-name field).
-    const { currentWorkspace } = useWorkspace();
+    const currentWorkspace = useOptionalWorkspace()?.currentWorkspace;
     useEffect(() => {
       if (!currentWorkspace?.id) return;
       try {
@@ -111,10 +139,24 @@ export const ChatInputArea = React.memo(
     });
     imagesRef.current = images;
 
+    // Keep auto-sizing on browsers that do not support field-sizing: content.
+    useLayoutEffect(() => {
+      const textarea = inputRef.current;
+      if (!textarea) return;
+      textarea.style.height = "auto";
+      textarea.style.height = `${textarea.scrollHeight}px`;
+    }, [input]);
+
     useEffect(() => {
       const timer = setTimeout(() => inputRef.current?.focus(), 100);
       return () => clearTimeout(timer);
     }, [focusKey]);
+
+    // A screen's draft ("Ask Mako to fix"): written in, for the person to
+    // read, add to and send.
+    useEffect(() => {
+      if (draft) setInput(draft.text);
+    }, [draft]);
 
     useEffect(() => {
       const prevId = prevEditingIdRef.current;
@@ -161,7 +203,7 @@ export const ChatInputArea = React.memo(
     const handlePaste = useCallback(
       (e: React.ClipboardEvent) => {
         const items = e.clipboardData?.items;
-        if (!items) return;
+        if (!items || !allowAttachments) return;
         const files: File[] = [];
         for (const item of items) {
           if (item.kind === "file" && item.type.startsWith("image/")) {
@@ -174,7 +216,7 @@ export const ChatInputArea = React.memo(
           addImages(files);
         }
       },
-      [addImages],
+      [addImages, allowAttachments],
     );
 
     const submitMessage = useCallback(async () => {
@@ -182,11 +224,13 @@ export const ChatInputArea = React.memo(
       const currentImages = images;
       const hasText = trimmedInput.length > 0;
       const hasImages = currentImages.length > 0;
-      if ((!hasText && !hasImages) || isPreparingSubmission) {
+      if ((!hasText && !hasImages) || disabled || submissionRef.current) {
         return;
       }
 
+      submissionRef.current = true;
       setIsPreparingSubmission(true);
+      setSubmissionError(null);
       let fileParts: FileUIPart[] | undefined;
       try {
         if (hasImages) {
@@ -197,348 +241,205 @@ export const ChatInputArea = React.memo(
               mediaType: img.file.type,
             })),
           );
-          currentImages.forEach(img => URL.revokeObjectURL(img.previewUrl));
         }
 
         onSubmit(input, fileParts);
+        currentImages.forEach(img => URL.revokeObjectURL(img.previewUrl));
         setInput("");
         setImages([]);
+      } catch {
+        setSubmissionError("Could not prepare the message. Try again.");
       } finally {
+        submissionRef.current = false;
         setIsPreparingSubmission(false);
       }
-    }, [images, input, isPreparingSubmission, onSubmit]);
+    }, [images, input, disabled, onSubmit]);
 
     const hasContent = input.trim() || images.length > 0;
     const isSubmitDisabled = !hasContent || disabled || isPreparingSubmission;
 
     return (
-      <Paper
-        elevation={0}
-        sx={{
-          // Beautiful UI "Prompt Bar": hairline ring + soft card shadow that
-          // strengthens on focus, instead of a plain divider border.
-          border: "none",
-          borderRadius: "14px",
-          boxShadow: "var(--bui-shadow-card)",
-          backgroundColor: "var(--bui-surface)",
-          transition: "box-shadow 0.15s ease",
-          "&:focus-within": {
-            boxShadow:
-              "0 0 0 1px var(--bui-line-strong), 0 1px 2px oklch(0% 0 0 / 0.06), 0 4px 12px oklch(0% 0 0 / 0.06)",
-          },
-          p: 1,
-          my: 1,
-          mx: 2,
-          display: "flex",
-          flexDirection: "column",
-          gap: 1,
+      <form
+        className="mx-4 my-2 min-w-0 text-foreground"
+        aria-label="Chat composer"
+        onSubmit={event => {
+          event.preventDefault();
+          void submitMessage();
         }}
+        onPaste={isPreparingSubmission || disabled ? undefined : handlePaste}
       >
-        {editingPrompt && (
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              px: 0.5,
-              pb: 0.5,
-              mb: 0.5,
-              borderBottom: 1,
-              borderColor: "divider",
-            }}
-          >
-            <Typography
-              variant="caption"
-              sx={{ fontWeight: 600, color: "text.secondary" }}
-            >
-              Editing queued message
-            </Typography>
-            <Typography
-              component="button"
-              type="button"
-              onClick={onCancelEdit}
-              variant="caption"
-              sx={{
-                border: "none",
-                background: "none",
-                cursor: "pointer",
-                color: "primary.main",
-                fontWeight: 600,
-                p: 0,
-                "&:hover": { textDecoration: "underline" },
-              }}
-            >
-              Cancel
-            </Typography>
-          </Box>
-        )}
-
-        <form
-          onSubmit={e => {
-            e.preventDefault();
-            submitMessage();
-          }}
-          onPaste={handlePaste}
+        <InputGroup
+          className="rounded-2xl bg-background shadow-sm"
+          data-disabled={disabled}
         >
-          {images.length > 0 && (
-            <Box
-              sx={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 1,
-                px: 0.5,
-                pt: 0.5,
-              }}
+          {editingPrompt && (
+            <InputGroupAddon
+              align="block-start"
+              className="justify-between border-b"
             >
-              {images.map(img => (
-                <Box
-                  key={img.id}
-                  sx={{
-                    position: "relative",
-                    width: 56,
-                    height: 56,
-                    borderRadius: 1.5,
-                    overflow: "hidden",
-                    flexShrink: 0,
-                    "&:hover .remove-btn": {
-                      opacity: 1,
-                    },
-                  }}
-                >
-                  <Box
-                    component="img"
-                    src={img.previewUrl}
-                    alt="Attachment"
-                    onClick={() => setPreviewSrc(img.previewUrl)}
-                    sx={{
-                      width: 56,
-                      height: 56,
-                      borderRadius: 1.5,
-                      objectFit: "cover",
-                      cursor: "pointer",
-                      border: 1,
-                      borderColor: "divider",
-                      display: "block",
-                    }}
-                  />
-                  <IconButton
-                    type="button"
-                    className="remove-btn"
-                    aria-label="Remove image"
-                    onClick={e => {
-                      e.stopPropagation();
-                      removeImage(img.id);
-                    }}
-                    size="small"
-                    disabled={isPreparingSubmission}
-                    sx={{
-                      position: "absolute",
-                      top: 4,
-                      right: 4,
-                      width: 18,
-                      height: 18,
-                      p: 0,
-                      opacity: 0,
-                      transition: "opacity 0.15s",
-                      color: "common.white",
-                      backgroundColor: "rgba(0, 0, 0, 0.6)",
-                      "&:hover": {
-                        backgroundColor: "rgba(0, 0, 0, 0.8)",
-                      },
-                    }}
-                  >
-                    <X size={11} />
-                  </IconButton>
-                </Box>
-              ))}
-            </Box>
+              <span className="text-xs">Editing queued message</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                onClick={onCancelEdit}
+              >
+                Cancel
+              </Button>
+            </InputGroupAddon>
           )}
-
-          <ImagePreviewDialog
-            src={previewSrc}
-            onClose={() => setPreviewSrc(null)}
-          />
-
-          <TextField
-            fullWidth
+          {images.length > 0 && (
+            <InputGroupAddon align="block-start" className="flex-wrap gap-2">
+              {images.map(img => (
+                <Attachment key={img.id} size="sm" className="max-w-full">
+                  <AttachmentMedia variant="image">
+                    <img src={img.previewUrl} alt="" />
+                  </AttachmentMedia>
+                  <AttachmentContent>
+                    <AttachmentTitle>{img.file.name}</AttachmentTitle>
+                  </AttachmentContent>
+                  <AttachmentTrigger
+                    aria-label={`Preview ${img.file.name}`}
+                    onClick={() => setPreviewSrc(img.previewUrl)}
+                  />
+                  <AttachmentActions>
+                    <AttachmentAction
+                      type="button"
+                      aria-label={`Remove ${img.file.name}`}
+                      disabled={isPreparingSubmission}
+                      onClick={() => removeImage(img.id)}
+                    >
+                      <X />
+                    </AttachmentAction>
+                  </AttachmentActions>
+                </Attachment>
+              ))}
+            </InputGroupAddon>
+          )}
+          <InputGroupTextarea
+            ref={inputRef}
+            aria-label="Message"
             autoFocus
-            multiline
-            minRows={1}
-            maxRows={24}
+            rows={1}
+            readOnly={isPreparingSubmission}
+            className="min-h-14 max-h-[min(45vh,24rem)] overflow-y-auto px-3 py-3 text-base sm:text-sm"
             placeholder={
               editingPrompt
                 ? "Edit queued message..."
                 : planFeedbackMode
                   ? "Suggest changes to the plan..."
-                  : "Ask Chat..."
+                  : placeholder
             }
             value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submitMessage();
+            onChange={event => setInput(event.target.value)}
+            onKeyDown={event => {
+              // IME confirmation is not a request to send (Safari also uses 229).
+              if (event.nativeEvent.isComposing || event.keyCode === 229) {
+                return;
               }
-              if (e.key === "Escape" && editingPrompt) {
-                e.preventDefault();
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void submitMessage();
+              }
+              if (event.key === "Escape" && editingPrompt) {
+                event.preventDefault();
                 onCancelEdit();
               }
-              if (e.key === "Backspace" && !input && images.length > 0) {
-                e.preventDefault();
+              if (
+                event.key === "Backspace" &&
+                !input &&
+                !isPreparingSubmission &&
+                images.length > 0
+              ) {
+                event.preventDefault();
                 const last = images[images.length - 1];
                 if (last) removeImage(last.id);
               }
             }}
-            variant="outlined"
-            inputRef={inputRef}
-            sx={{
-              m: 0.5,
-              maxHeight: "60vh",
-              overflowY: "auto",
-              "& .MuiInputBase-input": {
-                fontSize: { xs: 16, sm: 14 },
-                "&::placeholder": {
-                  color: "var(--bui-ink-3)",
-                  opacity: 1,
-                },
-              },
-              "& .MuiInputBase-root": {
-                p: 0,
-                fontSize: { xs: 16, sm: 14 },
-              },
-              "& .MuiOutlinedInput-notchedOutline": {
-                border: "none",
-              },
-              "& .MuiOutlinedInput-root:hover .MuiOutlinedInput-notchedOutline":
-                {
-                  border: "none",
-                },
-              "& .MuiOutlinedInput-root.Mui-focused .MuiOutlinedInput-notchedOutline":
-                {
-                  border: "none",
-                },
-            }}
           />
-
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            style={{ display: "none" }}
-            onChange={e => {
-              if (e.target.files) {
-                addImages(Array.from(e.target.files));
-                e.target.value = "";
-              }
-            }}
-          />
-
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              gap: 0.5,
-              minWidth: 0,
-            }}
-          >
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 0.5,
-                flex: "1 1 auto",
-                minWidth: 0,
-              }}
-            >
-              <ModelSelector />
-              <SessionUsageBadge chatId={chatId} isLocalAgent={isLocalAgent} />
-            </Box>
-
-            <Tooltip title="Attach image" placement="top">
-              <IconButton
-                type="button"
+          <InputGroupAddon align="block-end" className="gap-1.5">
+            {allowAttachments && (
+              <InputGroupButton
+                variant="outline"
+                size="icon-sm"
+                className="rounded-full"
+                aria-label="Attach image"
+                title="Attach image"
                 onClick={() => fileInputRef.current?.click()}
-                size="small"
                 disabled={isPreparingSubmission || disabled || isLoading}
-                sx={{
-                  width: 28,
-                  height: 28,
-                  flexShrink: 0,
-                  color: "var(--bui-ink-3)",
-                  "&:hover": {
-                    color: "var(--bui-ink)",
-                    backgroundColor: "var(--bui-hover)",
-                  },
-                }}
               >
-                <ImagePlus size={16} />
-              </IconButton>
-            </Tooltip>
-
-            {isLoading ? (
-              <IconButton
-                type="button"
-                aria-label="Stop generating"
-                onClick={onStop}
-                size="small"
-                sx={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: "50%",
-                  backgroundColor: "var(--bui-field)",
-                  boxShadow: "var(--bui-shadow-hairline)",
-                  "&:hover": {
-                    backgroundColor: "var(--bui-hover-2)",
-                  },
-                  flexShrink: 0,
-                }}
-              >
-                <Box
-                  sx={{
-                    width: 10,
-                    height: 10,
-                    backgroundColor: "var(--bui-ink)",
-                    borderRadius: 0.5,
-                  }}
-                />
-              </IconButton>
-            ) : (
-              <IconButton
-                type="submit"
-                aria-label="Send message"
-                disabled={isSubmitDisabled}
-                size="small"
-                sx={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: "50%",
-                  backgroundColor: !isSubmitDisabled
-                    ? "var(--bui-accent)"
-                    : "var(--bui-field)",
-                  color: !isSubmitDisabled ? "#fff" : "var(--bui-ink-3)",
-                  transition: "background-color 0.15s ease, transform 0.1s",
-                  "&:hover": {
-                    backgroundColor: !isSubmitDisabled
-                      ? "var(--bui-accent-ink)"
-                      : "var(--bui-field)",
-                  },
-                  "&:active": {
-                    transform: !isSubmitDisabled ? "scale(0.94)" : "none",
-                  },
-                  "&.Mui-disabled": {
-                    backgroundColor: "var(--bui-field)",
-                    color: "var(--bui-ink-3)",
-                  },
-                  flexShrink: 0,
-                }}
-              >
-                <ArrowUp size={18} />
-              </IconButton>
+                <Plus />
+              </InputGroupButton>
             )}
-          </Box>
-        </form>
-      </Paper>
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+              {showModelControls && (
+                <>
+                  <ModelSelector />
+                  <SessionUsageBadge
+                    chatId={chatId}
+                    isLocalAgent={isLocalAgent}
+                  />
+                </>
+              )}
+            </div>
+            {(!isLoading || hasContent) && (
+              <InputGroupButton
+                type="submit"
+                variant="default"
+                size="icon-sm"
+                className="rounded-full"
+                aria-label={isLoading ? "Queue message" : "Send message"}
+                title={isLoading ? "Queue message" : "Send message"}
+                disabled={isSubmitDisabled}
+              >
+                {isPreparingSubmission ? (
+                  <LoaderCircle className="motion-safe:animate-spin" />
+                ) : (
+                  <ArrowUp />
+                )}
+              </InputGroupButton>
+            )}
+            {isLoading && (
+              <InputGroupButton
+                variant="default"
+                size="icon-sm"
+                className="rounded-full"
+                aria-label="Stop generating"
+                title="Stop generating"
+                onClick={onStop}
+              >
+                <Square className="size-3 fill-current" />
+              </InputGroupButton>
+            )}
+          </InputGroupAddon>
+        </InputGroup>
+        {submissionError && (
+          <p role="alert" className="mt-2 text-sm text-destructive">
+            {submissionError}
+          </p>
+        )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          aria-label="Image attachments"
+          accept="image/*"
+          multiple
+          hidden
+          disabled={
+            !allowAttachments || disabled || isPreparingSubmission || isLoading
+          }
+          onChange={event => {
+            if (event.target.files) {
+              addImages(Array.from(event.target.files));
+              event.target.value = "";
+            }
+          }}
+        />
+        <ImagePreviewDialog
+          src={previewSrc}
+          onClose={() => setPreviewSrc(null)}
+        />
+      </form>
     );
   },
 );

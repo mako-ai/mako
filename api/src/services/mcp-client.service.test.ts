@@ -561,7 +561,7 @@ async function testGrantsAndNeedsApproval() {
       if (typeof fn === "function") {
         return await fn(
           {},
-          { toolCallId: "t", messages: [], experimental_context: undefined },
+          { toolCallId: "t", messages: [], context: undefined },
         );
       }
       return fn === true;
@@ -599,7 +599,7 @@ async function testGrantsAndNeedsApproval() {
     assert.ok(updateTool.execute);
     const updateDenied = (await updateTool.execute(
       {},
-      { toolCallId: "t", messages: [], experimental_context: undefined },
+      { toolCallId: "t", messages: [], context: undefined },
     )) as { success: boolean; denied?: boolean };
     assert.equal(updateDenied.success, false);
     assert.equal(updateDenied.denied, true);
@@ -696,7 +696,7 @@ async function testGrantsAndNeedsApproval() {
     assert.ok(createTool.execute);
     const denied = (await createTool.execute(
       {},
-      { toolCallId: "t", messages: [], experimental_context: undefined },
+      { toolCallId: "t", messages: [], context: undefined },
     )) as { success: boolean; denied?: boolean };
     assert.equal(denied.success, false);
     assert.equal(denied.denied, true);
@@ -712,7 +712,7 @@ async function testGrantsAndNeedsApproval() {
       typeof otherFn === "function"
         ? await otherFn(
             {},
-            { toolCallId: "t", messages: [], experimental_context: undefined },
+            { toolCallId: "t", messages: [], context: undefined },
           )
         : otherFn,
       true,
@@ -724,7 +724,7 @@ async function testGrantsAndNeedsApproval() {
       typeof otherSearchFn === "function"
         ? await otherSearchFn(
             {},
-            { toolCallId: "t", messages: [], experimental_context: undefined },
+            { toolCallId: "t", messages: [], context: undefined },
           )
         : otherSearchFn,
       false,
@@ -740,7 +740,7 @@ async function testGrantsAndNeedsApproval() {
     assert.ok(staleReadTool.execute);
     const disconnected = (await staleReadTool.execute(
       {},
-      { toolCallId: "t", messages: [], experimental_context: undefined },
+      { toolCallId: "t", messages: [], context: undefined },
     )) as { success: boolean; error?: string };
     assert.equal(disconnected.success, false);
     assert.match(disconnected.error ?? "", /no longer connected/i);

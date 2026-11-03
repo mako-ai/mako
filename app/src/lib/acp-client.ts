@@ -97,7 +97,7 @@ export const acpClient = {
       return unwrap(body, "Failed to update local adapter");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(rewriteLocalAgentNotFound(message));
+      throw new Error(rewriteLocalAgentNotFound(message), { cause: error });
     }
   },
 
@@ -114,7 +114,7 @@ export const acpClient = {
       return unwrap(body, "Failed to load local models");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(rewriteLocalAgentNotFound(message));
+      throw new Error(rewriteLocalAgentNotFound(message), { cause: error });
     }
   },
 

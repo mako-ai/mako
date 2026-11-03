@@ -34,12 +34,10 @@ import {
   resolveWorkspaceApiKeyScopes,
   type WorkspaceApiKeyScope,
 } from "../auth/api-key-scopes";
-import {
-  parseMcpOAuthScopes,
-  resolveMcpOAuthConsentScopes,
-} from "../auth/mcp-oauth.service";
+import { parseMcpOAuthScopes } from "../auth/mcp-oauth.service";
 import { mcpOAuthWellKnownRoutes } from "../routes/mcp-oauth.routes";
 import { effectiveSqlQueryAccess } from "../agent-lib/tools/sql-tools";
+import { requestContextStorage } from "../logging/context";
 import { sqlReadOnlyAccessError } from "../services/read-only-query.service";
 import {
   assertBridgePolicyCovers,
@@ -94,37 +92,23 @@ async function main() {
     () => parseWorkspaceApiKeyScopes(["mcp", "unknown"]),
     /Unsupported API key scope/,
   );
-  assert.deepEqual(parseMcpOAuthScopes(), ["mcp", "query:read"]);
-  assert.deepEqual(parseMcpOAuthScopes("warehouse:write"), [
+  // OAuth grants carry the full MCP scope set whatever the client asked for:
+  // connecting gives everything the person's role allows, no opt-ins.
+  const ALL_OAUTH_SCOPES = [
     "mcp",
     "query:read",
     "warehouse:write",
-  ]);
-  // Unknown scopes narrow, never reject: members:write is not an OAuth scope
-  // and offline_access is what the reference MCP SDK adds on its own.
-  assert.deepEqual(parseMcpOAuthScopes("query:read members:write"), [
-    "mcp",
-    "query:read",
-  ]);
-  assert.deepEqual(parseMcpOAuthScopes("offline_access warehouse:write"), [
-    "mcp",
-    "query:read",
+    "connections:write",
+    "workflows:run",
+  ];
+  for (const requested of [
+    undefined,
     "warehouse:write",
-  ]);
-  assert.deepEqual(
-    resolveMcpOAuthConsentScopes(
-      ["mcp", "query:read", "warehouse:write"],
-      false,
-    ),
-    ["mcp", "query:read"],
-  );
-  assert.deepEqual(
-    resolveMcpOAuthConsentScopes(
-      ["mcp", "query:read", "warehouse:write"],
-      true,
-    ),
-    ["mcp", "query:read", "warehouse:write"],
-  );
+    "query:read members:write",
+    "offline_access warehouse:write",
+  ]) {
+    assert.deepEqual(parseMcpOAuthScopes(requested), ALL_OAUTH_SCOPES);
+  }
   const oauthMetadataResponse = await mcpOAuthWellKnownRoutes.request(
     "http://localhost/.well-known/oauth-authorization-server",
   );
@@ -136,7 +120,19 @@ async function main() {
     "mcp",
     "query:read",
     "warehouse:write",
+    "connections:write",
+    "workflows:run",
   ]);
+  // The scope names still map to their grants (stored keys keep parsing),
+  // though every MCP session now holds these grants implicitly.
+  assert.deepEqual(parseWorkspaceApiKeyScopes(undefined), [
+    "mcp",
+    "query:read",
+  ]);
+  assert.deepEqual(
+    capabilityGrantsFromScopes(["mcp", "query:read", "connections:write"]),
+    ["connections-write"],
+  );
   // query:write is double-gated: the scope alone yields "write-opt-in",
   // which resolves to write ONLY against connections a workspace admin
   // marked allowAgentWrites — and can never upgrade a plain query:read key.
@@ -167,6 +163,45 @@ async function main() {
     effectiveSqlQueryAccess("none", { allowAgentWrites: true }),
     "none",
   );
+  // Being on the connection's writers list opens writes for that principal
+  // only, the way allowAgentWrites opens them for every key.
+  const asWorkflow = <T>(fn: () => T): T =>
+    requestContextStorage.run(
+      {
+        requestId: "t",
+        userId: "deployer",
+        workflow: "digest",
+        method: "POST",
+        path: "/api/mcp",
+        startTime: 0,
+      },
+      fn,
+    );
+  assert.equal(
+    asWorkflow(() =>
+      effectiveSqlQueryAccess("write-opt-in", {
+        writers: [{ principal: "workflow:digest" }],
+      }),
+    ),
+    "write",
+  );
+  assert.equal(
+    asWorkflow(() =>
+      effectiveSqlQueryAccess("write-opt-in", {
+        writers: [{ principal: "workflow:other" }],
+      }),
+    ),
+    "read",
+  );
+  assert.equal(
+    asWorkflow(() =>
+      effectiveSqlQueryAccess("read", {
+        writers: [{ principal: "workflow:digest" }],
+      }),
+    ),
+    "read",
+    "a list never upgrades a read-only key either",
+  );
   // REST endpoints have not adopted per-connection resolution: a
   // query:write key stays read there.
   assert.equal(
@@ -184,6 +219,11 @@ async function main() {
     ["warehouse-write"],
   );
   assert.deepEqual(capabilityGrantsFromScopes(["mcp", "query:read"]), []);
+  // Starting workflow runs is an opt-in for API keys, like warehouse:write.
+  assert.deepEqual(
+    capabilityGrantsFromScopes(["mcp", "query:read", "workflows:run"]),
+    ["workflows-run"],
+  );
   assert.deepEqual(
     capabilityGrantsFromScopes(["mcp", "query:read", "git:write"]),
     ["git-write"],
@@ -341,7 +381,6 @@ async function main() {
       "sql_execute_query",
       "mongo_list_connections",
       "search_consoles",
-      "search_dashboards",
       "search_skills",
       "list_skills",
       "get_relevant_skills",
@@ -435,22 +474,22 @@ async function main() {
       names.has("get_mcp_capabilities"),
       "capability diagnostics must always be exposed",
     );
-    // Warehouse-mutating dbt runs require the explicit warehouse:write
-    // scope; a default query:read key must not see them.
-    for (const warehouseGatedTool of [
+    // No opt-in: a default key (owner of the session: admin) sees the
+    // warehouse-mutating dbt tools and create_connection — roles, not
+    // scopes, gate them (see 3a1 for viewers).
+    for (const implicitTool of [
       "dbt_run_model",
       "dbt_run_job",
       "dbt_cancel_run",
       "dbt_ensure_dev_environment",
-      // Job CRUD schedules warehouse execution, so it is warehouse authority.
       "dbt_create_job",
       "dbt_update_job",
       "dbt_delete_job",
+      "create_connection",
     ]) {
-      assert.equal(
-        names.has(warehouseGatedTool),
-        false,
-        `${warehouseGatedTool} must stay hidden without warehouse:write`,
+      assert.ok(
+        names.has(implicitTool),
+        `${implicitTool} must be exposed without any opt-in scope`,
       );
     }
     for (const dbtCrudTool of [
@@ -483,14 +522,22 @@ async function main() {
       }>;
     };
     assert.deepEqual(capabilityReport.scopes, ["mcp", "query:read"]);
-    assert.deepEqual(
+    assert.equal(
       capabilityReport.unavailableTools.find(
         tool => tool.name === "dbt_run_model",
       ),
+      undefined,
+      "dbt_run_model needs no scope any more",
+    );
+    // members:write stays the one explicit opt-in.
+    assert.deepEqual(
+      capabilityReport.unavailableTools.find(
+        tool => tool.name === "invite_workspace_member",
+      ),
       {
-        name: "dbt_run_model",
-        reason: "Missing warehouse:write scope",
-        requiredScope: "warehouse:write",
+        name: "invite_workspace_member",
+        reason: "Missing members:write scope",
+        requiredScope: "members:write",
       },
     );
     // dbt git tools are GONE (apps.md §20): the workspace repo is the git
@@ -545,9 +592,52 @@ async function main() {
     assert.equal(names.has("dbt_create_job"), false);
   }
 
-  // 3a. warehouse:write opt-in: run tools appear (destructive-annotated) and
-  //     authorize; without the scope the call fails as an unknown tool and
-  //     the capability runtime would refuse it regardless.
+  // Syncs: anyone may read them; a backfill or a trigger change is an
+  // owner/admin's call (as the flow routes), and needs warehouse-write.
+  for (const [role, mayAct] of [
+    ["viewer", false],
+    ["member", false],
+    ["admin", true],
+  ] as const) {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: `sync-${role}`, method: "tools/list" }],
+      ["mcp", "query:read", "warehouse:write"],
+      false,
+      undefined,
+      role,
+    );
+    const { tools } = res.result as {
+      tools: { name: string; annotations?: { readOnlyHint?: boolean } }[];
+    };
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    for (const read of ["flow_list", "flow_read", "flow_status"]) {
+      assert.ok(byName.has(read), `${read} must be listed for a ${role}`);
+      assert.equal(
+        byName.get(read)?.annotations?.readOnlyHint,
+        true,
+        `${read} is a read`,
+      );
+    }
+    for (const act of ["flow_backfill", "flow_update"]) {
+      assert.equal(
+        byName.has(act),
+        mayAct,
+        `${act} must ${mayAct ? "" : "not "}be listed for a ${role}`,
+      );
+    }
+  }
+  {
+    const capability = AGENT_CAPABILITY_BY_NAME.get("flow_backfill");
+    assert.equal(capability?.requiredGrant, "warehouse-write");
+    assert.equal(capability?.minimumWorkspaceRole, "admin");
+    assert.equal(
+      AGENT_CAPABILITY_BY_NAME.get("flow_update")?.requiredGrant,
+      "warehouse-write",
+    );
+  }
+
+  // 3a. Warehouse tools: exposed (destructive-annotated) and authorized for
+  //     every key, with or without the legacy warehouse:write scope.
   {
     const [res] = await exchange(
       [{ jsonrpc: "2.0", id: "wh-list", method: "tools/list" }],
@@ -592,12 +682,11 @@ async function main() {
       isError?: boolean;
       content: { text: string }[];
     };
-    assert.equal(
-      ungatedResult.isError,
-      true,
-      "dbt_run_model without warehouse:write must fail",
+    assert.match(
+      ungatedResult.content[0].text,
+      /Invalid arguments/,
+      "a default key reaches dbt_run_model: no warehouse opt-in any more",
     );
-    assert.match(ungatedResult.content[0].text, /Unknown tool/);
 
     // With the scope, authorization passes and the zod schema rejects the
     // empty arguments (proves no grant gate blocked the call).
@@ -616,6 +705,67 @@ async function main() {
       (gatedCall.result as { content: { text: string }[] }).content[0].text,
       /Invalid arguments/,
       "warehouse:write key reaches dbt_run_model",
+    );
+  }
+
+  // 3a1b. create_connection: no opt-in scope; listed for members and up,
+  //       hidden from viewers and from the blanket Desktop ACP grant set
+  //       only through roles (Desktop holds every grant but members-write).
+  {
+    const listFor = async (
+      scopes: WorkspaceApiKeyScope[],
+      role = "admin",
+      acp = false,
+    ) => {
+      const [res] = await exchange(
+        [{ jsonrpc: "2.0", id: "conn-list", method: "tools/list" }],
+        scopes,
+        acp,
+        undefined,
+        role,
+      );
+      const { tools } = res.result as {
+        tools: {
+          name: string;
+          annotations?: {
+            readOnlyHint?: boolean;
+            destructiveHint?: boolean;
+            openWorldHint?: boolean;
+          };
+        }[];
+      };
+      return new Map(tools.map(tool => [tool.name, tool]));
+    };
+
+    const createTool = (await listFor(["mcp", "query:read"])).get(
+      "create_connection",
+    );
+    assert.ok(createTool, "a default key sees create_connection");
+    assert.equal(createTool.annotations?.readOnlyHint, false);
+    assert.equal(createTool.annotations?.destructiveHint, false);
+    assert.equal(createTool.annotations?.openWorldHint, true);
+    assert.ok(
+      (await listFor(["mcp"], "member")).has("create_connection"),
+      "a member may create connections, as in the UI",
+    );
+    assert.equal(
+      (await listFor(["mcp", "query:read"], "viewer")).has("create_connection"),
+      false,
+      "a viewer must not create connections",
+    );
+
+    const [call] = await exchange([
+      {
+        jsonrpc: "2.0",
+        id: "conn-call",
+        method: "tools/call",
+        params: { name: "create_connection", arguments: {} },
+      },
+    ]);
+    assert.match(
+      (call.result as { content: { text: string }[] }).content[0].text,
+      /Invalid arguments/,
+      "a default key reaches create_connection",
     );
   }
 
@@ -642,11 +792,6 @@ async function main() {
         `${goneTool} was deleted with Block D3`,
       );
     }
-    assert.equal(
-      byName.has("dbt_run_model"),
-      false,
-      "git:write must not imply warehouse:write",
-    );
   }
 
   // 3a3. query:write annotations: sql_execute_query may write (per-connection
@@ -952,7 +1097,7 @@ async function main() {
       content: { text: string }[];
     };
     assert.equal(badIdResult.isError, true);
-    assert.match(badIdResult.content[0].text, /console, dashboard, app/);
+    assert.match(badIdResult.content[0].text, /console, app, or skill/);
 
     const [badKind] = await chatGptExchange([
       {

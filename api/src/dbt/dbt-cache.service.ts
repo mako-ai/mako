@@ -22,7 +22,7 @@
  */
 
 import crypto from "crypto";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 import { loggers } from "../logging";
 
 const logger = loggers.app();
@@ -82,7 +82,7 @@ export function computePackagesHash(files: ProjectFile[]): string | null {
 
 async function readKey(key: string): Promise<Buffer | undefined> {
   try {
-    const stream = await getDashboardArtifactStore().openReadStream(key);
+    const stream = await getArtifactStore().openReadStream(key);
     if (!stream) return undefined;
     const chunks: Buffer[] = [];
     for await (const chunk of stream) {
@@ -130,7 +130,7 @@ export async function saveParseCache(
   partialParse: Buffer,
 ): Promise<void> {
   try {
-    await getDashboardArtifactStore().putBuffer(
+    await getArtifactStore().putBuffer(
       partialParse,
       `${parsePrefix(scope)}/${PARTIAL_PARSE_FILE}`,
       "application/octet-stream",
@@ -150,7 +150,7 @@ export async function savePackagesCache(
   packagesHash: string,
 ): Promise<void> {
   try {
-    const store = getDashboardArtifactStore();
+    const store = getArtifactStore();
     await store.putBuffer(
       archive,
       `${packagesPrefix(scope)}/dbt_packages.tgz`,

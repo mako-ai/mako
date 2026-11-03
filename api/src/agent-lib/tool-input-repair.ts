@@ -14,7 +14,7 @@
  * `commands` array and the PR tools' `prNumber`).
  *
  * `repairStringifiedToolInputs` plugs into streamText's
- * `experimental_repairToolCall` hook and fixes this WITHOUT a second LLM
+ * `repairToolCall` hook and fixes this WITHOUT a second LLM
  * call: it walks the tool's JSON Schema and, wherever the schema expects an
  * array/object but got a string, parses it; numeric/boolean strings are
  * coerced likewise. The repaired call is re-validated by the SDK through the
@@ -91,7 +91,10 @@ export function coerceValueToSchema(
     if (expectsType(schema, "array") || expectsType(schema, "object")) {
       const parsed = tryParseJson(value);
       if (parsed.ok && Array.isArray(parsed.value)) {
-        return coerceValueToSchema(parsed.value, variantOfType(schema, "array"));
+        return coerceValueToSchema(
+          parsed.value,
+          variantOfType(schema, "array"),
+        );
       }
       if (
         parsed.ok &&
@@ -157,7 +160,7 @@ export function coerceValueToSchema(
 }
 
 /**
- * `experimental_repairToolCall` hook: repair InvalidToolInputError calls by
+ * `repairToolCall` hook: repair InvalidToolInputError calls by
  * coercing the raw input toward the tool's JSON Schema. Returns null (keep
  * the original error) when the tool is unknown, the input isn't JSON, or
  * coercion changes nothing.

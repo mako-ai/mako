@@ -2,7 +2,7 @@
  * The apps index — git is the list, Mongo is the derived read model.
  *
  * Every app in a workspace is a folder holding `mako.json`, anywhere under
- * `apps/` or `users/<id>/apps/` (apps.md §13.6, folders per §16's consoles
+ * `apps/` or `users/<handle>/apps/` (apps.md §13.6, folders per §16's consoles
  * pattern). This module reads that tree at `main` ONCE per push and writes
  * one flat row per app (`app_index`), so the sidebar, the agent's list, search
  * and the binding scheduler never open the repo themselves. The rows are
@@ -25,8 +25,10 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { parseBindingFrontMatter } from "./bindings.service";
+import { extractTables } from "./app-search";
 import { freshenForServe } from "./cloud-repo.service";
 import { runGit } from "./git";
+import { timed } from "../middleware/server-timing";
 import {
   DEFAULT_BRANCH,
   readBlobsBatch,
@@ -34,6 +36,10 @@ import {
 } from "./repository.service";
 import { boundRepoDirIfExists } from "./workspace-repo-required";
 import { createSerializer } from "./serialized";
+import { scheduleThumbnailWarm } from "./thumbnail-variants.service";
+import { scheduleAppEmbeddings } from "./app-embeddings.service";
+import type { OwnerDirectory } from "./user-handles";
+import { loadOwnerDirectory } from "./user-handles.service";
 import {
   APPS_DIR,
   APP_MANIFEST,
@@ -50,7 +56,11 @@ import {
 const logger = loggers.api("apps-index");
 
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
-const INDEX_SCHEMA_VERSION = 1;
+// 2: rows carry `tables` (search), who first added the app and its
+// thumbnail (discovery).
+// 3: rows carry `bindings` (the names on main), so freshness ignores state
+// rows left behind by deleted or renamed bindings.
+const INDEX_SCHEMA_VERSION = 3;
 
 export interface AppSchedule {
   binding: string;
@@ -64,6 +74,11 @@ export interface AppIndexRow {
   path: string;
   slug: string;
   scope: AppScope;
+  /**
+   * For a personal app: the userId the `users/<handle>` segment resolves to
+   * through the workspace's handle mapping — absent when the handle is
+   * nobody's. Never the raw folder name.
+   */
   ownerId?: string;
   treeOid: string;
   title: string;
@@ -71,17 +86,87 @@ export interface AppIndexRow {
   hasManifestId: boolean;
   duplicateOf?: string;
   schedules: AppSchedule[];
+  /** Binding names on main (`bindings/<name>.sql`). */
+  bindings: string[];
+  /** Tables the app's bindings read (`FROM`/`JOIN`), for search. */
+  tables: string[];
+  /**
+   * Who committed the app's `mako.json` first, and when — the closest thing
+   * a folder-only app has to an author and a creation date. Absent when git
+   * could not say (history rewritten, a shallow clone).
+   */
+  authorEmail?: string;
+  firstCommitAt?: string;
+  /** The app's own thumbnail image at its root (see APP_THUMBNAIL_FILES). */
+  thumbnail?: AppThumbnailRef;
 }
+
+export interface AppThumbnailRef {
+  file: string;
+  oid: string;
+}
+
+/**
+ * The thumbnail convention: an image at the app's root, first match wins.
+ * Builders ship it themselves (the starter template writes a placeholder);
+ * the Apps home shows it on the app's card. Served by blob oid, so a new
+ * picture is a new URL and an old one caches forever.
+ */
+export const APP_THUMBNAIL_FILES = [
+  "thumbnail.png",
+  "thumbnail.webp",
+  "thumbnail.jpg",
+  "thumbnail.jpeg",
+  "thumbnail.svg",
+] as const;
 
 export interface AppsIndexSnapshot {
   /** The main commit the rows describe; "" when the workspace has no repo. */
   sha: string;
   apps: AppIndexRow[];
-  /** Every folder in the app trees (`apps/Sales`, `users/<id>/apps/x`). */
+  /** Every folder in the app trees (`apps/Sales`, `users/<handle>/apps/x`). */
   folders: string[];
 }
 
 const EMPTY: AppsIndexSnapshot = { sha: "", apps: [], folders: [] };
+
+/** The userId a personal app's folder belongs to, by the handle mapping. */
+export function ownerOfAppPath(
+  path: string,
+  directory: OwnerDirectory,
+): string | undefined {
+  const loc = parseAppRepoPath(path);
+  if (loc?.scope !== "private") return undefined;
+  return directory.ownerOf(loc.ownerHandle) ?? undefined;
+}
+
+const resolvedSnapshots = new WeakMap<
+  AppsIndexSnapshot,
+  { directory: OwnerDirectory; snapshot: AppsIndexSnapshot }
+>();
+
+/**
+ * The snapshot with every personal row's owner resolved against the CURRENT
+ * mapping. Stored rows carry the owner as of their sync; a handle assigned
+ * since (a member who just joined) must not wait for the next push.
+ */
+function withOwners(
+  snapshot: AppsIndexSnapshot,
+  directory: OwnerDirectory,
+): AppsIndexSnapshot {
+  const hit = resolvedSnapshots.get(snapshot);
+  if (hit?.directory === directory) return hit.snapshot;
+  const resolved: AppsIndexSnapshot = {
+    ...snapshot,
+    apps: snapshot.apps.map(app => {
+      if (app.scope !== "private") return app;
+      const ownerId = ownerOfAppPath(app.path, directory);
+      return ownerId === app.ownerId ? app : { ...app, ownerId };
+    }),
+  };
+  resolvedSnapshots.set(snapshot, { directory, snapshot: resolved });
+  return resolved;
+}
 
 // ---------------------------------------------------------------------------
 // Discovery — pure over a tree listing
@@ -91,11 +176,13 @@ export interface DiscoveredApp {
   path: string;
   slug: string;
   scope: AppScope;
-  ownerId?: string;
+  /** The raw `users/<handle>` segment; resolved into a row's ownerId. */
+  ownerHandle?: string;
   treeOid: string;
   manifestOid: string;
   /** `bindings/<name>.sql` blobs, by binding name. */
   bindingBlobs: Map<string, string>;
+  thumbnail?: AppThumbnailRef;
 }
 
 export interface Discovery {
@@ -144,7 +231,7 @@ export function discoverApps(records: TreeRecord[]): Discovery {
   // of its own (a manifest-less project under apps/, or its src/) is not a
   // folder, and neither is anything beneath it. `.gitkeep` is the one file
   // a folder may hold (an empty folder is a commit of that marker).
-  // The tree roots (`apps`, `users/<id>/apps`) may hold stray files
+  // The tree roots (`apps`, `users/<handle>/apps`) may hold stray files
   // (a README) without disqualifying everything beneath them.
   const withOwnFiles = new Set<string>();
   for (const r of records) {
@@ -173,15 +260,26 @@ export function discoverApps(records: TreeRecord[]): Discovery {
     }
     if (insideApp(r.path) || insideProject(r.path)) continue;
     const folder = parseAppFolderPath(r.path);
-    // The tree roots themselves (`apps`, `users/<id>/apps`) are implicit.
+    // The tree roots themselves (`apps`, `users/<handle>/apps`) are implicit.
     if (folder && folder.folderSegments.length > 0) folders.push(r.path);
   }
 
   const bindings = new Map<string, Map<string, string>>();
+  const thumbnails = new Map<string, AppThumbnailRef>();
+  const thumbRank = (file: string) =>
+    (APP_THUMBNAIL_FILES as readonly string[]).indexOf(file);
   for (const r of records) {
     if (r.type !== "blob") continue;
     const app = insideApp(r.path);
     if (!app) continue;
+    const rel = r.path.slice(app.length + 1);
+    if (thumbRank(rel) >= 0) {
+      const prev = thumbnails.get(app);
+      if (!prev || thumbRank(rel) < thumbRank(prev.file)) {
+        thumbnails.set(app, { file: rel, oid: r.oid });
+      }
+      continue;
+    }
     const m = /^bindings\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.sql$/.exec(
       r.path.slice(app.length + 1),
     );
@@ -200,10 +298,11 @@ export function discoverApps(records: TreeRecord[]): Discovery {
       path: dir,
       slug: loc.slug,
       scope: loc.scope,
-      ownerId: loc.ownerId,
+      ownerHandle: loc.ownerHandle,
       treeOid,
       manifestOid: manifestOids.get(dir) ?? "",
       bindingBlobs: bindings.get(dir) ?? new Map(),
+      ...(thumbnails.get(dir) ? { thumbnail: thumbnails.get(dir) } : {}),
     });
   }
   apps.sort((a, b) => a.path.localeCompare(b.path));
@@ -251,6 +350,7 @@ export async function readAppsAt(
   Discovery & {
     manifests: Map<string, ReturnType<typeof parseAppManifest>>;
     schedules: Map<string, AppSchedule[]>;
+    tables: Map<string, string[]>;
   }
 > {
   const discovery = discoverApps(await listAppTrees(repoDir, sha));
@@ -264,6 +364,7 @@ export async function readAppsAt(
   const blobs = await readBlobsBatch(repoDir, sha, paths);
   const manifests = new Map<string, ReturnType<typeof parseAppManifest>>();
   const schedules = new Map<string, AppSchedule[]>();
+  const tables = new Map<string, string[]>();
   for (const app of discovery.apps) {
     const manifest = blobs.get(`${app.path}/${APP_MANIFEST}`);
     manifests.set(
@@ -271,10 +372,15 @@ export async function readAppsAt(
       parseAppManifest(manifest ? manifest.toString("utf8") : null, app.slug),
     );
     const list: AppSchedule[] = [];
+    const reads = new Map<string, string>();
     for (const name of [...app.bindingBlobs.keys()].sort()) {
       const blob = blobs.get(`${app.path}/bindings/${name}.sql`);
       if (!blob) continue;
-      const meta = parseBindingFrontMatter(blob.toString("utf8"));
+      const sql = blob.toString("utf8");
+      for (const t of extractTables(sql)) {
+        if (!reads.has(t.toLowerCase())) reads.set(t.toLowerCase(), t);
+      }
+      const meta = parseBindingFrontMatter(sql);
       if (meta.schedule) {
         list.push({
           binding: name,
@@ -284,8 +390,9 @@ export async function readAppsAt(
       }
     }
     schedules.set(app.path, list);
+    tables.set(app.path, [...reads.values()]);
   }
-  return { ...discovery, manifests, schedules };
+  return { ...discovery, manifests, schedules, tables };
 }
 
 // ---------------------------------------------------------------------------
@@ -521,7 +628,105 @@ function rowToIndex(row: Pick<IAppIndexEntry, keyof AppIndexRow>): AppIndexRow {
       cron: s.cron,
       ...(s.timezone ? { timezone: s.timezone } : {}),
     })),
+    tables: row.tables ?? [],
+    bindings: row.bindings ?? [],
+    authorEmail: row.authorEmail ?? undefined,
+    firstCommitAt: row.firstCommitAt
+      ? new Date(row.firstCommitAt).toISOString()
+      : undefined,
+    thumbnail: row.thumbnail
+      ? { file: row.thumbnail.file, oid: row.thumbnail.oid }
+      : undefined,
   };
+}
+
+/**
+ * Platform identities that commit on people's behalf (the box agent's
+ * fallback, GitHub apps): never an app's author. A person's GitHub noreply
+ * address (`123+name@users.noreply.github.com`) is a person and stays.
+ */
+export function isBotCommitter(email: string): boolean {
+  const e = email.toLowerCase();
+  const local = e.split("@")[0];
+  return PLATFORM_LOCAL_PARTS.has(local) || e.includes("[bot]");
+}
+
+/** Local parts Mako and git hosts commit as (`bot@mako.ai`, `session@mako.ai`). */
+const PLATFORM_LOCAL_PARTS = new Set([
+  "bot",
+  "session",
+  "publish",
+  "noreply",
+  "no-reply",
+]);
+
+/**
+ * When each app folder first appeared, and who made it, by app path: one
+ * `git log` limited to the folders the index has not dated yet (new apps),
+ * newest first — so the last commit seen for a folder is its oldest. The
+ * author is the oldest HUMAN author: the commit that put a folder at its
+ * path is often a platform one (an import, a reorganisation, bot@mako.ai),
+ * while the person who built the app is the first to edit it. A move starts
+ * a folder's history over at the new path, which is why a row that already
+ * has a date keeps it — the identity follows the app, and so does its age.
+ * Best effort: a failure leaves the rows undated.
+ */
+export async function firstCommitsOf(
+  repoDir: string,
+  sha: string,
+  paths: ReadonlySet<string>,
+): Promise<Map<string, { email?: string; at: string }>> {
+  const out = new Map<string, { email?: string; at: string }>();
+  if (paths.size === 0) return out;
+  let stdout: string;
+  try {
+    ({ stdout } = await runGit(
+      [
+        "-C",
+        repoDir,
+        "log",
+        "--no-renames",
+        "--name-only",
+        "-z",
+        "--format=%x01%ae%x00%aI",
+        sha,
+        "--",
+        ...[...paths].map(p => `:(literal)${p}`),
+      ],
+      { timeoutMs: 60_000, maxBufferBytes: 128 * 1024 * 1024 },
+    ));
+  } catch (error) {
+    logger.warn("Apps index: could not date apps from history", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return out;
+  }
+  const appOf = (file: string): string | null => {
+    for (
+      let i = file.lastIndexOf("/");
+      i > 0;
+      i = file.lastIndexOf("/", i - 1)
+    ) {
+      const dir = file.slice(0, i);
+      if (paths.has(dir)) return dir;
+    }
+    return null;
+  };
+  for (const commit of stdout.split("\x01")) {
+    const [email, rawAt, ...files] = commit.split("\0").map(s => s.trim());
+    const ms = Date.parse(rawAt ?? "");
+    if (!email || !Number.isFinite(ms)) continue;
+    const at = new Date(ms).toISOString();
+    const human = !isBotCommitter(email);
+    const seen = new Set<string>();
+    for (const file of files) {
+      const dir = file ? appOf(file) : null;
+      if (!dir || seen.has(dir)) continue;
+      seen.add(dir);
+      out.set(dir, { email: human ? email : out.get(dir)?.email, at });
+    }
+  }
+  return out;
 }
 
 /**
@@ -539,14 +744,12 @@ export function syncAppsIndexFromRepo(
     } catch (error) {
       // Another workspace may have claimed a manifest id after our read.
       // Re-read ownership and assign this copy its own id.
-      if (
-        !(
-          error &&
-          typeof error === "object" &&
-          "code" in error &&
-          error.code === 11000
-        )
-      ) {
+      if (!(
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === 11000
+      )) {
         throw error;
       }
       return syncNow(workspaceId, { force: true });
@@ -610,6 +813,7 @@ async function syncNow(
   // a rejected index-build promise for the lifetime of the API process.
   await AppIndexEntry.collection.createIndex({ appId: 1 }, { unique: true });
   const read = await readAppsAt(repoDir, sha);
+  const directory = await loadOwnerDirectory(workspaceId);
   const existing = await AppIndexEntry.find({ workspaceId: ws }).lean();
   const incumbents = new Map<string, string>();
   for (const row of existing) incumbents.set(row.appId, row.path);
@@ -661,21 +865,54 @@ async function syncNow(
     head?.sha ? await renamedAppFolders(repoDir, head.sha, sha) : new Map(),
   );
 
+  // Author + creation date: kept from the row when it has them (a move must
+  // not make an app "new"), read from history only for the rest.
+  const datedById = new Map(
+    existing
+      // A bot author on a dated row is an older reading of history: redo it.
+      .filter(
+        r =>
+          r.firstCommitAt && !(r.authorEmail && isBotCommitter(r.authorEmail)),
+      )
+      .map(r => [
+        r.appId,
+        {
+          email: r.authorEmail ?? "",
+          at: new Date(r.firstCommitAt as Date).toISOString(),
+        },
+      ]),
+  );
+  const undated = new Set(
+    read.apps
+      .filter(a => !datedById.has(ids.get(a.path)?.appId ?? ""))
+      .map(a => a.path),
+  );
+  const firstCommits = await firstCommitsOf(repoDir, sha, undated);
+
   const rows: AppIndexRow[] = read.apps.map(app => {
     const manifest = read.manifests.get(app.path)!;
     const identity = ids.get(app.path)!;
+    const first = datedById.get(identity.appId) ?? firstCommits.get(app.path);
     return {
       appId: identity.appId,
       path: app.path,
       slug: app.slug,
       scope: app.scope,
-      ownerId: app.ownerId,
+      ownerId:
+        app.scope === "private"
+          ? (directory.ownerOf(app.ownerHandle) ?? undefined)
+          : undefined,
       treeOid: app.treeOid,
       title: manifest.title,
       description: manifest.description,
       hasManifestId: identity.hasManifestId,
       duplicateOf: identity.duplicateOf,
       schedules: read.schedules.get(app.path) ?? [],
+      tables: read.tables.get(app.path) ?? [],
+      bindings: [...app.bindingBlobs.keys()].sort(),
+      authorEmail: first?.email || undefined,
+      firstCommitAt: first?.at,
+      thumbnail: app.thumbnail,
     };
   });
 
@@ -708,6 +945,13 @@ async function syncNow(
               hasManifestId: row.hasManifestId,
               duplicateOf: row.duplicateOf ?? null,
               schedules: row.schedules,
+              tables: row.tables,
+              bindings: row.bindings,
+              authorEmail: row.authorEmail ?? null,
+              firstCommitAt: row.firstCommitAt
+                ? new Date(row.firstCommitAt)
+                : null,
+              thumbnail: row.thumbnail ?? null,
               indexedSha: sha,
             },
           },
@@ -770,11 +1014,13 @@ async function syncNow(
         const location = parseAppRepoPath(row.path);
         const wasPrivate = parseAppRepoPath(p?.path ?? "")?.scope === "private";
         // Visibility follows the tree: an app filed into someone's personal
-        // tree is theirs (private, owner = the tree's owner); one filed back
-        // into the workspace tree is workspace content again.
+        // tree is theirs (private, owner = the tree's owner by the handle
+        // mapping); one filed back into the workspace tree is workspace
+        // content again. A folder whose handle is nobody's stays private to
+        // nobody — its name must not make it someone's.
         const access =
           location?.scope === "private"
-            ? { access: "private", owner_id: location.ownerId }
+            ? { access: "private", owner_id: row.ownerId ?? null }
             : wasPrivate
               ? { access: "workspace" }
               : {};
@@ -831,14 +1077,40 @@ export async function loadAppsIndex(
   workspaceId: string,
   options: { freshen?: boolean } = {},
 ): Promise<AppsIndexSnapshot> {
-  const repoDir = await boundRepoDirIfExists(workspaceId);
+  const repoDir = await timed("index.repo", () =>
+    boundRepoDirIfExists(workspaceId),
+  );
   if (repoDir == null) return EMPTY;
-  if (options.freshen !== false) await freshenForServe(workspaceId);
-  const sha = await resolveCommit(repoDir, MAIN);
+  if (options.freshen !== false) {
+    await timed("index.freshen", () => freshenForServe(workspaceId));
+  }
+  const sha = await timed("index.revParse", () => resolveCommit(repoDir, MAIN));
   if (!sha) return EMPTY;
+  const directory = await timed("index.owners", () =>
+    loadOwnerDirectory(workspaceId),
+  );
   const cached = snapshotCache.get(workspaceId);
-  if (cached?.sha === sha) return cached;
-  return (await syncAppsIndexFromRepo(workspaceId)) ?? EMPTY;
+  if (cached?.sha === sha) return withOwners(cached, directory);
+  const synced = await timed("index.sync", () =>
+    syncAppsIndexFromRepo(workspaceId),
+  );
+  // Main moved (or this instance just started): make sure the posters'
+  // card and link-preview variants are in the shared store before the
+  // first crawler or Apps home asks. Once per sha (Inngest does the work).
+  if (synced) scheduleThumbnailWarm(workspaceId, synced);
+  // Semantic search: re-embed apps whose content changed, in the
+  // background — never part of this read (app-embeddings.service).
+  if (synced) scheduleAppEmbeddings(workspaceId, synced);
+  return synced ? withOwners(synced, directory) : EMPTY;
+}
+
+/**
+ * The commit this instance's index memo describes, without touching git —
+ * how a memo built on the index (app-home-base.service) notices that main
+ * moved here since, for free. Undefined when nothing is memoized.
+ */
+export function peekAppsIndexSha(workspaceId: string): string | undefined {
+  return snapshotCache.get(workspaceId)?.sha;
 }
 
 /** Forget the memo (tests, and after a lifecycle commit on this instance). */
@@ -898,6 +1170,45 @@ export async function resolveAppRef(
     );
   }
   return found;
+}
+
+/** Every app row as persisted in Mongo for a workspace (no git). */
+export async function loadIndexedApps(
+  workspaceId: string,
+): Promise<AppIndexRow[]> {
+  if (!Types.ObjectId.isValid(workspaceId)) return [];
+  const rows = await AppIndexEntry.find({
+    workspaceId: new Types.ObjectId(workspaceId),
+  }).lean();
+  return rows.map(rowToIndex);
+}
+
+/**
+ * Resolve a ref against the index rows as persisted in Mongo — no git at
+ * all. For hot public paths (link-preview images, card thumbnails) that must
+ * not pay a mirror clone on a fresh instance: the rows are written by
+ * whichever instance last synced main, so they are at most one sync behind.
+ * Null when the ref is unknown there (callers fall back to resolveAppRef).
+ */
+export async function resolveIndexedAppRef(
+  workspaceId: string,
+  ref: string,
+): Promise<AppIndexRow | null> {
+  if (!Types.ObjectId.isValid(workspaceId)) return null;
+  const ws = new Types.ObjectId(workspaceId);
+  const clean = ref.trim().toLowerCase();
+  if (isAppId(clean)) {
+    const row = await AppIndexEntry.findOne({
+      workspaceId: ws,
+      appId: clean,
+    }).lean();
+    if (row) return rowToIndex(row);
+  }
+  const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
+  return findAppInSnapshot(
+    { sha: "", apps: rows.map(rowToIndex), folders: [] },
+    ref,
+  );
 }
 
 /** Resolve historical folders using the same identities as the current index. */

@@ -1,4 +1,4 @@
-import { Button } from "@react-email/components";
+import { Button } from "react-email";
 
 export interface MakoButtonProps {
   href: string;

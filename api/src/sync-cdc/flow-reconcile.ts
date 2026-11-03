@@ -46,6 +46,7 @@ import {
   assertTreeAtMirrorMain,
 } from "../apps/cloud-repo.service";
 import { resolveConfiguredEntities } from "./entity-selection";
+import { isWebhookFlow } from "../services/flow-triggers.service";
 import type { FlowFile } from "../services/flow-config-files";
 
 const log = loggers.api("cdc-flow-reconcile");
@@ -168,6 +169,33 @@ export async function teardownFlow(flow: IFlow): Promise<{
   const flowId = flowOid.toString();
 
   await inngest.send({ name: "flow.cancel", data: { flowId } });
+
+  // The provider would keep POSTing to a URL that now answers 404: remove
+  // its subscription (inngest/functions/flow-webhook-subscription), from what
+  // the row holds — it is deleted below. Best-effort: a provider outage must
+  // not block a deletion.
+  if (
+    isWebhookFlow(flow) &&
+    flow.webhookConfig?.endpoint &&
+    flow.dataSourceId
+  ) {
+    try {
+      await inngest.send({
+        name: "flow.webhook.unsubscribe",
+        data: {
+          flowId,
+          dataSourceId: String(flow.dataSourceId),
+          endpoint: flow.webhookConfig.endpoint,
+          providerWebhookId: flow.webhookConfig.providerWebhookId,
+        },
+      });
+    } catch (error) {
+      log.warn("Could not queue webhook unsubscription for deleted flow", {
+        flowId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   const childFilter = { flowId: flowOid, workspaceId: workspaceOid };
   const [webhooks, executions, cdcEvents, entityStates, transitions] =

@@ -88,6 +88,18 @@ export interface ProvisionWebhookOptions {
   enabledEntities?: string[];
 }
 
+export interface UpdateWebhookSubscriptionOptions extends ProvisionWebhookOptions {
+  /** Id stored from an earlier provisioning, when known. */
+  providerWebhookId?: string;
+}
+
+export interface DeleteWebhookSubscriptionOptions {
+  /** The flow's inbound URL: every provider subscription POSTing to it goes. */
+  endpointUrl: string;
+  /** Id stored from an earlier provisioning, when known. */
+  providerWebhookId?: string;
+}
+
 export interface ProvisionWebhookResult {
   providerWebhookId: string;
   endpointUrl: string;
@@ -132,10 +144,7 @@ export interface WebhookCapabilities {
  * - `none`           `since` is ignored entirely; every poll re-fetches everything
  */
 export type IncrementalMode =
-  | "native"
-  | "client-filter"
-  | "created-anchor"
-  | "none";
+  "native" | "client-filter" | "created-anchor" | "none";
 
 /**
  * Static, UI-facing description of a connector's ability to pull only
@@ -170,12 +179,7 @@ export interface IncrementalCapabilities {
 export type NormalizedCdcRecord = Omit<NormalizedCdcEvent, "runId">;
 
 export type ConnectorLogicalType =
-  | "string"
-  | "number"
-  | "integer"
-  | "boolean"
-  | "timestamp"
-  | "json";
+  "string" | "number" | "integer" | "boolean" | "timestamp" | "json";
 
 export interface ConnectorFieldSchema {
   type: ConnectorLogicalType;
@@ -411,6 +415,46 @@ export abstract class BaseConnector {
   }
 
   /**
+   * Whether `updateWebhookSubscription` can retarget an existing
+   * provider-side subscription's events in place.
+   */
+  supportsWebhookSubscriptionUpdate(): boolean {
+    return false;
+  }
+
+  /**
+   * Update the provider-side subscription that delivers to
+   * `options.endpointUrl` so it carries the events for
+   * `options.enabledEntities`. Keeps its signing secret: the result has no
+   * `signingSecret`. Resolves to `null` when no such subscription exists, so
+   * the caller creates one instead.
+   */
+  async updateWebhookSubscription(
+    _options: UpdateWebhookSubscriptionOptions,
+  ): Promise<ProvisionWebhookResult | null> {
+    return null;
+  }
+
+  /**
+   * Whether `deleteWebhookSubscription` can remove the provider-side
+   * subscription(s) of a flow that is being deleted.
+   */
+  supportsWebhookSubscriptionDelete(): boolean {
+    return false;
+  }
+
+  /**
+   * Remove every provider-side subscription that delivers to
+   * `options.endpointUrl`. Resolves to how many were removed (0 when none
+   * existed).
+   */
+  async deleteWebhookSubscription(
+    _options: DeleteWebhookSubscriptionOptions,
+  ): Promise<number> {
+    return 0;
+  }
+
+  /**
    * Verify webhook signature and parse event
    */
   async verifyWebhook(
@@ -445,6 +489,21 @@ export abstract class BaseConnector {
   extractWebhookData(_event: any): { id: string; data: any } | null {
     // Default implementation - connectors should override
     return null;
+  }
+
+  /**
+   * Optional async step after `extractWebhookCdcRecords`, for providers whose
+   * webhook payload only LINKS to data that must be fetched while the link is
+   * valid (e.g. Claap transcripts behind 24-hour signed URLs). Receives the
+   * extracted records and which entities the flow syncs, and returns the full
+   * list (the originals plus any fetched records). The webhook processor keeps
+   * the original records if this throws. Default: unchanged.
+   */
+  async enrichWebhookCdcRecords(
+    records: NormalizedCdcRecord[],
+    _options: { isEntityEnabled: (entity: string) => boolean },
+  ): Promise<NormalizedCdcRecord[]> {
+    return records;
   }
 
   /**

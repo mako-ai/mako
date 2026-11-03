@@ -21,7 +21,8 @@
  * This module is pure format — serialize/parse only. Reading and writing the
  * repo lives in workspace-skills.service.ts.
  */
-import yaml from "js-yaml";
+import * as yaml from "js-yaml";
+import { loadYaml } from "../utils/yaml";
 
 export const SKILLS_DIR = "skills";
 export const SKILL_FILE_GLOB = `${SKILLS_DIR}/*/SKILL.md`;
@@ -107,7 +108,7 @@ export function parseSkillFile(
 
   let data: Record<string, unknown>;
   try {
-    const parsed = yaml.load(match[1]);
+    const parsed = loadYaml(match[1]);
     if (!parsed || typeof parsed !== "object") return null;
     data = parsed as Record<string, unknown>;
   } catch {

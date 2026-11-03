@@ -56,10 +56,10 @@ export const MAX_CONNECTOR_PROTOCOL_MESSAGES = 50_000;
  * can lag (the current E2B image has Node 20), so the content-addressed
  * runtime carries a pinned Node that can import TypeScript connectors.
  */
-export const CONNECTOR_NODE_VERSION = "24.20.0";
+export const CONNECTOR_NODE_VERSION = "24.22.1";
 const CONNECTOR_NODE_SHA256 = {
-  arm64: "5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7",
-  x64: "2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2",
+  arm64: "dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e",
+  x64: "6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6",
 } as const;
 
 /**

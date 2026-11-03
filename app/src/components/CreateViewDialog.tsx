@@ -87,7 +87,7 @@ const CreateViewDialog: React.FC<CreateViewDialogProps> = ({
         throw new Error("Pipeline must be an array");
       }
       return parsed;
-    } catch (error) {
+    } catch {
       return null;
     }
   };
@@ -132,10 +132,12 @@ const CreateViewDialog: React.FC<CreateViewDialogProps> = ({
       onClose={handleClose}
       maxWidth="md"
       fullWidth
-      PaperProps={{
-        sx: {
-          height: "80vh",
-          maxHeight: "800px",
+      slotProps={{
+        paper: {
+          sx: {
+            height: "80vh",
+            maxHeight: "800px",
+          },
         },
       }}
     >

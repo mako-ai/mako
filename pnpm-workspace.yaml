@@ -16,7 +16,6 @@ allowBuilds:
   mongodb-memory-server: false
   protobufjs: false
   sharp: false
-  sqlite3: false
   ssh2: true
   workerd: false
 ignoredBuiltDependencies:
@@ -25,7 +24,3 @@ ignoredBuiltDependencies:
 # default; declaring it here makes local resolution match CI so a fresh
 # install can't pin hours-old releases into the lockfile.
 minimumReleaseAge: 1440
-minimumReleaseAgeExclude:
-  - '@ai-sdk/gateway@3.0.124'
-  - '@ai-sdk/react@3.0.198'
-  - ai@6.0.196

@@ -255,7 +255,12 @@ export function SchemaMappingTable({
           borderRadius: 1,
         }}
       >
-        <Typography variant="body2" color="text.secondary">
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           No columns to map. Validate your query to detect columns.
         </Typography>
       </Box>
@@ -306,7 +311,12 @@ export function SchemaMappingTable({
                         <Tooltip
                           title={
                             <Box>
-                              <Typography variant="body2" fontWeight="bold">
+                              <Typography
+                                variant="body2"
+                                sx={{
+                                  fontWeight: "bold",
+                                }}
+                              >
                                 {mismatch.warning}
                               </Typography>
                               <Typography variant="caption">

@@ -5,7 +5,7 @@ description: Invariants for tab entities — unique URLs, breadcrumbs, page titl
 
 # Tab entities: URLs, breadcrumbs, page titles
 
-Every entity that opens in an editor tab (console, dashboard, table, app,
+Every entity that opens in an editor tab (console, table, app,
 file, data source, flow, connector, settings section, plan, ...) MUST have:
 
 1. **A unique, shareable URL** that the address bar shows while the tab is
@@ -85,8 +85,8 @@ source the separators from `explorer-reveal.ts` so reveal ids never drift.
    `rendersOwnBreadcrumbs` exclusion list if the view embeds
    `EntityBreadcrumbs` itself (needed only to place actions in the bar via
    the `trailing` prop, like the table refresh button).
-5. Add an open-or-focus helper following the `focusAppTab` /
-   `focusDashboardTab` pattern (`app/src/app-runtime/shell.ts`,
-   `app/src/dashboard-runtime/shell.ts`) so the tab is deduped everywhere.
+5. Add an open-or-focus helper following the `focusAppsTab` /
+   `focusFlowTab` pattern (`app/src/apps-runtime/shell.ts`,
+   `app/src/flow-runtime/shell.ts`) so the tab is deduped everywhere.
 6. Keep the tab `title` synced once the entity loads (placeholder titles
    come from deep-link hydration).

@@ -60,7 +60,12 @@ function TriggerSourceCell({
         }}
       />
       {keySuffix ? (
-        <Typography variant="caption" color="text.secondary">
+        <Typography
+          variant="caption"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           {keySuffix.replace(/^ · /, "")}
         </Typography>
       ) : null}
@@ -88,7 +93,12 @@ export default function ConsoleExecutionsPanel({
   if (executions.length === 0) {
     return (
       <Box sx={{ p: 3 }}>
-        <Typography variant="body2" color="text.secondary">
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           No executions recorded in the last 90 days.
         </Typography>
       </Box>

@@ -29,6 +29,7 @@
  * …/artifact` needs); building anything needs write access (what
  * materialize needs).
  */
+import { withDefaultQueryLabels } from "../services/bigquery-labels";
 import type {
   IAppProject,
   IDatabaseConnection,
@@ -50,7 +51,7 @@ import {
   latestDevModification,
   type DevRelationListing,
 } from "../dbt/dbt-defer";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 import {
   draftHash,
   forgetDraftBuild,
@@ -58,6 +59,7 @@ import {
   recordDraftBuilt,
   recordDraftFailed,
 } from "./binding-draft-cache";
+import { reportBindingPhase } from "./binding-progress";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps");
@@ -85,6 +87,11 @@ export interface DevBuildInput {
   dbtDefer?: boolean;
   /** Rebuild even when a stored artifact would answer. */
   refresh?: boolean;
+  /**
+   * The app is not on main yet (unregistered-draft-app.ts): there is no
+   * committed binding to serve or materialize, so every build is a draft.
+   */
+  unregistered?: boolean;
 }
 
 export type DevBuildResult =
@@ -218,7 +225,7 @@ const defaultDeps: DevBuildDeps = {
       ),
     };
   },
-  artifactExists: key => getDashboardArtifactStore().exists(key),
+  artifactExists: key => getArtifactStore().exists(key),
   materialize: (project, resolved, actorId) =>
     materializeAppBinding(project, resolved.binding.name, actorId, {
       keepFile: true,
@@ -259,10 +266,28 @@ export async function planDevBuild(
   input: DevBuildInput,
   deps: DevBuildDeps = defaultDeps,
 ): Promise<DevBuildPlan> {
+  // Dev builds and their defer listings are tagged as such in BigQuery; the
+  // returned run() may execute later (a binding job), so it re-enters.
+  const labels = { mako_trigger: "dev", mako_user: input.actorId };
+  const plan = await withDefaultQueryLabels(labels, () =>
+    planDevBuildUnlabelled(input, deps),
+  );
+  if (plan.kind !== "build") return plan;
+  return {
+    kind: "build",
+    run: () => withDefaultQueryLabels(labels, plan.run),
+  };
+}
+
+async function planDevBuildUnlabelled(
+  input: DevBuildInput,
+  deps: DevBuildDeps,
+): Promise<DevBuildPlan> {
   const { project, name, actorId } = input;
   if (!NAME_RE.test(name)) {
     throw new DevBuildError("Invalid binding name", 400);
   }
+  reportBindingPhase("checking");
 
   let draft: { binding: AppBinding; connection: IDatabaseConnection };
   let rendered: { code: string; devModifiedAt?: number | null };
@@ -306,14 +331,15 @@ export async function planDevBuild(
   }
 
   // Committed = the whole definition matches (connection, database, dbt
-  // link, materialization, query), not just the artifact key, which ignores
+  // link, materialization, row limit, query), not just the artifact key, which ignores
   // the dbt link and the mode. From here on the COMMITTED binding is what is
   // served or built: its key is the one published readers resolve, and
   // materializing it as read here (not re-read by name) means a commit
   // landing mid-request cannot put other SQL under this caller's text.
-  const committed = asPublished
-    ? await deps.committedBinding(project, name, actorId)
-    : null;
+  const committed =
+    asPublished && !input.unregistered
+      ? await deps.committedBinding(project, name, actorId)
+      : null;
   const isCommitted =
     committed !== null &&
     committed.materialization === "parquet" &&
@@ -329,9 +355,11 @@ export async function planDevBuild(
   }
   if (!input.canWrite) {
     throw new DevBuildError(
-      isCommitted
-        ? `Binding "${name}" is not materialized yet, and you have read-only access to this app`
-        : `Your bindings/${name}.sql differs from the committed one; building uncommitted SQL needs edit access to this app`,
+      input.unregistered
+        ? `This app is not on main yet; building its bindings/${name}.sql needs member (not viewer) access to the workspace`
+        : isCommitted
+          ? `Binding "${name}" is not materialized yet, and you have read-only access to this app`
+          : `Your bindings/${name}.sql differs from the committed one; building uncommitted SQL needs edit access to this app`,
       403,
     );
   }
@@ -343,6 +371,7 @@ export async function planDevBuild(
     databaseName: draft.binding.databaseName,
     renderedCode: rendered.code,
     devModifiedAt: rendered.devModifiedAt ?? null,
+    rowLimit: draft.binding.rowLimit,
   });
   if (!isCommitted && !input.refresh) {
     // An explicit refresh skips both: it rebuilds, and a person clicking it
@@ -413,6 +442,10 @@ export async function planDevBuild(
         throw error;
       }
       let keptKey: string | undefined;
+      reportBindingPhase("uploading", {
+        rowsWritten: built.rowCount,
+        bytes: built.byteSize,
+      });
       try {
         keptKey = await deps.drafts.built({ projectId, name, hash, ...built });
       } catch (error) {

@@ -1,6 +1,16 @@
+import {
+  checkConnectionWrite,
+  inReadOnlyTransaction,
+  isWrite,
+  ownResult,
+} from "../access/connection-writes";
 import { createClient } from "@clickhouse/client";
 import { MongoClient, Db, MongoClientOptions, ClientSession } from "mongodb";
-import { Client as PgClient, Pool as PgPool } from "pg";
+import {
+  Client as PgClient,
+  Pool as PgPool,
+  type QueryResult as PgQueryResult,
+} from "pg";
 import * as mysql from "mysql2/promise";
 import { ConnectionPool, Request as MSSQLRequest } from "mssql";
 import { IDatabaseConnection } from "../database/workspace-schema";
@@ -21,6 +31,7 @@ import { createBigQueryPollBudget } from "./bigquery-poll-budget";
 import { sshTunnelManager, type SshTunnelConfig } from "./ssh-tunnel.service";
 import { databaseRegistry } from "../databases/registry";
 import { isLocalBigQueryEmulator } from "../utils/bigquery-emulator";
+import { bigQueryJobLabels, type QueryLabels } from "./bigquery-labels";
 import {
   type PreviewPageInfo,
   buildBigQueryCursor,
@@ -32,7 +43,9 @@ import {
   prepareSqlBatchQuery,
   prepareSqlPreviewQuery,
   resolvePreviewPageSize,
+  stripLeadingSqlComments,
 } from "./query-pagination.service";
+import { countTopLevelSemicolons } from "./sql-query-utils";
 
 const logger = loggers.db();
 
@@ -71,6 +84,13 @@ export interface ConnectionConfig {
  * Used consistently across all database drivers
  */
 export interface QueryExecuteOptions {
+  /** Set once checkConnectionWrite ran at an outer entry point. */
+  writeChecked?: boolean;
+  /**
+   * Run in a read-only transaction (or setting) without readOnly's lexical
+   * single-SELECT rule: set by checkConnectionWrite for a person's reads.
+   */
+  readOnlyTransaction?: boolean;
   /** Target database name (for cluster/server-level connections) */
   databaseName?: string;
   /** Sub-database ID (e.g., Cloudflare D1 database UUID) */
@@ -89,10 +109,46 @@ export interface QueryExecuteOptions {
    */
   readOnly?: boolean;
   /**
+   * Who runs this query when it is not the person or workflow of the
+   * request being served, e.g. "user:<id>" for a scheduled console run as
+   * its owner (access/connection-writes.ts).
+   */
+  actor?: string;
+  /**
    * BigQuery only: max time to poll jobs.query until jobComplete (default 5m).
    * Large MERGE/DML jobs need a higher value or we return a false timeout while BQ keeps running.
    */
   bigQueryJobMaxWaitMs?: number;
+  /**
+   * Given each batch of rows as it is read (BigQuery: each result page).
+   * Throwing stops the read; the query fails with that error.
+   */
+  onRows?: (rows: Record<string, unknown>[]) => void;
+  /**
+   * BigQuery only: job labels for cost attribution, merged over the
+   * enclosing withQueryLabels context (these win). See bigquery-labels.ts.
+   */
+  labels?: QueryLabels;
+}
+
+/** Rows a Postgres cursor fetches at a time. */
+const CURSOR_FETCH_ROWS = 1000;
+
+/**
+ * The query without its trailing semicolon, when it is one statement that a
+ * Postgres cursor can read (a SELECT, WITH, VALUES or TABLE that writes
+ * nothing); null otherwise.
+ */
+function cursorReadable(query: string): string | null {
+  const statement = stripLeadingSqlComments(query.trim());
+  if (!/^[\s(]*(select|with|values|table)\b/i.test(statement)) return null;
+  if (isWrite("postgresql", query)) return null;
+  const { count, lastIndex } = countTopLevelSemicolons(statement);
+  if (count === 0) return statement;
+  if (count === 1 && lastIndex === statement.trimEnd().length - 1) {
+    return statement.trimEnd().slice(0, -1);
+  }
+  return null;
 }
 
 export interface QueryPreviewOptions extends QueryExecuteOptions {
@@ -532,6 +588,13 @@ export class DatabaseConnectionService {
     options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
     try {
+      // Writes are for the connection's writers; a read returns from this
+      // at once, in memory (access/connection-writes.ts).
+      const check = await checkConnectionWrite(database, query, options);
+      if (check.refused) return { success: false, error: check.refused };
+      if (check.readOnlyTransaction) {
+        options = { ...options, readOnlyTransaction: true };
+      }
       if (options?.readOnly) {
         if (typeof query !== "string") {
           return {
@@ -612,12 +675,160 @@ export class DatabaseConnectionService {
     }
   }
 
+  /**
+   * Run `query` exactly once and read its whole result, handing each batch
+   * of rows to `options.onRows` as it arrives (it throws to stop reading).
+   * On Postgres a read goes through a cursor in one transaction, so a result
+   * past the caller's limit is never held whole; BigQuery reads its job's
+   * pages; any other engine, or a write, returns its result whole first.
+   */
+  async executeQueryReadingRows(
+    database: IDatabaseConnection,
+    query: string,
+    options: QueryExecuteOptions & {
+      onRows: (rows: Record<string, unknown>[]) => void;
+      /** Statement timeout for the cursor read and BigQuery's job wait. */
+      timeoutMs?: number;
+    },
+  ): Promise<QueryResult> {
+    const check = await checkConnectionWrite(database, query, options);
+    if (check.refused) return { success: false, error: check.refused };
+    options = {
+      ...options,
+      writeChecked: true,
+      readOnlyTransaction:
+        options.readOnlyTransaction || check.readOnlyTransaction,
+    };
+    const readable =
+      database.type === "postgresql" ? cursorReadable(query) : null;
+    if (readable !== null) {
+      return this.executePostgreSQLCursor(database, readable, options);
+    }
+    let read = false;
+    const result = await this.executeQuery(database, query, {
+      ...options,
+      bigQueryJobMaxWaitMs: options.timeoutMs ?? options.bigQueryJobMaxWaitMs,
+      onRows: rows => {
+        read = true;
+        options.onRows(rows);
+      },
+    });
+    if (result.success && !read && Array.isArray(result.data)) {
+      try {
+        options.onRows(result.data as Record<string, unknown>[]);
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+    return result;
+  }
+
+  /**
+   * A Postgres read through a cursor: DECLARE once, FETCH a batch at a time
+   * in one transaction (read-only where the caller may not write), so the
+   * statement runs once and is one snapshot.
+   */
+  private async executePostgreSQLCursor(
+    database: IDatabaseConnection,
+    query: string,
+    options: QueryExecuteOptions & {
+      onRows: (rows: Record<string, unknown>[]) => void;
+      timeoutMs?: number;
+    },
+  ): Promise<QueryResult> {
+    const { executionId, signal, timeoutMs } = options;
+    try {
+      if (signal?.aborted) return { success: false, error: "Query cancelled" };
+      const pool = await this.getPostgresPool(
+        database,
+        options.databaseName || database.connection.database,
+      );
+      const client = await withRetry(async () => pool.connect(), {
+        maxRetries: this.postgresMaxRetries,
+        baseDelayMs: this.postgresRetryBaseDelayMs,
+        signal,
+      });
+      let open = false;
+      try {
+        if (executionId) {
+          const pid = (await client.query("SELECT pg_backend_pid()")).rows[0]
+            ?.pg_backend_pid;
+          if (pid) {
+            this.runningPostgresQueries.set(executionId, { database, pid });
+          }
+        }
+        await client.query(
+          options.readOnly || options.readOnlyTransaction
+            ? "BEGIN TRANSACTION READ ONLY"
+            : "BEGIN",
+        );
+        open = true;
+        if (timeoutMs) {
+          await client.query(
+            `SET LOCAL statement_timeout = ${Math.max(1, Math.floor(timeoutMs))}`,
+          );
+        }
+        // On its own lines: a trailing `-- comment` cannot eat the rest.
+        await client.query(
+          `DECLARE _mako_rows NO SCROLL CURSOR FOR\n${query}\n`,
+        );
+        const rows: Record<string, unknown>[] = [];
+        let fields: ReturnType<typeof normalizePostgresFields> | undefined;
+        for (;;) {
+          if (signal?.aborted) {
+            return { success: false, error: "Query cancelled" };
+          }
+          // pg reads query_timeout per query; its types do not list it.
+          const batch = await client.query({
+            text: `FETCH ${CURSOR_FETCH_ROWS} FROM _mako_rows`,
+            ...(timeoutMs ? { query_timeout: timeoutMs } : {}),
+          } as { text: string });
+          fields ??= normalizePostgresFields(batch.fields);
+          const batchRows = normalizePostgresRows(
+            batch.rows as Record<string, unknown>[],
+            fields,
+          );
+          options.onRows(batchRows);
+          rows.push(...batchRows);
+          if (batch.rows.length < CURSOR_FETCH_ROWS) break;
+        }
+        await client.query("COMMIT");
+        open = false;
+        return { success: true, data: rows, rowCount: rows.length, fields };
+      } finally {
+        if (open) await client.query("ROLLBACK").catch(() => undefined);
+        client.release();
+        if (executionId) this.runningPostgresQueries.delete(executionId);
+      }
+    } catch (error: any) {
+      if (error?.message?.includes("canceling statement due to user request")) {
+        return { success: false, error: "Query cancelled" };
+      }
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "PostgreSQL query failed",
+      };
+    }
+  }
+
   async executePreviewQuery(
     database: IDatabaseConnection,
     query: any,
     options?: QueryPreviewOptions,
   ): Promise<QueryPreviewResult> {
     try {
+      const check = await checkConnectionWrite(database, query, options);
+      if (check.refused) return { success: false, error: check.refused };
+      options = {
+        ...options,
+        writeChecked: true,
+        readOnlyTransaction:
+          options?.readOnlyTransaction || check.readOnlyTransaction,
+      };
       if (
         !options?.readOnly &&
         database.type === "bigquery" &&
@@ -680,6 +891,9 @@ export class DatabaseConnectionService {
           executionId: options?.executionId,
           signal: options?.signal,
           readOnly: options?.readOnly,
+          actor: options?.actor,
+          writeChecked: true,
+          readOnlyTransaction: options?.readOnlyTransaction,
         },
       );
 
@@ -723,6 +937,16 @@ export class DatabaseConnectionService {
     query: any,
     options: StreamingQueryOptions & QueryExecuteOptions,
   ): Promise<{ success: boolean; totalRows: number; error?: string }> {
+    const check = await checkConnectionWrite(database, query, options);
+    if (check.refused) {
+      return { success: false, totalRows: 0, error: check.refused };
+    }
+    options = {
+      ...options,
+      writeChecked: true,
+      readOnlyTransaction:
+        options.readOnlyTransaction || check.readOnlyTransaction,
+    };
     // Read-only enforcement is engine-agnostic: validate the query lexically
     // once, up front. Engines with a session read-only mode additionally get it
     // via executeQuery below; engines without one (e.g. BigQuery, whose native
@@ -792,6 +1016,9 @@ export class DatabaseConnectionService {
           executionId: options.executionId,
           signal: options.signal,
           readOnly: options.readOnly,
+          actor: options.actor,
+          writeChecked: true,
+          readOnlyTransaction: options.readOnlyTransaction,
         });
 
         if (!result.success) {
@@ -1408,7 +1635,9 @@ export class DatabaseConnectionService {
           ORDER BY table_name, ordinal_position
         `;
 
-        const result = await this.executeBigQueryQuery(database, query);
+        const result = await this.executeBigQueryQuery(database, query, {
+          labels: { mako_source: "metadata" },
+        });
         if (result.success && Array.isArray(result.data)) {
           if (!schema[datasetId]) schema[datasetId] = {};
 
@@ -1505,6 +1734,23 @@ export class DatabaseConnectionService {
     return Math.max(100, configured);
   }
 
+  /**
+   * The `labels` map for a BigQuery job on this connection (see
+   * bigquery-labels.ts), or undefined for a local emulator: emulator jobs
+   * cost nothing, and an emulator that rejects the field must not fail them.
+   */
+  private bigQueryLabels(
+    database: IDatabaseConnection,
+    apiBaseUrl: string | undefined,
+    options?: Pick<QueryExecuteOptions, "labels">,
+  ): Record<string, string> | undefined {
+    if (isLocalBigQueryEmulator(apiBaseUrl)) return undefined;
+    return bigQueryJobLabels({
+      workspaceId: database.workspaceId,
+      explicit: options?.labels,
+    });
+  }
+
   private async testBigQueryConnection(
     database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
@@ -1529,6 +1775,10 @@ export class DatabaseConnectionService {
         maxResults: 1,
       };
       if (location) body.location = location;
+      const labels = this.bigQueryLabels(database, api_base_url, {
+        labels: { mako_source: "connection_test" },
+      });
+      if (labels) body.labels = labels;
       await client.post(`/projects/${project_id}/queries`, body);
       return { success: true };
     } catch (error: any) {
@@ -1587,6 +1837,8 @@ export class DatabaseConnectionService {
         maxResults: batchSize,
       };
       if (configuredLocation) startBody.location = configuredLocation;
+      const labels = this.bigQueryLabels(database, api_base_url, options);
+      if (labels) startBody.labels = labels;
       checkAborted();
       let response = await client.post(
         `/projects/${project_id}/queries`,
@@ -1685,7 +1937,9 @@ export class DatabaseConnectionService {
 
       // Collect results
       if (Array.isArray(data.rows) && schema) {
-        rowsAccum.push(...this.bqMapRowsToObjects(data.rows, schema));
+        const page = this.bqMapRowsToObjects(data.rows, schema);
+        options?.onRows?.(page);
+        rowsAccum.push(...page);
       }
       pageToken = data.pageToken;
 
@@ -1701,12 +1955,23 @@ export class DatabaseConnectionService {
         data = response.data || {};
         schema = data.schema || schema;
         if (Array.isArray(data.rows) && schema) {
-          rowsAccum.push(...this.bqMapRowsToObjects(data.rows, schema));
+          const page = this.bqMapRowsToObjects(data.rows, schema);
+          options?.onRows?.(page);
+          rowsAccum.push(...page);
         }
         pageToken = data.pageToken;
       }
 
-      return { success: true, data: rowsAccum, rowCount: rowsAccum.length };
+      // A DML statement returns no rows; BigQuery says how many it changed.
+      const affected = Number(data.numDmlAffectedRows);
+      return {
+        success: true,
+        data: rowsAccum,
+        rowCount:
+          rowsAccum.length === 0 && Number.isFinite(affected)
+            ? affected
+            : rowsAccum.length,
+      };
     } catch (error: any) {
       if (error?.message === "Query cancelled") {
         return { success: false, error: "Query cancelled" };
@@ -1809,6 +2074,8 @@ export class DatabaseConnectionService {
         if (configuredLocation) {
           startBody.location = configuredLocation;
         }
+        const labels = this.bigQueryLabels(database, api_base_url, options);
+        if (labels) startBody.labels = labels;
 
         response = await client.post(
           `/projects/${project_id}/queries`,
@@ -1980,6 +2247,8 @@ export class DatabaseConnectionService {
       if (configuredLocation) {
         startBody.location = configuredLocation;
       }
+      const labels = this.bigQueryLabels(database, api_base_url, options);
+      if (labels) startBody.labels = labels;
 
       checkAborted();
       let response = await client.post(
@@ -2232,6 +2501,8 @@ export class DatabaseConnectionService {
         dryRun: true, // Key: validates query and returns schema without running
       };
       if (location) body.location = location;
+      const labels = this.bigQueryLabels(database, api_base_url);
+      if (labels) body.labels = labels;
 
       const response = await client.post(
         `/projects/${project_id}/queries`,
@@ -2663,7 +2934,9 @@ export class DatabaseConnectionService {
       obj = typeof sa === "string" ? JSON.parse(sa) : sa;
     } catch (e) {
       logger.error("Failed to parse service_account_json", { error: e });
-      throw new Error("Invalid service_account_json: Not a valid JSON string");
+      throw new Error("Invalid service_account_json: Not a valid JSON string", {
+        cause: e,
+      });
     }
 
     if (!obj || typeof obj !== "object") {
@@ -2732,6 +3005,7 @@ export class DatabaseConnectionService {
       throw new Error(
         `Google authentication failed for service account "${sa.client_email}": ${detail}. ` +
           `The service-account key may have been rotated, disabled, or deleted — update this connection's service_account_json with a current key.`,
+        { cause: error },
       );
     }
     const token = res.data.access_token as string;
@@ -3870,14 +4144,16 @@ export class DatabaseConnectionService {
           return { success: false, error: "Query cancelled" };
         }
 
-        if (options?.readOnly) {
-          await client.query("BEGIN TRANSACTION READ ONLY");
+        let result: PgQueryResult;
+        if (options?.readOnly || options?.readOnlyTransaction) {
           readOnlyTransactionStarted = true;
-        }
-        const result = await client.query(query);
-        if (readOnlyTransactionStarted) {
-          await client.query("COMMIT");
+          result = ownResult(
+            (await client.query(inReadOnlyTransaction(query))) as
+              PgQueryResult | PgQueryResult[],
+          );
           readOnlyTransactionStarted = false;
+        } else {
+          result = await client.query(query);
         }
         const fields = normalizePostgresFields(result.fields);
         const rows = normalizePostgresRows(
@@ -4287,7 +4563,7 @@ export class DatabaseConnectionService {
           return { success: false, error: "Query cancelled" };
         }
 
-        if (options?.readOnly) {
+        if (options?.readOnly || options?.readOnlyTransaction) {
           await connection.query("START TRANSACTION READ ONLY");
           readOnlyTransactionStarted = true;
         }
@@ -4659,7 +4935,9 @@ export class DatabaseConnectionService {
           clickhouse_settings: {
             // Allow query to be cancelled
             cancel_http_readonly_queries_on_client_close: 1,
-            ...(options?.readOnly ? { readonly: "2" } : {}),
+            ...(options?.readOnly || options?.readOnlyTransaction
+              ? { readonly: "2" }
+              : {}),
           },
           abort_signal: abortController.signal,
         });

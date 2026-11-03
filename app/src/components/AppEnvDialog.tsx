@@ -144,7 +144,13 @@ export default function AppEnvDialog({
         Environment variables{appTitle ? ` — ${appTitle}` : ""}
       </DialogTitle>
       <DialogContent>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+            mb: 2,
+          }}
+        >
           Values are encrypted at rest and injected when a process starts.
           Regular variables reach the dev server and the published build —{" "}
           <code>VITE_*</code> ones become part of the public bundle, which is
@@ -210,8 +216,11 @@ export default function AppEnvDialog({
         ) : (
           <Typography
             variant="body2"
-            color="text.secondary"
-            sx={{ mb: 2, fontStyle: "italic" }}
+            sx={{
+              color: "text.secondary",
+              mb: 2,
+              fontStyle: "italic",
+            }}
           >
             No variables yet.
           </Typography>

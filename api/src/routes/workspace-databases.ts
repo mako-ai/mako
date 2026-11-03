@@ -1,3 +1,9 @@
+import {
+  checkConnectionWrite,
+  covers,
+  principalsOutsideWorkspace,
+} from "../access/connection-writes";
+import { ConnectionWriteEvent } from "../access/connection-write-event";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Db } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -33,7 +39,6 @@ import { checkPreviewQuerySafety } from "../services/query-pagination.service";
 import { createStreamingExportResponse } from "../utils/query-export-stream";
 import { createArrowIPCStreamResponse } from "../utils/arrow-serializer";
 import { writeParquetTempFile } from "../utils/parquet-serializer";
-import { buildDashboardMaterializationArtifactPath } from "../services/dashboard-cache.service";
 import { workspaceService } from "../services/workspace.service";
 import { promises as fsPromises } from "fs";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
@@ -43,12 +48,11 @@ const consoleManager = new ConsoleManager();
 
 type WorkspaceDatabaseRouteError = {
   response: { success: false; error: string };
-  status: 400 | 404;
+  status: 400 | 403 | 404;
 };
 
 type WorkspaceDatabaseResult =
-  | WorkspaceDatabaseRouteError
-  | { database: IDatabaseConnection };
+  WorkspaceDatabaseRouteError | { database: IDatabaseConnection };
 
 type WorkspaceMongoDbResult = WorkspaceDatabaseRouteError | { db: Db };
 
@@ -100,12 +104,30 @@ async function getWorkspaceDatabase(
   return { database };
 }
 
+/**
+ * The MongoDB database behind a connection. `write` names the change a
+ * route is about to make with the raw client (createCollection,
+ * dropCollection): it is checked against the connection's writers list
+ * first, as a query would be (access/connection-writes.ts).
+ */
 async function getWorkspaceMongoDb(
   workspaceId: Types.ObjectId,
   databaseId: string,
+  write?: string,
 ): Promise<WorkspaceMongoDbResult> {
   const result = await getWorkspaceDatabase(workspaceId, databaseId);
   if (isWorkspaceDatabaseRouteError(result)) return result;
+  if (write) {
+    const check = await checkConnectionWrite(result.database, {
+      operation: write,
+    });
+    if (check.refused) {
+      return {
+        response: { success: false, error: check.refused },
+        status: 403 as const,
+      };
+    }
+  }
 
   const connection = await databaseConnectionService.getConnection(
     result.database,
@@ -220,6 +242,7 @@ async function createAdHocParquetResponse(options: {
       databaseId: options.queryDefinition.databaseId,
       databaseName: options.queryDefinition.databaseName,
       readOnly: true,
+      labels: { mako_source: "export" },
     },
   );
 
@@ -944,6 +967,202 @@ workspaceDatabaseRoutes.openapi(
   },
 );
 
+// Who may write through a connection (access/connection-writes.ts). Anyone
+// in the workspace may look; the owner and admins change it, in the app.
+const writersParams = z.object({
+  workspaceId: z
+    .string()
+    .openapi({ param: { name: "workspaceId", in: "path" } }),
+  id: z.string().openapi({ param: { name: "id", in: "path" } }),
+});
+
+/** A principal that can be put on a writers list. */
+const LISTABLE_PRINCIPAL =
+  /^(user:[A-Za-z0-9_-]+|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$/;
+
+const WriterSchema = z.object({
+  principal: z
+    .string()
+    .regex(LISTABLE_PRINCIPAL)
+    .openapi({ example: "workflow:crm-chat-issues" }),
+  where: z
+    .string()
+    .regex(/^[^.\s]+(\.[^.\s]+)?$/)
+    .optional()
+    .openapi({ example: "mako_out.issue_labels" }),
+});
+
+const RECENT_WRITES_DAYS = 30;
+
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/writers",
+    tags: ["Databases"],
+    summary: "Who may write through this connection",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: { params: writersParams },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspace = c.get("workspace");
+    const databaseId = c.req.param("id");
+    if (!Types.ObjectId.isValid(databaseId)) {
+      return c.json({ success: false, error: "Invalid database ID" }, 400);
+    }
+    const database = await DatabaseConnection.findOne({
+      _id: new Types.ObjectId(databaseId),
+      workspaceId: workspace._id,
+    })
+      .select("writers")
+      .lean();
+    if (!database) {
+      return c.json({ success: false, error: "Database not found" }, 404);
+    }
+    const memberRole = c.get("memberRole");
+    // Who wrote or tried to write here lately, from the write log, and what
+    // the list does not cover (what it refuses), to allow in one click.
+    const since = new Date(Date.now() - RECENT_WRITES_DAYS * 86_400_000);
+    const recent = await ConnectionWriteEvent.aggregate<{
+      _id: string;
+      count: number;
+      lastAt: Date;
+      targets: (string | null)[];
+    }>([
+      {
+        $match: {
+          connectionId: new Types.ObjectId(databaseId),
+          at: { $gte: since },
+        },
+      },
+      {
+        $group: {
+          _id: "$principal",
+          count: { $sum: 1 },
+          lastAt: { $max: "$at" },
+          targets: { $addToSet: "$target" },
+        },
+      },
+      { $sort: { count: -1 } },
+      { $limit: 50 },
+    ]);
+    return c.json({
+      success: true,
+      data: {
+        writers: (database.writers ?? []).map(w => ({
+          principal: w.principal,
+          where: w.where ?? null,
+          addedBy: w.addedBy ?? null,
+          addedAt: w.addedAt ?? null,
+        })),
+        canEdit: memberRole === "owner" || memberRole === "admin",
+        // Only who could be allowed: the worker writing as no workflow
+        // cannot be listed.
+        recent: recent
+          .filter(r => LISTABLE_PRINCIPAL.test(r._id))
+          .map(r => {
+            const targets = r.targets.filter((t): t is string => !!t);
+            return {
+              principal: r._id,
+              count: r.count,
+              lastAt: r.lastAt,
+              targets: targets.slice(0, 5),
+              // Against the list as it is now, not as it was then.
+              uncovered: targets
+                .filter(t => !covers(database.writers, r._id, t))
+                .slice(0, 5),
+            };
+          }),
+      },
+    });
+  },
+);
+
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/writers",
+    tags: ["Databases"],
+    summary: "Change who may write through this connection",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: {
+      params: writersParams,
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({ writers: z.array(WriterSchema).max(200) }),
+          },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspace = c.get("workspace");
+    const databaseId = c.req.param("id");
+    const user = c.get("user");
+    // People decide who writes, in the app: never an API key, MCP client or
+    // agent, whatever it is asked.
+    if (c.get("authType") !== "session" || !user?.id) {
+      return c.json(
+        { success: false, error: "Writers can only be changed in the app" },
+        403,
+      );
+    }
+    if (!Types.ObjectId.isValid(databaseId)) {
+      return c.json({ success: false, error: "Invalid database ID" }, 400);
+    }
+    const database = await DatabaseConnection.findOne({
+      _id: new Types.ObjectId(databaseId),
+      workspaceId: workspace._id,
+    });
+    if (!database) {
+      return c.json({ success: false, error: "Database not found" }, 404);
+    }
+    const { writers } = c.req.valid("json");
+    const strangers = await principalsOutsideWorkspace(
+      String(workspace._id),
+      writers.map(w => w.principal),
+    );
+    if (strangers.length > 0) {
+      return c.json(
+        {
+          success: false,
+          error: `${strangers.join(", ")} is not a member of this workspace`,
+        },
+        400,
+      );
+    }
+    // One entry per principal and place; keep who added an entry first.
+    const now = new Date();
+    const previous = new Map(
+      (database.writers ?? []).map(w => [`${w.principal} ${w.where ?? ""}`, w]),
+    );
+    const next = new Map<string, (typeof writers)[number]>();
+    for (const w of writers) next.set(`${w.principal} ${w.where ?? ""}`, w);
+    database.writers = [...next].map(([key, w]) => ({
+      principal: w.principal,
+      ...(w.where ? { where: w.where } : {}),
+      addedBy: previous.get(key)?.addedBy ?? user.id,
+      addedAt: previous.get(key)?.addedAt ?? now,
+    }));
+    await database.save();
+    logger.info("Connection writers changed", {
+      workspaceId: String(workspace._id),
+      databaseId,
+      userId: user.id,
+      writers: database.writers.length,
+    });
+    return c.json({ success: true });
+  },
+);
+
 // Delete database
 workspaceDatabaseRoutes.openapi(
   createRoute({
@@ -1165,7 +1384,11 @@ workspaceDatabaseRoutes.openapi(
       const result = await databaseConnectionService.executeQuery(
         database,
         body.query,
-        { ...body.options, readOnly: queryAccess === "read" },
+        {
+          ...body.options,
+          readOnly: queryAccess === "read",
+          labels: { mako_source: "adhoc" },
+        },
       );
 
       return c.json(result);
@@ -1322,7 +1545,11 @@ workspaceDatabaseRoutes.openapi(
         );
       }
 
-      const result = await getWorkspaceMongoDb(workspace._id, databaseId);
+      const result = await getWorkspaceMongoDb(
+        workspace._id,
+        databaseId,
+        "createCollection",
+      );
       if (isWorkspaceMongoDbRouteError(result)) {
         return c.json(result.response, result.status);
       }
@@ -1585,7 +1812,11 @@ workspaceDatabaseRoutes.openapi(
       const databaseId = c.req.param("id");
       const collectionName = c.req.param("name");
 
-      const result = await getWorkspaceMongoDb(workspace._id, databaseId);
+      const result = await getWorkspaceMongoDb(
+        workspace._id,
+        databaseId,
+        "dropCollection",
+      );
       if (isWorkspaceMongoDbRouteError(result)) {
         return c.json(result.response, result.status);
       }
@@ -1753,7 +1984,11 @@ workspaceDatabaseRoutes.openapi(
         );
       }
 
-      const result = await getWorkspaceMongoDb(workspace._id, databaseId);
+      const result = await getWorkspaceMongoDb(
+        workspace._id,
+        databaseId,
+        "createView",
+      );
       if (isWorkspaceMongoDbRouteError(result)) {
         return c.json(result.response, result.status);
       }
@@ -1918,7 +2153,11 @@ workspaceDatabaseRoutes.openapi(
       const databaseId = c.req.param("id");
       const viewName = c.req.param("name");
 
-      const result = await getWorkspaceMongoDb(workspace._id, databaseId);
+      const result = await getWorkspaceMongoDb(
+        workspace._id,
+        databaseId,
+        "dropView",
+      );
       if (isWorkspaceMongoDbRouteError(result)) {
         return c.json(result.response, result.status);
       }
@@ -1990,7 +2229,7 @@ workspaceExecuteRoutes.openapi(
   async c => {
     const startTime = Date.now();
     let database: IDatabaseConnection | null = null;
-    let executionStatus: QueryStatus = "error";
+    let executionStatus: QueryStatus;
     let rowCount: number | undefined;
     let errorType: string | undefined;
 
@@ -2078,6 +2317,13 @@ workspaceExecuteRoutes.openapi(
         databaseName: effectiveQueryDefinition.databaseName || databaseName,
         executionId,
         readOnly: queryAccess === "read",
+        labels: {
+          // A console tab runs through here; its id says which console.
+          mako_source: consoleId ? "console" : "adhoc",
+          mako_console: typeof consoleId === "string" ? consoleId : undefined,
+          mako_trigger: apiKey ? "api" : String(source || "console_ui"),
+          mako_user: user?.id ?? apiKey?.createdBy?.toString(),
+        },
       };
 
       const isPreviewMode = mode === "preview";
@@ -2359,8 +2605,6 @@ workspaceExecuteRoutes.openapi(
         batchSize,
         executionId,
         filename,
-        dashboardId,
-        dataSourceId,
       } = body;
       const effectiveConnectionId =
         queryDefinition?.connectionId || connectionId;
@@ -2466,25 +2710,11 @@ workspaceExecuteRoutes.openapi(
         executionId: typeof executionId === "string" ? executionId : undefined,
         signal: c.req.raw.signal,
         readOnly: true,
+        // On the query itself: the stream runs after this handler returns.
+        labels: { mako_source: "export", mako_user: c.get("user")?.id },
       };
 
       if (normalizedFormat === "parquet") {
-        if (
-          typeof dashboardId === "string" &&
-          dashboardId &&
-          typeof dataSourceId === "string" &&
-          dataSourceId
-        ) {
-          return c.redirect(
-            buildDashboardMaterializationArtifactPath({
-              workspaceId: workspace._id.toString(),
-              dashboardId,
-              dataSourceId,
-            }),
-            303,
-          );
-        }
-
         return await createAdHocParquetResponse({
           database,
           executableQuery,

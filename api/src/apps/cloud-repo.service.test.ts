@@ -68,6 +68,7 @@ import {
   ensureCommitLocally,
   fetchFromCloud,
   mirrorPushNow,
+  reconcileMirrorDeletionsForTests,
   resolveMirrorTarget,
   freshenForServe,
 } from "./cloud-repo.service";
@@ -404,6 +405,104 @@ describe("pushes to a connected repo", () => {
       await runGit(["-C", remoteDir, "rev-parse", "refs/mako/wip"])
     ).stdout.trim();
     expect(remoteWip).toBe(wipB);
+  });
+});
+
+/**
+ * The mirror push sends every local head, so before 2026-10-19 a branch
+ * deleted on GitHub came straight back from any instance whose clone still
+ * had it — pruning 267 merged branches could not stick. A deletion on the
+ * mirror must now win over a stale cache, and never over unmirrored work.
+ */
+describe("branches deleted on the mirror", () => {
+  async function setup(repo: string) {
+    const remoteDir = await makeBareRemote("acme", repo);
+    state.binding = { owner: "acme", repo };
+    await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+    await adoptConnectedRepo(workspaceId, state.binding);
+    const repoDir = repoDirFor(workspaceId);
+    const head = await headOf(repoDir);
+    if (!head) throw new Error("seeded repo must have a head");
+    return { remoteDir, repoDir, head };
+  }
+  const branchOid = (dir: string, name: string) =>
+    runGit(["-C", dir, "rev-parse", "--verify", `refs/heads/${name}`])
+      .then(r => r.stdout.trim())
+      .catch(() => null);
+
+  it("are not resurrected by the next push, and leave the local cache", async () => {
+    const { remoteDir, repoDir, head } = await setup("prune");
+    await runGit(["-C", repoDir, "update-ref", "refs/heads/feat/done", head]);
+    await mirrorPushNow(workspaceId);
+    expect(await branchOid(remoteDir, "feat/done")).toBe(head);
+
+    // Pruned on GitHub (a merged branch's "Delete branch" button).
+    await runGit(["-C", remoteDir, "update-ref", "-d", "refs/heads/feat/done"]);
+    await mirrorPushNow(workspaceId);
+
+    expect(await branchOid(remoteDir, "feat/done")).toBeNull();
+    expect(await branchOid(repoDir, "feat/done")).toBeNull();
+  });
+
+  it("keeps and re-pushes a branch that gained local commits meanwhile", async () => {
+    const { remoteDir, repoDir, head } = await setup("work");
+    await runGit(["-C", repoDir, "update-ref", "refs/heads/feat/live", head]);
+    await mirrorPushNow(workspaceId);
+    await runGit(["-C", remoteDir, "update-ref", "-d", "refs/heads/feat/live"]);
+
+    // A commit on the branch that the mirror never saw.
+    const tree = (
+      await runGit(["-C", repoDir, "rev-parse", `${head}^{tree}`])
+    ).stdout.trim();
+    const newer = await commitTree(repoDir, {
+      treeOid: tree,
+      parents: [head],
+      message: "unmirrored work",
+    });
+    await runGit(["-C", repoDir, "update-ref", "refs/heads/feat/live", newer]);
+    await mirrorPushNow(workspaceId);
+
+    expect(await branchOid(repoDir, "feat/live")).toBe(newer);
+    expect(await branchOid(remoteDir, "feat/live")).toBe(newer);
+  });
+
+  it("never drops a branch created here that the mirror has not seen yet", async () => {
+    const { remoteDir, repoDir, head } = await setup("fresh");
+    await mirrorPushNow(workspaceId);
+    // Created locally (Source Control "new branch"), not yet pushed.
+    await runGit(["-C", repoDir, "update-ref", "refs/heads/feat/new", head]);
+    expect(await reconcileMirrorDeletionsForTests(workspaceId)).toEqual([]);
+    await mirrorPushNow(workspaceId);
+
+    expect(await branchOid(repoDir, "feat/new")).toBe(head);
+    expect(await branchOid(remoteDir, "feat/new")).toBe(head);
+  });
+
+  it("are dropped by the background reconcile without waiting for a push", async () => {
+    const { remoteDir, repoDir, head } = await setup("sweep");
+    await runGit(["-C", repoDir, "update-ref", "refs/heads/feat/old", head]);
+    await mirrorPushNow(workspaceId);
+    await runGit(["-C", remoteDir, "update-ref", "-d", "refs/heads/feat/old"]);
+
+    expect(await reconcileMirrorDeletionsForTests(workspaceId)).toEqual([
+      "feat/old",
+    ]);
+    expect(await branchOid(repoDir, "feat/old")).toBeNull();
+    // The default branch is never a candidate, whatever the mirror says.
+    expect(await headOf(repoDir)).toBe(head);
+  });
+
+  it("does not push its bookkeeping refs to the customer's repo", async () => {
+    const { remoteDir } = await setup("clean");
+    await mirrorPushNow(workspaceId);
+    await mirrorPushNow(workspaceId);
+    const { stdout } = await runGit([
+      "-C",
+      remoteDir,
+      "for-each-ref",
+      "--format=%(refname)",
+    ]);
+    expect(stdout).not.toContain("refs/remotes/");
   });
 });
 

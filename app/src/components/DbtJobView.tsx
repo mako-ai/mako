@@ -442,8 +442,8 @@ export default function DbtJobView({
           <Tooltip title={`${commandSummary} · ${scheduleSummary}`}>
             <Typography
               variant="caption"
-              color="text.secondary"
               sx={{
+                color: "text.secondary",
                 minWidth: 0,
                 whiteSpace: "nowrap",
                 overflow: "hidden",
@@ -647,7 +647,12 @@ export default function DbtJobView({
                   </Select>
                 </FormControl>
                 {previewRuns.length > 0 ? (
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: "text.secondary",
+                    }}
+                  >
                     Next runs: {previewRuns.join(" · ")}
                   </Typography>
                 ) : (
@@ -668,8 +673,10 @@ export default function DbtJobView({
                 />
                 <Typography
                   variant="caption"
-                  color="text.secondary"
-                  sx={{ display: "block" }}
+                  sx={{
+                    color: "text.secondary",
+                    display: "block",
+                  }}
                 >
                   Turn off to keep the schedule but pause automatic runs.
                 </Typography>

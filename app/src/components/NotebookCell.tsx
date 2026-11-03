@@ -386,13 +386,15 @@ export default function NotebookCell({
           fullWidth
           minRows={2}
           variant="standard"
-          InputProps={{
-            disableUnderline: true,
-            sx: {
-              fontSize: "0.85rem",
-              p: 1,
-              alignItems: "flex-start",
-              bgcolor: "background.paper",
+          slotProps={{
+            input: {
+              disableUnderline: true,
+              sx: {
+                fontSize: "0.85rem",
+                p: 1,
+                alignItems: "flex-start",
+                bgcolor: "background.paper",
+              },
             },
           }}
         />

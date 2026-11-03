@@ -78,6 +78,13 @@ interface UIState {
 
   // Current workspace
   currentWorkspaceId: string | null;
+
+  /**
+   * A first message for a new chat, written by a screen ("Ask Mako to fix").
+   * The chat pane starts a new chat with it in the composer, then clears it.
+   * `at` tells two drafts with the same text apart. Not persisted.
+   */
+  chatDraft: { text: string; at: number } | null;
 }
 
 interface UIActions {
@@ -111,6 +118,11 @@ interface UIActions {
   // Workspace
   setCurrentWorkspaceId: (workspaceId: string | null) => void;
 
+  // Chat
+  /** Open the chat on a new chat with `text` written in the composer. */
+  askMako: (text: string) => void;
+  clearChatDraft: () => void;
+
   // Reset
   reset: () => void;
 }
@@ -125,6 +137,7 @@ const initialState: UIState = {
   leftPaneWidthPx: null,
   rightPaneWidthPx: null,
   mobileTab: "ask",
+  chatDraft: null,
   mobileBrowseView: "home",
   mobileConsolePane: "query",
   mobileAppPane: "preview",
@@ -193,6 +206,18 @@ export const useUIStore = create<UIStore>()(
 
       // Mobile navigation — plain setters; the nav is fixed and nothing here
       // is persisted (see partialize), so a reload lands on Ask.
+      askMako: text =>
+        set(state => {
+          state.chatDraft = { text, at: Date.now() };
+          state.rightPaneOpen = true;
+          state.mobileTab = "ask";
+        }),
+
+      clearChatDraft: () =>
+        set(state => {
+          state.chatDraft = null;
+        }),
+
       setMobileTab: tab =>
         set(state => {
           state.mobileTab = tab;
@@ -242,11 +267,18 @@ export const useUIStore = create<UIStore>()(
     })),
     {
       name: "ui-store",
-      // Pre-rename persisted pane selections ("apps-v2") land on the Apps
-      // explorer instead of falling through to the default pane.
+      // Persisted pane selections for retired explorers ("apps-v2" before the
+      // rename, "dashboards" before apps replaced them) land on the Apps
+      // explorer instead of an explorer that no longer renders.
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<UIStore>;
-        if ((p.leftPane as string) === "apps-v2") p.leftPane = "apps";
+        const legacyPane = p.leftPane as string | undefined;
+        if (legacyPane === "apps-v2" || legacyPane === "dashboards") {
+          p.leftPane = "apps";
+        }
+        if ((p.activeView as string | undefined) === "dashboards") {
+          p.activeView = "apps";
+        }
         return { ...current, ...p };
       },
       // Only persist navigation and workspace - not loading states or editor content
@@ -292,7 +324,6 @@ export type ActiveExplorer =
   | "consoles"
   | "connectors"
   | "flows"
-  | "dashboards"
   | "apps"
   | "notebooks"
   | "dbt"
@@ -309,7 +340,6 @@ const EXPLORER_VIEWS: ReadonlySet<LeftPaneView> = new Set([
   "consoles",
   "connectors",
   "flows",
-  "dashboards",
   "apps",
   "notebooks",
   "dbt",

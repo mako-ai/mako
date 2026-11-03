@@ -43,8 +43,9 @@ import { boxEnvPath, sh } from "./box";
 import { ensureBoxAgent } from "./box-agent";
 import { getBoxState, probeReachable } from "./box-state.service";
 import { readBindings, bindingArtifactKey } from "./bindings.service";
+import { snapshotArtifactKey } from "../services/binding-snapshot";
 import { resolveAppEnv } from "./env.service";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 
 const logger = loggers.api("apps-dev-server");
 
@@ -76,7 +77,7 @@ const MAX_RUNNING_DEV_SERVERS = 3;
 /**
  * One in-box identity per app for launcher, log, staged data, the port
  * registry and the box agent's reports: the app's ID. Folder basenames are
- * not unique once apps nest (`apps/sales/report`, `users/<me>/apps/report`),
+ * not unique once apps nest (`apps/sales/report`, `users/<handle>/apps/report`),
  * and a path is not a filename — so every site that used to key by the
  * basename keys by this instead, and they cannot disagree with each other.
  */
@@ -193,7 +194,7 @@ async function devPort(
  * `.e2b.app` is matched as a suffix, so it covers the sandbox's own origin
  * without our having to know the sandbox id at write time.
  */
-function launcherSource(
+export function launcherSource(
   appDir: string,
   port: number,
   stagedDataDir: string,
@@ -203,7 +204,7 @@ function launcherSource(
 ): string {
   return `
 import { createServer } from "${appDir}/node_modules/vite/dist/node/index.js";
-import { appendFileSync, createReadStream, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, createReadStream, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 // The app's env vault (env.service, dev tier — secrets included), baked into
@@ -285,6 +286,118 @@ process.on("SIGHUP", () => void farewell(129));
 // browser talks to the sandbox directly (apps.md §12.4), so nothing was
 // answering it: Vite fell through to its SPA fallback and returned index.html,
 // and the parquet reader failed with "footer != PAR1" on the HTML.
+// Replace a staged parquet whole (write aside, then rename): a reader gets the
+// old bytes or the new, never a half-written file. Mako's own restaging does
+// the same (stageFileAtomically); the suffixes differ so they never collide.
+function stageParquet(name, buf) {
+  const file = path.join(${JSON.stringify(stagedDataDir)}, name + ".parquet");
+  // A new build has no snapshot here: drop the old one BEFORE the parquet
+  // moves, so no instant sees the old preview beside the new data.
+  rmSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".snapshot.json"), { force: true });
+  writeFileSync(file + ".writing", buf);
+  renameSync(file + ".writing", file);
+  rmSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".live"), { force: true });
+}
+
+// Did the page ask for phase events (binding-progress.ts) instead of a
+// plain answer? The SDK sends Accept: application/x-ndjson from 2.7.4.
+function wantsProgress(req) {
+  return String(req.headers.accept || "")
+    .split(",")
+    .some(part => part.split(";")[0].trim().toLowerCase() === "application/x-ndjson");
+}
+// Start a phase stream on this response; returns the line writer.
+function progressStream(res) {
+  const started = Date.now();
+  res.statusCode = 200;
+  res.setHeader("content-type", "application/x-ndjson");
+  res.setHeader("cache-control", "no-store, no-transform");
+  res.setHeader("x-accel-buffering", "no");
+  return event => {
+    try {
+      res.write(JSON.stringify({ ...event, elapsedMs: Date.now() - started }) + "\\n");
+    } catch {}
+  };
+}
+
+const LIVE_STREAM = "application/vnd.mako.live-binding-stream";
+// Ask Mako to build a binding now. Mako answers phase lines first, then a
+// "ready" line with the byte count, then the parquet itself; an API that
+// predates that answers the parquet alone, which works the same minus the
+// phases. Rejects with { status, retryAfterMs } on a refused or failed build.
+async function liveBuild(name, persist, onPhase) {
+  const env = makoEnv();
+  const token = readFileSync(env.MAKO_TOKEN_FILE, "utf8").trim();
+  const upstream = await fetch(
+    env.MAKO_API + "/api/apps-box/" + env.MAKO_WS + "/live-binding",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: LIVE_STREAM,
+        authorization: "Bearer " + token,
+      },
+      body: JSON.stringify({ slug: ${JSON.stringify(slug)}, name, ...(persist ? { persist: true } : {}) }),
+      // A materialized query can be slow (a heavy dashboard mart runs
+      // for a minute); give it room rather than failing the table.
+      // Longer than the API's own query ceiling (300s), deliberately:
+      // when this was SHORTER, every binding taking 180-300s was
+      // unsatisfiable through this path — the box abandoned a request
+      // the API was still serving, so the answer could never arrive,
+      // while the warehouse job it started ran on and billed. The
+      // client must outlast the server it is waiting for, or it turns
+      // slow into impossible.
+      signal: AbortSignal.timeout(330000),
+    },
+  );
+  const failure = (message, status, retryAfterMs) =>
+    Object.assign(new Error(message), { status, ...(retryAfterMs ? { retryAfterMs } : {}) });
+  if (!String(upstream.headers.get("content-type") || "").startsWith(LIVE_STREAM)) {
+    if (!upstream.ok) {
+      let detail = {};
+      try { detail = await upstream.json(); } catch {}
+      throw failure(detail.error || ("Live binding failed (HTTP " + upstream.status + ")"), upstream.status, detail.retryAfterMs);
+    }
+    return {
+      buf: Buffer.from(await upstream.arrayBuffer()),
+      rowCount: Number(upstream.headers.get("x-mako-row-count")) || 0,
+      materializedAt: upstream.headers.get("x-mako-materialized-at"),
+    };
+  }
+  const reader = upstream.body.getReader();
+  let head = Buffer.alloc(0);
+  let ready = null;
+  const parts = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (ready) { parts.push(Buffer.from(value)); continue; }
+    head = Buffer.concat([head, Buffer.from(value)]);
+    let nl;
+    while (!ready && (nl = head.indexOf(10)) !== -1) {
+      const line = head.subarray(0, nl).toString("utf8").trim();
+      head = head.subarray(nl + 1);
+      if (!line) continue;
+      const event = JSON.parse(line);
+      if (event.phase === "failed") {
+        throw failure(event.error || "Live binding failed", event.status || 502, event.retryAfterMs);
+      }
+      if (event.phase === "ready") {
+        ready = event;
+        if (head.length) parts.push(head);
+      } else if (onPhase) {
+        onPhase(event);
+      }
+    }
+  }
+  if (!ready) throw failure("The build stream ended before the build did", 502);
+  const buf = Buffer.concat(parts);
+  if (typeof ready.bytes === "number" && buf.length !== ready.bytes) {
+    throw failure("The parquet arrived short (" + buf.length + " of " + ready.bytes + " bytes)", 502);
+  }
+  return { buf, rowCount: ready.rowCount || 0, materializedAt: ready.materializedAt || null };
+}
+
 const makoData = {
   name: "mako-data",
   configureServer(server) {
@@ -306,59 +419,73 @@ const makoData = {
       // through Mako as a real materialization (artifact stored, run
       // recorded), and keep the fresh bytes as this box's staged copy so the
       // very next __data/<name>.parquet read serves them. Same upstream as a
-      // live binding, with persist on.
+      // live binding, with persist on. A page that sent
+      // Accept: application/x-ndjson hears each phase as it happens
+      // (binding-progress.ts); any other caller gets the JSON answer.
       const refresh = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\/refresh$/.exec(url);
       if (refresh) {
         if (req.method !== "POST") { res.statusCode = 405; return res.end(); }
         const name = refresh[1];
-        const env = makoEnv();
+        const emit = wantsProgress(req) ? progressStream(res) : null;
         const reply = (status, body) => {
+          if (emit) {
+            const ok = status >= 200 && status < 300;
+            emit({ ...body, phase: ok ? "ready" : "failed", ...(ok ? {} : { status }) });
+            return res.end();
+          }
           res.statusCode = status;
           res.setHeader("content-type", "application/json");
           res.setHeader("cache-control", "no-store");
           res.end(JSON.stringify(body));
         };
+        if (emit) emit({ phase: "checking" });
         (async () => {
           try {
-            const token = readFileSync(env.MAKO_TOKEN_FILE, "utf8").trim();
-            const upstream = await fetch(
-              env.MAKO_API + "/api/apps-box/" + env.MAKO_WS + "/live-binding",
-              {
-                method: "POST",
-                headers: { "content-type": "application/json", authorization: "Bearer " + token },
-                body: JSON.stringify({ slug: ${JSON.stringify(slug)}, name, persist: true }),
-                signal: AbortSignal.timeout(330000),
-              },
-            );
-            if (!upstream.ok) {
-              let detail = {};
-              try { detail = await upstream.json(); } catch {}
-              return reply(upstream.status === 503 ? 429 : upstream.status === 404 ? 404 : 502, {
-                success: false,
-                error: detail.error || ("Refresh failed (HTTP " + upstream.status + ")"),
-                ...(detail.retryAfterMs ? { retryAfterMs: detail.retryAfterMs } : {}),
-              });
-            }
-            const buf = Buffer.from(await upstream.arrayBuffer());
-            const materializedAt = upstream.headers.get("x-mako-materialized-at");
-            // Write-through, like the live path above: serve these bytes
+            const built = await liveBuild(name, true, emit);
+            // Write-through, like the live path below: serve these bytes
             // until the next refresh rather than re-querying on every read.
             try {
-              writeFileSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".parquet"), buf);
-              rmSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".live"), { force: true });
+              stageParquet(name, built.buf);
             } catch {}
             reply(200, {
               success: true,
               binding: name,
-              materialization: materializedAt ? "parquet" : "live",
-              rowCount: Number(upstream.headers.get("x-mako-row-count")) || 0,
-              byteSize: buf.length,
-              ...(materializedAt ? { materializedAt } : {}),
+              materialization: built.materializedAt ? "parquet" : "live",
+              rowCount: built.rowCount,
+              byteSize: built.buf.length,
+              ...(built.materializedAt ? { materializedAt: built.materializedAt } : {}),
             });
           } catch (error) {
-            reply(502, { success: false, error: "Refresh failed: " + String(error && error.message) });
+            const status = error && error.status;
+            if (!status) {
+              return reply(502, { success: false, error: "Refresh failed: " + String(error && error.message) });
+            }
+            reply(status === 503 ? 429 : status === 404 ? 404 : 502, {
+              success: false,
+              error: error.message || ("Refresh failed (HTTP " + status + ")"),
+              ...(error.retryAfterMs ? { retryAfterMs: error.retryAfterMs } : {}),
+            });
           }
         })();
+        return;
+      }
+      const snapMatch = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\.snapshot\\.json$/.exec(url);
+      if (snapMatch) {
+        const snapFile = path.join(${JSON.stringify(stagedDataDir)}, snapMatch[1] + ".snapshot.json");
+        // A live binding is queried fresh: no stored build, so no preview.
+        const isLive = existsSync(path.join(${JSON.stringify(stagedDataDir)}, snapMatch[1] + ".live"));
+        if (isLive || !existsSync(snapFile)) {
+          res.statusCode = 404;
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ error: "Snapshot not available", binding: snapMatch[1] }));
+          return;
+        }
+        const snapBuf = readFileSync(snapFile);
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json; charset=utf-8");
+        res.setHeader("content-length", String(snapBuf.length));
+        res.setHeader("cache-control", "no-store");
+        res.end(snapBuf);
         return;
       }
       const match = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\.parquet$/.exec(url);
@@ -367,53 +494,47 @@ const makoData = {
       // Live binding: query it fresh through Mako, stream the parquet back.
       // dev/edit only — the box token authorizes it as this box's actor.
       if (existsSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".live"))) {
-        const env = makoEnv();
-        (async () => {
-          try {
-            const token = readFileSync(env.MAKO_TOKEN_FILE, "utf8").trim();
-            const upstream = await fetch(
-              env.MAKO_API + "/api/apps-box/" + env.MAKO_WS + "/live-binding",
-              {
-                method: "POST",
-                headers: { "content-type": "application/json", authorization: "Bearer " + token },
-                body: JSON.stringify({ slug: ${JSON.stringify(slug)}, name }),
-                // A materialized query can be slow (a heavy dashboard mart runs
-                // for a minute); give it room rather than failing the table.
-                // Longer than the API's own query ceiling (300s), deliberately:
-                // when this was SHORTER, every binding taking 180-300s was
-                // unsatisfiable through this path — the box abandoned a request
-                // the API was still serving, so the answer could never arrive,
-                // while the warehouse job it started ran on and billed. The
-                // client must outlast the server it is waiting for, or it turns
-                // slow into impossible.
-                signal: AbortSignal.timeout(330000),
-              },
-            );
-            if (!upstream.ok) {
-              res.statusCode = 502;
-              res.setHeader("content-type", "application/json");
-              res.end(JSON.stringify({ error: "Live binding failed", binding: name, status: upstream.status }));
-              return;
-            }
-            const buf = Buffer.from(await upstream.arrayBuffer());
-            // Write-through cache: keep this result as a static parquet and drop
-            // the live marker, so the binding is queried at most ONCE per dev
-            // session — the next fetch (and every re-open) serves the file, not
-            // a fresh 60s query. A rebuild/re-stage overwrites it.
-            try {
-              writeFileSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".parquet"), buf);
-              rmSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".live"), { force: true });
-            } catch {}
-            res.statusCode = 200;
-            res.setHeader("content-type", "application/vnd.apache.parquet");
-            res.setHeader("content-length", String(buf.length));
-            res.setHeader("cache-control", "no-store");
-            res.end(buf);
-          } catch (error) {
-            res.statusCode = 502;
-            res.setHeader("content-type", "application/json");
-            res.end(JSON.stringify({ error: "Live binding failed", binding: name, detail: String(error && error.message) }));
+        // A page that asked for phases gets them, then a "ready" with no
+        // url: the bytes are staged by then, so its plain re-GET of this
+        // same path is served the file below without querying again.
+        const emit = wantsProgress(req) ? progressStream(res) : null;
+        const fail = (body) => {
+          if (emit) {
+            emit({ ...body, phase: "failed", status: 502 });
+            return res.end();
           }
+          res.statusCode = 502;
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify(body));
+        };
+        if (emit) emit({ phase: "checking" });
+        (async () => {
+          let built;
+          try {
+            built = await liveBuild(name, false, emit);
+          } catch (error) {
+            return fail(
+              error && error.status
+                ? { error: "Live binding failed", binding: name, status: error.status, detail: error.message }
+                : { error: "Live binding failed", binding: name, detail: String(error && error.message) },
+            );
+          }
+          // Write-through cache: keep this result as a static parquet and drop
+          // the live marker, so the binding is queried at most ONCE per dev
+          // session — the next fetch (and every re-open) serves the file, not
+          // a fresh 60s query. A rebuild/re-stage overwrites it.
+          try {
+            stageParquet(name, built.buf);
+          } catch {}
+          if (emit) {
+            emit({ phase: "ready", binding: name, rowCount: built.rowCount });
+            return res.end();
+          }
+          res.statusCode = 200;
+          res.setHeader("content-type", "application/vnd.apache.parquet");
+          res.setHeader("content-length", String(built.buf.length));
+          res.setHeader("cache-control", "no-store");
+          res.end(built.buf);
         })();
         return;
       }
@@ -427,12 +548,15 @@ const makoData = {
         }));
         return;
       }
-      // Parquet readers need the length to locate the footer.
+      // Parquet readers need the length to locate the footer. One read, so
+      // the length and the bytes come from the same file even when a
+      // restage renames a new one into place between a stat and an open.
+      const buf = readFileSync(file);
       res.statusCode = 200;
       res.setHeader("content-type", "application/vnd.apache.parquet");
-      res.setHeader("content-length", String(statSync(file).size));
+      res.setHeader("content-length", String(buf.length));
       res.setHeader("cache-control", "no-store");
-      createReadStream(file).pipe(res);
+      res.end(buf);
     });
   },
 };
@@ -594,6 +718,34 @@ export interface DevPreview {
 }
 
 /**
+ * Write a staged file under a temporary name, then rename it into place.
+ * The dev server reads these files while a reattach restages them in the
+ * background; a write in place (truncate, then fill) let a page reload read a
+ * half-written parquet and fail with "No magic bytes found at end of file".
+ * `then` runs in the same exec as the rename, sparing a round-trip.
+ */
+export async function stageFileAtomically(
+  provider: ReturnType<typeof getSandboxProvider>,
+  ctx: SandboxExecContext,
+  target: string,
+  bytes: Uint8Array,
+  then?: string,
+  /** Runs (and must succeed) right before the move. */
+  before?: string,
+): Promise<void> {
+  const temp = `${target}.staging`;
+  await provider.writeFile(ctx, temp, bytes);
+  const moved = await provider.exec(
+    ctx,
+    `${before ? `${before} && ` : ""}mv -f ${sh(temp)} ${sh(target)}${then ? ` && ${then}` : ""}`,
+    { timeoutMs: 15_000 },
+  );
+  if (moved.exitCode !== 0) {
+    throw new Error(`Could not stage ${target}: ${moved.stderr.trim()}`);
+  }
+}
+
+/**
  * Copy each materialized binding's parquet into the sandbox so the dev server
  * can answer `__data/<name>.parquet` locally.
  *
@@ -623,7 +775,7 @@ async function stageBindingData(
   const stageDir = dataDir(handle);
   await provider.exec(ctx, `mkdir -p ${stageDir}`, { timeoutMs: 30_000 });
 
-  const store = getDashboardArtifactStore();
+  const store = getArtifactStore();
   const staged: string[] = [];
   // A marker (no parquet) tells the dev server's data middleware to fetch this
   // binding FRESH from Mako on each request. Listed in index.json so the SDK
@@ -654,28 +806,42 @@ async function stageBindingData(
       await stageLive(binding.name);
       continue;
     }
-    // A stale marker from a previous life mustn't shadow a now-static binding.
-    await provider
-      .exec(ctx, `rm -f ${stageDir}/${binding.name}.live`, {
-        timeoutMs: 15_000,
-      })
-      .catch(() => undefined);
     const chunks: Buffer[] = [];
     for await (const chunk of stream) {
       chunks.push(Buffer.from(chunk as Buffer));
     }
-    await provider.writeFile(
+    // A stale marker from a previous life mustn't shadow a now-static
+    // binding. The previous build's snapshot goes BEFORE the parquet moves,
+    // and this build's lands after it: never an old preview beside new data.
+    await stageFileAtomically(
+      provider,
       ctx,
       `${stageDir}/${binding.name}.parquet`,
       new Uint8Array(Buffer.concat(chunks)),
+      `rm -f ${stageDir}/${binding.name}.live`,
+      `rm -f ${stageDir}/${binding.name}.snapshot.json`,
     );
+    const snapshotStream = await store.openReadStream(snapshotArtifactKey(key));
+    if (snapshotStream) {
+      const snapChunks: Buffer[] = [];
+      for await (const chunk of snapshotStream) {
+        snapChunks.push(Buffer.from(chunk as Buffer));
+      }
+      await stageFileAtomically(
+        provider,
+        ctx,
+        `${stageDir}/${binding.name}.snapshot.json`,
+        new Uint8Array(Buffer.concat(snapChunks)),
+      );
+    }
     staged.push(binding.name);
   }
 
   // The staged names as a file beside the data, so the app-side SDK's
   // useDuckDB can register every binding without a Mako API in reach —
   // the same relative fetch that gets it the parquet gets it the list.
-  await provider.writeFile(
+  await stageFileAtomically(
+    provider,
     ctx,
     `${stageDir}/index.json`,
     new TextEncoder().encode(JSON.stringify(staged)),

@@ -93,7 +93,7 @@ import {
   triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
 import { validateScheduledConsoleSchedule } from "../services/scheduled-query-schedule.service";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 
 const logger = loggers.api("dbt");
 
@@ -713,7 +713,7 @@ dbtRoutes.get(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const path = c.req.param("path");
+      const path = c.req.param("path") as string;
       const file = await readWorkingFile(project, getUserId(c), path);
       if (!file) {
         return c.json({ success: false, error: "File not found" }, 404);
@@ -733,7 +733,7 @@ dbtRoutes.put(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const path = c.req.param("path");
+      const path = c.req.param("path") as string;
       if (!isSafeDbtPath(path)) return badRequest(c, "Invalid file path");
 
       const body = (await c.req.json()) as {
@@ -784,7 +784,7 @@ dbtRoutes.delete(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const path = c.req.param("path");
+      const path = c.req.param("path") as string;
       const userId = getUserId(c);
       const deleted = await deleteWorkingFile(project, userId, path);
       if (!deleted) {
@@ -926,7 +926,10 @@ dbtRoutes.get(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const live = await loadLiveJobById(project, c.req.param("jobId"));
+      const live = await loadLiveJobById(
+        project,
+        c.req.param("jobId") as string,
+      );
       if (!live) {
         return c.json({ success: false, error: "Job not found" }, 404);
       }
@@ -985,7 +988,7 @@ dbtRoutes.patch(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const jobId = c.req.param("jobId");
+      const jobId = c.req.param("jobId") as string;
       if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
       }
@@ -1045,7 +1048,7 @@ dbtRoutes.delete(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const jobId = c.req.param("jobId");
+      const jobId = c.req.param("jobId") as string;
       if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
       }
@@ -1078,7 +1081,7 @@ dbtRoutes.post(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const jobId = c.req.param("jobId");
+      const jobId = c.req.param("jobId") as string;
       if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
       }
@@ -1148,7 +1151,7 @@ dbtRoutes.get(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const runId = c.req.param("runId");
+      const runId = c.req.param("runId") as string;
       if (!Types.ObjectId.isValid(runId)) {
         return badRequest(c, "Invalid run id");
       }
@@ -1188,7 +1191,7 @@ dbtRoutes.post(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const runId = c.req.param("runId");
+      const runId = c.req.param("runId") as string;
       if (!Types.ObjectId.isValid(runId)) {
         return badRequest(c, "Invalid run id");
       }
@@ -1228,7 +1231,7 @@ dbtRoutes.post(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const runId = c.req.param("runId");
+      const runId = c.req.param("runId") as string;
       if (!Types.ObjectId.isValid(runId)) {
         return badRequest(c, "Invalid run id");
       }
@@ -1264,8 +1267,8 @@ dbtRoutes.get(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const runId = c.req.param("runId");
-      const kind = c.req.param("kind");
+      const runId = c.req.param("runId") as string;
+      const kind = c.req.param("kind") as string;
       if (!Types.ObjectId.isValid(runId)) {
         return badRequest(c, "Invalid run id");
       }
@@ -1288,7 +1291,7 @@ dbtRoutes.get(
       if (!key) {
         return c.json({ success: false, error: "Artifact not found" }, 404);
       }
-      const store = getDashboardArtifactStore();
+      const store = getArtifactStore();
       const stream = await store.openReadStream(key);
       if (!stream) {
         return c.json({ success: false, error: "Artifact not found" }, 404);
@@ -1419,7 +1422,7 @@ dbtRoutes.get("/local-runs/:runId", async (c: AuthenticatedContext) => {
     const found = await findOwnLocalRun({
       workspaceId,
       userId: caller.userId,
-      runId: c.req.param("runId"),
+      runId: c.req.param("runId") as string,
     });
     if (!found) {
       return c.json({ success: false, error: "Run not found" }, 404);
@@ -1465,7 +1468,7 @@ dbtRoutes.post("/local-runs/:runId/cancel", async (c: AuthenticatedContext) => {
     if (!workspaceId || !caller) {
       return c.json({ success: false, error: "Unauthorized" }, 401);
     }
-    const runId = c.req.param("runId");
+    const runId = c.req.param("runId") as string;
     const found = await findOwnLocalRun({
       workspaceId,
       userId: caller.userId,
@@ -1805,7 +1808,7 @@ dbtRoutes.get(
           lineage: { nodes: [], edges: [], generatedAt: null },
         });
       }
-      const store = getDashboardArtifactStore();
+      const store = getArtifactStore();
       const stream = await store.openReadStream(run.artifactKeys.manifest);
       if (!stream) {
         return c.json({ success: false, error: "Manifest not found" }, 404);

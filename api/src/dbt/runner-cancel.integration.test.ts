@@ -58,18 +58,25 @@ describe("runDbt cancellation", () => {
     const controller = new AbortController();
     const logs: string[] = [];
     const started = Date.now();
-    setTimeout(() => controller.abort("test cancel"), 500);
 
     const result = await runDbt({
       files,
       profile,
       commands: [parseDbtCommand("run --select x")],
       signal: controller.signal,
-      onLog: line => logs.push(line.line),
+      commandTimeoutMs: 2_000,
+      onLog: line => {
+        logs.push(line.line);
+        if (line.line.includes("fake dbt started")) {
+          controller.abort("test cancel");
+        }
+      },
     });
 
     const elapsed = Date.now() - started;
     expect(result.success).toBe(false);
+    expect(logs.some(l => l.includes("Run cancellation requested"))).toBe(true);
+    expect(logs.some(l => l.includes("Command timed out"))).toBe(false);
     // Aborted well before the fake's 120s sleep.
     expect(elapsed).toBeLessThan(10_000);
     expect(logs.some(l => l.includes("fake dbt started"))).toBe(true);
@@ -88,20 +95,28 @@ describe("runDbt cancellation", () => {
     const controller = new AbortController();
     const logs: string[] = [];
     const started = Date.now();
-    setTimeout(() => controller.abort("test cancel"), 300);
 
     const result = await runDbt({
       files,
       profile,
       commands: [parseDbtCommand("run --select x")],
       signal: controller.signal,
-      onLog: line => logs.push(line.line),
+      commandTimeoutMs: 2_000,
+      onLog: line => {
+        logs.push(line.line);
+        if (line.line.includes("ignoring sigterm")) {
+          controller.abort("test cancel");
+        }
+      },
     });
 
     const elapsed = Date.now() - started;
     expect(result.success).toBe(false);
-    // SIGTERM (~300ms) + 500ms grace + reap → comfortably under 8s.
+    expect(logs.some(l => l.includes("Run cancellation requested"))).toBe(true);
+    expect(logs.some(l => l.includes("Command timed out"))).toBe(false);
+    // Cancel after the fake process installs its trap; then allow 500ms to exit.
     expect(elapsed).toBeLessThan(8_000);
+    expect(logs.some(l => l.includes("ignoring sigterm"))).toBe(true);
     expect(logs.some(l => l.includes("SIGKILL"))).toBe(true);
   }, 20_000);
 });

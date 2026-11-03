@@ -7,14 +7,21 @@
  *
  * - MANAGED: written by Mako, overwritten on every refresh, headed "managed by
  *   Mako". Agent instructions (`AGENTS.md`, imported by `CLAUDE.md`), the MCP
- *   wiring (`.mcp.json`, `.envrc`), the identity stamp
- *   (`.mako/workspace.json`), and the vendored `packages/app-sdk`.
+ *   wiring (`.mcp.json`, `.envrc`) and the identity stamp
+ *   (`.mako/workspace.json`).
  * - SEEDED: written once when missing, never touched again (`README.md`,
  *   `.gitignore`) — they are the user's after that.
  *
  * Instructions here are POINTERS, not knowledge: the system skills (SDK API,
- * charts, dialects) stay behind the MCP server's `get_relevant_skills`, so
- * there is one copy to maintain instead of one per workspace that drifts.
+ * charts, dialects) stay behind the MCP server's `get_relevant_skills`, and
+ * the SDK documents itself in its npm README — the version an app installed,
+ * not whatever is newest. One copy to maintain instead of one per workspace
+ * that drifts.
+ *
+ * No code is vendored. Until v20 the template also wrote `packages/app-sdk`
+ * (a copy of `@makoai/app-sdk`); apps depend on the published package, so a
+ * refresh deletes that folder when no package.json references it (an app
+ * still on `file:../../packages/app-sdk` keeps it until that app moves).
  *
  * Refresh is monotonic on `templateVersion`: a repo is only ever moved
  * FORWARD, so two API deployments on different versions (dev and prod share
@@ -24,14 +31,14 @@
  */
 import { createHash } from "node:crypto";
 import { loggers } from "../logging";
-import { appSdkFiles } from "./app-sdk-package";
+import { APP_SDK_DIR } from "./app-sdk-package";
 import { workspaceRootGitignore } from "./box";
-import { readBlob, resolveCommit } from "./repository.service";
+import { grepTree, readBlob, resolveCommit } from "./repository.service";
 import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 18;
+export const WORKSPACE_TEMPLATE_VERSION = 24;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -56,15 +63,48 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
 - \`apps/<folder>/…/<slug>/\` — one app per folder holding a \`mako.json\`:
   a real Vite + React + TypeScript project. \`mako.json\` (\`id\`, title,
   entry), \`bindings/<name>.sql\` (data), \`src/\`, \`package.json\` +
-  \`package-lock.json\` (commit the lockfile). Folders between \`apps/\` and
+  its lockfile (commit it). Folders between \`apps/\` and
   the app are plain organisation — move an app with \`git mv\` and it keeps
   its identity, which is the \`id\` in its manifest, never its path.
-  \`users/<userId>/apps/…\` are personal apps.
-- \`packages/app-sdk/\` — \`@makoai/app-sdk\` (managed by Mako, do not edit).
-  Apps depend on the published package (\`"@makoai/app-sdk": "^2"\`); older
-  apps may still reference it via \`file:../../packages/app-sdk\`.
+- \`users/<handle>/…\` — one person's own tree (apps, consoles,
+  notebooks), private to them. The handle is their email's local part
+  (\`joan@…\` → \`users/joan/\`; \`-2\` on a clash); \`app_list_apps\` returns
+  yours as \`personalFolder\`. A folder's name grants nothing: only Mako's
+  handle mapping makes a \`users/<x>/\` someone's.
+- **New apps are personal by default**: create them in
+  \`users/<your handle>/apps/<slug>/\`, not \`apps/\`, unless the user
+  explicitly asks for a shared workspace app. Sharing is a deliberate move
+  (\`git mv\` into \`apps/…\`, or Share with workspace in Mako) once it is
+  worth everyone's attention. Before creating one, call \`search_apps\` with
+  what it should do — if a close match exists, propose extending it instead.
+- **Thumbnail:** an app's card on the Apps home shows \`thumbnail.png\`
+  (or \`.webp\`/\`.jpg\`/\`.svg\`) from the app's root, 1200×750 (16:10).
+  New apps start with a placeholder \`thumbnail.svg\`; replace it with a
+  real showcase of what the app does — design one as SVG and export a PNG,
+  or generate it with an image model. Prefer PNG: it is also the link
+  preview of the app's public share (WhatsApp, Slack, LinkedIn ignore SVG),
+  which crops to 1200×630 — keep the key content in that centred band.
+  Make it look great.
+- **Package manager: pnpm.** Use \`pnpm install\`, \`pnpm add <pkg>\`,
+  \`pnpm dev\`, \`pnpm build\` — never \`npm install\` in a pnpm app: it
+  ignores \`pnpm-lock.yaml\` and writes a competing \`package-lock.json\`.
+  Mako installs each app with what its folder says (\`pnpm-lock.yaml\` or
+  \`"packageManager": "pnpm@…"\` → pnpm, otherwise npm), so an app still on
+  \`package-lock.json\` keeps working; convert it with \`pnpm import\`, then
+  delete \`package-lock.json\` and set \`packageManager\`. Every new app is
+  pnpm.
+- **SDK and house style come from npm.** Apps depend on
+  \`"@makoai/app-sdk": "^2.7.0"\` — a caret range: Mako's deploys move every
+  app to the newest release inside it, so never vendor or copy the package
+  into this repo. Its README (\`node_modules/@makoai/app-sdk/README.md\` after
+  an install) documents the version the app has: the hooks, the vite plugin,
+  and the house dashboard kit \`@makoai/app-sdk/ui\` (\`PageHeader\`, \`Card\`,
+  \`KpiTile\`, \`MultiSelect\`, \`FreshnessBadge\`, \`RefreshAllButton\`, plus
+  \`ui.css\`). The SDK injects the house theme tokens (\`--background\`,
+  \`--brand\`, \`--canvas\`, \`--chart-1…5\`, …): style with them and use the
+  kit — do not paste token blocks or fork those components into an app.
 - \`consoles/<folder>/<name>.sql\` — saved consoles (\`.js\`, \`.mongodb.js\`
-  for the other languages); \`users/<userId>/consoles/…\` are private ones.
+  for the other languages); \`users/<handle>/consoles/…\` are private ones.
   Leading \`-- key: value\` lines are metadata (\`connection\`, \`database\`,
   \`description\`, \`schedule\`); a commit here shows up in the app on push.
 - \`skills/<name>/SKILL.md\` — workspace-taught agent skills (YAML
@@ -75,6 +115,11 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
 - \`PROMPT.md\` — the workspace's custom agent prompt (business context,
   conventions). Every agent turn reads it from \`main\`; edit and commit it
   like any file.
+- \`archive/…\` — archived apps: an app nobody opened or edited for 60 days
+  is moved here (\`archive/apps/…\`, \`archive/users/<handle>/apps/…\`) after
+  its owner was told. Outside the app trees, so nothing here is listed,
+  built or deployed; never create or edit apps under it. Restore one by
+  moving its folder back (\`git mv archive/apps/x apps/x\`) — it keeps its id.
 - \`.mako/workspace.json\` — workspace id + template version (managed).
 - \`.mcp.json\` — the \`mako\` MCP server for your agent (managed).
 
@@ -125,7 +170,7 @@ You are an ordinary developer in an ordinary checkout.
   The SDK API (\`useQuery\`, \`useDuckDB\`), binding front matter, chart and
   dialect guidance live there — not in this file. \`load_skill("apps")\` is
   the one to read first.
-- **Eyes**: run the app yourself — \`npm install && npm run dev\` inside
+- **Eyes**: run the app yourself — \`pnpm install && pnpm dev\` inside
   \`apps/<slug>\` — and look at it with your own browser tooling. \`run_app\`,
   \`app_open_app\`, \`app_browse\` render the sandbox's checkout, not yours.
 - **Memory**: durable workspace knowledge (schema quirks, conventions) goes
@@ -176,8 +221,8 @@ name, role }, app: { id, slug, role } }\`, or \`null\` on an anonymous share.
 Mako knows nothing else about people on purpose — team, country, seniority
 are YOUR data: put a roster in a binding (\`email\` + the columns the app's
 logic needs) and join it on the email in \`useDuckDB\`. \`MAKO_VIEWER_AS=<email>\`
-in \`.env\` previews the app as another member during \`npm run dev\`. See
-\`packages/app-sdk/README.md\`.
+in \`.env\` previews the app as another member during \`pnpm dev\`. See the
+SDK README.
 
 ## Shipping
 
@@ -189,8 +234,10 @@ Uncommitted work exists only on this machine.
 
 - commit \`.env\`, \`node_modules/\`, \`dist/\`, or parquet files;
 - put a query in a binding that you did not run with \`sql_execute_query\`;
-- edit \`packages/app-sdk/\`, \`.mako/\`, \`.mcp.json\` or this file — they are
-  overwritten on refresh.
+- vendor or copy \`@makoai/app-sdk\` (or a kit component) into the repo —
+  depend on it from npm;
+- edit \`.mako/\`, \`.mcp.json\` or this file — they are overwritten on
+  refresh.
 `;
 
 const CLAUDE_MD = `@AGENTS.md
@@ -241,7 +288,6 @@ export function managedTemplateFiles(
     ".mcp.json": MCP_JSON,
     ".envrc": ENVRC,
     [WORKSPACE_STAMP_PATH]: stamp(workspaceId),
-    ...appSdkFiles(),
   };
 }
 
@@ -304,15 +350,41 @@ export async function readWorkspaceStamp(
   }
 }
 
+export interface TemplateRefreshPlan {
+  writes: Record<string, string>;
+  /** Folders to remove (the retired vendored SDK). */
+  deletePrefixes: string[];
+}
+
 /**
- * The writes that bring `main` up to the current template, or null when the
+ * True when the repo still carries the vendored SDK copy and nothing uses
+ * it: no package.json outside the copy mentions `packages/app-sdk` (a
+ * `file:` dependency). An app that still does keeps its copy until it moves
+ * to the npm package — deleting it would break that app's next build.
+ */
+async function vendoredSdkIsRetirable(
+  repoDir: string,
+  ref: string,
+): Promise<boolean> {
+  if ((await readAt(repoDir, ref, `${APP_SDK_DIR}/package.json`)) === null) {
+    return false;
+  }
+  const refs = await grepTree(repoDir, ref, APP_SDK_DIR, {
+    pathspec: "*package.json",
+    maxMatches: 50,
+  });
+  return refs.every(m => m.path.startsWith(`${APP_SDK_DIR}/`));
+}
+
+/**
+ * The changes that bring `main` up to the current template, or null when the
  * repo is already current (or has no `main`). Pure with respect to the repo:
  * nothing is committed here.
  */
 export async function planTemplateRefresh(
   repoDir: string,
   workspaceId: string,
-): Promise<Record<string, string> | null> {
+): Promise<TemplateRefreshPlan | null> {
   const ref = "refs/heads/main";
   if (!(await resolveCommit(repoDir, ref))) return null;
   const current = await readWorkspaceStamp(repoDir, ref);
@@ -338,7 +410,12 @@ export async function planTemplateRefresh(
   for (const [rel, contents] of Object.entries(writes)) {
     if ((await readAt(repoDir, ref, rel)) === contents) delete writes[rel];
   }
-  return Object.keys(writes).length > 0 ? writes : null;
+  const deletePrefixes = (await vendoredSdkIsRetirable(repoDir, ref))
+    ? [APP_SDK_DIR]
+    : [];
+  return Object.keys(writes).length > 0 || deletePrefixes.length > 0
+    ? { writes, deletePrefixes }
+    : null;
 }
 
 /**
@@ -360,23 +437,19 @@ export async function ensureWorkspaceTemplate(
       error: error instanceof Error ? error.message : String(error),
     });
   });
-  const writes = await planTemplateRefresh(repoDir, workspaceId);
-  if (!writes) return null;
+  const plan = await planTemplateRefresh(repoDir, workspaceId);
+  if (!plan) return null;
   // Lazy import: worktree.service imports this module for initRepo.
   const { commitFilesOnBranch } = await import("./worktree.service");
-  const { commitOid } = await commitFilesOnBranch(
-    repoDir,
-    "main",
-    { writes },
-    {
-      message: `Update Mako workspace template to v${WORKSPACE_TEMPLATE_VERSION}`,
-    },
-  );
+  const { commitOid } = await commitFilesOnBranch(repoDir, "main", plan, {
+    message: `Update Mako workspace template to v${WORKSPACE_TEMPLATE_VERSION}`,
+  });
   queueMirrorPush(workspaceId);
   logger.info("Apps workspace template refreshed", {
     workspaceId,
     version: WORKSPACE_TEMPLATE_VERSION,
-    files: Object.keys(writes).length,
+    files: Object.keys(plan.writes).length,
+    retired: plan.deletePrefixes,
   });
   return commitOid;
 }

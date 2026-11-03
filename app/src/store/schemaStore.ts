@@ -13,6 +13,32 @@ import {
 // ============================================================================
 
 /** Database connection/server */
+/** One principal allowed to write through a connection. */
+export interface ConnectionWriter {
+  /** `user:<id>` or `workflow:<name>`. */
+  principal: string;
+  /** Absent: anywhere. `schema` or `schema.table`. */
+  where?: string | null;
+  addedBy?: string | null;
+  addedAt?: string | null;
+}
+
+/** Who wrote through a connection lately (last 30 days). */
+export interface ConnectionRecentWriter {
+  principal: string;
+  count: number;
+  lastAt: string;
+  targets: string[];
+  /** Places written lately that the list, as it is now, does not cover. */
+  uncovered: string[];
+}
+
+export interface ConnectionWriters {
+  writers: ConnectionWriter[];
+  canEdit: boolean;
+  recent: ConnectionRecentWriter[];
+}
+
 export interface Connection {
   id: string;
   connectionId?: string;
@@ -184,6 +210,16 @@ interface SchemaState {
 
   // === Refresh Methods (force re-fetch) ===
   refreshConnections: (workspaceId: string) => Promise<Connection[]>;
+  /** Who may write through a connection (access/connection-writes.ts). */
+  getConnectionWriters: (
+    workspaceId: string,
+    connectionId: string,
+  ) => Promise<ConnectionWriters>;
+  setConnectionWriters: (
+    workspaceId: string,
+    connectionId: string,
+    writers: { principal: string; where?: string }[],
+  ) => Promise<void>;
   refreshTreeRoot: (
     workspaceId: string,
     connectionId: string,
@@ -755,6 +791,32 @@ export const useSchemaStore = create<SchemaState>()(
           // Refresh connections list
           await get().refreshConnections(workspaceId);
         }
+      },
+
+      getConnectionWriters: async (workspaceId, connectionId) => {
+        const res = unwrapBody(
+          await api.GET(
+            "/api/workspaces/{workspaceId}/databases/{id}/writers",
+            { params: { path: { workspaceId, id: connectionId } } },
+          ),
+        ) as { success: boolean; data?: ConnectionWriters; error?: string };
+        if (!res.success || !res.data) {
+          throw new Error(res.error ?? "Couldn't load who can write.");
+        }
+        return res.data;
+      },
+
+      setConnectionWriters: async (workspaceId, connectionId, writers) => {
+        const res = unwrapBody(
+          await api.PUT(
+            "/api/workspaces/{workspaceId}/databases/{id}/writers",
+            {
+              params: { path: { workspaceId, id: connectionId } },
+              body: { writers },
+            },
+          ),
+        ) as { success: boolean; error?: string };
+        if (!res.success) throw new Error(res.error ?? "Couldn't save.");
       },
 
       testConnection: async (workspaceId, payload, options) => {

@@ -28,11 +28,11 @@ import fs from "node:fs/promises";
 import { Db, ObjectId } from "mongodb";
 import { Storage } from "@google-cloud/storage";
 import { loggers } from "../logging";
-import { getArtifactPrefix } from "../services/dashboard-cache.service";
 import {
-  getDashboardArtifactStoreType,
+  getArtifactPrefix,
+  getArtifactStoreType,
   getFilesystemArtifactPath,
-} from "../services/dashboard-artifact-store.service";
+} from "../services/artifact-store.service";
 
 const log = loggers.migration();
 
@@ -59,7 +59,7 @@ async function purgeArtifacts(
   // bucket env is present — falling back to a filesystem "purge" there
   // would drop makoapps and orphan the parquet forever.
   const bucketName = process.env.GCS_DASHBOARD_BUCKET;
-  const storeType = getDashboardArtifactStoreType();
+  const storeType = getArtifactStoreType();
   if (bucketName || storeType === "gcs") {
     if (!bucketName) {
       return {

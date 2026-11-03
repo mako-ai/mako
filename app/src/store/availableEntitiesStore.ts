@@ -14,10 +14,7 @@ export interface ConnectorEntityField {
 }
 
 export type EntityIncrementalMode =
-  | "native"
-  | "client-filter"
-  | "created-anchor"
-  | "none";
+  "native" | "client-filter" | "created-anchor" | "none";
 
 export interface ConnectorEntityMetadata {
   name: string;

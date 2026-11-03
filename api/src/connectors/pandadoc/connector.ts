@@ -244,7 +244,6 @@ export class PandaDocConnector extends BaseConnector {
     maxRetries = 5,
   ): Promise<T> {
     let attempt = 0;
-    // eslint-disable-next-line no-constant-condition
     while (true) {
       try {
         return await fn();
@@ -726,6 +725,7 @@ export class PandaDocConnector extends BaseConnector {
     } catch (error) {
       throw new Error(
         `Failed to create PandaDoc webhook subscription: ${formatPandaDocApiError(error)}`,
+        { cause: error },
       );
     }
   }

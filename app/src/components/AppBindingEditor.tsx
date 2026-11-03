@@ -15,7 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import { Alert, Box } from "@mui/material";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { Group, Panel, Separator } from "react-resizable-panels";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppsStore } from "../store/appsStore";
 import { useConsoleStore } from "../store/consoleStore";
@@ -323,8 +323,8 @@ export default function AppBindingEditor({
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <Box sx={{ flexGrow: 1, minHeight: 0 }}>
-        <PanelGroup direction="vertical" style={{ height: "100%" }}>
-          <Panel defaultSize={55} minSize={20}>
+        <Group orientation="vertical" style={{ height: "100%" }}>
+          <Panel defaultSize="55%" minSize="20%">
             {fileEntry && (
               <Console
                 variant="data-source"
@@ -342,13 +342,13 @@ export default function AppBindingEditor({
               />
             )}
           </Panel>
-          <PanelResizeHandle
+          <Separator
             style={{
               height: 4,
               background: "var(--mui-palette-divider, #ddd)",
             }}
           />
-          <Panel defaultSize={45} minSize={10}>
+          <Panel defaultSize="45%" minSize="10%">
             <ResultsErrorBoundary key={preview?.executedAt ?? "empty"}>
               <ResultsTable
                 results={preview}
@@ -357,7 +357,7 @@ export default function AppBindingEditor({
               />
             </ResultsErrorBoundary>
           </Panel>
-        </PanelGroup>
+        </Group>
       </Box>
     </Box>
   );

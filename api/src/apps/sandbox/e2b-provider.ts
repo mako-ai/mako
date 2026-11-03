@@ -286,7 +286,7 @@ async function execE2b(
   let stdout = "";
   let stderr = "";
   let truncated = false;
-  let exitCode = 0;
+  let exitCode: number;
   let timedOut = false;
   const cap = APPS_EXEC_MAX_OUTPUT_BYTES;
   const push = (target: "out" | "err", data: string) => {

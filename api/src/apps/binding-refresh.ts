@@ -24,6 +24,14 @@ import {
   readBindingMaterialization,
   type MaterializeResult,
 } from "./bindings.service";
+import {
+  BindingProgressHub,
+  bindingProgressResponse,
+  currentBindingProgressListener,
+  reportBindingPhase,
+  withBindingProgress,
+  type BindingProgressStreamOptions,
+} from "./binding-progress";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps");
@@ -101,8 +109,12 @@ const defaultDeps: RefreshBindingDeps = {
 
 // One build per (project, binding, commit) at a time, process-wide. A second
 // caller joins the build in flight rather than starting its own; the
-// scheduler's Inngest worker keys its concurrency the same way.
-const inflight = new Map<string, Promise<MaterializeResult>>();
+// scheduler's Inngest worker keys its concurrency the same way. The hub is
+// how a joiner hears the shared build's phases (binding-progress.ts).
+const inflight = new Map<
+  string,
+  { build: Promise<MaterializeResult>; hub: BindingProgressHub }
+>();
 
 export async function refreshAppBinding(
   input: RefreshBindingInput,
@@ -112,6 +124,7 @@ export async function refreshAppBinding(
   if (!NAME_RE.test(name)) {
     throw new BindingRefreshError("Invalid binding name", 400);
   }
+  reportBindingPhase("checking");
   const materialization = await deps.readMaterialization(
     project,
     name,
@@ -133,9 +146,10 @@ export async function refreshAppBinding(
   // or two callers past the read above would each start a build. The
   // cooldown claim lives inside the shared build for the same reason: it is
   // asked once per build, and a refused slot answers every joiner.
-  let build = inflight.get(key);
-  if (!build) {
-    build = (async () => {
+  let entry = inflight.get(key);
+  if (!entry) {
+    const hub = new BindingProgressHub();
+    const build = withBindingProgress(hub.emit, async () => {
       if (cooldownMs !== undefined) {
         const slot = await deps.claim(projectId, name, cooldownMs);
         if (!slot.claimed) {
@@ -147,13 +161,16 @@ export async function refreshAppBinding(
         }
       }
       return deps.materialize(project, name, actorId, { at });
-    })().finally(() => inflight.delete(key));
-    inflight.set(key, build);
+    }).finally(() => inflight.delete(key));
+    entry = { build, hub };
+    inflight.set(key, entry);
   }
 
+  const listener = currentBindingProgressListener();
+  const unsubscribe = listener ? entry.hub.subscribe(listener) : () => false;
   let result: MaterializeResult;
   try {
-    result = await build;
+    result = await entry.build;
   } catch (error) {
     if (error instanceof BindingRefreshError) throw error;
     const message = error instanceof Error ? error.message : String(error);
@@ -164,6 +181,8 @@ export async function refreshAppBinding(
       error: message,
     });
     throw new BindingRefreshError(message, 502);
+  } finally {
+    unsubscribe();
   }
   return {
     binding: name,
@@ -212,4 +231,24 @@ export async function refreshBindingHttp(
           : {},
     };
   }
+}
+
+/**
+ * The same refresh as a phase stream (binding-progress.ts), for a client that
+ * sent `Accept: application/x-ndjson`: checking → querying_warehouse →
+ * writing_parquet → uploading, then `ready` with the body refreshBindingHttp
+ * would have answered, or `failed` with its status. Call it inside the
+ * host's withQueryLabels: the build starts here, in that context.
+ */
+export function refreshBindingProgress(
+  input: RefreshBindingInput,
+  opts?: BindingProgressStreamOptions,
+  deps?: RefreshBindingDeps,
+): Response {
+  return bindingProgressResponse(async () => {
+    // retryAfterMs rides in the body; the retry-after header has no place
+    // on a 200 stream.
+    const { status, body } = await refreshBindingHttp(input, deps);
+    return { status, body };
+  }, opts);
 }

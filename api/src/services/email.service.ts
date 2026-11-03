@@ -4,7 +4,7 @@
  * - Invitation / verification / password-reset: SendGrid dynamic templates
  *   (template variables are escaped by SendGrid).
  * - Flow & scheduled-query run notifications: HTML + plain text rendered in-repo
- *   via React Email (@react-email); user content is rendered as React text nodes
+ *   via React Email (react-email); user content is rendered as React text nodes
  *   (never dangerouslySetInnerHTML).
  */
 
@@ -226,12 +226,10 @@ export class EmailService {
     };
 
     if (!config.apiKey) {
-      logEmailForDev(
-        "Verification",
-        to,
-        "Verify your email address",
-        { kind: "template", templateData },
-      );
+      logEmailForDev("Verification", to, "Verify your email address", {
+        kind: "template",
+        templateData,
+      });
       logger.info("Verification email logged (dev mode)", { to });
       return;
     }
@@ -328,6 +326,33 @@ export class EmailService {
     logger.info("Flow run notification emails sent", {
       count: recipients.length,
     });
+  }
+
+  /**
+   * App lifecycle notices (stale apps about to be archived) — in-repo HTML
+   * + text, SendGrid as transport only, like run notifications.
+   */
+  async sendAppLifecycleEmail(
+    to: string,
+    body: { html: string; text: string; subject: string },
+  ): Promise<void> {
+    const config = getConfig();
+    if (!config.apiKey) {
+      logEmailForDev("App lifecycle notice", to, body.subject, {
+        kind: "content",
+        text: body.text,
+        htmlTruncated: truncateForLog(body.html),
+      });
+      return;
+    }
+    await sendMail({
+      to,
+      from: config.fromEmail,
+      subject: body.subject,
+      html: body.html,
+      text: body.text,
+    });
+    logger.info("App lifecycle notice sent", { to });
   }
 }
 

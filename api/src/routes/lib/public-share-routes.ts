@@ -1,5 +1,5 @@
 /**
- * Public-link sharing management routes (dashboards + apps).
+ * Public-link sharing management routes (apps).
  *
  * Mounted on existing workspace-scoped routers (auth enforced upstream):
  *
@@ -12,6 +12,7 @@
 
 import crypto from "node:crypto";
 import bcrypt from "bcrypt";
+import type { Types } from "mongoose";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { loggers } from "../../logging";
 import type { AuthenticatedContext } from "../../middleware/workspace.middleware";
@@ -19,7 +20,6 @@ import { canManageSharing } from "../../utils/resource-acl";
 import {
   encrypt,
   decrypt,
-  Dashboard,
   AppProject,
   type IPublicShare,
 } from "../../database/workspace-schema";
@@ -81,17 +81,13 @@ function slugify(text: string): string {
     .replace(/-+$/, "");
 }
 
-/** Tokens are resolved globally, so check both shareable collections. */
+/** Tokens are resolved globally across every shareable collection. */
 async function isShareTokenTaken(
   token: string,
-  excludeId?: unknown,
+  excludeId?: Types.ObjectId | string,
 ): Promise<boolean> {
   const filter = { "publicShare.token": token, _id: { $ne: excludeId } };
-  const [dashboard, app] = await Promise.all([
-    Dashboard.exists(filter),
-    AppProject.exists(filter),
-  ]);
-  return !!(dashboard || app);
+  return !!(await AppProject.exists(filter));
 }
 
 /**
@@ -101,7 +97,7 @@ async function isShareTokenTaken(
  */
 async function generateShareToken(
   title: string | undefined,
-  options: { forceSuffix?: boolean; excludeId?: unknown } = {},
+  options: { forceSuffix?: boolean; excludeId?: Types.ObjectId | string } = {},
 ): Promise<string> {
   const slug = title ? slugify(title) : "";
   if (!slug) return crypto.randomBytes(8).toString("hex");
@@ -214,7 +210,6 @@ export function registerPublicShareRoutes(
             : (existing?.passwordEncrypted ?? null),
           createdAt: existing?.createdAt || new Date(),
           createdBy: existing?.createdBy || userId,
-          lastPublicRefreshAt: existing?.lastPublicRefreshAt,
           allowLiveQueries: existing?.allowLiveQueries ?? false,
         };
         doc.markModified("publicShare");

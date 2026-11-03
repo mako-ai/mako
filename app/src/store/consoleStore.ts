@@ -638,7 +638,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         // each kind owns exactly one duty: pin the tab when its content is
         // modified (console: first keystroke; app-file / dbt-file: first
         // keystroke; app workbench: entering edit mode; flow: entering edit;
-        // dashboard: its own shouldPin; notebook / dbt-console / connector /
+        // notebook / dbt-console / connector /
         // plan: durable documents, pinned at open). A double-click on the
         // tab title pins any kind.
         //
@@ -1056,7 +1056,7 @@ export const useConsoleStore = create<ConsoleStore>()(
             blockedDraftSaves.delete(consoleId);
             lastSavedContentHash.set(consoleId, baseStateHash);
           }
-        } catch (_e) {
+        } catch {
           // Best-effort: the revision base is unchanged, so the next sync
           // re-surfaces the agent edit for review rather than losing data.
         }
@@ -1140,7 +1140,7 @@ export const useConsoleStore = create<ConsoleStore>()(
               ),
             );
           }
-        } catch (_e) {
+        } catch {
           // Best-effort; the banner stays until a retry succeeds.
         }
       },
@@ -1846,7 +1846,7 @@ export const useConsoleStore = create<ConsoleStore>()(
             } else if (vm) {
               vm.updateVersion(versionId, { aiCommentStatus: "failed" });
             }
-          } catch (_e) {
+          } catch {
             if (vm) {
               vm.updateVersion(versionId, { aiCommentStatus: "failed" });
             }
@@ -2091,7 +2091,7 @@ export const useConsoleStore = create<ConsoleStore>()(
               }
               lastSavedContentHash.set(consoleId, stateHash);
             }
-          } catch (_e) {
+          } catch {
             // Auto-save failure - silently ignore as this is a best-effort operation
           }
         }, DRAFT_SAVE_DEBOUNCE_MS);
@@ -2115,6 +2115,15 @@ export const useConsoleStore = create<ConsoleStore>()(
           if (str) {
             const data = JSON.parse(str);
             if (data.state?.tabs) {
+              // Dashboards were removed; their open tabs cannot be reopened.
+              for (const [id, tab] of Object.entries(data.state.tabs)) {
+                if ((tab as { kind?: string }).kind === "dashboard") {
+                  delete data.state.tabs[id];
+                  if (data.state.activeTabId === id) {
+                    data.state.activeTabId = null;
+                  }
+                }
+              }
               // Rebuild or reconcile tabOrder with the current tabs map so
               // upgrading users don't end up with an empty tab strip.
               const tabIds = Object.keys(data.state.tabs);
@@ -2145,6 +2154,23 @@ export const useConsoleStore = create<ConsoleStore>()(
                 }
                 if (tab.isSaved === undefined) {
                   tab.isSaved = !!tab.filePath;
+                }
+                // Console/notebook diff tabs became one kind shared with
+                // flows and connectors; carry open ones across the rename.
+                if (
+                  tab.kind === "console-diff" ||
+                  tab.kind === "notebook-diff"
+                ) {
+                  const entity =
+                    tab.kind === "console-diff" ? "console" : "notebook";
+                  const meta = tab.metadata ?? {};
+                  tab.kind = "history-diff";
+                  tab.metadata = {
+                    entity,
+                    id: meta.consoleId ?? meta.notebookId,
+                    path: meta.path,
+                    sha: meta.sha,
+                  };
                 }
                 delete tab.initialContent;
                 delete tab.dbContentHash;

@@ -128,7 +128,12 @@ function SettingsSection({
           borderColor: "divider",
         }}
       >
-        <Typography variant="subtitle2" fontWeight={600}>
+        <Typography
+          variant="subtitle2"
+          sx={{
+            fontWeight: 600,
+          }}
+        >
           {title}
         </Typography>
         {action}
@@ -149,7 +154,13 @@ function ReadOnlyField({
 }) {
   return (
     <Box sx={{ mb: 1.5 }}>
-      <Typography variant="caption" color="text.secondary" display="block">
+      <Typography
+        variant="caption"
+        sx={{
+          color: "text.secondary",
+          display: "block",
+        }}
+      >
         {label}
       </Typography>
       {href ? (
@@ -612,7 +623,12 @@ export default function DbtProjectSettingsDrawer({
             mb: 1.5,
           }}
         >
-          <Typography variant="subtitle2" fontWeight={600}>
+          <Typography
+            variant="subtitle2"
+            sx={{
+              fontWeight: 600,
+            }}
+          >
             {compact ? "Environment" : env.name || "New environment"}
           </Typography>
           {editEnvs.length > 1 && (
@@ -673,8 +689,10 @@ export default function DbtProjectSettingsDrawer({
           onChange={e =>
             updateEditEnv(index, { threads: Number(e.target.value) })
           }
-          inputProps={{ min: 1, max: 32 }}
           sx={{ mb: 1.5 }}
+          slotProps={{
+            htmlInput: { min: 1, max: 32 },
+          }}
         />
         <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
           <InputLabel id={`dbt-settings-owner-${index}`}>Ownership</InputLabel>
@@ -698,8 +716,11 @@ export default function DbtProjectSettingsDrawer({
           </Select>
           <Typography
             variant="caption"
-            color="text.secondary"
-            sx={{ mt: 0.5, display: "block" }}
+            sx={{
+              color: "text.secondary",
+              mt: 0.5,
+              display: "block",
+            }}
           >
             Personal environments become the owner&apos;s default build target
             and are hidden from teammates&apos; pickers. They can&apos;t be the
@@ -709,8 +730,12 @@ export default function DbtProjectSettingsDrawer({
 
         <Typography
           variant="caption"
-          color="text.secondary"
-          sx={{ display: "block", mb: 0.5, fontWeight: 600 }}
+          sx={{
+            color: "text.secondary",
+            display: "block",
+            mb: 0.5,
+            fontWeight: 600,
+          }}
         >
           Variables
         </Typography>
@@ -755,8 +780,11 @@ export default function DbtProjectSettingsDrawer({
         </Button>
         <Typography
           variant="caption"
-          color="text.secondary"
-          sx={{ display: "block", mt: 0.5 }}
+          sx={{
+            color: "text.secondary",
+            display: "block",
+            mt: 0.5,
+          }}
         >
           Passed to every dbt command as <code>--vars</code>; read in models via{" "}
           <code>{"{{ var('key') }}"}</code>.
@@ -771,13 +799,15 @@ export default function DbtProjectSettingsDrawer({
       open={open && Boolean(projectId)}
       onClose={handleClose}
       sx={{ zIndex: theme => theme.zIndex.modal }}
-      PaperProps={{
-        sx: {
-          width: { xs: "100%", sm: DRAWER_WIDTH },
-          maxWidth: "100vw",
-          display: "flex",
-          flexDirection: "column",
-          boxShadow: theme => theme.shadows[16],
+      slotProps={{
+        paper: {
+          sx: {
+            width: { xs: "100%", sm: DRAWER_WIDTH },
+            maxWidth: "100vw",
+            display: "flex",
+            flexDirection: "column",
+            boxShadow: theme => theme.shadows[16],
+          },
         },
       }}
     >
@@ -814,11 +844,23 @@ export default function DbtProjectSettingsDrawer({
             <SettingsIcon size={18} strokeWidth={1.75} />
           )}
           <Box sx={{ minWidth: 0 }}>
-            <Typography variant="subtitle1" fontWeight={600} noWrap>
+            <Typography
+              variant="subtitle1"
+              noWrap
+              sx={{
+                fontWeight: 600,
+              }}
+            >
               {headerTitle}
             </Typography>
             {project && !selectedEnvName && (
-              <Typography variant="caption" color="text.secondary" noWrap>
+              <Typography
+                variant="caption"
+                noWrap
+                sx={{
+                  color: "text.secondary",
+                }}
+              >
                 {project.name}
               </Typography>
             )}
@@ -849,7 +891,12 @@ export default function DbtProjectSettingsDrawer({
 
       <Box sx={{ flex: 1, overflow: "auto", px: 2, py: 2 }}>
         {!project ? (
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             Loading project…
           </Typography>
         ) : selectedEnvName && selectedEnv ? (
@@ -894,8 +941,10 @@ export default function DbtProjectSettingsDrawer({
               <Box sx={{ mb: 1.5 }}>
                 <Typography
                   variant="caption"
-                  color="text.secondary"
-                  display="block"
+                  sx={{
+                    color: "text.secondary",
+                    display: "block",
+                  }}
                 >
                   Variables
                 </Typography>
@@ -977,8 +1026,11 @@ export default function DbtProjectSettingsDrawer({
                 </Select>
                 <Typography
                   variant="caption"
-                  color="text.secondary"
-                  sx={{ mt: 0.5, display: "block" }}
+                  sx={{
+                    color: "text.secondary",
+                    mt: 0.5,
+                    display: "block",
+                  }}
                 >
                   Ad-hoc builds defer to this environment’s last manifest, apps
                   resolve {"{{ dbt_schema }}"} against it, and it refuses ad-hoc
@@ -1000,7 +1052,13 @@ export default function DbtProjectSettingsDrawer({
               }
             >
               {connections.length === 0 && (
-                <Typography variant="caption" color="error" display="block">
+                <Typography
+                  variant="caption"
+                  color="error"
+                  sx={{
+                    display: "block",
+                  }}
+                >
                   No dbt-compatible connections. Add a Postgres, BigQuery, or
                   other supported connection in Databases first.
                 </Typography>
@@ -1073,8 +1131,11 @@ export default function DbtProjectSettingsDrawer({
                   </Select>
                   <Typography
                     variant="caption"
-                    color="text.secondary"
-                    sx={{ mt: 0.5, display: "block" }}
+                    sx={{
+                      color: "text.secondary",
+                      mt: 0.5,
+                      display: "block",
+                    }}
                   >
                     Where YOUR drafts and agent builds run. Solo workspaces: dev
                     is your personal target. Teams: pick (or provision) your
@@ -1185,8 +1246,11 @@ export default function DbtProjectSettingsDrawer({
               </Table>
               <Typography
                 variant="caption"
-                color="text.secondary"
-                sx={{ mt: 1, display: "block" }}
+                sx={{
+                  color: "text.secondary",
+                  mt: 1,
+                  display: "block",
+                }}
               >
                 Click a row for details, or use Add environment / Edit to create
                 prod, staging, or personal dev schemas.
@@ -1267,8 +1331,10 @@ export default function DbtProjectSettingsDrawer({
                     prev ? { ...prev, threads: Number(e.target.value) } : prev,
                   )
                 }
-                inputProps={{ min: 1, max: 32 }}
                 sx={{ mb: 1.5 }}
+                slotProps={{
+                  htmlInput: { min: 1, max: 32 },
+                }}
               />
               <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
                 <InputLabel id="dbt-env-modal-owner">Ownership</InputLabel>
@@ -1292,8 +1358,12 @@ export default function DbtProjectSettingsDrawer({
               </FormControl>
               <Typography
                 variant="caption"
-                color="text.secondary"
-                sx={{ display: "block", mb: 0.5, fontWeight: 600 }}
+                sx={{
+                  color: "text.secondary",
+                  display: "block",
+                  mb: 0.5,
+                  fontWeight: 600,
+                }}
               >
                 Variables
               </Typography>
@@ -1352,8 +1422,11 @@ export default function DbtProjectSettingsDrawer({
               </Button>
               <Typography
                 variant="caption"
-                color="text.secondary"
-                sx={{ display: "block", mt: 0.5 }}
+                sx={{
+                  color: "text.secondary",
+                  display: "block",
+                  mt: 0.5,
+                }}
               >
                 Passed to every dbt command as <code>--vars</code>; read in
                 models via <code>{"{{ var('key') }}"}</code>.
@@ -1418,7 +1491,12 @@ export default function DbtProjectSettingsDrawer({
             Edit environment
           </Button>
         ) : (
-          <Typography variant="caption" color="text.secondary">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             Edit to change project or add environments
           </Typography>
         )}

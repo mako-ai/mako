@@ -38,6 +38,7 @@ import type { NotebookBlock } from "../notebooks/types";
 import { loggers } from "../logging";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { RepoRequiredError } from "../apps/config";
+import { NotEntityPathError } from "../apps/entity-git-history";
 import {
   notebookCommitChanges,
   notebookFileVersions,
@@ -298,7 +299,7 @@ notebookRoutes.openapi(
     if (!artifact) {
       return c.json({ success: false, error: "Artifact not found" }, 404);
     }
-    return c.body(artifact.body, 200, {
+    return c.body(new Uint8Array(artifact.body), 200, {
       "Content-Type": artifact.contentType,
       "Cache-Control": "private, max-age=31536000, immutable",
     });
@@ -323,7 +324,7 @@ async function loadReadableNotebook(
   | { errorResponse: Response }
 > {
   const ws = workspaceId(c);
-  const id = c.req.param("id");
+  const id = c.req.param("id") as string;
   const userId = editorUserId(c);
   const access = await requireNotebookAccess(
     ws,
@@ -435,8 +436,18 @@ notebookRoutes.openapi(
     const loaded = await loadReadableNotebook(c, "read");
     if ("errorResponse" in loaded) return loaded.errorResponse;
     const { sha, path: relPath } = c.req.valid("query");
-    const versions = await notebookFileVersions(loaded.index, sha, relPath);
-    return c.json({ success: true as const, versions });
+    try {
+      const versions = await notebookFileVersions(loaded.index, sha, relPath);
+      return c.json({ success: true as const, versions });
+    } catch (error) {
+      if (error instanceof NotEntityPathError) {
+        return c.json(
+          { success: false, error: "Path is not this notebook" },
+          403,
+        );
+      }
+      throw error;
+    }
   },
 );
 
@@ -630,8 +641,7 @@ notebookRoutes.openapi(
       return c.json({ success: false, error: "clientId is required" }, 400);
     }
     const user = c.get("user") as
-      | { id?: unknown; email?: string; name?: string }
-      | undefined;
+      { id?: unknown; email?: string; name?: string } | undefined;
     publishRealtimeEvent(ws, {
       type: "notebook.presence",
       notebookId: id,

@@ -1,5 +1,12 @@
 # UI toolkit: Tailwind v4 + shadcn/ui in a Mako app
 
+> Start from the house kit: `@makoai/app-sdk/ui` (+ `ui.css`) already covers
+> page header, cards, KPI tiles, buttons, the multi-select filter, the
+> freshness badge, the refresh-all button and the data table, in the house
+> style. Reach for
+> shadcn below only for what the kit does not have — and map it onto the
+> SDK's tokens, never onto a pasted palette.
+
 Apps are ordinary Vite projects, so the standard modern React toolkit works —
 no CDN tricks. This is the proven setup (first shipped in
 `event-reconciliation-explorer`, 2026-08).
@@ -7,8 +14,8 @@ no CDN tricks. This is the proven setup (first shipped in
 ## Install
 
 ```bash
-npm i -D tailwindcss @tailwindcss/vite
-npm i clsx tailwind-merge class-variance-authority lucide-react
+pnpm add -D tailwindcss @tailwindcss/vite
+pnpm add clsx tailwind-merge class-variance-authority lucide-react
 ```
 
 `vite.config.ts` — add the plugin and the `@/` alias (keep `makoData()`):
@@ -81,7 +88,7 @@ Import it once from `main.tsx` (`import "./index.css"`).
 ## shadcn/ui
 
 Current shadcn components pass refs as props — they need **React 19**
-(`npm i react@^19 react-dom@^19 && npm i -D @types/react@^19 @types/react-dom@^19`;
+(`pnpm add react@^19 react-dom@^19 && pnpm add -D @types/react@^19 @types/react-dom@^19`;
 the SDK's peer range allows it). Under React 18 a `PopoverTrigger asChild`
 cannot anchor and fails silently.
 
@@ -108,7 +115,72 @@ The CLI writes `src/components/ui/*` and installs what it needs (`radix-ui`,
 Because the theme block above maps shadcn's expected token names onto the
 SDK's, generated components are correctly themed with zero edits.
 
+## Tables: use DataTable
+
+Every list of rows (customers, renewals, deals) is the kit's `DataTable`
+(`@makoai/app-sdk/ui`, SDK ≥ 2.11; README "Data tables"). Do not hand-roll a
+`<table>` or a shadcn table for it. The rules it encodes:
+
+- **Paginate, never cap.** Show every row across pages (25 / 50 / 100 per
+  page, default 50). A `LIMIT 100` or `.slice(0, 200)` hides rows and makes the
+  title's count wrong.
+- **Sticky header, pinned name column.** Put the row's identity first and set
+  `sticky: true` on it. Long values ellipsize at the column's width with the
+  full value on hover.
+- **Give every column a width.** The table must not reflow when sorting,
+  filtering or paging. Set `width` on each column (px or a CSS length) sized
+  for its real values, or rely on the defaults (numbers 96px, `date: true`
+  110px, the first column 240px, other text 140px). Mark the column that
+  should take spare room `grow: true` (default: the first). Never size a
+  column from the rows on screen.
+- **Fill the height.** A list that is the page's main content gets `fill` and
+  sits in a `100dvh` flex column, so the body scrolls and the pager stays in
+  view. A secondary table keeps the default 70vh scroll box.
+- **Every column sorts.** `value(row)` returns the raw number or string, never
+  formatted text: "€1,200" sorts wrong. `render(row)` formats. Numbers get
+  `num: true`. Pick a `defaultSort` that answers the card's question (largest
+  MRR, longest wait).
+- **CSV export.** Set `exportFilename`. It downloads every row as sorted, in
+  Mako and out. Give level or code columns a readable `csv(row)` and drop
+  link-only columns with `csv: false`. Dates export as `YYYY-MM-DD`.
+- **Reset on filters.** Pass the filter state as `resetKey` (`resetKey={{ q,
+  owners }}`). A filter change goes back to page 1. A data refresh keeps the
+  page.
+- **Empty state.** Pass `empty` with a sentence that names the filters ("No
+  customers match these filters."). Never render an empty table body.
+- **Links under the name.** Links to Close, Stripe or the CRM go under the name
+  in the pinned cell (small, 12px) or in an unsortable last column. Use
+  `onRowClick` only for a detail sheet. Links inside a clickable row keep their
+  own click.
+- **URL state.** When the view is shareable, keep `sort` and `page` in the URL
+  with the SDK's `useSearchParams` and pass them as controlled props (`sort` +
+  `onSortChange`, `page` + `onPageChange`).
+- **Title is the takeaway.** The card title states the count and the finding
+  ("41 customers not onboarded, 12 of them paid over 30 days ago"), and the
+  footer repeats the count with the `noun`.
+
+## Native `<select>`: the SDK base styles it
+
+macOS draws the native dropdown arrow flush against the right border. Since
+SDK 2.11.1, `ui.css` styles every single-line `<select>` like the MultiSelect
+trigger: 32px tall, 14px text, a chevron in the `--muted-foreground` token
+10px in from the right edge, 28px of right padding, hover and focus rings,
+dark mode from the tokens. It stays a native select, so keyboard and screen
+readers keep working. The rule sits in `@layer base`: any app CSS or Tailwind
+utility overrides it.
+
+- Do not strip it with `appearance: none` (or a `padding` shorthand that drops
+  the 28px) unless you draw your own arrow at least 10px from the right edge.
+- In Tailwind apps prefer shadcn `Select`. A select with `appearance-none` in
+  its classes (shadcn `NativeSelect`) draws its own arrow and the base leaves
+  it alone.
+- `[multiple]` and `[size]` list boxes keep the native look.
+
 ## Filter controls: the dropdown pattern
+
+Use the kit's `MultiSelect` (`@makoai/app-sdk/ui`) — it is this pattern,
+already built. The shadcn recipe below is for an app that has its own
+shadcn setup and needs a variant the kit does not offer.
 
 Multi-select filters (countries, teams, …) are a `DropdownMenu`, not a chip
 row: trigger shows the selection summary (`All countries` / `FR, CH`), the
@@ -141,4 +213,4 @@ Delete the runtime-injected CSS string and any `<link>`/`<script>` to
 unpkg/CDN, move styles to Tailwind utilities, and replace hand-rolled
 popovers/segmented controls with shadcn `Popover` / `Tabs`. Keep custom SVG
 charts if they are good — restyle their HTML tooltips with utilities. Then
-`npx tsc -b && npm run build` must both pass.
+`pnpm exec tsc -b && pnpm build` must both pass.

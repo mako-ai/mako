@@ -6,7 +6,7 @@ import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConne
 import { databaseConnectionService } from "../services/database-connection.service";
 import { loggers } from "../logging";
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const logger = loggers.sync("source-connection-manager");
 
@@ -23,7 +23,7 @@ type ConnectorSchema = { fields: ConnectorFieldSchema[] };
 
 /**
  * Decrypted runtime config for a source connection (a credential configured
- * with a connector). Not a DuckDB dashboard data source.
+ * with a connector). Not an app's DuckDB data source (binding).
  */
 export interface SourceConnectionConfig {
   id: string;

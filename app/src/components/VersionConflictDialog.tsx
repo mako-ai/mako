@@ -65,10 +65,12 @@ const VersionConflictDialog: React.FC<VersionConflictDialogProps> = ({
       onClose={handleClose}
       maxWidth="lg"
       fullWidth
-      PaperProps={{
-        sx: {
-          height: "85vh",
-          maxHeight: "900px",
+      slotProps={{
+        paper: {
+          sx: {
+            height: "85vh",
+            maxHeight: "900px",
+          },
         },
       }}
     >
@@ -80,7 +82,13 @@ const VersionConflictDialog: React.FC<VersionConflictDialogProps> = ({
           pb: 1,
         }}
       >
-        <Stack direction="row" alignItems="center" spacing={1}>
+        <Stack
+          direction="row"
+          spacing={1}
+          sx={{
+            alignItems: "center",
+          }}
+        >
           <WarningIcon color="warning" />
           <Typography variant="h6">Console Was Modified</Typography>
         </Stack>

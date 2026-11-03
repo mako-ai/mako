@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Types } from "mongoose";
-import { isStaleQueued } from "./dbt-run.service";
+import { isStaleQueued, reenabledAfterAutoDisableFilter } from "./dbt-run.service";
 
 function run(overrides: Partial<Parameters<typeof isStaleQueued>[0]> = {}) {
   return {
@@ -61,5 +61,21 @@ describe("isStaleQueued", () => {
     expect(isStaleQueued(run({ createdAt: undefined }), now, timeout)).toBe(
       false,
     );
+  });
+});
+
+describe("reenabledAfterAutoDisableFilter", () => {
+  const id = new Types.ObjectId();
+
+  it("matches an enabled job at or past the threshold", () => {
+    expect(reenabledAfterAutoDisableFilter(id, 10)).toEqual({
+      _id: id,
+      enabled: true,
+      "scheduledRun.consecutiveFailures": { $gte: 10 },
+    });
+  });
+
+  it("does nothing when auto-disable is off", () => {
+    expect(reenabledAfterAutoDisableFilter(id, 0)).toBeNull();
   });
 });

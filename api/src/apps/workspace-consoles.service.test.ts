@@ -23,7 +23,9 @@ import {
   ConsoleFolder,
   EntityVersion,
   SavedConsole,
+  WorkspaceUserHandle,
 } from "../database/workspace-schema";
+import { invalidateOwnerDirectory } from "./user-handles.service";
 import {
   CONSOLES_README_PATH,
   parseConsoleFile,
@@ -81,12 +83,21 @@ afterAll(async () => {
 
 const WS = new Types.ObjectId().toString();
 const USER = new Types.ObjectId().toString();
+/** USER's personal folder name: `users/<handle>/`, never their id. */
+const HANDLE = "alice";
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 
 beforeEach(async () => {
   await SavedConsole.deleteMany({});
   await ConsoleFolder.deleteMany({});
   await EntityVersion.deleteMany({});
+  await WorkspaceUserHandle.deleteMany({});
+  await WorkspaceUserHandle.create({
+    workspaceId: new Types.ObjectId(WS),
+    userId: USER,
+    handle: HANDLE,
+  });
+  invalidateOwnerDirectory();
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);
@@ -173,7 +184,7 @@ describe("write-through", () => {
         language: "sql",
       },
     );
-    expect(saved.path).toBe(`users/${USER}/consoles/scratch.sql`);
+    expect(saved.path).toBe(`users/${HANDLE}/consoles/scratch.sql`);
   });
 
   it("rename, move, access change and delete move the file", async () => {
@@ -228,20 +239,20 @@ describe("write-through", () => {
       ),
     ).not.toBeNull();
     paths = await treePaths();
-    expect(paths).toContain(`users/${USER}/consoles/Team/b.sql`);
+    expect(paths).toContain(`users/${HANDLE}/consoles/Team/b.sql`);
     expect(paths).not.toContain("consoles/Team/b.sql");
 
     expect(
       await manager.softDeleteConsole(saved._id.toString(), WS, USER),
     ).toBe(true);
     expect(await treePaths()).not.toContain(
-      `users/${USER}/consoles/Team/b.sql`,
+      `users/${HANDLE}/consoles/Team/b.sql`,
     );
     // …and restore puts it back at its path.
     expect(await manager.restoreConsole(saved._id.toString(), WS, USER)).toBe(
       true,
     );
-    expect(await treePaths()).toContain(`users/${USER}/consoles/Team/b.sql`);
+    expect(await treePaths()).toContain(`users/${HANDLE}/consoles/Team/b.sql`);
 
     const history = await log(repoDirFor(WS), MAIN, 20);
     expect(history.map(c => c.subject)).toEqual(
@@ -249,7 +260,7 @@ describe("write-through", () => {
         "rename: b",
         "move: b",
         "access private: b",
-        "delete: users/" + USER + "/consoles/Team/b.sql",
+        "delete: users/" + HANDLE + "/consoles/Team/b.sql",
         "restore: b",
       ]),
     );
@@ -451,7 +462,7 @@ describe("sync from repo", () => {
     await externalCommit({
       "consoles/Ops/Alerts/failed jobs.sql":
         "-- connection: 6846e6a01b05af0948070583\n\nSELECT * FROM jobs WHERE failed\n",
-      [`users/${USER}/consoles/mine.mongodb.js`]:
+      [`users/${HANDLE}/consoles/mine.mongodb.js`]:
         "// collection: users\n// operation: find\n\ndb.users.find({})\n",
     });
     const stats = await syncConsolesIndexFromRepo(WS, USER);
@@ -708,7 +719,7 @@ describe("adoption", () => {
       expect.arrayContaining(["consoles/Churn.sql", CONSOLES_README_PATH]),
     );
     expect(await treePaths()).not.toContain(
-      `users/${USER}/consoles/Untitled.sql`,
+      `users/${HANDLE}/consoles/Untitled.sql`,
     );
 
     const row = await SavedConsole.findById(id).select("+descriptionEmbedding");

@@ -6,9 +6,9 @@ import type { AgentContext } from "../types";
 import type { AgentMode, ExpertiseModeId } from "./types";
 import {
   QUERY_MODE_SYSTEM_PROMPT,
-  DASHBOARD_MODE_SYSTEM_PROMPT,
   FLOW_MODE_SYSTEM_PROMPT,
   APP_MODE_SYSTEM_PROMPT,
+  WORKFLOW_MODE_SYSTEM_PROMPT,
   TRANSFORM_MODE_SYSTEM_PROMPT,
   EXPLORE_MODE_SYSTEM_PROMPT,
   NOTEBOOK_MODE_SYSTEM_PROMPT,
@@ -74,12 +74,6 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   // or many fields). Its FIELD_PATHS enum makes it one of the heaviest
   // schemas in the catalog, so it stays out of the flow working set.
   set_form_field: "flows",
-  // Deprecated aliases of create_data_source({ consoleId }) — both imported a
-  // saved console into a dashboard by value. Kept executable for old chats.
-  import_console_as_data_source: "dashboards",
-  add_data_source: "dashboards",
-  // Deprecated alias of get_chart_template without templateId (lists all).
-  get_chart_templates: "dashboards",
   // Deprecated aliases of edit_notebook_cell (mode: 'insert' | 'delete').
   // Kept executable for external MCP clients; the in-product agent uses the
   // merged tool.
@@ -97,10 +91,6 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   mongo_list_databases: "mongodb",
   mongo_list_collections: "mongodb",
   mongo_inspect_collection: "mongodb",
-  // Deprecated per-entity aliases of the generic save_version /
-  // restore_version pair (which takes an entityType + entityId ref).
-  dashboard_save_version: "dashboards",
-  dashboard_restore_version: "dashboards",
 };
 
 export const DEFERRED_BUILTIN_TOOL_NAMES: readonly string[] = Object.keys(
@@ -137,41 +127,6 @@ const QUERY_MODE_TOOL_NAMES: string[] = [
   "list_console_executions",
 ];
 
-const DASHBOARD_MODE_TOOL_NAMES: string[] = [
-  "list_open_dashboards",
-  "open_dashboard",
-  "enter_edit_mode",
-  "create_dashboard",
-  "create_data_source",
-  "update_data_source_query",
-  "run_data_source_query",
-  "add_widget",
-  "modify_widget",
-  "remove_widget",
-  "get_dashboard_state",
-  // Shared surface-scoped data-source primitives (apps + dashboards)
-  "list_data_sources",
-  "inspect_data_source",
-  "query_duckdb",
-  "add_global_filter",
-  "remove_global_filter",
-  "link_tables",
-  "set_time_dimension",
-  "get_chart_template",
-  "save_version",
-  "restore_version",
-  "browse_version_history",
-  "get_version_snapshot",
-  "capture_screenshot",
-  // Search + discovery for building data sources
-  "search_consoles",
-  "search_dashboards",
-  "list_connections",
-  "list_databases",
-  "list_tables",
-  "inspect_table",
-];
-
 const FLOW_MODE_TOOL_NAMES: string[] = [
   // Flow server tools (unified agent strips flow's discovery tools in favor
   // of the universal ones, so we list those here for discovery).
@@ -194,6 +149,7 @@ const FLOW_MODE_TOOL_NAMES: string[] = [
 export const APP_TOOL_NAMES = new Set<string>([
   "app_list_apps",
   "app_create_app",
+  "search_apps",
   "app_move_app",
   "app_bash",
   "app_read_file",
@@ -218,7 +174,7 @@ const APP_MODE_TOOL_NAMES: string[] = [
   ...APP_TOOL_NAMES,
   "browse_version_history",
   "get_version_snapshot",
-  // Shared surface-scoped data-source primitives (apps + dashboards)
+  // Surface-scoped data-source primitives (app bindings)
   "list_data_sources",
   "inspect_data_source",
   "query_duckdb",
@@ -248,17 +204,42 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   "cancel_query",
 ];
 
+/**
+ * Workflows are files, so the mode is mostly the shell, file and git tools the
+ * app mode has, built to take a workflow folder (`workflow_*`, apps-tools.ts),
+ * plus the tools that look at runs, start one, and switch a workflow on.
+ */
+const WORKFLOW_MODE_TOOL_NAMES: string[] = [
+  "workflows_status",
+  "workflows_run",
+  "workflows_triggers",
+  "workflow_bash",
+  "workflow_read_file",
+  "workflow_write_file",
+  "workflow_edit_file",
+  "workflow_glob",
+  "workflow_grep",
+  "workflow_status",
+  "workflow_commit",
+  "workflow_merge_to_main",
+  // Discovery: look at the data before writing a query into a step.
+  "list_connections",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
+  "sql_execute_query",
+  "check_query_status",
+  "cancel_query",
+];
+
 const EXPLORE_MODE_TOOL_NAMES: string[] = [
   "list_connections",
   "list_databases",
   "list_tables",
   "inspect_table",
   "search_consoles",
-  "search_dashboards",
   "read_console",
   "list_open_consoles",
-  "list_open_dashboards",
-  "get_dashboard_state",
   "capture_screenshot",
 ];
 
@@ -291,19 +272,6 @@ export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
       "Discover the relevant connection and tables",
       "Draft the query in a console",
       "Run the query and verify the results",
-    ],
-  },
-  dashboard: {
-    id: "dashboard",
-    name: "Dashboard",
-    routingPrompt:
-      "Create and edit dashboards, widgets, data sources, filters, and charts.",
-    systemPrompt: DASHBOARD_MODE_SYSTEM_PROMPT,
-    toolNames: DASHBOARD_MODE_TOOL_NAMES,
-    trajectories: [
-      "Locate or create the target dashboard",
-      "Add or update the data source",
-      "Add or modify widgets and verify they render",
     ],
   },
   flow: {
@@ -346,6 +314,19 @@ export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
       "Verify with dbt_parse, dbt_compile_model, then dbt_run_model on dev",
     ],
   },
+  workflow: {
+    id: "workflow",
+    name: "Workflow",
+    routingPrompt:
+      "Write, test and deploy workflows: scheduled or multi-step jobs as TypeScript files in the workspace repo, run by Hatchet.",
+    systemPrompt: WORKFLOW_MODE_SYSTEM_PROMPT,
+    toolNames: WORKFLOW_MODE_TOOL_NAMES,
+    trajectories: [
+      "Write the workflow's folder, then run it in the sandbox and read the steps",
+      "Fix until the sandbox run succeeds, then commit to main",
+      "Ask before switching its schedule and webhook on",
+    ],
+  },
   notebook: {
     id: "notebook",
     name: "Notebook",
@@ -363,7 +344,7 @@ export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
     id: "explore",
     name: "Explore",
     routingPrompt:
-      "Read-only investigation across connections, consoles, dashboards, and memory.",
+      "Read-only investigation across connections, consoles, and memory.",
     systemPrompt: EXPLORE_MODE_SYSTEM_PROMPT,
     toolNames: EXPLORE_MODE_TOOL_NAMES,
     readOnly: true,
@@ -409,7 +390,6 @@ export function defaultExpertiseMode(
   tabKind?: string,
 ): ExpertiseModeId {
   const view = context.activeView;
-  if (view === "dashboard" || tabKind === "dashboard") return "dashboard";
   if (view === "flow-editor" || tabKind === "flow-editor") return "flow";
   if (view === "app" || tabKind === "app") return "app";
   if (tabKind === "notebook") return "notebook";

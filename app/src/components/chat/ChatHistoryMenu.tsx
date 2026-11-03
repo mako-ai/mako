@@ -201,7 +201,12 @@ export function ChatHistoryMenu({
 
       {sessions.length === 0 && (
         <MenuItem disabled>
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             No chat history yet
           </Typography>
         </MenuItem>
@@ -209,7 +214,12 @@ export function ChatHistoryMenu({
 
       {sessions.length > 0 && !hasResults && (
         <MenuItem disabled>
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             No chats match “{query.trim()}”
           </Typography>
         </MenuItem>

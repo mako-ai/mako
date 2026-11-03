@@ -144,7 +144,12 @@ export default function AppFileEditor({
           )}
           <Box sx={{ flex: 1 }} />
           {matResult && (
-            <Typography variant="caption" color="success.main">
+            <Typography
+              variant="caption"
+              sx={{
+                color: "success.main",
+              }}
+            >
               {matResult}
             </Typography>
           )}
@@ -178,7 +183,12 @@ export default function AppFileEditor({
           />
         ) : (
           <Box sx={{ p: 2 }}>
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Loading {path}...
             </Typography>
           </Box>

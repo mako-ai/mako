@@ -206,7 +206,12 @@ export default function AppHistoryPopover({
               >
                 {publishedSha.slice(0, 7)}
               </Typography>
-              <Typography variant="caption" color="text.secondary">
+              <Typography
+                variant="caption"
+                sx={{
+                  color: "text.secondary",
+                }}
+              >
                 — published from a repo-wide commit that did not change this
                 app&apos;s files
               </Typography>
@@ -215,8 +220,11 @@ export default function AppHistoryPopover({
           {history !== undefined && commits.length === 0 && (
             <Typography
               variant="body2"
-              color="text.secondary"
-              sx={{ px: 2, py: 2 }}
+              sx={{
+                color: "text.secondary",
+                px: 2,
+                py: 2,
+              }}
             >
               No commits yet.
             </Typography>

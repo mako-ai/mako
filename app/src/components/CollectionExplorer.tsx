@@ -146,7 +146,12 @@ const CollectionExplorer: React.FC<CollectionExplorerProps> = ({
             }}
           >
             <Typography variant="h6">Collections</Typography>
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               {collections.length} collection
               {collections.length !== 1 ? "s" : ""} found
             </Typography>

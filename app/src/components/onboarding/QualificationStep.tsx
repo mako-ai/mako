@@ -260,8 +260,10 @@ export function QualificationStep({
       )}
       <Typography
         variant="body1"
-        fontWeight={selected ? 600 : 400}
         color={selected ? "primary.main" : "text.primary"}
+        sx={{
+          fontWeight: selected ? 600 : 400,
+        }}
       >
         {label}
       </Typography>
@@ -299,7 +301,7 @@ export function QualificationStep({
         >
           <CheckCircleIcon sx={{ color: "primary.main", fontSize: 22 }} />
           <input
-            ref={otherInputRef as React.RefObject<HTMLInputElement>}
+            ref={otherInputRef as React.RefObject<HTMLInputElement | null>}
             type="text"
             placeholder={placeholder}
             value={value}
@@ -350,7 +352,12 @@ export function QualificationStep({
         <RadioButtonUncheckedIcon
           sx={{ color: "action.disabled", fontSize: 22 }}
         />
-        <Typography variant="body1" color="text.primary">
+        <Typography
+          variant="body1"
+          sx={{
+            color: "text.primary",
+          }}
+        >
           Other
         </Typography>
       </Paper>
@@ -484,10 +491,22 @@ export function QualificationStep({
       <Fade in key={questionIndex} timeout={200}>
         <Box>
           {/* Question header */}
-          <Typography variant="h4" fontWeight={600} gutterBottom>
+          <Typography
+            variant="h4"
+            gutterBottom
+            sx={{
+              fontWeight: 600,
+            }}
+          >
             {getQuestionTitle()}
           </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+              mb: 3,
+            }}
+          >
             {getQuestionSubtitle()}
           </Typography>
 

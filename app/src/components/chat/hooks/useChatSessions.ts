@@ -56,7 +56,7 @@ export function useChatSessions({ workspaceId }: UseChatSessionsArgs): {
 
   // Ref-based so useChat's onFinish (declared before this hook's consumers
   // re-render) always reaches the current workspace.
-  const fetchSessionsRef = useRef<() => Promise<void>>();
+  const fetchSessionsRef = useRef<() => Promise<void>>(undefined);
   fetchSessionsRef.current = async () => {
     if (!workspaceId) return;
     try {

@@ -105,9 +105,11 @@ const CreateCollectionDialog: React.FC<CreateCollectionDialogProps> = ({
       onClose={handleClose}
       maxWidth="sm"
       fullWidth
-      PaperProps={{
-        sx: {
-          minHeight: "400px",
+      slotProps={{
+        paper: {
+          sx: {
+            minHeight: "400px",
+          },
         },
       }}
     >
@@ -178,8 +180,10 @@ const CreateCollectionDialog: React.FC<CreateCollectionDialogProps> = ({
                 <>
                   <Typography
                     variant="body2"
-                    color="text.secondary"
-                    sx={{ mb: 1 }}
+                    sx={{
+                      color: "text.secondary",
+                      mb: 1,
+                    }}
                   >
                     Capped collections are fixed-size collections that maintain
                     insertion order and automatically remove the oldest
@@ -194,7 +198,9 @@ const CreateCollectionDialog: React.FC<CreateCollectionDialogProps> = ({
                     fullWidth
                     disabled={isCreating}
                     helperText="Maximum size of the collection in bytes"
-                    inputProps={{ min: 1 }}
+                    slotProps={{
+                      htmlInput: { min: 1 },
+                    }}
                   />
 
                   <TextField
@@ -207,7 +213,9 @@ const CreateCollectionDialog: React.FC<CreateCollectionDialogProps> = ({
                     fullWidth
                     disabled={isCreating}
                     helperText="Maximum number of documents in the collection"
-                    inputProps={{ min: 1 }}
+                    slotProps={{
+                      htmlInput: { min: 1 },
+                    }}
                   />
                 </>
               )}

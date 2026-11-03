@@ -14,6 +14,7 @@ import {
 } from "../database/workspace-schema";
 import { LlmUsage } from "../database/schema";
 import {
+  STRIPE_BILLING_API_VERSION,
   getStripeSecretKey,
   getStripeProPriceId,
   getStripeOveragePriceId,
@@ -30,7 +31,9 @@ let _stripe: Stripe | null = null;
 
 function getStripe(): Stripe {
   if (!_stripe) {
-    _stripe = new Stripe(getStripeSecretKey());
+    _stripe = new Stripe(getStripeSecretKey(), {
+      apiVersion: STRIPE_BILLING_API_VERSION,
+    });
   }
   return _stripe;
 }
@@ -94,7 +97,7 @@ export async function getOrCreateStripeCustomer(
       ],
     },
     { $set: { "billing.stripeCustomerId": customerId } },
-    { new: true },
+    { returnDocument: "after" },
   );
 
   if (!updated) {

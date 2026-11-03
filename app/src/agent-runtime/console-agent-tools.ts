@@ -1,4 +1,5 @@
 import { useConsoleStore } from "../store/consoleStore";
+import { getAllTemplates, getTemplate } from "../lib/chart-templates";
 import {
   CONSOLE_EXECUTOR_TOOL_NAMES,
   type AgentToolName,
@@ -65,6 +66,7 @@ function isConsoleOrChartClientTool(toolName: string): boolean {
  * (realtimeStore). What remains in the browser:
  *   - list_open_consoles: which tabs are open is a browser question
  *   - modify_chart_spec: renders into the active results panel
+ *   - get_chart_template: the template registry ships with the client
  */
 export async function executeConsoleAgentTool({
   toolCall,
@@ -108,10 +110,34 @@ export async function executeConsoleAgentTool({
     return true;
   }
 
+  if (toolName === "get_chart_template") {
+    const templateId = input.templateId;
+    if (typeof templateId !== "string") {
+      // No templateId = list mode.
+      emitToolOutput(addToolOutput, toolName, toolCallId, {
+        success: true,
+        templates: getAllTemplates(),
+      });
+      return true;
+    }
+    const template = getTemplate(templateId);
+    emitToolOutput(
+      addToolOutput,
+      toolName,
+      toolCallId,
+      template
+        ? { success: true, template }
+        : {
+            success: false,
+            error: `Template "${templateId}" not found. Call get_chart_template without templateId to see available IDs.`,
+          },
+    );
+    return true;
+  }
+
   if (toolName === "modify_chart_spec") {
     const vegaLiteSpec = input.vegaLiteSpec as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     if (!vegaLiteSpec) {
       emitToolOutput(addToolOutput, toolName, toolCallId, {
         success: false,
@@ -120,9 +146,8 @@ export async function executeConsoleAgentTool({
       return true;
     }
 
-    const { MakoChartSpec: MakoChartSpecSchema } = await import(
-      "../lib/chart-spec"
-    );
+    const { MakoChartSpec: MakoChartSpecSchema } =
+      await import("../lib/chart-spec");
     const parsed = MakoChartSpecSchema.safeParse(vegaLiteSpec);
     if (!parsed.success) {
       const issues = parsed.error.issues

@@ -43,7 +43,6 @@ import {
   ChevronRight as ChevronRightIcon,
   GitBranch as BranchIcon,
   GitMerge as MergeIcon,
-  Github as GitHubIcon,
   Minus as MinusIcon,
   Plus as PlusIcon,
   RefreshCw as RefreshIcon,
@@ -52,6 +51,7 @@ import {
   Copy as CopyIcon,
   FileDiff as DiffIcon,
 } from "lucide-react";
+import GitHubIcon from "./icons/GithubIcon";
 import { useWorkspace } from "../contexts/workspace-context";
 import {
   appRootOf,
@@ -582,7 +582,9 @@ export default function SourceControlExplorer() {
               </ListItemIcon>
               <ListItemText
                 primary={b.name}
-                primaryTypographyProps={{ fontSize: 13 }}
+                slotProps={{
+                  primary: { sx: { fontSize: 13 } },
+                }}
               />
             </MenuItem>
           ))}
@@ -603,8 +605,10 @@ export default function SourceControlExplorer() {
               <ListItemText
                 primary={`Merge "${branch}" into main`}
                 secondary={`${currentEntry?.aheadOfMain} commit${currentEntry?.aheadOfMain === 1 ? "" : "s"} ahead`}
-                primaryTypographyProps={{ fontSize: 13 }}
-                secondaryTypographyProps={{ fontSize: 11 }}
+                slotProps={{
+                  primary: { sx: { fontSize: 13 } },
+                  secondary: { sx: { fontSize: 11 } },
+                }}
               />
             </MenuItem>
           )}
@@ -621,7 +625,9 @@ export default function SourceControlExplorer() {
             </ListItemIcon>
             <ListItemText
               primary="Create new branch…"
-              primaryTypographyProps={{ fontSize: 13 }}
+              slotProps={{
+                primary: { sx: { fontSize: 13 } },
+              }}
             />
           </MenuItem>
         </Menu>
@@ -699,7 +705,13 @@ export default function SourceControlExplorer() {
         )}
 
         {hasRepo === false ? (
-          <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+              p: 2,
+            }}
+          >
             The workspace repository appears with its first app, console or
             skill — this panel takes over from there.
           </Typography>
@@ -852,8 +864,12 @@ export default function SourceControlExplorer() {
               {unstaged.length === 0 ? (
                 <Typography
                   variant="caption"
-                  color="text.secondary"
-                  sx={{ px: 2, pb: 1, display: "block" }}
+                  sx={{
+                    color: "text.secondary",
+                    px: 2,
+                    pb: 1,
+                    display: "block",
+                  }}
                 >
                   {staged.length > 0 ? "Everything is staged." : "No changes."}
                 </Typography>
@@ -914,8 +930,11 @@ export default function SourceControlExplorer() {
                 {commits.length === 0 && (
                   <Typography
                     variant="caption"
-                    color="text.secondary"
-                    sx={{ px: 2, display: "block" }}
+                    sx={{
+                      color: "text.secondary",
+                      px: 2,
+                      display: "block",
+                    }}
                   >
                     No commits yet.
                   </Typography>

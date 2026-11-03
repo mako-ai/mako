@@ -3,7 +3,7 @@ import { SearchX, Lock, AlertTriangle } from "lucide-react";
 import type { LoadError } from "../api";
 
 /**
- * Shared load states for any entity opened in a tab (app, dashboard, console,
+ * Shared load states for any entity opened in a tab (app, console, notebook,
  * flow, dbt project, file, data source, ...). Every tab view should render one
  * of these instead of a bespoke placeholder so a 404/403/transport failure is
  * always explicit and never an infinite "Loading…".
@@ -13,7 +13,7 @@ import type { LoadError } from "../api";
  *  - `EntityLoadingState`   — the standardized loading placeholder.
  *
  * For a sub-entity that vanished from an already-loaded parent (file removed
- * from an app, data source removed from a dashboard, ...), synthesize the 404
+ * from an app, job removed from a dbt project, ...), synthesize the 404
  * with `missingEntityError` from lib/entity-labels.
  */
 export default function EntityLoadErrorState({
@@ -23,7 +23,7 @@ export default function EntityLoadErrorState({
   onRetry,
 }: {
   error: LoadError;
-  /** Lowercase noun for the copy, e.g. "app", "dashboard", "file". */
+  /** Lowercase noun for the copy, e.g. "app", "console", "file". */
   entityLabel: string;
   /** Overrides the default body copy (title stays status-derived). */
   detail?: string;
@@ -61,7 +61,12 @@ export default function EntityLoadErrorState({
       }}
     >
       <Icon size={28} strokeWidth={1.5} />
-      <Typography variant="subtitle1" color="text.primary">
+      <Typography
+        variant="subtitle1"
+        sx={{
+          color: "text.primary",
+        }}
+      >
         {title}
       </Typography>
       <Typography variant="body2" sx={{ maxWidth: 420 }}>

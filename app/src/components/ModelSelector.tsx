@@ -180,7 +180,12 @@ export const ModelSelector: React.FC = () => {
     return (
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
         <CircularProgress size={14} />
-        <Typography variant="caption" color="text.secondary">
+        <Typography
+          variant="caption"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           Loading...
         </Typography>
       </Box>
@@ -192,8 +197,10 @@ export const ModelSelector: React.FC = () => {
       <Tooltip title={error || "No models available"}>
         <Typography
           variant="caption"
-          color="text.secondary"
-          sx={{ cursor: "default" }}
+          sx={{
+            color: "text.secondary",
+            cursor: "default",
+          }}
         >
           No models
         </Typography>
@@ -332,9 +339,11 @@ export const ModelSelector: React.FC = () => {
                       model.description && (
                         <Typography
                           variant="caption"
-                          color="text.secondary"
-                          sx={{ display: "block" }}
                           noWrap
+                          sx={{
+                            color: "text.secondary",
+                            display: "block",
+                          }}
                         >
                           {model.description}
                         </Typography>

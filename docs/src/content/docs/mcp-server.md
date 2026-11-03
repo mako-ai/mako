@@ -9,11 +9,11 @@ Where [MCP Connectors](/mcp-connectors/) let Mako's agent use _other_ systems' t
 
 Want Claude Code or Codex **inside** the Mako UI instead? See [Coding Agents (ACP)](/coding-agents-acp/).
 
-**Data access over MCP is read-only by default, everywhere.** A client may request `warehouse:write` during OAuth sign-in to run governed dbt models and jobs; the consent screen shows that permission as its own option — ticked because the client asked for it, and yours to untick — and warns that it can modify warehouse relations. A client that does not request it never gets the option. Raw SQL writes remain a narrower, double-gated API-key opt-in requiring **both** a key with `query:write` and a connection explicitly marked _Allow agent writes_. Neither write permission is granted by default.
+**Connecting a client gives it everything your workspace role allows** — there are no per-permission opt-ins on the sign-in page. That includes running governed dbt models and jobs (which can create, replace or modify warehouse relations) and creating source connections; a viewer stays read-only because those tools require at least the member role, checked live on every call. Raw SQL stays read-only: SQL writes remain a narrower, double-gated API-key opt-in requiring **both** a key with `query:write` and a connection explicitly marked _Allow agent writes_. Inviting workspace members is the other explicit API-key opt-in (`members:write`).
 
 ## Connect by signing in (no API key)
 
-Give your client one URL — `https://your-mako-host/api/mcp` — and it discovers the OAuth sign-in flow itself. Your browser opens once: sign in with your Mako account, pick a workspace, and approve the requested access. Normal connections are read-only against warehouse data; clients requesting dbt execution show a separate `warehouse:write` option, pre-ticked because they asked for it; untick it to connect read-only.
+Give your client one URL — `https://your-mako-host/api/mcp` — and it discovers the OAuth sign-in flow itself. Your browser opens once: sign in with your Mako account, pick a workspace, and approve. The page lists what the connection can do; there is nothing to tick.
 
 Inside the app, everything lives at **Settings → Connect Agents**: per-client setup with one-click **Add to Claude** / **Add to Cursor** buttons, plus a **Connected agents** list showing every agent with access (who connected it, when it was last used) with one-click disconnect.
 
@@ -31,7 +31,7 @@ Then type `/mcp` inside a session to trigger the sign-in.
 https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=mako&connectorUrl=<percent-encoded MCP URL>
 ```
 
-**ChatGPT** — Mako implements ChatGPT's connector contract (top-level `search` / `fetch` tools), so it can be added as a ChatGPT connector and used in regular chat and deep research with citations back into your workspace. In ChatGPT (Plus/Pro/Business/Enterprise): **Settings → Connectors → Create** — if you don't see the option, enable **Developer mode** under **Settings → Connectors → Advanced settings** first. Name it `mako`, paste `https://your-mako-host/api/mcp`, choose **OAuth** authentication, and sign in when prompted (same consent flow: pick a workspace, read-only). In chat and deep research ChatGPT uses `search` / `fetch` to find and cite saved consoles, dashboards, apps, and skills; with developer mode on, the full Mako tool surface (SQL exploration, the apps loop, dbt) is available too.
+**ChatGPT** — Mako implements ChatGPT's connector contract (top-level `search` / `fetch` tools), so it can be added as a ChatGPT connector and used in regular chat and deep research with citations back into your workspace. In ChatGPT (Plus/Pro/Business/Enterprise): **Settings → Connectors → Create** — if you don't see the option, enable **Developer mode** under **Settings → Connectors → Advanced settings** first. Name it `mako`, paste `https://your-mako-host/api/mcp`, choose **OAuth** authentication, and sign in when prompted (same consent flow: pick a workspace, read-only). In chat and deep research ChatGPT uses `search` / `fetch` to find and cite saved consoles, apps, and skills; with developer mode on, the full Mako tool surface (SQL exploration, the apps loop, dbt) is available too.
 
 **Cursor** — add to `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global); Cursor prompts you to sign in on first use. **Settings → Connect Agents** also has a one-click **Add to Cursor** button.
 
@@ -57,7 +57,7 @@ long periods of inactivity. Access tokens last 8 hours and clients renew them
 automatically with a rotating refresh token that has no expiry. You can revoke
 a connection from your workspace settings.
 
-Under the hood this is standard OAuth 2.1 for MCP: RFC 9728 protected-resource discovery, dynamic client registration, PKCE, and rotating refresh tokens. Grants default to `mcp query:read`; `warehouse:write` is the only OAuth write scope and must be requested and approved explicitly.
+Under the hood this is standard OAuth 2.1 for MCP: RFC 9728 protected-resource discovery, dynamic client registration, PKCE, and rotating refresh tokens. Every grant carries `mcp query:read warehouse:write connections:write workflows:run`, whatever the client requests; workspace roles decide what a viewer can do.
 
 ## Headless / CI: API keys
 
@@ -88,24 +88,24 @@ Keys created before scopes existed keep working for the REST API but cannot conn
 
 ## What your agent can do
 
-Try: _"Using the mako tools, explore my data and build a dashboard app showing revenue by month, then give me a preview link."_
+Try: _"Using the mako tools, explore my data and build an app showing revenue by month, then give me a preview link."_
 
 The server ships usage instructions with the handshake, so agents discover this workflow on their own:
 
-1. **Discover** — `list_connections` lists every configured credential, of two kinds: `database` connections (BigQuery, Postgres, MongoDB, …) that `list_databases` / `list_tables` / `inspect_table` describe (schemas + sample rows; they dispatch on engine) and SQL queries, and `source` connections (a Stripe key, a Vercel key, …) that flows read from and `probe_connection` reads live. Every row names its `kind` and its `connector` — the code it was configured with. `search_consoles` / `search_dashboards` find existing workspace work. Skills: `list_skills` (index), `get_relevant_skills` (ranked bodies for your task — same retrieval as the in-product agent), then `load_skill` / `read_skill_resource` as needed.
-2. **Validate queries** — `sql_execute_query` (read-only, short exploration timeout). Slow warehouse? `create_console` → `run_console` → `check_query_status` for long-running queries.
-3. **Build apps** — `app_list_apps` / `app_create_app` to discover or scaffold (`apps/<slug>/`, a real Vite project), then `app_write_file` / `app_edit_file` / `app_bash` for ordinary file and shell work, and `app_materialize` to build a binding's parquet artifact (bindings are `bindings/<name>.sql` files with the validated query).
+1. **Discover** — `list_connections` lists every configured credential, of two kinds: `database` connections (BigQuery, Postgres, MongoDB, …) that `list_databases` / `list_tables` / `inspect_table` describe (schemas + sample rows; they dispatch on engine) and SQL queries, and `source` connections (a Stripe key, a Vercel key, …) that flows read from and `probe_connection` reads live. Every row names its `kind` and its `connector` — the code it was configured with. `search_consoles` finds existing workspace work. Skills: `list_skills` (index), `get_relevant_skills` (ranked bodies for your task — same retrieval as the in-product agent), then `load_skill` / `read_skill_resource` as needed.
+2. **Validate queries** — `sql_execute_query` (read-only, short exploration timeout). Results come back as one compact markdown table (column names once, long cells shortened, rows added until a size budget runs out — 50 rows by default; pass `maxRows` up to 200 for more, but prefer aggregating in SQL), with a note saying what was left out. Slow warehouse? `create_console` → `run_console` → `check_query_status` for long-running queries.
+3. **Build apps** — `app_list_apps` / `app_create_app` to discover or scaffold (`apps/<slug>/`, a real Vite project; `app_create_app` requires a one-line `description`), then `app_write_file` / `app_edit_file` / `app_bash` for ordinary file and shell work, and `app_materialize` to build a binding's parquet artifact (bindings are `bindings/<name>.sql` files with the validated query).
 4. **Verify with real eyes** — `app_open_app` starts the dev server (and focuses the app in the user's UI), `app_dev_log` returns the boot/vite log plus browser-console output, and `app_browse` drives a headless browser against the running dev server: click, navigate, and screenshot what a user would actually see.
 5. **Publish** — `app_commit` (durability, `git push` semantics) and `app_merge_to_main` (`main` is what publishes buildable state).
-6. **Dashboards** — `search_dashboards` finds existing dashboards and `update_data_source_query` edits them in place: rewrite a source query (replace/patch/append), toggle live vs. materialized (`parquet`), and set the dashboard-level cron refresh schedule (`materializationSchedule`). Server writes bump the dashboard version, push a `dashboard.updated` realtime poke to open tabs, and queue a Parquet rebuild when the definition changes (schedule-only changes don't). Widget/layout editing stays in-product — those tools are client-only.
-7. **dbt** — `dbt_create_project` and `read_dbt_project_tree` manage projects; `create_dbt_file` / `read_dbt_file` / `edit_dbt_file` / `modify_dbt_file` / `delete_dbt_file` provide model and config CRUD; `dbt_parse` / `dbt_compile_model` / `dbt_show` validate asynchronously (start a run, poll `dbt_get_run`); and `dbt_create_job` / `dbt_update_job` / `dbt_delete_job` manage jobs and schedules. Project and job mutations require an admin/owner role; file mutations and runs require at least member. Warehouse-mutating operations (`dbt_ensure_dev_environment`, `dbt_run_model`, `dbt_run_job`, `dbt_cancel_run`, and job create/update/delete — a scheduled job is executed against the warehouse) additionally require the explicit `warehouse:write` OAuth/API-key scope.
-8. **Connectors and connections** — a _connector_ is code (`stripe`, `ws:vercel-ai-gateway`); a _connection_ is a credential configured with one. `list_connectors` is the catalog of code available to the workspace, with the connections configured with each; `inspect_connector` describes a type (entities, incremental support, config field names — never values); `inspect_connection` describes one configured connection of either kind; and `probe_connection` runs a source connection _live_ against the platform behind it: the credential check plus one bounded page of an entity (default 20 records, max 200; `fields` to keep only some columns, `since` where the connector supports it), written nowhere. That is how an agent verifies a freshly configured key, sees the real shape of an entity before authoring a `flows/<slug>.yml`, or answers an exploratory question from a platform that is not in the warehouse yet. Credential values never appear in a result; the probe scrubs them even out of vendor error messages. `probe_connection` reads external data, so like `sql_execute_query` it needs the `query:read` scope.
+6. **dbt** — `dbt_create_project` and `read_dbt_project_tree` manage projects; `create_dbt_file` / `read_dbt_file` / `edit_dbt_file` / `modify_dbt_file` / `delete_dbt_file` provide model and config CRUD; `dbt_parse` / `dbt_compile_model` / `dbt_show` validate asynchronously (start a run, poll `dbt_get_run`); and `dbt_create_job` / `dbt_update_job` / `dbt_delete_job` manage jobs and schedules. Project and job mutations require an admin/owner role; file mutations and runs require at least member.
+7. **Connectors and connections** — a _connector_ is code (`stripe`, `ws:vercel-ai-gateway`); a _connection_ is a credential configured with one. `list_connectors` is the catalog of code available to the workspace, with the connections configured with each; `inspect_connector` describes a type (entities, incremental support, config field names — never values); `inspect_connection` describes one configured connection of either kind; and `probe_connection` runs a source connection _live_ against the platform behind it: the credential check plus one bounded page of an entity (default 20 records, max 200; `fields` to keep only some columns, `since` where the connector supports it), written nowhere. That is how an agent verifies a freshly configured key, sees the real shape of an entity before authoring a `flows/<slug>.yml`, or answers an exploratory question from a platform that is not in the warehouse yet. Credential values never appear in a result; the probe scrubs them even out of vendor error messages. `probe_connection` reads external data, so like `sql_execute_query` it needs the `query:read` scope. `create_connection` is the one write in this group: it stores a new _source_ connection for a connector (config keyed by `inspect_connector`'s field names, secrets encrypted by the connector's schema), runs its credential check, and returns the id — a failed check keeps nothing. It requires at least the member role and cannot read, change or delete existing connections.
+8. **Syncs** — `flow_list` / `flow_read` / `flow_status` read the workspace's syncs (flows): the `flows/<slug>.yml` shape, triggers (poll, webhook, resync), per-entity CDC state and the last runs. `flow_backfill` starts a backfill and `flow_update` changes the three trigger controls (and commits the flow file); both need an owner/admin and the `warehouse:write` grant. A sync can be named by id, slug, or any unique short name. The CLI mirrors them as `mako sync ls | status | backfill | set`. See [Data Sync & Flows](/data-sync/).
 
 If an expected tool is absent, call `get_mcp_capabilities`. It reports the connection's effective scopes and grants, every available tool, and hidden grant-gated tools with the exact scope needed to enable them.
 
 Optional helpers: `web_search` / `fetch_url` for public docs (annotated `openWorldHint`).
 
-For ChatGPT compatibility the server also exposes a top-level `search` / `fetch` pair — workspace-wide search over saved consoles, dashboards, apps, and skills, plus document retrieval by id (`console:…`, `dashboard:…`, `app:…`, `skill:…`). ChatGPT requires exactly these two tools to accept a connector for chat and deep research; other clients can use them as a quick workspace search.
+For ChatGPT compatibility the server also exposes a top-level `search` / `fetch` pair — workspace-wide search over saved consoles, apps, and skills, plus document retrieval by id (`console:…`, `app:…`, `skill:…`). ChatGPT requires exactly these two tools to accept a connector for chat and deep research; other clients can use them as a quick workspace search.
 
 The MCP tool surface is a curated subset of the in-product agent tools. Classification lives in `api/src/mcp/bridge-policy.ts` — every agent tool is either bridged, MCP-only, or explicitly excluded (client-only UI, security, in-product UX, or deferred). Adding an agent tool without classifying it fails the MCP inventory test.
 
@@ -114,13 +114,13 @@ Read-only tools are annotated per the MCP spec (`readOnlyHint`), so well-behaved
 ## Security model
 
 - **SQL is read-only unless double-gated otherwise.** By default SQL must be a single `SELECT`/`WITH` statement; enforcement also happens _inside the database_ where supported (PostgreSQL/Cloud SQL/Redshift read-only transactions, MySQL `START TRANSACTION READ ONLY`, ClickHouse `readonly=2`). Arbitrary MongoDB JavaScript is not exposed at all — Mongo is discovery/inspection only. SQL writes require an API key with the `query:write` scope **and** a connection a workspace admin marked `allowAgentWrites` — the key scope alone stays read-only against every other connection, the connection flag alone does nothing for read-scoped keys, and console runs, app data bindings, and materializations stay read-only regardless.
-- **Warehouse mutations are opt-in and governed.** The only write path to a warehouse over MCP is dbt execution, which builds committed, reviewable model definitions — never ad-hoc SQL. These tools are hidden unless the OAuth client requests `warehouse:write` and the user checks its separate consent option, or a workspace admin creates an API key with that scope. It is never granted by default.
+- **Warehouse mutations are governed.** The write paths to a warehouse over MCP are dbt execution, which builds committed, reviewable model definitions, and sync backfills (`flow_backfill`), which re-read a source into the sync's configured destination — never ad-hoc SQL. dbt execution needs at least the member role, `flow_backfill` an owner or admin; viewers never see these tools.
+- **Creating connections stays narrow.** `create_connection` needs at least the member role, refuses connectors that declare no config schema (their secrets could not be encrypted) and unknown config keys, never returns or logs a config value, keeps nothing whose credential check fails, and cannot touch existing connections.
 - **Non-SQL engines fail closed** (MongoDB shell code, Cloudflare KV): the lexical analyzer cannot validate them, so read-only execution refuses them outright. SQL engines without a session-level read-only mode (BigQuery, MSSQL, Cloudflare D1) rely on the validated single-`SELECT`/`WITH` statement instead.
 - **MCP credentials are MCP-only.** OAuth access tokens and scoped keys are rejected on every other API endpoint, so an MCP credential can never be replayed against REST mutation routes.
-- **OAuth grants are least-privilege by construction**: public clients use mandatory PKCE, single-use authorization codes, rotating refresh tokens hashed at rest, and a binding to the one workspace chosen at consent. Grants default to read-only warehouse access; `warehouse:write` requires an explicit request and a conspicuous consent warning.
+- **OAuth grants are least-privilege by construction**: public clients use mandatory PKCE, single-use authorization codes, rotating refresh tokens hashed at rest, and a binding to the one workspace chosen at consent. A grant gives everything the person's role allows; there are no per-permission consent options.
 - **Key management requires a browser session** — API keys cannot create or delete other API keys.
 - App data bindings and materializations are always read-only.
-- **Dashboard writes edit definitions, never data.** `update_data_source_query` changes the dashboard document (query text, live/parquet toggle, refresh schedule) under the same query-access check as app bindings — an agent can point a source at a different saved query, but the query itself still executes read-only. Widget and layout mutations stay client-only and are not bridged.
 
 ## Headless & CI usage
 
@@ -136,14 +136,14 @@ To keep agent context lean, agents can pass `includeScreenshot: false` to `app_b
 
 Every workspace repo carries a small template Mako keeps current: `AGENTS.md`
 (imported by `CLAUDE.md`) telling your agent what the repo is and how to work
-in it, `.mcp.json` wiring the `mako` MCP server, `.envrc` for direnv, and the
-vendored `@makoai/app-sdk`. The whole setup, no key to paste:
+in it, `.mcp.json` wiring the `mako` MCP server, and `.envrc` for direnv. Apps
+depend on the published `@makoai/app-sdk` from npm. The whole setup, no key to paste:
 
 ```bash
 git clone <your workspace repo> && cd <repo>
 claude                 # the mako MCP server prompts a browser sign-in
 npx @makoai/cli login    # same sign-in for the app dev server, kept in ~/.mako/credentials.json
-npx @makoai/cli dev <app>   # or: cd apps/<app> && npm install && npm run dev
+npx @makoai/cli dev <app>   # or: cd apps/<app> && pnpm install && pnpm dev
 ```
 
 The app renders with **real data**: the scaffold's `vite.config.ts` includes
@@ -174,8 +174,8 @@ on your checkout's `dbt/` folder, uncommitted edits included: the CLI sends
 the files that differ from where your branch forked from `main` along with the
 run request, nothing is committed or pushed, and the log streams to your
 terminal (Ctrl-C cancels the run; the exit code is dbt's). No warehouse
-credentials on your laptop. It needs the `warehouse:write` scope
-(`mako login --warehouse-write`, which asks for it; the consent screen shows it as its own option, pre-ticked and yours to untick): your dbt
+credentials on your laptop. Any `mako login` can run it (at least the member
+role in the workspace; there is no separate opt-in): your dbt
 code runs with the target environment's warehouse credentials, and macros,
 hooks and schema configs can write beyond your own schema — personal
 environments currently share the production connection, so this is not a
@@ -212,8 +212,8 @@ repository root (`ai.mako/mako`, streamable HTTP at `https://app.mako.ai/api/mcp
 The app is a folder in the workspace's git monorepo and the agent works like
 a developer in a checkout:
 
-1. `app_list_apps` / `app_create_app` — discover or scaffold (`apps/<slug>/`, a real Vite project).
-2. `app_read_file` / `app_write_file` / `app_edit_file` / `app_glob` / `app_grep` — ordinary file work; `app_bash` runs any shell command in the app's sandbox.
+1. `app_list_apps` / `search_apps` / `app_create_app` — discover, search (title, description, path, owner and the tables bindings read) or scaffold a real Vite project. New apps are personal by default and land in your `personalFolder` (`users/<handle>/apps/<slug>/`); sharing into `apps/` is a deliberate move (see [Apps](/apps/#personal-and-workspace-apps)).
+2. `app_read_file` / `app_write_file` / `app_edit_file` / `app_glob` / `app_grep` — ordinary file work; `app_bash` runs any shell command in the app's sandbox. Output is capped (same limits as the in-app agent): `app_read_file` takes `offset`/`limit` and returns at most 2000 lines or ~50k chars per call, `app_grep` returns at most 200 matches, and `app_bash` keeps the head and tail of long output, saving the full text to a sandbox file whose path is in the result.
 3. `app_materialize` — build a binding's parquet artifact (bindings are `bindings/<name>.sql` files with front matter, not documents).
 4. **Verify with real eyes** — `app_open_app` starts the dev server (and focuses the app in the user's UI), `app_dev_log` returns the boot/vite log plus browser-console output, and `app_browse` drives a headless browser against the running dev server: click, navigate, and screenshot what a user would actually see.
 5. `app_status` / `app_commit` / `app_merge_to_main` — commits are durability (`git push` semantics); merging to `main` is what publishes buildable state.

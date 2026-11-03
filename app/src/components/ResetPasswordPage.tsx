@@ -1,5 +1,5 @@
 import { useState, FormEvent, useEffect } from "react";
-import { useSearchParams, useNavigate } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router";
 import {
   Box,
   TextField,
@@ -238,7 +238,12 @@ export function ResetPasswordPage() {
       )}
 
       <Box sx={{ textAlign: "center", mt: 4 }}>
-        <Typography variant="body2" color="text.secondary">
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           <Link
             component="button"
             variant="body2"

@@ -1,4 +1,4 @@
-import { Heading, Section, Text } from "@react-email/components";
+import { Heading, Section, Text } from "react-email";
 import type { FC } from "react";
 import type { NotificationOutboundPayload } from "../services/flow-run-notification.types";
 import { MakoButton } from "./components/MakoButton";
@@ -17,7 +17,9 @@ function formatDuration(ms: number | undefined): string {
   if (ms === undefined || ms === null || Number.isNaN(ms)) return "—";
   if (ms < 1000) return `${ms} ms`;
   const s = ms / 1000;
-  return s < 60 ? `${s.toFixed(s < 10 ? 1 : 0)} s` : `${(s / 60).toFixed(1)} min`;
+  return s < 60
+    ? `${s.toFixed(s < 10 ? 1 : 0)} s`
+    : `${(s / 60).toFixed(1)} min`;
 }
 
 function formatTriggerLabel(trigger: NotificationOutboundPayload["trigger"]) {
@@ -47,12 +49,20 @@ const RunNotificationEmail: FC<RunNotificationEmailProps> = props => {
 
   return (
     <MakoLayout previewText={previewText} footerNote={footerNote}>
-      <Heading style={{ fontSize: "22px", margin: "0 0 16px", color: "#18181b" }}>
+      <Heading
+        style={{ fontSize: "22px", margin: "0 0 16px", color: "#18181b" }}
+      >
         Run {props.trigger === "failure" ? "failed" : "completed"}
       </Heading>
-      <Text style={{ fontSize: "15px", lineHeight: "22px", color: "#3f3f46", margin: "0 0 16px" }}>
-        Your {kind.toLowerCase()}{" "}
-        <strong>{props.resourceName}</strong>{" "}
+      <Text
+        style={{
+          fontSize: "15px",
+          lineHeight: "22px",
+          color: "#3f3f46",
+          margin: "0 0 16px",
+        }}
+      >
+        Your {kind.toLowerCase()} <strong>{props.resourceName}</strong>{" "}
         {props.trigger === "failure" ? "failed." : "finished successfully."}
       </Text>
       <Section
@@ -71,7 +81,8 @@ const RunNotificationEmail: FC<RunNotificationEmailProps> = props => {
               lineHeight: "20px",
               color: "#52525b",
               margin: "0 0 6px",
-              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+              fontFamily:
+                "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
             }}
           >
             {line}

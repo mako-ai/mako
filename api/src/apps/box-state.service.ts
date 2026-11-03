@@ -17,6 +17,7 @@
  * machine keeps saying so.
  */
 import { Redis } from "ioredis";
+import { BASE_REDIS_OPTIONS } from "../utils/redis";
 import { loggers } from "../logging";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { getSandboxProvider } from "./sandbox/provider";
@@ -142,6 +143,7 @@ function redisStore(url: string): StateStore {
   // client has queued the command and retried it (measured: 3–5s per read,
   // 12s for a git action, during an outage). No offline queue, one retry.
   const redis = new Redis(url, {
+    ...BASE_REDIS_OPTIONS,
     maxRetriesPerRequest: 1,
     enableOfflineQueue: false,
     connectTimeout: 2000,

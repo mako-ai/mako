@@ -35,3 +35,14 @@ export function formatBytes(bytes: number): string {
   if (bytes < GB) return `${(bytes / MB).toFixed(1)} MB`;
   return `${(bytes / GB).toFixed(1)} GB`;
 }
+
+/**
+ * An amount in US dollars: "$0.31", "$12.40", "<$0.01" for a cost too small
+ * to show in cents, "$0.00" for none. Missing or non-finite input renders as
+ * "—".
+ */
+export function formatUsd(usd?: number | null): string {
+  if (usd === undefined || usd === null || !Number.isFinite(usd)) return "—";
+  if (usd > 0 && usd < 0.01) return "<$0.01";
+  return `$${usd.toFixed(2)}`;
+}

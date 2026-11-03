@@ -1,6 +1,7 @@
+import { propagateAttributes } from "@langfuse/tracing";
 import { embed, embedMany } from "ai";
 import {
-  gatewayAttributionOptions,
+  attributionProviderOptions,
   getEmbeddingModel,
   type GatewayAttribution,
 } from "../agent-lib/ai-gateway";
@@ -34,57 +35,58 @@ export function getEmbeddingModelName(): string | null {
  */
 export type EmbeddingAttribution = Omit<GatewayAttribution, "invocationType">;
 
-// `Record<string, any>` for the same reason `buildProviderOptions` returns
-// it: the SDK's provider-options type is a JSON record, and the typed
-// gateway options object (optional fields, `undefined`) is not assignable.
-function embeddingProviderOptions(
-  attribution?: EmbeddingAttribution,
-): Record<string, any> {
-  return {
-    gateway: gatewayAttributionOptions({
-      ...attribution,
-      invocationType: "embedding",
-    }),
-  };
-}
-
 export async function embedText(
   text: string,
-  attribution?: EmbeddingAttribution,
+  options: {
+    attribution: EmbeddingAttribution;
+    abortSignal?: AbortSignal;
+    maxRetries?: number;
+  },
 ): Promise<number[] | null> {
   if (!isEmbeddingAvailable()) return null;
 
-  const { embedding } = await embed({
-    model: getEmbeddingModel(GATEWAY_EMBEDDING_MODEL_ID),
-    value: text,
-    providerOptions: embeddingProviderOptions(attribution),
-    experimental_telemetry: {
-      isEnabled: true,
-      functionId: "embed-text",
-      metadata: { model: EMBEDDING_MODEL_LABEL },
-    },
-  });
+  const { embedding } = await propagateAttributes(
+    // Metadata only: embeddings often run inside another trace (a chat turn).
+    { metadata: { model: EMBEDDING_MODEL_LABEL } },
+    () =>
+      embed({
+        model: getEmbeddingModel(GATEWAY_EMBEDDING_MODEL_ID),
+        value: text,
+        providerOptions: attributionProviderOptions({
+          ...options.attribution,
+          invocationType: "embedding",
+        }),
+        telemetry: { functionId: "embed-text" },
+        ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
+        ...(options.maxRetries !== undefined
+          ? { maxRetries: options.maxRetries }
+          : {}),
+      }),
+  );
   return embedding;
 }
 
 export async function embedTexts(
   texts: string[],
-  attribution?: EmbeddingAttribution,
+  attribution: EmbeddingAttribution,
 ): Promise<(number[] | null)[]> {
   if (!isEmbeddingAvailable() || texts.length === 0) {
     return texts.map(() => null);
   }
 
-  const { embeddings } = await embedMany({
-    model: getEmbeddingModel(GATEWAY_EMBEDDING_MODEL_ID),
-    values: texts,
-    providerOptions: embeddingProviderOptions(attribution),
-    experimental_telemetry: {
-      isEnabled: true,
-      functionId: "embed-texts",
-      metadata: { model: EMBEDDING_MODEL_LABEL, count: texts.length },
-    },
-  });
+  const { embeddings } = await propagateAttributes(
+    { metadata: { model: EMBEDDING_MODEL_LABEL, count: String(texts.length) } },
+    () =>
+      embedMany({
+        model: getEmbeddingModel(GATEWAY_EMBEDDING_MODEL_ID),
+        values: texts,
+        providerOptions: attributionProviderOptions({
+          ...attribution,
+          invocationType: "embedding",
+        }),
+        telemetry: { functionId: "embed-texts" },
+      }),
+  );
   return embeddings;
 }
 

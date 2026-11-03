@@ -262,6 +262,8 @@ async function probeThinkingMode(
         anthropic: { thinking: { type: "enabled", budgetTokens: 1024 } },
       },
       maxOutputTokens: 2048,
+      // AI SDK telemetry is opt-out: keep catalog probes out of Langfuse.
+      telemetry: { isEnabled: false },
     });
     return "manual";
   } catch (error) {

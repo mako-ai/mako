@@ -89,9 +89,8 @@ export const useSettingsStore = create<SettingsState>()(
               const current = get().selectedModelId;
               // Local ACP models (Claude Code / Codex on this machine) are
               // client-only and never appear in the gateway catalog — keep them.
-              const { isLocalAcpModelId } = await import(
-                "../lib/local-acp-models"
-              );
+              const { isLocalAcpModelId } =
+                await import("../lib/local-acp-models");
               const isAvailable =
                 models.some(model => model.id === current) ||
                 isLocalAcpModelId(current);
@@ -116,7 +115,7 @@ export const useSettingsStore = create<SettingsState>()(
                 get().fetchModels();
               }, delay);
             }
-          } catch (error) {
+          } catch {
             if (modelsRetryCount < MAX_MODELS_RETRIES) {
               const delay = MODELS_RETRY_DELAYS[modelsRetryCount] ?? 10_000;
               modelsRetryCount++;
@@ -153,7 +152,7 @@ export const useSettingsStore = create<SettingsState>()(
               await api.GET("/api/agent/gateway-models"),
             ) as GatewayModelsResponse;
             set({ gatewayModels: response.models || [] });
-          } catch (error) {
+          } catch {
             set({ gatewayModelsError: "Failed to load gateway models" });
           } finally {
             set({ gatewayModelsLoading: false });
@@ -178,7 +177,7 @@ export const useSettingsStore = create<SettingsState>()(
             }),
           ) as DisabledModelsResponse;
           set({ disabledModelIds: response.disabledModelIds || [] });
-        } catch (error) {
+        } catch {
           set({ disabledModelsError: "Failed to load disabled models" });
         } finally {
           set({ disabledModelsLoading: false });
@@ -197,7 +196,7 @@ export const useSettingsStore = create<SettingsState>()(
           );
           set({ disabledModelIds: [...disabledIds] });
           return true;
-        } catch (error) {
+        } catch {
           return false;
         }
       },

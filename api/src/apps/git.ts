@@ -8,21 +8,50 @@
  */
 import { execFile } from "node:child_process";
 
+/**
+ * Strip credentials from anything git-shaped before it can reach a log:
+ * `-c http.extraheader=Authorization: Basic <token>`, any other
+ * Authorization header, `https://user:token@host` URLs, and bare GitHub
+ * tokens. Needed because a git process killed without output (a timeout)
+ * fails with Node's own message, which is the full command line — the auth
+ * header included — and loggers serialize error messages and stacks.
+ */
+export function redactGitSecrets(text: string): string {
+  return text
+    .replace(
+      /(authorization:\s*)(basic|bearer|token)\s+[^\s'"]+/gi,
+      "$1$2 [REDACTED]",
+    )
+    .replace(/(https?:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1[REDACTED]@")
+    .replace(
+      /\b(gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{20,})/g,
+      "[REDACTED]",
+    );
+}
+
 export class GitError extends Error {
+  public readonly args: string[];
+  public readonly stderr: string;
+  /**
+   * git's stdout, which is where it puts several things you would look for
+   * in stderr — "CONFLICT (content): Merge conflict in ..." among them. An
+   * error carrying only stderr makes a merge conflict indistinguishable
+   * from any other merge failure.
+   */
+  public readonly stdout: string;
+
   constructor(
     message: string,
-    public readonly args: string[],
+    args: string[],
     public readonly exitCode: number | null,
-    public readonly stderr: string,
-    /**
-     * git's stdout, which is where it puts several things you would look for
-     * in stderr — "CONFLICT (content): Merge conflict in ..." among them. An
-     * error carrying only stderr makes a merge conflict indistinguishable
-     * from any other merge failure.
-     */
-    public readonly stdout: string = "",
+    stderr: string,
+    stdout: string = "",
   ) {
-    super(message);
+    // Every field is redacted: any of them may end up in a log line.
+    super(redactGitSecrets(message));
+    this.args = args.map(redactGitSecrets);
+    this.stderr = redactGitSecrets(stderr);
+    this.stdout = redactGitSecrets(stdout);
     this.name = "GitError";
   }
 }

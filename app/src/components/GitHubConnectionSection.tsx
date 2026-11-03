@@ -32,7 +32,8 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { ExternalLink, Github, Plus, Unplug } from "lucide-react";
+import { ExternalLink, Plus, Unplug } from "lucide-react";
+import Github from "./icons/GithubIcon";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import {
@@ -253,7 +254,13 @@ export default function GitHubConnectionSection() {
         <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
           Workspace repository
         </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+            mb: 2,
+          }}
+        >
           A workspace has exactly ONE repository — its content root. Apps live
           under <code>apps/</code>; consoles, skills and dbt content join as
           sibling folders. Connect a GitHub repository first. Mako keeps
@@ -268,7 +275,13 @@ export default function GitHubConnectionSection() {
         )}
 
         {repos.length === 0 && !statusLoading && (
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+              mb: 1,
+            }}
+          >
             No repository connected. Connect one before creating apps, consoles,
             or dbt projects.
           </Typography>
@@ -293,7 +306,12 @@ export default function GitHubConnectionSection() {
                 <Typography variant="body2" sx={{ fontWeight: 500 }}>
                   {repo.owner}/{repo.repo}
                 </Typography>
-                <Typography variant="caption" color="text.secondary">
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: "text.secondary",
+                  }}
+                >
                   branch {repo.defaultBranch} · Mako root{" "}
                   {repo.subdirectory || "/"} · apps under{" "}
                   {repo.subdirectory ? `${repo.subdirectory}/apps/` : "apps/"}
@@ -342,7 +360,12 @@ export default function GitHubConnectionSection() {
           <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
             GitHub accounts
           </Typography>
-          <Typography variant="caption" color="text.secondary">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             Accounts the Mako AI GitHub App is installed on — repositories are
             picked from these.
           </Typography>
@@ -457,11 +480,15 @@ export default function GitHubConnectionSection() {
                 margin="dense"
                 label="Repository"
                 placeholder="Search repositories..."
-                InputProps={{
-                  ...params.InputProps,
-                  startAdornment: selectedRepo ? (
-                    <Github size={14} style={{ marginLeft: 6 }} />
-                  ) : undefined,
+                slotProps={{
+                  ...params.slotProps,
+
+                  input: {
+                    ...params.slotProps.input,
+                    startAdornment: selectedRepo ? (
+                      <Github size={14} style={{ marginLeft: 6 }} />
+                    ) : undefined,
+                  },
                 }}
               />
             )}

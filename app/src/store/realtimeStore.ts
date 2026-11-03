@@ -39,7 +39,6 @@ import {
 // above (console/notebook) register through the same mechanism where they
 // react.
 import "./appsStore";
-import "./dashboardStore";
 import "./dbtStore";
 import "./notebookPresenceStore";
 import "./notebookTreeStore";

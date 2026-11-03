@@ -94,9 +94,7 @@ export function estimateToolDefinitionTokens(tool: {
 }): number {
   let schemaTokens = DEFAULT_SCHEMA_TOKENS;
   const schema = tool.inputSchema as
-    | { jsonSchema?: unknown }
-    | z.ZodType
-    | undefined;
+    { jsonSchema?: unknown } | z.ZodType | undefined;
   try {
     if (schema && typeof schema === "object" && "jsonSchema" in schema) {
       // AI SDK `jsonSchema()` wrapper (dynamicTool / MCP tools).
@@ -122,7 +120,9 @@ export function estimateToolSetTokens(tools: ToolSet): Map<string, number> {
       name,
       estimateToolDefinitionTokens({
         name,
-        description: tool.description,
+        // AI SDK 7 allows context-dependent descriptions; ours are static.
+        description:
+          typeof tool.description === "string" ? tool.description : undefined,
         inputSchema: (tool as { inputSchema?: unknown }).inputSchema,
       }),
     );

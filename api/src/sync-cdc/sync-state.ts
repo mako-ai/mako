@@ -440,6 +440,21 @@ export const syncMachineService = {
     cdcSyncStateService.applyBackfillTransition.bind(cdcSyncStateService),
 };
 
+function anchorStamps(
+  runStartedAt: string | Date | undefined,
+  fetchMode: "full" | "incremental" | undefined,
+): Record<string, Date> {
+  if (!runStartedAt || !fetchMode) return {};
+  const startedAt = new Date(runStartedAt);
+  if (Number.isNaN(startedAt.getTime())) return {};
+  return fetchMode === "full"
+    ? {
+        lastBackfillRunStartedAt: startedAt,
+        lastFullBackfillRunStartedAt: startedAt,
+      }
+    : { lastBackfillRunStartedAt: startedAt };
+}
+
 export const cdcBackfillCheckpointService = {
   listCompletedEntities: async (params: {
     workspaceId: string;
@@ -485,6 +500,13 @@ export const cdcBackfillCheckpointService = {
     fetchState?: FetchState;
     /** Rows this backfill run wrote to the destination for this entity. */
     rowsWritten?: number;
+    /**
+     * `backfillState.startedAt` of this run and how the entity was fetched;
+     * stamped as the anchor of the next incremental scheduled resync
+     * (sync-cdc/backfill-fetch-mode.ts). Omitted for connectors not covered.
+     */
+    runStartedAt?: string | Date;
+    fetchMode?: "full" | "incremental";
   }) => {
     const cursor = {
       ...(params.fetchState || {
@@ -519,7 +541,10 @@ export const cdcBackfillCheckpointService = {
         entity: params.entity,
       },
       {
-        $set: { backfillCompletedAt: new Date() },
+        $set: {
+          backfillCompletedAt: new Date(),
+          ...anchorStamps(params.runStartedAt, params.fetchMode),
+        },
         ...(rowsWritten > 0
           ? { $inc: { lifetimeRowsApplied: rowsWritten } }
           : {}),

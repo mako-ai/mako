@@ -147,14 +147,15 @@ export async function generateConsoleDescription(
         traceName: "console-description",
         userId: trackingCtx?.userEmail ?? trackingCtx?.userId,
         tags: ["type:description_generation"],
-        metadata: trackingCtx
-          ? { workspaceId: trackingCtx.workspaceId }
-          : undefined,
+        metadata: {
+          workspaceId: trackingCtx?.workspaceId ?? "unknown",
+          invocationType: "description_generation",
+        },
       },
       () =>
         generateText({
           model: getModel(utilityModel),
-          system: DESCRIPTION_SYSTEM_PROMPT,
+          instructions: DESCRIPTION_SYSTEM_PROMPT,
           prompt,
           providerOptions: {
             gateway: {
@@ -165,20 +166,12 @@ export async function generateConsoleDescription(
               ],
             } satisfies GatewayLanguageModelOptions,
           },
-          experimental_telemetry: {
-            isEnabled: true,
-            functionId: "console-description",
-            metadata: {
-              workspaceId: trackingCtx?.workspaceId ?? "unknown",
-              invocationType: "description_generation",
-            },
-          },
+          telemetry: { functionId: "console-description" },
         }),
     );
 
     const actualModelId = (response as Record<string, unknown>)?.modelId as
-      | string
-      | undefined;
+      string | undefined;
 
     return processDescriptionResult(
       text,
@@ -210,8 +203,10 @@ export async function generateDescriptionAndEmbedding(
   if (description && isEmbeddingAvailable()) {
     try {
       embedding = await embedText(description, {
-        workspaceId: trackingCtx?.workspaceId,
-        userId: trackingCtx?.userId,
+        attribution: {
+          workspaceId: trackingCtx?.workspaceId,
+          userId: trackingCtx?.userId,
+        },
       });
       embeddingModel = getEmbeddingModelName();
     } catch (err) {

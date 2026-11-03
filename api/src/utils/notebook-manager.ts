@@ -41,7 +41,7 @@ function indexAsResource(index: INotebookIndex): ShareableResourceLike {
 }
 
 /**
- * Centralized permission + tree logic for notebooks (mirrors DashboardManager).
+ * Centralized permission + tree logic for notebooks.
  */
 export class NotebookManager {
   static isOwner(index: INotebookIndex, userId: string): boolean {

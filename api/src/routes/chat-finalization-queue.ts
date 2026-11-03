@@ -5,10 +5,10 @@ const logger = loggers.agent();
 /**
  * Per-chat finalization queue.
  *
- * The AI SDK keeps the UI message stream open until the `onFinish` callback of
- * `toUIMessageStreamResponse` resolves (it is awaited inside the stream's
+ * The AI SDK keeps the UI message stream open until the `onEnd` callback of
+ * `toUIMessageStream` resolves (it is awaited inside the stream's
  * `flush()`). On the client, `useChat` only fires the tool-result auto-resume
- * once that stream closes. So any slow work in `onFinish` (gateway pricing
+ * once that stream closes. So any slow work in `onEnd` (gateway pricing
  * lookups, `saveChat`, etc.) is serialized *into the user-perceived latency* of
  * every client-side tool round-trip — the assistant appears frozen even though
  * the tool itself (e.g. an instant `modify_console` patch) resolved in

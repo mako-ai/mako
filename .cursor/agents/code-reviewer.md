@@ -33,7 +33,7 @@ When invoked, review the recent changes and check against these project-specific
 
 - Components, pages, hooks, and contexts must NOT call `fetch`, `axios`, or `apiClient` directly. All network calls go through Zustand stores.
 - Stores must use the centralized `apiClient` from `app/src/lib/api-client.ts`.
-- Use MUI v7 components consistently. Style overrides go in the global theme (`ThemeContext.tsx`), not ad-hoc per component.
+- Use MUI v9 components consistently. Style overrides go in the global theme (`ThemeContext.tsx`), not ad-hoc per component.
 
 ## TypeScript
 

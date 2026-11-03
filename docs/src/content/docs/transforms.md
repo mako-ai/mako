@@ -74,7 +74,7 @@ The command bar accepts a free-form command (an optional leading `dbt` is stripp
 The `@makoai/cli` can run dbt from a local checkout, including uncommitted files:
 
 ```bash
-mako login --warehouse-write
+mako login
 mako dbt run -s orders
 mako dbt build -s +orders --env staging
 mako dbt build -s orders --full-refresh --no-defer
@@ -90,8 +90,8 @@ select a shared development environment. The production environment is refused
 (`403`) even with `--env` — it is only built from `main` by a job — and so is
 another person's personal environment. `--no-defer` disables deferral to
 production; `--full-refresh` applies to `run` and `build` (not `test`). Local runs
-require the `warehouse:write` scope because the uploaded project executes with the
-selected environment's warehouse credentials. See also
+need a `mako login` and at least the member role, because the uploaded project
+executes with the selected environment's warehouse credentials. See also
 [Working from a local checkout](/mcp-server/#working-from-a-local-checkout).
 
 The API equivalent is `POST /api/workspaces/:workspaceId/dbt/local-runs`, followed

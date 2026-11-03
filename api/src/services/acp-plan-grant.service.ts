@@ -53,7 +53,7 @@ export async function approveAcpPlanGrant(input: {
         expiresAt,
       },
     },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: "after" },
   );
   return { grants, expiresAt };
 }

@@ -13,14 +13,12 @@
 // file is the repo's.
 import path from "node:path";
 import { config as loadEnv } from "dotenv";
-loadEnv({ path: path.resolve(process.cwd(), ".env") });
-loadEnv({ path: path.resolve(process.cwd(), "..", ".env") });
+loadEnv({ path: path.resolve(process.cwd(), ".env"), quiet: true });
+loadEnv({ path: path.resolve(process.cwd(), "..", ".env"), quiet: true });
 
 async function main(): Promise<void> {
-  const { getDashboardArtifactStore } = await import(
-    "./dashboard-artifact-store.service"
-  );
-  const store = getDashboardArtifactStore();
+  const { getArtifactStore } = await import("./artifact-store.service");
+  const store = getArtifactStore();
   if (!store.ensureBrowserCors) {
     console.log(
       `Artifact store type is "${store.type}" — no bucket CORS to configure.` +

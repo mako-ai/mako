@@ -2,9 +2,9 @@
  * `app_browse` must hand the model a variant that actually carries a picture.
  *
  * Pinned because getting it wrong failed twice, in opposite ways, and neither
- * failure pointed back here: OpenAI 400s on `file-data` with an image MIME
- * type (killing the turn), while Anthropic silently drops it (the screenshot
- * never arrives and nothing says so). See browse-model-output.ts.
+ * failure pointed back here: OpenAI 400s on a document file part with an image
+ * MIME type (killing the turn), while Anthropic silently drops it (the
+ * screenshot never arrives and nothing says so). See browse-model-output.ts.
  *
  * Run: tsx src/agent-lib/tools/browse-model-output.test.ts
  */
@@ -30,18 +30,15 @@ function main() {
     Record<string, unknown>,
   ];
   assert.equal(text.type, "text");
+  assert.equal(image.type, "file");
   assert.equal(
-    image.type,
-    "image-data",
-    "an image must use the image-data variant — file-data means DOCUMENT, " +
-      "which OpenAI 400s and Anthropic silently drops",
+    image.mediaType,
+    "image/jpeg",
+    "an image must carry an image media type — any other file means " +
+      "DOCUMENT, which OpenAI 400s and Anthropic silently drops",
   );
-  assert.equal(image.mediaType, "image/jpeg");
-  assert.equal(image.data, "AAAA");
-  assert.ok(
-    !("filename" in image),
-    "image-data carries no filename field in the v3 spec",
-  );
+  assert.deepEqual(image.data, { type: "data", data: "AAAA" });
+  assert.ok(!("filename" in image), "an image part carries no filename");
 
   // The base64 must not be smuggled through the text part as well: as prose it
   // is ~25k tokens the model cannot see through.

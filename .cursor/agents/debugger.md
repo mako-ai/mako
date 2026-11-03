@@ -25,7 +25,7 @@ When invoked:
 ### Auth & Session Issues
 
 - **401 on protected routes**: Verify `unifiedAuthMiddleware` is applied. Check cookie settings (HTTP-only, SameSite). Verify `BASE_URL` matches the server's actual URL.
-- **OAuth callback failures**: `BASE_URL` must match the registered OAuth redirect URI. Check `api/src/auth/arctic.ts`.
+- **OAuth callback failures**: `BASE_URL` must match the registered OAuth redirect URI. Check `api/src/auth/oauth-providers.ts`.
 
 ### Vite Proxy Issues
 

@@ -37,6 +37,7 @@
  * The caller gets the previous error and how long to wait.
  */
 import { Redis } from "ioredis";
+import { BASE_REDIS_OPTIONS } from "../utils/redis";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps-live-binding");
@@ -106,6 +107,7 @@ function redisStore(url: string): GuardStore {
   // about to run a query anyway. A read that fails is treated as "no record",
   // which degrades to per-process protection rather than to an outage.
   const redis = new Redis(url, {
+    ...BASE_REDIS_OPTIONS,
     maxRetriesPerRequest: 1,
     enableOfflineQueue: false,
     connectTimeout: 2000,
@@ -154,7 +156,7 @@ export function cooldownMsFor(failures: number): number {
 }
 
 async function readRecord(key: string): Promise<CooldownRecord | null> {
-  let raw: string | null = null;
+  let raw: string | null;
   try {
     raw = await getStore().get(key);
   } catch {

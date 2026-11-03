@@ -170,6 +170,43 @@ describe("removal", () => {
     expect(state.sent.map(e => e.name)).toContain("flow.cancel");
   });
 
+  it("asks the provider to drop a removed webhook flow's subscription", async () => {
+    const kept = await seedFlow("kept");
+    const gone = await seedFlow("gone");
+    await Flow.updateOne(
+      { _id: gone._id },
+      {
+        $set: {
+          type: "webhook",
+          webhookConfig: {
+            endpoint: "https://mako.example/api/webhooks/ws/gone",
+            secret: "production",
+            providerWebhookId: "10:sub-1",
+            enabled: true,
+            totalReceived: 0,
+          },
+        },
+        $unset: { schedule: "" },
+      },
+    );
+
+    await reconcileFlowsFromRepo({
+      workspaceId: WS.toString(),
+      desired: [desiredOf(kept)],
+      treeSha: mirrorMain,
+    });
+
+    const unsubscribe = state.sent.find(
+      e => e.name === "flow.webhook.unsubscribe",
+    );
+    expect(unsubscribe?.data).toEqual({
+      flowId: gone._id.toString(),
+      dataSourceId: expect.any(String),
+      endpoint: "https://mako.example/api/webhooks/ws/gone",
+      providerWebhookId: "10:sub-1",
+    });
+  });
+
   it("does NOT tear down when the tree cannot be verified", async () => {
     const kept = await seedFlow("kept");
     const gone = await seedFlow("gone");

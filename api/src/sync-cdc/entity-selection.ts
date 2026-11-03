@@ -73,3 +73,11 @@ export function isEntityEnabledForFlow(
   if (normalizedCandidates.length === 0) return false;
   return normalizedCandidates.some(entity => selected.has(entity));
 }
+
+/**
+ * Sorted, comma-joined enabled entities: a cheap equality key for "did this
+ * edit change which entities the flow syncs?".
+ */
+export function flowEntitySignature(flow: FlowEntitySelectionSource): string {
+  return [...resolveConfiguredEntities(flow).entities].sort().join(",");
+}

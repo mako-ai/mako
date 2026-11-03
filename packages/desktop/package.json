@@ -13,11 +13,11 @@
     "pack:dir": "pnpm --filter @mako/local-agent build && pnpm run build && electron-builder --config electron-builder.yml --dir"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
-    "electron": "^36.0.0",
-    "electron-builder": "^26.0.12",
+    "@types/node": "^24.19.2",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
     "electron-updater": "^6.8.9",
-    "esbuild": "^0.25.5",
-    "typescript": "^5.8.3"
+    "esbuild": "^0.28.2",
+    "typescript": "^6.0.3"
   }
 }

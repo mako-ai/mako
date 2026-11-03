@@ -1113,7 +1113,11 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                 }}
               >
                 <CircularProgress size={32} sx={{ mr: 2 }} />
-                <Typography color="text.secondary">
+                <Typography
+                  sx={{
+                    color: "text.secondary",
+                  }}
+                >
                   Loading flow configuration...
                 </Typography>
               </Box>
@@ -1157,7 +1161,12 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                         <Typography variant="subtitle2">
                           {STEPS[0].label}
                         </Typography>
-                        <Typography variant="caption" color="text.secondary">
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            color: "text.secondary",
+                          }}
+                        >
                           {STEPS[0].description}
                         </Typography>
                       </Box>
@@ -1211,7 +1220,9 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                     <CircularProgress size={20} />
                                     <Typography
                                       variant="body2"
-                                      color="text.secondary"
+                                      sx={{
+                                        color: "text.secondary",
+                                      }}
                                     >
                                       Loading{" "}
                                       {isBigQuerySource
@@ -1354,7 +1365,9 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                   >
                                     <Typography
                                       variant="body2"
-                                      fontWeight="medium"
+                                      sx={{
+                                        fontWeight: "medium",
+                                      }}
                                     >
                                       Query validated successfully
                                     </Typography>
@@ -1363,7 +1376,9 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                         <Box sx={{ mt: 1 }}>
                                           <Typography
                                             variant="caption"
-                                            color="text.secondary"
+                                            sx={{
+                                              color: "text.secondary",
+                                            }}
                                           >
                                             Columns (
                                             {validationResult.columns.length}
@@ -1410,7 +1425,9 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                     >
                                       <Typography
                                         variant="body2"
-                                        fontWeight="medium"
+                                        sx={{
+                                          fontWeight: "medium",
+                                        }}
                                       >
                                         Suggestions:
                                       </Typography>
@@ -1445,8 +1462,10 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                   >
                                     <Typography
                                       variant="caption"
-                                      color="text.secondary"
                                       gutterBottom
+                                      sx={{
+                                        color: "text.secondary",
+                                      }}
                                     >
                                       Sample row:
                                     </Typography>
@@ -1536,7 +1555,12 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                         <Typography variant="subtitle2">
                           {STEPS[1].label}
                         </Typography>
-                        <Typography variant="caption" color="text.secondary">
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            color: "text.secondary",
+                          }}
+                        >
                           {STEPS[1].description}
                         </Typography>
                       </Box>
@@ -1593,7 +1617,9 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                     <CircularProgress size={20} />
                                     <Typography
                                       variant="body2"
-                                      color="text.secondary"
+                                      sx={{
+                                        color: "text.secondary",
+                                      }}
                                     >
                                       Loading databases...
                                     </Typography>
@@ -1784,7 +1810,12 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                         <Typography variant="subtitle2">
                           {STEPS[2].label}
                         </Typography>
-                        <Typography variant="caption" color="text.secondary">
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            color: "text.secondary",
+                          }}
+                        >
                           {STEPS[2].description}
                         </Typography>
                       </Box>
@@ -1794,8 +1825,10 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                         <Box>
                           <Typography
                             variant="body2"
-                            color="text.secondary"
-                            sx={{ mb: 2 }}
+                            sx={{
+                              color: "text.secondary",
+                              mb: 2,
+                            }}
                           >
                             Review and adjust the destination column types. The
                             AI agent can help inspect your source table and
@@ -1903,7 +1936,12 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                         <Typography variant="subtitle2">
                           {STEPS[3].label}
                         </Typography>
-                        <Typography variant="caption" color="text.secondary">
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            color: "text.secondary",
+                          }}
+                        >
                           {STEPS[3].description}
                         </Typography>
                       </Box>
@@ -2015,8 +2053,10 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                       </Typography>
                                       <Typography
                                         variant="body2"
-                                        color="text.secondary"
-                                        sx={{ mt: 0.5 }}
+                                        sx={{
+                                          color: "text.secondary",
+                                          mt: 0.5,
+                                        }}
                                       >
                                         Next sync will fetch rows where{" "}
                                         <code
@@ -2136,7 +2176,9 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                 field.onChange(parseInt(e.target.value) || 2000)
                               }
                               sx={{ maxWidth: 200 }}
-                              inputProps={{ min: 100, max: 50000 }}
+                              slotProps={{
+                                htmlInput: { min: 100, max: 50000 },
+                              }}
                             />
                           )}
                         />
@@ -2291,7 +2333,12 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                         <Typography variant="subtitle2">
                           {STEPS[4].label}
                         </Typography>
-                        <Typography variant="caption" color="text.secondary">
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            color: "text.secondary",
+                          }}
+                        >
                           {STEPS[4].description}
                         </Typography>
                       </Box>
@@ -2318,7 +2365,9 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                     </Typography>
                                     <Typography
                                       variant="body2"
-                                      color="text.secondary"
+                                      sx={{
+                                        color: "text.secondary",
+                                      }}
                                     >
                                       {field.value
                                         ? "Flow will run automatically on the configured schedule"

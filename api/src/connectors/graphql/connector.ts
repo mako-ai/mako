@@ -193,7 +193,9 @@ export class GraphQLConnector extends BaseConnector {
           }
         } catch (error) {
           logger.warn("Failed to parse headers JSON", { error });
-          throw new Error("Invalid JSON format in headers field");
+          throw new Error("Invalid JSON format in headers field", {
+            cause: error,
+          });
         }
       }
 

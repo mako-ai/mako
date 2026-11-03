@@ -15,6 +15,31 @@
  * testable in isolation with a fake run reader.
  */
 
+import { formatRowsForModel } from "./shared/query-result-format";
+
+/** What the model is told when a console preview leaves rows out. */
+export const CONSOLE_MORE_ROWS_HINT =
+  "The user sees the full result in the console's results panel. To bring " +
+  "more into view here, aggregate or filter in the query.";
+
+/**
+ * A console run's rows as the model sees them: a markdown table under the
+ * shared row/char budget (query-result-format.ts).
+ */
+export function consoleRowsForModel(
+  rows: unknown[],
+  fields: unknown,
+  maxRows: number,
+  rowCount?: number,
+) {
+  return formatRowsForModel(rows, {
+    fields,
+    maxRows,
+    totalRows: rowCount,
+    moreHint: CONSOLE_MORE_ROWS_HINT,
+  });
+}
+
 /** Subset of the persisted `SavedConsole.lastRun` artifact this poll reads. */
 export interface PollRunArtifact {
   status: "running" | "success" | "error" | "cancelled" | (string & {});
@@ -22,6 +47,8 @@ export interface PollRunArtifact {
   rowCount?: number;
   durationMs?: number;
   sampleRows?: unknown[];
+  /** Driver field metadata saved with the run (names, maybe types). */
+  fields?: unknown;
   error?: string;
   startedAt?: Date | string;
   at: Date | string;
@@ -138,7 +165,12 @@ export async function pollRunStatus(
         status: "success",
         rowCount: lastRun.rowCount ?? 0,
         durationMs: lastRun.durationMs,
-        preview: (lastRun.sampleRows ?? []).slice(0, previewMaxRows),
+        ...consoleRowsForModel(
+          lastRun.sampleRows ?? [],
+          lastRun.fields,
+          previewMaxRows,
+          lastRun.rowCount,
+        ),
         message: `Query finished: ${lastRun.rowCount ?? 0} row(s).`,
       };
     }

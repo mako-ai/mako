@@ -289,15 +289,23 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
       }}
       data-testid="mcp-approval-card"
     >
-      <Stack direction="row" spacing={1} alignItems="flex-start">
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={{
+          alignItems: "flex-start",
+        }}
+      >
         <ServerIcon src={toolInfo?.serverIcon} />
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Stack
             direction="row"
             spacing={0.75}
-            alignItems="center"
-            flexWrap="wrap"
             useFlexGap
+            sx={{
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
           >
             <Typography
               variant="body2"
@@ -319,8 +327,11 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
           {pending && !canAlwaysAllow && (
             <Typography
               variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", mt: 0.5 }}
+              sx={{
+                color: "text.secondary",
+                display: "block",
+                mt: 0.5,
+              }}
             >
               Workspace policy requires approval each time for this tool.
             </Typography>

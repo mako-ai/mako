@@ -12,7 +12,7 @@ ARG USE_PREBUILT=0
 # =============================================================================
 # Builder: compile from source (local / docs path)
 # =============================================================================
-FROM node:20 AS builder-source
+FROM node:24.22.1-bookworm AS builder-source
 WORKDIR /app
 
 RUN npm install -g pnpm
@@ -43,7 +43,7 @@ RUN pnpm --filter @mako/schemas run build \
 # =============================================================================
 # Builder: stage host-built artifacts (CI path)
 # =============================================================================
-FROM node:20 AS builder-prebuilt
+FROM node:24.22.1-bookworm AS builder-prebuilt
 WORKDIR /app
 
 # Same paths the production stage expects from the source builder
@@ -66,15 +66,17 @@ FROM builder-${USE_PREBUILT} AS builder
 # =============================================================================
 # Production runtime
 # =============================================================================
-FROM node:20-slim
+FROM node:24.22.1-bookworm-slim
 WORKDIR /app
 
 # Install build tools needed for native modules (+ venv for the dbt runner).
 # This layer is stable and should stay cached across app deploys.
 # `git` is required by Apps: the API keeps a local clone of each linked
 # GitHub repo as an ephemeral read cache for the file explorer (the sandbox
-# does its own in-VM git for pushing). node:20-slim ships without git, so the
+# does its own in-VM git for pushing). node:*-slim ships without git, so the
 # missing binary surfaced as `spawn git ENOENT` on app creation.
+# `ca-certificates` is required when chat-with-app reads parquet over DuckDB
+# httpfs (HTTPS / gs://): the sandbox allow-lists the system CA bundle.
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-venv \
@@ -82,6 +84,7 @@ RUN apt-get update && apt-get install -y \
     make \
     g++ \
     git \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Bake a pinned dbt Core venv with the supported warehouse adapters.
@@ -121,6 +124,16 @@ COPY --from=builder /app/packages/agent-tools/prepare.js ./packages/agent-tools/
 RUN mkdir -p packages/schemas/dist packages/agent-tools/dist
 
 RUN pnpm install --prod --filter api...
+
+# Bake DuckDB extensions with the exact @duckdb/node-api binary just installed
+# (same DuckDB version and linux_amd64 platform the server runs). Chat-with-app
+# direct-GCS mode LOADs httpfs from here with auto-install off, so no Cloud Run
+# instance downloads from extensions.duckdb.org. Cached until the lockfile or
+# this one compiled file changes.
+ENV DUCKDB_EXTENSION_DIRECTORY=/opt/duckdb-extensions
+COPY --from=builder /app/api/dist/apps/duckdb-extensions.js ./api/dist/apps/duckdb-extensions.js
+RUN node api/dist/apps/duckdb-extensions.js "$DUCKDB_EXTENSION_DIRECTORY" \
+    && test -n "$(find "$DUCKDB_EXTENSION_DIRECTORY" -name 'httpfs.duckdb_extension')"
 
 # Copy compiled shared packages + app/API output
 COPY --from=builder /app/packages/schemas/dist ./packages/schemas/dist

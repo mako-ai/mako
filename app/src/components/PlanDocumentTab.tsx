@@ -99,7 +99,12 @@ export default function PlanDocumentTab({
         }}
       >
         <ClipboardList size={16} />
-        <Typography variant="caption" color="text.secondary">
+        <Typography
+          variant="caption"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           Plan
         </Typography>
         {pending ? (
@@ -117,17 +122,31 @@ export default function PlanDocumentTab({
         ) : (
           <Typography
             variant="subtitle1"
-            fontWeight={600}
             noWrap
-            sx={{ flex: 1, minWidth: 0 }}
+            sx={{
+              fontWeight: 600,
+              flex: 1,
+              minWidth: 0,
+            }}
           >
             {plan.draft.title}
           </Typography>
         )}
         {streaming && (
-          <Stack direction="row" spacing={0.75} alignItems="center">
+          <Stack
+            direction="row"
+            spacing={0.75}
+            sx={{
+              alignItems: "center",
+            }}
+          >
             <CircularProgress size={12} thickness={5} />
-            <Typography variant="caption" color="text.secondary">
+            <Typography
+              variant="caption"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Writing plan…
             </Typography>
           </Stack>
@@ -182,7 +201,13 @@ export default function PlanDocumentTab({
             {/* Todos (appear/grow as they stream in) */}
             {(plan.draft.todos.length > 0 || pending) && (
               <Box sx={{ mt: 3 }}>
-                <Typography variant="subtitle2" color="text.secondary" mb={1}>
+                <Typography
+                  variant="subtitle2"
+                  sx={{
+                    color: "text.secondary",
+                    mb: 1,
+                  }}
+                >
                   {plan.draft.todos.length} To-do
                   {plan.draft.todos.length === 1 ? "" : "s"}
                 </Typography>
@@ -194,8 +219,9 @@ export default function PlanDocumentTab({
                         key={todo.id ?? index}
                         direction="row"
                         spacing={1}
-                        alignItems="center"
                         sx={{
+                          alignItems: "center",
+
                           color:
                             status === "completed" || status === "cancelled"
                               ? "text.disabled"
@@ -283,10 +309,17 @@ export default function PlanDocumentTab({
           <Stack
             direction="row"
             spacing={1.5}
-            alignItems="center"
-            justifyContent="flex-end"
+            sx={{
+              alignItems: "center",
+              justifyContent: "flex-end",
+            }}
           >
-            <Typography variant="caption" color="text.secondary">
+            <Typography
+              variant="caption"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               or reply in chat to iterate on the plan
             </Typography>
             <Button

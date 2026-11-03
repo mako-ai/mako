@@ -32,11 +32,12 @@
 import * as dotenv from "dotenv";
 import * as path from "path";
 // Load .env from the api package and the monorepo root (in that order of precedence).
-dotenv.config();
-dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
+dotenv.config({ quiet: true });
+dotenv.config({ path: path.resolve(__dirname, "../../../.env"), quiet: true });
 
 import mongoose from "mongoose";
 import Stripe from "stripe";
+import { STRIPE_BILLING_API_VERSION } from "../billing/config";
 import { Workspace } from "../database/workspace-schema";
 
 interface Args {
@@ -203,7 +204,9 @@ async function main() {
     console.log("  Connected to MongoDB for DB-reference safety check");
   }
 
-  const stripe = new Stripe(args.apiKey);
+  const stripe = new Stripe(args.apiKey, {
+    apiVersion: STRIPE_BILLING_API_VERSION,
+  });
 
   const minCreatedBefore =
     Math.floor(Date.now() / 1000) - args.minAgeHours * 3600;

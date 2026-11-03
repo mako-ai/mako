@@ -123,6 +123,7 @@ const CAPABILITY_GRANTS = new Set([
   "warehouse-write",
   "git-write",
   "schedule-write",
+  "workflows-run",
 ]);
 
 const normalizeTodos = (todos: unknown): PlanTodo[] => {
@@ -346,7 +347,7 @@ export const usePlanStore = create<PlanStore>()(
       name: "plan-store",
       // Only pending drafts need to survive a reload; resolved plans rehydrate
       // from message history via markResolved. Resolvers live outside state.
-      partialize: state => ({
+      partialize: (state: PlanStore) => ({
         plans: Object.fromEntries(
           Object.entries(state.plans).filter(
             ([, plan]) => plan.status === "pending",

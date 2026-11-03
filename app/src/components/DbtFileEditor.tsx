@@ -52,7 +52,7 @@ import {
   Terminal as CommandIcon,
   Wrench as BuildIcon,
 } from "lucide-react";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { Group, Panel, Separator } from "react-resizable-panels";
 import MonacoEditor, { type Monaco } from "@monaco-editor/react";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -133,7 +133,12 @@ function ResultsEmptyState({ message }: { message: string }) {
       <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
         There&apos;s nothing here.
       </Typography>
-      <Typography variant="body2" color="text.secondary">
+      <Typography
+        variant="body2"
+        sx={{
+          color: "text.secondary",
+        }}
+      >
         {message}
       </Typography>
     </Box>
@@ -154,7 +159,12 @@ function ProblemList({
   if (problems === null || busy) {
     return (
       <Box sx={{ p: 2 }}>
-        <Typography variant="caption" color="text.secondary">
+        <Typography
+          variant="caption"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           {busy ? "Parsing project…" : "Run a command or parse to populate."}
         </Typography>
       </Box>
@@ -163,7 +173,12 @@ function ProblemList({
   if (problems.length === 0) {
     return (
       <Box sx={{ p: 2 }}>
-        <Typography variant="caption" color="success.main">
+        <Typography
+          variant="caption"
+          sx={{
+            color: "success.main",
+          }}
+        >
           {emptyOk}
         </Typography>
       </Box>
@@ -998,7 +1013,12 @@ export default function DbtFileEditor({
           />
         ) : (
           <Box sx={{ p: 2 }}>
-            <Typography variant="caption" color="text.secondary">
+            <Typography
+              variant="caption"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               {busy === "compile"
                 ? "Compiling…"
                 : compileResult && !compileResult.ok
@@ -1163,8 +1183,10 @@ export default function DbtFileEditor({
       {/* dbt version */}
       <Typography
         variant="caption"
-        color="text.secondary"
-        sx={{ whiteSpace: "nowrap" }}
+        sx={{
+          color: "text.secondary",
+          whiteSpace: "nowrap",
+        }}
       >
         dbt {project ? dbtVersionLabel(project.dbtVersion) : ""}
       </Typography>
@@ -1262,14 +1284,14 @@ export default function DbtFileEditor({
 
       <Box sx={{ flex: 1, minHeight: 0 }}>
         {panelOpen ? (
-          <PanelGroup direction="vertical">
-            <Panel defaultSize={62} minSize={20}>
+          <Group orientation="vertical">
+            <Panel defaultSize="62%" minSize="20%">
               {editorPane}
             </Panel>
-            <PanelResizeHandle
+            <Separator
               style={{ height: 4, background: "var(--mui-palette-divider)" }}
             />
-            <Panel defaultSize={38} minSize={12}>
+            <Panel defaultSize="38%" minSize="12%">
               <Box
                 sx={{
                   height: "100%",
@@ -1281,7 +1303,7 @@ export default function DbtFileEditor({
                 {panelBody}
               </Box>
             </Panel>
-          </PanelGroup>
+          </Group>
         ) : (
           <Box
             sx={{ height: "100%", display: "flex", flexDirection: "column" }}

@@ -6,6 +6,7 @@
  * giving self-hosted / open-source users unlimited access.
  */
 
+import type Stripe from "stripe";
 import { isFreeTierModel } from "../services/model-catalog.service";
 
 export function isBillingEnabled(): boolean {
@@ -15,12 +16,7 @@ export function isBillingEnabled(): boolean {
 export type BillingPlan = "free" | "pro" | "enterprise";
 
 export type SubscriptionStatus =
-  | "active"
-  | "past_due"
-  | "canceled"
-  | "trialing"
-  | "incomplete"
-  | null;
+  "active" | "past_due" | "canceled" | "trialing" | "incomplete" | null;
 
 export type ModelTier = "free" | "pro";
 
@@ -86,6 +82,15 @@ export async function isModelAvailableForPlan(
   if (modelTier === "free") return true;
   return plan !== "free";
 }
+
+/**
+ * The Stripe API version billing talks to. Pinned explicitly: SDK majors move
+ * their default to Stripe's newest version, which reshapes subscription and
+ * invoice objects. This is the version billing was written against (the
+ * stripe@14 default); bump it deliberately, together with the code.
+ */
+export const STRIPE_BILLING_API_VERSION =
+  "2023-10-16" as Stripe.LatestApiVersion;
 
 export function getStripeSecretKey(): string {
   const key = process.env.STRIPE_SECRET_KEY;

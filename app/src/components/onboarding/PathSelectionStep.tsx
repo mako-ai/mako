@@ -10,7 +10,7 @@ import {
   alpha,
   useTheme,
 } from "@mui/material";
-import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline";
+import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutlined";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { Database } from "lucide-react";
 import { QualificationData } from "./QualificationStep";
@@ -98,10 +98,21 @@ export function PathSelectionStep({
               {icon}
             </Box>
             <Box sx={{ flex: 1 }}>
-              <Typography variant="h6" fontWeight={600} gutterBottom>
+              <Typography
+                variant="h6"
+                gutterBottom
+                sx={{
+                  fontWeight: 600,
+                }}
+              >
                 {title}
               </Typography>
-              <Typography variant="body2" color="text.secondary">
+              <Typography
+                variant="body2"
+                sx={{
+                  color: "text.secondary",
+                }}
+              >
                 {description}
               </Typography>
             </Box>
@@ -132,10 +143,21 @@ export function PathSelectionStep({
         </Button>
       </Box>
 
-      <Typography variant="h5" fontWeight={600} gutterBottom>
+      <Typography
+        variant="h5"
+        gutterBottom
+        sx={{
+          fontWeight: 600,
+        }}
+      >
         Choose your path
       </Typography>
-      <Typography color="text.secondary" sx={{ mb: 4 }}>
+      <Typography
+        sx={{
+          color: "text.secondary",
+          mb: 4,
+        }}
+      >
         {recommendDemo
           ? "We recommend starting with our demo database to explore Mako's features"
           : "Connect your database to start querying your data with AI"}

@@ -5,14 +5,8 @@ import React, {
   useState,
   useCallback,
 } from "react";
-import {
-  DndContext,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  closestCenter,
-  type DragEndEvent,
-} from "@dnd-kit/core";
+import { DndContext, closestCenter, type DragEndEvent } from "@dnd-kit/core";
+import { useDragSensors } from "../hooks/useDragSensors";
 import {
   SortableContext,
   useSortable,
@@ -64,7 +58,7 @@ function TabKindGlyph({ kind }: { kind: TabKind | undefined }) {
   const Icon = tabKindIcon(kind);
   return <Icon size={18} strokeWidth={1.5} />;
 }
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { Group, Panel, Separator, type Layout } from "react-resizable-panels";
 import { loader } from "@monaco-editor/react";
 import Console, { ConsoleRef } from "./Console";
 import ResultsTable from "./ResultsTable";
@@ -72,23 +66,23 @@ import Settings from "../pages/Settings";
 import SourceConnectionTab from "./SourceConnectionTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
-import DashboardCanvas from "./DashboardCanvas";
 import NotebookRenderer from "./NotebookRenderer";
 import AppWorkspace from "./AppWorkspace";
 import { useAppsStore } from "../store/appsStore";
 import AppFileEditor from "./AppFileEditor";
 import AppDiffTab from "./AppDiffTab";
-import ConsoleDiffTab from "./ConsoleDiffTab";
-import NotebookDiffTab from "./NotebookDiffTab";
+import HistoryDiffTab from "./HistoryDiffTab";
+import type { HistoryEntityKind } from "../store/entityHistoryStore";
 import RepoDiffTab from "./RepoDiffTab";
-import ConsoleHistoryPopover from "./ConsoleHistoryPopover";
+import EntityHistoryPopover from "./EntityHistoryPopover";
 import AppBindingEditor from "./AppBindingEditor";
 import PlanDocumentTab from "./PlanDocumentTab";
 import DbtFileEditor from "./DbtFileEditor";
 import DbtJobView from "./DbtJobView";
 import DbtConsoleView from "./DbtConsoleView";
 import DbtRunsView from "./DbtRunsView";
-import DashboardDataSourceEditor from "./DashboardDataSourceEditor";
+import AppsHome from "./apps-home/AppsHome";
+import WorkflowView from "./WorkflowView";
 import TableDataView from "./TableDataView";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
 import EntityLoadErrorState from "./EntityLoadErrorState";
@@ -107,10 +101,8 @@ import ConflictResolutionDialog, {
 import FileExplorerDialog from "./FileExplorerDialog";
 import { SaveCommentDialog } from "./SaveCommentDialog";
 import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
-import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import { useConsoleStore, selectConsoleTabs } from "../store/consoleStore";
 import { useShallow } from "zustand/react/shallow";
-import { useDashboardStore } from "../store/dashboardStore";
 import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
@@ -122,13 +114,11 @@ import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
-import { setIframeDragGuard } from "../lib/iframe-drag-guard";
+import { separatorDragRef } from "../lib/iframe-drag-guard";
 import { consoleLeafName } from "../lib/console-name";
 import { generateObjectId } from "../utils/objectId";
-import {
-  computeConsoleStateHash,
-  computeDashboardStateHash,
-} from "../utils/stateHash";
+import { isTabMounted, useMountedTabs } from "../lib/tab-mount-policy";
+import { computeConsoleStateHash } from "../utils/stateHash";
 import type {
   ScheduledQueryRunItem,
   ConsoleVersionConflict,
@@ -169,14 +159,18 @@ interface TabPaginationState {
   capApplied: boolean;
 }
 
-// Styled PanelResizeHandle components
-const StyledVerticalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
+// Makes iframes ignore the pointer while a divider is dragged (a cross-
+// origin preview would otherwise swallow the drag). Stable: see separatorDragRef.
+const guardSeparatorDrag = separatorDragRef();
+
+// Styled Separator components
+const StyledVerticalResizeHandle = styled(Separator)(({ theme }) => ({
   height: "4px",
   background: theme.palette.divider,
   transition: "background-color 0.2s ease",
   // The library flags hover/drag via a data attribute (its hit area extends
   // beyond the 4px strip), so key the highlight off that instead of :hover.
-  "&[data-resize-handle-state='hover'], &[data-resize-handle-state='drag']": {
+  "&[data-separator='hover'], &[data-separator='active']": {
     backgroundColor: theme.palette.primary.main,
   },
 }));
@@ -203,49 +197,6 @@ interface EditorProps {
     ((payload: ChartSpecChangePayload) => void) | undefined
   >;
   resultsContextRef?: React.MutableRefObject<ConsoleResultsContext | null>;
-}
-
-function LockConflictDialog() {
-  const prompt = useDashboardStore(state => state.lockConflictPrompt);
-  const setPrompt = useDashboardStore(state => state.setLockConflictPrompt);
-
-  useEffect(() => {
-    return () => {
-      const current = useDashboardStore.getState().lockConflictPrompt;
-      if (current) {
-        current.resolve(false);
-        useDashboardStore.getState().setLockConflictPrompt(null);
-      }
-    };
-  }, []);
-
-  const handleTakeOver = () => {
-    prompt?.resolve(true);
-    setPrompt(null);
-  };
-
-  const handleCancel = () => {
-    prompt?.resolve(false);
-    setPrompt(null);
-  };
-
-  return (
-    <Dialog open={prompt !== null} onClose={handleCancel}>
-      <DialogTitle>Dashboard Locked</DialogTitle>
-      <DialogContent>
-        <Typography>
-          {prompt?.lockedBy ?? "Another user"} is currently editing this
-          dashboard. Do you want to take over?
-        </Typography>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={handleCancel}>Cancel</Button>
-        <Button onClick={handleTakeOver} variant="contained" color="warning">
-          Take over
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
 }
 
 /**
@@ -284,7 +235,6 @@ function SortableConsoleTab(props: React.ComponentProps<typeof Tab>) {
 
   const dragStyle: React.CSSProperties = {
     opacity: isDragging ? 0.4 : 1,
-    touchAction: "none",
   };
 
   const indicatorSx = showIndicator
@@ -515,12 +465,6 @@ function Editor({
     tabId: string;
   } | null>(null);
 
-  // Version history panel state (dashboards)
-  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
-  const [versionHistoryTabId, setVersionHistoryTabId] = useState<string | null>(
-    null,
-  );
-
   // Unified share dialog state (consoles)
   const [shareConsoleTabId, setShareConsoleTabId] = useState<string | null>(
     null,
@@ -564,10 +508,6 @@ function Editor({
   // Concurrent-edit (optimistic concurrency) conflict state
   const [versionConflictData, setVersionConflictData] =
     useState<ConsoleVersionConflict | null>(null);
-
-  const [pendingDashboardCloseTabId, setPendingDashboardCloseTabId] = useState<
-    string | null
-  >(null);
 
   const [pendingSaveData, setPendingSaveData] = useState<{
     tabId: string;
@@ -630,10 +570,14 @@ function Editor({
   // detect a change every render and trigger a re-render loop.
   const consoleTabs = useConsoleStore(useShallow(selectConsoleTabs));
   const activeConsoleId = activeTabId;
+  // Lazy kinds (apps, notebooks) render nothing until first shown, then stay
+  // mounted; app tabs are capped (lib/tab-mount-policy). Only one tab is on
+  // screen in this Editor, so the active tab is the visible set.
+  const mountedLazyTabs = useMountedTabs(consoleTabs, [activeConsoleId]);
   const scheduleModalTab = scheduleModalTabId ? tabs[scheduleModalTabId] : null;
   const scheduleModalHasSchedule = Boolean(
     scheduleModalTab?.schedule?.cron?.trim() &&
-      scheduleModalTab?.schedule?.timezone?.trim(),
+    scheduleModalTab?.schedule?.timezone?.trim(),
   );
   const activeTab = activeConsoleId ? tabs[activeConsoleId] : undefined;
   useRenderCount("Editor", {
@@ -675,12 +619,14 @@ function Editor({
     },
     [updateResultsViewMode],
   );
-  const handlePanelLayout = useCallback((tabId: string, layout: number[]) => {
+  const handlePanelLayout = useCallback((tabId: string, layout: Layout) => {
     logRenderDebug("Editor.panel-layout", { tabId, layout });
   }, []);
 
   // Refs for each Console instance
-  const consoleRefs = useRef<Record<string, React.RefObject<ConsoleRef>>>({});
+  const consoleRefs = useRef<
+    Record<string, React.RefObject<ConsoleRef | null>>
+  >({});
 
   // Ensure refs exist for every tab
   useEffect(() => {
@@ -1041,12 +987,9 @@ function Editor({
   };
 
   // Drag-to-reorder tabs
-  const dndSensors = useSensors(
-    useSensor(PointerSensor, {
-      // Keep click-to-select working: only start a drag after 4px of movement.
-      activationConstraint: { distance: 4 },
-    }),
-  );
+  // Keep click-to-select working: a mouse drag starts after 4px; on touch a
+  // long-press, so the tab bar still swipes sideways.
+  const dndSensors = useDragSensors(4);
   const sortableTabIds = useMemo(
     () => consoleTabs.map(t => t.id),
     [consoleTabs],
@@ -1076,57 +1019,7 @@ function Editor({
   };
 
   const closeConsole = (id: string) => {
-    const closingTab = tabs[id];
-    if (closingTab?.kind === "dashboard") {
-      const dbId = closingTab.metadata?.dashboardId as string | undefined;
-      if (dbId) {
-        const store = useDashboardStore.getState();
-        const dashboard = store.openDashboards[dbId];
-        if (dashboard) {
-          const savedHash = store.getDashboardSavedStateHash(dbId);
-          const currentHash = computeDashboardStateHash(dashboard);
-          if (savedHash !== undefined && currentHash !== savedHash) {
-            setPendingDashboardCloseTabId(id);
-            return;
-          }
-        }
-        store.closeDashboard(dbId);
-      }
-    }
     cleanupTab(id);
-  };
-
-  const finalizeDashboardClose = (tabId: string) => {
-    const closingTab = tabs[tabId];
-    const dbId = closingTab?.metadata?.dashboardId as string | undefined;
-    if (dbId) {
-      useDashboardStore.getState().closeDashboard(dbId);
-    }
-    cleanupTab(tabId);
-  };
-
-  const handleDashboardCloseSave = async () => {
-    if (!pendingDashboardCloseTabId || !currentWorkspace) return;
-    const tab = tabs[pendingDashboardCloseTabId];
-    const dbId = tab?.metadata?.dashboardId as string | undefined;
-    if (dbId) {
-      const result = await useDashboardStore
-        .getState()
-        .saveDashboard(currentWorkspace.id, dbId);
-      if (!result.ok) return;
-    }
-    finalizeDashboardClose(pendingDashboardCloseTabId);
-    setPendingDashboardCloseTabId(null);
-  };
-
-  const handleDashboardCloseDiscard = () => {
-    if (!pendingDashboardCloseTabId) return;
-    finalizeDashboardClose(pendingDashboardCloseTabId);
-    setPendingDashboardCloseTabId(null);
-  };
-
-  const handleDashboardCloseCancel = () => {
-    setPendingDashboardCloseTabId(null);
   };
 
   const handleConsoleExecute = async (
@@ -1509,9 +1402,8 @@ function Editor({
 
         // Add the console to the tree
         if (!currentTab?.filePath) {
-          const { useConsoleTreeStore } = await import(
-            "../store/consoleTreeStore"
-          );
+          const { useConsoleTreeStore } =
+            await import("../store/consoleTreeStore");
           useConsoleTreeStore
             .getState()
             .addConsole(currentWorkspace.id, savePath ?? "", tabId);
@@ -1864,9 +1756,8 @@ function Editor({
         updateSavedState(tabId, true, newHash);
 
         // Update console tree
-        const { useConsoleTreeStore } = await import(
-          "../store/consoleTreeStore"
-        );
+        const { useConsoleTreeStore } =
+          await import("../store/consoleTreeStore");
         useConsoleTreeStore
           .getState()
           .addConsole(currentWorkspace.id, pendingSaveData.path, tabId);
@@ -1972,9 +1863,8 @@ function Editor({
           setSnackbarMessage(`Renamed to '${savePath}.js'`);
           setSnackbarOpen(true);
 
-          const { useConsoleTreeStore } = await import(
-            "../store/consoleTreeStore"
-          );
+          const { useConsoleTreeStore } =
+            await import("../store/consoleTreeStore");
           useConsoleTreeStore.getState().refresh(currentWorkspace.id);
         } else {
           setErrorMessage(JSON.stringify(result.error, null, 2));
@@ -2064,9 +1954,8 @@ function Editor({
           setSnackbarOpen(true);
         }
 
-        const { useConsoleTreeStore } = await import(
-          "../store/consoleTreeStore"
-        );
+        const { useConsoleTreeStore } =
+          await import("../store/consoleTreeStore");
         useConsoleTreeStore.getState().refresh(currentWorkspace.id);
       } else {
         setErrorMessage(JSON.stringify(result.error, null, 2));
@@ -2504,9 +2393,11 @@ function Editor({
                 </ListItemIcon>
                 <ListItemText
                   primary={tab.title}
-                  primaryTypographyProps={{
-                    noWrap: true,
-                    sx: { maxWidth: 180 },
+                  slotProps={{
+                    primary: {
+                      noWrap: true,
+                      sx: { maxWidth: 180 },
+                    },
                   }}
                 />
                 <IconButton
@@ -2538,7 +2429,7 @@ function Editor({
 
           {/* Breadcrumb path (Cursor-style) — one consistent bar for every
               tab kind. Views that embed their own actions in the bar
-              (table data, app files/bindings, dashboard data sources)
+              (table data, dbt files and runs)
               render EntityBreadcrumbs themselves. */}
           {(() => {
             const activeTab = activeConsoleId ? tabs[activeConsoleId] : null;
@@ -2548,16 +2439,18 @@ function Editor({
             if (isMobile) return null;
             const rendersOwnBreadcrumbs =
               activeTab.kind === "table-data" ||
-              activeTab.kind === "dashboard-data-source" ||
               activeTab.kind === "dbt-file" ||
               activeTab.kind === "dbt-runs";
             if (rendersOwnBreadcrumbs) return null;
             return <EntityBreadcrumbs tabId={activeTab.id} />;
           })()}
 
-          {/* Unified tab rendering: every tab stays mounted, visibility toggled with CSS */}
+          {/* Unified tab rendering: a mounted tab stays mounted, visibility toggled
+              with CSS. Lazy kinds mount on first show (lib/tab-mount-policy). */}
           <Box sx={{ flexGrow: 1, overflow: "hidden" }}>
             {consoleTabs.map(tab => {
+              // An unshown lazy tab keeps its slot and renders nothing.
+              const panelMounted = isTabMounted(tab, mountedLazyTabs);
               const showDesktopOnlyNotice =
                 isMobile &&
                 !!tab.kind &&
@@ -2786,8 +2679,12 @@ function Editor({
                           >
                             <Typography
                               variant="caption"
-                              color="text.secondary"
-                              sx={{ px: 1.5, py: 0.75, fontWeight: 600 }}
+                              sx={{
+                                color: "text.secondary",
+                                px: 1.5,
+                                py: 0.75,
+                                fontWeight: 600,
+                              }}
                             >
                               Scheduled runs
                             </Typography>
@@ -2853,7 +2750,7 @@ function Editor({
                     overflow: "hidden",
                   }}
                 >
-                  {showDesktopOnlyNotice ? (
+                  {!panelMounted ? null : showDesktopOnlyNotice ? (
                     <Box sx={{ p: 2 }}>
                       <Alert
                         severity="info"
@@ -2927,24 +2824,6 @@ function Editor({
                     />
                   ) : tab.kind === "table-data" ? (
                     <TableDataView tabId={tab.id} />
-                  ) : tab.kind === "dashboard" ? (
-                    <DashboardCanvas
-                      dashboardId={tab.metadata?.dashboardId as string}
-                      isNew={tab.metadata?.isNew as boolean}
-                      onCreated={(newId: string) => {
-                        useConsoleStore.setState(state => {
-                          const existingTab = state.tabs[tab.id];
-                          if (existingTab) {
-                            existingTab.metadata = {
-                              ...existingTab.metadata,
-                              dashboardId: newId,
-                              isNew: false,
-                            };
-                            existingTab.title = "Untitled Dashboard";
-                          }
-                        });
-                      }}
-                    />
                   ) : tab.kind === "notebook" ? (
                     <NotebookRenderer
                       notebookId={tab.metadata?.notebookId as string}
@@ -2964,15 +2843,10 @@ function Editor({
                       appId={tab.metadata?.appId as string}
                       path={tab.metadata?.path as string}
                     />
-                  ) : tab.kind === "notebook-diff" ? (
-                    <NotebookDiffTab
-                      notebookId={tab.metadata?.notebookId as string}
-                      path={tab.metadata?.path as string}
-                      sha={tab.metadata?.sha as string}
-                    />
-                  ) : tab.kind === "console-diff" ? (
-                    <ConsoleDiffTab
-                      consoleId={tab.metadata?.consoleId as string}
+                  ) : tab.kind === "history-diff" ? (
+                    <HistoryDiffTab
+                      entity={tab.metadata?.entity as HistoryEntityKind}
+                      id={tab.metadata?.id as string}
                       path={tab.metadata?.path as string}
                       sha={tab.metadata?.sha as string}
                     />
@@ -2981,9 +2855,7 @@ function Editor({
                       path={tab.metadata?.path as string}
                       mode={
                         (tab.metadata?.mode as
-                          | "working"
-                          | "index"
-                          | "commit") ?? "working"
+                          "working" | "index" | "commit") ?? "working"
                       }
                       sha={tab.metadata?.sha as string | undefined}
                     />
@@ -2993,9 +2865,7 @@ function Editor({
                       path={tab.metadata?.path as string}
                       mode={
                         (tab.metadata?.mode as
-                          | "working"
-                          | "index"
-                          | "commit") ?? "working"
+                          "working" | "index" | "commit") ?? "working"
                       }
                       sha={tab.metadata?.sha as string | undefined}
                     />
@@ -3025,6 +2895,8 @@ function Editor({
                     <DbtConsoleView
                       projectId={tab.metadata?.projectId as string}
                     />
+                  ) : tab.kind === "apps-home" ? (
+                    <AppsHome />
                   ) : tab.kind === "dbt-runs" ? (
                     <DbtRunsView
                       tabId={tab.id}
@@ -3033,11 +2905,12 @@ function Editor({
                         tab.metadata?.focusRunId as string | undefined
                       }
                     />
-                  ) : tab.kind === "dashboard-data-source" ? (
-                    <DashboardDataSourceEditor
-                      tabId={tab.id}
-                      dashboardId={tab.metadata?.dashboardId as string}
-                      dataSourceId={tab.metadata?.dataSourceId as string}
+                  ) : tab.kind === "workflow" ? (
+                    <WorkflowView
+                      workflowId={
+                        tab.metadata?.workflowId as string | undefined
+                      }
+                      path={tab.metadata?.path as string | undefined}
                     />
                   ) : (
                     /* Console tab: editor + results split (desktop) or a single
@@ -3051,27 +2924,27 @@ function Editor({
                           {mobileResultsView ? resultsPane : consolePane}
                         </Box>
                       ) : (
-                        <PanelGroup
-                          direction="vertical"
+                        <Group
+                          orientation="vertical"
                           style={{ height: "100%", width: "100%" }}
-                          onLayout={
+                          onLayoutChange={
                             renderDebugEnabled
                               ? layout => handlePanelLayout(tab.id, layout)
                               : undefined
                           }
                         >
-                          <Panel defaultSize={60} minSize={1}>
+                          <Panel defaultSize="60%" minSize="1%">
                             {consolePane}
                           </Panel>
 
                           <StyledVerticalResizeHandle
-                            onDragging={setIframeDragGuard}
+                            elementRef={guardSeparatorDrag}
                           />
 
-                          <Panel defaultSize={40} minSize={1}>
+                          <Panel defaultSize="40%" minSize="1%">
                             {resultsPane}
                           </Panel>
-                        </PanelGroup>
+                        </Group>
                       )}
                     </React.Profiler>
                   )}
@@ -3122,7 +2995,9 @@ function Editor({
         onClose={handleCloseErrorModal}
         maxWidth="md"
         fullWidth
-        PaperProps={{ sx: { maxHeight: "80vh" } }}
+        slotProps={{
+          paper: { sx: { maxHeight: "80vh" } },
+        }}
       >
         <DialogTitle
           sx={{
@@ -3242,32 +3117,15 @@ function Editor({
       />
 
       {consoleHistory && currentWorkspace && (
-        <ConsoleHistoryPopover
+        <EntityHistoryPopover
           anchorEl={consoleHistory.anchor}
           onClose={() => setConsoleHistory(null)}
           workspaceId={currentWorkspace.id}
-          consoleId={consoleHistory.tabId}
+          entity="console"
+          id={consoleHistory.tabId}
           onRestored={() =>
             reloadConsole(currentWorkspace.id, consoleHistory.tabId)
           }
-        />
-      )}
-
-      {/* Version history panel (dashboards) */}
-      {versionHistoryTabId && (
-        <VersionHistoryPanel
-          open={versionHistoryOpen}
-          onClose={() => {
-            setVersionHistoryOpen(false);
-            setVersionHistoryTabId(null);
-          }}
-          entityType="dashboard"
-          entityId={versionHistoryTabId}
-          onRestore={() => {
-            if (currentWorkspace && versionHistoryTabId) {
-              reloadConsole(currentWorkspace.id, versionHistoryTabId);
-            }
-          }}
         />
       )}
 
@@ -3338,32 +3196,6 @@ function Editor({
           {snackbarMessage}
         </Alert>
       </Snackbar>
-
-      {/* Lock Conflict Dialog (human-in-the-loop for agent enter_edit_mode) */}
-      <LockConflictDialog />
-
-      {/* Unsaved Dashboard Changes Dialog */}
-      <Dialog
-        open={pendingDashboardCloseTabId !== null}
-        onClose={handleDashboardCloseCancel}
-      >
-        <DialogTitle>Unsaved Changes</DialogTitle>
-        <DialogContent>
-          <Typography>
-            This dashboard has unsaved changes. Do you want to save before
-            closing?
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleDashboardCloseDiscard} color="error">
-            Discard
-          </Button>
-          <Button onClick={handleDashboardCloseCancel}>Cancel</Button>
-          <Button onClick={handleDashboardCloseSave} variant="contained">
-            Save
-          </Button>
-        </DialogActions>
-      </Dialog>
     </Box>
   );
 }

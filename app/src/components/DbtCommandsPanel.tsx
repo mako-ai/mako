@@ -47,7 +47,12 @@ function StatusIcon({ status }: { status: DbtCommandInvocation["status"] }) {
 function LogLines({ logs }: { logs: DbtRunLogLine[] }) {
   if (logs.length === 0) {
     return (
-      <Typography variant="caption" color="text.secondary">
+      <Typography
+        variant="caption"
+        sx={{
+          color: "text.secondary",
+        }}
+      >
         No output.
       </Typography>
     );
@@ -305,7 +310,12 @@ export default function DbtCommandsPanel({
   if (history.length === 0) {
     return (
       <Box sx={{ p: 2 }}>
-        <Typography variant="caption" color="text.secondary">
+        <Typography
+          variant="caption"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           Press Preview, Compile or Build above — or type a dbt command in the
           bar below (e.g. <code>build --select stg_orders+</code>) and press
           Enter.
@@ -371,10 +381,20 @@ export default function DbtCommandsPanel({
                   mt: 0.25,
                 }}
               >
-                <Typography variant="caption" color="text.secondary">
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: "text.secondary",
+                  }}
+                >
                   {entry.environment}
                 </Typography>
-                <Typography variant="caption" color="text.secondary">
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: "text.secondary",
+                  }}
+                >
                   {formatDuration(entry.durationMs)}
                 </Typography>
               </Box>

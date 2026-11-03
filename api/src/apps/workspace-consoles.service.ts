@@ -69,6 +69,8 @@ import {
 } from "./cloud-repo.service";
 import { RepoRequiredError, appsRequireConnectedRepo } from "./config";
 import { createSerializer } from "./serialized";
+import type { OwnerDirectory } from "./user-handles";
+import { loadOwnerDirectory, ownerDirectoryFor } from "./user-handles.service";
 import {
   requireWorkspaceRepo,
   boundRepoDirIfExists,
@@ -99,13 +101,22 @@ import {
   readBlobsBatch,
   resolveCommit,
   type BlobMutation,
-  type ChangedFile,
   type CommitInfo,
   type GitAuthor,
   type TreeEntry,
 } from "./repository.service";
 import { commitBranchFor } from "./branch-policy";
 import { EMPTY_TREE } from "./git";
+import {
+  NotEntityPathError,
+  entityCommitChanges,
+  entityFileVersions,
+  entityHistory,
+  fileScope,
+  type CommitChanges,
+  type EntityGitScope,
+  type FileVersions,
+} from "./entity-git-history";
 
 const logger = loggers.api("consoles-git");
 
@@ -189,7 +200,7 @@ export async function folderSegmentsFor(
 
 /**
  * Find-or-create the folder chain for a directory. Folders are organization,
- * not authorization (§10), but a folder created under `users/<id>/consoles`
+ * not authorization (§10), but a folder created under `users/<handle>/consoles`
  * is that user's private folder so the tree renders where the file lives.
  */
 export async function ensureFolderChain(
@@ -272,13 +283,63 @@ export function descriptionIsAuthored(
   return !row.descriptionGeneratedAt;
 }
 
+/**
+ * Which tree a row's file belongs in. A private console goes under its
+ * owner's handle; an owner without one (not a member of this workspace any
+ * more, never given a handle) has no tree to write into.
+ */
 export function rowScope(
   row: Pick<RowLike, "access" | "isPrivate" | "owner_id" | "createdBy">,
-): { scope: "workspace" | "private"; ownerId?: string } {
+  directory: OwnerDirectory,
+): { scope: "workspace" | "private"; ownerId?: string; ownerHandle?: string } {
   const access: ConsoleAccessLevel =
     row.access ?? (row.isPrivate ? "private" : "workspace");
   if (access === "workspace") return { scope: "workspace" };
-  return { scope: "private", ownerId: row.owner_id || row.createdBy };
+  const ownerId = row.owner_id || row.createdBy;
+  const ownerHandle = directory.handleOf(ownerId);
+  if (!ownerHandle) {
+    throw new Error(
+      `A private console needs an owner with a personal folder (owner ${JSON.stringify(ownerId)} has none in this workspace)`,
+    );
+  }
+  return { scope: "private", ownerId, ownerHandle };
+}
+
+/** The handle mapping, holding the owner's handle when the row is private. */
+async function directoryForRow(
+  row: Pick<
+    RowLike,
+    "access" | "isPrivate" | "owner_id" | "createdBy" | "workspaceId"
+  >,
+): Promise<OwnerDirectory> {
+  const access = row.access ?? (row.isPrivate ? "private" : "workspace");
+  return ownerDirectoryFor(
+    row.workspaceId.toString(),
+    access === "private" ? row.owner_id || row.createdBy : undefined,
+  );
+}
+
+/** Fill in each private definition's owner from the handle mapping. */
+function resolveDefinitionOwners(
+  defs: ConsoleDefinitionAtMain[],
+  directory: OwnerDirectory,
+): ConsoleDefinitionAtMain[] {
+  for (const def of defs) {
+    if (def.location.scope !== "private") continue;
+    const owner = directory.ownerOf(def.location.ownerHandle);
+    if (owner) def.location.ownerId = owner;
+    else delete def.location.ownerId;
+  }
+  return defs;
+}
+
+/**
+ * The owner a private file at `users/<handle>/consoles/…` is filed under
+ * when the handle is nobody's: never the pusher, never anyone the folder
+ * name happens to spell. Contains `:`, so it can never equal a userId.
+ */
+export function unownedConsoleOwner(handle: string | undefined): string {
+  return `unowned:${handle ?? ""}`;
 }
 
 /** The authored part of a row — what the file carries. */
@@ -322,7 +383,7 @@ export async function repoPathForRow(
     folderCache,
   );
   return consoleRepoPath({
-    ...rowScope(row),
+    ...rowScope(row, await directoryForRow(row)),
     folderSegments: segments,
     name: row.name,
     language: rowLanguage(row),
@@ -429,15 +490,20 @@ export async function listConsoleDefinitionsAtMain(
   if (repoDir == null) return [];
   const sha = await resolveCommit(repoDir, MAIN);
   if (!sha) return [];
+  const directory = await loadOwnerDirectory(workspaceId);
   const cached = consoleDefCache.get(workspaceId);
-  if (cached && cached.sha === sha) return cached.defs;
+  if (cached && cached.sha === sha) {
+    return resolveDefinitionOwners(cached.defs, directory);
+  }
 
   // A fresh Cloud Run replica can receive a whole workspace's explorer
   // requests before the first tree read fills the cache. Share that cold
   // load: parsing every console blob once per request is CPU-bound and can
   // exhaust the service before autoscaling catches up.
   const pending = consoleDefLoads.get(workspaceId);
-  if (pending && pending.sha === sha) return pending.promise;
+  if (pending && pending.sha === sha) {
+    return resolveDefinitionOwners(await pending.promise, directory);
+  }
 
   const promise = loadConsoleDefinitions(repoDir, sha);
   consoleDefLoads.set(workspaceId, { sha, promise });
@@ -447,7 +513,7 @@ export async function listConsoleDefinitionsAtMain(
     if (consoleDefLoads.get(workspaceId)?.promise === promise) {
       consoleDefCache.set(workspaceId, { sha, defs });
     }
-    return defs;
+    return resolveDefinitionOwners(defs, directory);
   } finally {
     if (consoleDefLoads.get(workspaceId)?.promise === promise) {
       consoleDefLoads.delete(workspaceId);
@@ -760,11 +826,7 @@ export function requestConsoleDescription(
 }
 
 export type DeriveOutcome =
-  | "updated"
-  | "current"
-  | "unavailable"
-  | "missing"
-  | "raced";
+  "updated" | "current" | "unavailable" | "missing" | "raced";
 
 /**
  * Derive description + embedding for one console from its indexed content.
@@ -802,9 +864,7 @@ export async function deriveConsoleDescription(
   if (!authored) {
     if (!isDescriptionGenAvailable()) return "unavailable";
     const connection = row.connectionId as
-      | { name?: string; type?: string }
-      | null
-      | undefined;
+      { name?: string; type?: string } | null | undefined;
     const generated = await generateDescriptionAndEmbedding(
       {
         code: row.code ?? "",
@@ -841,7 +901,7 @@ export async function deriveConsoleDescription(
   if (isEmbeddingAvailable() && description) {
     try {
       const embedding = await embedText(description, {
-        workspaceId: row.workspaceId.toString(),
+        attribution: { workspaceId: row.workspaceId.toString() },
       });
       if (embedding) {
         set.descriptionEmbedding = embedding;
@@ -972,6 +1032,7 @@ async function syncNow(
   const seenRows = new Set<string>();
   const touched: IndexRow[] = [];
   const actor = userId && userId.length > 0 ? userId : "git";
+  const directory = await loadOwnerDirectory(workspaceId);
 
   // Rows whose path is gone are rename candidates for new paths with the
   // same blob; anything unclaimed at the end is a deletion.
@@ -1025,9 +1086,15 @@ async function syncNow(
         : undefined;
       const access: ConsoleAccessLevel =
         location.scope === "private" ? "private" : "workspace";
+      // A private file's owner is whoever the handle mapping says the
+      // folder belongs to — not the pusher, and not the folder's spelling.
+      // A handle that is nobody's keeps a moved row's owner, or files it
+      // under an owner no user can be.
       const ownerId =
-        location.scope === "private" && location.ownerId
-          ? location.ownerId
+        location.scope === "private"
+          ? (directory.ownerOf(location.ownerHandle) ??
+            row?.owner_id ??
+            unownedConsoleOwner(location.ownerHandle))
           : (row?.owner_id ?? row?.createdBy ?? actor);
       // A folder that first appears from git belongs to whoever pushed it
       // (the console's owner), so they can rename or delete it later.
@@ -1230,7 +1297,11 @@ export interface AdoptionReport {
 
 interface VersionState {
   state: ConsoleFileState;
-  scope: { scope: "workspace" | "private"; ownerId?: string };
+  scope: {
+    scope: "workspace" | "private";
+    ownerId?: string;
+    ownerHandle?: string;
+  };
   folderSegments: string[];
 }
 
@@ -1291,7 +1362,7 @@ async function stateFromSnapshot(
   );
   return {
     state: fileStateFromRow(merged),
-    scope: rowScope(merged),
+    scope: rowScope(merged, await directoryForRow(merged)),
     folderSegments,
   };
 }
@@ -1636,58 +1707,52 @@ export async function projectSavedConsole(input: {
 // History: the same shapes the apps History popover consumes
 // ---------------------------------------------------------------------------
 
+/** The console's file and chart sidecar, as one history scope. */
+function consoleScope(
+  row: Pick<ISavedConsole, "workspaceId" | "path">,
+): EntityGitScope | null {
+  if (!row.path) return null;
+  return fileScope(
+    row.workspaceId.toString(),
+    row.path,
+    chartSidecarPath(row.path),
+  );
+}
+
 /** Commits that touched a console's file (renames included via its row path). */
 export async function consoleHistory(
   row: Pick<ISavedConsole, "workspaceId" | "path">,
   limit = 50,
 ): Promise<CommitInfo[]> {
-  if (!row.path) return [];
-  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
-  if (repoDir == null) return [];
-  if (!(await resolveCommit(repoDir, MAIN))) return [];
-  return repoLog(repoDir, MAIN, limit, row.path);
+  const scope = consoleScope(row);
+  return scope ? entityHistory(scope, limit) : [];
 }
 
 /** What one commit did to this console (its file and chart sidecar). */
 export async function consoleCommitChanges(
   row: Pick<ISavedConsole, "workspaceId" | "path">,
   sha: string,
-): Promise<{ sha: string; parent: string | null; files: ChangedFile[] }> {
-  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
-  if (repoDir == null) throw new Error(`No such commit: ${sha}`);
-  const oid = await resolveCommit(repoDir, sha);
-  if (!oid) throw new Error(`No such commit: ${sha}`);
-  const parent = await resolveCommit(repoDir, `${oid}^`);
-  const all = await diffNameStatus(repoDir, parent ?? EMPTY_TREE, oid);
-  const mine = new Set(row.path ? [row.path, chartSidecarPath(row.path)] : []);
-  return { sha: oid, parent, files: all.filter(f => mine.has(f.path)) };
+): Promise<CommitChanges> {
+  const scope = consoleScope(row) ?? {
+    workspaceId: row.workspaceId.toString(),
+    pathspec: "",
+    owns: () => false,
+  };
+  return entityCommitChanges(scope, sha);
 }
 
-/** A repo path before and after one commit (null = absent on that side). */
+/**
+ * The console's file (or chart sidecar) before and after one commit.
+ * Throws {@link NotEntityPathError} for any other path.
+ */
 export async function consoleFileVersions(
-  row: Pick<ISavedConsole, "workspaceId">,
+  row: Pick<ISavedConsole, "workspaceId" | "path">,
   sha: string,
   relPath: string,
-): Promise<{ before: string | null; after: string | null; binary: boolean }> {
-  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
-  if (repoDir == null) throw new Error(`No such commit: ${sha}`);
-  const oid = await resolveCommit(repoDir, sha);
-  if (!oid) throw new Error(`No such commit: ${sha}`);
-  const parent = await resolveCommit(repoDir, `${oid}^`);
-  const read = async (ref: string | null) => {
-    if (!ref) return null;
-    try {
-      return await readBlob(repoDir, ref, relPath);
-    } catch {
-      return null;
-    }
-  };
-  const [before, after] = await Promise.all([read(parent), read(oid)]);
-  return {
-    before: before?.isBinary ? null : (before?.contents ?? null),
-    after: after?.isBinary ? null : (after?.contents ?? null),
-    binary: Boolean(before?.isBinary || after?.isBinary),
-  };
+): Promise<FileVersions> {
+  const scope = consoleScope(row);
+  if (!scope) throw new NotEntityPathError(relPath);
+  return entityFileVersions(scope, sha, relPath);
 }
 
 /**

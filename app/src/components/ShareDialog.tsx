@@ -59,24 +59,25 @@ export interface ShareDialogProps {
   access?: ShareAccess;
   workspaceRole?: ShareRole;
   publicShare?: PublicShareInfo;
+  /** Apps only: whether viewers of the live link can chat with the app. */
+  chatEnabled?: boolean;
   /** Whether the current user can manage sharing (owner or workspace admin). */
   canManage?: boolean;
   onSharingChanged?: (changes: {
     access?: ShareAccess;
     workspaceRole?: ShareRole;
     publicShare?: PublicShareInfo;
+    chatEnabled?: boolean;
   }) => void;
 }
 
 const RESOURCE_LABEL: Record<ShareResourceType, string> = {
-  dashboard: "dashboard",
   console: "console",
   app: "app",
 };
 
 /** Public links are only available where snapshot data exists. */
 const SUPPORTS_PUBLIC: Record<ShareResourceType, boolean> = {
-  dashboard: true,
   console: false,
   // A published app is served from its immutable deployment.
   app: true,
@@ -210,13 +211,25 @@ function PersonRow({
         <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
           {primary}
           {isYou && (
-            <Typography component="span" variant="body2" color="text.secondary">
+            <Typography
+              component="span"
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               {" (you)"}
             </Typography>
           )}
         </Typography>
         {secondary && (
-          <Typography variant="caption" color="text.secondary" noWrap>
+          <Typography
+            variant="caption"
+            noWrap
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             {secondary}
           </Typography>
         )}
@@ -240,6 +253,7 @@ export default function ShareDialog({
   access: accessProp,
   workspaceRole: workspaceRoleProp,
   publicShare: publicShareProp,
+  chatEnabled: chatEnabledProp = false,
   canManage = false,
   onSharingChanged,
 }: ShareDialogProps) {
@@ -263,6 +277,7 @@ export default function ShareDialog({
   const updatePublicShare = useShareStore(s => s.updatePublicShare);
   const disablePublicShare = useShareStore(s => s.disablePublicShare);
   const getPublicSharePassword = useShareStore(s => s.getPublicSharePassword);
+  const updateAppChat = useShareStore(s => s.updateAppChat);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -273,6 +288,7 @@ export default function ShareDialog({
   const [publicShare, setPublicShare] = useState<PublicShareInfo>(
     publicShareProp ?? { enabled: false },
   );
+  const [chatEnabled, setChatEnabled] = useState(chatEnabledProp);
   const [password, setPassword] = useState("");
   const [copied, setCopied] = useState(false);
   const [internalCopied, setInternalCopied] = useState(false);
@@ -308,6 +324,7 @@ export default function ShareDialog({
     setAccess(accessProp ?? "private");
     setWorkspaceRole(workspaceRoleProp ?? "viewer");
     setPublicShare(publicShareProp ?? { enabled: false });
+    setChatEnabled(chatEnabledProp);
     void loadMembers();
     if (workspaceId && resourceId) {
       void loadCollaborators(resourceType, workspaceId, resourceId);
@@ -537,6 +554,19 @@ export default function ShareDialog({
     });
   };
 
+  // Apps only: the "Ask" chat on the live link's viewer page.
+  const handleChatEnabled = async (enabled: boolean) => {
+    if (!workspaceId || !resourceId) return;
+    await run(async () => {
+      const result = await updateAppChat(workspaceId, resourceId, enabled);
+      if (result.ok) {
+        setChatEnabled(enabled);
+        onSharingChanged?.({ chatEnabled: enabled });
+      }
+      return result;
+    });
+  };
+
   const handleSaveLinkName = async () => {
     if (!workspaceId || !resourceId) return;
     const draft = linkDraft.trim();
@@ -724,7 +754,13 @@ export default function ShareDialog({
             isYou={ownerId === user?.id}
             seed={ownerId || "owner"}
             action={
-              <Typography variant="body2" color="text.secondary" sx={{ pr: 1 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  color: "text.secondary",
+                  pr: 1,
+                }}
+              >
                 Owner
               </Typography>
             }
@@ -802,8 +838,10 @@ export default function ShareDialog({
                   ) : (
                     <Typography
                       variant="body2"
-                      color="text.secondary"
-                      sx={{ pr: 1 }}
+                      sx={{
+                        color: "text.secondary",
+                        pr: 1,
+                      }}
                     >
                       {collab.role === "viewer" ? "Viewer" : "Editor"}
                     </Typography>
@@ -882,8 +920,10 @@ export default function ShareDialog({
                 )}
                 <Typography
                   variant="caption"
-                  color="text.secondary"
-                  sx={{ display: "block" }}
+                  sx={{
+                    color: "text.secondary",
+                    display: "block",
+                  }}
                 >
                   {!selectedAppScope
                     ? "Choose a sharing scope to create a fullscreen link for others"
@@ -914,28 +954,60 @@ export default function ShareDialog({
                     }
                   }}
                   sx={{ mt: 1, ml: 6.5, width: "calc(100% - 52px)" }}
-                  InputProps={{
-                    startAdornment: (
-                      <InputAdornment position="start">
-                        <Lock size={14} />
-                      </InputAdornment>
-                    ),
-                    endAdornment: password ? (
-                      <InputAdornment position="end">
-                        <Button
-                          size="small"
-                          variant="contained"
-                          disableElevation
-                          disabled={busy}
-                          onClick={() => void handleSetPassword()}
-                        >
-                          Protect link
-                        </Button>
-                      </InputAdornment>
-                    ) : undefined,
+                  slotProps={{
+                    input: {
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <Lock size={14} />
+                        </InputAdornment>
+                      ),
+                      endAdornment: password ? (
+                        <InputAdornment position="end">
+                          <Button
+                            size="small"
+                            variant="contained"
+                            disableElevation
+                            disabled={busy}
+                            onClick={() => void handleSetPassword()}
+                          >
+                            Protect link
+                          </Button>
+                        </InputAdornment>
+                      ) : undefined,
+                    },
                   }}
                 />
               )}
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 1,
+                mt: 2,
+              }}
+            >
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography variant="body2" sx={{ display: "block" }}>
+                  Let viewers chat with this app
+                </Typography>
+                <Typography
+                  variant="caption"
+                  sx={{ color: "text.secondary", display: "block" }}
+                >
+                  Adds an Ask button to the live link. Answers come only from
+                  the app&apos;s published data.
+                </Typography>
+              </Box>
+              <Switch
+                size="small"
+                checked={chatEnabled}
+                disabled={!canManage || busy}
+                slotProps={{
+                  input: { "aria-label": "Let viewers chat with this app" },
+                }}
+                onChange={e => void handleChatEnabled(e.target.checked)}
+              />
+            </Box>
           </>
         ) : (
           <>
@@ -979,8 +1051,10 @@ export default function ShareDialog({
                 )}
                 <Typography
                   variant="caption"
-                  color="text.secondary"
-                  sx={{ display: "block" }}
+                  sx={{
+                    color: "text.secondary",
+                    display: "block",
+                  }}
                 >
                   {access === "private"
                     ? "Only people with access can open it"
@@ -1030,8 +1104,10 @@ export default function ShareDialog({
                   </Typography>
                   <Typography
                     variant="caption"
-                    color="text.secondary"
-                    sx={{ display: "block" }}
+                    sx={{
+                      color: "text.secondary",
+                      display: "block",
+                    }}
                   >
                     {publicShare.enabled
                       ? publicShare.hasPassword
@@ -1076,24 +1152,28 @@ export default function ShareDialog({
                       }
                     }}
                     onBlur={() => void handleSaveLinkName()}
-                    InputProps={{
-                      startAdornment: (
-                        <InputAdornment position="start">
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            sx={{ maxWidth: 260 }}
-                            noWrap
-                          >
-                            {publicShare.token
-                              ? buildPublicShareUrl(
-                                  publicShare.token,
-                                  currentWorkspace?.name,
-                                ).replace(/[^/]+$/, "")
-                              : ""}
-                          </Typography>
-                        </InputAdornment>
-                      ),
+                    slotProps={{
+                      input: {
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <Typography
+                              variant="caption"
+                              noWrap
+                              sx={{
+                                color: "text.secondary",
+                                maxWidth: 260,
+                              }}
+                            >
+                              {publicShare.token
+                                ? buildPublicShareUrl(
+                                    publicShare.token,
+                                    currentWorkspace?.name,
+                                  ).replace(/[^/]+$/, "")
+                                : ""}
+                            </Typography>
+                          </InputAdornment>
+                        ),
+                      },
                     }}
                   />
                 ) : (
@@ -1210,7 +1290,12 @@ export default function ShareDialog({
                           {revealedPassword}
                         </Typography>
                       ) : (
-                        <Typography variant="caption" color="text.secondary">
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            color: "text.secondary",
+                          }}
+                        >
                           Password protected
                         </Typography>
                       )}
@@ -1251,32 +1336,34 @@ export default function ShareDialog({
                           void handleSetPassword();
                         }
                       }}
-                      InputProps={{
-                        startAdornment: (
-                          <InputAdornment position="start">
-                            <Lock size={14} />
-                          </InputAdornment>
-                        ),
-                        endAdornment: password ? (
-                          <InputAdornment position="end">
-                            <Button
-                              size="small"
-                              variant="contained"
-                              disableElevation
-                              disabled={busy}
-                              onClick={() => void handleSetPassword()}
-                              sx={{
-                                minWidth: 0,
-                                px: 1.5,
-                                py: 0.25,
-                                fontSize: 12,
-                                borderRadius: 1,
-                              }}
-                            >
-                              Set password
-                            </Button>
-                          </InputAdornment>
-                        ) : undefined,
+                      slotProps={{
+                        input: {
+                          startAdornment: (
+                            <InputAdornment position="start">
+                              <Lock size={14} />
+                            </InputAdornment>
+                          ),
+                          endAdornment: password ? (
+                            <InputAdornment position="end">
+                              <Button
+                                size="small"
+                                variant="contained"
+                                disableElevation
+                                disabled={busy}
+                                onClick={() => void handleSetPassword()}
+                                sx={{
+                                  minWidth: 0,
+                                  px: 1.5,
+                                  py: 0.25,
+                                  fontSize: 12,
+                                  borderRadius: 1,
+                                }}
+                              >
+                                Set password
+                              </Button>
+                            </InputAdornment>
+                          ) : undefined,
+                        },
                       }}
                     />
                   ) : null)}
@@ -1296,8 +1383,10 @@ export default function ShareDialog({
                       </Typography>
                       <Typography
                         variant="caption"
-                        color="text.secondary"
-                        sx={{ display: "block" }}
+                        sx={{
+                          color: "text.secondary",
+                          display: "block",
+                        }}
                       >
                         Re-runs the app&apos;s published queries on your
                         connection, at most every few minutes per binding

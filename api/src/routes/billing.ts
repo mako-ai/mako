@@ -185,7 +185,7 @@ billingRoutes.openapi(
       return c.json({ error: "Session auth required for checkout" }, 401);
     }
 
-    let body: { successUrl?: string; cancelUrl?: string } = {};
+    let body: { successUrl?: string; cancelUrl?: string };
     try {
       body = await c.req.json();
     } catch {

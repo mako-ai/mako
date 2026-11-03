@@ -69,7 +69,12 @@ export const CodeBlock = React.memo(
               zIndex: 1,
             }}
           >
-            <Typography variant="body2" color="text.primary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.primary",
+              }}
+            >
               Generating...
             </Typography>
           </Box>

@@ -165,7 +165,12 @@ const ViewExplorer: React.FC<ViewExplorerProps> = ({
         >
           <Box>
             <Typography variant="h6">Database Views</Typography>
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               {views.length} view{views.length !== 1 ? "s" : ""} found
             </Typography>
           </Box>

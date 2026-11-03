@@ -9,7 +9,7 @@ const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 /**
  * The load-bearing guarantee: scheduling finalization must NOT block the
- * caller. The route schedules this inside `toUIMessageStreamResponse.onFinish`,
+ * caller. The route schedules this inside `toUIMessageStream`'s `onEnd`,
  * and the AI SDK awaits that callback before closing the stream. Awaiting the
  * task inline (the PR #424 / PR #440 regression) stalls every client-tool
  * round-trip until the held-open stream times out.

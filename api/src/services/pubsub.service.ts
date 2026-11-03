@@ -28,6 +28,7 @@
  */
 import { EventEmitter } from "node:events";
 import { Redis } from "ioredis";
+import { BASE_REDIS_OPTIONS } from "../utils/redis";
 import type { Publisher, Subscriber } from "resumable-stream/generic";
 import { loggers } from "../logging";
 
@@ -238,7 +239,10 @@ export function createPubSubPublisher(): Publisher {
   const redisUrl = process.env.REDIS_URL;
   if (redisUrl) {
     return redisPublisher(
-      attachRedisErrorListener(new Redis(redisUrl), "publisher"),
+      attachRedisErrorListener(
+        new Redis(redisUrl, BASE_REDIS_OPTIONS),
+        "publisher",
+      ),
     );
   }
   return getInMemoryPubSub().createPublisher();
@@ -253,7 +257,10 @@ export function createPubSubSubscriber(): Subscriber {
   const redisUrl = process.env.REDIS_URL;
   if (redisUrl) {
     return redisSubscriber(
-      attachRedisErrorListener(new Redis(redisUrl), "subscriber"),
+      attachRedisErrorListener(
+        new Redis(redisUrl, BASE_REDIS_OPTIONS),
+        "subscriber",
+      ),
     );
   }
   return getInMemoryPubSub().createSubscriber();
@@ -277,6 +284,7 @@ export async function checkPubSubBackendHealth(): Promise<void> {
   }
 
   const probe = new Redis(redisUrl, {
+    ...BASE_REDIS_OPTIONS,
     connectTimeout: 5_000,
     maxRetriesPerRequest: 1,
     // The probe owns its own error reporting below; a listener stops ioredis

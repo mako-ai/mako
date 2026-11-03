@@ -1,11 +1,6 @@
 import { promises as fs } from "fs";
 import { syncConnectorRegistry } from "./connector-registry";
 import { sourceConnectionManager } from "./database-data-source-manager";
-import { getDestinationManager } from "./destination-manager";
-import {
-  databaseConnectionService,
-  ConnectionConfig,
-} from "../services/database-connection.service";
 import {
   SyncLogger,
   FetchState,
@@ -16,17 +11,17 @@ import {
   Flow,
   ITableDestination,
 } from "../database/workspace-schema";
-import { createDestinationWriter } from "../services/destination-writer.service";
 import {
   buildParquetFromBatches,
   isDuckDBMemoryError,
   type FieldMeta,
 } from "../utils/streaming-parquet-builder";
-import { Db, Collection } from "mongodb";
+import { Collection } from "mongodb";
 import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
 import { loggers } from "../logging";
+import { LEGACY_ENGINE_REMOVED } from "../services/flow-triggers.service";
 import {
   normalizePayloadKeys,
   normalizePayloadBySchema,
@@ -124,6 +119,16 @@ export interface SyncChunkOptions {
   workspaceId?: string;
   syncEngine?: string;
   backfillRunId?: string;
+  /**
+   * Explicit fetch scope for a CDC backfill chunk, decided once per entity
+   * and run by sync-cdc/backfill-fetch-mode.ts. When present it replaces the
+   * `_syncedAt` incremental anchor below:
+   * - "incremental": `since` is passed to the connector on EVERY chunk (not
+   *   only the first), so a resumable cursor keeps one consistent filter;
+   * - "full": no `since` at all — a genuinely full fetch.
+   * Absent: the historical behaviour (poll anchor on the first chunk).
+   */
+  backfillFetch?: { mode: "full" } | { mode: "incremental"; since: string };
   entityPartitioning?: {
     type?: "time" | "ingestion";
     field: string;
@@ -245,95 +250,14 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Ensure required indexes exist on a collection for efficient sync operations
- */
-async function ensureCollectionIndexes(
-  collection: any,
-  logger?: SyncLogger,
-): Promise<void> {
-  try {
-    // Get existing indexes
-    const existingIndexes = await collection.indexes();
-    const existingIndexNames = existingIndexes.map((idx: any) => idx.name);
-
-    // 1. Unique index on 'id' field for webhook updates
-    if (
-      !existingIndexNames.includes("id_unique_idx") &&
-      !existingIndexNames.includes("id_1")
-    ) {
-      await collection.createIndex(
-        { id: 1 },
-        {
-          unique: true,
-          background: true,
-          name: "id_unique_idx",
-          partialFilterExpression: { id: { $exists: true } },
-        },
-      );
-      logger?.log(
-        "info",
-        `Created unique id index for ${collection.collectionName}`,
-      );
-    }
-
-    // 2. Compound index for bulk sync upserts (uses both id and _dataSourceId)
-    if (!existingIndexNames.includes("sync_upsert_idx")) {
-      await collection.createIndex(
-        { id: 1, _dataSourceId: 1 },
-        {
-          background: true,
-          name: "sync_upsert_idx",
-        },
-      );
-      logger?.log(
-        "info",
-        `Created sync upsert index for ${collection.collectionName}`,
-      );
-    }
-
-    // 3. Index for incremental sync date queries
-    if (!existingIndexNames.includes("incremental_sync_idx")) {
-      await collection.createIndex(
-        { _dataSourceId: 1, _syncedAt: -1 },
-        {
-          background: true,
-          name: "incremental_sync_idx",
-        },
-      );
-      logger?.log(
-        "info",
-        `Created incremental sync index for ${collection.collectionName}`,
-      );
-    }
-  } catch (error) {
-    logger?.log(
-      "warn",
-      `Failed to create indexes: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    // Don't throw - indexes are for performance, not correctness
-  }
-}
-
-/**
  * Performs a single chunk of sync work and returns state for resumption
  */
 export async function performSyncChunk(
   options: SyncChunkOptions,
 ): Promise<SyncChunkResult> {
-  const {
-    dataSourceId,
-    destinationId,
-    destinationDatabaseName,
-    entity,
-    isIncremental,
-    state,
-    maxIterations = 10,
-    logger,
-    queries,
-  } = options;
+  const { dataSourceId, isIncremental, logger, queries } = options;
 
   const syncMode = isIncremental ? "incremental" : "full";
-  let db: Db | null = null;
 
   try {
     // Get the data source
@@ -382,185 +306,11 @@ export async function performSyncChunk(
       );
     }
 
-    // ========== Legacy MongoDB destination path (unchanged) ==========
-    const connectionIdentifier = destinationDatabaseName
-      ? `${destinationId}:${destinationDatabaseName}`
-      : destinationId;
-
-    const connection = await databaseConnectionService.getConnectionById(
-      "destination",
-      connectionIdentifier,
-      async (id: string) => {
-        const realDestinationId = id.includes(":") ? id.split(":")[0] : id;
-        const destinationDb =
-          await getDestinationManager().getDestination(realDestinationId);
-        if (!destinationDb) return null;
-
-        const config = {
-          connectionString: destinationDb.connection.connection_string,
-          database: destinationDb.connection.database,
-        } as ConnectionConfig;
-
-        if (destinationDatabaseName) {
-          config.database = destinationDatabaseName;
-        }
-
-        return config;
-      },
+    // The legacy engine (writing to a MongoDB collection without a table
+    // destination) has been removed: every connector flow runs on CDC.
+    throw new Error(
+      `${LEGACY_ENGINE_REMOVED} (flow ${options.flowId ?? "unknown"} has no table destination)`,
     );
-    db = connection.db;
-
-    const normalizedEntityName = entity.includes(":")
-      ? entity.split(":")[0]
-      : entity;
-    const collectionName = `${sourceConnection.name}_${normalizedEntityName}`;
-    const stagingCollectionName = `${collectionName}_staging`;
-    const useStaging = syncMode === "full";
-
-    const collection = useStaging
-      ? db.collection(stagingCollectionName)
-      : db.collection(collectionName);
-
-    if (!useStaging && !state) {
-      await ensureCollectionIndexes(collection, logger);
-    }
-
-    if (useStaging && !state) {
-      try {
-        await db.collection(stagingCollectionName).drop();
-      } catch {
-        // Ignore if doesn't exist
-      }
-      await db.createCollection(stagingCollectionName);
-      const stagingCollection = db.collection(stagingCollectionName);
-      await ensureCollectionIndexes(stagingCollection, logger);
-    }
-
-    let lastSyncDate: Date | undefined;
-
-    if (syncMode === "incremental" && !state) {
-      const lastRecord = await db
-        .collection(collectionName)
-        .find({ _dataSourceId: sourceConnection.id })
-        .sort({ _syncedAt: -1 })
-        .limit(1)
-        .toArray();
-
-      if (lastRecord.length > 0) {
-        lastSyncDate = lastRecord[0]._syncedAt;
-        logger?.log(
-          "info",
-          `Syncing ${entity} updated after: ${lastSyncDate?.toISOString() ?? "unknown"}`,
-        );
-      }
-    }
-
-    const progressReporter = new ProgressReporter(entity, undefined, logger);
-
-    const maxRetries = sourceConnection.settings?.max_retries || 3;
-    const rateLimitDelay =
-      sourceConnection.settings?.rate_limit_delay_ms || 200;
-    const fetchState = await executeWithRetry(
-      () =>
-        connector.fetchEntityChunk({
-          entity,
-          state,
-          maxIterations,
-          ...(lastSyncDate && { since: lastSyncDate }),
-          onLog: (
-            level: "debug" | "info" | "warn" | "error",
-            message: string,
-            metadata?: unknown,
-          ) => logger?.log(level, message, metadata),
-          onBatch: async batch => {
-            if (batch.length === 0) return;
-
-            const processedRecords = batch.map(record => ({
-              ...record,
-              _dataSourceId: sourceConnection.id,
-              _dataSourceName: sourceConnection.name,
-              _syncedAt: new Date(),
-            }));
-
-            const bulkStart = Date.now();
-            try {
-              const bulkOps = processedRecords.map(record => ({
-                replaceOne: {
-                  filter: {
-                    id: record.id,
-                    _dataSourceId: sourceConnection.id,
-                  },
-                  replacement: record,
-                  upsert: true,
-                },
-              }));
-              const result = await collection.bulkWrite(bulkOps, {
-                ordered: false,
-              });
-              const syncType = useStaging ? "full sync" : "incremental sync";
-              orchestratorLogger.info("MongoDB bulkWrite upsert mode used", {
-                syncType,
-              });
-              const bulkDuration = Date.now() - bulkStart;
-              orchestratorLogger.info("MongoDB write succeeded", {
-                upsertedCount: result.upsertedCount,
-                modifiedCount: result.modifiedCount,
-                duration: bulkDuration,
-                recordCount: batch.length,
-              });
-            } catch (bulkError: any) {
-              const bulkDuration = Date.now() - bulkStart;
-              orchestratorLogger.error("MongoDB write failed", {
-                duration: bulkDuration,
-                error: bulkError.message,
-              });
-              throw bulkError;
-            }
-          },
-          onProgress: (current, total) => {
-            progressReporter.reportProgress(current, total);
-          },
-        }),
-      maxRetries,
-      logger,
-      options.step,
-      `fetch-chunk-${entity}`,
-      rateLimitDelay,
-    );
-
-    const completed = !fetchState.hasMore;
-
-    if (completed) {
-      progressReporter.reportComplete();
-
-      if (syncMode === "full") {
-        try {
-          await db.collection(collectionName).drop();
-        } catch {
-          // Ignore if doesn't exist
-        }
-        await db.collection(stagingCollectionName).rename(collectionName);
-      }
-
-      logger?.log(
-        "info",
-        `✅ ${entity} sync completed (${fetchState.totalProcessed} records)`,
-      );
-    } else {
-      logger?.log(
-        "info",
-        `📊 ${entity} chunk completed (${fetchState.totalProcessed} records so far, ${fetchState.iterationsInChunk} iterations)`,
-      );
-    }
-
-    return {
-      state: fetchState,
-      entity,
-      collectionName,
-      completed,
-      totalFetched: fetchState.totalProcessed,
-      totalWritten: fetchState.totalProcessed,
-    };
   } catch (error) {
     const errorMsg = `Sync chunk failed: ${error instanceof Error ? error.message : String(error)}`;
     logger?.log("error", errorMsg, {
@@ -599,54 +349,34 @@ async function performSyncChunkSql(
     entity,
   );
 
-  // Build per-entity tableDestination with the resolved table name
-  const entityTableDest: ITableDestination = {
-    ...tableDestination,
-    tableName: entityTableName,
-  };
-
   const destinationConn = await DatabaseConnection.findById(
     tableDestination.connectionId,
   )
     .select({ type: 1 })
     .lean();
+  // CDC is the only engine: a connector flow writes through its
+  // destination's CDC adapter (the legacy DestinationWriter path is gone).
   const isCdcEnabled =
     Boolean(options.flowId && options.workspaceId) &&
     options.syncEngine === "cdc" &&
     hasCdcDestinationAdapter(destinationConn?.type);
-
-  const cdcAdapter = isCdcEnabled
-    ? resolveCdcDestinationAdapter({
-        destinationType: destinationConn?.type || "",
-        destinationDatabaseId: options.destinationId,
-        destinationDatabaseName: options.destinationDatabaseName,
-        tableDestination: {
-          connectionId: String(tableDestination.connectionId),
-          schema: tableDestination.schema || "public",
-          tableName: entityTableName,
-        },
-      })
-    : undefined;
-  const writer = isCdcEnabled
-    ? undefined
-    : await createDestinationWriter(
-        {
-          destinationDatabaseId: new Types.ObjectId(options.destinationId),
-          destinationDatabaseName: options.destinationDatabaseName,
-          tableDestination: entityTableDest,
-        },
-        sourceConnection.name,
-      );
-  if (writer) {
-    (writer as any).config.deleteMode = options.deleteMode;
+  if (!isCdcEnabled) {
+    throw new Error(
+      `${LEGACY_ENGINE_REMOVED} (flow ${options.flowId ?? "unknown"}, destination ${destinationConn?.type ?? "unknown"})`,
+    );
   }
 
-  // Full sync: prepare staging on first chunk
-  if (!isCdcEnabled && syncMode === "full" && !state && writer) {
-    await writer.prepareFullSync();
-  } else if (!isCdcEnabled && syncMode === "full" && state && writer) {
-    (writer as any).stagingActive = true;
-  }
+  const cdcAdapter = resolveCdcDestinationAdapter({
+    destinationType: destinationConn?.type || "",
+    flowId: options.flowId,
+    destinationDatabaseId: options.destinationId,
+    destinationDatabaseName: options.destinationDatabaseName,
+    tableDestination: {
+      connectionId: String(tableDestination.connectionId),
+      schema: tableDestination.schema || "public",
+      tableName: entityTableName,
+    },
+  });
 
   // Incremental: get last sync date from destination table.
   //
@@ -657,17 +387,31 @@ async function performSyncChunkSql(
   // _syncedAt column, so anchor there too. Note: incremental CDC polls are
   // upsert-only; deletes are reconciled by the periodic full backfill
   // (backfillSchedule), not by polls.
+  const backfillFetch = options.backfillFetch;
   const anchorIncremental =
-    syncMode === "incremental" && options.writeMode !== "overwrite" && !state;
+    !backfillFetch &&
+    syncMode === "incremental" &&
+    options.writeMode !== "overwrite" &&
+    !state;
   let lastSyncDate: Date | undefined;
+  if (backfillFetch?.mode === "incremental") {
+    const since = new Date(backfillFetch.since);
+    if (!Number.isNaN(since.getTime())) {
+      lastSyncDate = since;
+      if (!state) {
+        logger?.log(
+          "info",
+          `Incremental resync: fetching ${entity} updated since ${since.toISOString()}`,
+        );
+      }
+    }
+  }
   if (anchorIncremental) {
     try {
-      const { getMaxTrackingValue } = await import(
-        "../services/destination-writer.service"
-      );
-      const { DatabaseConnection } = await import(
-        "../database/workspace-schema"
-      );
+      const { getMaxTrackingValue } =
+        await import("../services/destination-writer.service");
+      const { DatabaseConnection } =
+        await import("../database/workspace-schema");
       const destConn = await DatabaseConnection.findById(
         tableDestination.connectionId,
       );
@@ -703,8 +447,6 @@ async function performSyncChunkSql(
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
   })();
   let runningRowsWritten = previousRowsWritten;
-  const fullSyncWriteBatchSize = 1000;
-  let pendingFullSyncRows: Record<string, unknown>[] = [];
 
   const entitySchema = await resolveEntitySchemaSafe({
     entity,
@@ -771,68 +513,6 @@ async function performSyncChunkSql(
       }
     }
   }
-
-  const writeRows = async (
-    rowsToWrite: Record<string, unknown>[],
-    fetchedCountForLog: number,
-  ) => {
-    if (rowsToWrite.length === 0) return;
-
-    const writeOptions =
-      syncMode === "incremental"
-        ? {
-            keyColumns: ["id", "_dataSourceId"],
-            conflictStrategy: "update" as const,
-          }
-        : {};
-
-    if (!writer) {
-      throw new Error("Destination writer is not initialized");
-    }
-    const result = await writer.writeBatch(rowsToWrite, writeOptions);
-
-    if (!result.success) {
-      logger?.log("error", "SQL batch write failed", {
-        entity,
-        fetchedCount: fetchedCountForLog,
-        syncMode,
-        error: result.error,
-      });
-      throw new Error(`SQL write failed: ${result.error}`);
-    }
-
-    runningRowsWritten += result.rowsWritten;
-
-    logger?.log("info", "SQL batch write succeeded", {
-      entity,
-      fetchedCount: fetchedCountForLog,
-      rowsWritten: result.rowsWritten,
-      totalProcessed: runningRowsWritten,
-      totalRowsWritten: runningRowsWritten,
-      syncMode,
-    });
-
-    orchestratorLogger.info("SQL write succeeded", {
-      rowsWritten: result.rowsWritten,
-      recordCount: fetchedCountForLog,
-      table: entityTableName,
-    });
-  };
-
-  const flushFullSyncRows = async (reason: "threshold" | "chunk-end") => {
-    if (pendingFullSyncRows.length === 0) return;
-
-    const rowsToWrite = pendingFullSyncRows;
-    pendingFullSyncRows = [];
-
-    logger?.log("info", "Flushing buffered full-sync rows", {
-      entity,
-      reason,
-      bufferedRows: rowsToWrite.length,
-    });
-
-    await writeRows(rowsToWrite, rowsToWrite.length);
-  };
 
   const maxRetries = sourceConnection.settings?.max_retries || 3;
   const rateLimitDelay = sourceConnection.settings?.rate_limit_delay_ms || 200;
@@ -929,16 +609,6 @@ async function performSyncChunkSql(
             });
             return;
           }
-
-          if (syncMode === "full") {
-            pendingFullSyncRows.push(...processedRecords);
-            if (pendingFullSyncRows.length >= fullSyncWriteBatchSize) {
-              await flushFullSyncRows("threshold");
-            }
-            return;
-          }
-
-          await writeRows(processedRecords, batch.length);
         },
         onProgress: (current: number, total?: number) => {
           progressReporter.reportProgress(current, total);
@@ -951,10 +621,6 @@ async function performSyncChunkSql(
     rateLimitDelay,
   );
 
-  if (!isCdcEnabled && syncMode === "full") {
-    await flushFullSyncRows("chunk-end");
-  }
-
   const nextMetadata =
     fetchState.metadata && typeof fetchState.metadata === "object"
       ? { ...(fetchState.metadata as Record<string, unknown>) }
@@ -966,10 +632,6 @@ async function performSyncChunkSql(
 
   if (completed) {
     progressReporter.reportComplete();
-
-    if (!isCdcEnabled && syncMode === "full" && writer) {
-      await writer.finalize();
-    }
 
     const fetchWriteDelta = fetchState.totalProcessed - runningRowsWritten;
     logger?.log(
@@ -1355,6 +1017,7 @@ async function resolveAdapterContext(options: SyncChunkOptions) {
 
   const cdcAdapter = resolveCdcDestinationAdapter({
     destinationType: destinationConn?.type || "",
+    flowId: options.flowId,
     destinationDatabaseId: options.destinationId,
     destinationDatabaseName: options.destinationDatabaseName,
     tableDestination: {
@@ -1565,334 +1228,4 @@ export async function performStagingCleanup(
     .collection(collName)
     .drop()
     .catch(() => undefined);
-}
-
-/**
- * Orchestrates the sync process using the new architecture
- * where connectors are database-agnostic and all DB operations
- * are handled by the sync layer
- */
-export async function performSync(
-  dataSourceId: string,
-  destinationId: string,
-  destinationDatabaseName: string | undefined,
-  entities: string[] | undefined,
-  isIncremental: boolean = false,
-  logger?: SyncLogger,
-  step?: any, // Inngest step object for serverless-friendly retries
-  queries?: any[], // GraphQL/PostHog queries from the transfer
-) {
-  logger?.log(
-    "debug",
-    `performSync called with isIncremental: ${isIncremental}`,
-  );
-  const syncMode = isIncremental ? "incremental" : "full";
-  logger?.log("debug", `Sync mode determined as: ${syncMode}`);
-  let db: Db | null = null;
-
-  try {
-    // Validate configuration
-    const validation = sourceConnectionManager.validateConfig();
-    if (!validation.valid) {
-      const errorMsg =
-        "Configuration validation failed: " + validation.errors.join(", ");
-      logger?.log("error", errorMsg);
-      throw new Error(errorMsg);
-    }
-
-    // Get the data source
-    const sourceConnection =
-      await sourceConnectionManager.getSourceConnection(dataSourceId);
-    if (!sourceConnection) {
-      const errorMsg = `Data source '${dataSourceId}' not found`;
-      logger?.log("error", errorMsg);
-      throw new Error(errorMsg);
-    }
-
-    if (!sourceConnection.active) {
-      const errorMsg = `Data source '${sourceConnection.name}' is not active`;
-      logger?.log("error", errorMsg);
-      throw new Error(errorMsg);
-    }
-
-    // Inject transfer queries into sourceConnection for GraphQL/PostHog connectors
-    // The registry maps connection -> config when creating the connector
-    if (queries && queries.length > 0) {
-      sourceConnection.connection = {
-        ...sourceConnection.connection,
-        queries,
-      };
-    }
-
-    // Get destination database (just for validation)
-    const destinationDb =
-      await getDestinationManager().getDestination(destinationId);
-    if (!destinationDb) {
-      const errorMsg = `Destination database '${destinationId}' not found`;
-      logger?.log("error", errorMsg);
-      throw new Error(errorMsg);
-    }
-
-    // Get connector from registry
-    const connector =
-      await syncConnectorRegistry.getConnectorFor(sourceConnection);
-    if (!connector) {
-      const errorMsg = `Failed to create connector for type: ${sourceConnection.type}`;
-      logger?.log("error", errorMsg);
-      throw new Error(errorMsg);
-    }
-
-    // Test connection first with retry logic
-    const maxRetries = sourceConnection.settings?.max_retries || 3;
-    const rateLimitDelay =
-      sourceConnection.settings?.rate_limit_delay_ms || 200;
-    const connectionTest = await executeWithRetry(
-      () => connector.testConnection(),
-      maxRetries,
-      logger,
-      step, // Pass step parameter for Inngest sleep when available
-      `test-connection-${sourceConnection.type}`,
-      rateLimitDelay,
-    );
-    if (!connectionTest.success) {
-      const errorMsg = `Failed to connect to ${sourceConnection.type}: ${connectionTest.message}`;
-      logger?.log("error", errorMsg, { details: connectionTest.details });
-      throw new Error(errorMsg);
-    }
-
-    logger?.log("info", `Successfully connected to ${sourceConnection.type}`);
-    logger?.log("info", `Starting ${syncMode} sync...`);
-    logger?.log(
-      "info",
-      `Source: ${sourceConnection.name} (${sourceConnection.type})`,
-    );
-    logger?.log("info", `Destination: ${destinationDb.name}`);
-
-    const startTime = Date.now();
-
-    // Get connection from unified pool
-    const connectionIdentifier = destinationDatabaseName
-      ? `${destinationId}:${destinationDatabaseName}`
-      : destinationId;
-
-    const connection = await databaseConnectionService.getConnectionById(
-      "destination",
-      connectionIdentifier,
-      async (id: string) => {
-        const realDestinationId = id.includes(":") ? id.split(":")[0] : id;
-        const destinationDb =
-          await getDestinationManager().getDestination(realDestinationId);
-        if (!destinationDb) return null;
-
-        const config = {
-          connectionString: destinationDb.connection.connection_string,
-          database: destinationDb.connection.database,
-        } as ConnectionConfig;
-
-        if (destinationDatabaseName) {
-          config.database = destinationDatabaseName;
-        }
-
-        return config;
-      },
-    );
-    db = connection.db;
-
-    // Determine which entities to sync
-    const availableEntities = connector.getAvailableEntities();
-    let entitiesToSync: string[];
-
-    if (entities && entities.length > 0) {
-      // Validate requested entities
-      const invalidEntities = entities.filter(
-        e => !availableEntities.includes(e),
-      );
-      if (invalidEntities.length > 0) {
-        const errorMsg = `Invalid entities for ${sourceConnection.type} connector: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`;
-        logger?.log("error", errorMsg);
-        throw new Error(errorMsg);
-      }
-      entitiesToSync = entities;
-      logger?.log("info", `Entities: ${entitiesToSync.join(", ")}`);
-    } else {
-      // Sync all entities
-      entitiesToSync = availableEntities;
-      logger?.log("info", `Entities: All (${entitiesToSync.join(", ")})`);
-    }
-
-    // Sync each entity
-    for (const entityName of entitiesToSync) {
-      logger?.log("info", `Syncing entity: ${entityName}`);
-
-      // Perform sync using clean architecture
-      // Normalize sub-entity notation (e.g., activities:Call) to the parent for collection naming
-      const normalizedEntityNameForWrite = entityName.includes(":")
-        ? entityName.split(":")[0]
-        : entityName;
-      const collectionName = `${sourceConnection.name}_${normalizedEntityNameForWrite}`;
-      const stagingCollectionName = `${collectionName}_staging`;
-      const useStaging = syncMode === "full";
-
-      const collection = useStaging
-        ? db.collection(stagingCollectionName)
-        : db.collection(collectionName);
-
-      if (useStaging) {
-        // Drop staging collection if exists
-        try {
-          await db.collection(stagingCollectionName).drop();
-        } catch {
-          // Ignore if doesn't exist
-        }
-        await db.createCollection(stagingCollectionName);
-
-        // Create indexes on staging collection
-        const stagingCollection = db.collection(stagingCollectionName);
-        await ensureCollectionIndexes(stagingCollection, logger);
-      } else {
-        // Ensure indexes exist for incremental sync
-        await ensureCollectionIndexes(collection, logger);
-      }
-
-      let recordCount = 0;
-      let lastSyncDate: Date | undefined;
-
-      // Get last sync date for incremental
-      if (syncMode === "incremental") {
-        logger?.log(
-          "debug",
-          `Looking for last sync date in collection: ${collectionName}`,
-        );
-        logger?.log(
-          "debug",
-          `Using dataSourceId filter: ${sourceConnection.id}`,
-        );
-
-        const lastRecord = await db
-          .collection(collectionName)
-          .find({ _dataSourceId: sourceConnection.id })
-          .sort({ _syncedAt: -1 })
-          .limit(1)
-          .toArray();
-
-        logger?.log(
-          "debug",
-          `Found ${lastRecord.length} records with _dataSourceId: ${sourceConnection.id}`,
-        );
-
-        if (lastRecord.length > 0) {
-          lastSyncDate = lastRecord[0]._syncedAt;
-          logger?.log(
-            "debug",
-            `Last record _syncedAt: ${lastRecord[0]._syncedAt}`,
-          );
-          logger?.log(
-            "debug",
-            `Last record _dataSourceId: ${lastRecord[0]._dataSourceId}`,
-          );
-          logger?.log(
-            "info",
-            `Syncing ${entityName} updated after: ${lastSyncDate?.toISOString() ?? "unknown"}`,
-          );
-        } else {
-          logger?.log(
-            "warn",
-            `No previous sync records found for ${entityName} with dataSourceId: ${sourceConnection.id}`,
-          );
-        }
-      }
-
-      // Create progress reporter for this entity
-      const progressReporter = new ProgressReporter(
-        entityName,
-        undefined,
-        logger,
-      );
-
-      // Fetch data from connector with retry logic
-      const maxRetries = sourceConnection.settings?.max_retries || 3;
-      const rateLimitDelay =
-        sourceConnection.settings?.rate_limit_delay_ms || 200;
-      await executeWithRetry(
-        () =>
-          connector.fetchEntity({
-            entity: entityName,
-            ...(lastSyncDate && { since: lastSyncDate }),
-            onLog: (
-              level: "debug" | "info" | "warn" | "error",
-              message: string,
-              metadata?: unknown,
-            ) => logger?.log(level, message, metadata),
-            onBatch: async batch => {
-              if (batch.length === 0) return;
-
-              // Add metadata to records
-              const processedRecords = batch.map(record => ({
-                ...record,
-                _dataSourceId: sourceConnection.id,
-                _dataSourceName: sourceConnection.name,
-                _syncedAt: new Date(),
-              }));
-
-              // Prepare bulk operations
-              const bulkOps = processedRecords.map(record => ({
-                replaceOne: {
-                  filter: {
-                    id: record.id,
-                    _dataSourceId: sourceConnection.id,
-                  },
-                  replacement: record,
-                  upsert: true,
-                },
-              }));
-
-              // Write to database
-              await collection.bulkWrite(bulkOps, { ordered: false });
-              recordCount += batch.length;
-            },
-            onProgress: (current, total) => {
-              progressReporter.reportProgress(current, total);
-            },
-          }),
-        maxRetries,
-        logger,
-        step, // Pass step parameter for Inngest sleep when available
-        `fetch-entity-${entityName}`,
-        rateLimitDelay,
-      );
-
-      // Complete the progress reporting
-      progressReporter.reportComplete();
-
-      // Hot swap for full sync
-      if (useStaging) {
-        // Drop the existing collection and rename staging to main
-        try {
-          await db.collection(collectionName).drop();
-        } catch {
-          // Ignore if doesn't exist
-        }
-
-        // Rename staging to main
-        await db.collection(stagingCollectionName).rename(collectionName);
-      }
-
-      logger?.log(
-        "info",
-        `✅ ${entityName} sync completed (${recordCount} records)`,
-      );
-    }
-
-    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-    logger?.log("info", `Sync completed successfully in ${duration}s`);
-  } catch (error) {
-    const errorMsg = `Sync failed: ${error instanceof Error ? error.message : String(error)}`;
-    logger?.log("error", errorMsg, {
-      stack: error instanceof Error ? error.stack : undefined,
-    });
-    const wrappedError = new Error(errorMsg);
-    (wrappedError as Error & { cause?: unknown }).cause = error;
-    throw wrappedError;
-  }
-  // Note: We don't close the connection here anymore - it stays in the unified pool
 }

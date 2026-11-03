@@ -50,6 +50,7 @@ import {
 } from "./bui-status";
 import { BUI_MONO_FONT_FAMILY } from "./chat/bui-styles";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { EntityHistoryButton } from "./EntityHistoryButton";
 
 interface BackfillPanelProps {
   workspaceId: string;
@@ -386,9 +387,7 @@ export function BackfillPanel({
       status: string;
       success: boolean;
       error?:
-        | string
-        | { message: string; stack?: string; code?: string }
-        | null;
+        string | { message: string; stack?: string; code?: string } | null;
       duration?: number;
     }>
   >([]);
@@ -524,11 +523,9 @@ export function BackfillPanel({
     }
     if (details?.stats) {
       const es = details.stats.entityStats as
-        | Record<string, number>
-        | undefined;
+        Record<string, number> | undefined;
       const est = details.stats.entityStatus as
-        | Record<string, string>
-        | undefined;
+        Record<string, string> | undefined;
       if (es) {
         setExecStats(prev => ({ ...prev, ...es }));
       }
@@ -831,8 +828,7 @@ export function BackfillPanel({
 
   const configuredEntityNames: string[] = (() => {
     const layouts = flow?.entityLayouts as
-      | Array<{ entity: string; enabled?: boolean }>
-      | undefined;
+      Array<{ entity: string; enabled?: boolean }> | undefined;
     if (layouts && layouts.length > 0) {
       return layouts
         .filter(l => l.enabled !== false && l.entity)
@@ -941,17 +937,32 @@ export function BackfillPanel({
         }}
       >
         {connectorName && (
-          <Typography variant="caption" color="text.secondary">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             {connectorName}
           </Typography>
         )}
         {connectorName && destName && (
-          <Typography variant="caption" color="text.secondary">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             →
           </Typography>
         )}
         {destName && (
-          <Typography variant="caption" color="text.secondary">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             {destName}
             {dataset ? ` / ${dataset}` : ""}
           </Typography>
@@ -973,6 +984,11 @@ export function BackfillPanel({
         >
           Reset
         </Button>
+        <EntityHistoryButton
+          entity="flow"
+          id={flowId}
+          onRestored={() => void useFlowStore.getState().refresh(workspaceId)}
+        />
         {onEdit && (
           <Button
             size="small"
@@ -1010,8 +1026,12 @@ export function BackfillPanel({
                   <Typography sx={kpiValue}>—</Typography>
                   <Typography
                     variant="caption"
-                    color="text.secondary"
-                    sx={{ display: "block", mt: 0.25, fontSize: "0.68rem" }}
+                    sx={{
+                      color: "text.secondary",
+                      display: "block",
+                      mt: 0.25,
+                      fontSize: "0.68rem",
+                    }}
                   >
                     No streaming trigger — this sync runs on the periodic full
                     reconcile.
@@ -1057,8 +1077,12 @@ export function BackfillPanel({
                   {(cdc as any).failedWebhookCount > 0 && (
                     <Typography
                       variant="caption"
-                      color="error.main"
-                      sx={{ fontSize: "0.72rem", fontWeight: 600, mb: 0.5 }}
+                      sx={{
+                        color: "error.main",
+                        fontSize: "0.72rem",
+                        fontWeight: 600,
+                        mb: 0.5,
+                      }}
                     >
                       {(cdc as any).failedWebhookCount} webhook
                       {(cdc as any).failedWebhookCount === 1 ? "" : "s"} failed
@@ -1118,8 +1142,11 @@ export function BackfillPanel({
                     {cdc.webhookPendingCount > 0 && streamState !== "idle" && (
                       <Typography
                         variant="caption"
-                        color="text.secondary"
-                        sx={{ alignSelf: "center", fontSize: "0.72rem" }}
+                        sx={{
+                          color: "text.secondary",
+                          alignSelf: "center",
+                          fontSize: "0.72rem",
+                        }}
                       >
                         {cdc.webhookPendingCount.toLocaleString()} pending
                       </Typography>
@@ -1212,8 +1239,12 @@ export function BackfillPanel({
               </Typography>
               <Typography
                 variant="caption"
-                color="text.secondary"
-                sx={{ display: "block", mt: 0.25, fontSize: "0.68rem" }}
+                sx={{
+                  color: "text.secondary",
+                  display: "block",
+                  mt: 0.25,
+                  fontSize: "0.68rem",
+                }}
               >
                 Rows applied: {totalRowsApplied.toLocaleString()}
               </Typography>
@@ -1227,8 +1258,10 @@ export function BackfillPanel({
               >
                 <Typography
                   variant="caption"
-                  color="text.secondary"
-                  sx={{ fontSize: "0.68rem" }}
+                  sx={{
+                    color: "text.secondary",
+                    fontSize: "0.68rem",
+                  }}
                 >
                   Destination rows:{" "}
                   {destinationCounts === null || !hasAnyDestinationCount
@@ -1262,8 +1295,12 @@ export function BackfillPanel({
               {cdc.lastMaterializedAt && (
                 <Typography
                   variant="caption"
-                  color="text.secondary"
-                  sx={{ display: "block", mt: 0.25, fontSize: "0.68rem" }}
+                  sx={{
+                    color: "text.secondary",
+                    display: "block",
+                    mt: 0.25,
+                    fontSize: "0.68rem",
+                  }}
                 >
                   Last {new Date(cdc.lastMaterializedAt).toLocaleString()}
                 </Typography>
@@ -1281,7 +1318,12 @@ export function BackfillPanel({
             }}
           >
             <LinearProgress sx={{ width: 24 }} />
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Loading…
             </Typography>
           </Box>
@@ -1336,9 +1378,11 @@ export function BackfillPanel({
             {entities.length === 0 ? (
               <Typography
                 variant="body2"
-                color="text.secondary"
-                textAlign="center"
-                py={2}
+                sx={{
+                  color: "text.secondary",
+                  textAlign: "center",
+                  py: 2,
+                }}
               >
                 No entities configured yet.
               </Typography>
@@ -1473,7 +1517,9 @@ export function BackfillPanel({
                                 <Tooltip title="No streaming trigger — this sync runs on the periodic full reconcile">
                                   <Typography
                                     variant="caption"
-                                    color="text.secondary"
+                                    sx={{
+                                      color: "text.secondary",
+                                    }}
                                   >
                                     —
                                   </Typography>
@@ -1510,8 +1556,8 @@ export function BackfillPanel({
                                 {e.execStatus === "syncing" && (
                                   <Typography
                                     variant="caption"
-                                    color="text.secondary"
                                     sx={{
+                                      color: "text.secondary",
                                       fontSize: "0.68rem",
                                       whiteSpace: "nowrap",
                                     }}
@@ -1524,15 +1570,16 @@ export function BackfillPanel({
                             </TableCell>
                             <TableCell align="right">
                               <Typography
-                                fontSize="0.8rem"
-                                fontWeight={
-                                  (destinationRows ?? 0) > 0 ? 600 : 400
-                                }
                                 color={
                                   destinationRows === null
                                     ? "text.secondary"
                                     : undefined
                                 }
+                                sx={{
+                                  fontSize: "0.8rem",
+                                  fontWeight:
+                                    (destinationRows ?? 0) > 0 ? 600 : 400,
+                                }}
                               >
                                 {destinationRows === null
                                   ? "—"
@@ -1541,8 +1588,10 @@ export function BackfillPanel({
                             </TableCell>
                             <TableCell align="right">
                               <Typography
-                                fontSize="0.8rem"
-                                fontWeight={eventCount > 0 ? 600 : 400}
+                                sx={{
+                                  fontSize: "0.8rem",
+                                  fontWeight: eventCount > 0 ? 600 : 400,
+                                }}
                               >
                                 {eventCount.toLocaleString()}
                               </Typography>
@@ -1725,8 +1774,12 @@ export function BackfillPanel({
                                 ) : (
                                   <Typography
                                     variant="caption"
-                                    color="text.secondary"
-                                    sx={{ py: 1.5, px: 2, display: "block" }}
+                                    sx={{
+                                      color: "text.secondary",
+                                      py: 1.5,
+                                      px: 2,
+                                      display: "block",
+                                    }}
                                   >
                                     No schema available for this entity
                                   </Typography>
@@ -1786,8 +1839,10 @@ export function BackfillPanel({
                   {liveLogs.length === 0 ? (
                     <Typography
                       variant="caption"
-                      color="text.secondary"
-                      sx={{ fontFamily: "monospace" }}
+                      sx={{
+                        color: "text.secondary",
+                        fontFamily: "monospace",
+                      }}
                     >
                       Waiting for logs…
                     </Typography>
@@ -1857,8 +1912,10 @@ export function BackfillPanel({
                   {selectedRunLogs.length === 0 ? (
                     <Typography
                       variant="caption"
-                      color="text.secondary"
-                      sx={{ fontFamily: "monospace" }}
+                      sx={{
+                        color: "text.secondary",
+                        fontFamily: "monospace",
+                      }}
                     >
                       No logs recorded for this run.
                     </Typography>
@@ -1908,16 +1965,23 @@ export function BackfillPanel({
                 }}
               >
                 <LinearProgress sx={{ width: 24 }} />
-                <Typography variant="body2" color="text.secondary">
+                <Typography
+                  variant="body2"
+                  sx={{
+                    color: "text.secondary",
+                  }}
+                >
                   Loading logs…
                 </Typography>
               </Box>
             ) : runs.length === 0 && !executionId && liveLogs.length === 0 ? (
               <Typography
                 variant="body2"
-                color="text.secondary"
-                textAlign="center"
-                py={2}
+                sx={{
+                  color: "text.secondary",
+                  textAlign: "center",
+                  py: 2,
+                }}
               >
                 No execution history yet.
               </Typography>
@@ -2146,8 +2210,8 @@ export function BackfillPanel({
                     cdc.lastError.reason !== cdc.lastError.message && (
                       <Typography
                         variant="caption"
-                        color="text.secondary"
                         sx={{
+                          color: "text.secondary",
                           fontSize: "0.68rem",
                           display: "block",
                           mt: 0.25,
@@ -2246,9 +2310,11 @@ export function BackfillPanel({
             {webhookEvents.length === 0 ? (
               <Typography
                 variant="body2"
-                color="text.secondary"
-                textAlign="center"
-                py={2}
+                sx={{
+                  color: "text.secondary",
+                  textAlign: "center",
+                  py: 2,
+                }}
               >
                 {eventsFilter === "all"
                   ? "No webhook events received yet."
@@ -2360,8 +2426,8 @@ export function BackfillPanel({
                             >
                               <Typography
                                 variant="caption"
-                                color="error.main"
                                 sx={{
+                                  color: "error.main",
                                   fontSize: "0.68rem",
                                   display: "-webkit-box",
                                   WebkitLineClamp: 2,
@@ -2377,12 +2443,22 @@ export function BackfillPanel({
                           )}
                         </TableCell>
                         <TableCell>
-                          <Typography variant="caption" color="text.secondary">
+                          <Typography
+                            variant="caption"
+                            sx={{
+                              color: "text.secondary",
+                            }}
+                          >
                             {new Date(evt.receivedAt).toLocaleString()}
                           </Typography>
                         </TableCell>
                         <TableCell align="right">
-                          <Typography variant="caption" color="text.secondary">
+                          <Typography
+                            variant="caption"
+                            sx={{
+                              color: "text.secondary",
+                            }}
+                          >
                             {evt.processingDurationMs != null
                               ? `${evt.processingDurationMs}ms`
                               : "—"}
@@ -2413,7 +2489,12 @@ export function BackfillPanel({
                 {entityResetEntity ? entityLabel(entityResetEntity) : "—"}
               </Box>
             </Typography>
-            <Typography variant="caption" color="text.secondary">
+            <Typography
+              variant="caption"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               This drops the destination table for this entity, clears its CDC
               state, and starts a fresh backfill.
             </Typography>

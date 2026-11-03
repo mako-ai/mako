@@ -2,8 +2,8 @@
  * Langfuse tracing bootstrap.
  *
  * Wires the Vercel AI SDK's built-in OpenTelemetry spans into Langfuse via the
- * `LangfuseSpanProcessor`. The AI SDK emits GenAI spans whenever a call passes
- * `experimental_telemetry: { isEnabled: true }`; the processor's default smart
+ * `LangfuseSpanProcessor`. The AI SDK emits GenAI spans for every call once its
+ * OpenTelemetry integration is registered (see below); the processor's default smart
  * filter only exports Langfuse/GenAI/LLM spans, so unrelated HTTP/DB spans never
  * reach Langfuse (and never count toward billable units).
  *
@@ -16,6 +16,8 @@
 
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { LangfuseSpanProcessor } from "@langfuse/otel";
+import { LegacyOpenTelemetry } from "@ai-sdk/otel";
+import { registerTelemetry } from "ai";
 import { loggers } from "../logging";
 
 const logger = loggers.app();
@@ -99,6 +101,14 @@ export function initLangfuseTracing(): boolean {
     spanProcessors: [spanProcessor],
   });
   provider.register();
+  // AI SDK 7 no longer emits spans on its own: the OpenTelemetry integration
+  // is a separate package and must be registered. The legacy integration
+  // keeps the v6 span shape (`ai.streamText`, `ai.toolCall`, ...) that our
+  // Langfuse views are built on. Registered only when Langfuse is enabled, so
+  // a keyless deployment traces nothing — as before.
+  registerTelemetry(
+    new LegacyOpenTelemetry({ tracer: provider.getTracer("ai") }),
+  );
 
   logger.info("Langfuse tracing initialized", {
     baseUrl: baseUrl || "https://cloud.langfuse.com",

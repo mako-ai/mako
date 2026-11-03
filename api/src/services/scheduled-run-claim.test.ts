@@ -82,7 +82,7 @@ async function main(): Promise<void> {
     const reset = await TestJob.findByIdAndUpdate(
       due._id,
       { $set: { "scheduledRun.nextAt": new Date("2026-08-31T11:00:00Z") } },
-      { new: true },
+      { returnDocument: "after" },
     ).lean();
     assert.ok(reset);
     const serialized = {

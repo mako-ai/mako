@@ -55,10 +55,12 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
   if (!workspaceInitialized || workspaceLoading) {
     return (
       <Box
-        display="flex"
-        justifyContent="center"
-        alignItems="center"
-        minHeight="100vh"
+        sx={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          minHeight: "100vh",
+        }}
       >
         <CircularProgress size={60} />
       </Box>
@@ -87,10 +89,12 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
   if (workspaces.length === 1 && !currentWorkspace) {
     return (
       <Box
-        display="flex"
-        justifyContent="center"
-        alignItems="center"
-        minHeight="100vh"
+        sx={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          minHeight: "100vh",
+        }}
       >
         <CircularProgress size={60} />
       </Box>

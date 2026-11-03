@@ -10,7 +10,7 @@ export type {
   SessionCookie,
   CookieAttributes,
 } from "./session";
-export { getGoogle, getGitHub } from "./arctic";
+export { getGoogle, getGitHub } from "./oauth-providers";
 export { AuthService } from "./auth.service";
 export {
   authMiddleware,

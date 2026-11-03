@@ -9,7 +9,15 @@ import {
   AuthTypes,
   IpAddressTypes,
 } from "@google-cloud/cloud-sql-connector";
-import { Client as PgClient, Pool as PgPool } from "pg";
+import {
+  Client as PgClient,
+  Pool as PgPool,
+  type QueryResult as PgQueryResult,
+} from "pg";
+import {
+  inReadOnlyTransaction,
+  ownResult,
+} from "../../../access/connection-writes";
 import { GoogleAuth, JWT, type AuthClient } from "google-auth-library";
 import { loggers } from "../../../logging";
 import {
@@ -245,6 +253,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       dbName?: string;
       executionId?: string;
       readOnly?: boolean;
+      readOnlyTransaction?: boolean;
     },
   ): Promise<QueryResult> {
     try {
@@ -255,7 +264,8 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       // If executionId is provided, run the query on a dedicated pooled client
       // so we can reliably capture the backend PID for cancellation.
       const executionId = options?.executionId;
-      if (executionId || options?.readOnly) {
+      const readOnly = options?.readOnly || options?.readOnlyTransaction;
+      if (executionId || readOnly) {
         const client = await pool.connect();
         const poolKey = `${database._id.toString()}:${targetDb || "default"}`;
         let readOnlyTransactionStarted = false;
@@ -269,15 +279,16 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
               this.runningQueries.set(executionId, { pid, poolKey, pool });
             }
           }
-          if (options?.readOnly) {
-            await client.query("BEGIN TRANSACTION READ ONLY");
+          let result: PgQueryResult;
+          if (readOnly) {
             readOnlyTransactionStarted = true;
-          }
-
-          const result = await client.query(query);
-          if (readOnlyTransactionStarted) {
-            await client.query("COMMIT");
+            result = ownResult(
+              (await client.query(inReadOnlyTransaction(query))) as
+                PgQueryResult | PgQueryResult[],
+            );
             readOnlyTransactionStarted = false;
+          } else {
+            result = await client.query(query);
           }
           const fields = normalizePostgresFields(result.fields);
           const rows = normalizePostgresRows(
@@ -418,6 +429,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
           throw new Error(
             "Authentication failed. The service account credentials may not have the required permissions. " +
               "Please ensure the service account has 'Cloud SQL Client' role in the project.",
+            { cause: getOptionsError },
           );
         }
         throw getOptionsError;
@@ -613,6 +625,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         `Failed to establish Cloud SQL connection: ${
           error instanceof Error ? error.message : "Unknown error"
         }`,
+        { cause: error },
       );
     }
   }
@@ -706,6 +719,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
                 ? authTestError.message
                 : "Unknown error"
             }`,
+            { cause: authTestError },
           );
         }
 
@@ -726,6 +740,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
           `Invalid service account JSON: ${
             parseError instanceof Error ? parseError.message : "Parse error"
           }`,
+          { cause: parseError },
         );
       }
     } else {
@@ -751,6 +766,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
             authError instanceof Error ? authError.message : "Unknown error"
           }. ` +
             `Please provide service account JSON or ensure GOOGLE_APPLICATION_CREDENTIALS is set.`,
+          { cause: authError },
         );
       }
     }

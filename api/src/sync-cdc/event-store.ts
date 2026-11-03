@@ -140,8 +140,7 @@ function extractDuplicateErrorInfo(error: unknown): DuplicateErrorInfo {
       (err?.result as Record<string, unknown> | undefined)?.writeErrors ||
       (
         (err?.result as Record<string, unknown> | undefined)?.result as
-          | Record<string, unknown>
-          | undefined
+          Record<string, unknown> | undefined
       )?.writeErrors ||
       (err?.errorResponse as Record<string, unknown> | undefined)
         ?.writeErrors ||
@@ -280,7 +279,7 @@ class MongoCdcEventStore implements CdcEventStore {
       });
     }
 
-    let inserted = 0;
+    let inserted: number;
     let deduped = 0;
     try {
       const result = await CdcChangeEvent.insertMany(

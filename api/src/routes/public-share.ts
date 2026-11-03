@@ -2,38 +2,51 @@
  * Public share consumption routes — intentionally public (token-gated).
  *
  * Classification: Intentionally public. Access is gated by an unguessable
- * share token (and optionally a password). Anonymous viewers only ever see
- * materialized snapshot artifacts — no live query execution is reachable
- * from these routes.
+ * share token (and optionally a password). Anonymous viewers see the app's
+ * published deployment and its materialized snapshot artifacts; live
+ * re-execution is only reachable when the owner opts in (`allowLiveQueries`).
  *
  *   GET  /api/share/:token            — share metadata (+passwordRequired)
  *   POST /api/share/:token/unlock     — verify password, set signed cookie
- *   GET  /api/share/:token/content    — sanitized dashboard/app definition
- *   GET  /api/share/:token/artifacts/:artifactId — stream snapshot parquet
- *   POST /api/share/:token/refresh    — throttled snapshot re-materialization
+ *   GET  /api/share/:token/content    — shared app entry metadata
+ *   GET  /api/share/:token/artifacts/:artifactId — binding snapshot parquet
+ *   GET  /api/share/:token/app/*      — the app's published deployment files
  */
 
+import { withQueryLabels } from "../services/bigquery-labels";
 import crypto from "node:crypto";
-import { Readable } from "node:stream";
 import bcrypt from "bcrypt";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { OPEN_RESPONSES, createRouter } from "../openapi/core";
-import {
-  Dashboard,
-  AppProject,
-  type IDashboard,
-  type IAppProject,
-} from "../database/workspace-schema";
+import { type IAppProject } from "../database/workspace-schema";
 import { loggers } from "../logging";
-import { buildDataSourceMaterializationStatus } from "../services/dashboard-materialization.service";
-import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { serverTiming, timed } from "../middleware/server-timing";
+import { getArtifactStore } from "../services/artifact-store.service";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
-import { refreshBindingHttp } from "../apps/binding-refresh";
+import {
+  refreshBindingHttp,
+  refreshBindingProgress,
+} from "../apps/binding-refresh";
+import { wantsBindingProgress } from "../apps/binding-progress";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  APP_DOCUMENT_SANDBOX,
+  sandboxAppDocument,
+} from "../apps/app-document-sandbox";
+import {
+  anonIdFromCookie,
+  classifyUserAgent,
+  recordServedOpen,
+  servedOpenSource,
+} from "../apps/app-usage.service";
+import {
+  findShareByToken,
+  isOpenShare,
+  shareImageFor,
+} from "../services/share-og.service";
 
 const logger = loggers.api("public-share");
 
@@ -54,32 +67,19 @@ const OptionalJsonBody = {
 
 /** How long an unlock cookie stays valid. */
 const UNLOCK_TTL_MS = 12 * 60 * 60 * 1000;
-/** Minimum delay between anonymous refresh triggers per dashboard. */
+/** Minimum delay between anonymous refresh triggers per app binding. */
 export const PUBLIC_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 /** Password attempts per token+IP within the window. */
 const UNLOCK_MAX_ATTEMPTS = 10;
 const UNLOCK_WINDOW_MS = 15 * 60 * 1000;
 
-type SharedResource =
-  | { type: "dashboard"; doc: IDashboard }
-  // "app" is a git-backed app's built deployment (§13).
-  | { type: "app"; doc: IAppProject };
+// "app" is a git-backed app's built deployment (§13) — the only shareable
+// resource type.
+type SharedResource = { type: "app"; doc: IAppProject };
 
 async function findByToken(token: string): Promise<SharedResource | null> {
   // Tokens are readable slugs (possibly short) or legacy random strings.
-  if (!token || token.length < 3 || token.length > 128) return null;
-  if (!/^[a-zA-Z0-9_-]+$/.test(token)) return null;
-  const dashboard = await Dashboard.findOne({
-    "publicShare.token": token,
-    "publicShare.enabled": true,
-  });
-  if (dashboard) return { type: "dashboard", doc: dashboard };
-  // Apps shares the same publicShare primitive; what differs is what gets
-  // served — a built deployment rather than a JSON definition (§13).
-  const app = await AppProject.findOne({
-    "publicShare.token": token,
-    "publicShare.enabled": true,
-  });
+  const app = await findShareByToken(token);
   if (app) return { type: "app", doc: app };
   return null;
 }
@@ -116,6 +116,53 @@ function hasValidUnlock(c: Context, token: string): boolean {
   } catch {
     return false;
   }
+}
+
+// ── Unlock grant in the URL path ──
+//
+// A shared app's document is CSP-sandboxed (see SHARE_APP_SANDBOX), so its
+// origin is opaque and its own requests (module scripts, `__data/*`, the
+// refresh POST) carry no cookies, the unlock cookie included. The document
+// navigation still does: when the cookie authorizes it, the served HTML gets
+// a `<base>` pointing at `/api/share/<token>/u/<grant>/`, and every relative
+// request the app makes resolves under the grant. The address bar keeps the
+// cookie-gated URL, so copying it never copies the grant.
+//
+// The grant is the cookie's own expiry signed for a DIFFERENT purpose, so a
+// grant cannot pose as a cookie, nor a cookie as a grant, and a grant never
+// outlives the unlock that minted it.
+
+function signUnlockGrant(token: string, expiresAt: number): string {
+  return crypto
+    .createHmac("sha256", getShareSecret())
+    .update(`share-unlock-url:${token}:${expiresAt}`)
+    .digest("base64url");
+}
+
+function unlockExpiry(c: Context, token: string): number | null {
+  if (!hasValidUnlock(c, token)) return null;
+  const raw = getCookie(c, unlockCookieName(token)) ?? "";
+  return Number(raw.split(".")[0]);
+}
+
+/** The grant segment for this request's unlock cookie, or null. */
+export function unlockGrantFor(c: Context, token: string): string | null {
+  const expiresAt = unlockExpiry(c, token);
+  return expiresAt ? `${expiresAt}.${signUnlockGrant(token, expiresAt)}` : null;
+}
+
+export function isValidUnlockGrant(token: string, grant: string): boolean {
+  const [expStr, sig] = grant.split(".");
+  const expiresAt = Number(expStr);
+  if (!sig || !Number.isFinite(expiresAt) || expiresAt < Date.now()) {
+    return false;
+  }
+  const expected = Buffer.from(signUnlockGrant(token, expiresAt));
+  const actual = Buffer.from(sig);
+  return (
+    expected.length === actual.length &&
+    crypto.timingSafeEqual(expected, actual)
+  );
 }
 
 function passwordRequired(resource: SharedResource): boolean {
@@ -159,97 +206,6 @@ function clientIp(c: Context): string {
   );
 }
 
-// ── Content sanitizers (never expose SQL, connection ids, or hashes) ──
-
-async function buildDashboardContent(token: string, dashboard: IDashboard) {
-  const workspaceId = dashboard.workspaceId.toString();
-  const dashboardId = dashboard._id.toString();
-
-  // Render the PUBLISHED definition (draft/published split) so a public viewer
-  // never sees a half-edited or restored-but-unpublished draft. Fall back to
-  // the live definition for dashboards that were never published (back-compat).
-  const def = (dashboard.published as Record<string, any> | undefined) ?? {
-    title: dashboard.title,
-    description: dashboard.description,
-    widgets: dashboard.widgets,
-    globalFilters: dashboard.globalFilters,
-    relationships: dashboard.relationships,
-    crossFilter: dashboard.crossFilter,
-    layout: dashboard.layout,
-    dataSources: dashboard.dataSources,
-  };
-
-  // Materialization artifacts are server-owned and keyed by data-source id, so
-  // compute status from the LIVE data source when present (freshest), falling
-  // back to the published snapshot's definition.
-  const liveDsById = new Map(
-    (dashboard.dataSources || []).map(ds => [String(ds.id), ds]),
-  );
-  const dataSources = await Promise.all(
-    ((def.dataSources as Array<Record<string, any>>) || []).map(async ds => {
-      const liveDs = liveDsById.get(String(ds.id)) ?? ds;
-      const materialization =
-        (liveDs as { materialization?: string }).materialization === "live"
-          ? "live"
-          : "parquet";
-      // Live data sources execute server-side per viewer; anonymous public
-      // viewers never get live execution, so expose them as not-ready with no
-      // artifact (mirrors the public app viewer refusing live bindings).
-      if (materialization === "live") {
-        return {
-          id: ds.id,
-          name: ds.name,
-          tableRef: ds.tableRef,
-          timeDimension: ds.timeDimension,
-          computedColumns: ds.computedColumns,
-          materialization,
-          ready: false,
-          rowCount: null,
-          materializedAt: null,
-          artifactUrl: null,
-        };
-      }
-      const status = await buildDataSourceMaterializationStatus({
-        workspaceId,
-        dashboardId,
-        dataSource: liveDs as any,
-      });
-      const ready = status.status === "ready" && !!status.artifactKey;
-      return {
-        id: ds.id,
-        name: ds.name,
-        tableRef: ds.tableRef,
-        timeDimension: ds.timeDimension,
-        computedColumns: ds.computedColumns,
-        materialization,
-        ready,
-        rowCount: status.rowCount,
-        materializedAt: status.builtAt || status.lastMaterializedAt,
-        artifactUrl: ready
-          ? `/api/share/${token}/artifacts/${encodeURIComponent(String(ds.id))}?rev=${encodeURIComponent(status.artifactRevision || "")}`
-          : null,
-      };
-    }),
-  );
-
-  return {
-    type: "dashboard" as const,
-    title: def.title,
-    description: def.description,
-    widgets: def.widgets,
-    globalFilters: def.globalFilters,
-    relationships: def.relationships,
-    crossFilter: def.crossFilter,
-    layout: def.layout,
-    dataSources,
-    refresh: {
-      cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
-      lastRefreshAt:
-        dashboard.publicShare?.lastPublicRefreshAt?.toISOString() ?? null,
-    },
-  };
-}
-
 // ── Routes ──
 
 // GET /:token — public metadata (safe before password unlock)
@@ -265,7 +221,7 @@ app.openapi(
   }),
   async c => {
     try {
-      const token = c.req.param("token");
+      const token = c.req.param("token") as string;
       const resource = await findByToken(token);
       if (!resource) {
         return c.json({ success: false, error: "Share link not found" }, 404);
@@ -299,7 +255,7 @@ app.openapi(
   }),
   async c => {
     try {
-      const token = c.req.param("token");
+      const token = c.req.param("token") as string;
       const resource = await findByToken(token);
       if (!resource) {
         return c.json({ success: false, error: "Share link not found" }, 404);
@@ -346,7 +302,7 @@ app.openapi(
   },
 );
 
-// GET /:token/content — sanitized definition (post-unlock)
+// GET /:token/content — shared app entry metadata (post-unlock)
 app.openapi(
   createRoute({
     method: "get",
@@ -359,7 +315,7 @@ app.openapi(
   }),
   async c => {
     try {
-      const token = c.req.param("token");
+      const token = c.req.param("token") as string;
       const resource = await findByToken(token);
       if (!resource) {
         return c.json({ success: false, error: "Share link not found" }, 404);
@@ -367,31 +323,67 @@ app.openapi(
       const gate = requireUnlock(c, token, resource);
       if (gate) return gate;
 
-      if (resource.type === "app") {
-        // A v2 app is a built bundle, not a definition the client renders:
-        // its content is served as files from /api/share/:token/app/*.
-        return c.json(
-          {
-            success: true,
-            data: {
-              kind: "app" as const,
-              title: resource.doc.title,
-              published: Boolean(resource.doc.publishedSha),
-              entry: `/api/share/${token}/app/`,
-            },
+      // An app is a built bundle, not a definition the client renders: its
+      // content is served as files from /api/share/:token/app/*.
+      return c.json(
+        {
+          success: true,
+          data: {
+            kind: "app" as const,
+            title: resource.doc.title,
+            published: Boolean(resource.doc.publishedSha),
+            entry: `/api/share/${token}/app/`,
           },
-          200,
-          { "Cache-Control": "private, no-store" },
-        );
-      }
-      const data = await buildDashboardContent(token, resource.doc);
-
-      return c.json({ success: true, data }, 200, {
-        "Cache-Control": "private, no-store",
-      });
+        },
+        200,
+        { "Cache-Control": "private, no-store" },
+      );
     } catch (error) {
       logger.error("Error building share content", { error });
       return c.json({ success: false, error: "Failed to load content" }, 500);
+    }
+  },
+);
+
+// GET /:token/og-image — the link-preview picture (share-og.service)
+app.use("/:token/og-image", serverTiming("share.ogImage"));
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{token}/og-image",
+    tags: ["Public Shares"],
+    summary: "Link-preview image of an open share",
+    description:
+      "The app's own raster thumbnail (thumbnail.png/.jpg/.webp), as a JPEG at most 1200 px wide and ~300 KB (so WhatsApp shows the large card), for Open Graph crawlers. Only for a share anyone can open (enabled, no password); otherwise — or when the app has no raster thumbnail — 404, and the share page points crawlers at the generic /og-default.png instead. Cached publicly by blob oid.",
+    security: [],
+    request: { params: TokenParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const token = c.req.param("token") as string;
+      const app = await timed("share.lookup", () => findShareByToken(token));
+      const image = isOpenShare(app) ? await shareImageFor(app) : null;
+      if (!image) {
+        return c.json({ success: false, error: "No preview image" }, 404, {
+          "Cache-Control": "no-store",
+        });
+      }
+      return new Response(new Uint8Array(image.bytes), {
+        status: 200,
+        headers: {
+          "Content-Type": image.contentType,
+          "Content-Length": String(image.bytes.length),
+          // Crawlers and their CDNs cache by URL; the URL carries the oid.
+          // A day, not forever: unsharing must eventually stop serving it.
+          "Cache-Control": "public, max-age=86400",
+          ETag: image.etag,
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    } catch (error) {
+      logger.error("Error serving share preview image", { error });
+      return c.json({ success: false, error: "Failed to load image" }, 500);
     }
   },
 );
@@ -404,10 +396,7 @@ app.openapi(
     tags: ["Public Shares"],
     summary: "Stream a share snapshot artifact",
     security: [],
-    request: {
-      params: ArtifactParam,
-      query: z.object({ rev: z.string().optional() }),
-    },
+    request: { params: ArtifactParam },
     responses: {
       ...OPEN_RESPONSES,
       200: {
@@ -422,7 +411,7 @@ app.openapi(
   }),
   async c => {
     try {
-      const token = c.req.param("token");
+      const token = c.req.param("token") as string;
       const artifactId = c.req.param("artifactId");
       const resource = await findByToken(token);
       if (!resource) {
@@ -431,68 +420,24 @@ app.openapi(
       const gate = requireUnlock(c, token, resource);
       if (gate) return gate;
 
-      let artifactKey: string | null = null;
-      let revision: string | null = null;
-      let rowCount: number | null = null;
-
-      if (resource.type === "dashboard") {
-        const dataSource = resource.doc.dataSources?.find(
-          ds => ds.id === artifactId,
-        );
-        if (!dataSource) {
-          return c.json({ success: false, error: "Artifact not found" }, 404);
-        }
-        const status = await buildDataSourceMaterializationStatus({
-          workspaceId: resource.doc.workspaceId.toString(),
-          dashboardId: resource.doc._id.toString(),
-          dataSource,
-        });
-        artifactKey = status.artifactKey;
-        revision = status.artifactRevision;
-        rowCount = status.rowCount;
-      } else {
-        artifactKey = await bindingArtifactKeyByName(
-          resource.doc,
-          artifactId,
-          "",
-        );
-        // App bindings have no revision to pin caching to, so nothing is
-        // lost by handing the browser a signed bucket URL instead of a
-        // proxied stream. Dashboard artifacts below keep streaming: their
-        // `rev`-addressed responses are immutable-cacheable, which a
-        // per-request signed URL would break.
-        if (artifactKey) {
-          const redirected = await serveParquetArtifact(
-            getDashboardArtifactStore(),
-            artifactKey,
-            { cacheControl: "private, no-store" },
-          );
-          if (redirected) return redirected;
-          return c.json({ success: false, error: "Artifact not found" }, 404);
-        }
-      }
-
+      const artifactKey = await bindingArtifactKeyByName(
+        resource.doc,
+        artifactId,
+        "",
+      );
       if (!artifactKey) {
         return c.json({ success: false, error: "Artifact not found" }, 404);
       }
-
-      const store = getDashboardArtifactStore();
-      const stream = await store.openReadStream(artifactKey);
-      if (!stream) {
-        return c.json({ success: false, error: "Artifact not found" }, 404);
-      }
-
-      const rev = c.req.query("rev");
-      const cacheControl =
-        rev && revision && rev === revision
-          ? "private, max-age=86400, immutable"
-          : "private, no-store";
-
-      return c.body(Readable.toWeb(stream as Readable) as ReadableStream, 200, {
-        "Content-Type": "application/vnd.apache.parquet",
-        "X-Row-Count": String(rowCount ?? 0),
-        "Cache-Control": cacheControl,
-      });
+      // App bindings have no revision to pin caching to, so nothing is lost
+      // by handing the browser a signed bucket URL instead of a proxied
+      // stream.
+      const served = await serveParquetArtifact(
+        getArtifactStore(),
+        artifactKey,
+        { cacheControl: "private, no-store" },
+      );
+      if (served) return served;
+      return c.json({ success: false, error: "Artifact not found" }, 404);
     } catch (error) {
       logger.error("Error streaming share artifact", { error });
       return c.json({ success: false, error: "Failed to serve artifact" }, 500);
@@ -500,129 +445,69 @@ app.openapi(
   },
 );
 
-// POST /:token/refresh — throttled snapshot refresh.
-// Only re-runs the owner-defined data source queries; anonymous viewers can
-// never execute arbitrary queries.
-app.openapi(
-  createRoute({
-    method: "post",
-    path: "/{token}/refresh",
-    tags: ["Public Shares"],
-    summary: "Refresh a public share snapshot",
-    security: [],
-    request: { params: TokenParam },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const token = c.req.param("token");
-      const resource = await findByToken(token);
-      if (!resource) {
-        return c.json({ success: false, error: "Share link not found" }, 404);
-      }
-      const gate = requireUnlock(c, token, resource);
-      if (gate) return gate;
-      if (resource.type !== "dashboard") {
-        return c.json(
-          { success: false, error: "Refresh is only supported for dashboards" },
-          400,
-        );
-      }
-      if (
-        !(resource.doc.dataSources || []).some(
-          ds => ds.materialization !== "live",
-        )
-      ) {
-        return c.json(
-          {
-            success: false,
-            error: "No materialized dashboard data sources to refresh",
-          },
-          400,
-        );
-      }
+// ── Anonymous viewer id (usage) ──
+//
+// A share link's viewers have no account, and an IP is neither one person
+// (an office NAT) nor stable (a phone). So the first view of any shared app
+// gets a random first-party id in a long-lived cookie, and usage stores only
+// a prefixed hash of it (`anon:<hash>`, see anonIdFromCookie) — never the IP,
+// never linked to one. `SameSite=None; Secure` so the same viewer is
+// recognised when the app is framed on another site, where browsers that
+// block third-party cookies simply leave it unrecognised.
 
-      const last =
-        resource.doc.publicShare?.lastPublicRefreshAt?.getTime() ?? 0;
-      const elapsed = Date.now() - last;
-      if (elapsed < PUBLIC_REFRESH_COOLDOWN_MS) {
-        const retryAfterMs = PUBLIC_REFRESH_COOLDOWN_MS - elapsed;
-        return c.json(
-          {
-            success: false,
-            error: "Refresh is cooling down",
-            code: "REFRESH_COOLDOWN",
-            retryAfterMs,
-          },
-          429,
-        );
-      }
+const ANON_COOKIE = "mako_viewer";
+const ANON_COOKIE_MAX_AGE_S = 400 * 24 * 60 * 60;
+const ANON_COOKIE_VALUE = /^[A-Za-z0-9_-]{16,64}$/;
 
-      // Claim the cooldown slot atomically so concurrent anonymous viewers
-      // can't queue duplicate refreshes.
-      const claimed = await Dashboard.findOneAndUpdate(
-        {
-          _id: resource.doc._id,
-          "publicShare.enabled": true,
-          $or: [
-            { "publicShare.lastPublicRefreshAt": { $exists: false } },
-            {
-              "publicShare.lastPublicRefreshAt": {
-                $lte: new Date(Date.now() - PUBLIC_REFRESH_COOLDOWN_MS),
-              },
-            },
-          ],
-        },
-        { $set: { "publicShare.lastPublicRefreshAt": new Date() } },
-        { new: true },
+export function recordSharedAppOpen(
+  c: Context,
+  response: Response,
+  workspaceId: string,
+  appId: string,
+): void {
+  const fetchDest = c.req.header("sec-fetch-dest");
+  const contentType = response.headers.get("content-type");
+  if (!servedOpenSource(fetchDest, contentType, "share")) return;
+  const userAgent = c.req.header("user-agent");
+  const isBot = classifyUserAgent(userAgent) === "bot";
+  const existing = getCookie(c, ANON_COOKIE);
+  let cookie = existing && ANON_COOKIE_VALUE.test(existing) ? existing : null;
+  let anonId = cookie ? anonIdFromCookie(cookie) : null;
+  if (!cookie) {
+    cookie = crypto.randomBytes(18).toString("base64url");
+    // A top-level page keeps the cookie it is given, so this view is that
+    // viewer's first. A frame may be refused it (third-party cookies), and
+    // an id that never comes back would count one viewer per load — so a
+    // frame's first view is recorded as not-yet-identifiable instead.
+    if (fetchDest === "document") anonId = anonIdFromCookie(cookie);
+    if (!isBot) {
+      const secure = process.env.NODE_ENV === "production";
+      response.headers.append(
+        "Set-Cookie",
+        [
+          `${ANON_COOKIE}=${cookie}`,
+          "Path=/api/share",
+          `Max-Age=${ANON_COOKIE_MAX_AGE_S}`,
+          "HttpOnly",
+          secure ? "SameSite=None; Secure" : "SameSite=Lax",
+        ].join("; "),
       );
-      if (!claimed) {
-        return c.json(
-          {
-            success: false,
-            error: "Refresh is cooling down",
-            code: "REFRESH_COOLDOWN",
-            retryAfterMs: PUBLIC_REFRESH_COOLDOWN_MS,
-          },
-          429,
-        );
-      }
-
-      let queued = false;
-      let alreadyRunning = false;
-      let dataSourceIds: string[] = [];
-
-      if (resource.type === "dashboard") {
-        const dashboard = resource.doc;
-        // force: true re-queries the owner-defined source queries even when the
-        // dashboard definition is unchanged. Without it, the rebuild service
-        // reuses the cached parquet (no new parquetBuiltAt), so the viewer's
-        // "data changed?" poll never observes a fresh snapshot and times out.
-        // The 5-minute cooldown above guards against abusive/expensive re-runs.
-        const queueResult = await queueDashboardArtifactRefresh({
-          dashboardId: dashboard._id.toString(),
-          workspaceId: dashboard.workspaceId.toString(),
-          force: true,
-          triggerType: "manual",
-        });
-        queued = queueResult.queued;
-        alreadyRunning = !queueResult.queued;
-        dataSourceIds = queueResult.dataSourceIds;
-      }
-
-      return c.json({
-        success: true,
-        queued,
-        alreadyRunning,
-        dataSourceIds,
-        cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
-      });
-    } catch (error) {
-      logger.error("Error refreshing public share", { error });
-      return c.json({ success: false, error: "Failed to refresh" }, 500);
     }
-  },
-);
+  }
+  recordServedOpen({
+    workspaceId,
+    appId,
+    userId: null,
+    anonId,
+    viewerKey: `anon:${cookie}`,
+    fetchDest,
+    contentType,
+    pageSource: "share",
+    userAgent,
+    referer: c.req.header("referer"),
+    host: c.req.header("host"),
+  });
+}
 
 /**
  * Serve a shared Apps deployment's files (§13).
@@ -635,27 +520,42 @@ app.openapi(
  * shared app keeps its data without the viewer touching a warehouse.
  */
 async function serveSharedApp(c: Context): Promise<Response> {
-  const token = c.req.param("token");
+  const token = c.req.param("token") as string;
+  const grant = c.req.param("grant");
   const resource = await findByToken(token);
-  if (!resource || resource.type !== "app") {
-    return c.json({ success: false, error: "Share link not found" }, 404);
+  if (!resource) {
+    return shareAppJson({ success: false, error: "Share link not found" }, 404);
   }
-  const gate = requireUnlock(c, token, resource);
-  if (gate) return gate;
+  // `/u/<grant>/…` is authorized by the grant alone (the opaque-origin app
+  // sends no cookie); `/app/…` by the unlock cookie, as before.
+  if (grant !== undefined) {
+    if (passwordRequired(resource) && !isValidUnlockGrant(token, grant)) {
+      return shareAppJson(
+        {
+          success: false,
+          error: "Password required",
+          code: "PASSWORD_REQUIRED",
+        },
+        401,
+      );
+    }
+  } else {
+    const gate = requireUnlock(c, token, resource);
+    if (gate) return withShareAppHeaders(gate);
+  }
 
   const project = resource.doc;
   const sha = project.publishedSha;
   if (!sha) {
-    return c.json(
+    return shareAppJson(
       { success: false, error: "This app has not been published yet" },
       404,
     );
   }
   const projectId = project._id.toString();
-  const assetPath = (c.req.path.split(`/share/${token}/app`)[1] ?? "").replace(
-    /^\/+/,
-    "",
-  );
+  const marker =
+    grant !== undefined ? `/share/${token}/u/${grant}` : `/share/${token}/app`;
+  const assetPath = (c.req.path.split(marker)[1] ?? "").replace(/^\/+/, "");
 
   const response = await serveDeploymentFile({
     projectId,
@@ -664,38 +564,133 @@ async function serveSharedApp(c: Context): Promise<Response> {
     private: true,
     // Anonymous: `__data/viewer.json` is null — there is nobody to describe.
     viewer: null,
+    progress: wantsBindingProgress(c.req.header("accept")),
   });
-  return response ?? c.json({ success: false, error: "Not found" }, 404);
+  if (!response) {
+    return shareAppJson({ success: false, error: "Not found" }, 404);
+  }
+  // The share page navigates straight here, so this page load IS the view.
+  recordSharedAppOpen(c, response, project.workspaceId.toString(), projectId);
+
+  // A cookie-authorized document of a password share: point the app's
+  // relative requests at the grant, which they can carry and a cookie can't.
+  const cookieGrant =
+    grant === undefined && passwordRequired(resource)
+      ? unlockGrantFor(c, token)
+      : null;
+  if (cookieGrant && isHtml(response)) {
+    return await withShareBase(
+      response,
+      `/api/share/${encodeURIComponent(token)}/u/${cookieGrant}/`,
+    );
+  }
+  return withShareAppHeaders(response);
+}
+
+/** The sandbox every shared app document gets (app-document-sandbox.ts). */
+export const SHARE_APP_SANDBOX = APP_DOCUMENT_SANDBOX;
+
+function isHtml(response: Response): boolean {
+  return (response.headers.get("Content-Type") ?? "")
+    .toLowerCase()
+    .startsWith("text/html");
+}
+
+/**
+ * Headers for anything the shared app's (opaque-origin) document fetches:
+ * `Origin: null` + CORS-mode module scripts need a wildcard ACAO, which is
+ * safe because nothing here is cookie-authorized for a cross-origin reader
+ * (credentialed reads need an exact origin, which this never sends).
+ */
+function withShareAppHeaders(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Access-Control-Allow-Origin", "*");
+  sandboxAppDocument(headers);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function shareAppJson(body: object, status: number): Response {
+  return withShareAppHeaders(
+    new Response(JSON.stringify(body), {
+      status,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "private, no-store",
+      },
+    }),
+  );
+}
+
+/** Insert `<base href>` as the first thing in <head> (first base wins). */
+async function withShareBase(
+  response: Response,
+  href: string,
+): Promise<Response> {
+  const html = await response.text();
+  const tag = `<base href="${href.replace(/"/g, "&quot;")}">`;
+  const head = /<head(\s[^>]*)?>/i.exec(html);
+  const out = head
+    ? html.slice(0, head.index + head[0].length) +
+      tag +
+      html.slice(head.index + head[0].length)
+    : tag + html;
+  const headers = new Headers(response.headers);
+  headers.delete("Content-Length");
+  // The page now embeds a credential: never let anything keep a copy.
+  headers.set("Cache-Control", "private, no-store");
+  return withShareAppHeaders(
+    new Response(out, { status: response.status, headers }),
+  );
 }
 
 app.get("/:token/app", serveSharedApp);
 app.get("/:token/app/*", serveSharedApp);
+app.get("/:token/u/:grant", serveSharedApp);
+app.get("/:token/u/:grant/*", serveSharedApp);
 
 /**
  * A shared app's `POST __data/<name>/refresh` — the SDK's `refresh()` from
  * an anonymous viewer. Runs the owner's published query under the owner's
  * connection, so it is what `allowLiveQueries` was defined to govern: off by
  * default (a share stays a frozen snapshot), and when the owner opts in,
- * throttled per binding with the dashboard share's cooldown — claimed
+ * throttled per binding with PUBLIC_REFRESH_COOLDOWN_MS — claimed
  * atomically, so a crowd of viewers is one warehouse query, not a crowd.
  */
-app.post("/:token/app/__data/:name/refresh", async c => {
-  const token = c.req.param("token");
+async function refreshSharedBinding(c: Context): Promise<Response> {
+  const token = c.req.param("token") as string;
+  const grant = c.req.param("grant");
   const resource = await findByToken(token);
-  if (!resource || resource.type !== "app") {
-    return c.json({ success: false, error: "Share link not found" }, 404);
+  if (!resource) {
+    return shareAppJson({ success: false, error: "Share link not found" }, 404);
   }
-  const gate = requireUnlock(c, token, resource);
-  if (gate) return gate;
+  if (grant !== undefined) {
+    if (passwordRequired(resource) && !isValidUnlockGrant(token, grant)) {
+      return shareAppJson(
+        {
+          success: false,
+          error: "Password required",
+          code: "PASSWORD_REQUIRED",
+        },
+        401,
+      );
+    }
+  } else {
+    const gate = requireUnlock(c, token, resource);
+    if (gate) return withShareAppHeaders(gate);
+  }
   const project = resource.doc;
   if (!project.publishedSha) {
-    return c.json(
+    return shareAppJson(
       { success: false, error: "This app has not been published yet" },
       404,
     );
   }
   if (!project.publicShare?.allowLiveQueries) {
-    return c.json(
+    return shareAppJson(
       {
         success: false,
         error:
@@ -704,19 +699,36 @@ app.post("/:token/app/__data/:name/refresh", async c => {
       403,
     );
   }
+  const input = {
+    project,
+    name: c.req.param("name") as string,
+    actorId: "",
+    at: project.publishedSha,
+    cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
+  };
+  if (wantsBindingProgress(c.req.header("accept"))) {
+    return withShareAppHeaders(
+      await withQueryLabels({ mako_trigger: "public" }, async () =>
+        refreshBindingProgress(input),
+      ),
+    );
+  }
   try {
-    const { status, body, headers } = await refreshBindingHttp({
-      project,
-      name: c.req.param("name"),
-      actorId: "",
-      at: project.publishedSha,
-      cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
-    });
-    return c.json(body, status, headers);
+    const { status, body, headers } = await withQueryLabels(
+      { mako_trigger: "public" },
+      () => refreshBindingHttp(input),
+    );
+    return withShareAppHeaders(c.json(body, status, headers));
   } catch (error) {
     logger.error("Error refreshing a shared app's binding", { error });
-    return c.json({ success: false, error: "Failed to refresh" }, 500);
+    return shareAppJson({ success: false, error: "Failed to refresh" }, 500);
   }
-});
+}
+
+// The opaque-origin app sends a bodiless POST (a simple request, no
+// preflight) with no cookie: the grant path is how a password share's
+// refresh is authorized.
+app.post("/:token/app/__data/:name/refresh", refreshSharedBinding);
+app.post("/:token/u/:grant/__data/:name/refresh", refreshSharedBinding);
 
 export const publicShareRoutes = app;

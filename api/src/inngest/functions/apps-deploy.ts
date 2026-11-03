@@ -188,7 +188,7 @@ export const appsDeployReconcileFunction = inngest.createFunction(
       AppProject.find({ publishedSha: { $ne: null } })
         .select("_id workspaceId slug path publishedSha lastDeployError")
         .lean(),
-    )) as Array<
+    )) as unknown as Array<
       Pick<
         IAppProject,
         | "_id"

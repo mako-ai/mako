@@ -35,9 +35,7 @@ export const clarifyingQuestionSchema = z.object({
   allowMultiple: z
     .boolean()
     .optional()
-    .describe(
-      "For 'choice' questions, allow selecting more than one option.",
-    ),
+    .describe("For 'choice' questions, allow selecting more than one option."),
   allowOther: z
     .boolean()
     .optional()
@@ -91,6 +89,7 @@ export const submitPlanSchema = z.object({
         "warehouse-write",
         "git-write",
         "schedule-write",
+        "workflows-run",
       ]),
     )
     .optional()
@@ -108,7 +107,7 @@ export const clientPlanTools = {
     description:
       "Pause and ask the user one or more targeted clarifying questions before planning or acting. " +
       "Use this whenever the request is ambiguous or you need a decision (which connection, " +
-      "which dashboard, scope, etc.). The user answers in an inline form; their answers are returned to you. " +
+      "which app, scope, etc.). The user answers in an inline form; their answers are returned to you. " +
       "This is the ONLY way to ask the user questions — never present questions or option lists " +
       "as plain text in a reply. Prefer 'choice' questions with concrete options over free text. " +
       "When one option is the best default, set 'recommendedOption' to its exact label so the form " +
@@ -161,9 +160,7 @@ export type HitlToolName = keyof typeof HITL_TOOL_JSON_SCHEMAS;
 export function validateHitlToolArguments(
   tool: HitlToolName,
   args: unknown,
-):
-  | { ok: true; data: Record<string, unknown> }
-  | { ok: false; error: string } {
+): { ok: true; data: Record<string, unknown> } | { ok: false; error: string } {
   const schema =
     tool === "submit_plan" ? submitPlanSchema : askClarifyingQuestionsSchema;
   const parsed = schema.safeParse(args);

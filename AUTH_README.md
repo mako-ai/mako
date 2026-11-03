@@ -9,7 +9,7 @@ The authentication system consists of:
 ### Backend (API)
 
 - **Lucia Auth**: Session management library
-- **Arctic**: OAuth provider integration (Google & GitHub)
+- **OAuth client** (`auth/oauth-client.ts`): authorization-code flow for Google (PKCE) & GitHub
 - **MongoDB**: Database for users, sessions, and OAuth accounts
 - **Mongoose**: MongoDB ORM
 - **bcrypt**: Password hashing
@@ -29,7 +29,8 @@ api/
 ├── src/
 │   ├── auth/
 │   │   ├── lucia.ts          # Lucia configuration
-│   │   ├── arctic.ts         # OAuth providers setup
+│   │   ├── oauth-client.ts   # OAuth 2.0 authorization-code client
+│   │   ├── oauth-providers.ts# OAuth providers setup
 │   │   ├── auth.service.ts   # Auth business logic
 │   │   ├── auth.controller.ts# Route handlers
 │   │   ├── auth.middleware.ts# Auth & rate limit middleware
@@ -403,7 +404,7 @@ Browser → GET /api/auth/oauth-receive (on preview)
 | File                              | Purpose                                                                                      |
 | --------------------------------- | -------------------------------------------------------------------------------------------- |
 | `api/src/auth/oauth-proxy.ts`     | Proxy helpers: origin detection, state encoding/decoding, transfer tokens, origin validation |
-| `api/src/auth/arctic.ts`          | OAuth provider setup (callback URLs always point to production)                              |
+| `api/src/auth/oauth-providers.ts` | OAuth provider setup (callback URLs always point to production)                              |
 | `api/src/auth/auth.controller.ts` | OAuth routes with proxy-aware initiation, callback, and `/oauth-receive` endpoint            |
 
 ## Desktop App Authentication (deep-link handoff)
@@ -499,17 +500,18 @@ would fall through to the SPA fallback and poison client discovery.
   are consumed atomically. Session-minted Desktop ACP grants remain expiring.
 - `unifiedAuthMiddleware` recognizes the `mcpat_` Bearer prefix and sets
   `authType: "mcpOAuth"` with the grant's workspace binding and scopes.
-- Scopes default to the read-only set (`mcp`, `query:read`). OAuth clients may
-  request `warehouse:write`; the authorize page then shows a separate
-  warehouse-mutation option, pre-ticked because the client asked for it and
-  untickable (only what is still ticked is granted). A client that does not
-  request it never sees the option. `warehouse:write` is also what `mako dbt run`
-  needs to build a laptop checkout through `/api/workspaces/:id/dbt/local-runs`
-  (the caller's own environment by default; never another person's, never
-  the prod-like one): the uploaded dbt code runs with the environment's
-  warehouse credentials, so no narrower scope is offered. Raw `query:write`,
-  membership, and other administrative scopes are never available through
-  browser OAuth.
+- Every browser OAuth grant carries the full MCP scope set
+  (`MCP_OAUTH_SCOPES`: `mcp`, `query:read`, `warehouse:write`,
+  `connections:write`), whatever scope the client requests. There are no
+  per-permission consent options on the authorize page; what a viewer may not
+  do is decided by their LIVE workspace role at each tool call (the dbt and
+  connection tools require at least the member role). `mako dbt run` builds a
+  laptop checkout through `/api/workspaces/:id/dbt/local-runs` with any
+  MCP/CLI login (`mcp` scope); the route's RBAC keeps viewers out, and which
+  environment may be built (the caller's own by default; never another
+  person's, never the prod-like one) is decided in the route. Raw
+  `query:write`, membership, and other administrative scopes are never
+  available through browser OAuth.
 - An MCP OAuth token on the dbt routes acts with its user's LIVE workspace
   role, not the owner role a workspace API key gets.
 - Redirect URIs accepted at registration: `https` anywhere, `http` on
@@ -526,12 +528,17 @@ Workspace API keys (`revops_*`) now carry a `scopes` array
 `scopes: undefined` and are refused by the MCP endpoint with a rotation
 hint — they keep working everywhere else.
 
-The opt-in `warehouse:write` scope (never granted by default, available only
-through an explicit OAuth request or scoped API key) maps to the
-`warehouse-write` capability grant on the
-external MCP surface, exposing governed dbt executions (`dbt_run_model`,
-`dbt_run_job`, `dbt_cancel_run`). That scope alone does not unlock raw SQL
+The `warehouse:write` scope maps to the `warehouse-write` capability grant on
+the external MCP surface, exposing governed dbt executions (`dbt_run_model`,
+`dbt_run_job`, `dbt_cancel_run`). It is not a default for new API keys, but
+every MCP/CLI OAuth login carries it. That scope alone does not unlock raw SQL
 writes; those use the separate, double-gated `query:write` API-key scope.
+
+The `connections:write` scope maps to the `connections-write` grant behind the
+external-MCP `create_connection` tool (creates a new source connection, runs its
+credential check and deletes it again if the check fails; never reads, changes
+or deletes existing connections). Like `warehouse:write` it is carried by every
+OAuth login and is not a default for new API keys.
 
 The opt-in `query:write` scope is double-gated: it yields "write-opt-in"
 query access, which `sql_execute_query` resolves per connection — write
@@ -567,16 +574,23 @@ User-facing setup docs live in the Starlight site: `docs/src/content/docs/mcp-se
 
 ### Adding New OAuth Providers
 
-1. Install the provider in Arctic:
+1. Add a provider class next to `Google`/`GitHub` in `auth/oauth-client.ts`
+   (its authorization and token endpoints), and a lazy getter in
+   `auth/oauth-providers.ts`:
 
 ```ts
-import { Facebook } from "arctic";
-
-export const facebook = new Facebook(
-  process.env.FACEBOOK_APP_ID!,
-  process.env.FACEBOOK_APP_SECRET!,
-  `${process.env.BASE_URL}/api/auth/facebook/callback`,
-);
+export class Facebook extends OAuthClient {
+  constructor(clientId: string, clientSecret: string, redirectUri: string) {
+    super({
+      authorizationEndpoint: "https://www.facebook.com/v21.0/dialog/oauth",
+      tokenEndpoint: "https://graph.facebook.com/v21.0/oauth/access_token",
+      clientId,
+      clientSecret,
+      redirectUri,
+    });
+  }
+  // createAuthorizationURL / validateAuthorizationCode, as GitHub's
+}
 ```
 
 2. Add routes in auth controller

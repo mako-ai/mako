@@ -3,11 +3,6 @@
   "name": "Mako - AI-native SQL Client",
   "icons": [
     {
-      "src": "favicon.png",
-      "sizes": "512x512",
-      "type": "image/png"
-    },
-    {
       "src": "android-chrome-192x192.png",
       "type": "image/png",
       "sizes": "192x192"

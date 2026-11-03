@@ -11,15 +11,16 @@
  *    it is ~25k tokens of noise the model cannot see through; as media it is
  *    actual eyes.
  *
- * 2. The variant must be `image-data`, not `file-data`. The provider spec
- *    (v3 — what `@ai-sdk/gateway` speaks) offers both, and `file-data` means
- *    *document*. Every provider honors that distinction, and each one fails
- *    differently when you get it wrong:
+ * 2. The part must be a `file` with an `image/*` media type. Tool output
+ *    used to offer `image-data` and `file-data` (AI SDK 7 folds both into
+ *    `file`), and a file whose media type is not an image means *document*.
+ *    Every provider honors that distinction, and each one fails differently
+ *    when you get it wrong:
  *      - OpenAI maps file-data to `input_file`/`file_data`, which rejects
  *        image MIME types with a 400 that kills the entire turn.
  *      - Anthropic maps only `application/pdf` and silently DROPS anything
  *        else — the screenshot never arrived and nothing said so.
- *    `image-data` becomes `input_image` / an Anthropic image block.
+ *    An `image/jpeg` file becomes `input_image` / an Anthropic image block.
  *    `browse-model-output.test.ts` pins this.
  */
 
@@ -34,7 +35,11 @@ export type BrowseModelOutput =
       type: "content";
       value: Array<
         | { type: "text"; text: string }
-        | { type: "image-data"; data: string; mediaType: string }
+        | {
+            type: "file";
+            mediaType: string;
+            data: { type: "data"; data: string };
+          }
       >;
     };
 
@@ -67,7 +72,11 @@ export function buildBrowseModelOutput(
     type: "content",
     value: [
       { type: "text", text: JSON.stringify(rest) },
-      { type: "image-data", data: screenshotBase64, mediaType: "image/jpeg" },
+      {
+        type: "file",
+        mediaType: "image/jpeg",
+        data: { type: "data", data: screenshotBase64 },
+      },
     ],
   };
 }

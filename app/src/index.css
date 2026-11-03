@@ -9,6 +9,32 @@
    on a dark code-block background whenever the two disagree. */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* shadcn Trace uses this utility for the active reasoning/tool title. */
+@utility shimmer {
+  color: transparent;
+  background-image: linear-gradient(
+    100deg,
+    hsl(var(--muted-foreground)) 35%,
+    hsl(var(--foreground)) 50%,
+    hsl(var(--muted-foreground)) 65%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  animation: bui-shimmer-text 2s linear infinite;
+
+  @media (prefers-reduced-motion: reduce) {
+    color: hsl(var(--muted-foreground));
+    background: none;
+    animation: none;
+  }
+}
+
+@utility shimmer-none {
+  color: hsl(var(--muted-foreground));
+  background: none;
+  animation: none;
+}
+
 .app-truncate {
   min-width: 0;
   overflow: hidden;

@@ -1,8 +1,8 @@
 /**
  * Shared Parquet materialization core.
  *
- * The single "query -> Parquet artifact" pipeline used by BOTH dashboard data
- * sources and app data bindings: schema probe -> streaming query -> node
+ * The single "query -> Parquet artifact" pipeline used by app data bindings:
+ * schema probe -> streaming query -> node
  * DuckDB Parquet build -> artifact store upload. Callers own everything
  * domain-specific (definition hashes, artifact keys, cache metadata writes,
  * run records, snapshots, queueing).
@@ -16,25 +16,29 @@
 import { promises as fsPromises } from "fs";
 import type { IDatabaseConnection } from "../database/workspace-schema";
 import {
+  parquetWriteArtifactMetadata,
+  type ParquetCodec,
+  type ParquetWriteOptions,
+} from "../utils/parquet-compression";
+import {
   buildParquetFromBatches,
   type FieldMeta,
 } from "../utils/streaming-parquet-builder";
-import { storeArtifact } from "./dashboard-cache.service";
+import { storeArtifact } from "./artifact-store.service";
 import { databaseConnectionService } from "./database-connection.service";
+import { isWrite } from "../access/connection-writes";
 import { checkPreviewQuerySafety } from "./query-pagination.service";
+import { reportBindingPhase } from "../apps/binding-progress";
+import { parquetRowLimits } from "../utils/parquet-row-limit";
 import { loggers } from "../logging";
 
 const logger = loggers.api("parquet-build");
 
-/** Default/maximum rows materialized into a single Parquet artifact. */
-export const PARQUET_ROW_LIMIT = 500_000;
-
 const STREAM_BATCH_SIZE = 5000;
 
-/** SQL string, or a MongoDB executable descriptor (dashboard data sources). */
+/** SQL string, or a MongoDB executable descriptor. */
 export type ExecutableQuery =
-  | string
-  | { collection: string; operation: string; query: string };
+  string | { collection: string; operation: string; query: string };
 
 /**
  * Read-only gate for SQL materialization queries. Materialization runs
@@ -45,17 +49,25 @@ export type ExecutableQuery =
  * that requires the statement to start with `SELECT`/`WITH`, so it would
  * wrongly reject non-SQL executables. MongoDB executables (both structured
  * descriptors and JS shell strings like `db.users.aggregate([...])`) and
- * Cloudflare KV are validated by their own drivers/execution paths and are
- * skipped here. Pass the source `databaseType` so non-SQL sources are exempt.
+ * Cloudflare KV are judged by their operation or shell method instead
+ * (`isWrite`): a binding only reads. Pass the source `databaseType`.
  */
 export function assertReadOnlyMaterializationQuery(
   executableQuery: ExecutableQuery,
   databaseType?: string,
 ): void {
-  // Structured executables (e.g. MongoDB find/aggregate descriptors) are not SQL.
-  if (typeof executableQuery !== "string") return;
-  // Non-SQL sources use their own read-only semantics, not the SQL analyzer.
-  if (databaseType === "mongodb" || databaseType === "cloudflare-kv") return;
+  if (
+    typeof executableQuery !== "string" ||
+    databaseType === "mongodb" ||
+    databaseType === "cloudflare-kv"
+  ) {
+    if (isWrite(databaseType ?? "mongodb", executableQuery)) {
+      throw new Error(
+        "Query failed read-only safety checks: a binding can only read.",
+      );
+    }
+    return;
+  }
   const safety = checkPreviewQuerySafety(executableQuery);
   if (!safety.safe) {
     throw new Error(
@@ -69,8 +81,12 @@ export interface BuildQueryParquetFileInput {
   executableQuery: ExecutableQuery;
   databaseId?: string;
   databaseName?: string;
-  /** Capped at PARQUET_ROW_LIMIT-style limits by the caller; default 500k. */
+  /** Default: PARQUET_ROW_LIMIT (parquetRowLimits().defaultRowLimit). */
   rowLimit?: number;
+  /** See StreamingParquetOptions.onRowLimit; default `truncate`. */
+  onRowLimit?: "truncate" | "fail";
+  /** See StreamingParquetOptions.countRowsUpTo. */
+  countRowsUpTo?: number;
   /** Local temp-file name base, e.g. `app-{appId}-{bindingId}`. */
   filenameBase: string;
   /**
@@ -82,6 +98,11 @@ export interface BuildQueryParquetFileInput {
   schemaProbe?: "strict" | "lenient";
   /** Progress callback per inserted batch (heartbeats, run events). */
   onBatchInserted?: (totalRows: number) => Promise<void>;
+  /**
+   * Codec options for the COPY. Omitted = SNAPPY. App bindings pass
+   * `appBindingParquetWriteOptions()` (env-configurable, default ZSTD).
+   */
+  writeOptions?: ParquetWriteOptions;
 }
 
 export interface BuiltParquetFile {
@@ -89,6 +110,10 @@ export interface BuiltParquetFile {
   filePath: string;
   rowCount: number;
   byteSize: number;
+  compression: ParquetCodec;
+  zstdLevel?: number;
+  rowGroupSize?: number;
+  encodeDurationMs: number;
 }
 
 /**
@@ -108,6 +133,9 @@ export async function buildQueryParquetFile(
   } = input;
 
   assertReadOnlyMaterializationQuery(executableQuery, connection.type);
+  // An app's phase stream (binding-progress.ts): the warehouse has the query
+  // until the first batch lands, then rows are being written.
+  reportBindingPhase("querying_warehouse");
 
   // The driver-level `readOnly` gate is a SQL analyzer: it requires string
   // queries to be a single SELECT/WITH and fails closed for engines it can't
@@ -146,9 +174,15 @@ export async function buildQueryParquetFile(
 
   return await buildParquetFromBatches({
     filenameBase,
-    rowLimit: input.rowLimit ?? PARQUET_ROW_LIMIT,
+    rowLimit: input.rowLimit ?? parquetRowLimits().defaultRowLimit,
+    onRowLimit: input.onRowLimit,
+    countRowsUpTo: input.countRowsUpTo,
+    writeOptions: input.writeOptions,
     fields,
-    onBatchInserted,
+    onBatchInserted: async totalRows => {
+      reportBindingPhase("writing_parquet", { rowsWritten: totalRows });
+      await onBatchInserted?.(totalRows);
+    },
     streamBatches: async insertBatch => {
       const streamResult =
         await databaseConnectionService.executeStreamingQuery(
@@ -179,9 +213,14 @@ export async function storeParquetArtifactFile(input: {
   filePath: string;
   artifactKey: string;
   metadata?: Record<string, string>;
+  build?: BuiltParquetFile;
 }): Promise<void> {
+  const metadata = {
+    ...input.metadata,
+    ...(input.build ? parquetWriteArtifactMetadata(input.build) : {}),
+  };
   try {
-    await storeArtifact(input.filePath, input.artifactKey, input.metadata);
+    await storeArtifact(input.filePath, input.artifactKey, metadata);
   } finally {
     await fsPromises.rm(input.filePath, { force: true }).catch(() => undefined);
   }

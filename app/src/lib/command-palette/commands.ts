@@ -22,7 +22,10 @@ import {
   CHAT_ICON,
   EXPLORER_ICONS,
   SETTINGS_SECTION_ICONS,
+  TAB_KIND_ICONS,
 } from "../entity-icons";
+import { focusAppsHomeTab } from "../../apps-runtime/shell";
+import { useAppsDiscoveryStore } from "../../store/appsDiscoveryStore";
 import {
   selectTabBySettingsSection,
   useConsoleStore,
@@ -37,15 +40,15 @@ import type { PaletteCommand } from "./types";
 const EXPLORER_VIEWS: Array<{ view: LeftPaneView; label: string }> = [
   { view: "databases", label: "Databases" },
   { view: "consoles", label: "Consoles" },
-  { view: "dashboards", label: "Dashboards" },
   { view: "apps", label: "Apps" },
   { view: "dbt", label: "Transforms" },
+  { view: "workflows", label: "Workflows" },
   { view: "flows", label: "Flows" },
   { view: "connectors", label: "Sources" },
   { view: "settings", label: "Settings" },
 ];
 
-function openSettingsSection(section: SettingsSection): void {
+export function openSettingsSection(section: SettingsSection): void {
   const state = useConsoleStore.getState();
   const existing = selectTabBySettingsSection(section)(state);
   if (existing) {
@@ -99,6 +102,18 @@ export function buildCommands(options: {
       },
     });
   }
+
+  commands.push({
+    id: "view.apps-home",
+    title: "Open Apps home",
+    section: "Navigate",
+    keywords: ["apps", "catalogue", "popular", "discover", "browse"],
+    icon: TAB_KIND_ICONS["apps-home"],
+    run: () => {
+      useAppsDiscoveryStore.getState().setHomeQuery("");
+      focusAppsHomeTab();
+    },
+  });
 
   commands.push(
     {

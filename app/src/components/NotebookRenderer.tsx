@@ -30,7 +30,7 @@ import {
 import { runCell } from "../notebook-runtime/run";
 import { stopKernelSession } from "../notebook-runtime/kernel";
 import NotebookCell from "./NotebookCell";
-import NotebookHistoryPopover from "./NotebookHistoryPopover";
+import EntityHistoryPopover from "./EntityHistoryPopover";
 import { useNotebookPresence } from "../notebook-runtime/presence";
 import {
   presenceColor,
@@ -299,11 +299,12 @@ export default function NotebookRenderer({
       </Box>
 
       {workspaceId && (
-        <NotebookHistoryPopover
+        <EntityHistoryPopover
           anchorEl={historyAnchor}
           onClose={() => setHistoryAnchor(null)}
           workspaceId={workspaceId}
-          notebookId={notebookId}
+          entity="notebook"
+          id={notebookId}
         />
       )}
 
@@ -329,8 +330,11 @@ export default function NotebookRenderer({
         {doc.blocks.length === 0 && (
           <Typography
             variant="body2"
-            color="text.secondary"
-            sx={{ mb: 2, maxWidth: 520 }}
+            sx={{
+              color: "text.secondary",
+              mb: 2,
+              maxWidth: 520,
+            }}
           >
             Empty notebook. Add a cell to get started — SQL runs against a data
             source, Python runs on the kernel, Markdown renders inline.

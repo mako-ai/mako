@@ -9,7 +9,7 @@ import {
   type IWorkspaceAutoJoin,
 } from "../database/workspace-schema";
 import { Session, User } from "../database/schema";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 import { emailService } from "./email.service";
 import {
   validateAndNormalizeEmail,
@@ -55,7 +55,6 @@ export class WorkspaceService {
           maxDatabases: 5,
           maxMembers: 10,
           billingTier: "free",
-          dashboardRefreshConcurrency: 2,
           appBindingRefreshConcurrency: 2,
         },
       });
@@ -173,7 +172,9 @@ export class WorkspaceService {
     workspaceId: string,
     updates: Partial<IWorkspace>,
   ): Promise<IWorkspace | null> {
-    return Workspace.findByIdAndUpdate(workspaceId, updates, { new: true });
+    return Workspace.findByIdAndUpdate(workspaceId, updates, {
+      returnDocument: "after",
+    });
   }
 
   /** Domain auto-join settings; null turns it off. */
@@ -271,7 +272,7 @@ export class WorkspaceService {
         userId: userId,
       },
       { role: newRole },
-      { new: true },
+      { returnDocument: "after" },
     ).populate("userId", "email");
   }
 
@@ -330,7 +331,7 @@ export class WorkspaceService {
     const invite = new WorkspaceInvite({
       workspaceId: new Types.ObjectId(workspaceId),
       email: normalizedEmail,
-      token: uuidv4().replace(/-/g, ""),
+      token: randomUUID().replace(/-/g, ""),
       role,
       invitedBy: invitedBy,
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
@@ -630,7 +631,6 @@ export class WorkspaceService {
           maxDatabases: 5,
           maxMembers: 10,
           billingTier: "free",
-          dashboardRefreshConcurrency: 2,
           appBindingRefreshConcurrency: 2,
         },
       });
@@ -687,6 +687,7 @@ export class WorkspaceService {
 
         throw new Error(
           "Failed to get or create workspace after concurrent request",
+          { cause: error },
         );
       }
 

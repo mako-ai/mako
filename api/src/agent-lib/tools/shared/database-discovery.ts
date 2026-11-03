@@ -6,7 +6,10 @@
  */
 
 import { z } from "zod";
-import { DatabaseConnection } from "../../../database/workspace-schema";
+import {
+  DatabaseConnection,
+  type IDatabaseConnection,
+} from "../../../database/workspace-schema";
 import type { AgentToolExecutionContext } from "../../../agents/types";
 import { databaseConnectionService } from "../../../services/database-connection.service";
 import { MYSQL_SYSTEM_DATABASES_SET } from "../../../databases/drivers/mysql/driver";
@@ -127,7 +130,7 @@ export async function listConnectionsImpl(
 
   const databases = await DatabaseConnection.find({
     workspaceId: workspaceObjectId,
-    type: { $in: Array.from(allowedTypes) },
+    type: { $in: Array.from(allowedTypes) as IDatabaseConnection["type"][] },
   }).sort({ name: 1 });
 
   return databases.map(db => {
@@ -142,11 +145,9 @@ export async function listConnectionsImpl(
       displayInfo = databaseName;
     } else if (dialect === "postgresql" || dialect === "mysql") {
       const host = (connection.host || connection.instanceConnectionName) as
-        | string
-        | undefined;
+        string | undefined;
       const dbName = (connection.database || connection.db) as
-        | string
-        | undefined;
+        string | undefined;
       displayInfo = `${host || "unknown-host"}/${dbName || "unknown-db"}`;
     } else if (dialect === "bigquery") {
       displayInfo = (connection.project_id as string) || "unknown-project";
@@ -392,8 +393,7 @@ export async function listTablesImpl(
               ? row.table_name
               : `${row.table_schema}.${row.table_name}`,
           type: (row.table_type === "VIEW" ? "view" : "table") as
-            | "table"
-            | "view",
+            "table" | "view",
           schema: row.table_schema,
           sqlDialect: dialect,
         }),

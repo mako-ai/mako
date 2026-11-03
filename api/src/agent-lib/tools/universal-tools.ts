@@ -12,8 +12,10 @@ import { Types } from "mongoose";
 import {
   Connector as SourceConnection,
   DatabaseConnection,
+  type IDatabaseConnection,
 } from "../../database/workspace-schema";
 import type { AgentToolExecutionContext } from "../../agents/types";
+import type { QueryAccess } from "../../auth/api-key-scopes";
 import type { ConsoleDataV2 } from "../types";
 import {
   clientConsoleTools,
@@ -75,11 +77,9 @@ export function summarizeConnectionForListing(db: {
 
   if (sqlDialect === "postgresql" || sqlDialect === "mysql") {
     const host = (connection.host || connection.instanceConnectionName) as
-      | string
-      | undefined;
+      string | undefined;
     const databaseName = (connection.database || connection.db) as
-      | string
-      | undefined;
+      string | undefined;
     const displayInfo = `${host || "unknown-host"}/${databaseName || "unknown-db"}`;
     return {
       id: db._id.toString(),
@@ -147,7 +147,11 @@ export async function listAllConnectionsImpl(
       : (
           await DatabaseConnection.find({
             workspaceId: wsId,
-            type: { $in: Array.from(ALL_SUPPORTED_TYPES) },
+            type: {
+              $in: Array.from(
+                ALL_SUPPORTED_TYPES,
+              ) as IDatabaseConnection["type"][],
+            },
           }).sort({ name: 1 })
         ).map(db => ({
           ...summarizeConnectionForListing(
@@ -208,7 +212,7 @@ export const createUniversalTools = (
   preferredConsoleId?: string,
   userId?: string,
   toolExecutionContext?: AgentToolExecutionContext,
-  options?: { chatId?: string },
+  options?: { chatId?: string; queryAccess?: QueryAccess },
 ) => {
   // Get MongoDB tools and extract just the database-specific ones
   const mongoTools = createMongoToolsV2(
@@ -234,6 +238,7 @@ export const createUniversalTools = (
     preferredConsoleId,
     userId,
     toolExecutionContext,
+    options?.queryAccess,
   );
 
   return {
@@ -245,6 +250,7 @@ export const createUniversalTools = (
       userId,
       executionContext: toolExecutionContext,
       chatId: options?.chatId,
+      queryAccess: options?.queryAccess,
     }),
 
     // Remaining client-side console tool: listing OPEN TABS is inherently a

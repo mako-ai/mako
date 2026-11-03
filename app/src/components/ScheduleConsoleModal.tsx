@@ -203,12 +203,14 @@ export default function ScheduleConsoleModal({
       anchor="right"
       open={open}
       onClose={onClose}
-      PaperProps={{
-        sx: {
-          width: { xs: "100%", sm: 440 },
-          maxWidth: "100vw",
-          display: "flex",
-          flexDirection: "column",
+      slotProps={{
+        paper: {
+          sx: {
+            width: { xs: "100%", sm: 440 },
+            maxWidth: "100vw",
+            display: "flex",
+            flexDirection: "column",
+          },
         },
       }}
     >
@@ -225,7 +227,12 @@ export default function ScheduleConsoleModal({
           flexShrink: 0,
         }}
       >
-        <Typography variant="subtitle1" fontWeight={600}>
+        <Typography
+          variant="subtitle1"
+          sx={{
+            fontWeight: 600,
+          }}
+        >
           {title}
         </Typography>
         <IconButton
@@ -242,7 +249,12 @@ export default function ScheduleConsoleModal({
           {error && <Alert severity="error">{error}</Alert>}
 
           <Box>
-            <Typography variant="subtitle2" color="text.secondary">
+            <Typography
+              variant="subtitle2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Console
             </Typography>
             <Typography variant="body1">{displayConsoleName}</Typography>
@@ -293,7 +305,9 @@ export default function ScheduleConsoleModal({
               value={weekday}
               onChange={event => setWeekday(event.target.value)}
               fullWidth
-              SelectProps={{ native: true }}
+              slotProps={{
+                select: { native: true },
+              }}
             >
               <option value="0">Sunday</option>
               <option value="1">Monday</option>
@@ -312,7 +326,9 @@ export default function ScheduleConsoleModal({
               value={time}
               onChange={event => setTime(event.target.value)}
               fullWidth
-              InputLabelProps={{ shrink: true }}
+              slotProps={{
+                inputLabel: { shrink: true },
+              }}
             />
           )}
 
@@ -331,7 +347,9 @@ export default function ScheduleConsoleModal({
             value={timezone}
             onChange={event => setTimezone(event.target.value)}
             fullWidth
-            SelectProps={{ native: true }}
+            slotProps={{
+              select: { native: true },
+            }}
           >
             {TIMEZONE_OPTIONS.map(option => (
               <option key={option} value={option}>
@@ -344,7 +362,13 @@ export default function ScheduleConsoleModal({
             <Typography variant="subtitle2">Next runs</Typography>
             {previewRuns.length > 0 ? (
               previewRuns.map(run => (
-                <Typography key={run} variant="body2" color="text.secondary">
+                <Typography
+                  key={run}
+                  variant="body2"
+                  sx={{
+                    color: "text.secondary",
+                  }}
+                >
                   {run}
                 </Typography>
               ))
@@ -356,7 +380,12 @@ export default function ScheduleConsoleModal({
           </Box>
 
           {connectionLabel && (
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Runs against: {connectionLabel}
             </Typography>
           )}

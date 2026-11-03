@@ -252,7 +252,12 @@ function AddServerDialog({
             </Select>
           </FormControl>
           {preset && (
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               {preset.description}
             </Typography>
           )}
@@ -278,7 +283,12 @@ function AddServerDialog({
             // Fixed-URL presets: a disabled input reads like an empty
             // required field, so show the endpoint as plain info instead.
             preset?.url && (
-              <Typography variant="caption" color="text.secondary">
+              <Typography
+                variant="caption"
+                sx={{
+                  color: "text.secondary",
+                }}
+              >
                 Connects to{" "}
                 <Box component="code" sx={{ fontFamily: "monospace" }}>
                   {preset.url}
@@ -312,7 +322,12 @@ function AddServerDialog({
               </Select>
             </FormControl>
           )}
-          <Typography variant="caption" color="text.secondary">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             Every member authenticates individually — enabling a connector never
             grants shared data access. The agent only sees what the signed-in
             user can see.
@@ -489,7 +504,12 @@ function OAuthClientForm({
           />
         )}
       </Typography>
-      <Typography variant="caption" color="text.secondary">
+      <Typography
+        variant="caption"
+        sx={{
+          color: "text.secondary",
+        }}
+      >
         {preset.oauth?.helperText ??
           "This provider requires a pre-registered OAuth app. Save its Client ID and Client Secret to enable member sign-in."}
         {preset.oauth?.docsUrl && (
@@ -502,12 +522,17 @@ function OAuthClientForm({
               rel="noreferrer"
               sx={{ color: "primary.main" }}
             >
-              Open the provider&apos;s app dashboard
+              Open the provider&apos;s app settings
             </Box>
           </>
         )}
       </Typography>
-      <Typography variant="caption" color="text.secondary">
+      <Typography
+        variant="caption"
+        sx={{
+          color: "text.secondary",
+        }}
+      >
         Redirect URL for the app:{" "}
         <Box component="code" sx={{ fontFamily: "monospace" }}>
           {callbackUrl}
@@ -617,13 +642,23 @@ function OAuthConnectSection({
           />
         )}
       </Typography>
-      <Typography variant="caption" color="text.secondary">
+      <Typography
+        variant="caption"
+        sx={{
+          color: "text.secondary",
+        }}
+      >
         {server.authPerformer === "user"
           ? "Each member logs in with their own account. The agent acts as you when using these tools."
           : "One shared login for the whole workspace (admin-managed)."}
       </Typography>
       {needsOAuthClient && (
-        <Typography variant="caption" color="warning.main">
+        <Typography
+          variant="caption"
+          sx={{
+            color: "warning.main",
+          }}
+        >
           A workspace admin must save the {preset?.label ?? "provider"} OAuth
           app (Client ID + Secret) before accounts can be connected.
         </Typography>
@@ -1083,7 +1118,13 @@ function ServerDetail({
         />
       ) : null}
 
-      <Stack direction="row" spacing={1} alignItems="center">
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={{
+          alignItems: "center",
+        }}
+      >
         <Button
           variant="contained"
           size="small"
@@ -1120,8 +1161,11 @@ function ServerDetail({
             </Typography>
             <Typography
               variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", mb: 1.5 }}
+              sx={{
+                color: "text.secondary",
+                display: "block",
+                mb: 1.5,
+              }}
             >
               Restrict which permission levels members can choose for each tool.
               Restrictions set a ceiling — users can always choose a stricter
@@ -1131,16 +1175,26 @@ function ServerDetail({
             {isAdmin && (
               <Stack
                 direction="row"
-                alignItems="center"
                 spacing={1}
                 useFlexGap
-                sx={{ mb: 1.5, px: 1, flexWrap: "wrap", rowGap: 0.5 }}
+                sx={{
+                  alignItems: "center",
+                  mb: 1.5,
+                  px: 1,
+                  flexWrap: "wrap",
+                  rowGap: 0.5,
+                }}
               >
                 <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Typography variant="body2">
                     Default restriction for unconfigured tools
                   </Typography>
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: "text.secondary",
+                    }}
+                  >
                     Applies to tools without a specific restriction below,
                     including tools this server adds later.
                   </Typography>
@@ -1164,9 +1218,13 @@ function ServerDetail({
                 <Box key={groupLabel} sx={{ mb: 1.5 }}>
                   <Typography
                     variant="caption"
-                    fontWeight={600}
-                    color="text.secondary"
-                    sx={{ display: "block", mb: 0.5, px: 1 }}
+                    sx={{
+                      fontWeight: 600,
+                      color: "text.secondary",
+                      display: "block",
+                      mb: 0.5,
+                      px: 1,
+                    }}
                   >
                     {groupLabel} ({tools.length})
                   </Typography>
@@ -1178,10 +1236,10 @@ function ServerDetail({
                         <Stack
                           key={tool.name}
                           direction="row"
-                          alignItems="center"
                           spacing={1}
                           useFlexGap
                           sx={{
+                            alignItems: "center",
                             py: 0.5,
                             px: 1,
                             borderRadius: 1,
@@ -1194,7 +1252,9 @@ function ServerDetail({
                             <Stack
                               direction="row"
                               spacing={1}
-                              alignItems="center"
+                              sx={{
+                                alignItems: "center",
+                              }}
                             >
                               <Typography
                                 variant="body2"
@@ -1215,9 +1275,11 @@ function ServerDetail({
                             </Stack>
                             <Typography
                               variant="caption"
-                              color="text.secondary"
                               noWrap
-                              sx={{ display: "block" }}
+                              sx={{
+                                color: "text.secondary",
+                                display: "block",
+                              }}
                             >
                               {tool.description ?? ""} Users can choose:{" "}
                               {tool.restriction === "always"
@@ -1230,8 +1292,10 @@ function ServerDetail({
                           {!explicit && (
                             <Typography
                               variant="caption"
-                              color="text.disabled"
-                              sx={{ whiteSpace: "nowrap" }}
+                              sx={{
+                                color: "text.disabled",
+                                whiteSpace: "nowrap",
+                              }}
                             >
                               Uses default
                             </Typography>
@@ -1264,8 +1328,11 @@ function ServerDetail({
             </Typography>
             <Typography
               variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", mb: 1 }}
+              sx={{
+                color: "text.secondary",
+                display: "block",
+                mb: 1,
+              }}
             >
               These choices apply only to you. Read tools run without prompting.
               Write tools ask until you Always allow — per tool below, or for
@@ -1273,10 +1340,10 @@ function ServerDetail({
             </Typography>
             <Stack
               direction="row"
-              alignItems="center"
               spacing={1}
               useFlexGap
               sx={{
+                alignItems: "center",
                 mb: 1,
                 py: 0.75,
                 px: 1,
@@ -1287,10 +1354,20 @@ function ServerDetail({
               }}
             >
               <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Typography variant="body2" fontWeight={600}>
+                <Typography
+                  variant="body2"
+                  sx={{
+                    fontWeight: 600,
+                  }}
+                >
                   All tools on {server.name}
                 </Typography>
-                <Typography variant="caption" color="text.secondary">
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: "text.secondary",
+                  }}
+                >
                   Server-wide Always allow covers every tool the admin still
                   permits. Per-tool Block below overrides it. Destructive tools
                   stay Ask unless an admin unlocks them.
@@ -1342,10 +1419,10 @@ function ServerDetail({
                   <Stack
                     key={tool.name}
                     direction="row"
-                    alignItems="center"
                     spacing={1}
                     useFlexGap
                     sx={{
+                      alignItems: "center",
                       py: 0.5,
                       px: 1,
                       borderRadius: 1,
@@ -1363,23 +1440,43 @@ function ServerDetail({
                         {tool.name}
                       </Typography>
                       {tool.riskTier === "read" && value === "ask" && (
-                        <Typography variant="caption" color="text.secondary">
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            color: "text.secondary",
+                          }}
+                        >
                           Read — runs without prompting
                         </Typography>
                       )}
                       {inheritedAlways && (
-                        <Typography variant="caption" color="text.secondary">
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            color: "text.secondary",
+                          }}
+                        >
                           Covered by server-wide Always allow
                         </Typography>
                       )}
                       {ceilingOverridesGrant && (
-                        <Typography variant="caption" color="warning.main">
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            color: "warning.main",
+                          }}
+                        >
                           Always allow saved, but admin Ask still prompts
                         </Typography>
                       )}
                     </Box>
                     {blockedByAdmin ? (
-                      <Typography variant="caption" color="text.disabled">
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          color: "text.disabled",
+                        }}
+                      >
                         Blocked by admin
                       </Typography>
                     ) : (
@@ -1391,9 +1488,7 @@ function ServerDetail({
                             void handleSetUserPermission(
                               tool.name,
                               e.target.value as
-                                | "always_allow"
-                                | "ask"
-                                | "block",
+                                "always_allow" | "ask" | "block",
                               grant?.id,
                             )
                           }
@@ -1461,7 +1556,13 @@ function ConnectionCard({
         },
       }}
     >
-      <Stack direction="row" alignItems="flex-start" spacing={1}>
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={{
+          alignItems: "flex-start",
+        }}
+      >
         {icon}
         <Box sx={{ flex: 1 }} />
         {connected && (
@@ -1494,13 +1595,19 @@ function ConnectionCard({
         )}
         {statusChip}
       </Stack>
-      <Typography variant="subtitle2" fontWeight={600} sx={{ mt: 0.5 }}>
+      <Typography
+        variant="subtitle2"
+        sx={{
+          fontWeight: 600,
+          mt: 0.5,
+        }}
+      >
         {title}
       </Typography>
       <Typography
         variant="caption"
-        color="text.secondary"
         sx={{
+          color: "text.secondary",
           display: "-webkit-box",
           WebkitLineClamp: 3,
           WebkitBoxOrient: "vertical",
@@ -1641,19 +1748,21 @@ export function McpServersSection() {
         value={search}
         onChange={e => setSearch(e.target.value)}
         sx={{ mb: 2.5 }}
-        InputProps={{
-          startAdornment: (
-            <Box
-              sx={{
-                mr: 1,
-                display: "flex",
-                alignItems: "center",
-                color: "text.disabled",
-              }}
-            >
-              <Search size={15} />
-            </Box>
-          ),
+        slotProps={{
+          input: {
+            startAdornment: (
+              <Box
+                sx={{
+                  mr: 1,
+                  display: "flex",
+                  alignItems: "center",
+                  color: "text.disabled",
+                }}
+              >
+                <Search size={15} />
+              </Box>
+            ),
+          },
         }}
       />
 
@@ -1729,8 +1838,11 @@ export function McpServersSection() {
       {!isAdmin && (
         <Typography
           variant="caption"
-          color="text.secondary"
-          sx={{ display: "block", mt: 1.5 }}
+          sx={{
+            color: "text.secondary",
+            display: "block",
+            mt: 1.5,
+          }}
         >
           Only workspace admins can add connections. You can connect your own
           account on per-user connections via Manage.
@@ -1764,16 +1876,31 @@ export function McpServersSection() {
               <Stack
                 direction="row"
                 spacing={1.5}
-                alignItems="center"
                 useFlexGap
-                sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+                sx={{
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  rowGap: 0.5,
+                }}
               >
                 <ConnectionIcon src={serverIcon(detailServer)} size={28} />
                 <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography variant="subtitle1" fontWeight={600} noWrap>
+                  <Typography
+                    variant="subtitle1"
+                    noWrap
+                    sx={{
+                      fontWeight: 600,
+                    }}
+                  >
                     {detailServer.name}
                   </Typography>
-                  <Typography variant="caption" color="text.secondary" noWrap>
+                  <Typography
+                    variant="caption"
+                    noWrap
+                    sx={{
+                      color: "text.secondary",
+                    }}
+                  >
                     {detailServer.transport.url}
                   </Typography>
                 </Box>

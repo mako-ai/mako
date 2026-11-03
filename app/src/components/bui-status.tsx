@@ -110,9 +110,9 @@ export function SpinnerRingBadge({ size = 22 }: { size?: number }) {
     >
       <Box
         component="svg"
-        width={size}
-        height={size}
         sx={{
+          width: size,
+          height: size,
           position: "absolute",
           inset: 0,
           animation: "spin 1.1s linear infinite",

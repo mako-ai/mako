@@ -27,7 +27,10 @@ import { join } from "node:path";
 
 const flows = readFileSync(join(__dirname, "flows.ts"), "utf8");
 
-// Each route is one `flowRoutes.openapi(` block; the last runs to EOF.
+// Each route is one `flowRoutes.openapi(` call, closed by its own top-level
+// `);`. Ending a block there (not at the next route or EOF) keeps code after
+// the last route — e.g. the git-history registration, whose restore gates —
+// from being read as part of it.
 const lines = flows.split("\n");
 const starts = lines
   .map((line, i) => (line.startsWith("flowRoutes.openapi(") ? i : -1))
@@ -36,11 +39,11 @@ assert.ok(
   starts.length > 0,
   "no flow routes found — did the file's shape change?",
 );
-const blocks = starts.map((start, i) =>
-  lines
-    .slice(start, i + 1 < starts.length ? starts[i + 1] : lines.length)
-    .join("\n"),
-);
+const blocks = starts.map(start => {
+  const end = lines.findIndex((line, i) => i > start && line === ");");
+  assert.ok(end !== -1, `route at line ${start + 1} has no closing ");"`);
+  return lines.slice(start, end + 1).join("\n");
+});
 
 const describe = (block: string) => {
   const method = /method:\s*"(\w+)"/.exec(block)?.[1]?.toUpperCase() ?? "?";

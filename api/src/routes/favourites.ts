@@ -1,8 +1,8 @@
 /**
  * Favourites — `/api/workspaces/:workspaceId/favourites`.
  *
- * One person's bookmark tree over the workspace's apps, consoles, notebooks
- * and dashboards. Authenticated + workspace-scoped; a real session user is
+ * One person's bookmark tree over the workspace's apps, consoles and
+ * notebooks. Authenticated + workspace-scoped; a real session user is
  * required, because favourites belong to a person and an API key acting as
  * the workspace has none. Semantics live in `services/favourites.service.ts`;
  * these handlers parse input and map `{ ok, status, error }` onto the API
@@ -43,7 +43,7 @@ const IdParam = WorkspaceParam.extend({
 });
 const KindRefParam = WorkspaceParam.extend({
   kind: z
-    .enum(["app", "console", "notebook", "dashboard"])
+    .enum(["app", "console", "notebook"])
     .openapi({ param: { name: "kind", in: "path" } }),
   refId: z.string().openapi({ param: { name: "refId", in: "path" } }),
 });

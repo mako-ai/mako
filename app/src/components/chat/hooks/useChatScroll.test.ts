@@ -7,7 +7,7 @@ import { useChatScroll } from "./useChatScroll";
 
 function renderScrollHook() {
   const isLoadingRef: MutableRefObject<boolean> = { current: true };
-  const virtuosoRef: RefObject<VirtuosoHandle> = { current: null };
+  const virtuosoRef: RefObject<VirtuosoHandle | null> = { current: null };
   return renderHook(() =>
     useChatScroll({
       isLoading: true,

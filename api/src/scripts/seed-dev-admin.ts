@@ -33,7 +33,7 @@ import bcrypt from "bcrypt";
 // env vars take precedence because dotenv does not override existing values.
 const envPath = path.resolve(__dirname, "../../../.env");
 if (fs.existsSync(envPath)) {
-  dotenv.config({ path: envPath });
+  dotenv.config({ path: envPath, quiet: true });
 }
 
 const DEV_ADMIN_EMAIL = (process.env.DEV_ADMIN_EMAIL || "cloud-agent@mako.dev")

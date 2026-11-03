@@ -58,7 +58,13 @@ export default function MaterializationScheduleControls({
         label={title}
       />
       {caption && (
-        <Typography variant="caption" color="text.secondary" sx={{ mt: -1 }}>
+        <Typography
+          variant="caption"
+          sx={{
+            color: "text.secondary",
+            mt: -1,
+          }}
+        >
           {caption}
         </Typography>
       )}

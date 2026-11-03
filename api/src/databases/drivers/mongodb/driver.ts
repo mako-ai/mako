@@ -72,15 +72,13 @@ export class MongoDatabaseDriver implements DatabaseDriver {
       return (result.databases || [])
         .map((db: any) => db.name)
         .sort((a: string, b: string) => a.localeCompare(b))
-        .map(
-          (name: string): DatabaseTreeNode => ({
-            id: name,
-            label: name,
-            kind: "database",
-            hasChildren: true,
-            metadata: { databaseId: name, databaseName: name },
-          }),
-        );
+        .map((name: string): DatabaseTreeNode => ({
+          id: name,
+          label: name,
+          kind: "database",
+          hasChildren: true,
+          metadata: { databaseId: name, databaseName: name },
+        }));
     } catch (error) {
       logger.error("Error listing databases in cluster mode", { error });
       return [];
@@ -138,15 +136,13 @@ export class MongoDatabaseDriver implements DatabaseDriver {
       return collections
         .map((c: any) => c.name)
         .sort((a: string, b: string) => a.localeCompare(b))
-        .map(
-          (name: string): DatabaseTreeNode => ({
-            id: name,
-            label: name,
-            kind: "collection",
-            hasChildren: false,
-            metadata: { databaseId: targetDbName, databaseName: targetDbName },
-          }),
-        );
+        .map((name: string): DatabaseTreeNode => ({
+          id: name,
+          label: name,
+          kind: "collection",
+          hasChildren: false,
+          metadata: { databaseId: targetDbName, databaseName: targetDbName },
+        }));
     }
 
     if (isViews) {
@@ -156,15 +152,13 @@ export class MongoDatabaseDriver implements DatabaseDriver {
       return views
         .map((v: any) => v.name)
         .sort((a: string, b: string) => a.localeCompare(b))
-        .map(
-          (name: string): DatabaseTreeNode => ({
-            id: name,
-            label: name,
-            kind: "view",
-            hasChildren: false,
-            metadata: { databaseId: targetDbName, databaseName: targetDbName },
-          }),
-        );
+        .map((name: string): DatabaseTreeNode => ({
+          id: name,
+          label: name,
+          kind: "view",
+          hasChildren: false,
+          metadata: { databaseId: targetDbName, databaseName: targetDbName },
+        }));
     }
     return [];
   }
@@ -181,7 +175,7 @@ export class MongoDatabaseDriver implements DatabaseDriver {
     > = {};
 
     // Determine which databases to scan
-    let dbNames: string[] = [];
+    let dbNames: string[];
     if (database.connection.database) {
       dbNames = [database.connection.database];
     } else {

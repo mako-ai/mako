@@ -19,7 +19,6 @@ import { useAuth } from "./auth-context";
 import { useUIStore } from "../store/uiStore";
 import { useExplorerStore } from "../store/explorerStore";
 import { useChatStore } from "../store/chatStore";
-import { useDashboardStore } from "../store/dashboardStore";
 
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
@@ -350,7 +349,6 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         useExplorerStore.getState().reset();
         useChatStore.getState().reset();
         useFlowStore.getState().reset();
-        useDashboardStore.setState({ activeDashboardId: null });
 
         setCurrentWorkspaceId(id);
 
@@ -572,6 +570,16 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       {children}
     </WorkspaceContext.Provider>
   );
+}
+
+/**
+ * The workspace context when rendered inside a WorkspaceProvider, else
+ * undefined — for shared components that also render outside the shell
+ * (the app viewer's chat).
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useOptionalWorkspace() {
+  return useContext(WorkspaceContext);
 }
 
 // eslint-disable-next-line react-refresh/only-export-components

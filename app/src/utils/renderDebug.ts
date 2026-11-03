@@ -113,7 +113,7 @@ function useWhyChangedEnabled(
   componentName: string,
   values: DebugMetadata,
 ): void {
-  const previousValuesRef = useRef<DebugMetadata | undefined>();
+  const previousValuesRef = useRef<DebugMetadata | undefined>(undefined);
 
   useEffect(() => {
     const previousValues = previousValuesRef.current;
@@ -132,15 +132,16 @@ function useWhyChangedEnabled(
 
     const changes = changedKeys
       .slice(0, MAX_CHANGED_KEYS_TO_LOG)
-      .reduce<
-        Record<string, { previous: unknown; next: unknown }>
-      >((acc, key) => {
-        acc[key] = {
-          previous: previousValues[key],
-          next: values[key],
-        };
-        return acc;
-      }, {});
+      .reduce<Record<string, { previous: unknown; next: unknown }>>(
+        (acc, key) => {
+          acc[key] = {
+            previous: previousValues[key],
+            next: values[key],
+          };
+          return acc;
+        },
+        {},
+      );
 
     logRenderDebug(`${componentName} changed`, {
       changedKeys,

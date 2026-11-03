@@ -219,7 +219,7 @@ class AuthClient {
 
       const data = await this.handleResponse<AuthResponse>(response);
       return data.user;
-    } catch (error) {
+    } catch {
       return null;
     }
   }

@@ -79,7 +79,8 @@ const flowSchema = z.object({
   dataSourceId: flowDataSourceSchema.optional(), // Optional for database-to-database flows
   destinationDatabaseId: flowDestinationSchema.optional(), // Optional for database-to-database flows
   destinationDatabaseName: z.string().nullable().optional(),
-  type: z.enum(["scheduled", "webhook"]).optional(), // Remove default to detect missing type
+  /** Retired: display label only (never decides anything); triggers do. */
+  type: z.enum(["scheduled", "webhook"]).optional(),
   schedule: flowScheduleSchema,
   webhookConfig: webhookConfigSchema,
   entityFilter: z.array(z.string()).nullable().optional(),
@@ -1635,7 +1636,7 @@ export const useFlowStore = create<FlowStore>()(
           return response.data;
         } catch (error) {
           console.error("Failed to provision webhook:", error);
-          throw new Error(normalizeError(error));
+          throw new Error(normalizeError(error), { cause: error });
         }
       },
 

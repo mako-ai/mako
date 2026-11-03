@@ -2,7 +2,7 @@
  * GitHub App configuration (lazy env reads, mirroring api/src/billing/config.ts).
  *
  * These are distinct from the GH_CLIENT_ID/GH_CLIENT_SECRET used for *login*
- * OAuth (api/src/auth/arctic.ts). A GitHub *App* has its own App id, private
+ * OAuth (api/src/auth/oauth-providers.ts). A GitHub *App* has its own App id, private
  * key and (optionally) an OAuth client used for the install/identify flow.
  *
  * For local development and importing *public* repos you don't need an App at

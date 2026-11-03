@@ -28,6 +28,7 @@ import {
   Chip,
   CircularProgress,
   IconButton,
+  LinearProgress,
   Tooltip,
   Typography,
   styled,
@@ -56,14 +57,37 @@ import {
 } from "../store/appsStore";
 import AppHistoryPopover from "./AppHistoryPopover";
 import AppPublishedChip from "./AppPublishedChip";
+import EntityLoadErrorState from "./EntityLoadErrorState";
+import { TAB_KIND_ICONS } from "../lib/entity-icons";
 import { useConsoleStore } from "../store/consoleStore";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { setIframeDragGuard } from "../lib/iframe-drag-guard";
+import {
+  Group,
+  Panel,
+  Separator,
+  useDefaultLayout,
+} from "react-resizable-panels";
+import { separatorDragRef } from "../lib/iframe-drag-guard";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useUIStore } from "../store/uiStore";
 import { TerminalTypeAhead } from "../lib/terminal-type-ahead";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
+import { useAppUsageBeacon } from "../hooks/useAppUsageBeacon";
 import ShareDialog from "./ShareDialog";
+import { appViewerPath } from "../store/shareStore";
+import {
+  APP_OPEN_FALLBACK_MS,
+  appTabReadsReady,
+  isAwaitingPublishedPaint,
+  settleAppOpen,
+} from "../lib/app-open-gate";
+import { appFrameMessageOrigin, appFrameSandbox } from "../lib/app-frame";
+import {
+  APP_DUCKDB_MEMORY_MESSAGE,
+  clearAppFrame,
+  forgetAppFrame,
+  reportAppFrameMemory,
+  setAppFrameVisible,
+} from "../lib/app-memory";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
@@ -77,19 +101,19 @@ import ShareDialog from "./ShareDialog";
  * before, and it showed.
  */
 /** Vertical divider between the terminal panes and the sessions list. */
-const SessionsResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
+const SessionsResizeHandle = styled(Separator)(({ theme }) => ({
   flex: "0 0 4px",
   width: "4px",
   alignSelf: "stretch",
   background: theme.palette.divider,
   touchAction: "none",
   transition: "background-color 0.2s ease",
-  "&[data-resize-handle-state='hover'], &[data-resize-handle-state='drag']": {
+  "&[data-separator='hover'], &[data-separator='active']": {
     backgroundColor: theme.palette.primary.main,
   },
 }));
 
-const TerminalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
+const TerminalResizeHandle = styled(Separator)(({ theme }) => ({
   flex: "0 0 4px",
   height: "4px",
   alignSelf: "stretch",
@@ -99,10 +123,14 @@ const TerminalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
   // The library reports hover/drag through this attribute; its hit area is
   // larger than the visible strip, so the highlight has to key off it rather
   // than off CSS :hover.
-  "&[data-resize-handle-state='hover'], &[data-resize-handle-state='drag']": {
+  "&[data-separator='hover'], &[data-separator='active']": {
     backgroundColor: theme.palette.primary.main,
   },
 }));
+
+// Makes iframes ignore the pointer while a divider is dragged (a cross-
+// origin preview would otherwise swallow the drag). Stable: see separatorDragRef.
+const guardSeparatorDrag = separatorDragRef();
 
 const HIDDEN_PAUSE_MS = 10 * 60 * 1000;
 
@@ -487,10 +515,20 @@ function TerminalPanel({
             bgcolor: theme.palette.mode === "dark" ? "#0b0b0d" : "#ffffff",
           }}
         >
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             The machine is off.
           </Typography>
-          <Typography variant="caption" color="primary.main">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "primary.main",
+            }}
+          >
             Click to start it and open this shell
           </Typography>
         </Box>
@@ -523,6 +561,10 @@ function TerminalTabs({
   // style. Only the tab LIST is persisted; which tab is active is not worth
   // remembering.
   const hiddenPaused = useHiddenPause();
+  const sessionsLayout = useDefaultLayout({
+    id: "apps-terminal-sessions",
+    storage: localStorage,
+  });
   const [shells, setShells] = useState<string[]>(() => {
     try {
       const saved = JSON.parse(
@@ -872,16 +914,22 @@ function TerminalTabs({
     // is simply the first session in it (server-side it runs in a tmux
     // session named mako-dev-<slug>, attachable from any shell), not a
     // special surface.
-    <PanelGroup
-      direction="horizontal"
-      autoSaveId="apps-terminal-sessions"
+    <Group
+      orientation="horizontal"
+      defaultLayout={sessionsLayout.defaultLayout}
+      onLayoutChanged={sessionsLayout.onLayoutChanged}
       style={{ height: "100%" }}
     >
-      <Panel minSize={40}>
+      <Panel id="terminal-panes" minSize="40%">
         <Box sx={{ height: "100%", display: "flex" }}>{terminalPanes}</Box>
       </Panel>
       <SessionsResizeHandle />
-      <Panel defaultSize={14} minSize={7} maxSize={40}>
+      <Panel
+        id="terminal-sessions"
+        defaultSize="14%"
+        minSize="7%"
+        maxSize="40%"
+      >
         <Box
           sx={{
             height: "100%",
@@ -928,7 +976,7 @@ function TerminalTabs({
           ))}
         </Box>
       </Panel>
-    </PanelGroup>
+    </Group>
   );
 }
 
@@ -1117,13 +1165,13 @@ export default function AppWorkspace({
   const publishedSha = app?.publishedSha;
   const publishApp = useAppsStore(s => s.publishApp);
 
-  // The terminal split is a PanelGroup, like every other pane in the app.
+  // The terminal split is a panel Group, like every other pane in the app.
   //
   // It used to be a hand-rolled mousemove drag, which froze the moment the
   // cursor crossed the preview iframe: a cross-origin frame swallows
   // pointermove, so the parent window stops hearing about the drag. Drag
   // slowly and you stay on the handle and it works; drag fast and it hangs.
-  // `setIframeDragGuard` is the fix the rest of the app already uses — it
+  // The iframe drag guard is the fix the rest of the app already uses — it
   // makes every iframe transparent to pointer events for the duration — and
   // using the same library also means this handle is the same size as the
   // others rather than a hand-picked 5px.
@@ -1141,14 +1189,38 @@ export default function AppWorkspace({
     devServerKeyMatches(k, { id: appId, slug: slug ?? undefined }),
   );
   const viewUrl = useAppsStore(s => s.viewUrlByApp[appId]);
+  const viewUrlError = useAppsStore(s => s.viewUrlErrorByApp[appId]);
+  // The view URL the published iframe last finished loading. A new token
+  // (a publish moved the app on) shows the opening card again until it loads.
+  const [pubLoadedUrl, setPubLoadedUrl] = useState<string | null>(null);
+  const pubLoaded = !!viewUrl && pubLoadedUrl === viewUrl;
+  // Usage: only the PUBLISHED view counts, and only while this tab is the
+  // one in front — background tabs stay mounted (display: none), and the
+  // dev-mode preview is the author building, not someone using the app.
+  const isFrontTab = useConsoleStore(s => s.activeTabId === _tabId);
+  // The page-wide DuckDB budget asks background app frames to release, least
+  // recently shown first, never the one in front.
+  useEffect(() => {
+    setAppFrameVisible(_tabId, isFrontTab);
+  }, [_tabId, isFrontTab]);
+  useEffect(() => () => forgetAppFrame(_tabId), [_tabId]);
+  useAppUsageBeacon({
+    workspaceId,
+    appId,
+    active: !editing && pubLoaded && isFrontTab,
+    referrerKind: "internal",
+  });
+  const appsLoading = useAppsStore(s => s.appsLoading);
   const hiddenPaused = useHiddenPause();
-  // Durable, session-authorized URL for the published app — for normal tabs.
-  // The token URL (viewUrl) exists ONLY for the sandboxed iframe, whose
-  // opaque origin cannot send cookies; tokens are short-lived and in-memory,
-  // so handing them to window.open produced "Preview expired" minutes later.
+  // Durable URL for the published app in a normal tab: its viewer page, the
+  // canonical address people copy (the raw /api/…/live/ route only redirects
+  // there). The token URL (viewUrl) exists ONLY for the sandboxed iframe,
+  // whose opaque origin cannot send cookies; tokens are short-lived and
+  // in-memory, so handing them to window.open produced "Preview expired"
+  // minutes later.
   const liveUrl =
     app?.publishedSha && workspaceId
-      ? `/api/workspaces/${workspaceId}/apps/${appId}/live/`
+      ? appViewerPath(workspaceId, appId)
       : undefined;
   const fetchViewUrl = useAppsStore(s => s.fetchViewUrl);
   // Phone: the workbench is one pane at a time (preview OR terminal),
@@ -1164,12 +1236,57 @@ export default function AppWorkspace({
   // disagreed with the green dot — the exact multi-source drift §13.11 bans.
   // Editing a stopped app is a deliberate click now, not a restored side
   // effect.
+  //
+  // Until that probe answers, an unpublished app is not yet "never built":
+  // it may be about to open its running dev server instead.
+  const [devCheckedFor, setDevCheckedFor] = useState<string | null>(null);
+
+  // WHEN THIS TAB MAY READ THE REPO AND THE BOX.
+  //
+  // Files, status, branches and the dev-server probe are git- or
+  // sandbox-backed (3.4–3.7 s each on prod) and none is on screen while the
+  // published app opens. Fired on mount, by every app tab including the
+  // background ones, they queued on 1-vCPU instances in front of what the
+  // person was waiting for. So: the front tab only, once its published app
+  // has loaded (or after a fallback), and at once when nothing is loading —
+  // an unpublished app, the workbench, a dev server already serving. A
+  // background tab reads when it is brought to the front.
+  const awaitingPublishedPaint = isAwaitingPublishedPaint({
+    editing,
+    publishedSha,
+    pubLoaded,
+    devRunning,
+  });
+  const [paintWaitOver, setPaintWaitOver] = useState(false);
   useEffect(() => {
-    if (!workspaceId) return;
+    if (!isFrontTab || !awaitingPublishedPaint) return;
+    const timer = setTimeout(
+      () => setPaintWaitOver(true),
+      APP_OPEN_FALLBACK_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [isFrontTab, awaitingPublishedPaint]);
+  const repoReadsReady = appTabReadsReady({
+    isFrontTab,
+    appKnown: !!app,
+    awaitingPublishedPaint,
+    waitOver: paintWaitOver,
+  });
+  // The page's other boot-time reads wait on the same moment (app-open-gate).
+  useEffect(() => {
+    if (isFrontTab && app && !awaitingPublishedPaint) settleAppOpen();
+  }, [isFrontTab, app, awaitingPublishedPaint]);
+
+  const devProbedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!workspaceId || !repoReadsReady) return;
+    if (devProbedFor.current === appId) return;
+    devProbedFor.current = appId;
     void useAppsStore
       .getState()
       .checkDevStatus(workspaceId, appId)
       .then(() => {
+        setDevCheckedFor(appId);
         const p = useAppsStore.getState().previewByApp[appId];
         if (p?.mode === "dev" && p.url && !editing) {
           setEditing(workspaceId, appId, true);
@@ -1178,7 +1295,7 @@ export default function AppWorkspace({
     // Run once per app open; `editing` is deliberately not a dependency —
     // exiting dev mode clears it, and re-entering here would fight it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appId, workspaceId]);
+  }, [appId, workspaceId, repoReadsReady]);
 
   // Entering edit mode is "modifying the content" for an app tab: it pins
   // the tab (consoleStore's preview invariant), so a workbench with a dev
@@ -1192,7 +1309,9 @@ export default function AppWorkspace({
   // is opened for viewing and again whenever a publish moves the app on.
   useEffect(() => {
     if (!editing && app?.publishedSha && workspaceId) {
-      void fetchViewUrl(workspaceId, appId);
+      // A token UrlSync prefetched, or one this tab already holds for this
+      // publish, is used as is.
+      void fetchViewUrl(workspaceId, appId, { reuseFresh: true });
     }
   }, [editing, app?.publishedSha, workspaceId, appId, fetchViewUrl]);
   // Keep the tab's URL handle honest: a top-level app is addressed by its
@@ -1208,12 +1327,13 @@ export default function AppWorkspace({
     });
   }, [app, _tabId]);
 
-  const [terminalDragging, setTerminalDragging] = useState(false);
-  useEffect(() => {
-    if (!terminalDragging) return;
-    setIframeDragGuard(true);
-    return () => setIframeDragGuard(false);
-  }, [terminalDragging]);
+  // Remembers the preview/terminal split per browser, so a terminal you
+  // sized stays sized — one you have to re-drag every visit is one you stop
+  // using.
+  const workspaceLayout = useDefaultLayout({
+    id: "apps:workspace-vertical",
+    storage: localStorage,
+  });
 
   const checkDevStatus = useAppsStore(s => s.checkDevStatus);
   // The preview chip and iframe are CLIENT state; the server is the truth.
@@ -1260,7 +1380,28 @@ export default function AppWorkspace({
     const onMessage = (event: MessageEvent) => {
       const frame = pubIframeRef.current;
       if (!frame || event.source !== frame.contentWindow) return;
-      const data = event.data as { type?: unknown; search?: unknown } | null;
+      if (event.origin !== appFrameMessageOrigin(frame.src)) return;
+      const data = event.data as {
+        type?: unknown;
+        search?: unknown;
+        bytes?: unknown;
+        canRelease?: unknown;
+      } | null;
+      // SDK >= 2.13: what this frame's heap holds, for the page-wide
+      // budget across app frames (lib/app-memory.ts).
+      if (
+        data?.type === APP_DUCKDB_MEMORY_MESSAGE &&
+        typeof data.bytes === "number"
+      ) {
+        reportAppFrameMemory(
+          _tabId,
+          event.source as Window,
+          event.origin,
+          data.bytes,
+          data.canRelease !== false,
+        );
+        return;
+      }
       if (
         !data ||
         data.type !== "mako-app:navigate" ||
@@ -1293,6 +1434,11 @@ export default function AppWorkspace({
     s => (s.tabs[_tabId]?.metadata?.appSearchSeed as number | undefined) ?? 0,
   );
   const seedKey = `${previewNonce}:${appSearchSeed}`;
+  // Each of these replaces or removes the published iframe under a live tab.
+  useEffect(
+    () => () => clearAppFrame(_tabId),
+    [_tabId, seedKey, viewUrl, editing],
+  );
   const seededSearchRef = useRef<{ key: string; search: string } | null>(null);
   if (
     seededSearchRef.current === null ||
@@ -1309,11 +1455,18 @@ export default function AppWorkspace({
   useEffect(() => {
     if (!workspaceId) return;
     if (!app) void fetchApps(workspaceId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, appId]);
+  const repoReadFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!workspaceId || !repoReadsReady) return;
+    if (repoReadFor.current === appId) return;
+    repoReadFor.current = appId;
     void fetchFiles(workspaceId, appId);
     void fetchStatus(workspaceId, appId);
     void fetchBranches(workspaceId, appId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, appId]);
+  }, [workspaceId, appId, repoReadsReady]);
 
   // Repo-wide, deliberately: one worktree serves every app in the monorepo, so
   // Discard throws away the repo-wide set and a branch switch has to get past
@@ -1373,10 +1526,11 @@ export default function AppWorkspace({
         // it only ITS OWN origin, never ours. It is required there:
         // with an opaque origin, Vite's HMR socket and its
         // cross-origin module scripts do not work.
+        // External record links open normal tabs. Keep the app itself isolated.
         sandbox={
           preview.mode === "dev"
-            ? "allow-scripts allow-forms allow-same-origin"
-            : "allow-scripts allow-forms"
+            ? "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-same-origin"
+            : "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
         }
         style={{ border: 0, width: "100%", height: "100%" }}
       />
@@ -1385,13 +1539,24 @@ export default function AppWorkspace({
         <Typography variant="subtitle1" gutterBottom>
           {app?.title ?? "App"}
         </Typography>
-        <Typography variant="body2" color="text.secondary" paragraph>
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+            marginBottom: "16px",
+          }}
+        >
           Browse and edit this app&apos;s files from the Apps explorer on the
           left — every file opens in its own tab. Ask the agent in chat to build
           features (it works on your branch and commits every turn), or use the
           terminal below — it is a real machine with a real git checkout.
         </Typography>
-        <Typography variant="body2" color="text.secondary">
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           <strong>Start dev session</strong> runs the app live, so edits show up
           as you make them. <strong>Publish</strong> builds it and deploys —
           that is the version everyone else sees. A failed build publishes
@@ -1600,35 +1765,93 @@ export default function AppWorkspace({
           suggests the machine is part of viewing. DEV MODE is the workbench:
           preview on top, terminal below. */}
       {!editing ? (
-        <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
+        <Box
+          sx={{ flex: 1, minHeight: 0, display: "flex", position: "relative" }}
+        >
           {viewUrl ? (
-            // Consumer view: the PUBLISHED app, which is what everyone who is
-            // not working on it should see. It comes from the deployment
-            // store, so opening someone's app costs a static file read and
-            // starts no machine — the same reason a hundred viewers can open
-            // one app without a hundred microVMs.
-            //
-            // No allow-same-origin: this is served from Mako's own origin, so
-            // granting it would hand app code our origin and let it out of
-            // the sandbox entirely.
-            <iframe
-              key={`pub-${seedKey}`}
-              ref={pubIframeRef}
-              title={`${app?.title ?? "App"} (published)`}
-              // The view URL never carries a query of its own; the app's
-              // rides on it so the SDK reads it at mount (the preview route
-              // resolves the asset from the path alone).
-              src={
-                seededSearch
-                  ? viewUrl +
-                    (viewUrl.includes("?")
-                      ? `&${seededSearch.slice(1)}`
-                      : seededSearch)
-                  : viewUrl
+            <>
+              {/* Consumer view: the PUBLISHED app, which is what everyone who
+                  is not working on it should see. It comes from the
+                  deployment store, so opening someone's app costs a static
+                  file read and starts no machine — the same reason a hundred
+                  viewers can open one app without a hundred microVMs.
+
+                  No allow-same-origin while this is served from Mako's own
+                  origin: granting it would hand app code our origin and let
+                  it out of the sandbox entirely. On the app's own origin
+                  (APPS_ORIGIN_BASE) the flag is added, because that origin
+                  is foreign and it is what lets the browser cache work. */}
+              <iframe
+                key={`pub-${seedKey}`}
+                ref={pubIframeRef}
+                title={`${app?.title ?? "App"} (published)`}
+                // The view URL never carries a query of its own; the app's
+                // rides on it so the SDK reads it at mount (the preview route
+                // resolves the asset from the path alone).
+                src={
+                  seededSearch
+                    ? viewUrl +
+                      (viewUrl.includes("?")
+                        ? `&${seededSearch.slice(1)}`
+                        : seededSearch)
+                    : viewUrl
+                }
+                sandbox={appFrameSandbox(viewUrl)}
+                onLoad={() => setPubLoadedUrl(viewUrl)}
+                style={{
+                  border: 0,
+                  width: "100%",
+                  height: "100%",
+                  // Visible from the start, ABOVE the opening card. Until the
+                  // app's HTML paints, the frame is transparent and the card
+                  // shows through it; the app's own boot skeleton then
+                  // covers it the moment index.html parses. The frame used
+                  // to be held at opacity 0 until onLoad — after the whole
+                  // bundle — so that skeleton was never seen (5+ s of
+                  // "Opening…" on prod for a 0.5 s app).
+                  position: "relative",
+                  zIndex: 1,
+                  background: "transparent",
+                  // No colorScheme here. The frame's color-scheme becomes the
+                  // app's prefers-color-scheme, so pinning it to "light" made
+                  // every system-following app light. Mako never sets one on
+                  // <html>, so frame and app document are both "normal"
+                  // before the app paints and the canvas stays transparent.
+                }}
+              />
+              {!pubLoaded && (
+                // Under the frame, and gone once it has loaded, so an app
+                // without a background never shows the card through it.
+                <Box
+                  sx={{
+                    position: "absolute",
+                    inset: 0,
+                    display: "flex",
+                    zIndex: 0,
+                  }}
+                >
+                  <AppOpeningState title={app?.title} />
+                </Box>
+              )}
+            </>
+          ) : publishedSha && viewUrlError ? (
+            <EntityLoadErrorState
+              error={viewUrlError}
+              entityLabel="app"
+              onRetry={
+                workspaceId
+                  ? () => void fetchViewUrl(workspaceId, appId)
+                  : undefined
               }
-              sandbox="allow-scripts allow-forms"
-              style={{ border: 0, width: "100%", height: "100%" }}
             />
+          ) : publishedSha ||
+            (!app && appsLoading) ||
+            devCheckedFor !== appId ? (
+            // Built, or not known yet: the token, the app list or the
+            // dev-server probe is still in flight. Never the never-built
+            // screen — it offered "Launch dev mode" on every published app
+            // for as long as its view token took.
+            <AppOpeningState title={app?.title} />
           ) : (
             // Never deployed: say so plainly, and make the one meaningful
             // next action the obvious thing on the page.
@@ -1647,8 +1870,10 @@ export default function AppWorkspace({
               <Typography variant="h6">{app?.title ?? "App"}</Typography>
               <Typography
                 variant="body2"
-                color="text.secondary"
-                sx={{ maxWidth: 440 }}
+                sx={{
+                  color: "text.secondary",
+                  maxWidth: 440,
+                }}
               >
                 This app has never been built and deployed, so there is nothing
                 to view yet. Launch dev mode to work on it — a real sandbox with
@@ -1694,24 +1919,28 @@ export default function AppWorkspace({
           </Box>
         </>
       ) : (
-        <PanelGroup
-          direction="vertical"
-          // Remembers the split per browser, so a terminal you sized stays
-          // sized — one you have to re-drag every visit is one you stop
-          // using.
-          autoSaveId="apps:workspace-vertical"
+        <Group
+          orientation="vertical"
+          defaultLayout={workspaceLayout.defaultLayout}
+          onLayoutChanged={workspaceLayout.onLayoutChanged}
           style={{ flex: 1, minHeight: 0 }}
         >
-          <Panel defaultSize={70} minSize={20}>
+          <Panel id="preview" defaultSize="70%" minSize="20%">
             {previewPane}
           </Panel>
 
-          <TerminalResizeHandle onDragging={setTerminalDragging} />
+          <TerminalResizeHandle elementRef={guardSeparatorDrag} />
 
-          <Panel defaultSize={30} minSize={8} collapsible collapsedSize={0}>
+          <Panel
+            id="terminal"
+            defaultSize="30%"
+            minSize="8%"
+            collapsible
+            collapsedSize="0%"
+          >
             <TerminalTabs appId={appId} workspaceId={workspaceId} />
           </Panel>
-        </PanelGroup>
+        </Group>
       )}
 
       <AppHistoryPopover
@@ -1734,6 +1963,7 @@ export default function AppWorkspace({
           access={app.access ?? "workspace"}
           workspaceRole={app.workspaceRole ?? "viewer"}
           publicShare={app.publicShare}
+          chatEnabled={app.chatEnabled === true}
           canManage={
             !app.owner_id || app.owner_id === user?.id || isWorkspaceAdmin
           }
@@ -1748,10 +1978,52 @@ export default function AppWorkspace({
               if (changes.publicShare) {
                 currentApp.publicShare = changes.publicShare;
               }
+              if (changes.chatEnabled !== undefined) {
+                currentApp.chatEnabled = changes.chatEnabled;
+              }
             });
           }}
         />
       )}
+    </Box>
+  );
+}
+
+/**
+ * What an app tab shows while it opens: the app's name over an indeterminate
+ * bar, so a loading app reads as "opening", never as an empty or
+ * never-built one.
+ */
+function AppOpeningState({ title }: { title?: string }) {
+  const AppIcon = TAB_KIND_ICONS.app;
+  return (
+    <Box
+      role="status"
+      aria-live="polite"
+      sx={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 1.5,
+        p: 4,
+        textAlign: "center",
+        bgcolor: "background.default",
+        color: "text.secondary",
+      }}
+    >
+      <AppIcon size={32} strokeWidth={1.5} />
+      <Typography
+        variant="subtitle1"
+        sx={{
+          color: "text.primary",
+        }}
+      >
+        {title ?? "App"}
+      </Typography>
+      <LinearProgress sx={{ width: 160, borderRadius: 1 }} />
+      <Typography variant="caption">Opening…</Typography>
     </Box>
   );
 }

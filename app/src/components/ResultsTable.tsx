@@ -190,7 +190,9 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   const currentPage = results?.currentPage ?? 1;
   const canGoBack = currentPage > 1 && Boolean(onPreviousPage);
   const canGoForward = Boolean(results?.pageInfo?.hasMore && onNextPage);
-  const lastTableResetExecutedAtRef = React.useRef<string | undefined>();
+  const lastTableResetExecutedAtRef = React.useRef<string | undefined>(
+    undefined,
+  );
 
   // Reset the view whenever new results arrive: cards on mobile (answer-first),
   // table on desktop.
@@ -690,7 +692,12 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   const renderCardValue = (value: unknown): React.ReactNode => {
     if (value === null || value === undefined) {
       return (
-        <Typography variant="body2" color="text.disabled">
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.disabled",
+          }}
+        >
           —
         </Typography>
       );
@@ -783,8 +790,11 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
                     <React.Fragment key={col.field}>
                       <Typography
                         variant="caption"
-                        color="text.secondary"
-                        sx={{ wordBreak: "break-word", pt: 0.25 }}
+                        sx={{
+                          color: "text.secondary",
+                          wordBreak: "break-word",
+                          pt: 0.25,
+                        }}
                       >
                         {col.headerName ?? col.field}
                       </Typography>
@@ -807,8 +817,11 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
         {rows.length > MOBILE_CARD_LIMIT && (
           <Typography
             variant="caption"
-            color="text.secondary"
-            sx={{ textAlign: "center", py: 1 }}
+            sx={{
+              color: "text.secondary",
+              textAlign: "center",
+              py: 1,
+            }}
           >
             Showing the first {MOBILE_CARD_LIMIT} of {rows.length} rows — switch
             to Table view to see all.
@@ -843,7 +856,12 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
             <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
               {kpi.value}
             </Typography>
-            <Typography variant="caption" color="text.secondary">
+            <Typography
+              variant="caption"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               {kpi.label}
             </Typography>
           </>
@@ -852,7 +870,12 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
               {results.resultCount.toLocaleString()}
             </Typography>
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               {results.resultCount === 1 ? "result" : "results"}
               {results.executionTime !== undefined
                 ? ` • ${results.executionTime} ms`
@@ -1088,7 +1111,12 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
             gap: 2,
           }}
         >
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             {results.resultCount} result(s) •{" "}
             {results.executionTime !== undefined &&
               `executed in ${results.executionTime} ms at `}

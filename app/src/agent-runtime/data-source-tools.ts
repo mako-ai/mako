@@ -2,10 +2,9 @@
  * Client executor for the shared, surface-agnostic data source tools
  * (`list_data_sources`, `inspect_data_source`, `query_duckdb`).
  *
- * Dispatches on `input.surface.kind` to the app runtime or the dashboard
- * runtime. Both surfaces expose the same concept — named (connection, query)
- * data sources materialized into in-browser DuckDB tables — so the agent uses
- * one set of primitives regardless of where the data lives.
+ * Dispatches on `input.surface.kind`; apps are the only surface. App
+ * bindings are named (connection, query) data sources materialized into
+ * Parquet, which the tools read through in-browser DuckDB.
  */
 
 import {
@@ -14,10 +13,7 @@ import {
   clipAgentText,
 } from "@mako/agent-tools";
 import { useAppsStore } from "../store/appsStore";
-import { useDashboardStore } from "../store/dashboardStore";
 import { useUIStore } from "../store/uiStore";
-import { queryDashboardRuntime } from "../dashboard-runtime/gateway";
-import { previewDashboardQuery } from "../dashboard-runtime/commands";
 import {
   collectStreamBytes,
   createDuckDBInstance,
@@ -93,8 +89,9 @@ function clipSampleRows(
 
 type ToolResult = Record<string, unknown>;
 
+/** Untrusted tool input; "app" is the only supported kind. */
 interface Surface {
-  kind: "app" | "dashboard";
+  kind: string;
   id: string;
 }
 
@@ -124,10 +121,7 @@ export async function executeDataSourceTool(
   if (surface.kind === "app") {
     return executeAppDataTool(toolName, surface.id, input);
   }
-  if (surface.kind === "dashboard") {
-    return executeDashboardDataTool(toolName, surface.id, input);
-  }
-  return fail(`Unknown surface kind: ${String(surface.kind)}`);
+  return fail(`Unknown surface kind: ${surface.kind}`);
 }
 
 // ---- App surface ---------------------------------------------------------
@@ -285,98 +279,6 @@ async function executeAppDataTool(
       void terminateTrackedDuckDBInstance(db, "agent-app-data-source").catch(
         () => undefined,
       );
-    }
-  }
-
-  return fail(`Unknown data source tool: ${toolName}`);
-}
-
-// ---- Dashboard surface ---------------------------------------------------
-
-async function executeDashboardDataTool(
-  toolName: string,
-  dashboardId: string,
-  input: Record<string, unknown>,
-): Promise<ToolResult> {
-  const dashboard = useDashboardStore.getState().openDashboards[dashboardId];
-  if (!dashboard) {
-    return fail("Dashboard not found (open it first with open_dashboard)");
-  }
-
-  if (toolName === "list_data_sources") {
-    // Omit full SQL — inspect_data_source returns code for one source.
-    return {
-      success: true,
-      dataSources: (dashboard.dataSources || []).map(ds => ({
-        id: ds.id,
-        name: ds.name,
-        table: ds.tableRef,
-        connectionId: ds.query?.connectionId,
-        language: ds.query?.language,
-        codeLength: (ds.query?.code ?? "").length,
-        status: ds.cache?.parquetBuildStatus ?? null,
-        rowCount: ds.cache?.rowCount ?? null,
-      })),
-    };
-  }
-
-  if (toolName === "inspect_data_source") {
-    const ref = input.dataSource as string;
-    const ds =
-      dashboard.dataSources.find(d => d.id === ref) ||
-      dashboard.dataSources.find(d => d.name === ref);
-    if (!ds) return fail(`No data source "${ref}" on this dashboard`);
-    try {
-      const result = await previewDashboardQuery({
-        dashboardId,
-        dataSourceId: ds.id,
-      });
-      const codeClipped = clipAgentText(
-        ds.query?.code ?? "",
-        APP_INSPECT_CODE_PREVIEW_CHARS,
-      );
-      return {
-        success: true,
-        dataSource: {
-          id: ds.id,
-          name: ds.name,
-          table: ds.tableRef,
-          connectionId: ds.query?.connectionId,
-          language: ds.query?.language,
-          codePreview: codeClipped.text,
-          codeLength: codeClipped.length,
-          codeTruncated: codeClipped.truncated,
-          columns: result.fields,
-          sampleRows: clipSampleRows(
-            result.rows.slice(0, 5) as Record<string, unknown>[],
-          ),
-          rowCount: result.rowCount,
-        },
-        ...(codeClipped.truncated
-          ? {
-              note: "Query preview truncated — fetch the source query only when editing it.",
-            }
-          : {}),
-      };
-    } catch (e) {
-      return fail(e instanceof Error ? e.message : "Inspect failed");
-    }
-  }
-
-  if (toolName === "query_duckdb") {
-    try {
-      const result = await queryDashboardRuntime({
-        dashboard,
-        sql: input.sql as string,
-      });
-      return {
-        success: true,
-        rows: result.rows.slice(0, 100),
-        fields: result.fields,
-        rowCount: result.rowCount,
-      };
-    } catch (e) {
-      return fail(e instanceof Error ? e.message : "DuckDB query failed");
     }
   }
 

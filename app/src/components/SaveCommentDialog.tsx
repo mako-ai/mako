@@ -86,7 +86,13 @@ export function SaveCommentDialog({
       <DialogTitle>{title}</DialogTitle>
       <DialogContent>
         {description && (
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+              mb: 1,
+            }}
+          >
             {description}
           </Typography>
         )}
@@ -120,7 +126,12 @@ export function SaveCommentDialog({
               }}
             >
               <Sparkles size={14} />
-              <Typography variant="caption" color="text.secondary">
+              <Typography
+                variant="caption"
+                sx={{
+                  color: "text.secondary",
+                }}
+              >
                 Generating comment with AI...
               </Typography>
             </Box>
@@ -145,7 +156,12 @@ export function SaveCommentDialog({
                   <ChevronRight size={14} />
                 )}
               </IconButton>
-              <Typography variant="caption" color="text.secondary">
+              <Typography
+                variant="caption"
+                sx={{
+                  color: "text.secondary",
+                }}
+              >
                 Changes since last save
               </Typography>
             </Box>

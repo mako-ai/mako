@@ -187,7 +187,11 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
             <Typography variant="h5" gutterBottom>
               Loading Invitation
             </Typography>
-            <Typography color="text.secondary">
+            <Typography
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Please wait while we load your invitation...
             </Typography>
           </Paper>
@@ -281,7 +285,11 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
             <Alert severity="success" sx={{ mb: 3 }}>
               You&apos;ve successfully joined the workspace.
             </Alert>
-            <Typography color="text.secondary">
+            <Typography
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Redirecting to the application...
             </Typography>
           </Paper>
@@ -307,7 +315,11 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
             <Typography variant="h5" gutterBottom>
               Accepting Invitation
             </Typography>
-            <Typography color="text.secondary">
+            <Typography
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Please wait while we add you to the workspace...
             </Typography>
           </Paper>
@@ -342,7 +354,13 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
               currently logged in as <strong>{user?.email}</strong>.
             </Alert>
 
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+                mb: 3,
+              }}
+            >
               To accept this invitation, please log in with the email address
               the invitation was sent to.
             </Typography>
@@ -393,10 +411,20 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
               <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
                 <BusinessIcon color="action" />
                 <Box>
-                  <Typography variant="body2" color="text.secondary">
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      color: "text.secondary",
+                    }}
+                  >
                     Workspace
                   </Typography>
-                  <Typography variant="body1" fontWeight="medium">
+                  <Typography
+                    variant="body1"
+                    sx={{
+                      fontWeight: "medium",
+                    }}
+                  >
                     {inviteDetails?.workspaceName}
                   </Typography>
                 </Box>
@@ -405,10 +433,20 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
               <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
                 <PersonIcon color="action" />
                 <Box>
-                  <Typography variant="body2" color="text.secondary">
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      color: "text.secondary",
+                    }}
+                  >
                     Invited by
                   </Typography>
-                  <Typography variant="body1" fontWeight="medium">
+                  <Typography
+                    variant="body1"
+                    sx={{
+                      fontWeight: "medium",
+                    }}
+                  >
                     {inviteDetails?.inviterEmail}
                   </Typography>
                 </Box>
@@ -417,10 +455,20 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
               <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
                 <EmailIcon color="action" />
                 <Box>
-                  <Typography variant="body2" color="text.secondary">
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      color: "text.secondary",
+                    }}
+                  >
                     Invited email
                   </Typography>
-                  <Typography variant="body1" fontWeight="medium">
+                  <Typography
+                    variant="body1"
+                    sx={{
+                      fontWeight: "medium",
+                    }}
+                  >
                     {inviteDetails?.inviteeEmail}
                   </Typography>
                 </Box>
@@ -455,7 +503,13 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
           ) : (
             // User is not logged in
             <Stack spacing={2}>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  color: "text.secondary",
+                  mb: 1,
+                }}
+              >
                 Please log in or create an account with{" "}
                 <strong>{inviteDetails?.inviteeEmail}</strong> to accept this
                 invitation.
@@ -475,7 +529,12 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
               </Button>
 
               <Divider sx={{ my: 1 }}>
-                <Typography variant="body2" color="text.secondary">
+                <Typography
+                  variant="body2"
+                  sx={{
+                    color: "text.secondary",
+                  }}
+                >
                   or continue with
                 </Typography>
               </Divider>

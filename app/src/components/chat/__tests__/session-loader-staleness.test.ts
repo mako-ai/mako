@@ -14,7 +14,7 @@ function assistant(parts: Array<Record<string, unknown>>) {
 
 function tool(state: string, toolCallId = "call-1") {
   return {
-    type: "tool-create_dashboard",
+    type: "tool-create_console",
     toolCallId,
     state,
     input: { title: "X" },
@@ -39,7 +39,7 @@ describe("isPersistedSnapshotStale (reload-before-replay guard)", () => {
   });
 
   it("stale when a tool settled in memory is still pending in the snapshot", () => {
-    // The segment-boundary race: create_dashboard settled locally via
+    // The segment-boundary race: create_console settled locally via
     // addToolOutput, but the continuation save hasn't landed server-side.
     const persisted = [user("hi"), assistant([tool("input-available")])];
     const memory = [user("hi"), assistant([tool("output-available")])];

@@ -120,10 +120,20 @@ export function BillingSection() {
       {/* Usage Bar */}
       <Box sx={{ mb: 2 }}>
         <Box sx={{ display: "flex", justifyContent: "space-between", mb: 0.5 }}>
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             AI Usage this period
           </Typography>
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             ${status.currentUsageUsd.toFixed(2)} / $
             {status.usageQuotaUsd.toFixed(2)}
           </Typography>
@@ -135,11 +145,21 @@ export function BillingSection() {
           sx={{ height: 8, borderRadius: 4 }}
         />
         <Box sx={{ display: "flex", justifyContent: "space-between", mt: 0.5 }}>
-          <Typography variant="caption" color="text.secondary">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             {status.invocationCount} requests
           </Typography>
           {status.plan !== "free" && status.hardLimitUsd == null && (
-            <Typography variant="caption" color="text.secondary">
+            <Typography
+              variant="caption"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Overage billed at cost
             </Typography>
           )}
@@ -168,8 +188,11 @@ export function BillingSection() {
       {status.currentPeriodEnd && (
         <Typography
           variant="caption"
-          color="text.secondary"
-          sx={{ mt: 1, display: "block" }}
+          sx={{
+            color: "text.secondary",
+            mt: 1,
+            display: "block",
+          }}
         >
           Current period ends{" "}
           {new Date(status.currentPeriodEnd).toLocaleDateString()}

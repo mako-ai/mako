@@ -27,7 +27,14 @@ import type { CapabilityGrant } from "@mako/agent-tools";
  * on each execution rather than trusted from the key. A key cannot invite
  * above its owner's own role either — see invite_workspace_member.
  *
- * None of the write scopes are granted by default; workspace admins opt a
+ * `warehouse:write` and `connections:write` are no longer opt-ins: every
+ * MCP/CLI credential holds the warehouse-write and connections-write grants
+ * (mako-mcp-server.ts, EXTERNAL_MCP_IMPLICIT_GRANTS), OAuth issues both
+ * scopes on every sign-in, and what a viewer may not do is decided by the
+ * caller's live workspace role. The scope names stay valid so stored keys,
+ * tokens and older CLIs keep parsing.
+ *
+ * `members:write` and `query:write` are the remaining opt-ins; workspace admins opt a
  * key in explicitly.
  */
 export const WORKSPACE_API_KEY_SCOPES = [
@@ -37,7 +44,21 @@ export const WORKSPACE_API_KEY_SCOPES = [
   "warehouse:write",
   "git:write",
   "members:write",
+  "connections:write",
+  // Start workflow runs and add webhooks over MCP: that executes the
+  // workspace's own workflow code, so a read-only key cannot.
+  "workflows:run",
+  "workflows:runtime",
 ] as const;
+
+/**
+ * Scopes Mako mints for its own machinery and a person can never put on a key
+ * they create. `workflows:runtime` belongs to a workspace's workflow
+ * worker: it reads `workflows/` source and receives the workspace's Hatchet
+ * token, so a hand-made key carrying it would hand that token out.
+ */
+export const INTERNAL_WORKSPACE_API_KEY_SCOPES: readonly WorkspaceApiKeyScope[] =
+  ["workflows:runtime"];
 
 export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
 
@@ -62,6 +83,11 @@ export function parseWorkspaceApiKeyScopes(
   const scopes = value.map(scope => {
     if (typeof scope !== "string" || !WORKSPACE_API_KEY_SCOPE_SET.has(scope)) {
       throw new Error(`Unsupported API key scope: ${String(scope)}`);
+    }
+    if (
+      INTERNAL_WORKSPACE_API_KEY_SCOPES.includes(scope as WorkspaceApiKeyScope)
+    ) {
+      throw new Error(`API key scope is reserved: ${scope}`);
     }
     return scope as WorkspaceApiKeyScope;
   });
@@ -141,6 +167,12 @@ export function capabilityGrantsFromScopes(
   }
   if (hasWorkspaceApiKeyScope(scopes, "members:write")) {
     grants.push("members-write");
+  }
+  if (hasWorkspaceApiKeyScope(scopes, "connections:write")) {
+    grants.push("connections-write");
+  }
+  if (hasWorkspaceApiKeyScope(scopes, "workflows:run")) {
+    grants.push("workflows-run");
   }
   return grants;
 }

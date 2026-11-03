@@ -31,7 +31,13 @@ export default function ConsoleRemoteUpdateBanner({
       severity={isDeleted ? "warning" : "info"}
       sx={{ borderRadius: 0, py: 0.25, alignItems: "center" }}
       action={
-        <Stack direction="row" spacing={1} alignItems="center">
+        <Stack
+          direction="row"
+          spacing={1}
+          sx={{
+            alignItems: "center",
+          }}
+        >
           {isDeleted ? (
             <Button color="inherit" size="small" onClick={onCloseTab}>
               Close tab

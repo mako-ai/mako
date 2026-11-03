@@ -11,7 +11,7 @@ import type { VirtuosoHandle } from "react-virtuoso";
 export interface UseChatScrollArgs {
   isLoading: boolean;
   isLoadingRef: MutableRefObject<boolean>;
-  virtuosoRef: RefObject<VirtuosoHandle>;
+  virtuosoRef: RefObject<VirtuosoHandle | null>;
 }
 
 /**

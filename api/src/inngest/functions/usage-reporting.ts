@@ -16,6 +16,7 @@ import { Workspace } from "../../database/workspace-schema";
 import { LlmUsage } from "../../database/schema";
 import {
   isBillingEnabled,
+  STRIPE_BILLING_API_VERSION,
   getStripeSecretKey,
   getStripeMeterEventName,
   PLAN_DEFINITIONS,
@@ -168,7 +169,9 @@ export const usageReportingFunction = inngest.createFunction(
         }
 
         try {
-          const stripe = new Stripe(getStripeSecretKey());
+          const stripe = new Stripe(getStripeSecretKey(), {
+            apiVersion: STRIPE_BILLING_API_VERSION,
+          });
 
           await stripe.billing.meterEvents.create(
             {

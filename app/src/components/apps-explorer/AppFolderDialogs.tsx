@@ -93,7 +93,12 @@ export function FolderNameDialog({
           }
           disabled={busy}
         />
-        <Typography variant="caption" color="text.secondary">
+        <Typography
+          variant="caption"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           In {parentLabel}. A folder is a real directory in the workspace repo.
         </Typography>
       </DialogContent>

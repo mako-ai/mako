@@ -14,9 +14,9 @@
  * target environment's connection — and a personal environment clones the
  * prod-like one's connection. So:
  *
- *   - a token needs `warehouse:write` (the unticked-by-default, separately
- *     consented scope) for ANY local run; no narrower scope could honestly
- *     promise less. Real isolation needs a per-personal-environment
+ *   - any CLI/MCP login may run it (no separate warehouse opt-in), but only
+ *     as at least a member: the dbt routes' RBAC refuses viewers every write,
+ *     this POST included. Real isolation needs a per-personal-environment
  *     connection with a dataset-scoped service account (follow-up).
  *   - the default target is still the caller's own environment (created on
  *     first use), so ordinary work lands in their `dbt_<user>` schema;
@@ -80,21 +80,19 @@ export type LocalRunAuthority =
 
 /**
  * May this caller run dbt code it uploaded? A session is a member acting as
- * themselves; a token needs warehouse:write — see the module doc for why
- * nothing narrower is offered.
+ * themselves; a token may when it is an MCP/CLI login (`mcp`), with no
+ * separate warehouse opt-in. The role check (member+) is the route's RBAC.
  */
 export function mayRunLocalCheckout(authority: LocalRunAuthority): boolean {
   return (
     authority.kind === "session" ||
-    hasWorkspaceApiKeyScope(authority.scopes, "warehouse:write")
+    hasWorkspaceApiKeyScope(authority.scopes, "mcp")
   );
 }
 
 export const LOCAL_RUN_SCOPE_HINT =
-  "Running dbt from your checkout needs the warehouse:write scope: the " +
-  "uploaded dbt code runs with the environment's warehouse credentials " +
-  "(macros, hooks and schema configs can reach beyond your schema). Run " +
-  '`mako login --warehouse-write` and keep "Allow warehouse execution" ticked.';
+  "Running dbt from your checkout needs a Mako login for this workspace. " +
+  "Run `mako login` and try again.";
 
 /** `build --select x+ --full-refresh`, validated by the one command parser. */
 export function buildLocalRunCommand(input: {

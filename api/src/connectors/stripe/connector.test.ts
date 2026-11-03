@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { StripeConnector } from "./connector";
+import { resolveStripeEntitySchema } from "./schema";
 
 function createConnector(config: Record<string, unknown> = {}) {
   return new StripeConnector({
@@ -341,6 +342,353 @@ function testHostConfigFromApiBaseUrl() {
   assert.deepEqual(noUrlConnector.resolveHostConfig(), {});
 }
 
+function testEveryEntityHasSchemaAndLabel() {
+  const connector = createConnector();
+  const entities = connector.getAvailableEntities();
+  const metadata = connector.getEntityMetadata();
+  assert.equal(metadata.length, entities.length);
+  for (const entity of entities) {
+    assert.ok(
+      resolveStripeEntitySchema(entity),
+      `missing schema for Stripe entity ${entity}`,
+    );
+    const meta = metadata.find(entry => entry.name === entity);
+    assert.ok(meta?.label, `missing label for Stripe entity ${entity}`);
+  }
+}
+
+function testMoneyMovementEntitiesAvailable() {
+  const entities = createConnector().getAvailableEntities();
+  for (const entity of [
+    "balance_transactions",
+    "payouts",
+    "payout_balance_transactions",
+    "refunds",
+    "credit_notes",
+    "customer_balance_transactions",
+    "invoice_items",
+    "subscription_schedules",
+    "coupons",
+    "promotion_codes",
+    "checkout_sessions",
+    "setup_intents",
+    "early_fraud_warnings",
+  ]) {
+    assert.ok(entities.includes(entity), `${entity} should be syncable`);
+  }
+}
+
+async function testTopLevelMoneyEntitiesApplyCreatedAnchor() {
+  const connector = createConnector();
+  const calls: Array<{ resource: string; params: Record<string, unknown> }> =
+    [];
+  const lister = (resource: string) => ({
+    list: async (params: Record<string, unknown>) => {
+      calls.push({ resource, params });
+      return { data: [{ id: `${resource}_1` }], has_more: false };
+    },
+  });
+  (connector as any).stripe = {
+    balanceTransactions: lister("balance_transactions"),
+    payouts: lister("payouts"),
+    refunds: lister("refunds"),
+    creditNotes: lister("credit_notes"),
+    checkout: { sessions: lister("checkout_sessions") },
+    radar: { earlyFraudWarnings: lister("early_fraud_warnings") },
+  };
+
+  const since = new Date(CREATED_MS);
+  for (const entity of [
+    "balance_transactions",
+    "payouts",
+    "refunds",
+    "credit_notes",
+    "checkout_sessions",
+    "early_fraud_warnings",
+  ]) {
+    const batches: unknown[][] = [];
+    await connector.fetchEntity({
+      entity,
+      since,
+      onBatch: async (records: unknown[]) => {
+        batches.push(records);
+      },
+    } as any);
+    assert.equal(batches.length, 1, `${entity} should emit one batch`);
+  }
+
+  assert.equal(calls.length, 6);
+  for (const call of calls) {
+    assert.deepEqual(
+      call.params.created,
+      { gte: CREATED_EPOCH },
+      `${call.resource} should filter by created[gte]`,
+    );
+  }
+}
+
+function pagedChildren<T>(items: T[]) {
+  return { autoPagingToArray: async () => items };
+}
+
+async function testPayoutBalanceTransactionsCarryPayoutId() {
+  const connector = createConnector();
+  const childCalls: Array<Record<string, unknown>> = [];
+  (connector as any).stripe = {
+    payouts: {
+      list: async () => ({
+        data: [{ id: "po_1" }, { id: "po_2" }],
+        has_more: true,
+      }),
+    },
+    balanceTransactions: {
+      list: (params: Record<string, unknown>) => {
+        childCalls.push(params);
+        return pagedChildren([
+          { id: `txn_${String(params.payout)}_a`, type: "charge" },
+          { id: `txn_${String(params.payout)}_b`, type: "payout" },
+        ]);
+      },
+    },
+  };
+
+  const records: Array<Record<string, unknown>> = [];
+  const state = await connector.fetchEntityChunk({
+    entity: "payout_balance_transactions",
+    maxIterations: 1,
+    onBatch: async (batch: Array<Record<string, unknown>>) => {
+      records.push(...batch);
+    },
+  } as any);
+
+  assert.deepEqual(
+    childCalls.map(call => call.payout),
+    ["po_1", "po_2"],
+  );
+  assert.equal(records.length, 4);
+  assert.ok(records.every(record => typeof record.payout === "string"));
+  assert.equal(
+    records.find(record => record.id === "txn_po_2_a")?.payout,
+    "po_2",
+  );
+  // The resumable cursor walks payouts, not the transactions inside them.
+  assert.equal(state.cursor, "po_2");
+  assert.equal(state.hasMore, true);
+}
+
+async function testCustomerBalanceTransactionsIgnoreSince() {
+  const connector = createConnector();
+  const customerParams: Array<Record<string, unknown>> = [];
+  const listedFor: string[] = [];
+  (connector as any).stripe = {
+    customers: {
+      list: async (params: Record<string, unknown>) => {
+        customerParams.push(params);
+        return { data: [{ id: "cus_1" }, { id: "cus_2" }], has_more: false };
+      },
+      listBalanceTransactions: (customerId: string) => {
+        listedFor.push(customerId);
+        return pagedChildren(
+          customerId === "cus_1"
+            ? [{ id: "cbtxn_1", customer: "cus_1", amount: -5000 }]
+            : [],
+        );
+      },
+    },
+  };
+
+  const records: Array<Record<string, unknown>> = [];
+  await connector.fetchEntity({
+    entity: "customer_balance_transactions",
+    since: new Date(CREATED_MS),
+    onBatch: async (batch: Array<Record<string, unknown>>) => {
+      records.push(...batch);
+    },
+  } as any);
+
+  // Old customers keep receiving credit: never bound the walk by creation.
+  assert.equal(customerParams.length, 1);
+  assert.equal(customerParams[0].created, undefined);
+  assert.deepEqual(listedFor, ["cus_1", "cus_2"]);
+  assert.deepEqual(
+    records.map(record => record.id),
+    ["cbtxn_1"],
+  );
+
+  const capabilities = connector.getIncrementalCapabilities();
+  assert.equal(
+    capabilities.perEntity?.customer_balance_transactions?.mode,
+    "none",
+  );
+}
+
+function testMoneyMovementWebhookEvents() {
+  const connector = createConnector();
+  assert.deepEqual(connector.getWebhookEventMapping("payout.paid"), {
+    entity: "payouts",
+    operation: "upsert",
+  });
+  assert.deepEqual(connector.getWebhookEventMapping("charge.refund.updated"), {
+    entity: "refunds",
+    operation: "upsert",
+  });
+  assert.deepEqual(connector.getWebhookEventMapping("credit_note.voided"), {
+    entity: "credit_notes",
+    operation: "upsert",
+  });
+  assert.deepEqual(connector.getWebhookEventMapping("invoiceitem.deleted"), {
+    entity: "invoice_items",
+    operation: "delete",
+  });
+  assert.deepEqual(connector.getWebhookEventMapping("coupon.deleted"), {
+    entity: "coupons",
+    operation: "delete",
+  });
+
+  assert.deepEqual(connector.getWebhookEventsForEntities(["payouts"]).sort(), [
+    "payout.canceled",
+    "payout.created",
+    "payout.failed",
+    "payout.paid",
+    "payout.reconciliation_completed",
+    "payout.updated",
+  ]);
+  // Stripe rejects deprecated event types and fails the whole endpoint
+  // request with them, so they must never be subscribed.
+  for (const deprecated of ["invoiceitem.updated"]) {
+    assert.ok(
+      !connector.getSupportedWebhookEvents().includes(deprecated),
+      `${deprecated} is deprecated by Stripe`,
+    );
+    assert.equal(connector.getWebhookEventMapping(deprecated), null);
+  }
+
+  // Polled-only entities subscribe to nothing.
+  assert.deepEqual(
+    connector.getWebhookEventsForEntities([
+      "balance_transactions",
+      "payout_balance_transactions",
+      "customer_balance_transactions",
+    ]),
+    [],
+  );
+
+  // Every supported event maps to a syncable entity.
+  const entities = new Set(connector.getAvailableEntities());
+  for (const event of connector.getSupportedWebhookEvents()) {
+    const mapping = connector.getWebhookEventMapping(event);
+    assert.ok(mapping, `${event} has no entity mapping`);
+    assert.ok(entities.has(mapping.entity), `${event} maps to unknown entity`);
+  }
+}
+
+function stubWebhookEndpoints(
+  connector: StripeConnector,
+  endpoints: Array<{ id: string; url: string; status: string }>,
+) {
+  const updates: Array<{ id: string; params: Record<string, unknown> }> = [];
+  (connector as any).stripe = {
+    webhookEndpoints: {
+      list: () => ({ autoPagingToArray: async () => endpoints }),
+      update: async (id: string, params: Record<string, unknown>) => {
+        updates.push({ id, params });
+        return { id, url: endpoints.find(e => e.id === id)?.url };
+      },
+    },
+  };
+  return updates;
+}
+
+async function testUpdateWebhookSubscriptionRetargetsInPlace() {
+  const connector = createConnector();
+  assert.equal(connector.supportsWebhookSubscriptionUpdate(), true);
+
+  const url = "https://mako.example/api/webhooks/ws/flow";
+  const updates = stubWebhookEndpoints(connector, [
+    {
+      id: "we_other",
+      url: "https://elsewhere.example/hook",
+      status: "enabled",
+    },
+    { id: "we_flow", url, status: "enabled" },
+  ]);
+
+  const result = await connector.updateWebhookSubscription({
+    endpointUrl: url,
+    enabledEntities: ["payouts", "disputes"],
+  });
+
+  assert.deepEqual(result, { providerWebhookId: "we_flow", endpointUrl: url });
+  assert.equal(updates.length, 1, "only the flow's endpoint is touched");
+  assert.equal(updates[0].id, "we_flow");
+  assert.equal(updates[0].params.disabled, false);
+  const events = (updates[0].params.enabled_events as string[]).slice().sort();
+  assert.ok(events.includes("payout.paid"));
+  assert.ok(events.includes("charge.dispute.closed"));
+  assert.ok(!events.includes("invoice.paid"), "unselected entity excluded");
+  // Signing secrets are never re-issued by an update.
+  assert.equal((result as any).signingSecret, undefined);
+}
+
+async function testUpdateWebhookSubscriptionHandlesDuplicates() {
+  const connector = createConnector();
+  const url = "https://mako.example/api/webhooks/ws/flow";
+  const updates = stubWebhookEndpoints(connector, [
+    { id: "we_stale", url, status: "disabled" },
+    { id: "we_live", url, status: "enabled" },
+  ]);
+
+  const result = await connector.updateWebhookSubscription({
+    endpointUrl: url,
+    enabledEntities: ["invoices"],
+  });
+
+  // Without a stored id, the endpoint Stripe still delivers to wins.
+  assert.equal(result?.providerWebhookId, "we_live");
+  assert.deepEqual(updates.map(update => update.id).sort(), [
+    "we_live",
+    "we_stale",
+  ]);
+  assert.equal(
+    updates.find(update => update.id === "we_stale")?.params.disabled,
+    undefined,
+    "a stale duplicate is not re-enabled",
+  );
+
+  // A stored id overrides the health heuristic.
+  const pinned = stubWebhookEndpoints(connector, [
+    { id: "we_stale", url, status: "disabled" },
+    { id: "we_live", url, status: "enabled" },
+  ]);
+  const pinnedResult = await connector.updateWebhookSubscription({
+    endpointUrl: url,
+    enabledEntities: ["invoices"],
+    providerWebhookId: "we_stale",
+  });
+  assert.equal(pinnedResult?.providerWebhookId, "we_stale");
+  assert.equal(
+    pinned.find(update => update.id === "we_stale")?.params.disabled,
+    false,
+  );
+}
+
+async function testUpdateWebhookSubscriptionReturnsNullWithoutMatch() {
+  const connector = createConnector();
+  const updates = stubWebhookEndpoints(connector, [
+    {
+      id: "we_other",
+      url: "https://elsewhere.example/hook",
+      status: "enabled",
+    },
+  ]);
+  const result = await connector.updateWebhookSubscription({
+    endpointUrl: "https://mako.example/api/webhooks/ws/flow",
+    enabledEntities: ["invoices"],
+  });
+  assert.equal(result, null);
+  assert.equal(updates.length, 0);
+}
+
 async function main() {
   testConfigValidationRequiresApiKey();
   testAvailableEntitiesIncludeModernEntities();
@@ -358,6 +706,15 @@ async function main() {
   await testCreateWebhookSubscriptionPayload();
   await testCreateWebhookSubscriptionRejectsUnknownEvents();
   testHostConfigFromApiBaseUrl();
+  testEveryEntityHasSchemaAndLabel();
+  testMoneyMovementEntitiesAvailable();
+  await testTopLevelMoneyEntitiesApplyCreatedAnchor();
+  await testPayoutBalanceTransactionsCarryPayoutId();
+  await testCustomerBalanceTransactionsIgnoreSince();
+  testMoneyMovementWebhookEvents();
+  await testUpdateWebhookSubscriptionRetargetsInPlace();
+  await testUpdateWebhookSubscriptionHandlesDuplicates();
+  await testUpdateWebhookSubscriptionReturnsNullWithoutMatch();
 }
 
 main().catch((error: unknown) => {

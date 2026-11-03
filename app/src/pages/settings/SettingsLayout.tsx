@@ -7,7 +7,7 @@ interface Props {
   children: React.ReactNode;
   /**
    * Max content width in px. Pass `"full"` for admin-style pages that should
-   * stretch to the parent container (data tables, dashboards, etc).
+   * stretch to the parent container (data tables, editors, etc).
    * Default: 900.
    */
   maxWidth?: number | "full";
@@ -38,7 +38,13 @@ export default function SettingsLayout({
           {title}
         </Typography>
         {description && (
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+              mb: 3,
+            }}
+          >
             {description}
           </Typography>
         )}

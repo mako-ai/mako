@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Navigate, useLocation } from "react-router-dom";
+import { Navigate, useLocation } from "react-router";
 import { useAuth } from "../contexts/auth-context";
 import { CircularProgress, Box } from "@mui/material";
 import { OnboardingGuard } from "./onboarding";
@@ -62,10 +62,12 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
   if (authLoading || checkingRedirect) {
     return (
       <Box
-        display="flex"
-        justifyContent="center"
-        alignItems="center"
-        minHeight="100vh"
+        sx={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          minHeight: "100vh",
+        }}
       >
         <CircularProgress size={60} />
       </Box>

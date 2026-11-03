@@ -33,11 +33,11 @@ export const myFunction = inngest.createFunction(
 ## Rules
 
 - **`step.run`** for every side-effectful operation — makes units idempotent and resumable on retry.
-- **`concurrency`** — always set with a `key` to prevent duplicate runs for the same entity. Use `event.data.flowId`, `event.data.dashboardId`, etc.
+- **`concurrency`** — always set with a `key` to prevent duplicate runs for the same entity. Use `event.data.flowId`, `event.data.workspaceId`, etc.
 - **`retries`** — set explicitly. Don't rely on Inngest defaults. Use `retries: 0` for non-retryable work.
 - **`cancelOn`** — add for long-running flows so users can cancel via UI.
 - **Logging** — use `loggers.inngest()` at module level. Do not mix with `console.log` or Inngest's built-in `logger`.
-- **Schedulers disabled in dev** — `flowSchedulerFunction` and `dashboardSchedulerFunction` are only registered when `NODE_ENV !== "development"` (see `api/src/inngest/index.ts`). Test scheduled flows by sending events manually.
+- **Schedulers disabled in dev** — `flowSchedulerFunction` and the other schedulers (`appsBindingSchedulerFunction`, `dbtSchedulerFunction`, ...) are only registered when `NODE_ENV !== "development"` (see `api/src/inngest/index.ts`). Test scheduled flows by sending events manually.
 
 ## Triggers
 

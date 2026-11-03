@@ -226,7 +226,9 @@ export default function FileExplorerDialog({
       onClose={onClose}
       maxWidth="sm"
       fullWidth
-      PaperProps={{ sx: { minHeight: 460 } }}
+      slotProps={{
+        paper: { sx: { minHeight: 460 } },
+      }}
     >
       <DialogTitle
         sx={{ pb: 0, pt: 1.5, px: 2, display: "flex", alignItems: "center" }}
@@ -315,7 +317,13 @@ export default function FileExplorerDialog({
         </Box>
 
         {overwriteConfirm && (
-          <Typography variant="body2" color="warning.main" sx={{ mt: 0.5 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "warning.main",
+              mt: 0.5,
+            }}
+          >
             A console named &ldquo;{consoleName.trim()}&rdquo; already exists
             here. Click Replace to overwrite it.
           </Typography>

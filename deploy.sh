@@ -129,8 +129,9 @@ echo "API startup verification succeeded."
 # -------------------------------------------------------------
 #
 # -------------------------------------------------------------
-# Dashboard Artifact Storage (ONE-TIME - commented out)
-# This provisions a GCS bucket for server-side dashboard parquet artifacts.
+# Artifact Storage (ONE-TIME - commented out)
+# This provisions the GCS bucket for server-side parquet artifacts (app
+# bindings, deployments, dbt). The bucket/variable names are historical.
 # Runtime service account:
 #   813928377715-compute@developer.gserviceaccount.com
 # Bucket:

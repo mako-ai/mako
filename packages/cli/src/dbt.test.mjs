@@ -54,7 +54,11 @@ function checkout() {
   const repo = path.join(base, "repo");
   sh(base, "clone", "-q", origin, repo);
   const forkPoint = sh(repo, "rev-parse", "HEAD");
-  return { repo, forkPoint, cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
+  return {
+    repo,
+    forkPoint,
+    cleanup: () => fs.rmSync(base, { recursive: true, force: true }),
+  };
 }
 
 test("projectPath keeps dbt sources and drops generated folders", () => {
@@ -97,7 +101,9 @@ test("the upload is every local difference from the fork point, committed or not
     assert.equal(out.files["models/a.sql"], "select 10\n");
     assert.equal(out.files["models/b.sql"], "select 20\n");
     assert.deepEqual(out.deletes, ["models/gone.sql"]);
-    assert.deepEqual(out.skipped, [{ path: "seeds/blob.csv", reason: "binary" }]);
+    assert.deepEqual(out.skipped, [
+      { path: "seeds/blob.csv", reason: "binary" },
+    ]);
   } finally {
     cleanup();
   }
@@ -123,7 +129,10 @@ test("without a fork point from origin, the whole dbt/ tree goes", () => {
     write(dir, "dbt/target/run_results.json", "{}");
     const out = collectLocalDbtChanges(dir);
     assert.equal(out.baseSha, undefined);
-    assert.deepEqual(Object.keys(out.files).sort(), ["dbt_project.yml", "models/a.sql"]);
+    assert.deepEqual(Object.keys(out.files).sort(), [
+      "dbt_project.yml",
+      "models/a.sql",
+    ]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -138,18 +147,18 @@ test("a checkout without dbt/dbt_project.yml is refused before any request", () 
   }
 });
 
-// Review finding (#1013, HIGH): running uploaded dbt code needs
-// warehouse:write — nothing narrower is honest about what that code can do.
-test("only a warehouse:write login may run dbt, and the CLI says why", async () => {
-  assert.equal(loginCanRunDbt({ scopes: ["mcp", "query:read"] }), false);
-  assert.equal(loginCanRunDbt({ scopes: ["mcp", "query:read", "dbt:personal"] }), false);
+// No separate warehouse opt-in: any login may run dbt (the server checks the
+// workspace role), and every login asks for the full scope set.
+test("any login may run dbt; login asks for everything", async () => {
+  assert.equal(loginCanRunDbt({ scopes: ["mcp", "query:read"] }), true);
   assert.equal(loginCanRunDbt({ scopes: ["mcp", "warehouse:write"] }), true);
-  // Unknown scopes (a server that never reported them): let the server decide.
   assert.equal(loginCanRunDbt({}), true);
-  assert.deepEqual(loginScopes({}), ["mcp", "query:read"]);
-  assert.deepEqual(loginScopes({ "warehouse-write": true }), ["mcp", "query:read", "warehouse:write"]);
-  assert.match(NEEDS_WAREHOUSE_WRITE, /mako login --warehouse-write/);
-  assert.match(NEEDS_WAREHOUSE_WRITE, /warehouse credentials/);
+  const all = ["mcp", "query:read", "warehouse:write", "connections:write"];
+  assert.deepEqual(loginScopes({}), all);
+  // The old flag is still accepted and changes nothing.
+  assert.deepEqual(loginScopes({ "warehouse-write": true }), all);
+  assert.match(NEEDS_WAREHOUSE_WRITE, /mako login/);
+  assert.doesNotMatch(NEEDS_WAREHOUSE_WRITE, /--warehouse-write/);
 });
 
 /** Stub the dbt REST routes: the POST answer, then GET answers in order. */
@@ -159,18 +168,28 @@ function stubServer({ start, polls, status = 200 }) {
   let poll = 0;
   globalThis.fetch = async (url, init) => {
     const u = new URL(String(url));
-    calls.push({ method: init.method, path: u.pathname + u.search, body: init.body ? JSON.parse(init.body) : null });
+    calls.push({
+      method: init.method,
+      path: u.pathname + u.search,
+      body: init.body ? JSON.parse(init.body) : null,
+    });
     if (init.method === "POST" && u.pathname.endsWith("/local-runs")) {
       return new Response(JSON.stringify(start), { status });
     }
-    if (init.method === "POST") return new Response(JSON.stringify({ success: true }));
+    if (init.method === "POST")
+      return new Response(JSON.stringify({ success: true }));
     const body = polls[Math.min(poll++, polls.length - 1)];
     return new Response(JSON.stringify({ success: true, run: body }));
   };
   return { calls, restore: () => (globalThis.fetch = original) };
 }
 
-const CTX = { apiUrl: "https://mako.test", apiKey: "revops_test", workspaceId: "ws1", repoRoot: "/repo" };
+const CTX = {
+  apiUrl: "https://mako.test",
+  apiKey: "revops_test",
+  workspaceId: "ws1",
+  repoRoot: "/repo",
+};
 const LOCAL = {
   baseSha: "a".repeat(40),
   branch: "feat/x",
@@ -181,20 +200,37 @@ const LOCAL = {
 
 async function runDbt(positional, flags, server) {
   const lines = [];
-  const code = await dbt(CTX, positional, flags, { log: l => lines.push(l) }, {
-    collect: () => LOCAL,
-    pollMs: 1,
-    signals: {},
-  });
+  const code = await dbt(
+    CTX,
+    positional,
+    flags,
+    { log: l => lines.push(l) },
+    {
+      collect: () => LOCAL,
+      pollMs: 1,
+      signals: {},
+    },
+  );
   server.restore();
   return { code, output: lines.join("\n"), calls: server.calls };
 }
 
 test("run uploads the checkout, streams the log, and exits 0 on success", async () => {
   const server = stubServer({
-    start: { success: true, runId: "r1", projectId: "p1", environment: "joan", commands: ["build --select stg_orders+"], defer: true },
+    start: {
+      success: true,
+      runId: "r1",
+      projectId: "p1",
+      environment: "joan",
+      commands: ["build --select stg_orders+"],
+      defer: true,
+    },
     polls: [
-      { status: "running", logs: [{ line: "$ dbt build --select stg_orders+" }], logCursor: 1 },
+      {
+        status: "running",
+        logs: [{ line: "$ dbt build --select stg_orders+" }],
+        logCursor: 1,
+      },
       {
         status: "success",
         environment: "joan",
@@ -204,7 +240,11 @@ test("run uploads the checkout, streams the log, and exits 0 on success", async 
       },
     ],
   });
-  const { code, output, calls } = await runDbt(["build"], { s: "stg_orders+", "full-refresh": true }, server);
+  const { code, output, calls } = await runDbt(
+    ["build"],
+    { s: "stg_orders+", "full-refresh": true },
+    server,
+  );
   assert.equal(code, 0);
   assert.deepEqual(calls[0], {
     method: "POST",
@@ -220,7 +260,10 @@ test("run uploads the checkout, streams the log, and exits 0 on success", async 
     },
   });
   // The log cursor advances: the second poll asks only for new lines.
-  assert.equal(calls[2].path, "/api/workspaces/ws1/dbt/local-runs/r1?logsSince=1");
+  assert.equal(
+    calls[2].path,
+    "/api/workspaces/ws1/dbt/local-runs/r1?logsSince=1",
+  );
   assert.match(output, /\$ dbt build --select stg_orders\+/);
   assert.match(output, /Completed successfully/);
   assert.match(output, /succeeded in "joan"/);
@@ -228,7 +271,13 @@ test("run uploads the checkout, streams the log, and exits 0 on success", async 
 
 test("a failed run exits non-zero and names the failing node", async () => {
   const server = stubServer({
-    start: { success: true, runId: "r2", projectId: "p1", environment: "joan", commands: ["run --select m"] },
+    start: {
+      success: true,
+      runId: "r2",
+      projectId: "p1",
+      environment: "joan",
+      commands: ["run --select m"],
+    },
     polls: [
       {
         status: "error",
@@ -236,7 +285,13 @@ test("a failed run exits non-zero and names the failing node", async () => {
         error: "dbt exited with code 1",
         logs: [],
         logCursor: 0,
-        stepResults: [{ name: "m", status: "error", message: "Name call_source not found inside calls" }],
+        stepResults: [
+          {
+            name: "m",
+            status: "error",
+            message: "Name call_source not found inside calls",
+          },
+        ],
       },
     ],
   });
@@ -246,13 +301,21 @@ test("a failed run exits non-zero and names the failing node", async () => {
   assert.match(output, /failed: dbt exited with code 1/);
 });
 
-test("the server's refusal (a shared env without warehouse:write) is shown, exit 1", async () => {
+test("the server's refusal (a shared environment) is shown, exit 1", async () => {
   const server = stubServer({
     status: 403,
-    start: { success: false, error: '"dev" is a shared environment; this sign-in may only build your personal environment (omit --env).' },
+    start: {
+      success: false,
+      error:
+        '"dev" is a shared environment; this sign-in may only build your personal environment (omit --env).',
+    },
     polls: [],
   });
-  const { code, output } = await runDbt(["run"], { s: "m", env: "dev" }, server);
+  const { code, output } = await runDbt(
+    ["run"],
+    { s: "m", env: "dev" },
+    server,
+  );
   assert.equal(code, 1);
   assert.match(output, /"dev" is a shared environment/);
 });
@@ -274,9 +337,21 @@ test("bad invocations never reach the server", async () => {
 // fell behind is told how many it missed instead of silently skipping them.
 test("a log gap reported by the server is shown, not swallowed", async () => {
   const server = stubServer({
-    start: { success: true, runId: "r3", projectId: "p1", environment: "joan", commands: ["run --select m"] },
+    start: {
+      success: true,
+      runId: "r3",
+      projectId: "p1",
+      environment: "joan",
+      commands: ["run --select m"],
+    },
     polls: [
-      { status: "success", environment: "joan", logs: [{ line: "tail line" }], logCursor: 7001, logsSkipped: 2000 },
+      {
+        status: "success",
+        environment: "joan",
+        logs: [{ line: "tail line" }],
+        logCursor: 7001,
+        logsSkipped: 2000,
+      },
     ],
   });
   const { code, output } = await runDbt(["run"], { s: "m" }, server);

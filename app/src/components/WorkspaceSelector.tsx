@@ -91,10 +91,21 @@ export function WorkspaceSelector({
                     : "none",
               }}
             />
-            <Typography variant="h4" fontWeight="bold" gutterBottom>
+            <Typography
+              variant="h4"
+              gutterBottom
+              sx={{
+                fontWeight: "bold",
+              }}
+            >
               Select Workspace
             </Typography>
-            <Typography color="text.secondary" variant="body1">
+            <Typography
+              variant="body1"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               Choose an existing workspace to continue your work
             </Typography>
           </Box>
@@ -163,7 +174,13 @@ export function WorkspaceSelector({
                     {workspace.name}
                   </Typography>
                   {workspace.slug && (
-                    <Typography variant="body2" color="text.secondary" noWrap>
+                    <Typography
+                      variant="body2"
+                      noWrap
+                      sx={{
+                        color: "text.secondary",
+                      }}
+                    >
                       /{workspace.slug}
                     </Typography>
                   )}

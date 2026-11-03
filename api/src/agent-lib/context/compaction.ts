@@ -28,8 +28,8 @@
 
 import { generateText, type UIMessage } from "ai";
 import {
+  attributionProviderOptions,
   getModel,
-  systemProviderOptions,
   type GatewayAttribution,
 } from "../ai-gateway";
 import { getUtilityModelId } from "../ai-models";
@@ -344,13 +344,9 @@ export interface DedupeReasoningResult {
  */
 function reasoningSignature(part: Record<string, unknown>): string | null {
   const meta = part.providerMetadata as
-    | Record<string, unknown>
-    | undefined
-    | null;
+    Record<string, unknown> | undefined | null;
   const anthropic = meta?.anthropic as
-    | Record<string, unknown>
-    | undefined
-    | null;
+    Record<string, unknown> | undefined | null;
   const sig = anthropic?.signature;
   return typeof sig === "string" && sig.length > 0 ? sig : null;
 }
@@ -589,25 +585,17 @@ async function summarizeMessages(
     const modelId = await getUtilityModelId();
     const { text } = await generateText({
       model: getModel(modelId),
-      system: SUMMARY_INSTRUCTIONS,
+      instructions: SUMMARY_INSTRUCTIONS,
       prompt: `Summarize this earlier conversation:\n\n${transcript}`,
       maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
       abortSignal,
       // The summary is billed like any other call; attribute it to the chat
       // it compacts rather than leaving an untagged row in Vercel's report.
-      providerOptions: attribution?.userId
-        ? {
-            gateway: {
-              user: attribution.userId,
-              tags: [
-                ...(attribution.workspaceId
-                  ? [`ws:${attribution.workspaceId}`]
-                  : []),
-                "type:compaction",
-              ],
-            },
-          }
-        : systemProviderOptions("compaction", attribution?.workspaceId),
+      providerOptions: attributionProviderOptions({
+        ...attribution,
+        invocationType: "compaction",
+      }),
+      telemetry: { functionId: "context-compaction" },
     });
     const trimmed = text.trim();
     return trimmed.length > 0 ? trimmed : null;
@@ -665,10 +653,7 @@ export interface CompactionOptions {
 }
 
 export type CompactionStrategy =
-  | "none"
-  | "elide"
-  | "summarize"
-  | "emergency-drop";
+  "none" | "elide" | "summarize" | "emergency-drop";
 
 export interface CompactionResult {
   messages: UIMessage[];

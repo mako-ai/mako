@@ -9,10 +9,7 @@ import { api, unwrapBody } from "../api";
 export type McpWriteScope = "read" | "write_safe" | "write_destructive";
 export type McpRiskTier = "read" | "write" | "destructive";
 export type McpServerStatus =
-  | "created"
-  | "awaiting_auth"
-  | "connected"
-  | "error";
+  "created" | "awaiting_auth" | "connected" | "error";
 
 export type McpToolRestriction = "always" | "ask" | "block";
 

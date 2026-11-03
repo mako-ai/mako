@@ -50,8 +50,6 @@ export const TAB_DEEP_LINK_PATTERNS = {
   console: /^\/c\/([a-zA-Z0-9-]+)/,
   connectors: /^\/cx\/([a-zA-Z0-9-]+)/,
   "flow-editor": /^\/f\/([a-zA-Z0-9-]+)/,
-  dashboard: /^\/d\/([a-zA-Z0-9-]+)\/?$/,
-  "dashboard-data-source": /^\/d\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9_-]+)/,
   "table-data": /^\/t\/([a-zA-Z0-9-]+)\/([^/]+)\/([^/]+)\/?$/,
   // Apps live at /apps/:slug (the folder name in the workspace repo) or
   // /apps/:id (nested apps). Folder names are Unicode, so the segment is
@@ -59,10 +57,11 @@ export const TAB_DEEP_LINK_PATTERNS = {
   // the consumer.
   app: /^\/apps\/([^/?#]+)\/?$/,
   "app-file": /^\/apps\/([^/?#]+)\/file\/(.+)$/,
+  // The Apps home: the bare /apps (an app is always /apps/:ref).
+  "apps-home": /^\/apps\/?$/,
   "app-diff": null,
-  "console-diff": null,
+  "history-diff": null,
   "repo-diff": null,
-  "notebook-diff": null,
   plan: /^\/p\/([a-zA-Z0-9-]+)/,
   settings: /^\/settings\/([a-z-]+)$/,
   // Legacy tab kind superseded by the settings "members" section.
@@ -74,6 +73,8 @@ export const TAB_DEEP_LINK_PATTERNS = {
   "dbt-runs": /^\/x\/([a-zA-Z0-9-]+)\/runs\/?$/,
   "dbt-console": /^\/x\/([a-zA-Z0-9-]+)\/?$/,
   notebook: /^\/n\/([a-zA-Z0-9-]+)\/?$/,
+  // No deep link yet: a workflow tab is reopened from the explorer.
+  workflow: null,
 } as const satisfies Record<NonNullable<TabKind>, RegExp | null>;
 
 /**
@@ -91,17 +92,6 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
         : null;
     case "flow-editor":
       return tab.metadata?.flowId ? `/f/${tab.metadata.flowId}` : null;
-    case "dashboard":
-      return tab.metadata?.dashboardId
-        ? `/d/${tab.metadata.dashboardId}`
-        : null;
-    case "dashboard-data-source": {
-      const dashboardId = tab.metadata?.dashboardId as string | undefined;
-      const dataSourceId = tab.metadata?.dataSourceId as string | undefined;
-      return dashboardId && dataSourceId
-        ? `/d/${dashboardId}/data/${dataSourceId}`
-        : null;
-    }
     case "table-data": {
       const schema = tab.metadata?.schema as string | undefined;
       const table = tab.metadata?.table as string | undefined;
@@ -144,10 +134,11 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
         ? `/apps/${encodeURIComponent(ref)}/file/${encodePathSegments(path)}`
         : null;
     }
+    case "apps-home":
+      return "/apps";
     case "app-diff":
-    case "console-diff":
+    case "history-diff":
     case "repo-diff":
-    case "notebook-diff":
       // Diffs are transient views of the working copy: no deep link.
       return null;
     case "plan": {
@@ -184,6 +175,8 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
       const notebookId = tab.metadata?.notebookId as string | undefined;
       return notebookId ? `/n/${notebookId}` : null;
     }
+    case "workflow":
+      return null;
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       const exhaustivenessCheck: never = kind;

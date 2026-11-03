@@ -53,6 +53,7 @@ import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import { getWorkspaceRepo } from "./workspace-repos.service";
 import { Flow, type IFlow } from "../database/workspace-schema";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
+import { hasWebhookTrigger, isWebhookFlow } from "./flow-triggers.service";
 import {
   flowToFile,
   parseFlowFile,
@@ -63,6 +64,8 @@ import {
   reconcileFlowsFromRepo,
   type DesiredFlow,
 } from "../sync-cdc/flow-reconcile";
+import { flowEntitySignature } from "../sync-cdc/entity-selection";
+import { inngest } from "../inngest/client";
 
 const logger = loggers.api("flow-sync");
 
@@ -97,15 +100,18 @@ const logger = loggers.api("flow-sync");
  */
 export function mintedWebhookEndpoint(args: {
   isNew: boolean;
-  type: string | undefined;
+  /** The file's `webhook.enabled` (undefined when it has no stanza). */
+  webhookEnabled?: boolean;
   workspaceId: string;
   flowId: string;
   existingEndpoint?: string;
 }): string | null {
-  if (!args.isNew) return null;
-  if (args.type !== "webhook") return null;
-  // Belt and braces: never overwrite one that somehow already exists.
+  // Never overwrite one that already exists: providers POST to it.
   if (args.existingEndpoint) return null;
+  // A new webhook flow, or any flow whose file switches webhooks on (a
+  // scheduled flow keeps polling and gets webhooks on top).
+  const wanted = args.webhookEnabled === true;
+  if (!wanted) return null;
   return generateWebhookEndpoint(args.workspaceId, args.flowId);
 }
 
@@ -512,7 +518,8 @@ export interface FlowSyncResult {
  */
 function applyDefinition(doc: IFlow, file: FlowFile): string | null {
   doc.name = file.name;
-  doc.type = file.type;
+  // `type` is retired: never written (a file's `type: webhook` arrives here
+  // as webhookEnabled, see parseFlowFile).
 
   if (file.source.type === "database") {
     doc.sourceType = "database";
@@ -571,22 +578,32 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
     enabled: Boolean(file.backfillSchedule),
     cron: file.backfillSchedule?.cron,
     timezone: file.backfillSchedule?.timezone,
+    entities: file.backfillSchedule?.entities,
   } as IFlow["backfillSchedule"];
 
-  // Enabled-ness only. The endpoint is inbound URL identity minted once in
-  // Mongo (17 of 31 production flows have external systems POSTing to it) and
-  // the secret is a credential; neither is in the file and neither may be
-  // touched from here.
-  if (file.type === "webhook") {
+  // Enabled-ness and the provider subscription id. The endpoint is inbound
+  // URL identity minted once in Mongo (17 of 31 production flows have
+  // external systems POSTing to it) and the secret is a credential; neither
+  // is in the file and neither may be touched from here.
+  if (file.webhookEnabled !== undefined) {
     doc.webhookConfig = {
       ...(doc.webhookConfig ?? {}),
       enabled: file.webhookEnabled !== false,
+      // The provider subscription id is definition, not identity: the file
+      // owns it.
+      providerWebhookId: file.webhookProviderId,
     } as IFlow["webhookConfig"];
   }
 
   doc.syncMode = file.sync.mode as IFlow["syncMode"];
   doc.writeMode = file.sync.writeMode as IFlow["writeMode"];
-  doc.syncEngine = file.sync.engine as IFlow["syncEngine"];
+  // CDC is the only engine for connector flows: a file saying otherwise (or
+  // nothing) still yields CDC, so a flow can never be born on the removed
+  // legacy engine from a file.
+  doc.syncEngine =
+    doc.sourceType === "database"
+      ? (file.sync.engine as IFlow["syncEngine"])
+      : "cdc";
   doc.deleteMode = file.sync.deleteMode as IFlow["deleteMode"];
   if (file.sync.batchSize !== undefined) doc.batchSize = file.sync.batchSize;
 
@@ -684,8 +701,7 @@ export function hydrateFlowRow(
   const error = (
     doc as unknown as {
       validateSync: () =>
-        | { errors?: Record<string, { message?: string }> }
-        | undefined;
+        { errors?: Record<string, { message?: string }> } | undefined;
     }
   ).validateSync();
   const errors = error?.errors ?? {};
@@ -799,6 +815,7 @@ export async function syncFlowsFromRepo(
 
   const result: FlowSyncResult = { ...empty, invalid: [] };
   const desired: DesiredFlow[] = [];
+  const webhookResyncs: IFlow[] = [];
   const seen = new Set<string>();
 
   for (const { path, contents } of files) {
@@ -868,6 +885,7 @@ export async function syncFlowsFromRepo(
 
     const isNew = !row;
     const wasInvalid = row ? isFlowMarkedInvalid(row) : false;
+    const entitySignatureBefore = row ? flowEntitySignature(row as IFlow) : "";
     const doc =
       row ??
       new Flow({
@@ -902,9 +920,10 @@ export async function syncFlowsFromRepo(
     // A file-born webhook flow needs an inbound URL, and this is the only
     // place one may be minted. `isNew` is the create/update distinction: an
     // update must leave the endpoint exactly where it is.
+    const webhookOnBefore = !isNew && hasWebhookTrigger(doc as IFlow);
     const mintedEndpoint = mintedWebhookEndpoint({
       isNew,
-      type: (doc as IFlow).type,
+      webhookEnabled: parsed.webhookEnabled,
       workspaceId,
       flowId: String((doc as IFlow)._id),
       existingEndpoint: (doc as IFlow).webhookConfig?.endpoint,
@@ -942,8 +961,38 @@ export async function syncFlowsFromRepo(
       desired.push({ slug, file: parsed, flowId: String(doc._id) });
     } else {
       result.updated++;
+      // Entities changed, or webhooks were just switched on: retarget or
+      // provision the subscription (adopted by URL, never duplicated).
+      if (
+        isWebhookFlow(doc as IFlow) &&
+        (flowEntitySignature(doc as IFlow) !== entitySignatureBefore ||
+          !webhookOnBefore)
+      ) {
+        webhookResyncs.push(doc as IFlow);
+      }
     }
     logger.info("Flow synced from repo", { workspaceId, slug, isNew });
+  }
+
+  // A file that enables or disables entities changes which provider events
+  // the flow needs: retarget its webhook subscription. Dispatched as an event
+  // (inngest/functions/flow-webhook-subscription) so this module never loads
+  // the connector registry, and so a provider error cannot stall the push.
+  if (webhookResyncs.length > 0) {
+    try {
+      await inngest.send(
+        webhookResyncs.map(flow => ({
+          name: "flow.webhook.resubscribe",
+          data: { flowId: String(flow._id) },
+        })),
+      );
+    } catch (error) {
+      logger.warn("Could not queue webhook retargeting for changed flows", {
+        workspaceId,
+        flowIds: webhookResyncs.map(flow => String(flow._id)),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   // Removal is the reconciler's, end to end. A flow is a running stream, so a

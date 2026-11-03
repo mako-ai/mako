@@ -60,7 +60,7 @@ export function AcpWorkspaceToolsBanner(props: {
     : undefined;
   const attached = Boolean(
     providerId &&
-      sessions.some(s => s.providerId === providerId && s.makoMcpAttached),
+    sessions.some(s => s.providerId === providerId && s.makoMcpAttached),
   );
   const needsCliLogin = (() => {
     if (!provider || !providerId) return false;
@@ -250,7 +250,13 @@ export function AcpWorkspaceToolsBanner(props: {
           machine, then enable tools below.
         </Typography>
         {statusError ? (
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+              mb: 1,
+            }}
+          >
             {statusError}
           </Typography>
         ) : null}

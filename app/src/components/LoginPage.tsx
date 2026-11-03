@@ -16,7 +16,7 @@ import {
   Google as GoogleIcon,
   GitHub as GitHubIcon,
 } from "@mui/icons-material";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router";
 import { useAuth } from "../hooks/useAuth";
 import { handleInviteRedirectIfPresent } from "../utils/invite-redirect";
 import { readReturnTo, stashReturnTo } from "../utils/return-to";
@@ -164,8 +164,12 @@ export function LoginPage({
           </Button>
           <Typography
             variant="caption"
-            color="text.secondary"
-            sx={{ display: "block", mt: 1.5, lineHeight: 1.5 }}
+            sx={{
+              color: "text.secondary",
+              display: "block",
+              mt: 1.5,
+              lineHeight: 1.5,
+            }}
           >
             For your security, Mako Desktop signs you in through your web
             browser, where you can check the address bar and use your password
@@ -322,7 +326,12 @@ export function LoginPage({
       )}
 
       <Box sx={{ textAlign: "center", mt: 4 }}>
-        <Typography variant="body2" color="text.secondary">
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           New to Mako?{" "}
           <Link
             component="button"

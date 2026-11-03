@@ -114,15 +114,18 @@ export function CommitRow({
           >
             <Typography
               variant="caption"
-              color="text.secondary"
-              sx={{ fontFamily: "monospace", flexShrink: 0 }}
+              sx={{
+                color: "text.secondary",
+                fontFamily: "monospace",
+                flexShrink: 0,
+              }}
             >
               {commit.oid.slice(0, 7)}
             </Typography>
             <Typography
               variant="caption"
-              color="text.secondary"
               sx={{
+                color: "text.secondary",
                 minWidth: 0,
                 overflow: "hidden",
                 textOverflow: "ellipsis",
@@ -134,8 +137,11 @@ export function CommitRow({
             <Tooltip title={timeFormat === "relative" ? absolute : relative}>
               <Typography
                 variant="caption"
-                color="text.secondary"
-                sx={{ flexShrink: 0, whiteSpace: "nowrap" }}
+                sx={{
+                  color: "text.secondary",
+                  flexShrink: 0,
+                  whiteSpace: "nowrap",
+                }}
               >
                 · {timeFormat === "relative" ? relative : absolute}
               </Typography>
@@ -164,7 +170,12 @@ export function CommitRow({
           {!files ? (
             <CircularProgress size={14} sx={{ ml: 1, my: 0.5 }} />
           ) : files.length === 0 ? (
-            <Typography variant="caption" color="text.secondary">
+            <Typography
+              variant="caption"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               No files changed.
             </Typography>
           ) : (
@@ -236,7 +247,7 @@ export function CommitChip({
 }: {
   label: string;
   color?: "success" | "primary" | "default";
-  icon?: React.ReactElement;
+  icon?: React.ReactElement<any>;
   outlined?: boolean;
 }) {
   return (

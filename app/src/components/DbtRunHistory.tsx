@@ -35,7 +35,7 @@ import {
   ArrowDown as ArrowDownIcon,
   ArrowLeft as BackIcon,
 } from "lucide-react";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { Group, Panel, Separator } from "react-resizable-panels";
 import {
   useDbtStore,
   type DbtRunItem,
@@ -130,11 +130,7 @@ function runTreeChip(
 
 /** Sortable columns of the node-results table. */
 type NodeSortKey =
-  | "name"
-  | "resourceType"
-  | "status"
-  | "executionTimeMs"
-  | "rowsAffected";
+  "name" | "resourceType" | "status" | "executionTimeMs" | "rowsAffected";
 type SortDir = "asc" | "desc";
 
 const NODE_COLUMNS: { key: NodeSortKey; label: string }[] = [
@@ -387,7 +383,12 @@ export default function DbtRunHistory({
     <Box sx={{ height: "100%", overflow: "auto" }}>
       {runs.length === 0 ? (
         <Box sx={{ p: 2 }}>
-          <Typography variant="caption" color="text.secondary">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             {emptyHint}
           </Typography>
         </Box>
@@ -499,7 +500,12 @@ export default function DbtRunHistory({
                   );
                 })()}
                 {run.durationMs !== undefined && (
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: "text.secondary",
+                    }}
+                  >
                     {formatDuration(run.durationMs)}
                   </Typography>
                 )}
@@ -532,8 +538,10 @@ export default function DbtRunHistory({
               >
                 <Typography
                   variant="caption"
-                  color="text.secondary"
-                  sx={{ flex: 1 }}
+                  sx={{
+                    color: "text.secondary",
+                    flex: 1,
+                  }}
                 >
                   {formatRelativeTimeCompact(run.createdAt)}
                 </Typography>
@@ -547,8 +555,10 @@ export default function DbtRunHistory({
                 ) : (
                   <Typography
                     variant="caption"
-                    color="text.secondary"
-                    sx={{ fontSize: "0.65rem" }}
+                    sx={{
+                      color: "text.secondary",
+                      fontSize: "0.65rem",
+                    }}
                   >
                     {run.trigger}
                   </Typography>
@@ -564,7 +574,12 @@ export default function DbtRunHistory({
   const detailContent =
     !selectedRun && !selectedRunListItem ? (
       <Box sx={{ p: 2 }}>
-        <Typography variant="caption" color="text.secondary">
+        <Typography
+          variant="caption"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           Select a run to see details.
         </Typography>
       </Box>
@@ -660,10 +675,12 @@ export default function DbtRunHistory({
           })()}
           <Typography
             variant="caption"
-            color="text.secondary"
             title={absoluteTime(
               (selectedRun ?? selectedRunListItem)?.createdAt,
             )}
+            sx={{
+              color: "text.secondary",
+            }}
           >
             {formatRelativeTimeCompact(
               (selectedRun ?? selectedRunListItem)?.createdAt,
@@ -671,26 +688,36 @@ export default function DbtRunHistory({
           </Typography>
           <Typography
             variant="caption"
-            color="text.secondary"
+            title={(selectedRun ?? selectedRunListItem)?.commands
+              .map(command => `dbt ${command}`)
+              .join(" → ")}
             sx={{
+              color: "text.secondary",
               fontFamily: "monospace",
               maxWidth: 360,
               whiteSpace: "nowrap",
               overflow: "hidden",
               textOverflow: "ellipsis",
             }}
-            title={(selectedRun ?? selectedRunListItem)?.commands
-              .map(command => `dbt ${command}`)
-              .join(" → ")}
           >
             {(selectedRun ?? selectedRunListItem)?.commands
               .map(command => `dbt ${command}`)
               .join(" → ")}
           </Typography>
-          <Typography variant="caption" color="text.secondary">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             {formatDuration((selectedRun ?? selectedRunListItem)?.durationMs)}
           </Typography>
-          <Typography variant="caption" color="text.secondary">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             {(selectedRun ?? selectedRunListItem)?.trigger} ·{" "}
             {(selectedRun ?? selectedRunListItem)?.triggeredBy}
           </Typography>
@@ -763,8 +790,10 @@ export default function DbtRunHistory({
             >
               <Typography
                 variant="caption"
-                color="text.secondary"
-                sx={{ fontWeight: 600 }}
+                sx={{
+                  color: "text.secondary",
+                  fontWeight: 600,
+                }}
               >
                 Artifacts
               </Typography>
@@ -857,7 +886,12 @@ export default function DbtRunHistory({
                   </MenuItem>
                 ))}
               </Select>
-              <Typography variant="caption" color="text.secondary">
+              <Typography
+                variant="caption"
+                sx={{
+                  color: "text.secondary",
+                }}
+              >
                 {filteredSteps.length} node
                 {filteredSteps.length === 1 ? "" : "s"}
               </Typography>
@@ -995,14 +1029,16 @@ export default function DbtRunHistory({
               placeholder="Search logs…"
               value={logQuery}
               onChange={e => setLogQuery(e.target.value)}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchIcon size={14} />
-                  </InputAdornment>
-                ),
-              }}
               sx={{ "& .MuiInputBase-input": { fontSize: "0.72rem" } }}
+              slotProps={{
+                input: {
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon size={14} />
+                    </InputAdornment>
+                  ),
+                },
+              }}
             />
           </Box>
         )}
@@ -1019,11 +1055,21 @@ export default function DbtRunHistory({
           }}
         >
           {(selectedRun?.logs ?? []).length === 0 ? (
-            <Typography variant="caption" color="text.secondary">
+            <Typography
+              variant="caption"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               {selectedStatus === "queued" ? "Run queued…" : "No logs."}
             </Typography>
           ) : visibleLogs.length === 0 ? (
-            <Typography variant="caption" color="text.secondary">
+            <Typography
+              variant="caption"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               No log lines match “{logQuery}”.
             </Typography>
           ) : (
@@ -1066,9 +1112,9 @@ export default function DbtRunHistory({
 
   return (
     <Box sx={{ height: "100%", minHeight: 0 }}>
-      <PanelGroup direction="horizontal">
+      <Group orientation="horizontal">
         {/* Run history list */}
-        <Panel defaultSize={showSource ? 32 : 25} minSize={15}>
+        <Panel defaultSize={showSource ? "32%" : "25%"} minSize="15%">
           <Box
             sx={{
               height: "100%",
@@ -1079,14 +1125,14 @@ export default function DbtRunHistory({
             {listContent}
           </Box>
         </Panel>
-        <PanelResizeHandle
+        <Separator
           style={{ width: 4, background: "var(--mui-palette-divider)" }}
         />
         {/* Run details */}
-        <Panel defaultSize={showSource ? 68 : 75} minSize={30}>
+        <Panel defaultSize={showSource ? "68%" : "75%"} minSize="30%">
           {detailContent}
         </Panel>
-      </PanelGroup>
+      </Group>
     </Box>
   );
 }

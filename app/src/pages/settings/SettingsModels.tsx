@@ -173,7 +173,12 @@ export default function SettingsModels() {
       return (
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
           <CircularProgress size={20} />
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             Loading models...
           </Typography>
         </Box>
@@ -286,8 +291,10 @@ export default function SettingsModels() {
                     </Typography>
                     <Typography
                       variant="caption"
-                      color="text.secondary"
-                      sx={{ mr: 0.5 }}
+                      sx={{
+                        color: "text.secondary",
+                        mr: 0.5,
+                      }}
                     >
                       {enabledCount}/{providerModels.length}
                     </Typography>
@@ -328,9 +335,11 @@ export default function SettingsModels() {
                           </Typography>
                           <Typography
                             variant="caption"
-                            color="text.secondary"
                             noWrap
-                            sx={{ display: "block" }}
+                            sx={{
+                              color: "text.secondary",
+                              display: "block",
+                            }}
                           >
                             {model.id}
                             {model.contextWindow
@@ -355,7 +364,12 @@ export default function SettingsModels() {
             mt: 1.5,
           }}
         >
-          <Typography variant="caption" color="text.secondary">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             {gatewayModels.length - localDisabled.size} of{" "}
             {gatewayModels.length} models enabled
           </Typography>

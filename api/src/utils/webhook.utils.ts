@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 import { loggers } from "../logging";
 
 const logger = loggers.inngest("webhook");
@@ -62,7 +62,7 @@ export function parseWebhookPayload(
   );
 
   return {
-    entityId: payload.id || payload.data?.id || uuidv4(),
+    entityId: payload.id || payload.data?.id || randomUUID(),
     entityType: payload.type || payload.entity || "unknown",
     operation: "update",
   };

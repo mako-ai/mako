@@ -22,39 +22,28 @@ import { useFlowStore } from "../store/flowStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
 import { useRepoStore } from "../store/repoStore";
+import { whenAppOpenSettled } from "../lib/app-open-gate";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent, resetIdentity } from "../lib/analytics";
 import { useIsMobile } from "../hooks/useIsMobile";
 import {
-  topNavigationItems,
+  useNavigationItems,
   bottomNavigationItems,
   type NavigationView,
 } from "../lib/explorer-nav";
-import { tabRevealTarget } from "../lib/explorer-reveal";
 import { railButtonColors } from "./sidebar-rail";
 
 /**
- * The rail answers TWO questions, and conflating them is confusing.
- *
- * `isActive` is "this explorer's panel is the one on screen". `ownsActiveTab`
- * is "the tab you are looking at lives in here". They are independent by
- * design — browsing the Databases tree while editing a console is a real
- * workflow, and a reload deliberately restores the panel you had rather than
- * the one the URL implies (see UrlSync's isReload note).
- *
  * The highlight (full-contrast icon on the selected background, neutral — no
- * brand colour anywhere on the rail) always follows the open panel; the
- * explorer holding the open tab gets only a quieter hint. See
- * `railButtonColors` for why the emphasis is that way round.
+ * brand colour anywhere on the rail) follows the explorer panel on screen and
+ * nothing else. Which explorer holds the open tab is deliberately not shown:
+ * browsing the Databases tree while editing a console is a real workflow, and
+ * a second marker read as a second selection.
  */
 const NavButton = styled(Button, {
-  shouldForwardProp: prop => prop !== "isActive" && prop !== "ownsActiveTab",
-})<{ isActive?: boolean; ownsActiveTab?: boolean }>(({
-  theme,
-  isActive,
-  ownsActiveTab,
-}) => {
-  const colors = railButtonColors(theme, { isActive, ownsActiveTab });
+  shouldForwardProp: prop => prop !== "isActive",
+})<{ isActive?: boolean }>(({ theme, isActive }) => {
+  const colors = railButtonColors(theme, { isActive });
   return {
     minWidth: 40,
     width: 40,
@@ -100,16 +89,19 @@ function useRepoDirty(): boolean {
   );
   useEffect(() => {
     if (!workspaceId) return;
-    void fetchStatus(workspaceId);
+    // A git-backed read (5.1 s on prod): not ahead of the app being opened.
+    let cancelled = false;
+    void whenAppOpenSettled().then(() => {
+      if (!cancelled) void fetchStatus(workspaceId);
+    });
     const timer = setInterval(() => void fetchStatus(workspaceId), 30_000);
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, [workspaceId, fetchStatus]);
   return dirty;
 }
-
-const preloadDashboardsExplorer = () => {
-  void import("./DashboardsExplorer");
-};
 
 /**
  * Avatar button + dropdown (workspace switcher + sign out). Shared between the
@@ -184,9 +176,11 @@ export function SidebarUserMenu({
           vertical: "bottom",
           horizontal: "right",
         }}
-        PaperProps={{
-          sx: {
-            minWidth: 300,
+        slotProps={{
+          paper: {
+            sx: {
+              minWidth: 300,
+            },
           },
         }}
       >
@@ -194,8 +188,12 @@ export function SidebarUserMenu({
         <Box sx={{ px: 1.5, py: 1.25, minWidth: 0 }}>
           <Typography
             variant="caption"
-            color="text.secondary"
-            sx={{ mb: 0.75, display: "block", letterSpacing: 0.2 }}
+            sx={{
+              color: "text.secondary",
+              mb: 0.75,
+              display: "block",
+              letterSpacing: 0.2,
+            }}
           >
             Workspace
           </Typography>
@@ -204,10 +202,20 @@ export function SidebarUserMenu({
         <Divider />
 
         <Box sx={{ px: 2, py: 1 }}>
-          <Typography variant="body2" color="text.secondary">
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             Signed in as
           </Typography>
-          <Typography variant="body2" fontWeight="medium">
+          <Typography
+            variant="body2"
+            sx={{
+              fontWeight: "medium",
+            }}
+          >
             {user?.email}
           </Typography>
         </Box>
@@ -222,20 +230,12 @@ export function SidebarUserMenu({
 }
 
 function Sidebar() {
+  const navigationItems = useNavigationItems();
   // `activeExplorer` is the explorer that's actually visible on the left
   // (null when the pane is collapsed). Use this — not `leftPane`, which is
   // the last-selected view retained across collapse — to decide which icon
   // is highlighted, so collapsing the pane clears the highlight.
   const activeExplorer = useUIStore(selectActiveExplorer);
-  // Which explorer holds the tab currently in the editor. Returns a primitive
-  // so this only re-renders when the answer actually changes, not on every
-  // keystroke in the tab. Tabs with no sidebar home (settings, plans) map to
-  // null and mark nothing.
-  const activeTabExplorer = useConsoleStore(state => {
-    const id = state.activeTabId;
-    const tab = id ? state.tabs[id] : null;
-    return tabRevealTarget(tab)?.explorer ?? null;
-  });
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
   const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
   const setLeftPane = useUIStore(state => state.setLeftPane);
@@ -295,46 +295,20 @@ function Sidebar() {
             alignItems: "center",
           }}
         >
-          {topNavigationItems.map(item => {
+          {navigationItems.map(item => {
             const Icon = item.icon;
             const isActive = activeExplorer === item.view;
-            const ownsActiveTab = activeTabExplorer === item.view;
 
             return (
-              <Tooltip
-                key={item.view}
-                title={
-                  ownsActiveTab && !isActive
-                    ? `${item.label} — holds the open tab`
-                    : item.label
-                }
-                placement="right"
-              >
+              <Tooltip key={item.view} title={item.label} placement="right">
                 <NavButton
                   isActive={isActive}
-                  ownsActiveTab={ownsActiveTab}
-                  // Stable hooks for tests: the two states are otherwise only
+                  // Stable hooks for tests: the state is otherwise only
                   // visible as emotion-generated colours.
                   data-view={item.view}
                   aria-current={isActive ? "true" : undefined}
                   data-open-explorer={isActive ? "true" : "false"}
-                  data-owns-active-tab={ownsActiveTab ? "true" : "false"}
                   onClick={() => handleNavigation(item.view as NavigationView)}
-                  onMouseEnter={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
-                  onFocus={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
-                  onTouchStart={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
                 >
                   <Icon size={24} strokeWidth={1.5} />
                   {item.view === "source-control" && repoDirty && (
@@ -389,27 +363,16 @@ function Sidebar() {
             // Settings is now a real explorer — track `activeExplorer` like
             // every other rail so collapsing the pane clears the highlight.
             const isActive = activeExplorer === item.view;
-            const ownsActiveTab = activeTabExplorer === item.view;
 
             return (
-              <Tooltip
-                key={item.view}
-                title={
-                  ownsActiveTab && !isActive
-                    ? `${item.label} — holds the open tab`
-                    : item.label
-                }
-                placement="right"
-              >
+              <Tooltip key={item.view} title={item.label} placement="right">
                 <NavButton
                   isActive={isActive}
-                  ownsActiveTab={ownsActiveTab}
-                  // Stable hooks for tests: the two states are otherwise only
+                  // Stable hooks for tests: the state is otherwise only
                   // visible as emotion-generated colours.
                   data-view={item.view}
                   aria-current={isActive ? "true" : undefined}
                   data-open-explorer={isActive ? "true" : "false"}
-                  data-owns-active-tab={ownsActiveTab ? "true" : "false"}
                   onClick={() => handleNavigation(item.view as NavigationView)}
                 >
                   <Icon strokeWidth={1.5} />

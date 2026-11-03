@@ -109,6 +109,7 @@ import {
   APP_MANIFEST,
   APPS_DIR,
   FOLDER_KEEP_FILE,
+  WORKFLOWS_DIR,
   appRepoPath,
   parseAppRepoPath,
   appTreeRoot,
@@ -119,6 +120,9 @@ import {
   type AppScope,
 } from "./app-paths";
 import { appSdkDependency } from "./app-sdk-package";
+import { loadOwnerDirectory } from "./user-handles.service";
+import { workspaceService } from "../services/workspace.service";
+import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
 
 // Identity helpers moved to app-paths.ts (pure); re-exported so existing
 // importers keep working.
@@ -131,6 +135,7 @@ import {
   mirrorPushNow,
   resolveMirrorTarget,
   queueMirrorPush,
+  scheduleMirrorBranchReconcile,
 } from "./cloud-repo.service";
 
 /**
@@ -317,6 +322,10 @@ export function syncRepoBackedResources(
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  // Workflows (`workflows/`, docs/src/content/docs/workflows.md): a change at main
+  // rolls the workspace's worker to the new commit. A commit that fails its
+  // typecheck never becomes ready, so the previous worker keeps running.
+  deployWorkflows(workspaceId, userId);
   // Flow definitions (RFC #904 block 3): `flows/<slug>.yml` is authoritative,
   // so an external edit reconfigures a live CDC stream and a removed file
   // tears one down. Caught like the others — one resource's bad YAML must not
@@ -333,6 +342,30 @@ export function syncRepoBackedResources(
     })
     .catch(error => {
       logger.warn("Flow sync after push failed", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+}
+
+/**
+ * Ask for the workspace's workflows to be deployed from `main`, durably
+ * (inngest/functions/workflows-deploy.ts): the request that moved main
+ * returns now, and the deploy runs to completion elsewhere. A workspace
+ * with no workflows asks for nothing.
+ */
+function deployWorkflows(workspaceId: string, userId?: string): void {
+  void Promise.all([
+    import("../workflows/on-push"),
+    import("../inngest/functions/workflows-deploy"),
+  ])
+    .then(async ([onPush, deploy]) => {
+      if (await onPush.hasWorkflowsToDeploy(workspaceId)) {
+        await deploy.requestWorkflowsDeploy(workspaceId, userId, "push");
+      }
+    })
+    .catch(error => {
+      logger.warn("Workflows deploy request failed", {
         workspaceId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -736,17 +769,47 @@ export function slugify(title: string): string {
 /** Where a new app goes: a folder chain in one of the two trees. */
 export interface AppFolderTarget {
   scope: AppScope;
-  /** Required for `private`: the owner of the `users/<id>/apps` tree. */
+  /**
+   * For `private`: the owner's userId. Filled in by authorizeFolderTarget
+   * from the handle mapping — never taken from a folder name.
+   */
   ownerId?: string;
+  /** For `private`: the `users/<handle>` segment the tree lives under. */
+  ownerHandle?: string;
   folderSegments: string[];
 }
 
-/** Parse a folder path (`apps/Sales`, `users/<id>/apps`) into a target. */
+/**
+ * Make a private target consistent with the handle mapping before a path is
+ * built from it: an owner without a handle gets theirs filled in, and a
+ * handle that is not the owner's (or is nobody's) is refused — whatever the
+ * caller already checked. A no-op for workspace targets.
+ */
+async function settleTargetHandle(
+  workspaceId: string,
+  target: AppFolderTarget,
+): Promise<void> {
+  if (target.scope !== "private") return;
+  const directory = await loadOwnerDirectory(workspaceId, {
+    forUserId: target.ownerId,
+  });
+  target.ownerHandle ??= directory.handleOf(target.ownerId);
+  const owner = directory.ownerOf(target.ownerHandle);
+  if (!owner || (target.ownerId && owner !== target.ownerId)) {
+    throw new AppFolderError(
+      "That personal folder does not belong to the app's owner",
+      403,
+    );
+  }
+  target.ownerId = owner;
+}
+
+/** Parse a folder path (`apps/Sales`, `users/<handle>/apps`) into a target. */
 export function folderTargetFromPath(folderPath: string): AppFolderTarget {
   const parsed = parseAppFolderPath(folderPath.replace(/\/+$/, ""));
   if (!parsed) {
     throw new AppFolderError(
-      `Not an app folder: ${JSON.stringify(folderPath)} (expected apps/… or users/<id>/apps/…)`,
+      `Not an app folder: ${JSON.stringify(folderPath)} (expected apps/… or users/<handle>/apps/…)`,
     );
   }
   return parsed;
@@ -867,7 +930,7 @@ export async function createProject(input: {
   slug?: string;
   /**
    * Where to file it. Default: the top of the workspace tree (`apps/`). A
-   * `private` target puts it under the creator's `users/<id>/apps/`.
+   * `private` target puts it under the creator's `users/<handle>/apps/`.
    */
   folder?: AppFolderTarget;
 }): Promise<IAppProject> {
@@ -886,6 +949,7 @@ export async function createProject(input: {
     if (!target.ownerId) {
       throw new Error("A personal app needs a signed-in owner");
     }
+    await settleTargetHandle(input.workspaceId, target);
   }
   const slug =
     input.slug ?? (await uniqueSlug(input.workspaceId, title, target));
@@ -914,7 +978,7 @@ export async function createProject(input: {
   // §10 monorepo: commit the scaffold under its folder onto main. The row's
   // id goes into the manifest: that is the app's identity from here on,
   // whatever folder it is later filed under.
-  let scaffoldCommit: { commitOid: string; previousHead: string } | null = null;
+  let scaffoldCommit: { commitOid: string; previousHead: string } | null;
   try {
     const scaffold = createAppsScaffold({
       title: project.title,
@@ -972,6 +1036,7 @@ export async function createProject(input: {
     });
     throw new Error(
       `Could not store the app durably (GitHub push failed): ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
   logger.info("Apps project created", {
@@ -1016,7 +1081,7 @@ export async function deleteProject(project: IAppProject): Promise<void> {
 export class AppFolderError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409 = 400,
+    readonly status: 400 | 403 | 404 | 409 = 400,
   ) {
     super(message);
     this.name = "AppFolderError";
@@ -1030,7 +1095,7 @@ function folderPathOf(target: AppFolderTarget): string {
     }
   }
   return [
-    appTreeRoot(target.scope, target.ownerId),
+    appTreeRoot(target.scope, target.ownerHandle),
     ...target.folderSegments,
   ].join("/");
 }
@@ -1045,7 +1110,7 @@ function isWithin(candidate: string, root: string): boolean {
  * knows it by — so a move never changes an identity, even for an app that
  * predates manifest ids. Paths are the NEW ones (post-move).
  */
-async function moveWritesUnder(
+export async function moveWritesUnder(
   workspaceId: string,
   repoDir: string,
   moves: Array<{ from: string; to: string }>,
@@ -1101,7 +1166,7 @@ async function moveWritesUnder(
  */
 type MainMutation = Parameters<typeof commitFilesOnBranch>[2];
 
-async function commitOnMainDurably(
+export async function commitOnMainDurably(
   workspaceId: string,
   repoDir: string,
   /**
@@ -1143,6 +1208,7 @@ async function commitOnMainDurably(
     }
     throw new Error(
       `Could not store the change durably (GitHub push failed): ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
   invalidateAppsIndexCache(workspaceId);
@@ -1159,10 +1225,19 @@ async function commitOnMainDurably(
 export async function moveProject(
   project: IAppProject,
   target: AppFolderTarget & { slug?: string },
-  options: { userId?: string; author?: GitAuthor } = {},
+  options: {
+    userId?: string;
+    author?: GitAuthor;
+    /**
+     * Write this one-line description into the app's `mako.json` in the
+     * same commit ("Share with workspace" asks for one).
+     */
+    description?: string;
+  } = {},
 ): Promise<{ from: string; to: string }> {
   const workspaceId = project.workspaceId.toString();
   const repoDir = await requireWorkspaceRepo(workspaceId);
+  await settleTargetHandle(workspaceId, target);
   const from = appRootFor(project);
   const slug = target.slug ?? project.slug ?? from.split("/").pop() ?? "app";
   if (!isSafeSegment(slug)) {
@@ -1196,10 +1271,25 @@ export async function moveProject(
       if (!fresh.apps.some(a => a.path === from)) {
         throw new AppFolderError(`App folder ${from} is not on main`, 404);
       }
-      return {
-        moves,
-        writes: await moveWritesUnder(workspaceId, repoDir, moves),
-      };
+      const writes = await moveWritesUnder(workspaceId, repoDir, moves);
+      if (options.description !== undefined) {
+        const manifestAt = `${to}/${APP_MANIFEST}`;
+        let current: string | null = writes[manifestAt] ?? null;
+        if (current === null) {
+          try {
+            current = (
+              await readBlob(repoDir, DEFAULT_BRANCH, `${from}/${APP_MANIFEST}`)
+            ).contents;
+          } catch {
+            current = null;
+          }
+        }
+        const described = withManifestDescription(current, options.description);
+        if (described !== null && described !== current) {
+          writes[manifestAt] = described;
+        }
+      }
+      return { moves, writes };
     },
     {
       message: `Move app "${project.title}" (${from} → ${to})`,
@@ -1230,6 +1320,178 @@ export async function moveProject(
 }
 
 /**
+ * Set `description` in a manifest, keeping every other key in place. A
+ * manifest that does not parse is left alone (null), as stampManifestId does.
+ */
+export function withManifestDescription(
+  contents: string | null,
+  description: string,
+): string | null {
+  let raw: Record<string, unknown>;
+  try {
+    const parsed = contents ? (JSON.parse(contents) as unknown) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    raw = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const clean = description.trim();
+  if (!clean) return contents;
+  return `${JSON.stringify({ ...raw, description: clean }, null, 2)}\n`;
+}
+
+/** Where archived content lives: outside both app trees, so never built. */
+export const ARCHIVE_DIR = "archive";
+
+/**
+ * Archive an app: move its folder to `archive/<its path>` as one commit on
+ * main. `archive/` is outside `apps/` and `users/<id>/apps/`, so the index
+ * stops listing it and deploy-on-push unpublishes it like a deleted folder —
+ * but git keeps every file, and moving the folder back restores the app
+ * under the same id (stamped into the manifest here if it had none).
+ *
+ * The project row keeps its state (shares, env vars, public link) and gives
+ * up its path: a new app created at the old address must not inherit this
+ * app's identity from a stale incumbent row.
+ */
+export async function archiveProject(
+  workspaceId: string,
+  appPath: string,
+  options: { author?: GitAuthor; reason?: string } = {},
+): Promise<{ from: string; to: string }> {
+  const repoDir = await requireWorkspaceRepo(workspaceId);
+  const from = appPath.replace(/\/+$/, "");
+  if (!parseAppRepoPath(from)) {
+    throw new AppFolderError(`Not an app folder: ${JSON.stringify(from)}`);
+  }
+  const snapshot = await loadAppsIndex(workspaceId);
+  const app = snapshot.apps.find(a => a.path === from);
+  if (!app) throw new AppFolderError(`App folder ${from} is not on main`, 404);
+  const existsOnMain = (rel: string) =>
+    runGit(["-C", repoDir, "cat-file", "-e", `${DEFAULT_BRANCH}:${rel}`])
+      .then(() => true)
+      .catch(() => false);
+  // Archived before (restored, then stale again): keep both copies.
+  const base = `${ARCHIVE_DIR}/${from}`;
+  const day = new Date().toISOString().slice(0, 10);
+  let to = base;
+  for (let i = 1; await existsOnMain(to); i++) {
+    to = i === 1 ? `${base}-${day}` : `${base}-${day}-${i}`;
+  }
+  const moves = [{ from, to }];
+  await commitOnMainDurably(
+    workspaceId,
+    repoDir,
+    async () => {
+      const fresh = await loadAppsIndex(workspaceId, { freshen: false });
+      if (!fresh.apps.some(a => a.path === from)) {
+        throw new AppFolderError(`App folder ${from} is not on main`, 404);
+      }
+      return {
+        moves,
+        writes: await moveWritesUnder(workspaceId, repoDir, moves),
+      };
+    },
+    {
+      message: `Archive app "${app.title}" (${from} → ${to})${options.reason ? `\n\n${options.reason}` : ""}`,
+      author: options.author,
+    },
+  );
+  await AppProject.updateOne(
+    {
+      _id: new Types.ObjectId(app.appId),
+      workspaceId: new Types.ObjectId(workspaceId),
+      path: from,
+    },
+    { $unset: { path: 1 } },
+  );
+  pokeApp(workspaceId, app.appId, "lifecycle");
+  return { from, to };
+}
+
+/**
+ * Restore an archived app: move `archive/<...>` back to `to` (its original
+ * app folder) as one commit on main — the reverse of archiveProject. The
+ * manifest id was stamped before the archive move, so the app comes back
+ * under the same id with its row's shares, env vars and public link. 409
+ * when anything already sits at `to` (an app, a folder, a file) or inside
+ * an app there.
+ */
+export async function restoreArchivedProject(
+  workspaceId: string,
+  archivedPath: string,
+  to: string,
+  options: {
+    appId?: string;
+    title?: string;
+    author?: GitAuthor;
+    userId?: string;
+  } = {},
+): Promise<{ from: string; to: string }> {
+  const repoDir = await requireWorkspaceRepo(workspaceId);
+  const from = archivedPath.replace(/\/+$/, "");
+  const location = parseAppRepoPath(to);
+  if (!from.startsWith(`${ARCHIVE_DIR}/`) || !location) {
+    throw new AppFolderError(`Not an archived app: ${JSON.stringify(from)}`);
+  }
+  assertSafeRelPath(from);
+  const existsOnMain = (rel: string) =>
+    runGit(["-C", repoDir, "cat-file", "-e", `${DEFAULT_BRANCH}:${rel}`])
+      .then(() => true)
+      .catch(() => false);
+  const checkTarget = async (
+    snapshot: Awaited<ReturnType<typeof loadAppsIndex>>,
+  ) => {
+    if (!(await existsOnMain(`${from}/${APP_MANIFEST}`))) {
+      throw new AppFolderError(`${from} is not in the archive on main`, 404);
+    }
+    if (await existsOnMain(to)) {
+      throw new AppFolderError(`${to} already exists`, 409);
+    }
+    const parent = snapshot.apps.find(a => isWithin(to, a.path));
+    if (parent) {
+      throw new AppFolderError(`${parent.path} is an app, not a folder`, 409);
+    }
+    if (options.appId && snapshot.apps.some(a => a.appId === options.appId)) {
+      throw new AppFolderError(
+        "This app is already live in the workspace",
+        409,
+      );
+    }
+  };
+  await checkTarget(await loadAppsIndex(workspaceId));
+  const taken = await occupiedPaths(workspaceId);
+  if (taken.has(to)) throw new AppFolderError(`${to} already exists`, 409);
+  const moves = [{ from, to }];
+  await commitOnMainDurably(
+    workspaceId,
+    repoDir,
+    async () => {
+      // Against the freshened main: a push may have taken the address.
+      await checkTarget(await loadAppsIndex(workspaceId, { freshen: false }));
+      return { moves, writes: {} };
+    },
+    {
+      message: `Restore app "${options.title ?? location.slug}" (${from} → ${to})`,
+      author: options.author,
+    },
+  );
+  if (options.appId && Types.ObjectId.isValid(options.appId)) {
+    await AppProject.updateOne(
+      {
+        _id: new Types.ObjectId(options.appId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      },
+      { $set: { path: to, slug: location.slug } },
+    );
+  }
+  pokeApp(workspaceId, options.appId ?? null, "lifecycle", options.userId);
+  return { from, to };
+}
+
+/**
  * A new, empty folder. Git cannot hold an empty directory, so it is a
  * `.gitkeep` — the marker the index reads folders from.
  */
@@ -1242,6 +1504,7 @@ export async function createAppFolder(
     throw new AppFolderError("A folder needs a name");
   }
   const repoDir = await requireWorkspaceRepo(workspaceId);
+  await settleTargetHandle(workspaceId, target);
   const folderPath = folderPathOf(target);
   const snapshot = await loadAppsIndex(workspaceId);
   if (snapshot.folders.includes(folderPath)) {
@@ -1277,6 +1540,8 @@ export async function moveAppFolder(
     throw new AppFolderError("The tree roots cannot be moved");
   }
   const repoDir = await requireWorkspaceRepo(workspaceId);
+  await settleTargetHandle(workspaceId, from);
+  await settleTargetHandle(workspaceId, to);
   const fromPath = folderPathOf(from);
   const toPath = folderPathOf(to);
   if (fromPath === toPath) return { from: fromPath, to: toPath, apps: 0 };
@@ -1326,6 +1591,7 @@ export async function deleteAppFolder(
     throw new AppFolderError("The tree roots cannot be deleted");
   }
   const repoDir = await requireWorkspaceRepo(workspaceId);
+  await settleTargetHandle(workspaceId, target);
   const folderPath = folderPathOf(target);
   const snapshot = await loadAppsIndex(workspaceId);
   if (!snapshot.folders.includes(folderPath)) {
@@ -1357,7 +1623,7 @@ export async function stampAppId(
   options: { userId?: string; author?: GitAuthor } = {},
 ): Promise<void> {
   const repoDir = await requireWorkspaceRepo(workspaceId);
-  let contents: string | null = null;
+  let contents: string | null;
   try {
     contents = (
       await readBlob(repoDir, DEFAULT_BRANCH, `${app.path}/${APP_MANIFEST}`)
@@ -1495,7 +1761,7 @@ async function ensureWorktreeCore(
   const doc = await AppWorktree.findOneAndUpdate(
     { workspaceId: new Types.ObjectId(workspaceId), userId: actorId },
     { $setOnInsert: { branch } },
-    { new: true, upsert: true },
+    { returnDocument: "after", upsert: true },
   );
 
   return { doc, repoDir };
@@ -1582,6 +1848,53 @@ export async function execInWorktree(
     );
   }
   return result;
+}
+
+/**
+ * Write a file to the sandbox's scratch area — outside the working copy, so
+ * it can never be committed — and return its absolute path in the sandbox.
+ * Used to keep the full output of a command whose tool result was truncated,
+ * where `grep`/`tail` in app_bash can reach it. Scratch lives as long as the
+ * sandbox: a recycled box loses it.
+ *
+ * `keepNewest` bounds the file's directory to that many files (newest kept):
+ * the box disk is small, and these files are regenerable by re-running the
+ * command, so they must never be what fills it.
+ */
+export async function writeWorktreeScratchFile(
+  handle: WorktreeHandle,
+  relPath: string,
+  contents: string,
+  options: { keepNewest?: number } = {},
+): Promise<string> {
+  const ctx = await ensureBox(handle);
+  const provider = getSandboxProvider();
+  const remotePath = path.posix.join(
+    provider.scratch(ctx),
+    assertSafeRelPath(relPath),
+  );
+  // TextEncoder, not Buffer.from: a Buffer can be a view into Node's shared
+  // pool, and the E2B provider uploads `bytes.buffer` — the whole pool.
+  await provider.writeFile(ctx, remotePath, new TextEncoder().encode(contents));
+  if (options.keepNewest && options.keepNewest > 0) {
+    const dir = sh(path.posix.dirname(remotePath));
+    await provider
+      .exec(
+        ctx,
+        // cd first and delete bare names: nothing outside the directory can
+        // match, and a failed cd stops the pipeline before any rm runs.
+        // (A read loop, not xargs -d: that flag is GNU-only.)
+        `cd ${dir} && ls -1t | tail -n +${options.keepNewest + 1} | ` +
+          'while IFS= read -r f; do rm -f -- "$f"; done',
+        { timeoutMs: 15_000 },
+      )
+      .catch(error =>
+        logger.warn("Could not prune sandbox scratch files", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+  }
+  return remotePath;
 }
 
 /**
@@ -2426,50 +2739,149 @@ export interface BranchInfo {
   lastCommit?: { subject: string; author: string; timestamp: number };
 }
 
+/**
+ * Every branch in the workspace repo with its distance from the default
+ * branch.
+ *
+ * The repo is the WORKSPACE's (apps, consoles, dbt, flows share it), so this
+ * answer is the same for every app that asks — and it used to be computed
+ * once per asking app with one `git rev-list --count` per branch, serially.
+ * At 573 branches that was ~573 subprocesses per call on a 1-vCPU instance;
+ * on 2026-10-19 it took 40s at the median and 71% of the service's
+ * request-seconds, and Cloud Run refused ~1,700 requests while it lasted.
+ *
+ * Now: one `for-each-ref` (≈10ms) per call reads the branch tips, and the
+ * tips ARE the cache key — nothing to invalidate, and a call made after a
+ * push always sees it. Only when the tips changed does one `rev-list` walk
+ * the commits not on the default branch, from which every branch's count is
+ * read in memory; concurrent calls seeing the same tips share that walk.
+ */
 export async function listBranches(scope: RepoScope): Promise<BranchInfo[]> {
   const repoDir = await repoForWorkspace(scope.workspaceId);
-  const { stdout } = await runGit([
+  // Mirror deletions are reconciled in the background (a deleted branch
+  // stays listed until then); never on the read path.
+  scheduleMirrorBranchReconcile(scope.workspaceId);
+  const { stdout: refs } = await runGit([
     "-C",
     repoDir,
     "for-each-ref",
     "--format=%(refname:short)%00%(objectname)%00%(subject)%00%(authorname)%00%(authordate:unix)",
     "refs/heads/",
   ]);
-  const defaultBranch = scope.defaultBranch;
-  const branches: BranchInfo[] = [];
-  for (const line of stdout.split("\n").filter(Boolean)) {
-    const [name, head, subject, author, at] = line.split("\0");
-    let aheadOfMain = 0;
-    if (name !== defaultBranch) {
-      try {
-        const { stdout: count } = await runGit([
-          "-C",
-          repoDir,
-          "rev-list",
-          "--count",
-          `refs/heads/${defaultBranch}..refs/heads/${name}`,
-        ]);
-        aheadOfMain = Number(count.trim()) || 0;
-      } catch {
-        aheadOfMain = 0;
-      }
-    }
-    branches.push({
-      name,
-      head,
-      isDefault: name === defaultBranch,
-      aheadOfMain,
-      lastCommit: subject
-        ? { subject, author, timestamp: Number(at) * 1000 }
-        : undefined,
+  const key = `${scope.workspaceId}\u0000${scope.defaultBranch}`;
+  const cached = branchListCache.get(key);
+  if (cached?.refs === refs) return cached.branches;
+  const flightKey = `${key}\u0000${refs}`;
+  const existing = branchListInFlight.get(flightKey);
+  if (existing) return existing;
+  const run = buildBranchList(repoDir, scope.defaultBranch, refs)
+    .then(branches => {
+      branchListCache.set(key, { refs, branches });
+      return branches;
+    })
+    .finally(() => branchListInFlight.delete(flightKey));
+  branchListInFlight.set(flightKey, run);
+  return run;
+}
+
+const branchListInFlight = new Map<string, Promise<BranchInfo[]>>();
+const branchListCache = new Map<
+  string,
+  { refs: string; branches: BranchInfo[] }
+>();
+
+async function buildBranchList(
+  repoDir: string,
+  defaultBranch: string,
+  refs: string,
+): Promise<BranchInfo[]> {
+  const rows = refs
+    .split("\n")
+    .filter(Boolean)
+    .map(line => {
+      const [name, head, subject, author, at] = line.split("\0");
+      return { name, head, subject, author, at };
     });
+  const hasDefault = rows.some(r => r.name === defaultBranch);
+  const others = rows.filter(r => r.name !== defaultBranch);
+  let ahead = new Map<string, number>();
+  if (hasDefault && others.length > 0) {
+    try {
+      // Every commit reachable from some branch but not from the default
+      // branch, with its parents: the whole "ahead" graph in one process.
+      const { stdout: graph } = await runGit([
+        "-C",
+        repoDir,
+        "rev-list",
+        "--parents",
+        "--branches",
+        "--not",
+        `refs/heads/${defaultBranch}`,
+      ]);
+      ahead = countAheadOfDefault(
+        graph,
+        others.map(r => r.head),
+      );
+    } catch {
+      ahead = new Map();
+    }
   }
+
+  const branches: BranchInfo[] = rows.map(r => ({
+    name: r.name,
+    head: r.head,
+    isDefault: r.name === defaultBranch,
+    aheadOfMain: r.name === defaultBranch ? 0 : (ahead.get(r.head) ?? 0),
+    lastCommit: r.subject
+      ? { subject: r.subject, author: r.author, timestamp: Number(r.at) * 1000 }
+      : undefined,
+  }));
   // Default branch first, then most recently committed.
   branches.sort((a, b) => {
     if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
     return (b.lastCommit?.timestamp ?? 0) - (a.lastCommit?.timestamp ?? 0);
   });
   return branches;
+}
+
+/**
+ * `rev-list --count <default>..<head>` for many heads at once, from the
+ * output of `rev-list --parents --branches --not <default>`: each line is a
+ * commit not on the default branch followed by its parents. A head's count is
+ * the commits reachable from it inside that set — a parent outside the set is
+ * on the default branch, and so is everything behind it. A head absent from
+ * the set is merged (0).
+ */
+export function countAheadOfDefault(
+  graph: string,
+  heads: string[],
+): Map<string, number> {
+  const parents = new Map<string, string[]>();
+  for (const line of graph.split("\n")) {
+    if (!line) continue;
+    const [commit, ...rest] = line.split(" ");
+    parents.set(commit, rest);
+  }
+  const counts = new Map<string, number>();
+  for (const head of heads) {
+    if (counts.has(head)) continue;
+    if (!parents.has(head)) {
+      counts.set(head, 0);
+      continue;
+    }
+    const seen = new Set<string>([head]);
+    const stack = [head];
+    while (stack.length > 0) {
+      for (const parent of parents.get(stack.pop() as string) ?? []) {
+        if (!seen.has(parent) && parents.has(parent)) {
+          seen.add(parent);
+          stack.push(parent);
+        }
+      }
+    }
+    counts.set(head, seen.size);
+  }
+  return counts;
 }
 
 export interface MergeResult {
@@ -2489,6 +2901,8 @@ export async function mergeBranchToMain(
   scope: RepoScope,
   branch: string,
   author?: GitAuthor,
+  /** Who merges. Given, a branch that changes `workflows/` needs an admin. */
+  actorUserId?: string,
 ): Promise<MergeResult> {
   const repoDir = await repoForWorkspace(scope.workspaceId);
   const defaultBranch = scope.defaultBranch;
@@ -2510,6 +2924,25 @@ export async function mergeBranchToMain(
   if (branchHead === mainHead) {
     return { merged: false, reason: "Already up to date" };
   }
+  // Main is where workflows go live. The git endpoint lets only admins push
+  // workflow changes; the merge, which does not run hooks, asks the same.
+  if (actorUserId) {
+    const { stdout } = await runGit([
+      // Three dots: what the branch changed since it left main, not what
+      // main changed meanwhile.
+      ...["-C", repoDir, "diff", "--name-only", `${mainHead}...${branchHead}`],
+      ...["--", `${WORKFLOWS_DIR}/`],
+    ]);
+    if (stdout.trim()) {
+      const member = await workspaceService.getMember(
+        scope.workspaceId,
+        actorUserId,
+      );
+      if (!mayChangeWorkflows(member?.role)) {
+        throw new WorktreeConflictError(WORKFLOWS_ADMIN_ONLY);
+      }
+    }
+  }
 
   // Fast-forward when main is an ancestor of the branch.
   try {
@@ -2528,6 +2961,8 @@ export async function mergeBranchToMain(
     queueMirrorPush(scope.workspaceId);
     pokeApp(scope.workspaceId, scope.projectId ?? null, "merge");
     invalidatePullThrottle();
+    // A merge writes main here, not through the git endpoint.
+    deployWorkflows(scope.workspaceId);
     return { merged: true, commitOid: branchHead, fastForward: true };
   } catch (error) {
     if (error instanceof WorktreeConflictError) throw error;
@@ -2561,6 +2996,7 @@ export async function mergeBranchToMain(
   queueMirrorPush(scope.workspaceId);
   pokeApp(scope.workspaceId, scope.projectId ?? null, "merge");
   invalidatePullThrottle();
+  deployWorkflows(scope.workspaceId);
   return { merged: true, commitOid, fastForward: false };
 }
 
@@ -2790,7 +3226,7 @@ export type AppFolder = AppIndexRow & { id: string };
  * Every app in a workspace, read from the repo (through the apps index).
  *
  * An app is a folder with a `mako.json`, anywhere under `apps/` or
- * `users/<id>/apps/`; that is the whole definition. It exists because the
+ * `users/<handle>/apps/`; that is the whole definition. It exists because the
  * folder exists, not because a row does — so pushing a folder from a local
  * checkout makes the app appear, and no registration step is needed.
  *
@@ -2838,7 +3274,16 @@ export async function ensureProjectRow(
   // ownerless; otherwise the auto-deploy of every repo-imported folder would
   // stamp the literal "publish" as owner_id, nobody could ever restrict or
   // share it, and a private access setting would lock out even admins.
-  const owner = isUserActor(actorId) ? actorId : undefined;
+  // A personal app (users/<handle>/apps/…) already knows its owner from the
+  // handle mapping (projectFromIndexRow sets owner_id); that owner wins over
+  // whoever happens to act. Dropping it made every personal app first seen
+  // by the push-deploy worker private to nobody: invisible to its own owner.
+  const owner =
+    project.access === "private" && project.owner_id
+      ? project.owner_id
+      : isUserActor(actorId)
+        ? actorId
+        : undefined;
   const existing = await AppProject.findOne({
     _id: project._id,
     workspaceId: project.workspaceId,
@@ -2924,7 +3369,7 @@ export function projectFromIndexRow(
     slug: folder.slug,
     path: folder.path,
     description: folder.description,
-    // A folder under users/<id>/apps is that person's: private to them
+    // A folder under users/<handle>/apps is that person's: private to them
     // until they share it, exactly like a private console.
     access: folder.scope === "private" ? "private" : "workspace",
     ...(folder.scope === "private" && folder.ownerId

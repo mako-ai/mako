@@ -10,6 +10,7 @@
  * `flow-sync.service.ts`. Runtime reads the derived row after comparing
  * `sourceBlobSha` to the blob at main.
  */
+import type { Types } from "mongoose";
 import { RepoRequiredError } from "../apps/config";
 import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
@@ -33,11 +34,18 @@ import {
   flowFilePath,
   flowToFile,
   serializeFlowFile,
+  serializeFlowFileV1,
+  parseFlowFile,
+  sameFlowMeaning,
 } from "./flow-config-files";
 
 const logger = loggers.api("flow-config");
 
-async function commitConfig(
+/**
+ * Commit whole-file writes/deletes onto main and queue the mirror push.
+ * Shared by flow saves and history restores (flows, workspace connectors).
+ */
+export async function commitConfigToMain(
   workspaceId: string,
   mutation: { writes?: Record<string, string>; deletes?: string[] },
   message: string,
@@ -74,13 +82,25 @@ export async function commitFlowFile(
   if (!flow.slug || !flow.name?.trim()) {
     return { ok: true, changed: false };
   }
-  const contents = serializeFlowFile(flowToFile(flow));
+  const file = flowToFile(flow);
+  const contents = serializeFlowFile(file);
   const sha = blobOid(contents);
   if (flow.sourceBlobSha === sha) {
     return { ok: true, changed: false, sourceBlobSha: sha };
   }
+  // The file on main may say the same thing in the older words (format 1:
+  // `type`, `schedule`, `webhook`, `backfill_schedule`). Then nothing changed
+  // but the format: leave it, so a save never rewrites a file for its format
+  // alone. It moves to format 2 the first time its meaning changes.
+  if (
+    flow.sourceBlobSha &&
+    (flow.sourceBlobSha === blobOid(serializeFlowFileV1(file)) ||
+      (await fileAtMainSaysTheSame(flow, file)))
+  ) {
+    return { ok: true, changed: false, sourceBlobSha: flow.sourceBlobSha };
+  }
   try {
-    await commitConfig(
+    await commitConfigToMain(
       flow.workspaceId.toString(),
       { writes: { [flowFilePath(flow.slug)]: contents } },
       messageOverride ?? `flow: "${flow.name ?? flow.slug}" (${flow.slug})`,
@@ -99,13 +119,40 @@ export async function commitFlowFile(
   }
 }
 
+/**
+ * The file this row was derived from (its blob is the row's sourceBlobSha) is
+ * still the one on main, and it means the same flow as `file` — whatever its
+ * format, comments or key spellings. Best-effort: any failure answers false,
+ * and the caller writes as before.
+ */
+async function fileAtMainSaysTheSame(
+  flow: IFlow,
+  file: ReturnType<typeof flowToFile>,
+): Promise<boolean> {
+  if (!flow.slug || !flow.sourceBlobSha) return false;
+  try {
+    const { readFlowFilesAtMain } = await import("./flow-sync.service");
+    const { files } = await readFlowFilesAtMain(flow.workspaceId.toString(), {
+      freshen: false,
+    });
+    const atMain = files.find(f => f.path === flowFilePath(flow.slug!));
+    if (!atMain || blobOid(atMain.contents) !== flow.sourceBlobSha) {
+      return false;
+    }
+    const parsed = parseFlowFile(atMain.contents);
+    return parsed !== null && sameFlowMeaning(parsed, file);
+  } catch {
+    return false;
+  }
+}
+
 /** Remove a deleted flow's file. Throws {@link RepoRequiredError} without a repo. */
 export async function deleteFlowFile(
   flow: Pick<IFlow, "workspaceId" | "slug" | "name">,
   actorUserId?: string,
 ): Promise<void> {
   if (!flow.slug) return;
-  await commitConfig(
+  await commitConfigToMain(
     flow.workspaceId.toString(),
     { deletes: [flowFilePath(flow.slug)] },
     `flow: delete "${flow.name ?? flow.slug}" (${flow.slug})`,
@@ -190,7 +237,7 @@ export async function exportWorkspaceFlows(
   const flows = await Flow.find({ workspaceId }).sort({ _id: 1 }).lean();
 
   const writes: Record<string, string> = {};
-  const shaBySlug = new Map<string, { id: unknown; sha: string }>();
+  const shaBySlug = new Map<string, { id: Types.ObjectId; sha: string }>();
   const failed: Array<{ slug: string; error: string }> = [];
   let skipped = 0;
 
@@ -200,7 +247,17 @@ export async function exportWorkspaceFlows(
       continue;
     }
     try {
-      const contents = serializeFlowFile(flowToFile(flow));
+      const file = flowToFile(flow);
+      const contents = serializeFlowFile(file);
+      // Same meaning already on main, in either format: nothing to write.
+      if (
+        flow.sourceBlobSha &&
+        (flow.sourceBlobSha === blobOid(contents) ||
+          flow.sourceBlobSha === blobOid(serializeFlowFileV1(file)))
+      ) {
+        skipped++;
+        continue;
+      }
       writes[flowFilePath(flow.slug)] = contents;
       shaBySlug.set(flow.slug, { id: flow._id, sha: blobOid(contents) });
     } catch (error) {
@@ -214,7 +271,7 @@ export async function exportWorkspaceFlows(
   let commitMade = false;
   if (Object.keys(writes).length > 0) {
     try {
-      await commitConfig(
+      await commitConfigToMain(
         workspaceId,
         { writes },
         `flows: export ${Object.keys(writes).length} definition(s)`,

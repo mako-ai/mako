@@ -75,8 +75,8 @@ vi.mock("../dbt/dbt-run.service", () => ({
 vi.mock("../services/realtime.service", () => ({
   publishRealtimeEvent: vi.fn(),
 }));
-vi.mock("../services/dashboard-artifact-store.service", () => ({
-  getDashboardArtifactStore: vi.fn(() => ({})),
+vi.mock("../services/artifact-store.service", () => ({
+  getArtifactStore: vi.fn(() => ({})),
 }));
 vi.mock("../services/scheduled-query-schedule.service", () => ({
   validateScheduledConsoleSchedule: vi.fn(() => null),

@@ -14,20 +14,19 @@ export type TabKind =
   | "connectors"
   | "members"
   | "flow-editor"
-  | "dashboard"
-  | "dashboard-data-source"
   | "table-data"
   | "app"
   | "app-file"
   | "app-diff"
-  | "console-diff"
+  | "apps-home"
+  | "history-diff"
   | "repo-diff"
-  | "notebook-diff"
   | "plan"
   | "dbt-file"
   | "dbt-job"
   | "dbt-console"
   | "dbt-runs"
+  | "workflow"
   | "notebook";
 
 /**
@@ -41,7 +40,6 @@ export type SettingsSection =
   | "agents"
   | "coding-agents"
   | "models"
-  | "limits"
   | "billing"
   | "members"
   | "api-keys"
@@ -186,10 +184,10 @@ export type LeftPaneView =
   | "consoles"
   | "connectors"
   | "flows"
-  | "dashboards"
   | "apps"
   | "notebooks"
   | "dbt"
+  | "workflows"
   | "source-control"
   | "settings";
 

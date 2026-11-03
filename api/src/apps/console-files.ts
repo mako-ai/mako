@@ -4,7 +4,10 @@
  * A saved console is one file in the workspace repo:
  *
  *   consoles/<folder path>/<name>.sql                  access = workspace
- *   users/<ownerId>/consoles/<folder path>/<name>.sql  access = private
+ *   users/<handle>/consoles/<folder path>/<name>.sql   access = private
+ *
+ * `<handle>` names the owner through the workspace's handle mapping
+ * (user-handles.ts); the parser returns it raw and the service resolves it.
  *
  * The extension carries the language (`.sql`, `.js`, `.mongodb.js`), the
  * filename is the console's name, and the directories are its folder chain.
@@ -28,6 +31,8 @@
  * workspace-consoles.service.ts.
  */
 
+import { isHandle } from "./user-handles";
+
 export const CONSOLES_DIR = "consoles";
 export const USERS_DIR = "users";
 /**
@@ -44,7 +49,7 @@ committed here (from a clone, a terminal, the agent) shows up in the app on
 the next push.
 
 - \`consoles/<folder>/<name>.sql\` is visible to the whole workspace;
-  \`users/<userId>/consoles/…\` is that user's private console.
+  \`users/<handle>/consoles/…\` is that person's private console.
 - Leading \`-- key: value\` comment lines are metadata (\`connection\`,
   \`database\`, \`description\`, \`schedule\`, \`timezone\`); the first blank
   line ends them. \`<name>.chart.json\` next to a file is its chart.
@@ -81,7 +86,12 @@ export interface ConsoleFileState {
 
 export interface ConsoleRepoLocation {
   scope: "workspace" | "private";
-  /** Set for private consoles: the `users/<ownerId>` segment. */
+  /** Set for private consoles: the `users/<handle>` segment, as written. */
+  ownerHandle?: string;
+  /**
+   * The userId that handle resolves to. Never set by the parser — only by
+   * the service, from the handle mapping; absent when the handle is nobody's.
+   */
   ownerId?: string;
   folderSegments: string[];
   name: string;
@@ -140,28 +150,28 @@ const CHART_SUFFIX = ".chart.json";
 
 export function consoleRepoPath(location: {
   scope: "workspace" | "private";
-  ownerId?: string;
+  ownerHandle?: string;
   folderSegments: string[];
   name: string;
   language: ConsoleLanguage;
 }): string {
   const root =
     location.scope === "private"
-      ? `${USERS_DIR}/${requireOwner(location.ownerId)}/${CONSOLES_DIR}`
+      ? `${USERS_DIR}/${requireOwner(location.ownerHandle)}/${CONSOLES_DIR}`
       : CONSOLES_DIR;
   const folders = location.folderSegments.map(safeSegment);
   const file = `${safeSegment(location.name)}${consoleExtension(location.language)}`;
   return [root, ...folders, file].join("/");
 }
 
-function requireOwner(ownerId: string | undefined): string {
-  const id = (ownerId ?? "").trim();
-  if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+function requireOwner(ownerHandle: string | undefined): string {
+  const handle = (ownerHandle ?? "").trim();
+  if (!isHandle(handle)) {
     throw new Error(
-      `A private console needs an owner id (got ${JSON.stringify(ownerId)})`,
+      `A private console needs its owner's handle (got ${JSON.stringify(ownerHandle)})`,
     );
   }
-  return id;
+  return handle;
 }
 
 /** The sidecar path carrying a console file's chart spec. */
@@ -176,14 +186,14 @@ export function isChartSidecarPath(path: string): boolean {
 }
 
 /**
- * `consoles/a/b/name.sql` → location, `users/<id>/consoles/name.js` →
+ * `consoles/a/b/name.sql` → location, `users/<handle>/consoles/name.js` →
  * private location, anything else (README, sidecars, foreign extensions,
  * files under other roots) → null.
  */
 export function parseConsoleRepoPath(path: string): ConsoleRepoLocation | null {
   const segments = path.split("/");
   let scope: "workspace" | "private";
-  let ownerId: string | undefined;
+  let ownerHandle: string | undefined;
   let rest: string[];
   if (segments[0] === CONSOLES_DIR) {
     scope = "workspace";
@@ -192,10 +202,10 @@ export function parseConsoleRepoPath(path: string): ConsoleRepoLocation | null {
     segments[0] === USERS_DIR &&
     segments.length >= 4 &&
     segments[2] === CONSOLES_DIR &&
-    /^[A-Za-z0-9_-]+$/.test(segments[1] ?? "")
+    isHandle(segments[1] ?? "")
   ) {
     scope = "private";
-    ownerId = segments[1];
+    ownerHandle = segments[1];
     rest = segments.slice(3);
   } else {
     return null;
@@ -209,7 +219,7 @@ export function parseConsoleRepoPath(path: string): ConsoleRepoLocation | null {
   if (folderSegments.some(s => s === "" || s === "." || s === "..")) {
     return null;
   }
-  return { scope, ownerId, folderSegments, ...split };
+  return { scope, ownerHandle, folderSegments, ...split };
 }
 
 // ---------------------------------------------------------------------------

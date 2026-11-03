@@ -159,8 +159,8 @@ export async function ensureAcpSessionForProvider(
         ensured?.skipped
           ? `${ensured.message} Or install via Terminal, then retry.`
           : ensured?.message ||
-            provider?.installHint ||
-            `${providerId} ACP adapter not found. Use Install in Chat or restart Local Agent.`,
+              provider?.installHint ||
+              `${providerId} ACP adapter not found. Use Install in Chat or restart Local Agent.`,
       );
     }
   }

@@ -605,7 +605,7 @@ consoleRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
+      const consoleId = c.req.param("id") as string;
       const body = await c.req.json();
 
       if (!Types.ObjectId.isValid(consoleId)) {
@@ -698,7 +698,7 @@ consoleRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
+      const consoleId = c.req.param("id") as string;
 
       if (!Types.ObjectId.isValid(consoleId)) {
         return c.json({ success: false, error: "Invalid console ID" }, 400);
@@ -780,7 +780,7 @@ consoleRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
+      const consoleId = c.req.param("id") as string;
       const user = c.get("user");
 
       if (!Types.ObjectId.isValid(consoleId)) {
@@ -850,7 +850,7 @@ consoleRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
+      const consoleId = c.req.param("id") as string;
       const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
 
       if (!Types.ObjectId.isValid(consoleId)) {
@@ -949,9 +949,8 @@ consoleRoutes.openapi(
         return c.json({ results: [] });
       }
 
-      const { searchConsoles } = await import(
-        "../agent-lib/tools/console-search-tools"
-      );
+      const { searchConsoles } =
+        await import("../agent-lib/tools/console-search-tools");
       const results = await searchConsoles(query, workspaceId, limit);
 
       return c.json({ results });
@@ -1181,7 +1180,7 @@ consoleRoutes.openapi(
 consoleRoutes.put("/:path{.+}", async (c: Context) => {
   try {
     const workspaceId = c.req.param("workspaceId") as string;
-    const pathOrId = c.req.param("path");
+    const pathOrId = c.req.param("path") as string;
     const body = await c.req.json();
     const user = c.get("user");
 
@@ -1434,7 +1433,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             $inc: { version: 1, draftRevision: 1 },
             $setOnInsert: setOnInsertFields,
           },
-          { upsert: !saveGuardActive, new: true },
+          { upsert: !saveGuardActive, returnDocument: "after" },
         );
         if (!result) {
           await projected.revert();
@@ -1530,7 +1529,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             $inc: { version: 1, draftRevision: 1 },
             $setOnInsert: setOnInsertFields,
           },
-          { upsert: !saveGuardActive, new: true },
+          { upsert: !saveGuardActive, returnDocument: "after" },
         );
         if (!result) {
           await projected.revert();
@@ -1595,7 +1594,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           $inc: { draftRevision: 1 },
           $setOnInsert: setOnInsertFields,
         },
-        { upsert: !useDraftGuard, new: true },
+        { upsert: !useDraftGuard, returnDocument: "after" },
       );
 
       if (!result) {
@@ -1733,7 +1732,7 @@ consoleRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
+      const consoleId = c.req.param("id") as string;
       const body = await c.req.json();
       const { name } = body;
       const user = c.get("user");
@@ -1803,7 +1802,7 @@ consoleRoutes.openapi(
               workspaceId: new Types.ObjectId(workspaceId),
             },
             { $inc: { draftRevision: 1 } },
-            { new: true },
+            { returnDocument: "after" },
           );
           if (renamed) {
             publishRealtimeEvent(workspaceId, {
@@ -1864,7 +1863,7 @@ consoleRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
+      const consoleId = c.req.param("id") as string;
       const user = c.get("user");
 
       // Workspace access itself is the router middleware's job (it ran and
@@ -1969,7 +1968,7 @@ consoleRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
+      const consoleId = c.req.param("id") as string;
       const user = c.get("user");
 
       // Workspace access itself is the router middleware's job (it ran and
@@ -2050,7 +2049,7 @@ consoleRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
+      const consoleId = c.req.param("id") as string;
       const user = c.get("user");
 
       // Workspace access itself is the router middleware's job (it ran and
@@ -2120,7 +2119,7 @@ consoleRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
+      const consoleId = c.req.param("id") as string;
       const user = c.get("user");
 
       // Workspace access itself is the router middleware's job (it ran and
@@ -2229,7 +2228,7 @@ consoleRoutes.openapi(
   async c => {
     const startTime = Date.now();
     let database: IDatabaseConnection | null = null;
-    let executionStatus: QueryStatus = "error";
+    let executionStatus: QueryStatus;
     let rowCount: number | undefined;
     let errorType: string | undefined;
     let workspaceId: string | undefined;
@@ -2251,7 +2250,7 @@ consoleRoutes.openapi(
           403,
         );
       }
-      const consoleId = c.req.param("id");
+      const consoleId = c.req.param("id") as string;
       const mode = c.req.query("mode");
       const pageSizeParam = c.req.query("pageSize");
       const cursorParam = c.req.query("cursor");
@@ -2322,6 +2321,12 @@ consoleRoutes.openapi(
         databaseId: savedConsole.databaseId,
         databaseName: savedConsole.databaseName,
         readOnly: queryAccess === "read",
+        labels: {
+          mako_source: "console",
+          mako_console: consoleId,
+          mako_trigger: apiKey ? "api" : "console_ui",
+          mako_user: user?.id ?? apiKey?.createdBy?.toString(),
+        },
       };
       const isPreviewMode = mode === "preview";
 
@@ -2580,12 +2585,9 @@ consoleRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
+      const consoleId = c.req.param("id") as string;
       const format = (c.req.query("format") || "arrow") as
-        | "arrow"
-        | "json"
-        | "ndjson"
-        | "csv";
+        "arrow" | "json" | "ndjson" | "csv";
       const limit = parseInt(c.req.query("limit") || "500000", 10);
 
       if (!Types.ObjectId.isValid(consoleId)) {
@@ -2621,6 +2623,13 @@ consoleRoutes.openapi(
       }
 
       const startTime = Date.now();
+      // Set on the query itself: the streaming export runs after this
+      // handler returns, outside any context it could enter.
+      const labels = {
+        mako_source: "export",
+        mako_console: consoleId,
+        mako_user: c.get("user")?.id,
+      };
 
       let query: any = savedConsole.code;
       if (
@@ -2680,6 +2689,7 @@ consoleRoutes.openapi(
                 signal: c.req.raw.signal,
                 onBatch: emitRows,
                 readOnly: true,
+                labels,
               },
             ),
         });
@@ -2692,6 +2702,7 @@ consoleRoutes.openapi(
           databaseId: savedConsole.databaseId,
           databaseName: savedConsole.databaseName,
           readOnly: true,
+          labels,
         },
       );
 
@@ -2872,7 +2883,7 @@ consoleRoutes.openapi(
       // Access was verified by the router middleware; only the id is needed.
       const access = { workspaceId: c.req.param("workspaceId") as string };
 
-      const consoleId = c.req.param("id");
+      const consoleId = c.req.param("id") as string;
       if (!Types.ObjectId.isValid(consoleId)) {
         return c.json({ success: false, error: "Invalid console ID" }, 400);
       }
@@ -2965,7 +2976,7 @@ consoleRoutes.openapi(
       // Access was verified by the router middleware; only the id is needed.
       const access = { workspaceId: c.req.param("workspaceId") as string };
 
-      const consoleId = c.req.param("id");
+      const consoleId = c.req.param("id") as string;
 
       // Validate console ID
       if (!Types.ObjectId.isValid(consoleId)) {
@@ -3101,7 +3112,7 @@ async function loadReadableConsole(
   | { errorResponse: Response }
 > {
   const workspaceId = c.req.param("workspaceId") as string;
-  const consoleId = c.req.param("id");
+  const consoleId = c.req.param("id") as string;
   const user = (c as AuthenticatedContext).get("user");
   if (!user) {
     return {

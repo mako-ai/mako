@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import {
+  isWebhookFlow,
   buildScheduledFlowSelection,
+  connectorFlowCdcError,
   deriveFlowType,
   deriveTriggerSet,
   hasAnyTrigger,
+  hasWebhookTrigger,
   resolveDefaultSyncEngine,
 } from "./flow-triggers.service";
 
@@ -99,55 +102,48 @@ function testNoTriggers() {
 }
 
 function testDefaultSyncEngine() {
-  // Webhook flows are always CDC.
+  // CDC is the only engine for connector flows.
+  assert.equal(resolveDefaultSyncEngine({ sourceType: "connector" }), "cdc");
+  // Database (SQL query) sources keep their own write path and label.
+  assert.equal(resolveDefaultSyncEngine({ sourceType: "database" }), "legacy");
+}
+
+function testConnectorFlowCdcError() {
+  // A connector flow CDC can run: no error.
   assert.equal(
-    resolveDefaultSyncEngine({
-      flowType: "webhook",
+    connectorFlowCdcError({
       sourceType: "connector",
       hasTableDestination: true,
       destinationSupportsCdc: true,
     }),
-    "cdc",
+    null,
   );
-  // Connector flows to CDC-capable table destinations default to CDC.
-  assert.equal(
-    resolveDefaultSyncEngine({
-      flowType: "scheduled",
-      sourceType: "connector",
-      hasTableDestination: true,
-      destinationSupportsCdc: true,
-    }),
-    "cdc",
-  );
-  // Non-CDC destination stays legacy.
-  assert.equal(
-    resolveDefaultSyncEngine({
-      flowType: "scheduled",
-      sourceType: "connector",
-      hasTableDestination: true,
-      destinationSupportsCdc: false,
-    }),
-    "legacy",
-  );
-  // Mongo collection destination (no tableDestination) stays legacy.
-  assert.equal(
-    resolveDefaultSyncEngine({
-      flowType: "scheduled",
+  // No table destination (the old Mongo-collection legacy path): refused.
+  assert.match(
+    connectorFlowCdcError({
       sourceType: "connector",
       hasTableDestination: false,
       destinationSupportsCdc: true,
-    }),
-    "legacy",
+    }) ?? "",
+    /legacy sync engine has been removed/,
   );
-  // Database (SQL query) sources keep the legacy DB-sync path.
-  assert.equal(
-    resolveDefaultSyncEngine({
-      flowType: "scheduled",
-      sourceType: "database",
+  // Destination without a CDC adapter: refused.
+  assert.match(
+    connectorFlowCdcError({
+      sourceType: "connector",
       hasTableDestination: true,
-      destinationSupportsCdc: true,
+      destinationSupportsCdc: false,
+    }) ?? "",
+    /no CDC adapter/,
+  );
+  // Database sources are not engine flows.
+  assert.equal(
+    connectorFlowCdcError({
+      sourceType: "database",
+      hasTableDestination: false,
+      destinationSupportsCdc: false,
     }),
-    "legacy",
+    null,
   );
 }
 
@@ -164,13 +160,56 @@ function testScheduledFlowSelection() {
   assert.equal("type" in selection, false);
 }
 
+function testIsWebhookFlow() {
+  // Every flow created as a webhook flow keeps taking deliveries exactly as
+  // before — even one whose endpoint was never stored.
+  assert.equal(
+    isWebhookFlow({ type: "webhook", webhookConfig: { enabled: true } }),
+    true,
+  );
+  // A scheduled flow with only the Mongoose default is not one…
+  assert.equal(
+    isWebhookFlow({ type: "scheduled", webhookConfig: { enabled: true } }),
+    false,
+  );
+  // …until webhooks are switched on (endpoint minted + enabled), whatever
+  // its type: it keeps polling and takes deliveries on top.
+  assert.equal(
+    isWebhookFlow({
+      type: "scheduled",
+      schedule: { enabled: true, cron: "0 * * * *" },
+      webhookConfig: { enabled: true, endpoint: "https://x/api/webhooks/w/f" },
+    }),
+    true,
+  );
+  // Switched off again: still set up for webhooks (it has its URL, the
+  // receiver answers 403), but no webhook trigger, so no deliveries.
+  assert.equal(
+    isWebhookFlow({
+      type: "scheduled",
+      webhookConfig: { enabled: false, endpoint: "https://x/api/webhooks/w/f" },
+    }),
+    true,
+    "switched off again: still has its URL",
+  );
+  assert.equal(
+    hasWebhookTrigger({
+      webhookConfig: { enabled: false, endpoint: "https://x/api/webhooks/w/f" },
+    }),
+    false,
+    "switched off again: no deliveries",
+  );
+}
+
 function main() {
+  testIsWebhookFlow();
   testScheduledFlowTriggerSet();
   testWebhookFlowWithMongooseScheduleDefault();
   testScheduledFlowWithMongooseWebhookDefault();
   testHybridFlowIsScheduledForBackCompat();
   testNoTriggers();
   testDefaultSyncEngine();
+  testConnectorFlowCdcError();
   testScheduledFlowSelection();
   // eslint-disable-next-line no-console
   console.log("flow-triggers.service tests passed");

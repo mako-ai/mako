@@ -100,24 +100,113 @@ export function gatewayAttributionOptions(
   };
 }
 
+/** Vercel's limits on a request's tags. */
+const MAX_TAGS = 10;
+const MAX_TAG_CHARS = 64;
+/** Tags only Mako sets: a step cannot bill its calls to another workspace. */
+const RESERVED_TAG = /^(ws|agent|type):/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Stamp an attribution on the JSON body of a request Mako forwards to the
+ * gateway for someone else's code (a workflow step). Mako's user and tags win
+ * over whatever the step sent. The step's other options and its own tags stay.
+ * A body that is not a JSON object goes through as it came.
+ */
+export function withGatewayAttribution(
+  body: string,
+  attribution: GatewayAttribution,
+): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return body;
+  }
+  if (!isRecord(parsed)) return body;
+  const providerOptions = isRecord(parsed.providerOptions)
+    ? parsed.providerOptions
+    : {};
+  const gateway = isRecord(providerOptions.gateway)
+    ? providerOptions.gateway
+    : {};
+  const stepTags = Array.isArray(gateway.tags)
+    ? gateway.tags.filter(
+        (tag): tag is string =>
+          typeof tag === "string" &&
+          tag.length >= 1 &&
+          tag.length <= MAX_TAG_CHARS &&
+          !RESERVED_TAG.test(tag),
+      )
+    : [];
+  const { user, tags = [] } = gatewayAttributionOptions(attribution);
+  return JSON.stringify({
+    ...parsed,
+    providerOptions: {
+      ...providerOptions,
+      gateway: {
+        ...gateway,
+        user,
+        tags: [...tags, ...stepTags].slice(0, MAX_TAGS),
+      },
+    },
+  });
+}
+
+/**
+ * Gateway options, plus `caching` — a Gateway feature newer than the pinned
+ * `@ai-sdk/gateway` types (it arrives with the package `ai` depends on). The
+ * client posts `providerOptions` to the Gateway verbatim, so the field works
+ * today; drop this extension once the bundled types carry it.
+ */
+type GatewayOptions = GatewayLanguageModelOptions & { caching?: "auto" };
+
 /**
  * Build `providerOptions` for a request. Attaches user / tag metadata
  * for Vercel-side spend tracking.
+ *
+ * Pass `promptCacheSessionId` (a stable, opaque id such as the chat id) for
+ * multi-step / multi-turn traffic that re-sends a growing prompt:
+ * - `gateway.caching: "auto"` makes the Gateway add Anthropic `cache_control`
+ *   breakpoints on the last message (and before the last user message), so
+ *   each agent step reads the previous step's prompt from cache instead of
+ *   paying full input price for the whole history again. Providers that cache
+ *   implicitly (OpenAI, Google, DeepSeek) are left untouched.
+ * - `openai.promptCacheKey` routes the session's requests to the same OpenAI
+ *   cache shard, which raises implicit-cache hit rates.
+ * Leave it unset for one-shot calls: an Anthropic cache write costs 1.25× and
+ * pays off only when a later request reads it.
  */
 export function buildProviderOptions(opts: {
   userId: string;
   workspaceId: string;
   agentId?: string;
   invocationType?: string;
+  promptCacheSessionId?: string;
 }): Record<string, any> {
+  const cacheSession = opts.promptCacheSessionId;
   return {
-    gateway: gatewayAttributionOptions({
-      userId: opts.userId,
-      workspaceId: opts.workspaceId,
-      agentId: opts.agentId,
-      invocationType: opts.invocationType ?? "chat",
-    }),
+    gateway: {
+      ...gatewayAttributionOptions({
+        userId: opts.userId,
+        workspaceId: opts.workspaceId,
+        agentId: opts.agentId,
+        invocationType: opts.invocationType ?? "chat",
+      }),
+      ...(cacheSession ? { caching: "auto" as const } : {}),
+    } satisfies GatewayOptions,
+    ...(cacheSession ? { openai: { promptCacheKey: cacheSession } } : {}),
   };
+}
+
+/** `providerOptions` carrying only an attribution. */
+export function attributionProviderOptions(
+  attribution: GatewayAttribution,
+): Record<string, any> {
+  return { gateway: gatewayAttributionOptions(attribution) };
 }
 
 /** `providerOptions` for a call made on behalf of nobody in particular. */
@@ -125,7 +214,17 @@ export function systemProviderOptions(
   invocationType: string,
   workspaceId?: string,
 ): Record<string, any> {
-  return {
-    gateway: gatewayAttributionOptions({ workspaceId, invocationType }),
-  };
+  return attributionProviderOptions({ workspaceId, invocationType });
+}
+
+/**
+ * Request headers that keep a session's requests on the same provider-side
+ * prompt cache. The Gateway forwards `x-session-affinity` to providers that
+ * support it; it never changes routing. The id must be opaque (no personal
+ * data) and stable for the conversation.
+ */
+export function buildPromptCacheHeaders(
+  sessionId: string,
+): Record<string, string> {
+  return { "x-session-affinity": sessionId };
 }

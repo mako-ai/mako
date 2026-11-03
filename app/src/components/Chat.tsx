@@ -142,12 +142,10 @@ interface ChatProps {
   >;
 }
 
-type ChatActiveView = "dashboard" | "flow-editor" | "console" | "empty";
+type ChatActiveView = "flow-editor" | "console" | "empty";
 
 function normalizeChatActiveView(kind: ConsoleTab["kind"]): ChatActiveView {
-  return kind === "dashboard" || kind === "flow-editor" || kind === "console"
-    ? kind
-    : "empty";
+  return kind === "flow-editor" || kind === "console" ? kind : "empty";
 }
 
 // Claude-style floating round button used in the mobile pane headers. Each
@@ -257,10 +255,6 @@ const Chat: React.FC<ChatProps> = ({
   // This prevents the race condition where user switches consoles while agent is thinking
   const capturedConsoleIdRef = useRef<string | null>(null);
 
-  // Ref to capture the active dashboard ID at submit time so switching tabs mid-turn
-  // doesn't cause the agent to read context from a different dashboard
-  const capturedDashboardIdRef = useRef<string | null>(null);
-
   // Session list / history menu state (fetch, delete, streaming indicator).
   // Called before useChat so onFinish can refresh the list via the ref.
   const {
@@ -309,7 +303,7 @@ const Chat: React.FC<ChatProps> = ({
   const localAcpGenerationRef = useRef(0);
   /** In-flight refresh/wake reattach to a Local Agent turn (see resume below). */
   const localAcpResumeAbortRef = useRef<AbortController | null>(null);
-  const requestLocalAcpResumeRef = useRef<(() => void) | undefined>();
+  const requestLocalAcpResumeRef = useRef<(() => void) | undefined>(undefined);
   const [localAcpBusy, setLocalAcpBusy] = useState(false);
   const localAcpBusyRef = useRef(false);
   localAcpBusyRef.current = localAcpBusy;
@@ -317,7 +311,7 @@ const Chat: React.FC<ChatProps> = ({
   // and the per-chat toolCallId dispatch dedupe gate (the triplicate-tool
   // fix). Created before useChat — its register/settle callbacks are wired
   // into onToolCall; addToolOutputRef is assigned right after useChat.
-  const addToolOutputRef = useRef<AddToolOutputFn>();
+  const addToolOutputRef = useRef<AddToolOutputFn>(undefined);
   const {
     activeClientToolCallsRef,
     toolDispatchGateRef,
@@ -341,8 +335,8 @@ const Chat: React.FC<ChatProps> = ({
   // Stream-error handling lives in useStreamResume (which needs useChat's
   // state, so it runs after useChat); useChat's onError — captured once per
   // Chat instance — delegates through this ref.
-  const onStreamErrorImplRef = useRef<(error: unknown) => void>();
-  const clearErrorRef = useRef<(() => void) | undefined>();
+  const onStreamErrorImplRef = useRef<(error: unknown) => void>(undefined);
+  const clearErrorRef = useRef<(() => void) | undefined>(undefined);
   // Single-flight resume manager (assigned after useChat — it needs stop /
   // resumeStream). ALL reattach triggers (loadSession, wake, error retry) go
   // through requestResumeRef: calling the SDK's resumeStream directly attaches
@@ -350,17 +344,19 @@ const Chat: React.FC<ChatProps> = ({
   // every consumer re-processes every chunk — the root cause of the
   // triplicated tool executions and message parts.
   const requestResumeRef =
-    useRef<(opts?: { skipReload?: boolean }) => Promise<void>>();
+    useRef<(opts?: { skipReload?: boolean }) => Promise<void>>(undefined);
   // Refetch persisted messages + reset chat state; assigned by
   // useChatSessionLoader (shares the history-load conversion logic).
   const loadPersistedMessagesRef =
-    useRef<(opts?: { forHistoryLoad?: boolean }) => Promise<boolean>>();
+    useRef<(opts?: { forHistoryLoad?: boolean }) => Promise<boolean>>(
+      undefined,
+    );
   // Client tool dispatch lives in useClientToolDispatch (which needs useChat's
   // state, so it runs after useChat); useChat's onToolCall — captured once at
   // Chat-instance creation — delegates through this ref so it always invokes
   // the latest implementation.
   const onToolCallImplRef =
-    useRef<(toolCall: DispatchableToolCall) => Promise<void>>();
+    useRef<(toolCall: DispatchableToolCall) => Promise<void>>(undefined);
   const isLoadingRef = useRef(false);
   // While a submit_plan awaits review, the composer routes sent messages to
   // the plan as request_changes feedback. Assigned below (after the
@@ -419,9 +415,6 @@ const Chat: React.FC<ChatProps> = ({
           const activeTab = tabs.find(t => t.id === store.activeTabId);
           const computedActiveView = normalizeChatActiveView(activeTab?.kind);
           const workspaceId = workspaceIdRef.current;
-          const workspaceConnectionsForRequest = workspaceId
-            ? useSchemaStore.getState().connections[workspaceId] || []
-            : [];
 
           const flowFormState = dbFlowFormRefCurrent.current?.current
             ? dbFlowFormRefCurrent.current.current.getFormState()
@@ -456,8 +449,6 @@ const Chat: React.FC<ChatProps> = ({
             activeConsoleId: activeConsoleIdRef.current,
             activeConsoleResults,
             flowFormState,
-            workspaceConnections: workspaceConnectionsForRequest,
-            pinnedDashboardId: capturedDashboardIdRef.current,
           });
 
           return {
@@ -977,6 +968,19 @@ const Chat: React.FC<ChatProps> = ({
     setIsExistingChat(false);
   };
 
+  // A screen asked for a new chat with a first message written
+  // ("Ask Mako to fix"): start one and put the message in the composer.
+  const chatDraft = useUIStore(s => s.chatDraft);
+  const [composerDraft, setComposerDraft] = useState<typeof chatDraft>(null);
+  const createNewSessionRef = useRef(createNewSession);
+  createNewSessionRef.current = createNewSession;
+  useEffect(() => {
+    if (!chatDraft) return;
+    createNewSessionRef.current();
+    setComposerDraft(chatDraft);
+    useUIStore.getState().clearChatDraft();
+  }, [chatDraft]);
+
   const handleSelectSession = (id: string) => {
     cancelActiveClientToolCalls("session-change");
     manualStopRequestedRef.current = false;
@@ -1073,8 +1077,7 @@ const Chat: React.FC<ChatProps> = ({
       if (part.state !== "input-available" && !isStreamingPlan) continue;
       return {
         toolName: (isPlan ? "submit_plan" : "ask_clarifying_questions") as
-          | "ask_clarifying_questions"
-          | "submit_plan",
+          "ask_clarifying_questions" | "submit_plan",
         toolCallId: (part.toolCallId as string) || "",
         input: part.input,
         streaming: isStreamingPlan,
@@ -1217,7 +1220,6 @@ const Chat: React.FC<ChatProps> = ({
     sendMessageRef,
     modelIdRef,
     capturedConsoleIdRef,
-    capturedDashboardIdRef,
     activeConsoleIdRef,
     pendingPlanToolCallIdRef,
     suppressNextAutoSendRef,
@@ -1652,6 +1654,7 @@ const Chat: React.FC<ChatProps> = ({
         editingPrompt={editingPrompt}
         onCancelEdit={handleCancelEditQueuedPrompt}
         planFeedbackMode={isPlanAwaitingFeedback}
+        draft={composerDraft}
       />
 
       <Snackbar

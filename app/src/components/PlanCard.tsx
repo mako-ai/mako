@@ -157,7 +157,13 @@ export const PlanCard: React.FC<PlanCardProps> = ({
         "&:hover": { backgroundColor: "var(--bui-hover)" },
       }}
     >
-      <Stack direction="row" spacing={1} alignItems="center">
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={{
+          alignItems: "center",
+        }}
+      >
         {isStreaming ? (
           <CircularProgress size={15} thickness={5} />
         ) : (

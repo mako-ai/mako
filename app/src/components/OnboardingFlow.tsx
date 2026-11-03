@@ -403,8 +403,11 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
         <Typography
           variant="body2"
-          color="text.secondary"
-          sx={{ mt: 3, textAlign: "center" }}
+          sx={{
+            color: "text.secondary",
+            mt: 3,
+            textAlign: "center",
+          }}
         >
           You can also{" "}
           <Button
@@ -450,9 +453,13 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
           <Box sx={{ mb: 3 }}>
             <Typography
               variant="subtitle2"
-              fontWeight={600}
-              color="text.secondary"
-              sx={{ mb: 2, textTransform: "uppercase", letterSpacing: 0.5 }}
+              sx={{
+                fontWeight: 600,
+                color: "text.secondary",
+                mb: 2,
+                textTransform: "uppercase",
+                letterSpacing: 0.5,
+              }}
             >
               Pending Invitations
             </Typography>
@@ -493,9 +500,13 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
           <Typography
             variant="subtitle2"
-            fontWeight={600}
-            color="text.secondary"
-            sx={{ mb: 2, textTransform: "uppercase", letterSpacing: 0.5 }}
+            sx={{
+              fontWeight: 600,
+              color: "text.secondary",
+              mb: 2,
+              textTransform: "uppercase",
+              letterSpacing: 0.5,
+            }}
           >
             Or create new
           </Typography>
@@ -510,10 +521,6 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
           placeholder="e.g., Acme Corp, Engineering Team, Personal"
           value={workspaceName}
           onChange={e => setWorkspaceName(e.target.value)}
-          // Mirrors the API's WORKSPACE_NAME_MAX: a name is a label, not a
-          // document — unbounded input here is how pasted prompts became
-          // workspace names.
-          inputProps={{ maxLength: 80 }}
           disabled={state === "creating" || acceptingToken !== null}
           onKeyDown={e => {
             if (e.key === "Enter" && workspaceName.trim()) {
@@ -522,13 +529,19 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
           }}
           autoFocus={!hasInvites}
           helperText="A short label for your team or company — you can change it later"
+          slotProps={{
+            // Mirrors the API's WORKSPACE_NAME_MAX: a name is a label, not a
+            // document — unbounded input here is how pasted prompts became
+            // workspace names.
+            htmlInput: { maxLength: 80 },
+          }}
         />
         <TextField
           fullWidth
           multiline
           minRows={2}
           label="What do you want to build? (optional)"
-          placeholder="e.g., A dashboard of weekly sales by region from our Postgres"
+          placeholder="e.g., An app showing weekly sales by region from our Postgres"
           value={buildIntent}
           onChange={e => setBuildIntent(e.target.value)}
           disabled={state === "creating" || acceptingToken !== null}

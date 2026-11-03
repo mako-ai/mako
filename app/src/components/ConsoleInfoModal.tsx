@@ -172,7 +172,13 @@ export default function ConsoleInfoModal({
       <DialogContent sx={{ pt: 1 }}>
         <Stack spacing={2}>
           <Box>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+                mb: 0.5,
+              }}
+            >
               Console ID
             </Typography>
             <MonospaceField
@@ -182,7 +188,13 @@ export default function ConsoleInfoModal({
           </Box>
 
           <Box>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+                mb: 0.5,
+              }}
+            >
               Workspace ID
             </Typography>
             <MonospaceField
@@ -197,7 +209,13 @@ export default function ConsoleInfoModal({
           </Box>
 
           <Box>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+                mb: 0.5,
+              }}
+            >
               Description
             </Typography>
             {loadingDetails ? (
@@ -217,7 +235,13 @@ export default function ConsoleInfoModal({
           </Box>
 
           <Box>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+                mb: 0.5,
+              }}
+            >
               Created by
             </Typography>
             {loadingDetails ? (
@@ -233,8 +257,10 @@ export default function ConsoleInfoModal({
             <Box>
               <Typography
                 variant="body2"
-                color="text.secondary"
-                sx={{ mb: 0.5 }}
+                sx={{
+                  color: "text.secondary",
+                  mb: 0.5,
+                }}
               >
                 Access
               </Typography>
@@ -247,7 +273,13 @@ export default function ConsoleInfoModal({
           )}
 
           <Box>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+                mb: 0.5,
+              }}
+            >
               API Endpoint
             </Typography>
             <MonospaceField
@@ -257,7 +289,13 @@ export default function ConsoleInfoModal({
           </Box>
 
           <Box>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+                mb: 1,
+              }}
+            >
               Recent executions
             </Typography>
             {loadingExecutions ? (
@@ -267,7 +305,12 @@ export default function ConsoleInfoModal({
                 <Skeleton variant="rounded" height={28} />
               </Stack>
             ) : executions.length === 0 ? (
-              <Typography variant="body2" color="text.disabled">
+              <Typography
+                variant="body2"
+                sx={{
+                  color: "text.disabled",
+                }}
+              >
                 No executions recorded in the last 90 days.
               </Typography>
             ) : (

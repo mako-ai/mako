@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 import { setCookie } from "hono/cookie";
 import type { Context } from "hono";
 import { Session, User, ISession, IUser } from "../database/schema";
@@ -87,7 +87,7 @@ export interface SessionCookie {
  * Generate a unique session ID
  */
 function generateSessionId(): string {
-  return uuidv4().replace(/-/g, "") + uuidv4().replace(/-/g, "");
+  return randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
 }
 
 /**
@@ -304,9 +304,7 @@ export function writeSessionCookie(c: Context, sessionId: string): void {
     ...cookie.attributes,
     sameSite: sameSite
       ? ((sameSite.charAt(0).toUpperCase() + sameSite.slice(1)) as
-          | "Strict"
-          | "Lax"
-          | "None")
+          "Strict" | "Lax" | "None")
       : undefined,
   });
 }

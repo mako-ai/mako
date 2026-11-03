@@ -1,9 +1,9 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { setCookie, getCookie } from "hono/cookie";
-import { generateState, generateCodeVerifier } from "arctic";
+import { generateState, generateCodeVerifier } from "./oauth-client";
 import { sessionManager } from "./session";
-import { getGoogle, getGitHub, isOAuthDisabled } from "./arctic";
+import { getGoogle, getGitHub, isOAuthDisabled } from "./oauth-providers";
 import { AuthService } from "./auth.service";
 import { authMiddleware, rateLimitMiddleware } from "./auth.middleware";
 import { isSuperAdminEmail } from "./super-admin";

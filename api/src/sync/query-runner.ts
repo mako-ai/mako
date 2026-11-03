@@ -6,7 +6,7 @@ import { DatabaseConnection } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { loggers } from "../logging";
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const logger = loggers.sync("query-runner");
 
@@ -89,7 +89,9 @@ class QueryRunner {
         const cleanedQuery = queryContent.replace(/\/\/.*$/gm, "").trim();
         pipeline = JSON.parse(cleanedQuery);
       } catch (parseError) {
-        throw new Error(`Failed to parse query JSON: ${parseError}`);
+        throw new Error(`Failed to parse query JSON: ${parseError}`, {
+          cause: parseError,
+        });
       }
 
       // Ensure pipeline is an array

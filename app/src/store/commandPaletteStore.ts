@@ -3,7 +3,7 @@
  *
  * Owns the palette open/closed state and the server-backed console search
  * (network calls live in stores per the frontend guidelines). Everything
- * else the palette shows (open tabs, dashboards, apps, ...) is read from
+ * else the palette shows (open tabs, consoles, apps, ...) is read from
  * the owning domain stores at render time.
  */
 
@@ -97,7 +97,7 @@ export const useCommandPaletteStore = create<CommandPaletteStore>()(
           state.consoleResults = res.results ?? [];
           state.searching = false;
         });
-      } catch (err) {
+      } catch {
         if (controller.signal.aborted) return;
         // Search is best-effort UI sugar; swallow errors and show nothing.
         set(state => {

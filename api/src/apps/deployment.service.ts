@@ -13,7 +13,7 @@
  * repoint (ensureDeploymentBindings), so an old sha never brings old numbers
  * back with it.
  *
- * Deployments live in the same artifact store as dashboards and bindings (GCS
+ * Deployments live in the same artifact store as bindings (GCS
  * in deployed environments), so they survive API restarts and are shared
  * across instances — unlike the developer preview, whose token lives in one
  * process's memory for thirty minutes.
@@ -27,10 +27,19 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import {
   getArtifactSourceStore,
-  getDashboardArtifactStore,
-  type DashboardArtifactStore,
-} from "../services/dashboard-artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+  getArtifactStore,
+  type ArtifactStore,
+} from "../services/artifact-store.service";
+import {
+  serveJsonArtifact,
+  serveParquetArtifact,
+} from "../services/artifact-delivery.service";
+import { snapshotArtifactKey } from "../services/binding-snapshot";
+import {
+  bindingProgressResponse,
+  parquetLinkOutcome,
+  serverTimingHeader,
+} from "./binding-progress";
 import {
   bindingArtifactKey,
   bindingArtifactKeyByName,
@@ -50,6 +59,11 @@ import {
 } from "./worktree.service";
 import { readBoxDir } from "./box";
 import { resolveAppEnv } from "./env.service";
+import {
+  INSTALL_IS_FRESH,
+  installCommand,
+  updateMakoPackagesCommand,
+} from "./package-manager";
 
 const logger = loggers.api("apps-deployment");
 
@@ -78,15 +92,15 @@ export function legacyDeploymentKey(
 }
 
 interface StoredDeploymentAsset {
-  store: DashboardArtifactStore;
+  store: ArtifactStore;
   key: string;
 }
 
 /** The writable store first, then the optional read-only canonical source. */
-async function artifactStoreForRead(
+export async function artifactStoreForRead(
   key: string,
-): Promise<DashboardArtifactStore | null> {
-  const primary = getDashboardArtifactStore();
+): Promise<ArtifactStore | null> {
+  const primary = getArtifactStore();
   if (await primary.exists(key)) return primary;
   const source = getArtifactSourceStore();
   if (source && (await source.exists(key))) return source;
@@ -179,7 +193,7 @@ export async function uploadDeployment(
   distDir: string,
 ): Promise<PublishResult> {
   const projectId = project._id.toString();
-  const store = getDashboardArtifactStore();
+  const store = getArtifactStore();
 
   // index.html is the marker: if it is already there, this sha is deployed.
   if (await deploymentExists(projectId, sha)) {
@@ -323,7 +337,7 @@ export interface DeploymentBindingReadiness {
  * it from the run it recorded at `builtAt`.
  */
 async function isBindingArtifactCurrent(
-  store: DashboardArtifactStore,
+  store: ArtifactStore,
   key: string,
   binding: AppBinding,
   context: { projectId: string; sha: string; now: Date },
@@ -370,6 +384,87 @@ async function isBindingArtifactCurrent(
     reason: builtAt ? "overdue" : "unknown-build-time",
   });
   return false;
+}
+
+/**
+ * A deployment's binding index: every binding's artifact key by name, as of
+ * the deployment commit. Written once when the deployment's bindings are made
+ * ready, next to its build.
+ *
+ * Serving reads it instead of the repository. Without it, each
+ * `__data/<name>.parquet` request resolves the key by reading
+ * `bindings/<name>.sql` at the deployed sha, and on an instance that has
+ * never seen that commit this means first cloning or fetching the workspace
+ * repository: tens of seconds before the first table of a freshly published
+ * app, or one opened on a new instance, even starts to download. The keys of
+ * a deployment never change (it is immutable, its artifacts are
+ * content-addressed), so the index is also cached for the life of the process.
+ */
+export const DEPLOYMENT_BINDING_INDEX = "__data/bindings.json";
+
+async function writeDeploymentBindingIndex(
+  projectId: string,
+  sha: string,
+  bindings: AppBinding[],
+): Promise<void> {
+  const keys = Object.fromEntries(
+    bindings.map(binding => [binding.name, bindingArtifactKey(binding)]),
+  );
+  try {
+    await getArtifactStore().putBuffer(
+      Buffer.from(JSON.stringify(keys)),
+      deploymentKey(projectId, sha, DEPLOYMENT_BINDING_INDEX),
+      "application/json",
+    );
+    bindingIndexCache.set(`${projectId}:${sha}`, keys);
+  } catch (error) {
+    // Serving falls back to reading the bindings from the repository.
+    logger.warn("Apps deployment binding index not written", {
+      projectId,
+      sha,
+      error,
+    });
+  }
+}
+
+/** Positive results only: an index written later (a rollback) must be seen. */
+const bindingIndexCache = new Map<string, Record<string, string>>();
+const BINDING_INDEX_CACHE_SIZE = 500;
+
+/** The deployment's binding keys by name, or null when it predates the index. */
+async function deploymentBindingIndex(
+  projectId: string,
+  sha: string,
+): Promise<Record<string, string> | null> {
+  const cacheKey = `${projectId}:${sha}`;
+  const cached = bindingIndexCache.get(cacheKey);
+  if (cached) return cached;
+  const asset = await existingDeploymentAsset(
+    projectId,
+    sha,
+    DEPLOYMENT_BINDING_INDEX,
+  );
+  const stream = asset ? await asset.store.openReadStream(asset.key) : null;
+  if (!stream) return null;
+  let keys: Record<string, string>;
+  try {
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    keys = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch (error) {
+    logger.warn("Apps deployment binding index unreadable", {
+      projectId,
+      sha,
+      error,
+    });
+    return null;
+  }
+  if (bindingIndexCache.size >= BINDING_INDEX_CACHE_SIZE) {
+    const oldest = bindingIndexCache.keys().next().value;
+    if (oldest !== undefined) bindingIndexCache.delete(oldest);
+  }
+  bindingIndexCache.set(cacheKey, keys);
+  return keys;
 }
 
 /**
@@ -446,6 +541,8 @@ export async function ensureDeploymentBindings(
     readiness.materialized.push(binding.name);
   }
 
+  await writeDeploymentBindingIndex(projectId, sha, bindings);
+
   logger.info("Apps deployment bindings ready", {
     projectId,
     sha,
@@ -481,18 +578,53 @@ export async function readDeploymentAsset(
   if (!path.extname(clean)) candidates.push("index.html");
 
   for (const candidate of candidates) {
-    const stored = await existingDeploymentAsset(projectId, sha, candidate);
-    if (!stored) continue;
-    const stream = await stored.store.openReadStream(stored.key);
-    if (stream) {
+    const opened = await openDeploymentAsset(projectId, sha, candidate);
+    if (opened) {
       return {
-        stream,
+        stream: opened.stream,
         contentType: contentTypeFor(candidate),
-        size: await stored.store.getSize(stored.key),
+        size: opened.size,
       };
     }
   }
   return null;
+}
+
+/**
+ * Open one deployment file, searching the same keys and stores in the same
+ * order as existingDeploymentAsset — but as ONE store call per place looked,
+ * not three. On GCS the old exists() + openReadStream()'s own exists() +
+ * getSize() were three sequential metadata round trips before the first byte
+ * of every JS, CSS and HTML file of a published app.
+ */
+async function openDeploymentAsset(
+  projectId: string,
+  sha: string,
+  assetPath: string,
+): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null> {
+  const source = getArtifactSourceStore();
+  const stores = source ? [getArtifactStore(), source] : [getArtifactStore()];
+  for (const key of [
+    deploymentKey(projectId, sha, assetPath),
+    legacyDeploymentKey(projectId, sha, assetPath),
+  ]) {
+    for (const store of stores) {
+      const opened = await openStoredFile(store, key);
+      if (opened) return opened;
+    }
+  }
+  return null;
+}
+
+async function openStoredFile(
+  store: ArtifactStore,
+  key: string,
+): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null> {
+  if (store.openRead) return await store.openRead(key);
+  if (!(await store.exists(key))) return null;
+  const stream = await store.openReadStream(key);
+  if (!stream) return null;
+  return { stream, size: await store.getSize(key) };
 }
 
 /**
@@ -519,6 +651,46 @@ export function buildLogPath(handle: WorktreeHandle): string {
   return `/tmp/mako-build-${handleProject(handle)._id.toString()}.log`;
 }
 
+/** Percent of the box disk in use above which the publish box prunes. */
+const PUBLISH_DISK_PRUNE_PERCENT = 80;
+
+/**
+ * Keep the publish box from filling its disk.
+ *
+ * The publish box builds every app in the workspace and keeps each one's
+ * `node_modules` and `dist` so the next publish can skip the install. Nothing
+ * ever removed them, so a workspace with several apps ended in "No space left
+ * on device". Pruning only when the disk is nearly full keeps normal publishes
+ * fast; it is safe because this box is write-free and `main` is the source of
+ * truth — a pruned app just reinstalls on its next publish.
+ *
+ * Only the publish box: a user's box holds their running dev servers, and
+ * deleting a sibling app's `node_modules` would break them.
+ */
+async function prunePublishBoxIfFull(
+  handle: WorktreeHandle,
+  exec: Parameters<typeof buildApp>[1],
+): Promise<void> {
+  if (handle.doc.userId !== PUBLISH_ACTOR) return;
+  const script = [
+    // Other apps = every node_modules/dist in the repo except this app's own.
+    `top="$(git rev-parse --show-toplevel)"; here="$(pwd -P)"`,
+    `used="$(df -P "$top" | awk 'NR==2 { gsub("%","",$5); print $5 }')"`,
+    `[ "\${used:-0}" -ge ${PUBLISH_DISK_PRUNE_PERCENT} ] || exit 0`,
+    `find "$top" -maxdepth 4 -type d \\( -name node_modules -o -name dist \\) -prune ! -path "$here/*" ! -path "$top/.git/*" -exec rm -rf {} + 2>/dev/null`,
+    `rm -rf "$HOME/.npm/_cacache" "$HOME/.cache" /tmp/mako-build-*.log 2>/dev/null`,
+    `echo pruned`,
+  ].join("\n");
+  const result = await exec(handle, script, { timeoutMs: 60_000 }).catch(
+    () => undefined,
+  );
+  if (result?.stdout.includes("pruned")) {
+    logger.warn("Publish box disk nearly full; pruned other apps' builds", {
+      workspaceId: handle.doc.workspaceId.toString(),
+    });
+  }
+}
+
 export async function buildApp(
   handle: WorktreeHandle,
   exec: (
@@ -527,6 +699,7 @@ export async function buildApp(
     options: { timeoutMs: number; env?: Record<string, string> },
   ) => Promise<{ exitCode: number; stdout: string; stderr: string }>,
 ): Promise<{ ok: boolean; output: string }> {
+  await prunePublishBoxIfFull(handle, exec);
   const log = buildLogPath(handle);
   // The app's NON-SECRET env vars (env.service): `vite build` inlines the
   // `VITE_*` ones into the bundle — which is the point, that class of key is
@@ -541,24 +714,31 @@ export async function buildApp(
   );
   const install = await exec(
     handle,
-    // `--loglevel=http` so the install streams progress into the log (npm is
-    // near-silent when its stdout is a pipe), and `--foreground-scripts` so
-    // lifecycle-script output shows too — the client is watching this live.
+    // npm or pnpm, as the app's own lockfile says (package-manager.ts), in
+    // its verbose form — the client is watching this log live.
     //
     // Freshness via OUR stamp, written only after a SUCCESSFUL install: npm
     // writes .package-lock.json early during reify, so a killed install left
     // a "fresh" stamp over a half-written tree (no vite binary) and every
     // later publish skipped the install forever. Stamp-after-success plus
     // rm -rf on miss makes the tree either complete or absent.
-    `set -o pipefail; ( [ node_modules/.mako-installed -nt package.json ] || (rm -rf node_modules && npm install --no-audit --no-fund --loglevel=http --foreground-scripts && touch node_modules/.mako-installed) ) 2>&1 | tee -a ${log}`,
+    `set -o pipefail; ( ${INSTALL_IS_FRESH} || (rm -rf node_modules && ${installCommand({ verbose: true })} && touch node_modules/.mako-installed) ) 2>&1 | tee -a ${log}`,
     { timeoutMs: 300_000 },
   );
   if (install.exitCode !== 0) {
     return {
       ok: false,
-      output: `npm install failed\n${(install.stdout + install.stderr).slice(-4000)}`,
+      output: `dependency install failed\n${(install.stdout + install.stderr).slice(-4000)}`,
     };
   }
+  // Newest @makoai/* inside the app's declared range, on every build — also
+  // when node_modules was fresh, or a published SDK fix would wait for the
+  // app's next dependency change. Never fails the build (see the command).
+  await exec(
+    handle,
+    `set -o pipefail; ( ${updateMakoPackagesCommand()} ) 2>&1 | tee -a ${log}`,
+    { timeoutMs: 120_000 },
+  ).catch(() => undefined);
   const build = await exec(
     handle,
     `set -o pipefail; npm run build -- --base=./ 2>&1 | tee -a ${log}`,
@@ -606,7 +786,8 @@ export async function deployBuild(
 
 /**
  * Serve one file of a published app: a build asset, or a materialized data
- * binding at `__data/<name>.parquet`.
+ * binding at `__data/<name>.parquet` (and its instant-open sibling
+ * `__data/<name>.snapshot.json`).
  *
  * The only difference between the signed-in viewer and an anonymous share is
  * WHO is allowed to call it; what gets served is identical — except
@@ -627,9 +808,32 @@ export async function serveDeploymentFile(input: {
    * nobody known (anonymous share, a token minted before viewers existed).
    */
   viewer?: ViewerIdentity | null;
+  /**
+   * The client asked for phase events (`Accept: application/x-ndjson`):
+   * answer a `__data/<name>.parquet` with resolving → signing → ready + the
+   * signed URL instead of a 302 (binding-progress.ts).
+   */
+  progress?: boolean;
+  /**
+   * Epoch ms until which this URL's answer cannot change (app-origin.ts).
+   * A deployment is immutable at its sha, so when the URL itself names the
+   * sha and expires (a stable view token on an app's own origin), every
+   * file except `viewer.json` may be cached until then.
+   */
+  immutableUntil?: number;
+  /** Stable signed parquet redirects; see serveParquetArtifact. */
+  stableData?: { windowMs: number };
 }): Promise<Response | null> {
   const { projectId, sha, assetPath } = input;
-  const cache = input.private ? "private, no-cache" : "no-cache";
+  const immutableFor = input.immutableUntil
+    ? Math.floor((input.immutableUntil - Date.now()) / 1000)
+    : 0;
+  const cache =
+    immutableFor > 0
+      ? `private, max-age=${immutableFor}, immutable`
+      : input.private
+        ? "private, no-cache"
+        : "no-cache";
 
   // Who the app is talking to — the SDK's useViewer(). Two small reads
   // (workspace, membership), only on this one request, never per asset.
@@ -651,13 +855,18 @@ export async function serveDeploymentFile(input: {
   // dev server writes this file next to its staged parquet; published serving
   // derives it from the repo's bindings so published apps get tables too.
   if (assetPath === "__data/index.json") {
-    const project = await AppProject.findById(projectId);
+    const index = await deploymentBindingIndex(projectId, sha);
+    const project = index ? null : await AppProject.findById(projectId);
     // AT the deployed commit — see readSource's `at`. Tolerant, like the
     // per-binding data path: a malformed neighbour must not 500 the table
     // index that every healthy binding's registration depends on.
-    const names = project
-      ? (await readBindingsTolerant(project, "", sha)).bindings.map(b => b.name)
-      : [];
+    const names = index
+      ? Object.keys(index)
+      : project
+        ? (await readBindingsTolerant(project, "", sha)).bindings.map(
+            b => b.name,
+          )
+        : [];
     return new Response(JSON.stringify(names), {
       status: 200,
       headers: { "Content-Type": "application/json", "Cache-Control": cache },
@@ -665,7 +874,7 @@ export async function serveDeploymentFile(input: {
   }
 
   const dataMatch = assetPath.match(
-    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
+    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.(parquet|snapshot\.json)$/,
   );
   if (dataMatch) {
     // Resolve by name through the binding's DEFINITION, exactly as the
@@ -673,17 +882,62 @@ export async function serveDeploymentFile(input: {
     // `apps/bindings/<connectionId>/<definitionHash>.parquet`. The old
     // `apps/<projectId>/<name>.parquet` key here was a scheme nothing
     // writes: published apps could never see their data (§13.19).
-    const project = await AppProject.findById(projectId);
-    const key = project
-      ? await bindingArtifactKeyByName(project, dataMatch[1], "", sha)
-      : null;
-    if (!key) return null;
-    const store = await artifactStoreForRead(key);
-    if (!store) return null;
-    return await serveParquetArtifact(store, key, {
+    // The deployment's binding index when it has one (no repository read);
+    // a name it does not list is no healthy binding at this commit.
+    if (dataMatch[2] === "snapshot.json") {
+      // Only through the index: a snapshot is an optional preview, and the
+      // 404 for an artifact without one must cost no repository read.
+      const index = await deploymentBindingIndex(projectId, sha);
+      const parquetKey =
+        index && Object.hasOwn(index, dataMatch[1])
+          ? index[dataMatch[1]]
+          : null;
+      if (!parquetKey) return null;
+      const snapshotKey = snapshotArtifactKey(parquetKey);
+      const store = await artifactStoreForRead(snapshotKey);
+      if (!store) return null;
+      return await serveJsonArtifact(store, snapshotKey, {
+        cacheControl: input.private ? "private, no-store" : "no-store",
+      });
+    }
+    const resolve = async () => {
+      const index = await deploymentBindingIndex(projectId, sha);
+      const project = index ? null : await AppProject.findById(projectId);
+      const key = index
+        ? Object.hasOwn(index, dataMatch[1])
+          ? index[dataMatch[1]]
+          : null
+        : project
+          ? await bindingArtifactKeyByName(project, dataMatch[1], "", sha)
+          : null;
+      if (!key) return null;
+      const store = await artifactStoreForRead(key);
+      return store ? { store, key } : null;
+    };
+    if (input.progress) {
+      // The SDK (>= 2.7.4) takes its parquet URL from these events, so a
+      // stable window must reach the signing here too, or an app on its own
+      // origin would get a fresh URL (a cache miss) on every open.
+      return bindingProgressResponse(() =>
+        parquetLinkOutcome(dataMatch[1], resolve, input.stableData),
+      );
+    }
+    const resolveStart = Date.now();
+    const target = await resolve();
+    if (!target) return null;
+    return await serveParquetArtifact(target.store, target.key, {
       cacheControl: input.private ? "private, no-store" : "no-store",
+      extraHeaders: {
+        "Server-Timing": serverTimingHeader({
+          resolve: Date.now() - resolveStart,
+        }),
+      },
+      ...(input.stableData ? { stable: input.stableData } : {}),
     });
   }
+
+  // Serving's own index, not part of the build: binding keys stay internal.
+  if (assetPath === DEPLOYMENT_BINDING_INDEX) return null;
 
   const asset = await readDeploymentAsset(projectId, sha, assetPath);
   if (!asset) return null;

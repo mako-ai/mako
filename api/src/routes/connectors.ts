@@ -358,7 +358,7 @@ connectorRoutes.openapi(
           );
           const icon = files.get("icon.svg");
           if (icon) {
-            return c.body(icon, 200, {
+            return c.body(new Uint8Array(icon), 200, {
               "Content-Type": "image/svg+xml",
               "Cache-Control": "private, no-store",
               "Content-Security-Policy":

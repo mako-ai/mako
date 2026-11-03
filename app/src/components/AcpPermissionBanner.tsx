@@ -66,7 +66,14 @@ export function AcpPermissionBanner() {
         zIndex: 2,
       }}
       action={
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+        <Stack
+          direction="row"
+          spacing={1}
+          useFlexGap
+          sx={{
+            flexWrap: "wrap",
+          }}
+        >
           {prompt.options.map(opt => (
             <Button
               key={opt.optionId}

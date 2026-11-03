@@ -9,6 +9,7 @@ import {
 } from "../database/mcp-oauth-schema";
 import {
   ACP_MCP_CLIENT_ID,
+  MCP_OAUTH_SCOPES,
   createAuthorizationCode,
   exchangeAuthorizationCode,
   listMcpConnections,
@@ -94,7 +95,6 @@ it.each(["Mako CLI", "External MCP client"])(
     expect(await validateMcpAccessToken(renewed.accessToken)).toMatchObject({
       userId: "user",
       workspaceId: "workspace",
-      scopes: ["mcp", "query:read"],
     });
     const stored = await McpOAuthToken.findOne({
       clientId: grant.clientId,
@@ -246,4 +246,40 @@ it("refreshing a live legacy grant upgrades it without requiring migration first
       }).lean()
     )?.refreshExpiresAt,
   ).toBeUndefined();
+});
+
+it("refresh widens a grant made before a scope existed to today's MCP scopes", async () => {
+  const grant = await authorize();
+  // A grant from before `workflows:run` and `connections:write` existed.
+  await McpOAuthToken.updateOne(
+    { refreshTokenHash: hash(grant.refreshToken) },
+    { $set: { scopes: ["mcp", "query:read", "warehouse:write"] } },
+  );
+  const renewed = await refreshAccessToken({
+    clientId: grant.clientId,
+    refreshToken: grant.refreshToken,
+  });
+  expect([...renewed.scopes].sort()).toEqual([...MCP_OAUTH_SCOPES].sort());
+  const validated = await validateMcpAccessToken(renewed.accessToken);
+  expect(validated?.scopes).toContain("workflows:run");
+  expect(validated?.scopes).not.toContain("workflows:runtime");
+  const stored = await McpOAuthToken.findOne({
+    refreshTokenHash: hash(renewed.refreshToken),
+  }).lean();
+  expect([...(stored?.scopes ?? [])].sort()).toEqual(
+    [...MCP_OAUTH_SCOPES].sort(),
+  );
+});
+
+it("refresh never adds or keeps internal scopes", async () => {
+  const grant = await authorize();
+  await McpOAuthToken.updateOne(
+    { refreshTokenHash: hash(grant.refreshToken) },
+    { $set: { scopes: ["mcp", "workflows:runtime"] } },
+  );
+  const renewed = await refreshAccessToken({
+    clientId: grant.clientId,
+    refreshToken: grant.refreshToken,
+  });
+  expect(renewed.scopes).not.toContain("workflows:runtime");
 });

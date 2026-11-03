@@ -122,7 +122,13 @@ export function McpAgentConnectCard({
       <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
         Connect an AI agent (MCP)
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+      <Typography
+        variant="body2"
+        sx={{
+          color: "text.secondary",
+          mb: 1.5,
+        }}
+      >
         No API key needed — your agent signs in with your Mako account and you
         pick which workspace it can read.{" "}
         <a
@@ -155,7 +161,13 @@ export function McpAgentConnectCard({
           <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
             1 · Copy the Mako MCP URL
           </Typography>
-          <Stack direction="row" alignItems="center" spacing={0.5}>
+          <Stack
+            direction="row"
+            spacing={0.5}
+            sx={{
+              alignItems: "center",
+            }}
+          >
             <Box
               component="code"
               sx={{
@@ -187,7 +199,13 @@ export function McpAgentConnectCard({
           <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
             2 · Add it to {active.client}
           </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+              mb: 1,
+            }}
+          >
             {active.instruction}
           </Typography>
           {active.deeplink && (
@@ -251,11 +269,23 @@ export function McpAgentConnectCard({
           <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
             3 · Sign in and ask it something
           </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              color: "text.secondary",
+              mb: 1,
+            }}
+          >
             Your browser opens once to approve read-only access for a workspace.
             Then:
           </Typography>
-          <Stack direction="row" alignItems="flex-start" spacing={0.5}>
+          <Stack
+            direction="row"
+            spacing={0.5}
+            sx={{
+              alignItems: "flex-start",
+            }}
+          >
             <Box
               sx={{
                 flex: 1,
@@ -375,7 +405,13 @@ export function McpConnectedAgents({
       <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
         Connected agents
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+      <Typography
+        variant="body2"
+        sx={{
+          color: "text.secondary",
+          mb: 1.5,
+        }}
+      >
         {canSeeAll
           ? "Every agent connected to this workspace via MCP sign-in. Disconnecting revokes its access immediately."
           : "Agents you connected to this workspace via MCP sign-in. Disconnecting revokes their access immediately."}
@@ -413,7 +449,13 @@ export function McpConnectedAgents({
               {(connections ?? []).map(connection => (
                 <TableRow key={`${connection.clientId}:${connection.userId}`}>
                   <TableCell>
-                    <Stack direction="row" alignItems="center" spacing={1}>
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      sx={{
+                        alignItems: "center",
+                      }}
+                    >
                       <Typography variant="body2" sx={{ fontWeight: 500 }}>
                         {connection.clientName}
                       </Typography>
@@ -422,19 +464,34 @@ export function McpConnectedAgents({
                   </TableCell>
                   {canSeeAll && (
                     <TableCell>
-                      <Typography variant="body2" color="text.secondary">
+                      <Typography
+                        variant="body2"
+                        sx={{
+                          color: "text.secondary",
+                        }}
+                      >
                         {connection.userEmail || "—"}
                         {connection.isOwn ? " (you)" : ""}
                       </Typography>
                     </TableCell>
                   )}
                   <TableCell>
-                    <Typography variant="body2" color="text.secondary">
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        color: "text.secondary",
+                      }}
+                    >
                       {formatRelativeTime(connection.connectedAt)}
                     </Typography>
                   </TableCell>
                   <TableCell>
-                    <Typography variant="body2" color="text.secondary">
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        color: "text.secondary",
+                      }}
+                    >
                       {connection.lastUsedAt
                         ? formatRelativeTime(connection.lastUsedAt)
                         : "Never"}

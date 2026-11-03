@@ -292,7 +292,7 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
             },
             $setOnInsert: { createdBy: user.id },
           },
-          { upsert: true, new: true, setDefaultsOnInsert: true },
+          { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
         );
       }
       logger.info("GitHub installations synced from user authorization", {
@@ -370,7 +370,7 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
         },
         $setOnInsert: { createdBy: user.id },
       },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
+      { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
     );
     // GitHub allows at most one live installation of this App per account, so
     // any other record for the same workspace + account is provably stale —

@@ -14,6 +14,7 @@
  */
 import { randomUUID } from "crypto";
 import { Redis } from "ioredis";
+import { BASE_REDIS_OPTIONS } from "../utils/redis";
 
 import { loggers } from "../logging";
 import type { KernelEndpoint } from "./kernel-provider";
@@ -197,7 +198,10 @@ export function getSessionStore(): SessionStore {
   if (cached) return cached;
   const url = process.env.REDIS_URL;
   if (url) {
-    const redis = new Redis(url, { maxRetriesPerRequest: null });
+    const redis = new Redis(url, {
+      ...BASE_REDIS_OPTIONS,
+      maxRetriesPerRequest: null,
+    });
     redis.on("error", error =>
       logger.warn("kernel session store Redis error", { error }),
     );

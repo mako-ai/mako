@@ -1,5 +1,5 @@
 import { useState, FormEvent, useEffect } from "react";
-import { useSearchParams, useNavigate } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router";
 import {
   Box,
   TextField,
@@ -163,8 +163,12 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
           </Button>
           <Typography
             variant="caption"
-            color="text.secondary"
-            sx={{ display: "block", mt: 1.5, lineHeight: 1.5 }}
+            sx={{
+              color: "text.secondary",
+              display: "block",
+              mt: 1.5,
+              lineHeight: 1.5,
+            }}
           >
             For your security, Mako Desktop creates your account through your
             web browser, where you can check the address bar and use your
@@ -301,22 +305,41 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
 
       <Typography
         variant="caption"
-        color="text.secondary"
-        sx={{ display: "block", mt: 2, lineHeight: 1.5 }}
+        sx={{
+          color: "text.secondary",
+          display: "block",
+          mt: 2,
+          lineHeight: 1.5,
+        }}
       >
         By creating an account you agree to the{" "}
-        <Link href="#" color="text.secondary">
+        <Link
+          href="#"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           Terms of Service
         </Link>{" "}
         and our{" "}
-        <Link href="#" color="text.secondary">
+        <Link
+          href="#"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           Privacy Policy
         </Link>
         .
       </Typography>
 
       <Box sx={{ textAlign: "center", mt: 4 }}>
-        <Typography variant="body2" color="text.secondary">
+        <Typography
+          variant="body2"
+          sx={{
+            color: "text.secondary",
+          }}
+        >
           Already have an account?{" "}
           <Link
             component="button"

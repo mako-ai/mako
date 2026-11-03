@@ -6,8 +6,9 @@ import {
   WebhookEvent,
   SourceConnection,
 } from "../database/workspace-schema";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 import { connectorRegistry } from "../connectors/registry";
+import { isWebhookFlow } from "../services/flow-triggers.service";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { enrichContextWithWorkspace, loggers } from "../logging";
@@ -90,13 +91,14 @@ router.openapi(
     const query = c.req.query();
 
     try {
+      // By id alone: any flow whose webhook trigger is on takes deliveries,
+      // whatever its `type` (isWebhookFlow).
       const flow = await Flow.findOne({
         _id: flowId,
         workspaceId: workspaceId,
-        type: "webhook",
       });
 
-      if (!flow) {
+      if (!flow || !isWebhookFlow(flow)) {
         logger.warn("Webhook received for invalid flow", { flowId });
         return c.json({ error: "Invalid webhook endpoint" }, 404);
       }
@@ -159,7 +161,7 @@ router.openapi(
         // stable across updates. Falling back to it would defeat the
         // (flowId,eventId) unique index for vendor retries. Prefer the nested
         // event id, then top-level, then a random id as a last resort.
-        eventId: event.id || event.event?.id || uuidv4(),
+        eventId: event.id || event.event?.id || randomUUID(),
         eventType:
           event.type ||
           event.event_type ||
@@ -234,16 +236,15 @@ router.openapi(
       const flow = await Flow.findOne({
         _id: flowId,
         workspaceId: workspaceId,
-        type: "webhook",
       });
 
-      if (!flow) {
+      if (!flow || !isWebhookFlow(flow)) {
         return c.json({ error: "Webhook flow not found" });
       }
 
       // Create a test event
       const testEvent = {
-        id: `test_${uuidv4()}`,
+        id: `test_${randomUUID()}`,
         type: "test.webhook",
         created: Math.floor(Date.now() / 1000),
         data: {

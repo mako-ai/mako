@@ -384,7 +384,12 @@ db.createCollection("new_collection_name", {
                         )}
                         {!collectionDetails.options?.capped &&
                           !collectionDetails.type && (
-                            <Typography variant="body2" color="text.secondary">
+                            <Typography
+                              variant="body2"
+                              sx={{
+                                color: "text.secondary",
+                              }}
+                            >
                               No special options
                             </Typography>
                           )}

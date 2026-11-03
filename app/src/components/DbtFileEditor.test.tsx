@@ -293,7 +293,7 @@ describe("DbtFileEditor", () => {
     expect(preview.textContent).toBe("# Hello docs");
 
     // Flipping the Preview switch off swaps to the (Monaco) editor pane.
-    const previewSwitch = screen.getByRole("checkbox", {
+    const previewSwitch = screen.getByRole("switch", {
       name: /preview/i,
     }) as HTMLInputElement;
     expect(previewSwitch.checked).toBe(true);

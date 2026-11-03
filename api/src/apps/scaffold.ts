@@ -6,6 +6,7 @@
  * non-secret Mako-specific configuration (entry, data bindings, jobs).
  */
 import { appSdkDependency } from "./app-sdk-package";
+import { PNPM_VERSION } from "./package-manager";
 
 export interface ScaffoldOptions {
   title: string;
@@ -36,6 +37,10 @@ export function createAppsScaffold(
         private: true,
         version: "0.0.0",
         type: "module",
+        // pnpm: one shared store hard-linked into every app instead of a
+        // full node_modules copy per app. Mako installs with whatever this
+        // field (or the committed lockfile) names — see package-manager.ts.
+        packageManager: `pnpm@${PNPM_VERSION}`,
         scripts: {
           dev: "vite",
           // Publish builds with vite (esbuild) only — the same transform dev
@@ -92,8 +97,11 @@ export function createAppsScaffold(
 </html>
 `,
     "vite.config.ts": `import { defineConfig } from "vite";
+import { existsSync, readdirSync } from "node:fs";
 import react from "@vitejs/plugin-react";
 import { makoData } from "@makoai/app-sdk/vite";
+
+const bindingsDir = new URL("./bindings", import.meta.url);
 
 export default defineConfig({
   // makoData serves this app's data bindings (__data/*.parquet) during a
@@ -101,6 +109,17 @@ export default defineConfig({
   // Inside Mako's own sandbox the launcher answers those paths itself and
   // the plugin stays idle.
   plugins: [react(), makoData()],
+  // The binding names, for RefreshAllButton (@makoai/app-sdk/ui): a new
+  // bindings/<name>.sql is picked up without touching the code.
+  define: {
+    __APP_BINDING_NAMES__: JSON.stringify(
+      existsSync(bindingsDir)
+        ? readdirSync(bindingsDir)
+            .filter(name => name.endsWith(".sql"))
+            .map(name => name.slice(0, -4))
+        : [],
+    ),
+  },
   // Relative asset URLs so builds work under any hosting prefix
   // (including Mako's token-scoped preview paths).
   base: "./",
@@ -134,9 +153,16 @@ export default defineConfig({
       null,
       2,
     )}\n`,
+    "src/vite-env.d.ts": `/// <reference types="vite/client" />
+
+/** bindings/*.sql names, defined in vite.config.ts. */
+declare const __APP_BINDING_NAMES__: string[];
+`,
     "src/main.tsx": `import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+// The house style first, the app's own rules after it so they win.
+import "@makoai/app-sdk/ui.css";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
@@ -145,111 +171,53 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   </React.StrictMode>,
 );
 `,
-    "src/App.tsx": `export default function App() {
+    "src/App.tsx": `import {
+  Card,
+  KpiRow,
+  KpiTile,
+  PageHeader,
+  RefreshAllButton,
+} from "@makoai/app-sdk/ui";
+
+// Mako's house dashboard kit — see node_modules/@makoai/app-sdk/README.md.
+export default function App() {
   return (
-    <main className="container">
-      <h1>${safeTitle.replace(/[<>&]/g, "")}</h1>
-      <p>Built with Mako Apps — edit src/App.tsx to get started.</p>
+    <main className="page">
+      <PageHeader
+        title="${safeTitle.replace(/[<>&"{}]/g, "")}"
+        subtitle="Built with Mako Apps — edit src/App.tsx to get started."
+        actions={<RefreshAllButton bindings={__APP_BINDING_NAMES__} />}
+      />
+      <KpiRow>
+        <KpiTile label="Your first KPI" value="—" hint="Add a binding, then useQuery()" />
+      </KpiRow>
+      <Card
+        title="Getting started"
+        description="Data comes from bindings/<name>.sql; read it with useQuery('<name>')."
+      >
+        <p className="muted">
+          The theme tokens (--background, --brand, --chart-1…) and the kit
+          come from @makoai/app-sdk: style with the tokens, reuse the kit.
+        </p>
+      </Card>
     </main>
   );
 }
 `,
-    "src/styles.css": `/* Mako theme tokens — same contract the SDK injects (explicit here so the
-   scaffold works without the SDK, and apps can see what to override). */
-:root {
-  color-scheme: light;
-  --background: hsl(0 0% 100%);
-  --foreground: hsl(240 10% 3.9%);
-  --card: hsl(0 0% 100%);
-  --card-foreground: hsl(240 10% 3.9%);
-  --popover: hsl(0 0% 100%);
-  --popover-foreground: hsl(240 10% 3.9%);
-  --primary: hsl(240 5.9% 10%);
-  --primary-foreground: hsl(0 0% 98%);
-  --secondary: hsl(240 4.8% 95.9%);
-  --secondary-foreground: hsl(240 5.9% 10%);
-  --muted: hsl(240 4.8% 95.9%);
-  --muted-foreground: hsl(240 3.8% 46.1%);
-  --accent: hsl(240 4.8% 95.9%);
-  --accent-foreground: hsl(240 5.9% 10%);
-  --destructive: hsl(0 84.2% 60.2%);
-  --destructive-foreground: hsl(0 0% 98%);
-  --border: hsl(240 5.9% 90%);
-  --input: hsl(240 5.9% 90%);
-  --ring: hsl(240 5.9% 10%);
-  --chart-1: hsl(12 76% 61%);
-  --chart-2: hsl(173 58% 39%);
-  --chart-3: hsl(197 37% 24%);
-  --chart-4: hsl(43 74% 66%);
-  --chart-5: hsl(27 87% 67%);
-  --radius: 0.5rem;
-}
-:root.dark {
-  color-scheme: dark;
-  --background: hsl(240 10% 3.9%);
-  --foreground: hsl(0 0% 98%);
-  --card: hsl(240 10% 3.9%);
-  --card-foreground: hsl(0 0% 98%);
-  --popover: hsl(240 10% 3.9%);
-  --popover-foreground: hsl(0 0% 98%);
-  --primary: hsl(0 0% 98%);
-  --primary-foreground: hsl(240 5.9% 10%);
-  --secondary: hsl(240 3.7% 15.9%);
-  --secondary-foreground: hsl(0 0% 98%);
-  --muted: hsl(240 3.7% 15.9%);
-  --muted-foreground: hsl(240 5% 64.9%);
-  --accent: hsl(240 3.7% 15.9%);
-  --accent-foreground: hsl(0 0% 98%);
-  --destructive: hsl(0 62.8% 30.6%);
-  --destructive-foreground: hsl(0 0% 98%);
-  --border: hsl(240 3.7% 15.9%);
-  --input: hsl(240 3.7% 15.9%);
-  --ring: hsl(240 4.9% 83.9%);
-  --chart-1: hsl(220 70% 50%);
-  --chart-2: hsl(160 60% 45%);
-  --chart-3: hsl(30 80% 55%);
-  --chart-4: hsl(280 65% 60%);
-  --chart-5: hsl(340 75% 55%);
-}
-@media (prefers-color-scheme: dark) {
-  :root:not(.light) {
-    color-scheme: dark;
-    --background: hsl(240 10% 3.9%);
-    --foreground: hsl(0 0% 98%);
-    --card: hsl(240 10% 3.9%);
-    --card-foreground: hsl(0 0% 98%);
-    --popover: hsl(240 10% 3.9%);
-    --popover-foreground: hsl(0 0% 98%);
-    --primary: hsl(0 0% 98%);
-    --primary-foreground: hsl(240 5.9% 10%);
-    --secondary: hsl(240 3.7% 15.9%);
-    --secondary-foreground: hsl(0 0% 98%);
-    --muted: hsl(240 3.7% 15.9%);
-    --muted-foreground: hsl(240 5% 64.9%);
-    --accent: hsl(240 3.7% 15.9%);
-    --accent-foreground: hsl(0 0% 98%);
-    --destructive: hsl(0 62.8% 30.6%);
-    --destructive-foreground: hsl(0 0% 98%);
-    --border: hsl(240 3.7% 15.9%);
-    --input: hsl(240 3.7% 15.9%);
-    --ring: hsl(240 4.9% 83.9%);
-    --chart-1: hsl(220 70% 50%);
-    --chart-2: hsl(160 60% 45%);
-    --chart-3: hsl(30 80% 55%);
-    --chart-4: hsl(280 65% 60%);
-    --chart-5: hsl(340 75% 55%);
-  }
-}
-body { background: var(--background); color: var(--foreground); }
+    "src/styles.css": `/* The theme tokens (--background, --card, --brand, --canvas, --chart-1…5,
+   light and dark) are injected by @makoai/app-sdk, and the house base and kit
+   styles come from @makoai/app-sdk/ui.css (imported before this file).
+   Override a token here to re-theme; keep app layout below. */
 
-:root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+.page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
 }
 
-.container {
-  max-width: 720px;
-  margin: 4rem auto;
-  padding: 0 1rem;
+.muted {
+  margin: 0;
+  color: var(--muted-foreground);
 }
 `,
     ".gitignore": `node_modules
@@ -270,8 +238,88 @@ tsconfig.tsbuildinfo
 ${description ?? "A Mako app."}
 
 Built with Mako Apps: a real Vite + React project stored in a Mako-managed
-git repository. Run \`npm install\` (or pnpm/yarn) and \`npm run dev\` locally,
+git repository. Run \`pnpm install\` and \`pnpm dev\` locally (this app uses pnpm — do
+not run \`npm install\`, it would write a competing \`package-lock.json\`),
 or edit it from Mako chat.
+
+The card picture on the Apps home (and the link preview of a public share)
+is \`thumbnail.png\` (or \`.svg\`, \`.webp\`,
+\`.jpg\`) at the app's root, 1200×750. The one here is a placeholder — replace
+it with a showcase of what the app does.
 `,
+    "thumbnail.svg": defaultThumbnailSvg(safeTitle),
   };
+}
+
+const MAKO_MARK =
+  "m58 0 44 77-8 13H7L0 77 43 0h15ZM6 77l3 5 36-64 9 16 17 30h6L45 8 6 77Zm79-8H34l-3 5h64L55 5h-6l36 64Zm-48-5h28L51 39 37 64Z";
+
+const escapeXml = (s: string) =>
+  s.replace(
+    /[<>&"']/g,
+    c =>
+      ({
+        "<": "&lt;",
+        ">": "&gt;",
+        "&": "&amp;",
+        '"': "&quot;",
+        "'": "&apos;",
+      })[c] as string,
+  );
+
+/** Title on two lines at most, by words, for a 1200px-wide card. */
+function titleLines(title: string, perLine = 26): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of title.split(/\s+/).filter(Boolean)) {
+    const next = line ? `${line} ${word}` : word;
+    if (next.length > perLine && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push(line);
+  if (lines.length > 2) {
+    lines[1] = `${lines[1].slice(0, perLine - 1)}…`;
+    lines.length = 2;
+  }
+  return lines.map(l =>
+    l.length > perLine ? `${l.slice(0, perLine - 1)}…` : l,
+  );
+}
+
+/**
+ * The starter thumbnail: the app's title on a colour derived from it, with
+ * the Mako mark — so a new app's card is recognisable before its builder
+ * replaces it with a real showcase. 1200×750 (16:10), plain SVG, no fonts
+ * or images to fetch.
+ */
+export function defaultThumbnailSvg(title: string): string {
+  let hash = 0;
+  for (const ch of title) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  const hue = hash % 360;
+  const lines = titleLines(title);
+  const firstY = lines.length === 1 ? 420 : 380;
+  const text = lines
+    .map(
+      (l, i) =>
+        `  <text x="96" y="${firstY + i * 96}" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="80" font-weight="700" fill="#fff">${escapeXml(l)}</text>`,
+    )
+    .join("\n");
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="750" viewBox="0 0 1200 750">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="hsl(${hue} 55% 42%)"/>
+      <stop offset="1" stop-color="hsl(${(hue + 40) % 360} 60% 24%)"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="750" fill="url(#bg)"/>
+  <path d="${MAKO_MARK}" fill="#fff" fill-opacity="0.08" transform="translate(720 300) scale(5)"/>
+  <path d="${MAKO_MARK}" fill="#fff" transform="translate(96 96) scale(0.8)"/>
+${text}
+  <text x="96" y="660" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="28" fill="#fff" fill-opacity="0.7">Built with Mako</text>
+</svg>
+`;
 }

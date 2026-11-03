@@ -83,7 +83,7 @@ export async function updateNotebookIndex(
       notebookId,
     },
     { $set },
-    { new: true },
+    { returnDocument: "after" },
   );
 }
 

@@ -6,7 +6,7 @@
  * which tools are safe to run before a plan is approved.
  *
  * A tool is "read-only" when calling it cannot mutate workspace artifacts
- * (consoles, dashboards, flows, data sources), persisted memory, or remote
+ * (consoles, apps, flows, data sources), persisted memory, or remote
  * data. Discovery, inspection, search, validation, and explanation tools are
  * read-only. Anything that executes a query, creates/modifies/removes an
  * artifact, writes memory, or sets form fields is considered mutating.
@@ -23,19 +23,15 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   ...AGENT_CAPABILITIES.filter(capability => capability.risk === "read").map(
     capability => capability.name,
   ),
-  // Dashboard reads / previews
-  "list_open_dashboards",
-  "get_dashboard_state",
-  "get_chart_templates",
+  // Chart template catalog (console charts)
   "get_chart_template",
-  // Surface-scoped data-source reads (apps + dashboards, local DuckDB only)
+  // Surface-scoped data-source reads (apps, local DuckDB only)
   "list_data_sources",
   "inspect_data_source",
   "query_duckdb",
   // Visual inspection (no mutation)
   "capture_screenshot",
   // Search
-  "search_dashboards",
   "search_skills",
   "search_tools",
   "list_skills",
@@ -53,6 +49,10 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   // dry-run, which shares its decision function with the reconciler and
   // performs none of its writes.
   "check_flow_files",
+  // Syncs: list, definition, per-entity status (flow-sync-tools.ts).
+  "flow_list",
+  "flow_read",
+  "flow_status",
   // Flow form reads + query validation/explanation (read-only by design)
   "get_form_state",
   "list_flow_tabs",

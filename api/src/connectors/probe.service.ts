@@ -445,6 +445,6 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
           : JSON.stringify(responseBody);
       message = `${message} — ${serialized.slice(0, 2_000)}`;
     }
-    throw new Error(redactSecrets(message, secrets));
+    throw new Error(redactSecrets(message, secrets), { cause: error });
   }
 }

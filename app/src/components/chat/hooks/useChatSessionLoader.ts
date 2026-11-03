@@ -131,7 +131,7 @@ export interface UseChatSessionLoaderArgs {
   messagesRef: MutableRefObject<ChatHelpers["messages"]>;
   workspaceIdRef: MutableRefObject<string | undefined>;
   chatIdRef: MutableRefObject<string>;
-  virtuosoRef: RefObject<VirtuosoHandle>;
+  virtuosoRef: RefObject<VirtuosoHandle | null>;
   capturedConsoleIdRef: MutableRefObject<string | null>;
   handledConsoleOpenToolCallIdsRef: MutableRefObject<Set<string>>;
   toolDispatchGateRef: MutableRefObject<ToolDispatchGate>;

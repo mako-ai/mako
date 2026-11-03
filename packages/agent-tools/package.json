@@ -17,11 +17,12 @@
     "prepare": "node prepare.js"
   },
   "dependencies": {
+    "@ai-sdk/provider-utils": "5.0.58",
     "@mako/schemas": "workspace:*",
-    "ai": "6.0.196",
-    "zod": "^4.2.1"
+    "ai": "7.0.137",
+    "zod": "^4.6.6"
   },
   "devDependencies": {
-    "typescript": "^5.8.3"
+    "typescript": "^6.0.3"
   }
 }

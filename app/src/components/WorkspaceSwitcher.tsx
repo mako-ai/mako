@@ -155,8 +155,8 @@ export function WorkspaceSwitcher() {
         anchorEl={anchorEl}
         open={Boolean(anchorEl)}
         onClose={handleClose}
-        PaperProps={{
-          sx: { minWidth: 240, maxHeight: 360, py: 0.5 },
+        slotProps={{
+          paper: { sx: { minWidth: 240, maxHeight: 360, py: 0.5 } },
         }}
       >
         {workspaces.map(workspace => (
@@ -177,10 +177,15 @@ export function WorkspaceSwitcher() {
             </ListItemIcon>
             <ListItemText
               primary={workspace.name}
-              primaryTypographyProps={{
-                fontSize: "0.9rem",
-                fontWeight: workspace.id === currentWorkspace?.id ? 600 : 500,
-                lineHeight: 1.3,
+              slotProps={{
+                primary: {
+                  sx: {
+                    fontSize: "0.9rem",
+                    fontWeight:
+                      workspace.id === currentWorkspace?.id ? 600 : 500,
+                    lineHeight: 1.3,
+                  },
+                },
               }}
             />
           </MenuItem>
@@ -197,7 +202,9 @@ export function WorkspaceSwitcher() {
           </ListItemIcon>
           <ListItemText
             primary="Create New Workspace"
-            primaryTypographyProps={{ fontSize: "0.9rem", fontWeight: 500 }}
+            slotProps={{
+              primary: { sx: { fontSize: "0.9rem", fontWeight: 500 } },
+            }}
           />
         </MenuItem>
       </Menu>
@@ -220,8 +227,6 @@ export function WorkspaceSwitcher() {
             variant="outlined"
             value={newWorkspaceName}
             onChange={e => setNewWorkspaceName(e.target.value)}
-            // Mirrors the API's WORKSPACE_NAME_MAX (80).
-            inputProps={{ maxLength: 80 }}
             error={Boolean(createError)}
             helperText={createError}
             disabled={creating}
@@ -231,8 +236,18 @@ export function WorkspaceSwitcher() {
               }
             }}
             sx={{ mt: 2 }}
+            slotProps={{
+              // Mirrors the API's WORKSPACE_NAME_MAX (80).
+              htmlInput: { maxLength: 80 },
+            }}
           />
-          <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+              mt: 1,
+            }}
+          >
             You can invite team members after creating the workspace.
           </Typography>
         </DialogContent>

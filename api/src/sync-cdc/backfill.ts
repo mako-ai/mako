@@ -328,6 +328,12 @@ export class CdcBackfillService {
       reuseExistingRunId?: boolean;
       entities?: string[];
       reason?: string;
+      /**
+       * "scheduled" lets eligible entities fetch incrementally (see
+       * backfill-fetch-mode.ts). Default: a resumed run keeps its trigger,
+       * anything else is "manual" (full).
+       */
+      trigger?: "scheduled" | "manual";
     },
   ): Promise<{ runId: string; reusedRunId: boolean }> {
     const flow = await Flow.findOne({
@@ -392,6 +398,11 @@ export class CdcBackfillService {
         : createBackfillRunId(flowId);
     const reusedRunId = Boolean(shouldReuseRunId && flow.backfillState?.runId);
     const previousFailures = flow.backfillState?.consecutiveFailures ?? 0;
+    const trigger: "scheduled" | "manual" =
+      options?.trigger ??
+      (reusedRunId && flow.backfillState?.trigger === "scheduled"
+        ? "scheduled"
+        : "manual");
     const now = new Date();
     flow.backfillState = {
       status: "running",
@@ -403,6 +414,7 @@ export class CdcBackfillService {
         mode: effectiveScope.length > 0 ? "subset" : "all",
         entities: effectiveScope,
       },
+      trigger,
     };
     await flow.save();
 
@@ -585,6 +597,7 @@ export class CdcBackfillService {
   private resolveRepartitionAdapter(flow: IFlow, destinationType: string) {
     const adapter = resolveCdcDestinationAdapter({
       destinationType,
+      flowId: String(flow._id),
       destinationDatabaseId: String(flow.destinationDatabaseId),
       destinationDatabaseName: flow.destinationDatabaseName,
       tableDestination: {
@@ -1795,6 +1808,27 @@ export async function markCdcBackfillCompletedForFlow(params: {
       },
       $unset: {
         "backfillState.runId": "",
+      },
+    },
+  );
+  // The COMPLETE transition that follows finds the status already completed
+  // and changes nothing, so it never replaces an old failure's meta: a flow
+  // whose backfill failed once kept that error for months of clean runs.
+  // A live stream error keeps its meta (the consumer's self-heal reads it).
+  await Flow.updateOne(
+    {
+      _id: new Types.ObjectId(params.flowId),
+      workspaceId: new Types.ObjectId(params.workspaceId),
+      streamState: { $ne: "error" },
+      "syncStateMeta.lastErrorCode": { $exists: true, $ne: null },
+    },
+    {
+      $set: {
+        syncStateMeta: {
+          lastEvent: "backfill:COMPLETE",
+          lastReason: "Backfill completed",
+        },
+        syncStateUpdatedAt: new Date(),
       },
     },
   );

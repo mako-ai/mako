@@ -13,13 +13,13 @@ Mako is a production-ready, multi-tenant AI-powered SQL client built with a PNPM
 **Architecture:** Four main packages:
 
 - **Root**: Data sync scripts, database migrations, and shared configuration
-- **API**: Hono-based backend server (Node.js 20+, TypeScript, MongoDB with Mongoose, Arctic OAuth)
-- **App**: React/Vite frontend (React 18, MUI v7, Zustand, Monaco Editor, Vercel AI SDK)
+- **API**: Hono-based backend server (Node.js 24, TypeScript, MongoDB with Mongoose, Google/GitHub OAuth)
+- **App**: React/Vite frontend (React 19, MUI v9, Zustand, Monaco Editor, Vercel AI SDK)
 - **Docs**: Astro-based documentation site
 
 ## Agent prompts & skills
 
-Keep base agent prompts lean. Durable vendor/database/dashboard/flow guidance
+Keep base agent prompts lean. Durable vendor/database/app/flow guidance
 belongs in git-versioned system skills under `api/src/agent-skills/**`, not in
 always-on prompt literals. See `.cursor/rules/35-agent-prompts.mdc` and
 `api/src/agent-skills/README.md` before changing prompt content.
@@ -270,24 +270,23 @@ REDIS_URL=redis://localhost:6379
 
 | Technology    | Version    | Purpose                |
 | ------------- | ---------- | ---------------------- |
-| Node.js       | 20+        | Runtime                |
-| TypeScript    | 5.8.3      | Type safety            |
-| Hono          | 4.7.11     | Web framework          |
-| Mongoose      | 8.15.1     | MongoDB ODM            |
-| Arctic        | 3.7.0      | OAuth                  |
-| Inngest       | 3.54.1     | Event-driven workflows |
-| Vercel AI SDK | 6.0.0-beta | LLM abstraction        |
+| Node.js       | 24         | Runtime                |
+| TypeScript    | 6.0        | Type safety            |
+| Hono          | 4.13       | Web framework          |
+| Mongoose      | 9.11       | MongoDB ODM            |
+| Inngest       | 4.23       | Event-driven workflows |
+| Vercel AI SDK | 7.0        | LLM abstraction        |
 
 ### Frontend
 
 | Technology      | Version | Purpose           |
 | --------------- | ------- | ----------------- |
-| React           | 18.2.0  | UI framework      |
-| Vite            | 5.0.8   | Build tool        |
-| MUI             | 7.1.0   | Component library |
-| Zustand         | 5.0.5   | State management  |
-| Monaco Editor   | 4.6.0   | Code editor       |
-| React Hook Form | 7.57.0  | Form handling     |
+| React           | 19.3    | UI framework      |
+| Vite            | 8.3     | Build tool        |
+| MUI             | 9.5     | Component library |
+| Zustand         | 5.0     | State management  |
+| Monaco Editor   | 4.7     | Code editor       |
+| React Hook Form | 7.90    | Form handling     |
 
 ### Supported Databases
 
@@ -307,7 +306,7 @@ MongoDB, PostgreSQL, BigQuery, ClickHouse, Cloud SQL (Postgres), Cloudflare D1, 
 
 ### Legacy Systems
 
-- **Lucia Auth references** — now using Arctic for OAuth
+- **Lucia Auth references** — OAuth is a small in-repo client (`api/src/auth/oauth-client.ts`)
 
 The legacy sync CLI (`pnpm sync`, `api/src/sync/cli.ts`) is **deleted**
 (RFC #904 block 4). Flows are the sync system: definitions live in

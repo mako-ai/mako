@@ -22,22 +22,21 @@ import {
   Bot,
   BrainCircuit,
   CalendarClock,
-  ChartPie,
   ClipboardList,
   CloudUpload,
   Database,
   FileCode,
   GitBranch,
-  Github,
   Server,
   History,
   KeySquare,
+  LayoutGrid,
   MessageCircleMore,
   MessageSquareText,
   Notebook,
+  Workflow,
   Palette,
   Plug,
-  Gauge,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -50,6 +49,7 @@ import {
   GitCompare,
   type LucideIcon,
 } from "lucide-react";
+import Github from "../components/icons/GithubIcon";
 import DbtIcon from "../components/icons/DbtIcon";
 import type {
   LeftPaneView,
@@ -66,10 +66,11 @@ export const EXPLORER_ICONS = {
   // git glyph — GitBranch now belongs to Source Control, where it means what
   // it says.
   dbt: DbtIcon,
+  workflows: Workflow,
   "source-control": GitBranch,
   connectors: Plug,
-  dashboards: ChartPie,
-  apps: AppWindowMac,
+  // The launcher grid, as on Apps home; a single app keeps its window glyph.
+  apps: LayoutGrid,
   notebooks: Notebook,
   settings: Settings,
 } as const satisfies Record<LeftPaneView, LucideIcon>;
@@ -79,7 +80,7 @@ export const CHAT_ICON: LucideIcon = MessageCircleMore;
 
 /**
  * Icon per tab kind, as rendered in the Editor tab bar. Entity rows in
- * explorers and palette results use the same map so a dashboard looks the
+ * explorers and palette results use the same map so an app looks the
  * same everywhere it appears.
  */
 export const TAB_KIND_ICONS = {
@@ -88,25 +89,26 @@ export const TAB_KIND_ICONS = {
   connectors: CloudUpload,
   members: Users,
   "flow-editor": ArrowLeftRight,
-  dashboard: ChartPie,
-  "dashboard-data-source": Database,
   "table-data": Table,
   app: AppWindowMac,
   "app-file": FileCode,
   "app-diff": GitCompare,
-  "console-diff": GitCompare,
+  "apps-home": LayoutGrid,
+  "history-diff": GitCompare,
   "repo-diff": GitCompare,
-  "notebook-diff": GitCompare,
   plan: ClipboardList,
   "dbt-file": FileCode,
   "dbt-job": CalendarClock,
   "dbt-console": Terminal,
   "dbt-runs": History,
+  workflow: Workflow,
   notebook: Notebook,
 } as const satisfies Record<NonNullable<TabKind>, LucideIcon>;
 
 export function tabKindIcon(kind: TabKind | undefined): LucideIcon {
-  return TAB_KIND_ICONS[kind ?? "console"];
+  // Persisted tabs and recents can carry a kind that no longer exists (the
+  // removed "dashboard"); an undefined icon would crash the whole shell.
+  return TAB_KIND_ICONS[kind ?? "console"] ?? TAB_KIND_ICONS.console;
 }
 
 /** Settings explorer / settings command icons, one per section. */
@@ -117,7 +119,6 @@ export const SETTINGS_SECTION_ICONS = {
   agents: Bot,
   "coding-agents": BrainCircuit,
   models: Sparkles,
-  limits: Gauge,
   billing: Wallet,
   members: Users,
   "api-keys": KeySquare,

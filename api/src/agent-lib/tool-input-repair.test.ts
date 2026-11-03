@@ -4,33 +4,36 @@
  *
  * Covers the schema-guided coercion unit (stringified arrays/objects/numbers/
  * booleans, no-ops on already-valid input) and an end-to-end generateText run
- * through the AI SDK's experimental_repairToolCall hook with a mock model that
+ * through the AI SDK's repairToolCall hook with a mock model that
  * emits a dbt_create_job-style call whose `commands` array arrives
  * JSON-stringified.
  *
  * Run: tsx src/agent-lib/tool-input-repair.test.ts
  */
 import assert from "node:assert/strict";
-import { generateText, stepCountIs, tool, type JSONSchema7 } from "ai";
-import { MockLanguageModelV3 } from "ai/test";
+import { generateText, isStepCount, tool, type JSONSchema7 } from "ai";
+import { MockLanguageModelV4 } from "ai/test";
 import { z } from "zod";
 import {
   coerceValueToSchema,
   repairStringifiedToolInputs,
 } from "./tool-input-repair";
 
-type GenerateResult = Awaited<
-  ReturnType<MockLanguageModelV3["doGenerate"]>
->;
+type GenerateResult = Awaited<ReturnType<MockLanguageModelV4["doGenerate"]>>;
+
+const USAGE: GenerateResult["usage"] = {
+  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+  outputTokens: { total: 1, text: 1, reasoning: 0 },
+};
 
 /**
- * Sequential mock model. (MockLanguageModelV3's built-in array form indexes
+ * Sequential mock model. (MockLanguageModelV4's built-in array form indexes
  * by post-push call count and skips the first element, so we sequence with
  * our own counter.)
  */
-function mockModel(results: GenerateResult[]): MockLanguageModelV3 {
+function mockModel(results: GenerateResult[]): MockLanguageModelV4 {
   let call = 0;
-  return new MockLanguageModelV3({
+  return new MockLanguageModelV4({
     doGenerate: async () => results[Math.min(call++, results.length - 1)],
   });
 }
@@ -139,14 +142,15 @@ async function main() {
             }),
           },
         ],
-        finishReason: "tool-calls",
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        // AI SDK 7 only executes tools after a "tool-calls" (or "stop") step.
+        finishReason: { unified: "tool-calls", raw: "tool_use" },
+        usage: USAGE,
         warnings: [],
       },
       {
         content: [{ type: "text", text: "done" }],
-        finishReason: "stop",
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        finishReason: { unified: "stop", raw: "end_turn" },
+        usage: USAGE,
         warnings: [],
       },
     ]);
@@ -154,8 +158,8 @@ async function main() {
     const result = await generateText({
       model,
       prompt: "create the job",
-      stopWhen: stepCountIs(3),
-      experimental_repairToolCall: repairStringifiedToolInputs,
+      stopWhen: isStepCount(3),
+      repairToolCall: repairStringifiedToolInputs,
       tools: {
         dbt_create_job: tool({
           description: "Create a saved dbt job",
@@ -196,14 +200,15 @@ async function main() {
             input: JSON.stringify({ projectId: "p1" }),
           },
         ],
-        finishReason: "tool-calls",
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        // AI SDK 7 only executes tools after a "tool-calls" (or "stop") step.
+        finishReason: { unified: "tool-calls", raw: "tool_use" },
+        usage: USAGE,
         warnings: [],
       },
       {
         content: [{ type: "text", text: "done" }],
-        finishReason: "stop",
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        finishReason: { unified: "stop", raw: "end_turn" },
+        usage: USAGE,
         warnings: [],
       },
     ]);
@@ -211,8 +216,8 @@ async function main() {
     const result = await generateText({
       model,
       prompt: "create the job",
-      stopWhen: stepCountIs(3),
-      experimental_repairToolCall: repairStringifiedToolInputs,
+      stopWhen: isStepCount(3),
+      repairToolCall: repairStringifiedToolInputs,
       tools: {
         dbt_create_job: tool({
           description: "Create a saved dbt job",

@@ -1,5 +1,5 @@
 import { ObjectId } from "mongodb";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 import type { UIMessage } from "ai";
 import { Chat, SavedConsole } from "../database/workspace-schema";
 import type { AgentKind } from "../agent-lib";
@@ -63,7 +63,7 @@ export const getOrCreateThreadContext = async (
       }));
       let threadId = existingChat.threadId;
       if (!threadId) {
-        threadId = uuidv4();
+        threadId = randomUUID();
         await Chat.findByIdAndUpdate(sessionId, { threadId });
       }
       return {
@@ -78,7 +78,7 @@ export const getOrCreateThreadContext = async (
     }
   }
   return {
-    threadId: uuidv4(),
+    threadId: randomUUID(),
     recentMessages: [],
     metadata: { messageCount: 0, lastActivityAt: new Date() },
     activeAgent: undefined,
@@ -142,7 +142,7 @@ export const persistChatSession = async (
   }
   const updateData: any = { messages: updatedMessages, updatedAt: now };
   if (!threadContext.threadId) {
-    updateData.threadId = uuidv4();
+    updateData.threadId = randomUUID();
   }
   if (activeAgent) {
     updateData.activeAgent = activeAgent;
@@ -150,7 +150,9 @@ export const persistChatSession = async (
   if (pinnedConsoleId !== undefined) {
     updateData.pinnedConsoleId = pinnedConsoleId;
   }
-  await Chat.findByIdAndUpdate(sessionId, updateData, { new: true });
+  await Chat.findByIdAndUpdate(sessionId, updateData, {
+    returnDocument: "after",
+  });
   return sessionId;
 };
 
@@ -228,7 +230,9 @@ export const persistUserMessage = async (
   if (workspacePrompt !== undefined && !existingChat.workspacePrompt) {
     updateData.workspacePrompt = workspacePrompt;
   }
-  await Chat.findByIdAndUpdate(sessionId, updateData, { new: true });
+  await Chat.findByIdAndUpdate(sessionId, updateData, {
+    returnDocument: "after",
+  });
   return sessionId;
 };
 
@@ -273,7 +277,7 @@ export const appendToolCalls = async (
   await Chat.findByIdAndUpdate(
     sessionId,
     { messages, updatedAt: now },
-    { new: true },
+    { returnDocument: "after" },
   );
 };
 
@@ -316,7 +320,9 @@ export const finalizeAssistantMessage = async (
     updateData.activeAgent = activeAgent;
   }
 
-  await Chat.findByIdAndUpdate(sessionId, updateData, { new: true });
+  await Chat.findByIdAndUpdate(sessionId, updateData, {
+    returnDocument: "after",
+  });
 };
 
 /**
@@ -369,7 +375,9 @@ export const updateChatWithResponse = async (
     updateData.activeAgent = activeAgent;
   }
 
-  await Chat.findByIdAndUpdate(sessionId, updateData, { new: true });
+  await Chat.findByIdAndUpdate(sessionId, updateData, {
+    returnDocument: "after",
+  });
 };
 
 /**
@@ -474,7 +482,7 @@ export const persistChatError = async (
     await Chat.findByIdAndUpdate(
       sessionId,
       { messages, updatedAt: now },
-      { new: true },
+      { returnDocument: "after" },
     );
   } catch (persistError) {
     // Don't throw - this is best-effort error logging
@@ -718,8 +726,8 @@ export const saveChat = async (
   }
 
   // Drop assistant messages that arrived with no parts. This happens when a
-  // stream is aborted before any delta is emitted: `toUIMessageStreamResponse`
-  // has already minted an assistant message id, so `onFinish` hands us a
+  // stream is aborted before any delta is emitted: `toUIMessageStream`
+  // has already minted an assistant message id, so `onEnd` hands us a
   // zero-parts message. Persisting it would poison the chat — on the next
   // turn `convertToModelMessages` would reject the history with
   // "Invalid prompt: The messages do not match the ModelMessage[] schema."
@@ -790,7 +798,7 @@ export const saveChat = async (
       createdBy: userId,
       title: "New Chat",
       titleGenerated: false,
-      threadId: uuidv4(),
+      threadId: randomUUID(),
       createdAt: now,
     },
   };
@@ -827,7 +835,7 @@ export const saveChat = async (
     result = await Chat.findOneAndUpdate(
       { _id: new ObjectId(chatId) },
       updateOp,
-      { upsert: true, new: true },
+      { upsert: true, returnDocument: "after" },
     );
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -849,7 +857,7 @@ export const saveChat = async (
     result = await Chat.findOneAndUpdate(
       { _id: new ObjectId(chatId) },
       updateOp,
-      { upsert: true, new: true },
+      { upsert: true, returnDocument: "after" },
     );
   }
 

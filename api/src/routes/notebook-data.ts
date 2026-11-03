@@ -254,6 +254,8 @@ notebookDataRoutes.openapi(
       const streamingOptions = {
         batchSize: 5000,
         signal: c.req.raw.signal,
+        // On the query itself: the stream runs after this handler returns.
+        labels: { mako_source: "notebook", mako_trigger: "kernel" },
       };
 
       const fieldsResult =

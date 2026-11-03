@@ -267,9 +267,11 @@ export function SkillsSection() {
     <Box>
       <Stack
         direction="row"
-        alignItems="center"
-        justifyContent="flex-end"
-        sx={{ mb: 1 }}
+        sx={{
+          alignItems: "center",
+          justifyContent: "flex-end",
+          mb: 1,
+        }}
       >
         <Tooltip title="Refresh">
           <span>
@@ -307,7 +309,12 @@ export function SkillsSection() {
 
       {hasSkills && (
         <Stack spacing={1.5}>
-          <Typography variant="caption" color="text.secondary">
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+            }}
+          >
             {skills.length} skill{skills.length === 1 ? "" : "s"}
             {suppressedCount > 0 ? ` · ${suppressedCount} suppressed` : ""}
           </Typography>
@@ -325,16 +332,20 @@ export function SkillsSection() {
             >
               <Stack
                 direction="row"
-                alignItems="flex-start"
-                justifyContent="space-between"
                 spacing={1}
+                sx={{
+                  alignItems: "flex-start",
+                  justifyContent: "space-between",
+                }}
               >
                 <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Stack
                     direction="row"
-                    alignItems="center"
                     spacing={1}
-                    sx={{ mb: 0.5 }}
+                    sx={{
+                      alignItems: "center",
+                      mb: 0.5,
+                    }}
                   >
                     <Typography
                       variant="body2"
@@ -372,8 +383,10 @@ export function SkillsSection() {
                   </Stack>
                   <Typography
                     variant="body2"
-                    color="text.secondary"
-                    sx={{ mb: 0.5 }}
+                    sx={{
+                      color: "text.secondary",
+                      mb: 0.5,
+                    }}
                   >
                     <strong>loadWhen:</strong> {skill.loadWhen}
                   </Typography>
@@ -403,7 +416,12 @@ export function SkillsSection() {
                         />
                       ))}
                       {skill.entities.length > 12 && (
-                        <Typography variant="caption" color="text.secondary">
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            color: "text.secondary",
+                          }}
+                        >
                           +{skill.entities.length - 12} more
                         </Typography>
                       )}
@@ -411,15 +429,23 @@ export function SkillsSection() {
                   )}
                   <Typography
                     variant="caption"
-                    color="text.secondary"
-                    sx={{ fontFamily: "monospace" }}
+                    sx={{
+                      color: "text.secondary",
+                      fontFamily: "monospace",
+                    }}
                   >
                     {skill.definitionInvalid
                       ? `${skill.path} — ${skill.definitionInvalid.reason}`
                       : skill.path}
                   </Typography>
                 </Box>
-                <Stack direction="row" alignItems="center" spacing={0.5}>
+                <Stack
+                  direction="row"
+                  spacing={0.5}
+                  sx={{
+                    alignItems: "center",
+                  }}
+                >
                   <Tooltip
                     title={
                       skill.suppressed
@@ -489,7 +515,12 @@ export function SkillsSection() {
               <Typography variant="h6" sx={{ fontFamily: "monospace" }}>
                 {editing.name}
               </Typography>
-              <Typography variant="caption" color="text.secondary">
+              <Typography
+                variant="caption"
+                sx={{
+                  color: "text.secondary",
+                }}
+              >
                 Every edit is recoverable from the workspace repository&apos;s
                 git history.
               </Typography>
@@ -514,8 +545,10 @@ export function SkillsSection() {
                 multiline
                 minRows={2}
                 fullWidth
-                inputProps={{ maxLength: 300 }}
                 helperText="One trigger line describing when this skill should load (max 300 characters)."
+                slotProps={{
+                  htmlInput: { maxLength: 300 },
+                }}
               />
               <TextField
                 label="body"
@@ -524,8 +557,10 @@ export function SkillsSection() {
                 multiline
                 minRows={12}
                 fullWidth
-                inputProps={{ maxLength: 20000 }}
                 sx={{ fontFamily: "monospace" }}
+                slotProps={{
+                  htmlInput: { maxLength: 20000 },
+                }}
               />
               <TextField
                 label="entities (comma-separated)"

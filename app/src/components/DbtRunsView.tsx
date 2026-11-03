@@ -128,7 +128,12 @@ export default function DbtRunsView({
         tabId={tabId}
         trailing={
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-            <Typography variant="caption" color="text.secondary">
+            <Typography
+              variant="caption"
+              sx={{
+                color: "text.secondary",
+              }}
+            >
               {projectRuns.length} recent · agent, manual &amp; scheduled
             </Typography>
             <Tooltip title="Refresh">

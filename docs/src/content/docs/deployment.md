@@ -87,6 +87,22 @@ Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`)
 | `LANGFUSE_SECRET_KEY`          | Optional    | Langfuse LLM observability — secret key |
 | `LANGFUSE_BASE_URL`            | Optional    | Langfuse region base URL (EU `https://cloud.langfuse.com`, US `https://us.cloud.langfuse.com`) |
 | `LANGFUSE_TRACING_ENVIRONMENT` | Optional    | Trace environment label (defaults to `NODE_ENV`) |
+| `API_RATE_LIMIT_MODE`          | Optional    | Per-caller API budget: `shadow` (default, logs who would be refused), `enforce` (429 + `Retry-After`), or `off`. The Cloud Run deploy workflow sets `enforce` |
+| `API_RATE_LIMIT_PER_MINUTE`    | Optional    | Cost units per caller per minute (default `1200`) |
+| `EDGE_ORIGIN_SECRET`           | Optional    | When set, requests must carry `x-mako-edge: <secret>` (set by a Cloudflare Transform Rule) so the `*.run.app` URL cannot bypass Cloudflare. Logs only until `EDGE_ORIGIN_CHECK=enforce` |
+| `APPS_LIFECYCLE_ENFORCE`       | Optional    | Enforces the daily [app lifecycle job](/apps/#app-lifecycle-stale-and-archived-apps) (stale notices, archiving, paused schedules): `all` or a comma-separated list of workspace ids. Unset = dry run, the job only logs its plan |
+
+### API Protection
+
+Three guards keep one noisy caller from taking an instance down:
+
+- **Per-caller rate limit** — each session, token or client IP gets a per-minute budget of cost units, shared across instances through `REDIS_URL` (without Redis it is per-instance; if Redis is unreachable the limit fails open). Heavy routes (branch listing, sandbox and git reads, query execution, agent chat) cost more than a plain read. Inngest, provider webhooks and health checks are exempt. Over budget, enforce mode answers `429` with `Retry-After`.
+- **Concurrency pool** — the git and sandbox read routes allow 12 requests at once per instance. A request that waits more than 10 seconds gets `503` with `Retry-After`, so a slow endpoint cannot starve the UI, webhooks and Inngest.
+- **Edge-origin check** — optional; see `EDGE_ORIGIN_SECRET` above.
+
+### BigQuery Cost Attribution
+
+Mako runs every BigQuery job as one service account, so `INFORMATION_SCHEMA.JOBS` cannot split cost by user. Each job therefore carries `mako_*` labels: `mako_source` (`app_binding`, `console`, `adhoc`, `export`, `scheduled_query`, `agent`, `notebook`, `workflow`, `cdc`, `flow`, `metadata`, `connection_test` or `other`) and `mako_workspace`, plus `mako_app`, `mako_binding`, `mako_trigger`, `mako_user`, `mako_console`, `mako_flow`, `mako_table`, `mako_chat` and `mako_tool` where they apply. Group `INFORMATION_SCHEMA.JOBS` by these labels to see what an app refresh, a CDC MERGE or an agent query costs. Values are lowercased, any other character becomes `_`, and they are cut at 63 characters (BigQuery's label rules). The local BigQuery emulator gets no labels.
 
 ### LLM Observability (Langfuse)
 
@@ -111,9 +127,10 @@ are filtered out and never count toward billable units. A defensive redaction
 pass strips connection strings, bearer tokens, provider API keys, and card
 numbers before any trace leaves the process.
 
-### Dashboard Artifact Storage
+### Artifact Storage
 
-Dashboard materialization stores parquet artifacts on the backend. Mako supports
+Mako stores materialized parquet artifacts on the backend: app data bindings,
+dbt outputs, and chat attachments all share one artifact store. Mako supports
 three artifact storage backends:
 
 - `filesystem` - default; stores parquet files on local disk
@@ -125,6 +142,10 @@ Select the backend with:
 ```env
 DASHBOARD_ARTIFACT_STORE=filesystem
 ```
+
+The `DASHBOARD_` prefix on these variable names (and the default
+`/data/dashboard-artifacts` directory) is historical; they configure the shared
+artifact store and are kept for compatibility with existing deployments.
 
 Optional shared settings:
 
@@ -138,7 +159,7 @@ DASHBOARD_ARTIFACT_DIR=/data/dashboard-artifacts
 
 #### Google Cloud Storage
 
-To use GCS for dashboard parquet artifacts:
+To use GCS for parquet artifacts:
 
 ```env
 DASHBOARD_ARTIFACT_STORE=gcs

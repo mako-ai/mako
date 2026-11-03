@@ -12,7 +12,8 @@
  * Run state (history, scheduler claims, failure counters) never appears
  * here: those are runtime fields on the Mongo index rows.
  */
-import yaml from "js-yaml";
+import * as yaml from "js-yaml";
+import { loadYaml } from "../utils/yaml";
 
 import { slugifyName } from "../utils/slugify";
 
@@ -76,7 +77,7 @@ export function serializeJobFile(job: DbtJobFile): string {
 export function parseJobFile(contents: string): DbtJobFile | null {
   let raw: unknown;
   try {
-    raw = yaml.load(contents);
+    raw = loadYaml(contents);
   } catch {
     return null;
   }
@@ -132,7 +133,7 @@ export function parseEnvironmentsFile(
 ): DbtEnvironmentsFile | null {
   let raw: unknown;
   try {
-    raw = yaml.load(contents);
+    raw = loadYaml(contents);
   } catch {
     return null;
   }
