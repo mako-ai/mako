@@ -124,8 +124,10 @@ export function isPersistedSnapshotStale(
 /**
  * The chat the panel showed when this page loaded. Restoring it is the panel
  * coming back, not the user picking a chat, so it must not move focus.
+ * `undefined` until the first load, `null` once the panel leaves that chat:
+ * any later visit is a user pick, including a return to the same chat.
  */
-let pageLoadChatId: string | undefined;
+let pageLoadChatId: string | null | undefined;
 
 export interface UseChatSessionLoaderArgs {
   chatId: string;
@@ -370,7 +372,8 @@ export function useChatSessionLoader({
     // slow load can't resume the wrong chat. (State staleness is handled
     // inside loadPersistedMessages via chatId re-checks.)
     let cancelled = false;
-    pageLoadChatId ??= chatId;
+    if (pageLoadChatId === undefined) pageLoadChatId = chatId;
+    else if (pageLoadChatId !== chatId) pageLoadChatId = null;
     const loadSession = async () => {
       if (!isExistingChat || !workspaceId) {
         return;

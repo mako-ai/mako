@@ -23,24 +23,29 @@ vi.mock("../../../store/consoleStore", () => ({
 
 vi.mock("../../../api/client", () => ({
   api: {
-    GET: vi.fn(async () => ({
-      data: { messages: [], consoles: [{ id: "chat-console" }] },
-      response: { ok: true },
-    })),
+    GET: vi.fn(
+      async (_url: string, opts: { params: { path: { id: string } } }) => ({
+        data: {
+          messages: [],
+          consoles: [{ id: `${opts.params.path.id}-console` }],
+        },
+        response: { ok: true },
+      }),
+    ),
   },
 }));
 
-import { useChatSessionLoader } from "./useChatSessionLoader";
+// The page-load chat lives at module scope, so each test imports a fresh copy.
+let useChatSessionLoader: typeof import("./useChatSessionLoader").useChatSessionLoader;
 
-function render(chatId: string) {
+function render(chatId: string, workspaceId: string | null = "ws") {
   const ref = <T>(current: T) => ({ current });
   const args = {
     chatId,
     isExistingChat: true,
-    workspaceId: "ws",
     setMessages: vi.fn(),
     messagesRef: ref([]),
-    workspaceIdRef: ref<string | undefined>("ws"),
+    workspaceIdRef: ref<string | undefined>(workspaceId ?? undefined),
     chatIdRef: ref(chatId),
     virtuosoRef: ref(null),
     capturedConsoleIdRef: ref<string | null>(null),
@@ -51,46 +56,97 @@ function render(chatId: string) {
     localAcpBindingRef: ref(null),
     localAcpBusyRef: ref(false),
   };
-  const hook = renderHook(
-    ({ id }: { id: string }) => {
+  type Props = { id: string; ws?: string | null };
+  const hook = renderHook<void, Props>(
+    ({ id, ws = "ws" }) => {
       args.chatIdRef.current = id;
+      args.workspaceIdRef.current = ws ?? undefined;
       useChatSessionLoader({
         ...(args as unknown as Parameters<typeof useChatSessionLoader>[0]),
         chatId: id,
+        workspaceId: ws ?? undefined,
       });
     },
-    { initialProps: { id: chatId } },
+    { initialProps: { id: chatId, ws: workspaceId } },
   );
   return { ...hook, args };
 }
 
 describe("useChatSessionLoader console restore", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    consoleState.tabs = {};
     consoleState.setActiveTab.mockClear();
     consoleState.openConsoleFromServer.mockClear();
+    consoleState.openConsoleFromServer.mockImplementation(
+      async (_workspaceId: string, consoleId: string) => {
+        consoleState.tabs[consoleId] = {};
+      },
+    );
+    vi.resetModules();
+    ({ useChatSessionLoader } = await import("./useChatSessionLoader"));
   });
 
   it("reopens the page-load chat's console without focusing it, then focuses for a chat picked later", async () => {
     const { rerender, args } = render("restored-chat");
 
     await waitFor(() =>
-      expect(args.capturedConsoleIdRef.current).toBe("chat-console"),
+      expect(args.capturedConsoleIdRef.current).toBe("restored-chat-console"),
     );
     expect(consoleState.openConsoleFromServer).toHaveBeenCalledWith(
       "ws",
-      "chat-console",
+      "restored-chat-console",
       { focus: false },
     );
     expect(consoleState.setActiveTab).not.toHaveBeenCalled();
 
     rerender({ id: "picked-chat" });
     await waitFor(() =>
-      expect(consoleState.setActiveTab).toHaveBeenCalledWith("chat-console"),
+      expect(consoleState.setActiveTab).toHaveBeenCalledWith(
+        "picked-chat-console",
+      ),
     );
     expect(consoleState.openConsoleFromServer).toHaveBeenLastCalledWith(
       "ws",
-      "chat-console",
+      "picked-chat-console",
       { focus: true },
     );
+  });
+
+  it("brings the page-load chat's console forward when the user returns to it", async () => {
+    const { rerender, args } = render("chat-a");
+    await waitFor(() =>
+      expect(args.capturedConsoleIdRef.current).toBe("chat-a-console"),
+    );
+    expect(consoleState.setActiveTab).not.toHaveBeenCalled();
+
+    rerender({ id: "chat-b" });
+    await waitFor(() =>
+      expect(consoleState.setActiveTab).toHaveBeenLastCalledWith(
+        "chat-b-console",
+      ),
+    );
+
+    rerender({ id: "chat-a" });
+    await waitFor(() =>
+      expect(consoleState.setActiveTab).toHaveBeenLastCalledWith(
+        "chat-a-console",
+      ),
+    );
+  });
+
+  it("keeps the page-load chat unfocused when the workspace resolves after mount", async () => {
+    const { rerender, args } = render("chat-a", null);
+    expect(consoleState.openConsoleFromServer).not.toHaveBeenCalled();
+
+    rerender({ id: "chat-a", ws: "ws" });
+    await waitFor(() =>
+      expect(args.capturedConsoleIdRef.current).toBe("chat-a-console"),
+    );
+    expect(consoleState.openConsoleFromServer).toHaveBeenCalledWith(
+      "ws",
+      "chat-a-console",
+      { focus: false },
+    );
+    expect(consoleState.setActiveTab).not.toHaveBeenCalled();
   });
 });
