@@ -18,3 +18,34 @@ same-as-mode = 'set'
 [[block]]
 target = 'cloudflare/app-router/wrangler.canary.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
 same-as = 'cloudflare/app-router/wrangler.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
+
+# Canary exists to prove what production will run.
+[[block]]
+target = 'cloudflare/app-router/wrangler.jsonc#/compatibility_date'
+same-as = 'cloudflare/app-router/wrangler.canary.jsonc#/compatibility_date'
+
+[[block]]
+target = 'cloudflare/app-router/wrangler.canary.jsonc#/compatibility_date'
+same-as = 'cloudflare/app-router/wrangler.jsonc#/compatibility_date'
+
+# The CLI asks only for scopes the server issues (it drops unknown ones).
+[[block]]
+target = 'packages/cli/src/login.js#/loginScopes'
+same-as = 'api/src/auth/mcp-oauth.service.ts#/MCP_OAUTH_SCOPES'
+same-as-mode = 'subset'
+same-as-pattern = '"(?P<value>mcp|[^"\s]+:[^"\s]+)"'
+
+# Machine-local env vars: never synced to Secret Manager, each listed once.
+[[block]]
+target = 'scripts/secrets.ts#/LOCAL_ONLY'
+keep-unique = '^"(?P<value>[A-Z0-9_]+)",$'
+affects = 'CLAUDE.md:local-only-env-vars'
+
+# Constants the MCP server docs list.
+[[block]]
+target = 'api/src/auth/api-key-scopes.ts#/DEFAULT_WORKSPACE_API_KEY_SCOPES'
+affects = 'docs/src/content/docs/mcp-server.md:default-api-key-scopes'
+
+[[block]]
+target = 'api/src/services/database-connection.service.ts#/READ_ONLY_UNSUPPORTED_TYPES'
+affects = 'docs/src/content/docs/mcp-server.md:read-only-unsupported-engines'
