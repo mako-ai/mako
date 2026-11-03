@@ -181,14 +181,14 @@ export function useBindingProgress(name) {
 // Cloud Run answers a queue timeout with a 429 and no CORS header, so an opaque
 // app frame sees only "Failed to fetch": 12 of 5,087 published parquet requests
 // on 2026-11-02, in 8 bursts. One page-wide gate keeps a page from making it worse.
-// - At most 6 downloads at once; 1 while the gate is recovering from a failure.
+// - At most 12 downloads at once; 1 while the gate is recovering from a failure.
 // - A failure closes the gate for 1, 3, 9, 27, then 60 s, with jitter. Failures
 //   in one closed window count once. Any answer that is not a 429 or 503 opens it.
 // - Past 3 failures in a row, a request while it is closed fails at once with no
 //   network, so a page down to one probe at a time does not keep panels spinning.
 const FETCH_RETRY_MS = [1000, 3000];
 const RETRY_AFTER_CAP_MS = 30000;
-const DOWNLOAD_SLOTS = 6;
+const DOWNLOAD_SLOTS = 12;
 const GATE_MAX_MS = 60000;
 const GATE_FAIL_FAST_AT = 3;
 let gateStreak = 0;
@@ -285,7 +285,7 @@ async function downloadBinding(name, bust, report) {
   const what = 'Data for binding "' + name + '" could not be loaded';
   report({ phase: "requesting", rowsWritten: null, bytes: null, bytesTotal: null });
   // A slot holds the connection, not the wait for a build: one slow warehouse
-  // query must not hold up six bindings that are ready.
+  // query must not hold up twelve bindings that are ready.
   let res = await withSlot(() =>
     fetchRetrying(path + (bust ? "?refresh=" + Date.now() : ""), {
       headers: { accept: PROGRESS_ACCEPT },

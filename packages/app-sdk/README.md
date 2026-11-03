@@ -158,7 +158,7 @@ for the whole heap, and `pressure`.
 
 ### Failed downloads (2.12)
 
-- A page runs at most 6 downloads at once, and one after a failure.
+- A page runs at most 12 downloads at once, and one after a failure.
 - A rejected fetch, a 429 or a 503 closes a page-wide gate for 1, 3, 9, 27, then
   60 s, with jitter. Past 3 failures in a row, a request while it is closed fails
   at once with no network. Any other answer opens it.
