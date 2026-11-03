@@ -30,7 +30,16 @@ import {
   getArtifactStore,
   type ArtifactStore,
 } from "../services/artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  serveJsonArtifact,
+  serveParquetArtifact,
+} from "../services/artifact-delivery.service";
+import { snapshotArtifactKey } from "../services/binding-snapshot";
+import {
+  bindingProgressResponse,
+  parquetLinkOutcome,
+  serverTimingHeader,
+} from "./binding-progress";
 import {
   bindingArtifactKey,
   bindingArtifactKeyByName,
@@ -569,18 +578,53 @@ export async function readDeploymentAsset(
   if (!path.extname(clean)) candidates.push("index.html");
 
   for (const candidate of candidates) {
-    const stored = await existingDeploymentAsset(projectId, sha, candidate);
-    if (!stored) continue;
-    const stream = await stored.store.openReadStream(stored.key);
-    if (stream) {
+    const opened = await openDeploymentAsset(projectId, sha, candidate);
+    if (opened) {
       return {
-        stream,
+        stream: opened.stream,
         contentType: contentTypeFor(candidate),
-        size: await stored.store.getSize(stored.key),
+        size: opened.size,
       };
     }
   }
   return null;
+}
+
+/**
+ * Open one deployment file, searching the same keys and stores in the same
+ * order as existingDeploymentAsset — but as ONE store call per place looked,
+ * not three. On GCS the old exists() + openReadStream()'s own exists() +
+ * getSize() were three sequential metadata round trips before the first byte
+ * of every JS, CSS and HTML file of a published app.
+ */
+async function openDeploymentAsset(
+  projectId: string,
+  sha: string,
+  assetPath: string,
+): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null> {
+  const source = getArtifactSourceStore();
+  const stores = source ? [getArtifactStore(), source] : [getArtifactStore()];
+  for (const key of [
+    deploymentKey(projectId, sha, assetPath),
+    legacyDeploymentKey(projectId, sha, assetPath),
+  ]) {
+    for (const store of stores) {
+      const opened = await openStoredFile(store, key);
+      if (opened) return opened;
+    }
+  }
+  return null;
+}
+
+async function openStoredFile(
+  store: ArtifactStore,
+  key: string,
+): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null> {
+  if (store.openRead) return await store.openRead(key);
+  if (!(await store.exists(key))) return null;
+  const stream = await store.openReadStream(key);
+  if (!stream) return null;
+  return { stream, size: await store.getSize(key) };
 }
 
 /**
@@ -742,7 +786,8 @@ export async function deployBuild(
 
 /**
  * Serve one file of a published app: a build asset, or a materialized data
- * binding at `__data/<name>.parquet`.
+ * binding at `__data/<name>.parquet` (and its instant-open sibling
+ * `__data/<name>.snapshot.json`).
  *
  * The only difference between the signed-in viewer and an anonymous share is
  * WHO is allowed to call it; what gets served is identical — except
@@ -763,9 +808,32 @@ export async function serveDeploymentFile(input: {
    * nobody known (anonymous share, a token minted before viewers existed).
    */
   viewer?: ViewerIdentity | null;
+  /**
+   * The client asked for phase events (`Accept: application/x-ndjson`):
+   * answer a `__data/<name>.parquet` with resolving → signing → ready + the
+   * signed URL instead of a 302 (binding-progress.ts).
+   */
+  progress?: boolean;
+  /**
+   * Epoch ms until which this URL's answer cannot change (app-origin.ts).
+   * A deployment is immutable at its sha, so when the URL itself names the
+   * sha and expires (a stable view token on an app's own origin), every
+   * file except `viewer.json` may be cached until then.
+   */
+  immutableUntil?: number;
+  /** Stable signed parquet redirects; see serveParquetArtifact. */
+  stableData?: { windowMs: number };
 }): Promise<Response | null> {
   const { projectId, sha, assetPath } = input;
-  const cache = input.private ? "private, no-cache" : "no-cache";
+  const immutableFor = input.immutableUntil
+    ? Math.floor((input.immutableUntil - Date.now()) / 1000)
+    : 0;
+  const cache =
+    immutableFor > 0
+      ? `private, max-age=${immutableFor}, immutable`
+      : input.private
+        ? "private, no-cache"
+        : "no-cache";
 
   // Who the app is talking to — the SDK's useViewer(). Two small reads
   // (workspace, membership), only on this one request, never per asset.
@@ -806,7 +874,7 @@ export async function serveDeploymentFile(input: {
   }
 
   const dataMatch = assetPath.match(
-    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
+    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.(parquet|snapshot\.json)$/,
   );
   if (dataMatch) {
     // Resolve by name through the binding's DEFINITION, exactly as the
@@ -816,20 +884,55 @@ export async function serveDeploymentFile(input: {
     // writes: published apps could never see their data (§13.19).
     // The deployment's binding index when it has one (no repository read);
     // a name it does not list is no healthy binding at this commit.
-    const index = await deploymentBindingIndex(projectId, sha);
-    const project = index ? null : await AppProject.findById(projectId);
-    const key = index
-      ? Object.hasOwn(index, dataMatch[1])
-        ? index[dataMatch[1]]
-        : null
-      : project
-        ? await bindingArtifactKeyByName(project, dataMatch[1], "", sha)
-        : null;
-    if (!key) return null;
-    const store = await artifactStoreForRead(key);
-    if (!store) return null;
-    return await serveParquetArtifact(store, key, {
+    if (dataMatch[2] === "snapshot.json") {
+      // Only through the index: a snapshot is an optional preview, and the
+      // 404 for an artifact without one must cost no repository read.
+      const index = await deploymentBindingIndex(projectId, sha);
+      const parquetKey =
+        index && Object.hasOwn(index, dataMatch[1])
+          ? index[dataMatch[1]]
+          : null;
+      if (!parquetKey) return null;
+      const snapshotKey = snapshotArtifactKey(parquetKey);
+      const store = await artifactStoreForRead(snapshotKey);
+      if (!store) return null;
+      return await serveJsonArtifact(store, snapshotKey, {
+        cacheControl: input.private ? "private, no-store" : "no-store",
+      });
+    }
+    const resolve = async () => {
+      const index = await deploymentBindingIndex(projectId, sha);
+      const project = index ? null : await AppProject.findById(projectId);
+      const key = index
+        ? Object.hasOwn(index, dataMatch[1])
+          ? index[dataMatch[1]]
+          : null
+        : project
+          ? await bindingArtifactKeyByName(project, dataMatch[1], "", sha)
+          : null;
+      if (!key) return null;
+      const store = await artifactStoreForRead(key);
+      return store ? { store, key } : null;
+    };
+    if (input.progress) {
+      // The SDK (>= 2.7.4) takes its parquet URL from these events, so a
+      // stable window must reach the signing here too, or an app on its own
+      // origin would get a fresh URL (a cache miss) on every open.
+      return bindingProgressResponse(() =>
+        parquetLinkOutcome(dataMatch[1], resolve, input.stableData),
+      );
+    }
+    const resolveStart = Date.now();
+    const target = await resolve();
+    if (!target) return null;
+    return await serveParquetArtifact(target.store, target.key, {
       cacheControl: input.private ? "private, no-store" : "no-store",
+      extraHeaders: {
+        "Server-Timing": serverTimingHeader({
+          resolve: Date.now() - resolveStart,
+        }),
+      },
+      ...(input.stableData ? { stable: input.stableData } : {}),
     });
   }
 

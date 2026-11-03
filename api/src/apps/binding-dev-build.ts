@@ -59,6 +59,7 @@ import {
   recordDraftBuilt,
   recordDraftFailed,
 } from "./binding-draft-cache";
+import { reportBindingPhase } from "./binding-progress";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps");
@@ -286,6 +287,7 @@ async function planDevBuildUnlabelled(
   if (!NAME_RE.test(name)) {
     throw new DevBuildError("Invalid binding name", 400);
   }
+  reportBindingPhase("checking");
 
   let draft: { binding: AppBinding; connection: IDatabaseConnection };
   let rendered: { code: string; devModifiedAt?: number | null };
@@ -329,7 +331,7 @@ async function planDevBuildUnlabelled(
   }
 
   // Committed = the whole definition matches (connection, database, dbt
-  // link, materialization, query), not just the artifact key, which ignores
+  // link, materialization, row limit, query), not just the artifact key, which ignores
   // the dbt link and the mode. From here on the COMMITTED binding is what is
   // served or built: its key is the one published readers resolve, and
   // materializing it as read here (not re-read by name) means a commit
@@ -369,6 +371,7 @@ async function planDevBuildUnlabelled(
     databaseName: draft.binding.databaseName,
     renderedCode: rendered.code,
     devModifiedAt: rendered.devModifiedAt ?? null,
+    rowLimit: draft.binding.rowLimit,
   });
   if (!isCommitted && !input.refresh) {
     // An explicit refresh skips both: it rebuilds, and a person clicking it
@@ -439,6 +442,10 @@ async function planDevBuildUnlabelled(
         throw error;
       }
       let keptKey: string | undefined;
+      reportBindingPhase("uploading", {
+        rowsWritten: built.rowCount,
+        bytes: built.byteSize,
+      });
       try {
         keptKey = await deps.drafts.built({ projectId, name, hash, ...built });
       } catch (error) {

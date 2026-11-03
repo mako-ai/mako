@@ -14,9 +14,16 @@ import { promises as fsPromises } from "fs";
 import crypto from "crypto";
 import path from "path";
 import { Storage } from "@google-cloud/storage";
+import { GoogleAuth } from "google-auth-library";
 import { loggers } from "../logging";
 
 export type ArtifactStoreType = "filesystem" | "gcs" | "s3";
+
+/** A fixed validity window for a deterministic signed URL. */
+export interface SignedUrlWindow {
+  accessibleAt: Date;
+  expiresAt: Date;
+}
 
 export interface ArtifactStore {
   readonly type: ArtifactStoreType;
@@ -37,9 +44,31 @@ export interface ArtifactStore {
     contentType: string,
     metadata?: Record<string, string>,
   ): Promise<void>;
-  getSignedUrl(key: string, ttlSeconds?: number): Promise<string | null>;
+  /**
+   * A signed read URL. With `window`, the URL is fixed by the window instead
+   * of by "now": the same key signed twice inside one window yields the same
+   * string, which is what lets a browser cache answer it (app-origin.ts).
+   * Stores that cannot honour it may ignore it.
+   */
+  getSignedUrl(
+    key: string,
+    ttlSeconds?: number,
+    window?: SignedUrlWindow,
+  ): Promise<string | null>;
   openReadStream(key: string): Promise<NodeJS.ReadableStream | null>;
   getSize(key: string): Promise<number | null>;
+  /**
+   * Open the object and learn its size in ONE round trip: null when it is
+   * missing, a throw for any other failure. Serving a published app's assets
+   * used to cost exists() + exists() + getMetadata() before the first byte —
+   * three sequential GCS calls per file. The stream is held until the store
+   * has answered, so a missing object is a clean null (→ 404), never a 200
+   * that aborts mid-body. Absent on stores that cannot do better than the
+   * probes; callers fall back to exists/openReadStream/getSize.
+   */
+  openRead?(
+    key: string,
+  ): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null>;
   /**
    * When the object at `key` was last written, or null when it is missing
    * or the store cannot say. Publish uses it to tell a content-addressed
@@ -60,6 +89,18 @@ export interface ArtifactStore {
    * that as "not safe to redirect".
    */
   ensureBrowserCors?(): Promise<boolean>;
+  /**
+   * `gs://bucket/object` for this key. DuckDB httpfs reads this URI when
+   * chat-with-app skips the local copy (`APP_CHAT_PARQUET_DIRECT_GCS`).
+   * Absent on filesystem/S3 stores.
+   */
+  gcsObjectUri?(key: string): string | null;
+  /**
+   * Short-lived OAuth access token from this store's GCS client (ADC /
+   * service account). Used as DuckDB
+   * `CREATE SECRET (TYPE gcs, BEARER_TOKEN …)` when HMAC keys are unset.
+   */
+  getOauthAccessToken?(): Promise<string | null>;
 }
 
 const logger = loggers.api("artifact-store");
@@ -202,6 +243,28 @@ class FilesystemArtifactStore implements ArtifactStore {
     }
   }
 
+  async openRead(
+    key: string,
+  ): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null> {
+    let handle: Awaited<ReturnType<typeof fsPromises.open>>;
+    try {
+      handle = await fsPromises.open(this.resolvePath(key), "r");
+    } catch {
+      return null;
+    }
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) {
+        await handle.close();
+        return null;
+      }
+      return { stream: handle.createReadStream(), size: stat.size };
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
   async getLastModified(key: string): Promise<Date | null> {
     try {
       const stat = await fsPromises.stat(this.resolvePath(key));
@@ -223,6 +286,65 @@ class FilesystemArtifactStore implements ArtifactStore {
       .rm(`${targetPath}.meta.json`, { force: true })
       .catch(() => undefined);
   }
+}
+
+/**
+ * Start a GCS media download and wait for its response headers.
+ *
+ * `File.createReadStream()` sends nothing until someone reads, and reports a
+ * missing object only as an error event after that. `read(0)` starts the
+ * request without consuming a byte; the body then buffers in the stream until
+ * the HTTP response pipes it on. A 404 resolves null; any other failure
+ * rejects, as the exists() probe this replaces did.
+ */
+export async function openGcsRead(
+  stream: NodeJS.ReadableStream & {
+    destroy(error?: Error): unknown;
+    read(size?: number): unknown;
+  },
+): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null> {
+  // Errors after the handover belong to whoever pipes the stream (it sees
+  // them too). This listener only stops one landing in the gap from crashing
+  // the process as an unhandled 'error' event.
+  stream.on("error", () => undefined);
+  return await new Promise((resolve, reject) => {
+    const done = () => {
+      stream.removeListener("response", onResponse);
+      stream.removeListener("error", onError);
+    };
+    const onResponse = (res: {
+      statusCode?: number;
+      headers?: Record<string, string | string[] | undefined>;
+    }) => {
+      // A failure status: the library destroys the stream with the error
+      // next, and onError classifies it (404 → null).
+      if ((res.statusCode ?? 0) >= 400) return;
+      done();
+      const header = (name: string) => {
+        const value = res.headers?.[name];
+        return Array.isArray(value) ? value[0] : value;
+      };
+      // GCS may answer gzip and the library decompresses: then the wire
+      // length is not the body length, so send no Content-Length at all.
+      const encoded = (header("content-encoding") ?? "identity") !== "identity";
+      const length = Number(header("content-length"));
+      resolve({
+        stream,
+        size:
+          !encoded && header("content-length") !== undefined && length >= 0
+            ? length
+            : null,
+      });
+    };
+    const onError = (error: Error & { code?: number | string }) => {
+      done();
+      if (Number(error.code) === 404) resolve(null);
+      else reject(error);
+    };
+    stream.on("response", onResponse);
+    stream.on("error", onError);
+    stream.read(0);
+  });
 }
 
 class GcsArtifactStore implements ArtifactStore {
@@ -299,12 +421,50 @@ class GcsArtifactStore implements ArtifactStore {
     });
   }
 
-  async getSignedUrl(key: string, ttlSeconds = 3600): Promise<string | null> {
-    const [signedUrl] = await this.file(key).getSignedUrl({
-      action: "read",
-      expires: Date.now() + ttlSeconds * 1000,
-    });
+  async getSignedUrl(
+    key: string,
+    ttlSeconds = 3600,
+    window?: SignedUrlWindow,
+  ): Promise<string | null> {
+    // A V2 signature covers only the resource and `Expires`, and RSA PKCS#1
+    // v1.5 is deterministic: a fixed expiry gives a byte-identical URL.
+    // `accessibleAt` pins V4's X-Goog-Date the same way, should the version
+    // ever change.
+    const [signedUrl] = await this.file(key).getSignedUrl(
+      window
+        ? {
+            action: "read",
+            accessibleAt: window.accessibleAt,
+            expires: window.expiresAt,
+          }
+        : {
+            action: "read",
+            expires: Date.now() + ttlSeconds * 1000,
+          },
+    );
     return signedUrl;
+  }
+
+  gcsObjectUri(key: string): string | null {
+    if (!this.bucketName) return null;
+    return `gs://${this.bucketName}/${ensureSafeKey(key)}`;
+  }
+
+  async getOauthAccessToken(): Promise<string | null> {
+    try {
+      // Read-only scope so a DuckDB secret cannot COPY/overwrite parquet
+      // even though the runtime SA may have objectAdmin for uploads.
+      const auth = new GoogleAuth({
+        scopes: ["https://www.googleapis.com/auth/devstorage.read_only"],
+      });
+      const token = await auth.getAccessToken();
+      return token || null;
+    } catch (error) {
+      logger.warn("Could not mint a GCS OAuth token for DuckDB", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 
   /**
@@ -370,6 +530,12 @@ class GcsArtifactStore implements ArtifactStore {
     } catch {
       return null;
     }
+  }
+
+  async openRead(
+    key: string,
+  ): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null> {
+    return await openGcsRead(this.file(key).createReadStream());
   }
 
   async getLastModified(key: string): Promise<Date | null> {

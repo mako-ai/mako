@@ -469,6 +469,67 @@ describe("environments follow dbt/environments.yml; jobs resolve through the ove
     expect(gone.ok).toBe(false);
     if (!gone.ok) expect(gone.status).toBe(404);
   });
+
+  it("a job file with several space-separated selectors syncs into a runnable row", async () => {
+    const project = await seedProject();
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [jobFilePath("manual-build-customer-activation-prod")]: [
+            "name: 'Manual: build customer activation (prod)'",
+            "environment: prod",
+            "commands:",
+            "  # comment lines are fine",
+            "  - run --select stg_crm__reviews stg_crm__teams stg_crm__property_transactions --full-refresh",
+            "  - build --select activation_levels tag:activation",
+            "enabled: true",
+            "",
+          ].join("\n"),
+        },
+      },
+      { message: "merged on GitHub" },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    const row = await DbtJob.findOne({
+      slug: "manual-build-customer-activation-prod",
+    });
+    expect(row?.name).toBe("Manual: build customer activation (prod)");
+    expect(row?.commands).toHaveLength(2);
+    const id = (await loadLiveJobs(project))[0]!.id.toString();
+    expect((await resolveLiveJobRow(project, id)).ok).toBe(true);
+  });
+
+  it("a git-only file that does not apply says why, not 'once synced'", async () => {
+    const project = await seedProject();
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [jobFilePath("bad-env")]: serializeJobFile({
+            name: "Bad env",
+            environment: "staging",
+            commands: ["build"],
+            schedule: null,
+            enabled: true,
+            deferToProduction: false,
+          }),
+        },
+      },
+      { message: "job with unknown environment" },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    const id = (await loadLiveJobs(project))[0]!.id.toString();
+    const resolved = await resolveLiveJobRow(project, id);
+    expect(resolved.ok).toBe(false);
+    if (!resolved.ok) {
+      expect(resolved.status).toBe(409);
+      expect(resolved.error).toContain("unknown environment: staging");
+      expect(resolved.error).not.toContain("once the push is synced");
+    }
+  });
 });
 
 describe("sync from repo", () => {

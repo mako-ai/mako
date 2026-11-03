@@ -253,7 +253,7 @@ export function WorkflowsExplorer() {
   return (
     <ExplorerShell
       title="Workflows"
-      error={buildError}
+      error={buildError ?? overview?.hatchetError ?? null}
       loading={!overview}
       actions={
         <>

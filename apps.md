@@ -273,7 +273,7 @@ Two tiers replace the single CDN iframe:
 
 **Dev preview (editing).** The sandbox runs `vite dev`; E2B exposes it at a public per-sandbox URL; `AppRenderer` iframes that URL. HMR works natively. The `@makoai/app-sdk` becomes a real npm package (dep of the scaffold) that keeps the same API (`useQuery`, `useDuckDB`, `useTheme`, `useLocation`) and the same postMessage bridge to the authenticated parent window — so live queries, parquet/DuckDB, theming, and virtual routing carry over with minimal renderer changes, and the iframe still never holds credentials. When no sandbox is running, the preview shows the last published build with a "start dev session" affordance.
 
-**Published (deployed).** "Publish" = deploy an **immutable commit** (never a moving branch head; a dirty worktree gets an explicit "commit and publish"): run `vite build` with `--frozen-lockfile` in a fresh build sandbox, upload `dist/` to a GCS/R2 bucket under a content-addressed deployment prefix, record an `AppDeployment` (commit SHA, lockfile digest, artifact digest), and point the routing entry at it. Rollback is a pointer change, no rebuild. Serving reuses the Cloudflare pattern we already run (`cloudflare/app-router/` KV-routed Worker) — but on a **separate registrable domain, never a `mako.ai` subdomain** (e.g. `<stable-app-id>.makoapps.dev`, registered in the Public Suffix List so sibling apps are different browser _sites_). User code sharing a registrable domain with the control plane would share cookie scope and same-site trust; this was a flaw in the first draft of this RFC. The Worker enforces the existing public-share model (tokens, password unlock, `allowLiveQueries`); runtime data access continues through `api/src/routes/public-share.ts` initially, evolving to a dedicated runtime capability endpoint (opaque, short-lived, deployment-scoped tokens exchanged via one-time bootstrap codes) as the end state.
+**Published (deployed).** "Publish" = deploy an **immutable commit** (never a moving branch head; a dirty worktree gets an explicit "commit and publish"): run `vite build` with `--frozen-lockfile` in a fresh build sandbox, upload `dist/` to a GCS/R2 bucket under a content-addressed deployment prefix, record an `AppDeployment` (commit SHA, lockfile digest, artifact digest), and point the routing entry at it. Rollback is a pointer change, no rebuild. Serving reuses the Cloudflare pattern we already run (`cloudflare/app-router/` KV-routed Worker) — but on a **separate registrable domain, never a `mako.ai` subdomain** (e.g. `<stable-app-id>.makousercontent.com`, registered in the Public Suffix List so sibling apps are different browser _sites_). User code sharing a registrable domain with the control plane would share cookie scope and same-site trust; this was a flaw in the first draft of this RFC. The Worker enforces the existing public-share model (tokens, password unlock, `allowLiveQueries`); runtime data access continues through `api/src/routes/public-share.ts` initially, evolving to a dedicated runtime capability endpoint (opaque, short-lived, deployment-scoped tokens exchanged via one-time bootstrap codes) as the end state.
 
 This answers "if the app installs packages, how do we host it": packages are resolved at build time by a real bundler; hosting is static output, not CDN import-maps. **Scope note:** v2 published apps are static SPAs + data via Mako APIs. Server-side app code (API routes, SSR) is explicitly out of scope; the escape hatch for compute is scheduled scripts (4.9).
 
@@ -389,7 +389,7 @@ Everything lives in the binding file; nothing in Mongo except derived cache.
 
 **Block 4 — Scheduler.** Derived schedule index rebuilt on commit/merge-to-main (parse front matter during the mirror-push hook) → registry (Mongo now, Postgres later; cache, rebuildable) → Inngest cron materializes due bindings, reusing v1 scheduling patterns.
 
-**Block 5 — Runtime polish.** `__data/<name>.parquet`: Range support + ETag (Content-Length shipped 2026-07-15); skill guidance for hyparquet/duckdb-wasm; consider a tiny v2 SDK helper later.
+**Block 5 — Runtime polish.** `__data/<name>.parquet`: Range support + ETag (Content-Length shipped 2026-07-15); skill guidance for hyparquet/duckdb-wasm; consider a tiny v2 SDK helper later. Opt-in preview snapshots (SDK 2.9, PR #1140): each build writes its first 500 rows / 200 KiB as `<key>.snapshot.json` beside the parquet, read back from the built file and encoded with the SDK's own toPlainRows rules (data-core.js); `useQuery(name, { snapshot: true })` exposes them as `preview` while `data` stays null. Old snapshot deleted before the parquet upload, so no build pairs with another build's preview. Published hosts resolve it through the deployment binding index only.
 
 Order: 1 → 2 → 3; 4 needs 1; 5 independent. Adjacent, already recorded elsewhere: Phase B substrate pivot (GitHub API reads, sandbox clones, delete local git), dev GitHub App callback repoint to app.mako.ai at merge.
 
@@ -3461,3 +3461,79 @@ on main". Reads, favourites and the explorer are testable there; moves and
 folders are proven by `app-index.service.test.ts`. And the preview's bound
 repo is the REAL workspace repo, so a Workspace-tree move from a preview
 would make prod unpublish that app — test moves in a personal tree only.
+
+## 30. Each app gets its own origin, so the browser cache works (2026-10-22)
+
+Opening an app re-downloaded 12 MB every time in the bench below. The
+published iframe is sandboxed without `allow-same-origin`, so its origin is
+opaque. Chromium gives an opaque-origin frame a transient network isolation
+key and never reads or writes the HTTP cache for it. The 6 MB DuckDB WASM,
+the bundle and every parquet came over the wire on every open.
+
+**Design.** `APPS_ORIGIN_BASE=https://makousercontent.com` (off by default) serves
+each published app from `https://<appId>.makousercontent.com/api/apps-preview/<token>/`
+and frames it WITH `allow-same-origin`. That is §4.7's end state, reached
+through the existing token route instead of a new Worker.
+
+- The origin is foreign to Mako, so the app still gets none of Mako's
+  cookies, storage or DOM. The apps domain must be a separate registrable
+  domain: `appOriginConfig()` refuses a base on CLIENT_URL's site. On a
+  `mako.ai` subdomain the session cookie (SameSite=Lax) rides on any
+  credentialed fetch the app makes to app.mako.ai; the bench shows it.
+- One hostname per app keeps apps apart: two app frames are two origins.
+  Without a PSL entry they share one site, which also means one cache
+  partition, so the WASM downloads once for all apps.
+- An app host answers one thing (`middleware/apps-host-gate.ts`): that
+  app's files under a `pub.` token minted for that app. Any other path, and
+  another app's token, is a 404. Responses carry `frame-ancestors <CLIENT_URL>`,
+  no X-Frame-Options, no Set-Cookie, `Referrer-Policy: no-referrer`.
+- The frame gets `allow-same-origin` only when its URL is cross-origin to
+  the page (`app/src/lib/app-frame.ts`). Message listeners check
+  `event.origin` on top of `event.source`.
+
+**Stable URLs.** A cache hit needs the same URL twice. The view token is now
+a pure function of a 1 h window (`APPS_ORIGIN_TOKEN_WINDOW_SECONDS`), and on
+an app host every deployment file except `viewer.json` is
+`private, max-age=<token life>, immutable`. Parquet 302s point at a signed
+URL fixed for a 6 h window (`APPS_STABLE_SIGNED_URL_WINDOW_SECONDS`; V2
+signatures are deterministic for a fixed `Expires`), and the 302 itself may
+be reused for up to 10 min. Artifact keys are overwritten on refresh, so
+correctness rides on GCS: a signed read of a private object answers
+`Cache-Control: private, max-age=0` with an ETag, the browser revalidates
+every use, and unchanged data is a bodiless 304.
+
+**Also fixed, flag or not.** A token URL opened as a top-level page ran app
+code as app.mako.ai. HTML and SVG from the token route on Mako's origin now
+carry `Content-Security-Policy: sandbox …`, the one policy shares use too
+(`api/src/apps/app-document-sandbox.ts`, from #1146).
+
+**Rejected.** A parent-page broker (Mako fetches WASM and parquet, posts
+the bytes in) needs SDK changes, still leaves the bundle and DuckDB's worker
+uncached, and puts the session-holding page in the data path.
+`<iframe credentialless>` partitions the cache by a per-document nonce, so it
+caches nothing across loads either.
+
+**Bench** (`scripts/app-origin-cache-bench.mjs`, Chrome for Testing 1248,
+synthetic server with Mako's headers, 6 MB WASM + 200 KB bundle + 2 × 3 MB
+parquet). The script now runs headless only. Chrome's headless shell kept the
+cross-site WASM even in the opaque frame (old load 2 = 6.20 MiB, no parquet
+or bundle hits), so it understates today's cost. The table is the full
+Chrome run, which matches the 6060 kB × 2 measured in Joan's Chrome:
+
+| Setup | Load 1 | Load 2 | Session cookie on frame's fetch to Mako |
+| --- | --- | --- | --- |
+| Opaque origin (today) | 12.20 MiB | 12.20 MiB | no |
+| `<id>.makoapps.test` + allow-same-origin | 12.20 MiB | 0.00 MiB (2 × 304) | no |
+| `<id>.apps.mako.test` (same site) | 12.20 MiB | 0.00 MiB | **yes** |
+
+**Open.** Anonymous share links still run app code top-level on
+app.mako.ai (`PublicSharePage` navigates to `/api/share/<t>/app/`), with the
+visitor's session in reach. Moving shares to the app origin needs the
+password-unlock cookie to move with them.
+
+Code: `api/src/apps/app-origin.ts`, `api/src/middleware/apps-host-gate.ts`,
+`routes/apps-preview.ts`, `routes/apps.ts` (view-token),
+`services/artifact-delivery.service.ts`, `cloudflare/app-router/worker.mjs`
+(`APPS_DOMAIN`). Tests: `app-origin.test.ts`,
+`artifact-delivery.service.test.ts`, `app/src/lib/app-frame.test.ts`,
+`worker.test.mjs`.

@@ -29,10 +29,13 @@ Bindings are how apps reach workspace data. A binding is one file — `bindings/
 -- connection: <workspace connection id>
 -- materialization: parquet
 -- schedule: 0 6 * * *
+-- row_limit: 3000000
 SELECT category, amount, created_at FROM orders
 ```
 
-Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**. The query is materialized into a Parquet artifact; at runtime the preview serves each artifact at the app-relative URL `__data/<name>.parquet`, ready for hyparquet or DuckDB-WASM. In app code, read bindings through `@makoai/app-sdk` — the published npm package (apps depend on it with a caret range; it is no longer vendored into the workspace repo):
+`row_limit` is optional. A binding holds up to 2,000,000 rows by default and may declare up to 5,000,000 (`3000000`, `3_000_000` or `3M`). Operators set both numbers with `PARQUET_ROW_LIMIT` and `PARQUET_MAX_ROW_LIMIT`. Each binding downloads whole into the viewer's browser tab and sits in DuckDB-WASM memory. That costs about 950 bytes per row for a 43-column binding and about 180 bytes for a 14-column one. DuckDB-WASM stops at 3.1 GB per page, for all bindings together, so a 43-column binding runs out near 3.3M rows. Past a million rows, select fewer columns, pre-aggregate in SQL, or shard the binding by year or country. In the page, `useQuery(name)` turns at most 500,000 rows into JS objects and sets `truncated` past that (the `rowLimit` option). Aggregate bigger bindings in `useDuckDB` SQL or read them with `{ format: "arrow" }`.
+
+Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**. The query is materialized into a Parquet artifact; at runtime the preview serves each artifact at the app-relative URL `__data/<name>.parquet`, In app code, read bindings through `@makoai/app-sdk` — the published npm package (apps depend on it with a caret range; it is no longer vendored into the workspace repo):
 
 ```tsx
 import { useQuery, useDuckDB } from "@makoai/app-sdk"; // apps created before 2026-09: "@mako/app-sdk" (older alias, same package)
@@ -48,7 +51,39 @@ const { data: totals } = useDuckDB(
 const { refresh, refreshing } = useQuery("recent_orders");
 ```
 
+`useDuckDB` downloads only the bindings its SQL names (SDK 2.8+). Before 2.8 it fetched every binding in `__data/index.json` before running any query. Joins across bindings still work by name, and a binding the name scan misses loads when DuckDB reports its table missing. Each binding is decoded once into an in-memory DuckDB table, so repeated queries skip the parquet decode. `SHOW TABLES` and `information_schema` queries still load every binding.
+
+For anything the hooks do not cover, use the SDK's escape hatches (2.8+) on the same engine. Never import `@duckdb/duckdb-wasm`, `hyparquet` or `apache-arrow` parquet readers yourself. A second engine means a second ~1 s boot and a second copy of the data.
+
+| Need | Use |
+|---|---|
+| Arrow Table instead of rows | `useDuckDB(sql, { format: "arrow" })` |
+| Your own SQL session | `getDuckDB()` returns the shared engine (never close or terminate it). `withConnection(conn => conn.query(sql))` |
+| A binding as a table | `await ensureBinding("orders")` returns `"orders"`. `unloadBinding(name)` frees it |
+| Raw parquet bytes | `fetchBindingBytes(name, { onProgress, fresh })` |
+| Memory cap for binding tables | `setBindingMemoryBudget(bytes)` (default 1.5 GiB; least recently read tables become views over their parquet, SDK 2.12) |
+| Memory across app tabs | Past 2 GiB, Mako ends the DuckDB worker of the least recently shown read-only app (SDK 2.13). `getDuckDB()`, `withConnection()`, `ensureBinding()` or `useDuckDB` SQL that writes keep that app's worker for the page's life |
+
 `refresh()` POSTs to `__data/<name>/refresh`, the data URL's sibling, so the same server that serves the data rebuilds it — signed-in viewers can always refresh; a public share link only when its owner enabled live queries, throttled per binding. A refused refresh rejects with `status` 403/429 (with `retryAfterMs`), a failed query with 502 and its error message.
+
+From SDK 2.7.4 every hook also returns `phase`: what `loading` or `refreshing` is waiting on. `bindingPhaseLabel(q)` turns it into a caption. "Building from warehouse" means the query is running (a refresh, a laptop dev build, a sandbox live binding). "Getting download link" means the file exists and Mako is signing its URL (well under a second; a published app never builds on a read). "Downloading" and "Loading into DuckDB" are the browser's own work. The server reports its phases on the same request as NDJSON when asked with `Accept: application/x-ndjson`; older servers answer as before.
+
+### Preview rows while the data loads (SDK 2.9+)
+
+`useQuery(name, { snapshot: true })` adds a `preview` field. Every build since this release also writes its first 500 rows (200 KiB cap) next to the parquet, served as `__data/<name>.snapshot.json`. That file is a few KB of JSON, so it arrives before DuckDB-WASM boots.
+
+```tsx
+const { data, loading, preview } = useQuery("recent_orders", { snapshot: true });
+if (loading) return <OrdersTable rows={preview?.data ?? []} skeleton />;
+return <OrdersTable rows={data ?? []} />;
+```
+
+- `data` stays null and `loading` stays true until the full parquet is in. Code that sums or filters `data` never sees the preview.
+- `preview` is `{ data, fields, rowCount, truncated, builtAt }` while loading. It turns null when the rows arrive or the load fails.
+- Preview values have the same types as `data`: DATE → `"YYYY-MM-DD"`, TIMESTAMP → ISO 8601, a 64-bit integer past 2^53 → BigInt.
+- The snapshot holds the first N rows of the build stream, in the query's own order. Without an `ORDER BY` that order is the warehouse's choice. Use it for a skeleton or a first paint. Never sum, count or filter it.
+- `preview` stays null for a binding with no snapshot: built before this release (refresh it once), a live binding, a draft still building on a laptop, or a DECIMAL, LIST or STRUCT column. The hook then behaves exactly as without the option.
+- Without the option, `useQuery` behaves exactly as before and fetches no snapshot. `useDuckDB` never reads snapshots.
 
 A binding can pin a workspace [dbt project](/transforms/) via `-- dbt_project: <id>` front matter for environment-aware schemas.
 
@@ -218,7 +253,7 @@ preview the app as a specific workspace member during `pnpm dev`.
 ## Security Model
 
 - Binding queries are validated against the workspace's connections and run server-side with read-only enforcement on materialization SQL.
-- A binding is the app's whole data, so one past the 500,000-row Parquet limit **fails its build** (the run records the error, and the previously built artifact keeps being served) instead of being silently cut to 500,000 rows. Narrow or aggregate the binding's SQL.
+- A binding is the app's whole data, so one past its row limit (2,000,000 by default, `-- row_limit:` up to 5,000,000) **fails its build** instead of being silently cut. The run records the error, and the previously built artifact keeps being served. The error names the binding, the rows its query returned and the `-- row_limit:` that would fit them. Raise the limit, or aggregate or shard the binding's SQL.
 - The sandbox is an isolated microVM per workspace; app code and shell commands never run in Mako's API process.
 - The preview iframe is sandboxed; app code receives query *results* only — never credentials.
 

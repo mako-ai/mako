@@ -41,7 +41,7 @@ function fakeServer(root) {
   };
 }
 
-function request(handler, url, method) {
+function request(handler, url, method, headers = {}) {
   return new Promise(resolve => {
     const chunks = [];
     const res = {
@@ -55,7 +55,7 @@ function request(handler, url, method) {
     // createReadStream(...).pipe(res) support
     res.pipe = undefined;
     const next = () => resolve({ status: "next" });
-    handler({ url, method }, res, next);
+    handler({ url, method, headers }, res, next);
   });
 }
 
@@ -190,6 +190,45 @@ test("parquet: built from the LOCAL binding text, cached by that text", async ()
     assert.equal(r3.body.toString(), "PAR1:select 1 as connected");
     assert.equal(calls.length, 2);
     assert.deepEqual(calls[1].body, { source: "select 1 as connected", async: true });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("an outdated cache of the same text is served at once and rebuilt in the background", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  const api = devBuildApi(calls);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let asked = 0;
+  globalThis.fetch = async (url, init) => {
+    if (asked++) await gate; // the first build answers; later ones wait
+    return api(url, init);
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ revalidateMs: 1 }).configureServer(server);
+    const r1 = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r1.headers["x-mako-data"], "api");
+    await new Promise(r => setTimeout(r, 5));
+    fs.writeFileSync(path.join(app, "bindings", "sales.sql"), "select 1"); // same text
+    // Past revalidateMs: the copy on disk answers without waiting on the API…
+    const r2 = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r2.headers["x-mako-data"], "revalidating");
+    assert.equal(r2.body.toString(), "PAR1:select 1");
+    assert.equal(asked, 2, "…while one rebuild runs");
+    const r3 = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r3.headers["x-mako-data"], "revalidating");
+    assert.equal(asked, 2, "concurrent loads share the rebuild");
+    release();
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(calls.length, 2);
+    // ?refresh still waits for a build.
+    const r4 = await request(handlers[0], "/__data/sales.parquet?refresh=1");
+    assert.equal(r4.headers["x-mako-data"], "api");
+    assert.equal(asked, 3);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -342,7 +381,7 @@ test("refresh against an older API (JSON 404) falls back to materialize", async 
 
 // A fake API that answers dev-build with a job (202) and makes the caller
 // poll it `pending` times before it is ready.
-function jobApi(calls, { pending = 2, fail } = {}) {
+function jobApi(calls, { pending = 2, fail, phases } = {}) {
   let polls = 0;
   return async (url, init = {}) => {
     const u = String(url);
@@ -352,7 +391,11 @@ function jobApi(calls, { pending = 2, fail } = {}) {
     }
     if (u.endsWith("/binding-jobs/j1")) {
       polls++;
-      if (polls <= pending) return new Response(JSON.stringify({ success: true, jobId: "j1", status: "running" }));
+      if (polls <= pending) {
+        return new Response(
+          JSON.stringify({ success: true, jobId: "j1", status: "running", ...(phases?.[polls - 1] ?? {}) }),
+        );
+      }
       if (fail) {
         return new Response(
           JSON.stringify({ success: true, jobId: "j1", status: "error", error: fail, errorStatus: 502 }),
@@ -587,6 +630,146 @@ test("refresh relays the API's refusal with its message", async () => {
       success: false,
       error: "You have read-only access to this app.",
     });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+const NDJSON = { accept: "application/x-ndjson, */*;q=0.5" };
+const lines = r => r.body.toString().trim().split("\n").map(l => JSON.parse(l));
+
+test("a page that asks for phases hears the job's, then takes the bytes once", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = jobApi(calls, {
+    phases: [{ phase: "querying_warehouse" }, { phase: "writing_parquet", rowsWritten: 5000 }],
+  });
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    const r = await request(handlers[0], "/__data/sales.parquet", "GET", NDJSON);
+    assert.equal(r.headers["content-type"], "application/x-ndjson");
+    const events = lines(r);
+    assert.deepEqual(events.map(e => e.phase), ["checking", "querying_warehouse", "writing_parquet", "ready"]);
+    assert.equal(events[2].rowsWritten, 5000);
+    const take = events[3].url;
+    assert.match(take, /^__data\/sales\.parquet\?take=[0-9a-f]{16}$/);
+    // The follow-up GET is the bytes just built, never another build.
+    const before = calls.length;
+    const bytes = await request(handlers[0], "/" + take);
+    assert.equal(bytes.body.toString(), "PAR1:job");
+    assert.equal(calls.length, before);
+    // A take is good once.
+    globalThis.fetch = async () => new Response("unexpected", { status: 500 });
+    const again = await request(handlers[0], "/" + take);
+    assert.equal(again.headers["x-mako-data"], "cache");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a cached binding answers bytes even when the page asks for phases", async () => {
+  const { app } = repo();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = jobApi([], { pending: 0 });
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    await request(handlers[0], "/__data/sales.parquet");
+    const r = await request(handlers[0], "/__data/sales.parquet", "GET", NDJSON);
+    assert.equal(r.headers["content-type"], "application/vnd.apache.parquet");
+    assert.equal(r.headers["x-mako-data"], "cache");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("refresh with phases ends in ready with the refresh answer, or failed with its status", async () => {
+  const { app } = repo();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = jobApi([], { pending: 1, phases: [{ phase: "uploading", rowsWritten: 12, bytes: 9 }] });
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    const r = await request(handlers[0], "/__data/sales/refresh", "POST", NDJSON);
+    const events = lines(r);
+    assert.deepEqual(events.map(e => e.phase), ["checking", "uploading", "ready"]);
+    assert.equal(events[2].success, true);
+    assert.equal(events[2].materializedAt, "2026-09-28T11:00:00.000Z");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  globalThis.fetch = jobApi([], { pending: 0, fail: "Syntax error at line 3" });
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    const r = await request(handlers[0], "/__data/sales/refresh", "POST", NDJSON);
+    const events = lines(r);
+    const last = events[events.length - 1];
+    assert.equal(last.phase, "failed");
+    assert.equal(last.status, 502);
+    assert.match(last.error, /Syntax error/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("snapshot: asked by the LOCAL text, so an edited query never gets the committed preview", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  // The API knows a stored artifact only for the committed text.
+  globalThis.fetch = async (url, init = {}) => {
+    const body = init.body ? JSON.parse(init.body) : null;
+    calls.push({ method: init.method ?? "GET", url: String(url).split("/apps/")[1], body });
+    if (String(url).endsWith("/dev-snapshot") && body?.source === "select 1") {
+      return new Response('{"version":1,"rows":[{"a":1}]}', { status: 200 });
+    }
+    return new Response('{"success":false,"error":"Snapshot not available"}', { status: 404 });
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData().configureServer(server);
+    const r1 = await request(handlers[0], "/__data/sales.snapshot.json");
+    assert.equal(r1.status, 200);
+    assert.equal(r1.body.toString(), '{"version":1,"rows":[{"a":1}]}');
+    assert.deepEqual(calls[0], {
+      method: "POST",
+      url: "my-app/bindings/sales/dev-snapshot",
+      body: { source: "select 1" },
+    });
+
+    // A draft edit: the API has nothing for this text yet → 404, and no
+    // other request (the snapshot route never builds).
+    fs.writeFileSync(path.join(app, "bindings", "sales.sql"), "select 2 as draft");
+    const r2 = await request(handlers[0], "/__data/sales.snapshot.json");
+    assert.equal(r2.status, 404);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1].body, { source: "select 2 as draft" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("snapshot: committed by name without a local file; failures are 404s", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  let fail = false;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push((init.method ?? "GET") + " " + String(url).split("/apps/")[1]);
+    if (fail) throw new Error("offline");
+    return new Response('{"version":1,"rows":[]}', { status: 200 });
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ materialize: false }).configureServer(server);
+    assert.equal((await request(handlers[0], "/__data/sales.snapshot.json")).status, 200);
+    assert.deepEqual(calls, ["GET my-app/bindings/sales/snapshot"]);
+    fail = true;
+    assert.equal((await request(handlers[0], "/__data/sales.snapshot.json")).status, 404);
+    assert.equal((await request(handlers[0], "/__data/bad%20name.snapshot.json")).status, 400);
   } finally {
     globalThis.fetch = realFetch;
   }

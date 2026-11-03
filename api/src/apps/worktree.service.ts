@@ -3275,13 +3275,10 @@ export async function ensureProjectRow(
   // stamp the literal "publish" as owner_id, nobody could ever restrict or
   // share it, and a private access setting would lock out even admins.
   const actor = isUserActor(actorId) ? actorId : undefined;
-  // A folder under users/<handle>/apps is its owner's alone (§29): its row is
-  // theirs whoever's action creates it, and nobody else ever claims it. The
-  // owner is the handle mapping's answer for the folder, never the caller —
-  // otherwise any member reaching a sharing route of a row-less personal app
-  // (never published, or a creation rolled back after its push) became its
-  // owner, then shared it. A segment the mapping does not know is nobody's:
-  // the row stays ownerless and unclaimable.
+  // A folder under users/<handle>/apps belongs to its owner (§29). The owner
+  // is the handle mapping's answer for the folder, whoever's action creates
+  // or first touches the row. A segment the mapping does not know is nobody's:
+  // the row stays ownerless.
   const personal = await personalTreeOwner(project);
   const owner = personal ? personal.ownerId : actor;
   const existing = await AppProject.findOne({

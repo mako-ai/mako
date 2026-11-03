@@ -15,14 +15,31 @@ import type { Context } from "hono";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
 import {
   refreshBindingHttp,
+  refreshBindingProgress,
   refreshPathBinding,
 } from "../apps/binding-refresh";
+import {
+  bindingProgressResponse,
+  parquetLinkOutcome,
+  serverTimingHeader,
+  wantsBindingProgress,
+} from "../apps/binding-progress";
 import { AppProject } from "../database/workspace-schema";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { resolveAppViewerById } from "../apps/app-viewer.service";
 import { getArtifactStore } from "../services/artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  serveJsonArtifact,
+  serveParquetArtifact,
+} from "../services/artifact-delivery.service";
+import { snapshotArtifactKey } from "../services/binding-snapshot";
 import { readPreviewAsset, resolvePreviewGrant } from "../apps/preview.service";
+import {
+  appIdFromHost,
+  requestHost,
+  signedUrlWindowMs,
+} from "../apps/app-origin";
+import { sandboxAppDocument } from "../apps/app-document-sandbox";
 import { createRouter } from "../openapi/core";
 
 export const appsPreviewRoutes = createRouter();
@@ -60,15 +77,17 @@ async function serveAsset(c: Context): Promise<Response> {
     if (!name || !project) {
       return c.json({ success: false, error: "Not found" }, 404);
     }
+    const input = { project, name, actorId: "", at: grant.publishedSha };
+    if (wantsBindingProgress(c.req.header("accept"))) {
+      return await withQueryLabels({ mako_trigger: "preview" }, async () =>
+        refreshBindingProgress(input, {
+          headers: { "Access-Control-Allow-Origin": "*" },
+        }),
+      );
+    }
     const { status, body, headers } = await withQueryLabels(
       { mako_trigger: "preview" },
-      () =>
-        refreshBindingHttp({
-          project,
-          name,
-          actorId: "",
-          at: grant.publishedSha,
-        }),
+      () => refreshBindingHttp(input),
     );
     return c.json(body, status, {
       ...headers,
@@ -76,11 +95,22 @@ async function serveAsset(c: Context): Promise<Response> {
     });
   }
 
+  // On the app's own origin (app-origin.ts; the host gate has already
+  // proved this token names this host's app) the browser cache works, so
+  // let it: the token is stable for a window and names an immutable commit.
+  const onAppHost = appIdFromHost(requestHost(name => c.req.header(name)));
+
   // A published deployment is served from the artifact store, not a
   // directory — but through the same token, because the reason for the token
   // is the sandboxed iframe, which does not care where the bytes come from.
   if (grant.publishedSha) {
     const response = await serveDeploymentFile({
+      ...(onAppHost
+        ? {
+            immutableUntil: grant.expiresAt,
+            stableData: { windowMs: signedUrlWindowMs() },
+          }
+        : {}),
       projectId: grant.projectId,
       sha: grant.publishedSha,
       assetPath: assetPathFor(c, token),
@@ -91,6 +121,7 @@ async function serveAsset(c: Context): Promise<Response> {
       // (no cookie in the sandboxed iframe) — `__data/viewer.json` is
       // answered from it (apps.md §28).
       viewer: grant.viewer ?? null,
+      progress: wantsBindingProgress(c.req.header("accept")),
     });
     if (!response) {
       return c.json({ success: false, error: "Not found" }, 404);
@@ -102,6 +133,9 @@ async function serveAsset(c: Context): Promise<Response> {
     // static preview below sets, for the same reason.
     const headers = new Headers(response.headers);
     headers.set("Access-Control-Allow-Origin", "*");
+    // On Mako's origin, a top-level open of this URL must not run app code
+    // as app.mako.ai (app-document-sandbox.ts). An app host is foreign.
+    if (!onAppHost) sandboxAppDocument(headers);
     return new Response(response.body, { status: response.status, headers });
   }
 
@@ -118,24 +152,68 @@ async function serveAsset(c: Context): Promise<Response> {
     });
   }
 
-  // Data bindings: `__data/<name>.parquet` (app-relative, so it works under
-  // the token prefix in BOTH static and dev previews). Streams the
-  // materialized artifact for this project — served BEFORE the dev proxy so
-  // vite never sees it.
+  // Data bindings: `__data/<name>.parquet` and `__data/<name>.snapshot.json`
+  // (app-relative, so they work under the token prefix in BOTH static and
+  // dev previews). Served BEFORE the dev proxy so vite never sees them.
   const dataMatch = assetPathFor(c, token).match(
-    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
+    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.(parquet|snapshot\.json)$/,
   );
   if (dataMatch) {
-    const project = await AppProject.findById(grant.projectId);
-    const key = project
-      ? await bindingArtifactKeyByName(project, dataMatch[1], "")
-      : null;
-    const response = key
-      ? await serveParquetArtifact(getArtifactStore(), key, {
+    if (dataMatch[2] === "snapshot.json") {
+      const project = await AppProject.findById(grant.projectId);
+      const parquetKey = project
+        ? await bindingArtifactKeyByName(project, dataMatch[1], "")
+        : null;
+      const snapshot = parquetKey
+        ? await serveJsonArtifact(
+            getArtifactStore(),
+            snapshotArtifactKey(parquetKey),
+            {
+              cacheControl: "no-store",
+              extraHeaders: { "Access-Control-Allow-Origin": "*" },
+            },
+          )
+        : null;
+      return (
+        snapshot ??
+        c.json(
+          {
+            success: false,
+            error: `Snapshot for binding "${dataMatch[1]}" is not available`,
+          },
+          404,
+          { "Access-Control-Allow-Origin": "*" },
+        )
+      );
+    }
+    // A repo read (the binding's definition decides its key): this is the
+    // `resolving` phase a progress client sees.
+    const resolve = async () => {
+      const project = await AppProject.findById(grant.projectId);
+      const key = project
+        ? await bindingArtifactKeyByName(project, dataMatch[1], "")
+        : null;
+      return key ? { store: getArtifactStore(), key } : null;
+    };
+    if (wantsBindingProgress(c.req.header("accept"))) {
+      return bindingProgressResponse(
+        () => parquetLinkOutcome(dataMatch[1], resolve),
+        { headers: { "Access-Control-Allow-Origin": "*" } },
+      );
+    }
+    const resolveStart = Date.now();
+    const target = await resolve();
+    const response = target
+      ? await serveParquetArtifact(target.store, target.key, {
           cacheControl: "no-store",
           // The preview page fetches cross-origin; without ACAO the browser
           // rejects both the stream and the redirect before following it.
-          extraHeaders: { "Access-Control-Allow-Origin": "*" },
+          extraHeaders: {
+            "Access-Control-Allow-Origin": "*",
+            "Server-Timing": serverTimingHeader({
+              resolve: Date.now() - resolveStart,
+            }),
+          },
         })
       : null;
     if (!response) {
@@ -151,7 +229,7 @@ async function serveAsset(c: Context): Promise<Response> {
   if (!asset) {
     return c.json({ success: false, error: "Not found" }, 404);
   }
-  return c.body(new Uint8Array(asset.contents), 200, {
+  const headers = new Headers({
     "Content-Type": asset.contentType,
     "Cache-Control": "no-store",
     // Belt-and-braces: previewed code must never be served as-if-Mako HTML.
@@ -162,6 +240,9 @@ async function serveAsset(c: Context): Promise<Response> {
     // and cookie-free, so a wildcard is safe and required for modules to run.
     "Access-Control-Allow-Origin": "*",
   });
+  // The static preview is always on Mako's origin.
+  sandboxAppDocument(headers);
+  return new Response(new Uint8Array(asset.contents), { status: 200, headers });
 }
 
 appsPreviewRoutes.get("/:token", serveAsset);

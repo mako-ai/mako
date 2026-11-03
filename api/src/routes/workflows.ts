@@ -24,8 +24,10 @@ import {
 } from "../auth/api-key-scopes";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { checkBillingLimits } from "../billing/usage-limit.middleware";
+import { type IWorkflowRunRef } from "../database/schema";
 import { AppProject, Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { getRequestContext } from "../logging/context";
 import {
   AuthenticatedContext,
   requireWorkspace,
@@ -36,6 +38,7 @@ import { workspaceService } from "../services/workspace.service";
 import { runStepAgent } from "../workflows/agent";
 import {
   HatchetError,
+  isHatchetId,
   readWorkspaceTenant,
   requireTenant,
   startRun,
@@ -46,9 +49,14 @@ import {
   WorkflowQueryError,
   runWorkflowQuery,
 } from "../workflows/query";
-import { readWorkflowsOverview } from "../workflows/runs";
+import {
+  readWorkflowFlow,
+  readWorkflowsOverview,
+  retryRun,
+} from "../workflows/runs";
 import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
-import { startSandboxRun } from "../workflows/sandbox";
+import { readWorkflowCost } from "../workflows/costs";
+import { isSandboxRunId, startSandboxRun } from "../workflows/sandbox";
 import { waitForRun } from "../workflows/status";
 import { isWebhookSecret, setTriggers } from "../workflows/webhook";
 
@@ -102,7 +110,7 @@ workflowRoutes.use("*", unifiedAuthMiddleware, requireWorkspace);
 workflowRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const allowed =
     c.req.method === "GET" ||
-    (c.req.path.endsWith("/run") ? mayRun(c) : mayChange(c));
+    (/\/(run|retry)$/.test(c.req.path) ? mayRun(c) : mayChange(c));
   if (!allowed) {
     return c.json(
       {
@@ -172,6 +180,86 @@ workflowRoutes.openapi(
       { success: true as const, run, ...(done ? {} : { running: true }) },
       200,
     );
+  },
+);
+
+workflowRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{name}/flow",
+    tags: ["Workflows"],
+    summary:
+      "A deployed workflow's steps as its code defines them: each with the steps it waits for, its retries and timeout",
+    security: AUTH_SECURITY,
+    request: { params: NameParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    const { workspaceId, name } = c.req.valid("param");
+    const flow = await readWorkflowFlow(await requireTenant(workspaceId), name);
+    return c.json({ success: true as const, ...flow }, 200);
+  },
+);
+
+workflowRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{name}/cost",
+    tags: ["Workflows"],
+    summary:
+      "A workflow's AI cost (its runs' model calls) over the last `days` days (default 30), in total and by day",
+    security: AUTH_SECURITY,
+    request: {
+      params: NameParam,
+      query: z.object({
+        days: z.coerce.number().int().min(1).max(365).optional(),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    const { workspaceId, name } = c.req.valid("param");
+    const { days } = c.req.valid("query");
+    const cost = await readWorkflowCost(workspaceId, name, days ?? 30);
+    return c.json({ success: true as const, ...cost }, 200);
+  },
+);
+
+workflowRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/runs/{id}/retry",
+    tags: ["Workflows"],
+    summary:
+      "Retry a deployed run in place. With `step`: that step and the ones after it run again, on what the earlier steps kept; without, the whole run",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam.extend({
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: z.object({ step: z.string().optional() }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    const { workspaceId, id } = c.req.valid("param");
+    if (isSandboxRunId(id)) {
+      throw new HatchetError(
+        "A sandbox run is not kept: start it again instead",
+        400,
+      );
+    }
+    const body = await c.req.json().catch(() => ({}));
+    const step = typeof body?.step === "string" ? body.step : undefined;
+    const retried = await retryRun(await requireTenant(workspaceId), id, step);
+    return c.json({ success: true as const, ...retried }, 200);
   },
 );
 
@@ -389,6 +477,20 @@ export function languageModelGatewayBase(
 
 type Worker = { workspaceId: string; userId: string };
 
+/**
+ * The run and step a deployed worker's request comes from: the workflow is
+ * the one Mako checked (X-Mako-Workflow, logging/context.ts), the run and step
+ * what the worker sends with it (worker.mjs). A model call's cost is counted
+ * against them; a person's own run sends none.
+ */
+function workflowRunOf(c: Context): IWorkflowRunRef | undefined {
+  const workflowId = getRequestContext()?.workflow;
+  const runId = c.req.header("X-Mako-Run");
+  if (!workflowId || !runId || !isHatchetId(runId)) return undefined;
+  const step = c.req.header("X-Mako-Step")?.trim().slice(0, 100);
+  return { workflowId, runId, ...(step ? { step } : {}) };
+}
+
 // Mako's own auth resolves the key; a session or a key without the worker's
 // scope is turned away here (scoped-key-routes.ts already refuses the latter).
 workflowRuntimeRoutes.use("*", unifiedAuthMiddleware);
@@ -524,6 +626,7 @@ async function forwardToGateway(
     }
   });
   const startedAt = Date.now();
+  const workflowRun = workflowRunOf(c);
   const decision = kind === "decision-model";
   if (decision && !headers.has("ai-gateway-protocol-version")) {
     // `@ai-sdk/gateway` sends it; a plain fetch from a step does not.
@@ -575,6 +678,7 @@ async function forwardToGateway(
       totalTokens: inputTokens + outputTokens,
       durationMs: Date.now() - startedAt,
       ...(Number.isFinite(costUsd) ? { costUsd } : {}),
+      workflowRun,
     });
   }
   return new Response(body, {
@@ -627,6 +731,7 @@ workflowRuntimeRoutes.post(
     return c.json(
       await runStepAgent({
         ...worker,
+        workflowRun: workflowRunOf(c),
         goal: body.goal,
         modelId: typeof body.model === "string" ? body.model : undefined,
         maxSteps: typeof body.maxSteps === "number" ? body.maxSteps : undefined,

@@ -87,14 +87,20 @@ const responses: Record<string, unknown> = {
   },
 };
 globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
-  const { pathname } = new URL(String(url));
+  const { pathname, searchParams } = new URL(String(url));
   const method = init?.method ?? "GET";
   requests.push({
     method,
     path: pathname,
     body: init?.body ? JSON.parse(String(init.body)) : undefined,
   });
-  const body = responses[`${method} ${pathname}`];
+  let body = responses[`${method} ${pathname}`];
+  // Log lines as Hatchet pages them: newest first when asked, then limited.
+  if (pathname.endsWith("/logs") && body) {
+    const rows = [...(body as { rows: unknown[] }).rows];
+    if (searchParams.get("order_by_direction") === "DESC") rows.reverse();
+    body = { rows: rows.slice(0, Number(searchParams.get("limit") ?? 50)) };
+  }
   return new Response(JSON.stringify(body ?? { error: "not found" }), {
     status: body ? 200 : 404,
   });
@@ -197,6 +203,24 @@ async function main() {
     const bad = await call(tools, "workflows_status", { runId: "../tenants" });
     assert.equal(bad.success, false);
     assert.equal(requests.length, before);
+
+    // A tenant Hatchet does not have (a token from another Hatchet): the
+    // overview still lists what is deployed, and says why runs are missing.
+    const runsKey = `GET /api/v1/stable/tenants/${TENANT}/workflow-runs`;
+    const kept = responses[runsKey];
+    delete responses[runsKey];
+    const asked = requests.length;
+    const lost = await call(tools, "workflows_status", {});
+    responses[runsKey] = kept;
+    requests.splice(asked); // later checks count Hatchet calls
+    assert.equal(lost.success, true);
+    assert.equal(lost.configured, true);
+    assert.deepEqual(
+      lost.workflows.map((w: { workflowId: string }) => w.workflowId),
+      ["daily-digest", "weekly-report"],
+    );
+    assert.deepEqual(lost.recentRuns, []);
+    assert.match(lost.hatchetError, /could not read .*Hatchet tenant.*404/);
 
     // Viewers look, they do not start runs.
     const viewer = as("viewer");

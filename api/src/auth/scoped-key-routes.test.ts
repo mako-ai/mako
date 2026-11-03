@@ -18,6 +18,22 @@ for (const app of ["latest-sales", "68b0c0ffee0000000000abcd"]) {
     true,
   );
   assert.equal(
+    scopedKeyMayAccess("GET", `${base}/latest_sales/snapshot`, read),
+    true,
+  );
+  assert.equal(
+    scopedKeyMayAccess("POST", `${base}/latest_sales/snapshot`, read),
+    false,
+  );
+  assert.equal(
+    scopedKeyMayAccess("POST", `${base}/latest_sales/dev-snapshot`, read),
+    true,
+  );
+  assert.equal(
+    scopedKeyMayAccess("GET", `${base}/latest_sales/dev-snapshot`, read),
+    false,
+  );
+  assert.equal(
     scopedKeyMayAccess("POST", `${base}/latest_sales/materialize`, read),
     true,
   );
@@ -76,6 +92,10 @@ for (const app of ["latest-sales", "68b0c0ffee0000000000abcd"]) {
   assert.equal(scopedKeyMayAccess("GET", base, mcpOnly), false);
   assert.equal(
     scopedKeyMayAccess("GET", `${base}/latest_sales/artifact`, mcpOnly),
+    false,
+  );
+  assert.equal(
+    scopedKeyMayAccess("GET", `${base}/latest_sales/snapshot`, mcpOnly),
     false,
   );
 }

@@ -117,6 +117,7 @@ import { getApiBasePath } from "../lib/api-base-path";
 import { separatorDragRef } from "../lib/iframe-drag-guard";
 import { consoleLeafName } from "../lib/console-name";
 import { generateObjectId } from "../utils/objectId";
+import { isTabMounted, useMountedTabs } from "../lib/tab-mount-policy";
 import { computeConsoleStateHash } from "../utils/stateHash";
 import type {
   ScheduledQueryRunItem,
@@ -569,6 +570,10 @@ function Editor({
   // detect a change every render and trigger a re-render loop.
   const consoleTabs = useConsoleStore(useShallow(selectConsoleTabs));
   const activeConsoleId = activeTabId;
+  // Lazy kinds (apps, notebooks) render nothing until first shown, then stay
+  // mounted; app tabs are capped (lib/tab-mount-policy). Only one tab is on
+  // screen in this Editor, so the active tab is the visible set.
+  const mountedLazyTabs = useMountedTabs(consoleTabs, [activeConsoleId]);
   const scheduleModalTab = scheduleModalTabId ? tabs[scheduleModalTabId] : null;
   const scheduleModalHasSchedule = Boolean(
     scheduleModalTab?.schedule?.cron?.trim() &&
@@ -2440,9 +2445,12 @@ function Editor({
             return <EntityBreadcrumbs tabId={activeTab.id} />;
           })()}
 
-          {/* Unified tab rendering: every tab stays mounted, visibility toggled with CSS */}
+          {/* Unified tab rendering: a mounted tab stays mounted, visibility toggled
+              with CSS. Lazy kinds mount on first show (lib/tab-mount-policy). */}
           <Box sx={{ flexGrow: 1, overflow: "hidden" }}>
             {consoleTabs.map(tab => {
+              // An unshown lazy tab keeps its slot and renders nothing.
+              const panelMounted = isTabMounted(tab, mountedLazyTabs);
               const showDesktopOnlyNotice =
                 isMobile &&
                 !!tab.kind &&
@@ -2742,7 +2750,7 @@ function Editor({
                     overflow: "hidden",
                   }}
                 >
-                  {showDesktopOnlyNotice ? (
+                  {!panelMounted ? null : showDesktopOnlyNotice ? (
                     <Box sx={{ p: 2 }}>
                       <Alert
                         severity="info"

@@ -33,6 +33,10 @@ export default defineConfig({
       "src/apps/box-state.service.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",
+      // Phase events on the request doing the work (NDJSON), no shared state.
+      "src/apps/binding-progress.test.ts",
+      // The generated sandbox launcher parses, and relays build phases.
+      "src/apps/dev-server-launcher.test.ts",
       // Staged binding files are replaced whole, never written in place.
       "src/apps/dev-server-staging.test.ts",
       // Asynchronous binding builds (202 + poll): job rows in real Mongo.
@@ -44,6 +48,9 @@ export default defineConfig({
       "src/apps/unregistered-draft-app.test.ts",
       // A binding past the parquet row limit fails its build, never truncates.
       "src/apps/binding-row-limit.test.ts",
+      // PARQUET_ROW_LIMIT / PARQUET_MAX_ROW_LIMIT and `-- row_limit:`.
+      "src/utils/parquet-row-limit.test.ts",
+      "src/apps/binding-artifact-format.test.ts",
       // Draft reuse + failure backoff: real Mongo, filesystem artifact store.
       "src/apps/binding-draft-cache.test.ts",
       // Real git + mongo: the pre-push flow-file check reads the workspace
@@ -65,7 +72,15 @@ export default defineConfig({
       "src/agent-lib/tools/shared/query-result-format.test.ts",
       "src/agent-lib/capabilities/runtime.test.ts",
       "src/apps/preview.service.test.ts",
+      // The view token: an app id answered from its row, no repo resolver.
+      "src/apps/view-token-route.test.ts",
+      // Shared apps run CSP-sandboxed; password shares work via a URL grant.
+      "src/routes/public-share-sandbox.test.ts",
+      // Per-app origins: host gate, token scope, frame-ancestors, stable URLs.
+      "src/apps/app-origin.test.ts",
       "src/apps/deployment.service.test.ts",
+      // One store call per published asset: open + size, 404 on missing.
+      "src/services/artifact-store-open-read.test.ts",
       // Viewer identity (apps.md §28): who an app is talking to, and the
       // domain auto-join that lets a link-clicker become a member.
       "src/apps/app-viewer.service.test.ts",

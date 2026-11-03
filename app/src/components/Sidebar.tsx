@@ -22,6 +22,7 @@ import { useFlowStore } from "../store/flowStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
 import { useRepoStore } from "../store/repoStore";
+import { whenAppOpenSettled } from "../lib/app-open-gate";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent, resetIdentity } from "../lib/analytics";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -88,9 +89,16 @@ function useRepoDirty(): boolean {
   );
   useEffect(() => {
     if (!workspaceId) return;
-    void fetchStatus(workspaceId);
+    // A git-backed read (5.1 s on prod): not ahead of the app being opened.
+    let cancelled = false;
+    void whenAppOpenSettled().then(() => {
+      if (!cancelled) void fetchStatus(workspaceId);
+    });
     const timer = setInterval(() => void fetchStatus(workspaceId), 30_000);
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, [workspaceId, fetchStatus]);
   return dirty;
 }

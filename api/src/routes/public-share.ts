@@ -25,9 +25,17 @@ import { loggers } from "../logging";
 import { serverTiming, timed } from "../middleware/server-timing";
 import { getArtifactStore } from "../services/artifact-store.service";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
-import { refreshBindingHttp } from "../apps/binding-refresh";
+import {
+  refreshBindingHttp,
+  refreshBindingProgress,
+} from "../apps/binding-refresh";
+import { wantsBindingProgress } from "../apps/binding-progress";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  APP_DOCUMENT_SANDBOX,
+  sandboxAppDocument,
+} from "../apps/app-document-sandbox";
 import {
   anonIdFromCookie,
   classifyUserAgent,
@@ -108,6 +116,53 @@ function hasValidUnlock(c: Context, token: string): boolean {
   } catch {
     return false;
   }
+}
+
+// ── Unlock grant in the URL path ──
+//
+// A shared app's document is CSP-sandboxed (see SHARE_APP_SANDBOX), so its
+// origin is opaque and its own requests (module scripts, `__data/*`, the
+// refresh POST) carry no cookies, the unlock cookie included. The document
+// navigation still does: when the cookie authorizes it, the served HTML gets
+// a `<base>` pointing at `/api/share/<token>/u/<grant>/`, and every relative
+// request the app makes resolves under the grant. The address bar keeps the
+// cookie-gated URL, so copying it never copies the grant.
+//
+// The grant is the cookie's own expiry signed for a DIFFERENT purpose, so a
+// grant cannot pose as a cookie, nor a cookie as a grant, and a grant never
+// outlives the unlock that minted it.
+
+function signUnlockGrant(token: string, expiresAt: number): string {
+  return crypto
+    .createHmac("sha256", getShareSecret())
+    .update(`share-unlock-url:${token}:${expiresAt}`)
+    .digest("base64url");
+}
+
+function unlockExpiry(c: Context, token: string): number | null {
+  if (!hasValidUnlock(c, token)) return null;
+  const raw = getCookie(c, unlockCookieName(token)) ?? "";
+  return Number(raw.split(".")[0]);
+}
+
+/** The grant segment for this request's unlock cookie, or null. */
+export function unlockGrantFor(c: Context, token: string): string | null {
+  const expiresAt = unlockExpiry(c, token);
+  return expiresAt ? `${expiresAt}.${signUnlockGrant(token, expiresAt)}` : null;
+}
+
+export function isValidUnlockGrant(token: string, grant: string): boolean {
+  const [expStr, sig] = grant.split(".");
+  const expiresAt = Number(expStr);
+  if (!sig || !Number.isFinite(expiresAt) || expiresAt < Date.now()) {
+    return false;
+  }
+  const expected = Buffer.from(signUnlockGrant(token, expiresAt));
+  const actual = Buffer.from(sig);
+  return (
+    expected.length === actual.length &&
+    crypto.timingSafeEqual(expected, actual)
+  );
 }
 
 function passwordRequired(resource: SharedResource): boolean {
@@ -466,26 +521,41 @@ export function recordSharedAppOpen(
  */
 async function serveSharedApp(c: Context): Promise<Response> {
   const token = c.req.param("token") as string;
+  const grant = c.req.param("grant");
   const resource = await findByToken(token);
   if (!resource) {
-    return c.json({ success: false, error: "Share link not found" }, 404);
+    return shareAppJson({ success: false, error: "Share link not found" }, 404);
   }
-  const gate = requireUnlock(c, token, resource);
-  if (gate) return gate;
+  // `/u/<grant>/…` is authorized by the grant alone (the opaque-origin app
+  // sends no cookie); `/app/…` by the unlock cookie, as before.
+  if (grant !== undefined) {
+    if (passwordRequired(resource) && !isValidUnlockGrant(token, grant)) {
+      return shareAppJson(
+        {
+          success: false,
+          error: "Password required",
+          code: "PASSWORD_REQUIRED",
+        },
+        401,
+      );
+    }
+  } else {
+    const gate = requireUnlock(c, token, resource);
+    if (gate) return withShareAppHeaders(gate);
+  }
 
   const project = resource.doc;
   const sha = project.publishedSha;
   if (!sha) {
-    return c.json(
+    return shareAppJson(
       { success: false, error: "This app has not been published yet" },
       404,
     );
   }
   const projectId = project._id.toString();
-  const assetPath = (c.req.path.split(`/share/${token}/app`)[1] ?? "").replace(
-    /^\/+/,
-    "",
-  );
+  const marker =
+    grant !== undefined ? `/share/${token}/u/${grant}` : `/share/${token}/app`;
+  const assetPath = (c.req.path.split(marker)[1] ?? "").replace(/^\/+/, "");
 
   const response = await serveDeploymentFile({
     projectId,
@@ -494,16 +564,93 @@ async function serveSharedApp(c: Context): Promise<Response> {
     private: true,
     // Anonymous: `__data/viewer.json` is null — there is nobody to describe.
     viewer: null,
+    progress: wantsBindingProgress(c.req.header("accept")),
   });
-  if (response) {
-    // The share page navigates straight here, so this page load IS the view.
-    recordSharedAppOpen(c, response, project.workspaceId.toString(), projectId);
+  if (!response) {
+    return shareAppJson({ success: false, error: "Not found" }, 404);
   }
-  return response ?? c.json({ success: false, error: "Not found" }, 404);
+  // The share page navigates straight here, so this page load IS the view.
+  recordSharedAppOpen(c, response, project.workspaceId.toString(), projectId);
+
+  // A cookie-authorized document of a password share: point the app's
+  // relative requests at the grant, which they can carry and a cookie can't.
+  const cookieGrant =
+    grant === undefined && passwordRequired(resource)
+      ? unlockGrantFor(c, token)
+      : null;
+  if (cookieGrant && isHtml(response)) {
+    return await withShareBase(
+      response,
+      `/api/share/${encodeURIComponent(token)}/u/${cookieGrant}/`,
+    );
+  }
+  return withShareAppHeaders(response);
+}
+
+/** The sandbox every shared app document gets (app-document-sandbox.ts). */
+export const SHARE_APP_SANDBOX = APP_DOCUMENT_SANDBOX;
+
+function isHtml(response: Response): boolean {
+  return (response.headers.get("Content-Type") ?? "")
+    .toLowerCase()
+    .startsWith("text/html");
+}
+
+/**
+ * Headers for anything the shared app's (opaque-origin) document fetches:
+ * `Origin: null` + CORS-mode module scripts need a wildcard ACAO, which is
+ * safe because nothing here is cookie-authorized for a cross-origin reader
+ * (credentialed reads need an exact origin, which this never sends).
+ */
+function withShareAppHeaders(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Access-Control-Allow-Origin", "*");
+  sandboxAppDocument(headers);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function shareAppJson(body: object, status: number): Response {
+  return withShareAppHeaders(
+    new Response(JSON.stringify(body), {
+      status,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "private, no-store",
+      },
+    }),
+  );
+}
+
+/** Insert `<base href>` as the first thing in <head> (first base wins). */
+async function withShareBase(
+  response: Response,
+  href: string,
+): Promise<Response> {
+  const html = await response.text();
+  const tag = `<base href="${href.replace(/"/g, "&quot;")}">`;
+  const head = /<head(\s[^>]*)?>/i.exec(html);
+  const out = head
+    ? html.slice(0, head.index + head[0].length) +
+      tag +
+      html.slice(head.index + head[0].length)
+    : tag + html;
+  const headers = new Headers(response.headers);
+  headers.delete("Content-Length");
+  // The page now embeds a credential: never let anything keep a copy.
+  headers.set("Cache-Control", "private, no-store");
+  return withShareAppHeaders(
+    new Response(out, { status: response.status, headers }),
+  );
 }
 
 app.get("/:token/app", serveSharedApp);
 app.get("/:token/app/*", serveSharedApp);
+app.get("/:token/u/:grant", serveSharedApp);
+app.get("/:token/u/:grant/*", serveSharedApp);
 
 /**
  * A shared app's `POST __data/<name>/refresh` — the SDK's `refresh()` from
@@ -513,23 +660,37 @@ app.get("/:token/app/*", serveSharedApp);
  * throttled per binding with PUBLIC_REFRESH_COOLDOWN_MS — claimed
  * atomically, so a crowd of viewers is one warehouse query, not a crowd.
  */
-app.post("/:token/app/__data/:name/refresh", async c => {
+async function refreshSharedBinding(c: Context): Promise<Response> {
   const token = c.req.param("token") as string;
+  const grant = c.req.param("grant");
   const resource = await findByToken(token);
   if (!resource) {
-    return c.json({ success: false, error: "Share link not found" }, 404);
+    return shareAppJson({ success: false, error: "Share link not found" }, 404);
   }
-  const gate = requireUnlock(c, token, resource);
-  if (gate) return gate;
+  if (grant !== undefined) {
+    if (passwordRequired(resource) && !isValidUnlockGrant(token, grant)) {
+      return shareAppJson(
+        {
+          success: false,
+          error: "Password required",
+          code: "PASSWORD_REQUIRED",
+        },
+        401,
+      );
+    }
+  } else {
+    const gate = requireUnlock(c, token, resource);
+    if (gate) return withShareAppHeaders(gate);
+  }
   const project = resource.doc;
   if (!project.publishedSha) {
-    return c.json(
+    return shareAppJson(
       { success: false, error: "This app has not been published yet" },
       404,
     );
   }
   if (!project.publicShare?.allowLiveQueries) {
-    return c.json(
+    return shareAppJson(
       {
         success: false,
         error:
@@ -538,23 +699,36 @@ app.post("/:token/app/__data/:name/refresh", async c => {
       403,
     );
   }
+  const input = {
+    project,
+    name: c.req.param("name") as string,
+    actorId: "",
+    at: project.publishedSha,
+    cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
+  };
+  if (wantsBindingProgress(c.req.header("accept"))) {
+    return withShareAppHeaders(
+      await withQueryLabels({ mako_trigger: "public" }, async () =>
+        refreshBindingProgress(input),
+      ),
+    );
+  }
   try {
     const { status, body, headers } = await withQueryLabels(
       { mako_trigger: "public" },
-      () =>
-        refreshBindingHttp({
-          project,
-          name: c.req.param("name"),
-          actorId: "",
-          at: project.publishedSha,
-          cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
-        }),
+      () => refreshBindingHttp(input),
     );
-    return c.json(body, status, headers);
+    return withShareAppHeaders(c.json(body, status, headers));
   } catch (error) {
     logger.error("Error refreshing a shared app's binding", { error });
-    return c.json({ success: false, error: "Failed to refresh" }, 500);
+    return shareAppJson({ success: false, error: "Failed to refresh" }, 500);
   }
-});
+}
+
+// The opaque-origin app sends a bodiless POST (a simple request, no
+// preflight) with no cookie: the grant path is how a password share's
+// refresh is authorized.
+app.post("/:token/app/__data/:name/refresh", refreshSharedBinding);
+app.post("/:token/u/:grant/__data/:name/refresh", refreshSharedBinding);
 
 export const publicShareRoutes = app;

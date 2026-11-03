@@ -24,10 +24,18 @@ export interface WorkflowRunSummary {
   durationMs?: number;
   error?: string;
   trigger?: string;
+  /** What its steps' model calls cost, in USD; absent before costs were kept. */
+  costUsd?: number;
 }
 
-interface WorkflowRunStep {
+export interface WorkflowRunStep {
   step?: string;
+  /** The steps it waited for (a deployed run; a sandbox run has none). */
+  parents?: string[];
+  /** A line about a step not taken from a run (its retries, its timeout). */
+  note?: string;
+  /** What the step's model calls cost, in USD. */
+  costUsd?: number;
   status?: string;
   attempt?: number;
   durationMs?: number;
@@ -37,6 +45,8 @@ interface WorkflowRunStep {
 }
 
 export interface WorkflowRun extends WorkflowRunSummary {
+  /** Part of its cost was matched to it afterwards, by time. */
+  costBackfilled?: boolean;
   input?: string;
   output?: string;
   steps: WorkflowRunStep[];
@@ -50,6 +60,9 @@ interface WorkflowsOverview {
   deployment: WorkflowDeployment;
   /** Where an admin opens the Hatchet dashboard, when the installation has one. */
   dashboardUrl: string | null;
+  /** Set when the workspace's Hatchet tenant did not answer: runs and
+   * schedules are missing, and this says why. */
+  hatchetError?: string;
   /** The viewer is an admin: the switches and webhook URLs are theirs. */
   mayChange?: boolean;
   /** `active`: its schedule and webhook are on. `webhookUrl`: for admins; null while off. */
@@ -82,6 +95,8 @@ interface WorkflowsState {
     input: Record<string, unknown>,
     sandbox: boolean,
   ) => Promise<Result>;
+  /** Retry a deployed run in place: from `step`, or the whole run. */
+  retry: (workspaceId: string, runId: string, step?: string) => Promise<Result>;
   /** Change what starts a workflow: its Active switch, its webhook. */
   setTriggers: (
     workspaceId: string,
@@ -92,6 +107,49 @@ interface WorkflowsState {
 
 export const isActiveRun = (status?: string) =>
   status === "RUNNING" || status === "QUEUED";
+
+/** A deployed workflow's steps as its code defines them. */
+export interface WorkflowFlow {
+  workflowId: string;
+  steps: Array<{
+    step: string;
+    parents: string[];
+    retries: number;
+    timeout?: string;
+  }>;
+}
+
+/** A workflow's AI cost over the last 30 days, or null when it cannot be read. */
+export async function fetchWorkflowCost(
+  workspaceId: string,
+  workflowId: string,
+): Promise<{ costUsd: number; runs: number } | null> {
+  try {
+    return unwrapBody(
+      await api.GET("/api/workspaces/{workspaceId}/workflows/{name}/cost", {
+        params: { path: { workspaceId, name: workflowId }, query: {} },
+      }),
+    ) as { costUsd: number; runs: number };
+  } catch {
+    return null;
+  }
+}
+
+/** A deployed workflow's flow, or an error saying why there is none. */
+export async function fetchWorkflowFlow(
+  workspaceId: string,
+  workflowId: string,
+): Promise<WorkflowFlow | { error: string }> {
+  try {
+    return unwrapBody(
+      await api.GET("/api/workspaces/{workspaceId}/workflows/{name}/flow", {
+        params: { path: { workspaceId, name: workflowId } },
+      }),
+    ) as WorkflowFlow;
+  } catch (e) {
+    return { error: message(e, "Could not read the workflow's steps") };
+  }
+}
 
 /** One file under `workflows/`, or null when it is not on the branch. */
 export async function fetchWorkflowFile(
@@ -136,8 +194,12 @@ export const useWorkflowsStore = create<WorkflowsState>()(
     fetchRun: async (workspaceId, runId) => {
       try {
         const body = unwrapBody(
+          // Every log line: the screen shows the whole log.
           await api.GET("/api/workspaces/{workspaceId}/workflows/runs/{id}", {
-            params: { path: { workspaceId, id: runId } },
+            params: {
+              path: { workspaceId, id: runId },
+              query: { full: "true" },
+            },
           }),
         ) as { run: WorkflowRun };
         set(s => {
@@ -174,6 +236,23 @@ export const useWorkflowsStore = create<WorkflowsState>()(
         return { ok: true, runId: body.runId };
       } catch (e) {
         return { ok: false, error: message(e, "Failed to start the run") };
+      }
+    },
+
+    retry: async (workspaceId, runId, step) => {
+      try {
+        unwrapBody(
+          await api.POST(
+            "/api/workspaces/{workspaceId}/workflows/runs/{id}/retry",
+            {
+              params: { path: { workspaceId, id: runId } },
+              body: step ? { step } : {},
+            },
+          ),
+        );
+        return { ok: true, runId };
+      } catch (e) {
+        return { ok: false, error: message(e, "Failed to retry the run") };
       }
     },
 

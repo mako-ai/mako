@@ -456,7 +456,17 @@ export interface ILlmUsage extends Document {
   agentId?: string;
   tags?: string[];
   durationMs?: number;
+  /** The workflow run and step a model call was made from. `backfilled`:
+   * matched afterwards by time, not sent by the step. */
+  workflowRun?: IWorkflowRunRef;
   createdAt: Date;
+}
+
+export interface IWorkflowRunRef {
+  workflowId: string;
+  runId: string;
+  step?: string;
+  backfilled?: boolean;
 }
 
 const LlmUsageStepSchema = new Schema<ILlmUsageStep>(
@@ -505,11 +515,32 @@ const LlmUsageSchema = new Schema<ILlmUsage>(
     agentId: { type: String },
     tags: { type: [String], default: undefined },
     durationMs: { type: Number },
+    workflowRun: {
+      type: new Schema<IWorkflowRunRef>(
+        {
+          workflowId: { type: String, required: true },
+          runId: { type: String, required: true },
+          step: { type: String },
+          backfilled: { type: Boolean },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 );
 
 LlmUsageSchema.index({ workspaceId: 1, createdAt: -1 });
+// A run's cost, and a workflow's over time (workflows/costs.ts).
+LlmUsageSchema.index(
+  { workspaceId: 1, "workflowRun.runId": 1 },
+  { partialFilterExpression: { "workflowRun.runId": { $exists: true } } },
+);
+LlmUsageSchema.index(
+  { workspaceId: 1, "workflowRun.workflowId": 1, createdAt: -1 },
+  { partialFilterExpression: { "workflowRun.workflowId": { $exists: true } } },
+);
 LlmUsageSchema.index({ userId: 1, createdAt: -1 });
 LlmUsageSchema.index({ chatId: 1 });
 LlmUsageSchema.index({ workspaceId: 1, userId: 1, createdAt: -1 });

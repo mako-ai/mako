@@ -54,6 +54,7 @@ import {
   createAppFolder,
   createProject,
   deleteAppFolder,
+  PUBLISH_ACTOR,
   ensureProjectRow,
   moveAppFolder,
   moveProject,
@@ -249,6 +250,35 @@ describe("personal trees resolve through the handle mapping only", () => {
     const byId = await resolveProjectRef(WS, `users/${USER}/apps/by-id`);
     expect(byId?.access).toBe("private");
     expect(byId?.owner_id).toBeUndefined();
+  });
+
+  it("a personal app first persisted by the push-deploy worker keeps its owner", async () => {
+    // A users/<handle>/apps folder arriving by git push: deploy-on-push
+    // resolves it (no row yet) and persists the row as PUBLISH_ACTOR. The
+    // row must carry the mapping's owner, or the app is private to nobody.
+    const personal = (await resolveProjectRef(WS, `users/${HANDLE}/apps/c`))!;
+    expect(personal.owner_id).toBe(USER);
+    const row = await ensureProjectRow(personal, PUBLISH_ACTOR);
+    expect(row.access).toBe("private");
+    expect(row.owner_id).toBe(USER);
+    expect(canReadResource(row, USER, "member")).toBe(true);
+    expect(canReadResource(row, "someone-else", "member")).toBe(false);
+    const stored = await AppProject.findById(personal._id);
+    expect(stored?.owner_id).toBe(USER);
+    expect(stored?.access).toBe("private");
+
+    // A later worker run or another actor leaves the owner alone.
+    const again = (await resolveProjectRef(WS, `users/${HANDLE}/apps/c`))!;
+    expect((await ensureProjectRow(again, PUBLISH_ACTOR)).owner_id).toBe(USER);
+    const other = new Types.ObjectId().toString();
+    expect((await ensureProjectRow(again, other)).owner_id).toBe(USER);
+
+    // A workspace app is unaffected: workspace access, ownerless until a
+    // human claims it.
+    const shared = (await resolveProjectRef(WS, "a"))!;
+    const sharedRow = await ensureProjectRow(shared, PUBLISH_ACTOR);
+    expect(sharedRow.access).toBe("workspace");
+    expect(sharedRow.owner_id ?? undefined).toBeUndefined();
   });
 
   it("usage surfaces (/usage, /recent) and authorship follow the mapping, not the folder name", async () => {

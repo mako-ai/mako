@@ -4125,6 +4125,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/snapshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Serve a binding's preview snapshot (committed definition)
+         * @description The first N rows of the committed binding's stored parquet, in build order (schema + total row count), for `useQuery(name, { snapshot: true })` to paint before DuckDB-WASM loads. 404 when the binding was never built, was built before snapshots existed, or has a column type a snapshot cannot carry — callers wait for the parquet.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_id_bindings_name_snapshot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/materialize": {
         parameters: {
             query?: never;
@@ -4159,6 +4179,26 @@ export interface paths {
          * @description The laptop dev loop behind `makoData()`: send the local `bindings/<name>.sql` text and get back the parquet of exactly that query, run read-only through the workspace connection its front matter names. Text identical to the committed binding is served from (or materialized into) the app's stored artifact; anything else — an uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` against a dev dbt environment (per relation: ones the environment has not built read prod, unless `dbtDefer: false`) — is a draft: built and streamed back, reused for 30 minutes (same connection + rendered SQL) unless `refresh`, never stored as the app's artifact, so published viewers never see it. A draft that keeps failing answers 503 with Retry-After instead of re-running. May redirect to a short-lived signed artifact URL; follow redirects. With `async: true`, a build (not a stored artifact) answers 202 with a `jobId` to poll at `GET …/binding-jobs/{jobId}` instead.
          */
         post: operations["post_api_workspaces_workspaceId_apps_id_bindings_name_dev_build"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/dev-snapshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview snapshot of the artifact a local binding text maps to
+         * @description The laptop `makoData()` plugin's `__data/<name>.snapshot.json`: send the same body as `dev-build`, get the snapshot of exactly the stored artifact that `dev-build` would answer with for that text (the committed artifact, or a cached draft) — never another definition's. 404 when that text has no stored artifact yet (a build is needed) or the artifact has no snapshot. Never builds anything.
+         */
+        post: operations["post_api_workspaces_workspaceId_apps_id_bindings_name_dev_snapshot"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5128,6 +5168,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/workflows/{name}/flow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A deployed workflow's steps as its code defines them: each with the steps it waits for, its retries and timeout */
+        get: operations["get_api_workspaces_workspaceId_workflows_name_flow"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/workflows/{name}/cost": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A workflow's AI cost (its runs' model calls) over the last `days` days (default 30), in total and by day */
+        get: operations["get_api_workspaces_workspaceId_workflows_name_cost"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/workflows/runs/{id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry a deployed run in place. With `step`: that step and the ones after it run again, on what the earlier steps kept; without, the whole run */
+        post: operations["post_api_workspaces_workspaceId_workflows_runs_id_retry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/workflows/files": {
         parameters: {
             query?: never;
@@ -5471,6 +5562,23 @@ export interface paths {
         /** Set curated model defaults (admin) */
         put: operations["put_api_admin_catalog_defaults"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/workflows/cost-backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Backfill workflow AI costs: match older model calls to their run and step by time (a dry run unless dryRun is false) */
+        post: operations["post_api_admin_workflows_cost_backfill"];
         delete?: never;
         options?: never;
         head?: never;
@@ -19022,6 +19130,48 @@ export interface operations {
             };
         };
     };
+    get_api_workspaces_workspaceId_apps_id_bindings_name_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     post_api_workspaces_workspaceId_apps_id_bindings_name_materialize: {
         parameters: {
             query?: {
@@ -19096,6 +19246,56 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_apps_id_bindings_name_dev_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    source: string;
+                    dbtEnvironment?: string;
+                    dbtDefer?: boolean;
+                };
+            };
+        };
+        responses: {
             /** @description Successful response */
             "2XX": {
                 headers: {
@@ -21733,6 +21933,137 @@ export interface operations {
             };
         };
     };
+    get_api_workspaces_workspaceId_workflows_name_flow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_workflows_name_cost: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_workflows_runs_id_retry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    step?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     get_api_workspaces_workspaceId_workflows_files: {
         parameters: {
             query?: {
@@ -22541,6 +22872,52 @@ export interface operations {
             content: {
                 "application/json": {
                     [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_admin_workflows_cost_backfill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    workspaceId?: string;
+                    days?: number;
+                    dryRun?: boolean;
                 };
             };
         };

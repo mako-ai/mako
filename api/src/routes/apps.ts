@@ -175,6 +175,7 @@ import { publishState } from "../apps/publish-state";
 import fs from "node:fs/promises";
 import { readBoxDir } from "../apps/box";
 import { mintPreviewGrant, mintPublishedGrant } from "../apps/preview.service";
+import { appOriginFor, tokenWindowMs } from "../apps/app-origin";
 import {
   resolveAppViewer,
   resolveAppViewerByEmail,
@@ -213,7 +214,11 @@ import {
   materializeAppBinding,
   readBindings,
 } from "../apps/bindings.service";
-import { refreshBindingHttp } from "../apps/binding-refresh";
+import {
+  refreshBindingHttp,
+  refreshBindingProgress,
+} from "../apps/binding-refresh";
+import { wantsBindingProgress } from "../apps/binding-progress";
 import { DevBuildError, planDevBuild } from "../apps/binding-dev-build";
 import {
   unregisteredDraftAccess,
@@ -233,7 +238,11 @@ import {
   setAppEnvVar,
 } from "../apps/env.service";
 import { getArtifactStore } from "../services/artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  serveJsonArtifact,
+  serveParquetArtifact,
+} from "../services/artifact-delivery.service";
+import { snapshotArtifactKey } from "../services/binding-snapshot";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { serverTiming, timed } from "../middleware/server-timing";
 import {
@@ -442,6 +451,41 @@ async function loadProject(
     }
   }
   return { project, userId };
+}
+
+/**
+ * The view token's fast path: an app id whose row is published and readable
+ * by the caller. One Mongo read, no repo index and no git.
+ *
+ * Opening an app in Mako asks for its token by id, and the full resolver
+ * spent 0.8–1.1 s on prod freshening the workspace mirror (a git fetch when
+ * the last one is over 3 s old) to learn what the row already holds. For an
+ * id, resolveProjectRef returns this same row: the index only corrects its
+ * path and slug, and neither the grant nor the ACL reads them. Anything else
+ * (a slug, a path, no row, unpublished, not readable) returns null and takes
+ * loadProject, so its answers and 404s stay exactly as they were.
+ */
+async function loadPublishedRowById(
+  c: AuthenticatedContext,
+): Promise<{ project: IAppProject; userId?: string } | null> {
+  const workspaceId = c.req.param("workspaceId") as string;
+  const id = c.req.param("id")?.trim() ?? "";
+  if (!/^[0-9a-f]{24}$/i.test(id) || !Types.ObjectId.isValid(workspaceId)) {
+    return null;
+  }
+  const row = await AppProject.findOne({
+    _id: new Types.ObjectId(id),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+  if (!row?.publishedSha) return null;
+  const userId = actingUserId(c);
+  if (userId) {
+    // The workspace middleware already read this member for this request.
+    const role =
+      c.get("memberRole") ?? (await memberRoleFor(workspaceId, userId));
+    if (!canReadResource(row, userId, role)) return null;
+  }
+  return { project: row, userId };
 }
 
 /**
@@ -2632,6 +2676,62 @@ appsRoutes.openapi(
 
 appsRoutes.openapi(
   createRoute({
+    method: "get",
+    path: "/{id}/bindings/{name}/snapshot",
+    tags: ["Apps"],
+    summary: "Serve a binding's preview snapshot (committed definition)",
+    description:
+      "The first N rows of the committed binding's stored parquet, in build " +
+      "order (schema + total row count), for `useQuery(name, { snapshot: " +
+      "true })` to paint before DuckDB-WASM loads. 404 when the binding was " +
+      "never built, was built before snapshots existed, or has a column " +
+      "type a snapshot cannot carry — callers wait for the parquet.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam.extend({
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { name } = c.req.valid("param");
+      if (!/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name)) {
+        return c.json({ success: false, error: "Invalid binding name" }, 400);
+      }
+      const parquetKey = await bindingArtifactKeyByName(
+        loaded.project,
+        name,
+        loaded.userId ?? "",
+      );
+      const response = parquetKey
+        ? await serveJsonArtifact(
+            getArtifactStore(),
+            snapshotArtifactKey(parquetKey),
+            { cacheControl: "no-store" },
+          )
+        : null;
+      if (!response) {
+        return c.json(
+          {
+            success: false,
+            error: `Snapshot for binding "${name}" is not available`,
+          },
+          404,
+        );
+      }
+      return response;
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
     method: "post",
     path: "/{id}/bindings/{name}/materialize",
     tags: ["Apps"],
@@ -2832,6 +2932,90 @@ appsRoutes.openapi(
             : undefined,
         );
       }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/bindings/{name}/dev-snapshot",
+    tags: ["Apps"],
+    summary: "Preview snapshot of the artifact a local binding text maps to",
+    description:
+      "The laptop `makoData()` plugin's `__data/<name>.snapshot.json`: send " +
+      "the same body as `dev-build`, get the snapshot of exactly the stored " +
+      "artifact that `dev-build` would answer with for that text (the " +
+      "committed artifact, or a cached draft) — never another definition's. " +
+      "404 when that text has no stored artifact yet (a build is needed) or " +
+      "the artifact has no snapshot. Never builds anything.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam.extend({
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({
+              source: z
+                .string()
+                .min(1)
+                .max(512 * 1024),
+              dbtEnvironment: z.string().min(1).max(64).optional(),
+              dbtDefer: z.boolean().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { name } = c.req.valid("param");
+      const { source, dbtEnvironment, dbtDefer } = c.req.valid("json");
+      const loaded = await loadDevBuildProject(c, { checkWrite: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const notAvailable = () =>
+        c.json(
+          {
+            success: false,
+            error: `Snapshot for binding "${name}" is not available`,
+          },
+          404,
+        );
+      let plan: Awaited<ReturnType<typeof planDevBuild>>;
+      try {
+        plan = await planDevBuild({
+          project: loaded.project,
+          name,
+          actorId: loaded.userId ?? "api-key",
+          userId: loaded.userId,
+          canWrite: loaded.canWrite,
+          source,
+          dbtEnvironment,
+          dbtDefer,
+          refresh: false,
+          unregistered: loaded.unregistered,
+        });
+      } catch (error) {
+        // A refusal for a build is no snapshot either; the parquet request
+        // beside this one reports the reason.
+        if (error instanceof DevBuildError) return notAvailable();
+        throw error;
+      }
+      // "build": nothing stored for this text yet — do not start one here.
+      if (plan.kind !== "artifact") return notAvailable();
+      const response = await serveJsonArtifact(
+        getArtifactStore(),
+        snapshotArtifactKey(plan.artifactKey),
+        { cacheControl: "no-store" },
+      );
+      return response ?? notAvailable();
+    } catch (error) {
       return handleError(c, error);
     }
   },
@@ -3990,6 +4174,7 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
     sha,
     assetPath: rest.replace(/^\/+/, ""),
     viewer: viewerOf(c),
+    progress: wantsBindingProgress(c.req.header("accept")),
   });
   if (response && loaded.userId) {
     // A raw `/live/` page load or a frame on another site; the in-Mako views
@@ -4030,7 +4215,9 @@ appsRoutes.openapi(
   }),
   async c => {
     try {
-      const loaded = await loadProject(c, { write: false });
+      const loaded =
+        (await loadPublishedRowById(c)) ??
+        (await loadProject(c, { write: false }));
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const sha = loaded.project.publishedSha;
       if (!sha) {
@@ -4039,21 +4226,29 @@ appsRoutes.openapi(
           404,
         );
       }
+      const projectId = loaded.project._id.toString();
+      // APPS_ORIGIN_BASE set: the app gets its own origin and a token that
+      // is stable for a window, so the browser cache can work (app-origin.ts).
+      const appOrigin = appOriginFor(projectId);
       const grant = mintPublishedGrant({
         workspaceId: loaded.project.workspaceId.toString(),
-        projectId: loaded.project._id.toString(),
+        projectId,
         sha,
         // Binds the token to this person: the cookie-free serving route
         // answers `__data/viewer.json` from it (apps.md §28).
         viewer: viewerOf(c) ?? undefined,
+        ...(appOrigin ? { stableWindowMs: tokenWindowMs() } : {}),
       });
       return c.json(
         {
           success: true as const,
           token: grant.token,
-          url: `/api/apps-preview/${grant.token}/`,
+          url: `${appOrigin ?? ""}/api/apps-preview/${grant.token}/`,
           sha,
           expiresAt: grant.expiresAt,
+          // Which app the ref named: the client may ask by slug before its
+          // app list has loaded, and files the token under this id.
+          appId: loaded.project._id.toString(),
         },
         200,
       );
@@ -4421,15 +4616,20 @@ appsRoutes.post("/:id/live/__data/:name/refresh", async c => {
         404,
       );
     }
+    const input = {
+      project: loaded.project,
+      name: c.req.param("name"),
+      actorId: loaded.userId ?? "api-key",
+      at: sha,
+    };
+    if (wantsBindingProgress(c.req.header("accept"))) {
+      return await withQueryLabels({ mako_trigger: "viewer" }, async () =>
+        refreshBindingProgress(input),
+      );
+    }
     const { status, body, headers } = await withQueryLabels(
       { mako_trigger: "viewer" },
-      () =>
-        refreshBindingHttp({
-          project: loaded.project,
-          name: c.req.param("name"),
-          actorId: loaded.userId ?? "api-key",
-          at: sha,
-        }),
+      () => refreshBindingHttp(input),
     );
     return c.json(body, status, headers);
   } catch (error) {

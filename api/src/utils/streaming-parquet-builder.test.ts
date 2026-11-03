@@ -446,6 +446,171 @@ async function testRowLimitExactlyAtLimitIsWhole() {
   }
 }
 
+async function testRowLimitFailCountsTheWholeResult() {
+  console.log(
+    "  buildParquetFromBatches: countRowsUpTo reads past the limit to report the real row count",
+  );
+  let batchesOffered = 0;
+  await assert.rejects(
+    buildParquetFromBatches({
+      filenameBase: "test-row-limit-count",
+      rowLimit: 250,
+      onRowLimit: "fail",
+      countRowsUpTo: 1_000,
+      fields: ROW_FIELDS,
+      streamBatches: async insertBatch => {
+        for (let b = 0; b < 6; b++) {
+          batchesOffered++;
+          await insertBatch(idRows(b * 100, 100));
+        }
+      },
+    }),
+    (err: unknown) => {
+      assert.ok(err instanceof ParquetRowLimitError);
+      assert.equal(err.rowLimit, 250);
+      assert.equal(err.rowCount, 600);
+      assert.equal(err.exact, true);
+      assert.match(
+        err.message,
+        /returned 600 rows\. This parquet artifact may hold 250\./,
+      );
+      return true;
+    },
+  );
+  assert.equal(batchesOffered, 6);
+}
+
+async function testRowLimitFailStopsCountingAtTheBound() {
+  console.log(
+    "  buildParquetFromBatches: counting stops at countRowsUpTo and reports a lower bound",
+  );
+  let batchesOffered = 0;
+  await assert.rejects(
+    buildParquetFromBatches({
+      filenameBase: "test-row-limit-count-bound",
+      rowLimit: 250,
+      onRowLimit: "fail",
+      countRowsUpTo: 450,
+      fields: ROW_FIELDS,
+      streamBatches: async insertBatch => {
+        for (let b = 0; b < 50; b++) {
+          batchesOffered++;
+          await insertBatch(idRows(b * 100, 100));
+        }
+      },
+    }),
+    (err: unknown) => {
+      assert.ok(err instanceof ParquetRowLimitError);
+      assert.equal(err.rowCount, 450);
+      assert.equal(err.exact, false);
+      assert.match(err.message, /more than 450 rows/);
+      return true;
+    },
+  );
+  // 500 rows seen > 450: the fifth batch ends the stream.
+  assert.equal(batchesOffered, 5);
+}
+
+async function testRowLimitErrorSurvivesADriverThatWrapsIt() {
+  console.log(
+    "  buildParquetFromBatches: a driver that rethrows its own error still yields ParquetRowLimitError",
+  );
+  await assert.rejects(
+    buildParquetFromBatches({
+      filenameBase: "test-row-limit-wrapped",
+      rowLimit: 150,
+      onRowLimit: "fail",
+      fields: ROW_FIELDS,
+      streamBatches: async insertBatch => {
+        try {
+          await streamOf(2, 100)(insertBatch);
+        } catch (e) {
+          throw new Error(`Streaming query failed: ${String(e)}`, {
+            cause: e,
+          });
+        }
+      },
+    }),
+    ParquetRowLimitError,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Integration test: codec. Default SNAPPY (the CDC/sync loaders), ZSTD only
+// when the caller passes it (app bindings).
+// ---------------------------------------------------------------------------
+
+async function parquetCodecAndRows(
+  filePath: string,
+): Promise<{ codecs: string[]; rows: number; sum: number }> {
+  const instance = await DuckDBInstance.create(":memory:");
+  const conn = await instance.connect();
+  const lit = filePath.replace(/'/g, "''");
+  try {
+    const codecs = (
+      await (
+        await conn.run(
+          `SELECT DISTINCT compression FROM parquet_metadata('${lit}') ORDER BY 1`,
+        )
+      ).getRows()
+    ).map(row => String(row[0]));
+    const [agg] = await (
+      await conn.run(
+        `SELECT count(*)::INTEGER, sum(id)::INTEGER FROM read_parquet('${lit}')`,
+      )
+    ).getRows();
+    return { codecs, rows: Number(agg?.[0]), sum: Number(agg?.[1]) };
+  } finally {
+    conn.closeSync();
+  }
+}
+
+async function testDefaultCodecIsSnappy() {
+  console.log(
+    "  buildParquetFromBatches: no writeOptions writes SNAPPY (CDC/sync path)",
+  );
+  const result = await buildParquetFromBatches({
+    filenameBase: "test-codec-default",
+    fields: ROW_FIELDS,
+    streamBatches: streamOf(2, 100),
+  });
+  try {
+    assert.equal(result.compression, "SNAPPY");
+    assert.equal(result.zstdLevel, undefined);
+    assert.ok(result.encodeDurationMs >= 0);
+    assert.deepEqual(await parquetCodecAndRows(result.filePath), {
+      codecs: ["SNAPPY"],
+      rows: 200,
+      sum: 19900,
+    });
+  } finally {
+    await fsPromises.rm(result.filePath, { force: true });
+  }
+}
+
+async function testZstdRoundTrip() {
+  console.log(
+    "  buildParquetFromBatches: ZSTD writeOptions round-trip through read_parquet",
+  );
+  const result = await buildParquetFromBatches({
+    filenameBase: "test-codec-zstd",
+    fields: ROW_FIELDS,
+    streamBatches: streamOf(2, 100),
+    writeOptions: { codec: "ZSTD", zstdLevel: 1 },
+  });
+  try {
+    assert.equal(result.compression, "ZSTD");
+    assert.equal(result.zstdLevel, 1);
+    assert.deepEqual(await parquetCodecAndRows(result.filePath), {
+      codecs: ["ZSTD"],
+      rows: 200,
+      sum: 19900,
+    });
+  } finally {
+    await fsPromises.rm(result.filePath, { force: true });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
@@ -475,6 +640,16 @@ async function main() {
   await testRowLimitFailEvenWhenTheDriverSwallowsTheThrow();
   console.log("  PASSED");
   await testRowLimitExactlyAtLimitIsWhole();
+  console.log("");
+  await testRowLimitFailCountsTheWholeResult();
+  console.log("");
+  await testRowLimitFailStopsCountingAtTheBound();
+  console.log("");
+  await testRowLimitErrorSurvivesADriverThatWrapsIt();
+  console.log("  PASSED");
+  await testDefaultCodecIsSnappy();
+  console.log("  PASSED");
+  await testZstdRoundTrip();
   console.log("  PASSED\n");
 
   console.log("All tests passed.");

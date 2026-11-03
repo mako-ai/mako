@@ -4,7 +4,8 @@
  * parallel apps branch, adapted to this provider's session model).
  *
  * Improvements over the stock "base" template:
- * - pnpm preinstalled at a pinned version (alongside node/npm from base).
+ * - Node pinned to BOX_NODE_VERSION, replacing the base image's own.
+ * - pnpm preinstalled at a pinned version.
  * - The scaffold's npm dependency set pre-warmed into the npm cache, so a
  *   DEAD-sandbox rebuild's `npm install` is a cache hit instead of a cold
  *   registry crawl (the worst-case resume path).
@@ -22,6 +23,39 @@ import { PNPM_VERSION } from "./package-manager";
 import { installRuntimeCommand } from "../workflows/runtime-files";
 
 const DEFAULT_ALIAS = "mako-apps";
+
+/**
+ * The Node every box runs: the box agent, dev servers, app builds. Pinned
+ * here because the E2B base image ships whatever Node it was cut with — it
+ * was 20.9.0 (Oct 2023, end-of-life, two years of unpatched CVEs) while the
+ * API image moved on. Keep in step with the root Dockerfile. Checksums are
+ * from https://nodejs.org/dist/v<version>/SHASUMS256.txt.
+ */
+export const BOX_NODE_VERSION = "24.22.1";
+const BOX_NODE_SHA256: Record<string, string> = {
+  x64: "6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6",
+  arm64: "dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e",
+};
+
+/**
+ * Replace the base image's Node with BOX_NODE_VERSION. The base image has the
+ * official tarball layout under /usr/local, so the new tarball unpacks over it;
+ * the old npm tree goes first so none of its files outlive the swap.
+ */
+function installNodeCommand(): string {
+  const v = BOX_NODE_VERSION;
+  return [
+    'case "$(uname -m)" in x86_64) NODE_ARCH=x64;; aarch64) NODE_ARCH=arm64;; *) echo "unsupported arch" >&2; exit 1;; esac',
+    `NODE_TGZ=node-v${v}-linux-$NODE_ARCH.tar.xz`,
+    `curl -fsSL -o /tmp/$NODE_TGZ https://nodejs.org/dist/v${v}/$NODE_TGZ`,
+    `if [ $NODE_ARCH = x64 ]; then NODE_SHA=${BOX_NODE_SHA256.x64}; else NODE_SHA=${BOX_NODE_SHA256.arm64}; fi`,
+    'echo "$NODE_SHA  /tmp/$NODE_TGZ" | sha256sum -c -',
+    "rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack",
+    "tar -xJf /tmp/$NODE_TGZ -C /usr/local --strip-components=1 --no-same-owner --exclude=CHANGELOG.md --exclude=LICENSE --exclude=README.md",
+    "rm -f /tmp/$NODE_TGZ",
+    `test "$(node -v)" = "v${v}"`,
+  ].join(" && ");
+}
 
 const envPath = path.resolve(__dirname, "../../../.env");
 if (fs.existsSync(envPath)) {
@@ -163,7 +197,7 @@ function appsTemplate() {
     .runCmd(
       [
         "set -eux",
-        "command -v node >/dev/null",
+        installNodeCommand(),
         // ALL git runs inside the sandbox (the API host has no git and never
         // shells out to it). Guarantee git is present — install it if the base
         // image lacks it — then assert.

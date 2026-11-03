@@ -23,6 +23,11 @@ import {
   withLiveBindingGuard,
 } from "../apps/live-binding-guard";
 import { resolveProjectRef } from "../apps/worktree.service";
+import {
+  LIVE_BINDING_STREAM_CONTENT_TYPE,
+  bindingProgressResponse,
+  wantsBindingProgress,
+} from "../apps/binding-progress";
 import { createReadStream } from "node:fs";
 import { rm } from "node:fs/promises";
 import { loggers } from "../logging";
@@ -166,12 +171,15 @@ appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
   const project = await resolveProjectRef(workspaceId, slug);
   if (!project) return c.json({ error: "App not found" }, 404);
 
-  let built: { filePath: string; rowCount: number; materializedAt?: Date };
-  try {
-    // Guarded: a binding that cannot succeed must not be re-queried as fast as
-    // a page can re-request it. See live-binding-guard.ts — 41 abandoned
-    // BigQuery jobs in 48 minutes is what this exists to stop.
-    built = await withLiveBindingGuard({ workspaceId, slug, name }, () =>
+  // Guarded: a binding that cannot succeed must not be re-queried as fast as
+  // a page can re-request it. See live-binding-guard.ts — 41 abandoned
+  // BigQuery jobs in 48 minutes is what this exists to stop.
+  const build = (): Promise<{
+    filePath: string;
+    rowCount: number;
+    materializedAt?: Date;
+  }> =>
+    withLiveBindingGuard({ workspaceId, slug, name }, () =>
       withQueryLabels({ mako_trigger: "live" }, async () => {
         const store =
           persist &&
@@ -189,6 +197,40 @@ appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
         return { ...result, filePath: result.filePath as string };
       }),
     );
+
+  // The dev server inside the box relays phases to the page (binding-
+  // progress.ts): phase lines, then the parquet bytes on the same stream.
+  if (
+    wantsBindingProgress(
+      c.req.header("accept"),
+      LIVE_BINDING_STREAM_CONTENT_TYPE,
+    )
+  ) {
+    return bindingProgressResponse(
+      async () => {
+        try {
+          const built = await build();
+          return {
+            status: 200,
+            body: {
+              rowCount: built.rowCount,
+              ...(built.materializedAt
+                ? { materializedAt: built.materializedAt.toISOString() }
+                : {}),
+            },
+            tailFile: built.filePath,
+          };
+        } catch (error) {
+          return liveBindingFailure(error, { workspaceId, slug, name });
+        }
+      },
+      { contentType: LIVE_BINDING_STREAM_CONTENT_TYPE },
+    );
+  }
+
+  let built: { filePath: string; rowCount: number; materializedAt?: Date };
+  try {
+    built = await build();
   } catch (error) {
     if (error instanceof LiveBindingCoolingDown) {
       // 503 + Retry-After, not 502: the query was not attempted, and this is
@@ -228,3 +270,29 @@ appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
     },
   });
 });
+
+/** The live-binding failure answers above, as a phase-stream outcome. */
+function liveBindingFailure(
+  error: unknown,
+  where: { workspaceId: string; slug: string; name: string },
+) {
+  if (error instanceof LiveBindingCoolingDown) {
+    return {
+      status: 503,
+      body: {
+        error: `This binding failed ${error.failures} time(s) in a row and is not being re-run yet: ${error.message}`,
+        retryAfterMs: error.retryAfterMs,
+      },
+    };
+  }
+  logger.warn("Apps live binding failed", {
+    ...where,
+    error: error instanceof Error ? error.message : String(error),
+  });
+  return {
+    status: 502,
+    body: {
+      error: error instanceof Error ? error.message : "Live query failed",
+    },
+  };
+}

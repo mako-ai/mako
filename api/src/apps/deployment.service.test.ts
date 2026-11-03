@@ -63,9 +63,24 @@ vi.mock("./app-viewer.service", () => ({
 }));
 
 vi.mock("../services/artifact-delivery.service", () => ({
+  SIGNED_URL_TTL_SECONDS: 600,
+  artifactDeliveryMode: vi.fn(async () => "redirect"),
+  signArtifactUrl: vi.fn(
+    async (
+      store: { getSignedUrl: (k: string, t: number) => unknown },
+      key,
+    ) => ({
+      url: await store.getSignedUrl(key, 600),
+      expiresAt: null,
+    }),
+  ),
   serveParquetArtifact: vi.fn(
     async (store, key) =>
       new Response(`${store === stores.source}:${key}`, { status: 200 }),
+  ),
+  serveJsonArtifact: vi.fn(
+    async (store, key) =>
+      new Response(`json:${store === stores.source}:${key}`, { status: 200 }),
   ),
 }));
 
@@ -139,6 +154,65 @@ describe("published deployment artifact source", () => {
     expect(stores.primary.exists).toHaveBeenCalledWith(indexKey);
     expect(stores.primary.openReadStream).not.toHaveBeenCalled();
     expect(stores.source.openReadStream).toHaveBeenCalledWith(indexKey);
+  });
+
+  it("opens an asset in one store call when the store can", async () => {
+    const primary = mockStore([indexKey]);
+    primary.openRead = vi.fn(async (key: string) =>
+      key === indexKey
+        ? { stream: Readable.from([Buffer.from("<html></html>")]), size: 13 }
+        : null,
+    );
+    stores.primary = primary;
+
+    const response = await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "index.html",
+    });
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("content-length")).toBe("13");
+    expect(await response?.text()).toBe("<html></html>");
+    expect(primary.openRead).toHaveBeenCalledTimes(1);
+    expect(primary.exists).not.toHaveBeenCalled();
+    expect(primary.getSize).not.toHaveBeenCalled();
+  });
+
+  it("answers a missing asset with null after one call per place looked", async () => {
+    const primary = mockStore([]);
+    primary.openRead = vi.fn(async () => null);
+    stores.primary = primary;
+
+    const response = await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "assets/missing.js",
+    });
+
+    expect(response).toBeNull();
+    // The current key, then the legacy key; no SPA fallback for a file path.
+    expect(primary.openRead).toHaveBeenCalledTimes(2);
+    expect(primary.exists).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the read-only source through openRead too", async () => {
+    const primary = mockStore([]);
+    primary.openRead = vi.fn(async () => null);
+    const source = mockStore([indexKey]);
+    source.openRead = vi.fn(async (key: string) =>
+      key === indexKey ? { stream: Readable.from(["src"]), size: null } : null,
+    );
+    stores.primary = primary;
+    stores.source = source;
+
+    const asset = await readDeploymentAsset(projectId, sha, "some/route");
+
+    expect(asset?.size).toBeNull();
+    expect(asset?.contentType).toBe("text/html; charset=utf-8");
+    // some/route misses both stores at both keys, then index.html hits the
+    // source at the current key.
+    expect(source.openRead).toHaveBeenLastCalledWith(indexKey);
   });
 
   it("prefers the isolated writable store when it has the deployment", async () => {
@@ -234,7 +308,8 @@ describe("deployment binding index", () => {
     const sha = "2222222222222222222222222222222222222222";
     const indexKey = deploymentKey(projectId, sha, DEPLOYMENT_BINDING_INDEX);
     const bindingKey = "apps/bindings/warehouse/sales.parquet";
-    const store = mockStore([indexKey, bindingKey]);
+    const snapshotKey = "apps/bindings/warehouse/sales.snapshot.json";
+    const store = mockStore([indexKey, bindingKey, snapshotKey]);
     store.openReadStream = vi.fn(async key =>
       key === indexKey
         ? Readable.from([JSON.stringify({ sales: bindingKey })])
@@ -249,6 +324,34 @@ describe("deployment binding index", () => {
     });
     expect(await data?.text()).toBe(`false:${bindingKey}`);
 
+    // A client that asked for phases gets the signed link on the stream,
+    // not a 302 whose Location fetch() would swallow.
+    store.getSignedUrl = vi.fn(async () => "https://storage.test/s?sig=1");
+    const progress = await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "__data/sales.parquet",
+      progress: true,
+    });
+    expect(progress?.headers.get("content-type")).toBe("application/x-ndjson");
+    const lines = (await (progress as Response).text())
+      .trim()
+      .split("\n")
+      .map(line => JSON.parse(line));
+    expect(lines.map(e => e.phase)).toEqual(["resolving", "signing", "ready"]);
+    expect(lines[2]).toMatchObject({
+      binding: "sales",
+      url: "https://storage.test/s?sig=1",
+    });
+    expect(store.getSignedUrl).toHaveBeenCalledWith(bindingKey, 600);
+
+    const snapshot = await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "__data/sales.snapshot.json",
+    });
+    expect(await snapshot?.text()).toBe(`json:false:${snapshotKey}`);
+
     const names = await serveDeploymentFile({
       projectId,
       sha,
@@ -262,6 +365,15 @@ describe("deployment binding index", () => {
         projectId,
         sha,
         assetPath: `__data/${name}.parquet`,
+      });
+      expect(missing).toBeNull();
+    }
+
+    for (const name of ["other", "constructor"]) {
+      const missing = await serveDeploymentFile({
+        projectId,
+        sha,
+        assetPath: `__data/${name}.snapshot.json`,
       });
       expect(missing).toBeNull();
     }
@@ -283,6 +395,41 @@ describe("deployment binding index", () => {
         .mocked(store.openReadStream)
         .mock.calls.filter(([k]) => k === indexKey),
     ).toHaveLength(1);
+  });
+
+  it("answers a snapshot 404 cheaply: no index means no snapshot, never a repo read", async () => {
+    const sha = "3333333333333333333333333333333333333333";
+    const bindingKey = "apps/bindings/warehouse/sales.parquet";
+    // An older deployment: no binding index, parquet present, no snapshot.
+    stores.primary = mockStore([bindingKey]);
+    expect(
+      await serveDeploymentFile({
+        projectId,
+        sha,
+        assetPath: "__data/sales.snapshot.json",
+      }),
+    ).toBeNull();
+    expect(bindingArtifactKeyByName).not.toHaveBeenCalled();
+
+    // Indexed, but built before snapshots existed.
+    const sha2 = "4444444444444444444444444444444444444444";
+    const indexKey = deploymentKey(projectId, sha2, DEPLOYMENT_BINDING_INDEX);
+    const store = mockStore([indexKey, bindingKey]);
+    store.openReadStream = vi.fn(async key =>
+      key === indexKey
+        ? Readable.from([JSON.stringify({ sales: bindingKey })])
+        : null,
+    );
+    stores.primary = store;
+    expect(
+      await serveDeploymentFile({
+        projectId,
+        sha: sha2,
+        assetPath: "__data/sales.snapshot.json",
+      }),
+    ).toBeNull();
+    expect(bindingArtifactKeyByName).not.toHaveBeenCalled();
+    expect(readBindingsTolerant).not.toHaveBeenCalled();
   });
 });
 

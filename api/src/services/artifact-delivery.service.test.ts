@@ -14,8 +14,10 @@ import { Readable } from "node:stream";
 import type { ArtifactStore } from "./artifact-store.service";
 import {
   artifactDeliveryMode,
+  serveJsonArtifact,
   serveParquetArtifact,
   SIGNED_URL_TTL_SECONDS,
+  STABLE_REDIRECT_MAX_AGE_SECONDS,
 } from "./artifact-delivery.service";
 
 function fakeStore(
@@ -159,6 +161,43 @@ async function testEnvOverrides() {
   }
 }
 
+async function testJsonArtifactAlwaysStreamsAndSkipsRedirect() {
+  const store = fakeStore({
+    type: "gcs",
+    ensureBrowserCors: async () => true,
+    openReadStream: async () =>
+      Readable.from([Buffer.from('{"version":1,"rows":[]}')]),
+    getSize: async () => {
+      throw new Error("a snapshot read needs no size probe");
+    },
+  });
+  const res = await serveJsonArtifact(store, "apps/k.snapshot.json", {
+    cacheControl: "no-store",
+    extraHeaders: { "Access-Control-Allow-Origin": "*" },
+  });
+  assert.ok(res);
+  assert.equal(res.status, 200);
+  assert.equal(
+    res.headers.get("Content-Type"),
+    "application/json; charset=utf-8",
+  );
+  assert.equal(res.headers.get("Content-Length"), "23");
+  assert.equal(res.headers.get("Access-Control-Allow-Origin"), "*");
+  assert.equal(await res.text(), '{"version":1,"rows":[]}');
+}
+
+async function testMissingJsonArtifactIsNull() {
+  const store = fakeStore({
+    type: "gcs",
+    ensureBrowserCors: async () => true,
+    openReadStream: async () => null,
+  });
+  const res = await serveJsonArtifact(store, "apps/missing.snapshot.json", {
+    cacheControl: "no-store",
+  });
+  assert.equal(res, null);
+}
+
 async function testModeIsResolvedOncePerStore() {
   let probes = 0;
   const store = fakeStore({
@@ -173,6 +212,67 @@ async function testModeIsResolvedOncePerStore() {
   assert.equal(probes, 1);
 }
 
+async function testStableRedirectIsOneUrlPerWindow() {
+  // Every 302 inside one window must point at the SAME signed URL, or the
+  // browser cache can never answer the parquet (app-origin.ts).
+  const windows: Array<{ accessibleAt: Date; expiresAt: Date } | undefined> =
+    [];
+  const store = fakeStore({
+    type: "gcs",
+    ensureBrowserCors: async () => true,
+    getSignedUrl: async (_key, _ttl, window) => {
+      windows.push(window);
+      return `https://bucket.example/signed?exp=${window?.expiresAt.getTime()}`;
+    },
+  });
+  const hour = 60 * 60 * 1000;
+  const start = Date.UTC(2026, 9, 22, 6, 0, 0);
+  const at = async (now: number) =>
+    await serveParquetArtifact(store, "apps/k.parquet", {
+      cacheControl: "no-store",
+      stable: { windowMs: 6 * hour, now },
+    });
+  const early = await at(start + 1000);
+  const late = await at(start + 6 * hour - 1000);
+  const next = await at(start + 6 * hour + 1000);
+  assert.ok(early && late && next);
+  assert.equal(early.headers.get("Location"), late.headers.get("Location"));
+  assert.notEqual(late.headers.get("Location"), next.headers.get("Location"));
+  // Pinned to the window, and outliving it by the usual short TTL.
+  assert.equal(windows[0]?.accessibleAt.getTime(), start);
+  assert.equal(
+    windows[0]?.expiresAt.getTime(),
+    start + 6 * hour + SIGNED_URL_TTL_SECONDS * 1000,
+  );
+  // The redirect may be reused, but never past ten minutes, and never
+  // within two minutes of the signature inside it expiring.
+  assert.equal(
+    early.headers.get("Cache-Control"),
+    `private, max-age=${STABLE_REDIRECT_MAX_AGE_SECONDS}`,
+  );
+  const lateMaxAge = Number(
+    /max-age=(\d+)/.exec(late.headers.get("Cache-Control") ?? "")?.[1],
+  );
+  assert.equal(lateMaxAge, 1 + SIGNED_URL_TTL_SECONDS - 120);
+}
+
+async function testUnstableRedirectStillUncached() {
+  let window: unknown = "unset";
+  const store = fakeStore({
+    type: "gcs",
+    ensureBrowserCors: async () => true,
+    getSignedUrl: async (_key, _ttl, w) => {
+      window = w;
+      return "https://bucket.example/signed?sig=abc";
+    },
+  });
+  const res = await serveParquetArtifact(store, "apps/k.parquet", {
+    cacheControl: "no-store",
+  });
+  assert.equal(res?.headers.get("Cache-Control"), "private, no-store");
+  assert.equal(window, undefined);
+}
+
 async function main() {
   await testRedirectsWhenBucketCorsConfirmed();
   await testMissingArtifactIsNullNotBucket404();
@@ -182,6 +282,10 @@ async function main() {
   await testSigningFailureDegradesToStream();
   await testEnvOverrides();
   await testModeIsResolvedOncePerStore();
+  await testJsonArtifactAlwaysStreamsAndSkipsRedirect();
+  await testMissingJsonArtifactIsNull();
+  await testStableRedirectIsOneUrlPerWindow();
+  await testUnstableRedirectStillUncached();
   console.log("artifact-delivery.service tests passed");
 }
 

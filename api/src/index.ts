@@ -18,6 +18,7 @@ import {
 } from "./services/share-og.service";
 import { registerApiRoutes } from "./routes/register-routes";
 import { edgeOriginMiddleware } from "./middleware/edge-origin";
+import { appsHostGate } from "./middleware/apps-host-gate";
 import { apiRateLimitMiddleware } from "./middleware/rate-limit";
 import { mcpOAuthWellKnownRoutes } from "./routes/mcp-oauth.routes";
 import { getOpenApiDocument } from "./openapi";
@@ -50,6 +51,8 @@ import {
   shutdownLangfuse,
 } from "./observability/langfuse";
 import { assertDevLoginSafeAtBoot } from "./auth/dev-login";
+import { initAppBindingParquetWriteOptions } from "./utils/parquet-compression";
+import { initParquetRowLimits } from "./utils/parquet-row-limit";
 import { attachAppsTerminalWs } from "./apps/terminal-ws";
 import {
   isGkeWorkerConfigured,
@@ -85,6 +88,10 @@ const REQUIRED_SYSTEM_SKILLS = [
 const app = new OpenAPIHono<AuthEnv>();
 
 const isProduction = process.env.NODE_ENV === "production";
+
+// App hosts (`<appId>.<apps domain>`) serve one app's files and nothing else.
+// First, so its header rewrite runs after every other middleware's.
+app.use("*", appsHostGate);
 
 // Security headers. CSP is intentionally left unset here because the SPA loads
 // GTM, Google Fonts, and renders sandboxed blob/srcdoc iframes; a tuned CSP is
@@ -368,6 +375,12 @@ async function main(): Promise<void> {
   // production environment. A misconfiguration here must be a loud crash, not
   // a silently weakened login path.
   assertDevLoginSafeAtBoot();
+
+  // A typo in PARQUET_COMPRESSION / PARQUET_ZSTD_LEVEL stops the boot here,
+  // so the revision never serves, instead of failing app binding builds.
+  initAppBindingParquetWriteOptions();
+  // Same for PARQUET_ROW_LIMIT / PARQUET_MAX_ROW_LIMIT.
+  initParquetRowLimits();
 
   const systemSkillRegistry = discoverSystemSkills();
   const missingSystemSkills = REQUIRED_SYSTEM_SKILLS.filter(

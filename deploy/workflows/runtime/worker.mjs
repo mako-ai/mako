@@ -23,6 +23,18 @@ const load = file => import(pathToFileURL(join(dir, file)).href);
 // writes to a connection as itself (access/connection-writes.ts), not as
 // whoever deployed it. Not in a sandbox run, which acts as its person.
 const running = (globalThis.makoWorkflow = new AsyncLocalStorage());
+// And which run and step, so Mako counts a model call's cost against them.
+// Apart from the name, which older copies of lib/mako read as a string.
+const runStep = (globalThis.makoRun = new AsyncLocalStorage());
+const runIdOf = ctx => {
+  try {
+    return typeof ctx?.workflowRunId === "function"
+      ? String(ctx.workflowRunId())
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
 const runAs = (name, definition) => {
   const tasks = [
     ...(definition._tasks ?? []),
@@ -32,7 +44,11 @@ const runAs = (name, definition) => {
   ].filter(task => typeof task?.fn === "function");
   for (const task of tasks) {
     const fn = task.fn;
-    task.fn = (...args) => running.run(name, () => fn(...args));
+    const step = task.name;
+    task.fn = (...args) =>
+      running.run(name, () =>
+        runStep.run({ runId: runIdOf(args[1]), step }, () => fn(...args)),
+      );
   }
 };
 
@@ -70,6 +86,9 @@ if (!sandbox && makoOrigin) {
       init?.headers ?? (input instanceof Request ? input.headers : undefined),
     );
     headers.set("X-Mako-Workflow", name);
+    const { runId, step } = runStep.getStore() ?? {};
+    if (runId) headers.set("X-Mako-Run", runId);
+    if (step) headers.set("X-Mako-Step", step);
     return baseFetch(input, { ...init, headers });
   };
 }

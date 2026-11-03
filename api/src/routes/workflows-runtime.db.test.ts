@@ -11,8 +11,10 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 
 import { hashApiKey } from "../auth/api-key.middleware";
 import { LlmUsage, User } from "../database/schema";
+import { loggingMiddleware } from "../logging";
 import { Workspace } from "../database/workspace-schema";
 import { encryptString } from "../services/crypto.service";
+import { workerKeyName } from "../workflows/worker-key";
 import { workflowRuntimeRoutes } from "./workflows";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
@@ -25,6 +27,8 @@ const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 
 const app = new OpenAPIHono();
+// As in the API: the request context carries the workflow Mako checked.
+app.use("*", loggingMiddleware({}));
 app.route("/api/workflows/runtime", workflowRuntimeRoutes);
 
 const call = (path: string, key: string, body?: unknown) =>
@@ -60,12 +64,20 @@ async function main() {
       slug: `t-${id}`,
       createdBy: "tester",
       apiKeys: [
-        key("worker", WORKER_KEY, ["mcp", "query:read", "workflows:runtime"]),
+        key(workerKeyName(), WORKER_KEY, [
+          "mcp",
+          "query:read",
+          "workflows:runtime",
+        ]),
         key("ordinary", OTHER_KEY, ["mcp", "query:read"]),
       ],
       workflows: {
         hatchetToken: encryptString(HATCHET_TOKEN),
-        live: { sha: SHA_A, tree: "tree-a" },
+        live: {
+          sha: SHA_A,
+          tree: "tree-a",
+          names: ["digest", "crm-chat-classifier"],
+        },
         active: ["digest"],
       },
     });
@@ -179,6 +191,9 @@ async function main() {
           "ai-model-id": "typesafe-ai/jev",
           "ai-decision-model-specification-version": "4",
           "x-mako-workflow": "crm-chat-classifier",
+          // The run and step the worker sends (worker.mjs), for its cost.
+          "x-mako-run": "0f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+          "x-mako-step": "label",
           cookie: "session=secret",
         },
         body: JSON.stringify({
@@ -240,6 +255,13 @@ async function main() {
       assert.equal(row?.outputTokens, 4);
       assert.equal(row?.totalTokens, 124);
       assert.equal(row?.costUsd, 0.000031374);
+      // Counted against the run and step it came from, the workflow being
+      // the deployed one Mako checked.
+      assert.deepEqual(row?.workflowRun, {
+        workflowId: "crm-chat-classifier",
+        runId: "0f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+        step: "label",
+      });
 
       // A gateway error is passed back as is, and nothing is counted.
       gatewayReply = () =>

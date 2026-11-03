@@ -74,6 +74,20 @@ import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import { useAppUsageBeacon } from "../hooks/useAppUsageBeacon";
 import ShareDialog from "./ShareDialog";
 import { appViewerPath } from "../store/shareStore";
+import {
+  APP_OPEN_FALLBACK_MS,
+  appTabReadsReady,
+  isAwaitingPublishedPaint,
+  settleAppOpen,
+} from "../lib/app-open-gate";
+import { appFrameMessageOrigin, appFrameSandbox } from "../lib/app-frame";
+import {
+  APP_DUCKDB_MEMORY_MESSAGE,
+  clearAppFrame,
+  forgetAppFrame,
+  reportAppFrameMemory,
+  setAppFrameVisible,
+} from "../lib/app-memory";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
@@ -1184,6 +1198,12 @@ export default function AppWorkspace({
   // one in front — background tabs stay mounted (display: none), and the
   // dev-mode preview is the author building, not someone using the app.
   const isFrontTab = useConsoleStore(s => s.activeTabId === _tabId);
+  // The page-wide DuckDB budget asks background app frames to release, least
+  // recently shown first, never the one in front.
+  useEffect(() => {
+    setAppFrameVisible(_tabId, isFrontTab);
+  }, [_tabId, isFrontTab]);
+  useEffect(() => () => forgetAppFrame(_tabId), [_tabId]);
   useAppUsageBeacon({
     workspaceId,
     appId,
@@ -1220,8 +1240,48 @@ export default function AppWorkspace({
   // Until that probe answers, an unpublished app is not yet "never built":
   // it may be about to open its running dev server instead.
   const [devCheckedFor, setDevCheckedFor] = useState<string | null>(null);
+
+  // WHEN THIS TAB MAY READ THE REPO AND THE BOX.
+  //
+  // Files, status, branches and the dev-server probe are git- or
+  // sandbox-backed (3.4–3.7 s each on prod) and none is on screen while the
+  // published app opens. Fired on mount, by every app tab including the
+  // background ones, they queued on 1-vCPU instances in front of what the
+  // person was waiting for. So: the front tab only, once its published app
+  // has loaded (or after a fallback), and at once when nothing is loading —
+  // an unpublished app, the workbench, a dev server already serving. A
+  // background tab reads when it is brought to the front.
+  const awaitingPublishedPaint = isAwaitingPublishedPaint({
+    editing,
+    publishedSha,
+    pubLoaded,
+    devRunning,
+  });
+  const [paintWaitOver, setPaintWaitOver] = useState(false);
   useEffect(() => {
-    if (!workspaceId) return;
+    if (!isFrontTab || !awaitingPublishedPaint) return;
+    const timer = setTimeout(
+      () => setPaintWaitOver(true),
+      APP_OPEN_FALLBACK_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [isFrontTab, awaitingPublishedPaint]);
+  const repoReadsReady = appTabReadsReady({
+    isFrontTab,
+    appKnown: !!app,
+    awaitingPublishedPaint,
+    waitOver: paintWaitOver,
+  });
+  // The page's other boot-time reads wait on the same moment (app-open-gate).
+  useEffect(() => {
+    if (isFrontTab && app && !awaitingPublishedPaint) settleAppOpen();
+  }, [isFrontTab, app, awaitingPublishedPaint]);
+
+  const devProbedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!workspaceId || !repoReadsReady) return;
+    if (devProbedFor.current === appId) return;
+    devProbedFor.current = appId;
     void useAppsStore
       .getState()
       .checkDevStatus(workspaceId, appId)
@@ -1235,7 +1295,7 @@ export default function AppWorkspace({
     // Run once per app open; `editing` is deliberately not a dependency —
     // exiting dev mode clears it, and re-entering here would fight it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appId, workspaceId]);
+  }, [appId, workspaceId, repoReadsReady]);
 
   // Entering edit mode is "modifying the content" for an app tab: it pins
   // the tab (consoleStore's preview invariant), so a workbench with a dev
@@ -1249,7 +1309,9 @@ export default function AppWorkspace({
   // is opened for viewing and again whenever a publish moves the app on.
   useEffect(() => {
     if (!editing && app?.publishedSha && workspaceId) {
-      void fetchViewUrl(workspaceId, appId);
+      // A token UrlSync prefetched, or one this tab already holds for this
+      // publish, is used as is.
+      void fetchViewUrl(workspaceId, appId, { reuseFresh: true });
     }
   }, [editing, app?.publishedSha, workspaceId, appId, fetchViewUrl]);
   // Keep the tab's URL handle honest: a top-level app is addressed by its
@@ -1318,7 +1380,28 @@ export default function AppWorkspace({
     const onMessage = (event: MessageEvent) => {
       const frame = pubIframeRef.current;
       if (!frame || event.source !== frame.contentWindow) return;
-      const data = event.data as { type?: unknown; search?: unknown } | null;
+      if (event.origin !== appFrameMessageOrigin(frame.src)) return;
+      const data = event.data as {
+        type?: unknown;
+        search?: unknown;
+        bytes?: unknown;
+        canRelease?: unknown;
+      } | null;
+      // SDK >= 2.13: what this frame's heap holds, for the page-wide
+      // budget across app frames (lib/app-memory.ts).
+      if (
+        data?.type === APP_DUCKDB_MEMORY_MESSAGE &&
+        typeof data.bytes === "number"
+      ) {
+        reportAppFrameMemory(
+          _tabId,
+          event.source as Window,
+          event.origin,
+          data.bytes,
+          data.canRelease !== false,
+        );
+        return;
+      }
       if (
         !data ||
         data.type !== "mako-app:navigate" ||
@@ -1351,6 +1434,11 @@ export default function AppWorkspace({
     s => (s.tabs[_tabId]?.metadata?.appSearchSeed as number | undefined) ?? 0,
   );
   const seedKey = `${previewNonce}:${appSearchSeed}`;
+  // Each of these replaces or removes the published iframe under a live tab.
+  useEffect(
+    () => () => clearAppFrame(_tabId),
+    [_tabId, seedKey, viewUrl, editing],
+  );
   const seededSearchRef = useRef<{ key: string; search: string } | null>(null);
   if (
     seededSearchRef.current === null ||
@@ -1367,11 +1455,18 @@ export default function AppWorkspace({
   useEffect(() => {
     if (!workspaceId) return;
     if (!app) void fetchApps(workspaceId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, appId]);
+  const repoReadFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!workspaceId || !repoReadsReady) return;
+    if (repoReadFor.current === appId) return;
+    repoReadFor.current = appId;
     void fetchFiles(workspaceId, appId);
     void fetchStatus(workspaceId, appId);
     void fetchBranches(workspaceId, appId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, appId]);
+  }, [workspaceId, appId, repoReadsReady]);
 
   // Repo-wide, deliberately: one worktree serves every app in the monorepo, so
   // Discard throws away the repo-wide set and a branch switch has to get past
@@ -1434,8 +1529,8 @@ export default function AppWorkspace({
         // External record links open normal tabs. Keep the app itself isolated.
         sandbox={
           preview.mode === "dev"
-            ? "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"
-            : "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+            ? "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-same-origin"
+            : "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
         }
         style={{ border: 0, width: "100%", height: "100%" }}
       />
@@ -1681,9 +1776,11 @@ export default function AppWorkspace({
                   file read and starts no machine — the same reason a hundred
                   viewers can open one app without a hundred microVMs.
 
-                  No allow-same-origin: this is served from Mako's own origin,
-                  so granting it would hand app code our origin and let it out
-                  of the sandbox entirely. */}
+                  No allow-same-origin while this is served from Mako's own
+                  origin: granting it would hand app code our origin and let
+                  it out of the sandbox entirely. On the app's own origin
+                  (APPS_ORIGIN_BASE) the flag is added, because that origin
+                  is foreign and it is what lets the browser cache work. */}
               <iframe
                 key={`pub-${seedKey}`}
                 ref={pubIframeRef}
@@ -1699,21 +1796,40 @@ export default function AppWorkspace({
                         : seededSearch)
                     : viewUrl
                 }
-                sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+                sandbox={appFrameSandbox(viewUrl)}
                 onLoad={() => setPubLoadedUrl(viewUrl)}
                 style={{
                   border: 0,
                   width: "100%",
                   height: "100%",
-                  // Held invisible until the bundle has loaded, so the
-                  // opening card hands straight over to the app instead of
-                  // to a blank white frame.
-                  opacity: pubLoaded ? 1 : 0,
-                  transition: "opacity 150ms ease",
+                  // Visible from the start, ABOVE the opening card. Until the
+                  // app's HTML paints, the frame is transparent and the card
+                  // shows through it; the app's own boot skeleton then
+                  // covers it the moment index.html parses. The frame used
+                  // to be held at opacity 0 until onLoad — after the whole
+                  // bundle — so that skeleton was never seen (5+ s of
+                  // "Opening…" on prod for a 0.5 s app).
+                  position: "relative",
+                  zIndex: 1,
+                  background: "transparent",
+                  // No colorScheme here. The frame's color-scheme becomes the
+                  // app's prefers-color-scheme, so pinning it to "light" made
+                  // every system-following app light. Mako never sets one on
+                  // <html>, so frame and app document are both "normal"
+                  // before the app paints and the canvas stays transparent.
                 }}
               />
               {!pubLoaded && (
-                <Box sx={{ position: "absolute", inset: 0, display: "flex" }}>
+                // Under the frame, and gone once it has loaded, so an app
+                // without a background never shows the card through it.
+                <Box
+                  sx={{
+                    position: "absolute",
+                    inset: 0,
+                    display: "flex",
+                    zIndex: 0,
+                  }}
+                >
                   <AppOpeningState title={app?.title} />
                 </Box>
               )}

@@ -17,6 +17,7 @@ import {
 } from "../base/BaseConnector";
 import {
   resolveCloseEntitySchema,
+  closeActivitySearchFields,
   closeCustomFieldSelectors,
   splitCloseSearchFieldSelection,
   type CloseCustomField,
@@ -284,12 +285,16 @@ export class CloseConnector extends BaseConnector {
     opportunities: "opportunity",
   };
 
+  private static readonly CUSTOM_ACTIVITY_OBJECT_TYPE =
+    "activity.custom_activity";
+  private static readonly ACTIVITY_CUSTOM_FIELD_CACHE_KEY = "activity";
+
   private async fetchCustomFieldsForEntity(
     entity: string,
   ): Promise<CloseCustomField[]> {
     if (entity === "activities:CustomActivity") {
       return this.fetchCustomFieldsViaList(
-        "activity",
+        CloseConnector.ACTIVITY_CUSTOM_FIELD_CACHE_KEY,
         "/custom_field/activity/",
       );
     }
@@ -309,17 +314,45 @@ export class CloseConnector extends BaseConnector {
   }
 
   /**
-   * Re-read the custom-field schema from Close, bypassing the per-instance
-   * cache. Used when a Search request is rejected mid-run: a field deleted
-   * in Close after the schema was cached leaves a dangling `custom.cf_*`
-   * selector that Close refuses, and the fix is to re-plan with the current
-   * schema — not to shrink the batch.
+   * Custom fields the Search API requests as `custom.cf_*` selectors for one
+   * object type, or null when the type carries none. Uses the same lookup as
+   * resolveSchema, so every requested selector has a schema column and every
+   * `custom_cf_*` column is requested.
    */
-  private async refreshCustomFieldsViaSchema(
+  private async fetchSearchCustomFields(
+    objectType: string,
+  ): Promise<CloseCustomField[] | null> {
+    if (objectType === CloseConnector.CUSTOM_ACTIVITY_OBJECT_TYPE) {
+      return this.fetchCustomFieldsForEntity("activities:CustomActivity");
+    }
+    if (
+      objectType === "lead" ||
+      objectType === "contact" ||
+      objectType === "opportunity"
+    ) {
+      return this.fetchCustomFieldsViaSchema(objectType);
+    }
+    return null;
+  }
+
+  /**
+   * Re-read the custom fields from Close, bypassing the per-instance cache.
+   * Used when a Search request is rejected mid-run: a field deleted in Close
+   * after the schema was cached leaves a dangling `custom.cf_*` selector that
+   * Close refuses, and the fix is to re-plan with the current schema — not
+   * to shrink the batch.
+   */
+  private async refreshSearchCustomFields(
     objectType: string,
   ): Promise<CloseCustomField[]> {
-    this.customFieldSchemaCache.delete(objectType);
-    return this.fetchCustomFieldsViaSchema(objectType);
+    if (objectType === CloseConnector.CUSTOM_ACTIVITY_OBJECT_TYPE) {
+      this.customFieldSchemaCache.delete(
+        CloseConnector.ACTIVITY_CUSTOM_FIELD_CACHE_KEY,
+      );
+    } else {
+      this.customFieldSchemaCache.delete(objectType);
+    }
+    return (await this.fetchSearchCustomFields(objectType)) ?? [];
   }
 
   private async fetchCustomFieldsViaSchema(
@@ -590,6 +623,7 @@ export class CloseConnector extends BaseConnector {
     "opportunities",
     "contacts",
     "custom_objects",
+    "activities:CustomActivity",
   ]);
 
   private normalizeLeadRecord(
@@ -1264,106 +1298,28 @@ export class CloseConnector extends BaseConnector {
       ],
     };
 
-    // All activity types share common fields; the API ignores unknown fields per type.
-    const activityFields = [
-      "id",
-      "_type",
-      "lead_id",
-      "contact_id",
-      "user_id",
-      "user_name",
-      "created_by",
-      "created_by_name",
-      "updated_by",
-      "updated_by_name",
-      "organization_id",
-      "date_created",
-      "date_updated",
-      "activity_at",
-      // Call
-      "direction",
-      "duration",
-      "phone",
-      "local_phone",
-      "remote_phone",
-      "status",
-      "disposition",
-      "call_method",
-      "cost",
-      "note",
-      "note_html",
-      "recording_url",
-      "voicemail_url",
-      "voicemail_duration",
-      "outcome_id",
-      "outcome_reason",
-      "outcome_autofill_confidence",
-      "outcome_autofill_reasoning",
-      "transferred_from",
-      "transferred_to",
-      "source",
-      // Email
-      "subject",
-      "body_text",
-      "sender",
-      "to",
-      "cc",
-      "bcc",
-      "envelope",
-      "thread_id",
-      "template_id",
-      "opens",
-      // SMS
-      "text",
-      "local_phone_formatted",
-      "remote_phone_formatted",
-      // Meeting
-      "title",
-      "starts_at",
-      "ends_at",
-      "location",
-      "is_recurring",
-      "attendees",
-      "connected_account_id",
-      // Status changes
-      "old_status_id",
-      "old_status_label",
-      "old_status_type",
-      "new_status_id",
-      "new_status_label",
-      "new_status_type",
-      // Note (activity.note)
-      "note_date_updated",
-      "pinned",
-      "pinned_at",
-      "attachments",
-      "note_mentions",
-    ];
-
-    if (objectType.startsWith("activity.")) {
+    // Activity subtypes request exactly the columns their schema declares,
+    // so backfill, incremental polls and the warehouse table share one
+    // definition (see closeActivitySearchFields).
+    const activityFields = closeActivitySearchFields(entity);
+    if (activityFields) {
       fieldsMap[objectType] = activityFields;
     }
 
-    // Core objects: enumerate every custom field as an explicit
+    // Objects with custom fields (leads, contacts, opportunities, custom
+    // activities): enumerate every custom field as an explicit
     // `custom.cf_<id>` selector so values come back as flat keys (matching the
     // schema's `custom_cf_*` columns and the shape webhooks deliver) instead
     // of the deprecated aggregate `custom` blob. The selection is split so no
     // single request exceeds the per-request selector budget; see
-    // CLOSE_SEARCH_CUSTOM_SELECTOR_BATCH. The custom-field schema lookup is
-    // cached per connector instance.
-    let coreCustomFields: CloseCustomField[] | null = null;
-    if (
-      objectType === "lead" ||
-      objectType === "contact" ||
-      objectType === "opportunity"
-    ) {
-      coreCustomFields = await this.fetchCustomFieldsViaSchema(objectType);
-    }
+    // CLOSE_SEARCH_CUSTOM_SELECTOR_BATCH. The custom-field lookup is cached
+    // per connector instance.
+    let searchCustomFields = await this.fetchSearchCustomFields(objectType);
     const planFieldSelection = (): CloseSearchFieldSelectionPlan | null =>
-      coreCustomFields
+      searchCustomFields
         ? splitCloseSearchFieldSelection(
             fieldsMap[objectType] || [],
-            coreCustomFields,
+            searchCustomFields,
             this.customSelectorBatchSize,
           )
         : null;
@@ -1706,7 +1662,7 @@ export class CloseConnector extends BaseConnector {
           }
           pageCursor = null;
         } else if (
-          coreCustomFields &&
+          searchCustomFields &&
           axios.isAxiosError(error) &&
           error.response?.status === 400
         ) {
@@ -1715,19 +1671,21 @@ export class CloseConnector extends BaseConnector {
           // deleted field) — re-plan with the fresh schema; or the list is
           // simply too long — retry with a smaller per-request budget. The
           // cursor is unchanged either way, so the same page is retried.
-          const refreshed = await this.refreshCustomFieldsViaSchema(objectType);
+          const refreshed = await this.refreshSearchCustomFields(objectType);
           if (
             this.customFieldSelectionChanged(
               entity,
-              coreCustomFields,
+              searchCustomFields,
               refreshed,
               error,
             )
           ) {
-            coreCustomFields = refreshed;
+            searchCustomFields = refreshed;
             continue;
           }
-          if (this.shrinkCustomSelectorBatch(error, entity, coreCustomFields)) {
+          if (
+            this.shrinkCustomSelectorBatch(error, entity, searchCustomFields)
+          ) {
             continue;
           }
           throw error;
@@ -1930,7 +1888,7 @@ export class CloseConnector extends BaseConnector {
         };
 
         if (axios.isAxiosError(error) && error.response?.status === 400) {
-          const refreshed = await this.refreshCustomFieldsViaSchema(objectType);
+          const refreshed = await this.refreshSearchCustomFields(objectType);
           const current = new Set(closeCustomFieldSelectors(refreshed));
           const stillValid = remainingFields.filter(field =>
             current.has(`custom.${field.id}`),

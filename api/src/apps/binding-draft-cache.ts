@@ -34,6 +34,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import mongoose, { Schema, Types } from "mongoose";
 import { getArtifactStore } from "../services/artifact-store.service";
+import {
+  snapshotArtifactKey,
+  snapshotFromParquetBestEffort,
+  storeParquetWithSnapshot,
+} from "../services/binding-snapshot";
 import { cooldownMsFor } from "./live-binding-guard";
 import { loggers } from "../logging";
 
@@ -61,9 +66,16 @@ export interface DraftDefinition {
    * or null. Part of the hash: rebuilding a dev model is a new draft.
    */
   devModifiedAt?: number | null;
+  /**
+   * `-- row_limit:` as written. Part of the hash only when set (drafts
+   * without one keep their hash): raising the limit after a draft failed on
+   * it is a new draft, not one the failure backoff refuses.
+   */
+  rowLimit?: string;
 }
 
 export function draftHash(d: DraftDefinition): string {
+  const rowLimit = d.rowLimit?.trim();
   return createHash("sha256")
     .update(
       [
@@ -72,6 +84,7 @@ export function draftHash(d: DraftDefinition): string {
         d.databaseName ?? "",
         d.renderedCode,
         d.devModifiedAt == null ? "" : String(d.devModifiedAt),
+        ...(rowLimit ? [`row_limit=${rowLimit}`] : []),
       ]
         .map(part => `${part.length}:${part}`)
         .join("|"),
@@ -213,10 +226,23 @@ export async function recordDraftBuilt(input: {
     input.hash,
     randomBytes(6).toString("hex"),
   );
-  await getArtifactStore().put(input.filePath, key, {
-    appProjectId: input.projectId,
-    binding: input.name,
-    draft: "true",
+  const context = { projectId: input.projectId, binding: input.name };
+  // Per-build key, so no older snapshot can sit here; the shared helper
+  // keeps the order identical to the committed path anyway.
+  await storeParquetWithSnapshot({
+    parquetKey: key,
+    snapshot: await snapshotFromParquetBestEffort(
+      input.filePath,
+      input.rowCount,
+      context,
+    ),
+    context,
+    uploadParquet: () =>
+      getArtifactStore().put(input.filePath, key, {
+        appProjectId: input.projectId,
+        binding: input.name,
+        draft: "true",
+      }),
   });
   const project = new Types.ObjectId(input.projectId);
   await AppBindingDraft.create({
@@ -297,6 +323,14 @@ async function pruneExpiredDrafts(projectId: string, now: Date) {
     } catch (error) {
       logger.warn("Could not delete expired draft artifact", {
         key: doc.key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    try {
+      await store.delete(snapshotArtifactKey(doc.key));
+    } catch (error) {
+      logger.warn("Could not delete expired draft snapshot", {
+        key: snapshotArtifactKey(doc.key),
         error: error instanceof Error ? error.message : String(error),
       });
     }

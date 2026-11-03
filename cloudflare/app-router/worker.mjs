@@ -105,17 +105,41 @@ async function proxyRequest(request, targetUrl, publicUrl) {
   });
 }
 
+// Per-app origins (api/src/apps/app-origin.ts): `<appId>.<APPS_DOMAIN>`
+// hosts serve one published app each, from the same origin as app.mako.ai.
+// Off unless the APPS_DOMAIN var is set. The edge only lets the published
+// asset route through; the API enforces the rest (token scope per app).
+const APP_HOST_LABEL = /^[0-9a-f]{24}$/;
+const APP_HOST_PATH_PREFIX = "/api/apps-preview/pub.";
+const APP_HOST_ROUTE_KEY = "route:app.mako.ai";
+
+function isAppHost(hostname, env) {
+  const domain = (env.APPS_DOMAIN || "").toLowerCase();
+  if (!domain) return false;
+  const suffix = `.${domain}`;
+  return (
+    hostname.endsWith(suffix) &&
+    APP_HOST_LABEL.test(hostname.slice(0, -suffix.length))
+  );
+}
+
 export default {
   async fetch(request, env) {
     const publicUrl = new URL(request.url);
-    if (!SUPPORTED_HOSTS.has(publicUrl.hostname)) {
+    const appHost = isAppHost(publicUrl.hostname, env);
+    if (!SUPPORTED_HOSTS.has(publicUrl.hostname) && !appHost) {
       return jsonResponse(404, { error: "unsupported_host" });
+    }
+    if (appHost && !publicUrl.pathname.startsWith(APP_HOST_PATH_PREFIX)) {
+      return jsonResponse(404, { error: "not_found" });
     }
 
     // Origin and maintenance state are one JSON value so each Cloudflare PoP
     // sees a coherent route configuration even while KV propagates globally.
     const routeConfig = parseRouteConfig(
-      await env.MAKO_APP_ROUTING.get(`route:${publicUrl.hostname}`),
+      await env.MAKO_APP_ROUTING.get(
+        appHost ? APP_HOST_ROUTE_KEY : `route:${publicUrl.hostname}`,
+      ),
     );
     if (!routeConfig) {
       return jsonResponse(503, { error: "origin_not_configured" });
