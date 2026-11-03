@@ -128,6 +128,7 @@ import { deployOneApp, deployTargetForPush } from "./deploy-on-push";
 import {
   clearPublishedSha,
   deployBuild,
+  ensureDeploymentBindings,
   recordDeployFailure,
   setPublishedSha,
 } from "./deployment.service";
@@ -143,6 +144,8 @@ beforeEach(() => {
   state.commitPresent = true;
   state.folderPresent = true;
   state.events = [];
+  state.project.publishedSha = "1111111111111111111111111111111111111111";
+  state.ancestry.clear();
   vi.clearAllMocks();
 });
 
@@ -223,6 +226,25 @@ describe("atomic app deployment", () => {
       "vite: boom",
     );
     expect(deployBuild).not.toHaveBeenCalled();
+  });
+});
+
+describe("a deploy that kept running after a newer commit went live", () => {
+  it("does not repoint the app past the newer commit", async () => {
+    const newer = "2".repeat(40);
+    state.ancestry.add(`${sha}>${newer}`);
+    vi.mocked(ensureDeploymentBindings).mockImplementationOnce(async () => {
+      state.project.publishedSha = newer;
+      return {} as never;
+    });
+
+    await expect(deployOneApp(workspaceId, "sales", sha)).resolves.toMatchObject(
+      { outcome: "superseded" },
+    );
+
+    expect(setPublishedSha).not.toHaveBeenCalled();
+    expect(deployBuild).not.toHaveBeenCalled();
+    expect(state.events).toContain("clear-progress");
   });
 });
 

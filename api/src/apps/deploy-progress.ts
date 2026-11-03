@@ -188,6 +188,22 @@ export function clearDeployProgress(
   );
 }
 
+/**
+ * Is a deploy of `sha` running and still making progress? A new request for
+ * the same commit would only cancel it and start over, and the cancelled
+ * run's step keeps building: on 2026-11-03 three walks of one commit ran side
+ * by side and spent 129 builds on 85 bindings.
+ */
+export function isDeployInFlight(
+  progress: IAppDeployProgress | null | undefined,
+  sha: string,
+  now: Date = new Date(),
+): boolean {
+  if (!progress?.sha || progress.sha !== sha) return false;
+  const idleMs = now.getTime() - new Date(progress.updatedAt).getTime();
+  return idleMs < DEPLOY_STALL_MS[progress.stage];
+}
+
 export interface DeployProgressView {
   sha: string;
   stage: AppDeployStage;

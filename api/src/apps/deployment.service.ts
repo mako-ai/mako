@@ -8,10 +8,10 @@
  * prefix, rolling back is repointing `publishedSha` at an earlier sha — no
  * build, no sandbox, and no risk that "the last good version" has drifted.
  * It also means a deployment can be linked to by sha. The one thing a
- * rollback does prepare first is its DATA: a scheduled binding whose artifact
- * predates the schedule's latest occurrence is re-materialized before the
- * repoint (ensureDeploymentBindings), so an old sha never brings old numbers
- * back with it.
+ * rollback does prepare first is its DATA: a binding with no artifact is
+ * built before the repoint, and a scheduled binding whose artifact predates
+ * the schedule's latest occurrence is refreshed right behind it
+ * (ensureDeploymentBindings), so an old sha cannot keep old numbers.
  *
  * Deployments live in the same artifact store as bindings (GCS
  * in deployed environments), so they survive API restarts and are shared
@@ -48,6 +48,7 @@ import {
   type AppBinding,
 } from "./bindings.service";
 import { isCronDue, nextCronRunAt } from "../services/cron-due";
+import { APPS_BINDING_WORKSPACE_BUILD_LIMIT } from "../inngest/functions/apps-binding-concurrency";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
 import {
   clearDeployProgress,
@@ -307,10 +308,16 @@ export async function deploymentExists(
 export interface DeploymentBindingReadiness {
   /** Parquet bindings that a published deployment must be able to serve. */
   required: string[];
-  /** Bindings whose existing content-addressed artifact was reused. */
+  /** Bindings whose existing artifact is current for their schedule. */
   reused: string[];
-  /** Bindings materialized by this readiness check. */
+  /** Bindings with no artifact, built by this readiness check. */
   materialized: string[];
+  /**
+   * Scheduled bindings whose artifact predates the schedule's latest
+   * occurrence. The release goes live on these artifacts; each one is queued
+   * for a rebuild behind it.
+   */
+  refreshing: string[];
   /**
    * Files under bindings/ that are not servable (bad filename, no
    * connection). They do not block the release — their data URL 404s
@@ -321,7 +328,8 @@ export interface DeploymentBindingReadiness {
 }
 
 /**
- * Whether an artifact that already exists for `binding` may be served as-is.
+ * Whether an artifact that already exists for `binding` is current for its
+ * schedule. A stale one still serves; the release queues its rebuild.
  *
  * Content addressing answers "same query?", not "current data?". Scheduler
  * state is per binding NAME, so when a merge reverts a query to an earlier
@@ -380,7 +388,7 @@ async function isBindingArtifactCurrent(
   ) {
     return true;
   }
-  logger.info("Apps deployment rebuilds stale binding artifact", {
+  logger.info("Apps deployment found stale binding artifact", {
     projectId,
     sha,
     binding: binding.name,
@@ -475,20 +483,102 @@ async function deploymentBindingIndex(
   return keys;
 }
 
+/** Metadata reads per release: one or two store round trips per binding. */
+const BINDING_CHECK_CONCURRENCY = 16;
+
+/**
+ * Run `work` over `items`, at most `limit` at a time, in input order. After a
+ * failure no new item starts; items in flight finish, then the first error
+ * is thrown.
+ */
+async function forEachBounded<T>(
+  items: T[],
+  limit: number,
+  work: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  let failed = false;
+  let firstError: unknown;
+  const worker = async () => {
+    while (!failed && next < items.length) {
+      const index = next++;
+      try {
+        await work(items[index], index);
+      } catch (error) {
+        if (!failed) firstError = error;
+        failed = true;
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
+  if (failed) throw firstError;
+}
+
+/**
+ * Is the artifact of `binding` present and current for its schedule? The
+ * after-publish refresh asks this right before it builds, so a binding that
+ * another build already refreshed is not built twice.
+ */
+export async function isBindingArtifactReady(
+  binding: AppBinding,
+  context: { projectId: string; sha: string; now?: Date },
+): Promise<boolean> {
+  const key = bindingArtifactKey(binding);
+  const store = await artifactStoreForRead(key);
+  if (!store) return false;
+  return isBindingArtifactCurrent(store, key, binding, {
+    ...context,
+    now: context.now ?? new Date(),
+  });
+}
+
+/** Queue rebuilds for a release's stale artifacts. A failed send only logs. */
+async function queueBindingRefreshes(
+  project: IAppProject,
+  sha: string,
+  names: string[],
+): Promise<void> {
+  if (names.length === 0) return;
+  try {
+    const { requestBindingRefreshes } =
+      await import("../inngest/functions/apps-binding-refresh");
+    await requestBindingRefreshes(project, sha, names);
+  } catch (error) {
+    // The binding's own schedule still rebuilds it at its next due tick.
+    logger.warn("Apps deployment could not queue binding refreshes", {
+      projectId: project._id.toString(),
+      sha,
+      bindings: names.length,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 /**
  * Make the data contract of a deployment ready before it becomes live.
  *
  * Binding definitions are read at the exact deployment commit, never from a
- * mutable worktree. Their artifacts are content-addressed, so an unchanged
- * query is a cheap existence check while a changed/new query is materialized
- * once — unless the binding is scheduled and the existing artifact predates
- * the schedule's latest occurrence (isBindingArtifactCurrent), in which case
- * it is rebuilt exactly like a missing one. A failure propagates to the
- * durable deploy job and, critically, the caller has not moved
- * `publishedSha` yet. That includes a scheduled binding whose query is
- * currently broken: once its artifact is overdue it blocks every publish
- * and rollback of the app (silent reuse of the old artifact IS #992) —
- * fix or unschedule the binding to release.
+ * mutable worktree. Each binding is judged once, against the moment this
+ * release started:
+ *
+ * - No artifact: built now, at most APPS_BINDING_WORKSPACE_BUILD_LIMIT at a
+ *   time. Only this blocks the release: a page cannot read a table that does
+ *   not exist. A failure propagates to the durable deploy job and the caller
+ *   has not moved `publishedSha` yet.
+ * - Artifact predates the schedule's latest occurrence: the release goes live
+ *   on it and a rebuild is queued right behind it (isBindingArtifactCurrent).
+ *   The queued rebuild keeps #992 fixed: scheduler state is per binding name
+ *   and may believe a reverted query ran today, so the refresh judges the
+ *   artifact's own write time.
+ * - Otherwise: reused.
+ *
+ * This walk used to rebuild every stale artifact in sequence and judge each
+ * binding at its own turn. On 2026-11-03 a 134-binding app on an hourly cron
+ * walked for 124 minutes: 77 builds, 10 of them stale only because the walk
+ * itself crossed the :55. It outlived Cloud Run's 3,600 s request limit and
+ * the live frontend waited for all of it.
  */
 export async function ensureDeploymentBindings(
   project: IAppProject,
@@ -520,54 +610,82 @@ export async function ensureDeploymentBindings(
     );
   }
 
-  const readiness: DeploymentBindingReadiness = {
-    required: bindings.map(binding => binding.name),
-    reused: [],
-    materialized: [],
-    skipped,
-  };
-  // Visible in app_publish_status as "bindings: n of m prepared".
+  // One moment for the whole release: a schedule coming due during
+  // preparation must not change what this release considers ready.
+  const judgedAt = options.now ?? new Date();
   await markDeployStage(project, sha, "bindings");
-  let prepared = 0;
   await markBindingProgress(project, sha, {
     total: bindings.length,
-    prepared,
+    prepared: 0,
   });
-  for (const binding of bindings) {
-    const key = bindingArtifactKey(binding);
-    const store = await artifactStoreForRead(key);
-    // Judged per binding: an earlier binding's rebuild can take minutes, and
-    // a schedule may have come due meanwhile.
-    const now = options.now ?? new Date();
-    if (
-      store &&
-      (await isBindingArtifactCurrent(store, key, binding, {
+
+  const verdicts = new Array<"absent" | "stale" | "current">(bindings.length);
+  await forEachBounded(
+    bindings,
+    BINDING_CHECK_CONCURRENCY,
+    async (binding, index) => {
+      const key = bindingArtifactKey(binding);
+      const store = await artifactStoreForRead(key);
+      if (!store) {
+        verdicts[index] = "absent";
+        return;
+      }
+      verdicts[index] = (await isBindingArtifactCurrent(store, key, binding, {
         projectId,
         sha,
-        now,
+        now: judgedAt,
       }))
-    ) {
-      readiness.reused.push(binding.name);
+        ? "current"
+        : "stale";
+    },
+  );
+  const namesWith = (verdict: (typeof verdicts)[number]) =>
+    bindings.filter((_, i) => verdicts[i] === verdict).map(b => b.name);
+
+  const absent = bindings.filter((_, i) => verdicts[i] === "absent");
+  let prepared = bindings.length - absent.length;
+  const building = new Set<string>();
+  const reportProgress = () =>
+    markBindingProgress(project, sha, {
+      total: bindings.length,
+      prepared,
+      ...(building.size > 0 ? { current: [...building].join(", ") } : {}),
+    });
+  await reportProgress();
+  await forEachBounded(
+    absent,
+    APPS_BINDING_WORKSPACE_BUILD_LIMIT,
+    async binding => {
+      building.add(binding.name);
+      await reportProgress();
+      try {
+        await materializeAppBinding(project, binding.name, PUBLISH_ACTOR, {
+          at: sha,
+          binding,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Binding "${binding.name}": ${message}`, {
+          cause: error,
+        });
+      } finally {
+        building.delete(binding.name);
+      }
       prepared += 1;
-      continue;
-    }
-    await markBindingProgress(project, sha, {
-      total: bindings.length,
-      prepared,
-      current: binding.name,
-    });
-    await materializeAppBinding(project, binding.name, PUBLISH_ACTOR, {
-      at: sha,
-    });
-    readiness.materialized.push(binding.name);
-    prepared += 1;
-    await markBindingProgress(project, sha, {
-      total: bindings.length,
-      prepared,
-    });
-  }
+      await reportProgress();
+    },
+  );
+
+  const readiness: DeploymentBindingReadiness = {
+    required: bindings.map(binding => binding.name),
+    reused: namesWith("current"),
+    materialized: namesWith("absent"),
+    refreshing: namesWith("stale"),
+    skipped,
+  };
 
   await writeDeploymentBindingIndex(projectId, sha, bindings);
+  await queueBindingRefreshes(project, sha, readiness.refreshing);
 
   logger.info("Apps deployment bindings ready", {
     projectId,
@@ -575,6 +693,7 @@ export async function ensureDeploymentBindings(
     required: readiness.required.length,
     reused: readiness.reused.length,
     materialized: readiness.materialized.length,
+    refreshing: readiness.refreshing.length,
     skipped: readiness.skipped.length,
   });
   return readiness;

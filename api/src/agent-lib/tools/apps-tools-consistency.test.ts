@@ -10,6 +10,16 @@ const state = vi.hoisted(() => ({
     slug: "sales",
     title: "Sales",
     defaultBranch: "main",
+    publishedSha: "1".repeat(40) as string | undefined,
+    deployProgress: undefined as
+      | undefined
+      | {
+          sha: string;
+          stage: "bindings";
+          startedAt: Date;
+          stageStartedAt: Date;
+          updatedAt: Date;
+        },
   },
 }));
 
@@ -131,6 +141,8 @@ vi.mock("../../services/realtime.service", () => ({
 }));
 
 import { createAppsTools } from "./apps-tools";
+import { requestAppDeploys } from "../../inngest/functions/apps-deploy";
+import { resolveCommit } from "../../apps/repository.service";
 
 type Executable = {
   execute: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -234,5 +246,55 @@ describe("app tool access", () => {
     expect(result.success).toBe(false);
     expect(String(result.error)).toContain("You can view app");
     expect(String(result.error)).not.toContain("not found");
+  });
+});
+
+describe("app_publish", () => {
+  const sha = "9".repeat(40);
+  const publish = () =>
+    (
+      createAppsTools({
+        workspaceId: "6a9411eb4c8b33609a65e666",
+        userId: "user",
+      } as never) as unknown as Record<string, Executable>
+    ).app_publish.execute({ appId: "sales" });
+
+  beforeEach(() => {
+    state.project.deployProgress = undefined;
+    vi.mocked(requestAppDeploys).mockClear();
+    vi.mocked(resolveCommit).mockResolvedValue(sha);
+  });
+
+  it("leaves a deploy of the same commit running instead of starting over", async () => {
+    const now = new Date();
+    state.project.deployProgress = {
+      sha,
+      stage: "bindings",
+      startedAt: now,
+      stageStartedAt: now,
+      updatedAt: now,
+    };
+
+    const result = await publish();
+
+    expect(result).toMatchObject({ success: true, alreadyInFlight: true });
+    expect(requestAppDeploys).not.toHaveBeenCalled();
+  });
+
+  it("takes over a deploy that stopped progressing", async () => {
+    const longAgo = new Date(Date.now() - 60 * 60_000);
+    state.project.deployProgress = {
+      sha,
+      stage: "bindings",
+      startedAt: longAgo,
+      stageStartedAt: longAgo,
+      updatedAt: longAgo,
+    };
+
+    const result = await publish();
+
+    expect(result).toMatchObject({ success: true });
+    expect(result.alreadyInFlight).toBeUndefined();
+    expect(requestAppDeploys).toHaveBeenCalledTimes(1);
   });
 });

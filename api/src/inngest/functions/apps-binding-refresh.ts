@@ -17,6 +17,10 @@
  * A tick now finishes in seconds; the backlog drains in parallel; a slow or
  * broken binding delays nothing but itself.
  *
+ * A release also sends these events, for the stale artifacts it went live on
+ * (requestBindingRefreshes). They carry `afterPublish` and the release's
+ * commit, jump the queue by the most Inngest allows, and are judged by the
+ * artifact's own write time.
  */
 import { inngest } from "../client";
 import { loadAppsIndex } from "../../apps/app-index.service";
@@ -29,12 +33,14 @@ import {
 import {
   getBindingState,
   materializeAppBinding,
-  readBindings,
+  readCommittedBinding,
   type AppBinding,
   type AppBindingStateDoc,
 } from "../../apps/bindings.service";
 import { isCronDue, nextCronRunAt } from "../../services/cron-due";
 import { pausedScheduleAppIds } from "../../apps/app-lifecycle.service";
+import { isBindingArtifactReady } from "../../apps/deployment.service";
+import { PUBLISH_ACTOR } from "../../apps/worktree.service";
 
 import { APPS_BINDING_BUILD_CONCURRENCY } from "./apps-binding-concurrency";
 
@@ -48,6 +54,10 @@ interface MaterializeEventData {
   binding: string;
   /** `${projectId}:${binding}` — the concurrency key (one build per binding). */
   key: string;
+  /** Build the binding as of this commit instead of the head of main. */
+  at?: string;
+  /** A release went live on this binding's stale artifact. */
+  afterPublish?: boolean;
 }
 
 /**
@@ -199,6 +209,56 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
   },
 );
 
+/**
+ * One binding build from an event. A scheduled event is judged by the
+ * binding's scheduler state. An after-publish event is judged by the
+ * artifact's write time, because scheduler state is per binding name and a
+ * reverted query's artifact can be old while the state says it ran today
+ * (#992).
+ */
+export async function runBindingMaterializeEvent(
+  data: MaterializeEventData,
+): Promise<
+  | { skipped: "project-gone" | "binding-gone" | "not-due" }
+  | { ok: true; rowCount: number }
+  | { ok: false }
+> {
+  const { projectId, binding: name, at, afterPublish } = data;
+  const project = await AppProject.findById(projectId);
+  if (!project) return { skipped: "project-gone" };
+  // This binding's file only: reading all of them costs ~100 ms per binding
+  // in the app, per build.
+  const binding = await readCommittedBinding(
+    project,
+    name,
+    undefined as never,
+    at,
+  );
+  if (!binding) return { skipped: "binding-gone" };
+  // A later tick may have queued this binding again while the backlog was
+  // still draining; if a build landed in between, this one is moot.
+  const moot = afterPublish
+    ? await isBindingArtifactReady(binding, { projectId, sha: at ?? "main" })
+    : !(await isBindingDue(projectId, binding));
+  if (moot) return { skipped: "not-due" };
+  try {
+    const result = await materializeAppBinding(
+      project,
+      name,
+      afterPublish ? PUBLISH_ACTOR : "scheduler",
+      { at, binding },
+    );
+    return { ok: true, rowCount: result.rowCount };
+  } catch (error) {
+    log.warn("Scheduled binding materialization failed", {
+      projectId,
+      binding: name,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { ok: false };
+  }
+}
+
 export const appsBindingMaterializeFunction = inngest.createFunction(
   {
     id: "apps-binding-materialize",
@@ -206,36 +266,40 @@ export const appsBindingMaterializeFunction = inngest.createFunction(
     // A workspace's warehouse sees at most 4 builds at once and a binding is
     // never built twice concurrently — shared with on-demand async builds.
     concurrency: APPS_BINDING_BUILD_CONCURRENCY,
+    // A viewer already reads this stale artifact, so it goes ahead of builds
+    // nobody is waiting on. Seconds, and 600 is the most Inngest accepts.
+    priority: { run: "event.data.afterPublish == true ? 600 : 0" },
     // materializeAppBinding records the failure in the binding's state and
     // the next due check backs off from it; retrying here would re-run a
     // broken warehouse query for nothing.
     retries: 0,
     triggers: { event: APPS_BINDING_MATERIALIZE_EVENT },
   },
-  async ({ event, step }) => {
-    const { projectId, binding: name } = event.data as MaterializeEventData;
-    return step.run("materialize", async () => {
-      const project = await AppProject.findById(projectId);
-      if (!project) return { skipped: "project-gone" as const };
-      const bindings = await readBindings(project, undefined as never);
-      const binding = bindings.find(b => b.name === name);
-      if (!binding) return { skipped: "binding-gone" as const };
-      // A later tick may have queued this binding again while the backlog
-      // was still draining; if a build landed in between, this one is moot.
-      if (!(await isBindingDue(projectId, binding))) {
-        return { skipped: "not-due" as const };
-      }
-      try {
-        const result = await materializeAppBinding(project, name, "scheduler");
-        return { ok: true as const, rowCount: result.rowCount };
-      } catch (error) {
-        log.warn("Scheduled binding materialization failed", {
-          projectId,
-          binding: name,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return { ok: false as const };
-      }
-    });
-  },
+  async ({ event, step }) =>
+    step.run("materialize", () =>
+      runBindingMaterializeEvent(event.data as MaterializeEventData),
+    ),
 );
+
+/** Queue rebuilds for the stale artifacts a release of `sha` went live on. */
+export async function requestBindingRefreshes(
+  project: { _id: unknown; workspaceId: unknown },
+  sha: string,
+  names: string[],
+): Promise<void> {
+  if (names.length === 0) return;
+  const projectId = String(project._id);
+  await inngest.send(
+    names.map(binding => ({
+      name: APPS_BINDING_MATERIALIZE_EVENT,
+      data: {
+        workspaceId: String(project.workspaceId),
+        projectId,
+        binding,
+        key: `${projectId}:${binding}`,
+        at: sha,
+        afterPublish: true,
+      } satisfies MaterializeEventData,
+    })),
+  );
+}

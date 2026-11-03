@@ -2335,7 +2335,14 @@ export class DatabaseConnectionService {
         if (jobLocation) {
           params.location = jobLocation;
         }
-        response = await client.get(
+        // Ask for the client per page: a stream can outlive the token it
+        // started with (smp0's 250+ seconds of pages ended in a 401 for two
+        // deploys on 2026-11-03), and this is the call that renews it.
+        const pageClient = await this.getBigQueryHttpClient(
+          service_account_json,
+          api_base_url,
+        );
+        response = await pageClient.get(
           `/projects/${project_id}/queries/${jobId}`,
           {
             params,

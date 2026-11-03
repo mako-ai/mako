@@ -153,6 +153,19 @@ export class DeployBindingsError extends Error {
   }
 }
 
+/** Is a commit newer than `sha` already live for this app? */
+async function hasNewerLiveCommit(
+  project: { publishedSha?: string | null },
+  repoDir: string,
+  sha: string,
+): Promise<boolean> {
+  return (
+    !!project.publishedSha &&
+    project.publishedSha !== sha &&
+    (await isAncestorCommit(repoDir, sha, project.publishedSha))
+  );
+}
+
 /**
  * Build one app at `sha` and make it the live deployment. Idempotent: a
  * commit already built (the Publish button got there first) is just made
@@ -185,11 +198,7 @@ export async function deployOneApp(
   // A delivery that arrives AFTER a newer commit of this app already went
   // live must not roll it back: Inngest's singleton cancels older runs when
   // a newer event arrives, but not the other way round.
-  if (
-    discovered.publishedSha &&
-    discovered.publishedSha !== sha &&
-    (await isAncestorCommit(repoDir, sha, discovered.publishedSha))
-  ) {
+  if (await hasNewerLiveCommit(discovered, repoDir, sha)) {
     await clearDeployProgress(discovered, sha);
     return { app: appRef, sha, outcome: "superseded" };
   }
@@ -256,6 +265,14 @@ export async function deployOneApp(
       sha,
       { cause: error },
     );
+  }
+  // Preparing data can take minutes, and Inngest cannot stop a running step: a
+  // cancelled deploy keeps going here. It must not repoint the app past a
+  // newer commit that went live meanwhile.
+  const liveNow = await resolveProjectRef(workspaceId, appRef);
+  if (liveNow && (await hasNewerLiveCommit(liveNow, repoDir, sha))) {
+    await clearDeployProgress(liveNow, sha);
+    return { app: appRef, sha, outcome: "superseded" };
   }
   if (await deploymentExists(project._id.toString(), sha)) {
     // The frontend was already uploaded (the Publish button got there

@@ -14,6 +14,7 @@
 import { recordDeployFailure } from "../../apps/deployment.service";
 import {
   deployErrorStageFor,
+  isDeployInFlight,
   markDeployQueued,
 } from "../../apps/deploy-progress";
 import { NonRetriableError } from "inngest";
@@ -206,7 +207,9 @@ export const appsDeployReconcileFunction = inngest.createFunction(
   async ({ step }) => {
     const published = (await step.run("list-published", async () =>
       AppProject.find({ publishedSha: { $ne: null } })
-        .select("_id workspaceId slug path publishedSha lastDeployError")
+        .select(
+          "_id workspaceId slug path publishedSha lastDeployError deployProgress",
+        )
         .lean(),
     )) as unknown as Array<
       Pick<
@@ -217,6 +220,7 @@ export const appsDeployReconcileFunction = inngest.createFunction(
         | "path"
         | "publishedSha"
         | "lastDeployError"
+        | "deployProgress"
       >
     >;
 
@@ -296,6 +300,17 @@ export const appsDeployReconcileFunction = inngest.createFunction(
               });
               continue;
             }
+          }
+          // Already deploying this commit: cancelling it to start over is how
+          // the 04:17 sweep of 2026-11-03 added a second walk to a running one.
+          if (isDeployInFlight(project.deployProgress, repo.head)) {
+            log.info("Apps reconcile: deploy of main already in flight", {
+              workspaceId,
+              appId,
+              app: project.path,
+              sha: repo.head,
+            });
+            continue;
           }
           out.push({ workspaceId, appId, sha: repo.head, reason: "reconcile" });
         } catch (error) {
