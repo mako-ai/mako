@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-11-03T12:34:29.658Z",
+  "createdAt": "2026-11-03T13:29:36.193Z",
   "payload": {
     "actions": [
       {
@@ -31,7 +31,7 @@
       "targetId": "chromium",
       "instructionDigest": "14f866c7b871767d394714750601b66d7a899a096f5b1055b1617fd6922be441"
     },
-    "summary": "Verified the email successfully; the workspace creation form is now visible. Stopped without creating a workspace.",
+    "summary": "Verified the email successfully. The workspace creation form is now visible; stopped without creating a workspace.",
     "startPath": "/verify-email?email={{param:/email|uri}}",
     "endPath": "/",
     "endAnchors": [
@@ -66,6 +66,6 @@
         "text": "What do you want to build? (optional)"
       }
     ],
-    "endWaitMs": 14321
+    "endWaitMs": 14887
   }
 }

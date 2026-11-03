@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-11-03T12:34:53.878Z",
+  "createdAt": "2026-11-03T13:30:00.139Z",
   "payload": {
     "actions": [
       {
@@ -21,7 +21,7 @@
       "targetId": "chromium",
       "instructionDigest": "06568f75b88d4c0af22b8c199eb593b5e31d6df4704fe4e454bba3de767c44f0"
     },
-    "summary": "Selected Start Exploring. The workspace now shows the Chinook Music Store database connection in the Databases pane; stopped without opening GitHub settings or sending a chat.",
+    "summary": "Selected Start Exploring. The workspace now shows the PostgreSQL Chinook Music Store connection in the Databases pane; stopped without opening GitHub settings or sending a chat.",
     "startPath": "/",
     "endPath": "/",
     "endAnchors": [
@@ -58,6 +58,6 @@
         "name": "Apps"
       }
     ],
-    "endWaitMs": 12445
+    "endWaitMs": 12496
   }
 }

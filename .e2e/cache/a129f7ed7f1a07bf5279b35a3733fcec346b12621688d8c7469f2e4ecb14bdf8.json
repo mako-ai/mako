@@ -1,11 +1,11 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-11-03T12:34:34.018Z",
+  "createdAt": "2026-11-03T13:29:40.982Z",
   "payload": {
     "actions": [
       {
         "name": "type",
-        "summary": "type \"Mako E2E a59a61f7-273b-4736-a035-90c1d2…\" into textbox \"Workspace name\"",
+        "summary": "type \"Mako E2E d1051b85-be3b-4c1a-a17d-8f8cee…\" into textbox \"Workspace name\"",
         "target": {
           "role": "textbox",
           "name": "Workspace name",
@@ -32,7 +32,7 @@
       "targetId": "chromium",
       "instructionDigest": "8259eee6658f4f496822d58c85f09b262b6645fc373d2d3cd7c3303e893c8355"
     },
-    "summary": "Created the workspace named “Mako E2E a59a61f7-273b-4736-a035-90c1d20722a7.” The “What’s your role?” question is visible; stopped without answering onboarding questions.",
+    "summary": "Created the workspace named “Mako E2E d1051b85-be3b-4c1a-a17d-8f8cee43ece0”. The “What's your role?” question is visible; stopped without answering onboarding questions.",
     "startPath": "/",
     "endPath": "/",
     "endAnchors": [
@@ -63,6 +63,6 @@
         "name": "Next"
       }
     ],
-    "endWaitMs": 11741
+    "endWaitMs": 11735
   }
 }

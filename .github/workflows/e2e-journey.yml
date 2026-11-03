@@ -81,7 +81,7 @@ jobs:
           AI_GATEWAY_API_KEY: ${{ inputs.record_cache && secrets.E2E_AI_GATEWAY_API_KEY || '' }}
           MAKO_E2E_RECORD_CACHE: ${{ inputs.record_cache && '1' || '0' }}
           MAKO_E2E_GITHUB_AUTH: fake
-          MAKO_E2E_BASE_URL: http://localhost:5173
+          MAKO_E2E_BASE_URL: http://127.0.0.1:5173
           MAKO_E2E_MONGODB_URI: mongodb://127.0.0.1:27017/mako_e2e?replicaSet=rs0
           DEMO_DATABASE_URL: postgresql://mako:e2e-local-only@127.0.0.1:5432/demo
           MAKO_E2E_START_APP: "1"
@@ -98,7 +98,10 @@ jobs:
           export ENCRYPTION_KEY="$(openssl rand -hex 32)"
           export APPS_GIT_ROOT="$RUNNER_TEMP/mako-e2e-git"
           export APPS_SESSIONS_ROOT="$RUNNER_TEMP/mako-e2e-sessions"
-          pnpm test:e2e --reporter list,junit
+          # Replays must match the committed recordings: a stale one fails as
+          # REPLAY_STALE (exit 2) instead of falling back to a keyless agent.
+          pnpm test:e2e --reporter list,junit \
+            $([ "$MAKO_E2E_RECORD_CACHE" = 1 ] || echo --strict-cache)
 
       - name: Show MongoDB logs
         if: ${{ failure() }}

@@ -20,6 +20,8 @@ export const FAKE_GITHUB = {
   repo: "mako-ai/test-workspace",
 } as const;
 export const FAKE_AI_GATEWAY_URL = `${ORIGIN}/ai`;
+/** The runner's readiness probe: 200 only once every MAKO_E2E_READY_PROBES URL answers too. */
+export const FAKE_READY_URL = `${ORIGIN}/ready`;
 
 const [owner, name] = FAKE_GITHUB.repo.split("/");
 const account = { login: owner, type: "Organization" };
@@ -79,6 +81,19 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+async function ready(): Promise<boolean> {
+  const probes = (process.env.MAKO_E2E_READY_PROBES ?? "").split(",");
+  const results = await Promise.all(
+    probes.map(url =>
+      fetch(url, { signal: AbortSignal.timeout(5_000) }).then(
+        response => response.ok,
+        () => false,
+      ),
+    ),
+  );
+  return results.every(Boolean);
+}
+
 function startFakeServices() {
   createServer(async (req, res) => {
     const url = req.url ?? "/";
@@ -88,6 +103,10 @@ function startFakeServices() {
       res.writeHead(status, { "Content-Type": "application/json" });
       res.end(JSON.stringify(value));
     };
+    if (url === "/ready") {
+      // 503, not 404: the runner treats any status below 500 as ready.
+      return (await ready()) ? reply(200, { ready: true }) : reply(503, {});
+    }
     if (url.startsWith("/github/")) {
       if (!req.headers.authorization?.startsWith("Bearer ")) {
         return reply(401, { message: "Requires authentication" });

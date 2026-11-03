@@ -217,39 +217,34 @@ describe("Mako new user", { serial: true }, () => {
     agent,
   }) => {
     await app.open("/");
-    await agent.act(
-      "Send {message} in a new Mako chat and wait for the assistant's answer. Close the GitHub settings tab if it hides the chat.",
-      {
-        params: {
-          message:
-            "What is 19 plus 23? Reply with the number only. Do not use tools or modify any files.",
-        },
+    // Test 05 left the GitHub settings tab open; it would hide the chat.
+    await screen.getByRole("button", "Close GitHub").tap();
+    await expect(screen.getByRole("button", "Open Console")).toBeVisible();
+    await agent.act("Send {message} in a new Mako chat.", {
+      params: {
+        message:
+          "What is 19 plus 23? Reply with the number only. Do not use tools or modify any files.",
       },
-    );
-    // The expected reply is deliberately absent from the user message.
-    await expect(screen.getByText("42", { exact: true })).toBeVisible({
+    });
+    const reply = screen.getByRole("article", "Assistant message").last();
+    // Copy is offered only once the turn has finished streaming.
+    await expect(reply.getByRole("button", "Copy message")).toBeVisible({
       timeout: 120_000,
     });
-    await expect(
-      screen.getByRole("button", "Stop generating"),
-    ).not.toBeVisible();
+    // The expected reply is deliberately absent from the user message.
+    await expect(reply).toContainText("42");
   });
 
-  test("08 execute SQL and inspect results", async ({
-    screen,
-    browser,
-    agent,
-  }) => {
+  test("08 execute SQL and inspect results", async ({ screen, agent }) => {
     await agent.act(
-      "Open a SQL Console and select the Chinook Music Store connection. Close the GitHub settings tab first if it is open; with no tab open, the center pane offers Open Console.",
+      "Open a SQL Console and select the Chinook Music Store connection.",
     );
     await expect(
       screen.getByRole("button", "Run (⌘/Ctrl+Enter)", { exact: true }),
     ).toBeVisible();
-    const editor = browser.locator(".monaco-editor .view-lines").first();
-    await editor.tap();
-    await browser.keyboard.press("ControlOrMeta+A");
-    await browser.keyboard.type("SELECT 19 + 23 AS mako_e2e_answer");
+    const editor = screen.getByRole("textbox", "Console editor");
+    await editor.press("ControlOrMeta+A");
+    await editor.pressSequentially("SELECT 19 + 23 AS mako_e2e_answer");
     await agent.act(
       "Run the SQL already present in the console editor and display its result table. Do not edit the SQL.",
     );

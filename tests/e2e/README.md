@@ -17,8 +17,10 @@ pnpm test:e2e --headed
 
 The suite creates a new Mako account and workspace on every run, connects a
 database, links a GitHub repository, sends a chat, and executes read-only
-SQL. It does not seed an admin, deploy, or clean up other users' data. Do not
-target production or a customer repository.
+SQL. It does not seed an admin, deploy, or clean up other users' data. It
+does not delete its own account either, so only loopback hosts are accepted;
+PR previews and other shared hosts stay blocked until the suite cleans up
+after itself. Do not target production or a customer repository.
 
 The eight serial checks follow the current UI order: register and verify
 email → create workspace → answer the four quiz questions → connect the demo
@@ -37,12 +39,12 @@ generated per run (it signs JWTs for the fake), a fake App ID/slug/client ID,
 placeholder AI key. Real GitHub App or AI credentials in the environment are
 never forwarded to Mako; the app command only receives the variables listed in
 `e2e.config.ts`. Only localhost and a loopback MongoDB named `mako_e2e` are
-accepted.
+accepted. The runner waits for the fakes' `/ready` probe, which answers only
+once the Vite app and the API answer too.
 
 **Existing server:** `MAKO_E2E_START_APP=0` (default) with
 `MAKO_E2E_GITHUB_AUTH=oauth` (default) runs against an already started
-dedicated local instance or a Mako PR preview (`https://pr-<number>.mako.ai`).
-Other hosts are rejected. That server's own GitHub, email, demo database and
+dedicated local instance. Other hosts are rejected. That server's own GitHub, email, demo database and
 AI configuration are used; no server secrets are copied locally.
 
 ## Configuration
@@ -51,16 +53,15 @@ Copy `.env.e2e.example` to the ignored `.env.e2e.local`.
 
 | Variable                              | Purpose                                                                                                         |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `MAKO_E2E_BASE_URL`                   | Mako URL; defaults to `http://localhost:5173`.                                                                  |
+| `MAKO_E2E_BASE_URL`                   | Mako URL; defaults to `http://127.0.0.1:5173`.                                                                  |
 | `MAKO_E2E_START_APP`                  | `1` starts/stops Mako and the loopback fakes through the runner; default `0` uses an existing server.           |
 | `MAKO_E2E_GITHUB_AUTH`                | `fake` (required with `MAKO_E2E_START_APP=1`) or `oauth` (default) for real OAuth on an existing server.        |
 | `AI_GATEWAY_API_KEY`                  | Browser agent only. Not needed to replay `.e2e/cache`; needed to record or on a cache miss. Use a budgeted key. |
 | `MAKO_E2E_MODEL`                      | Agent model; defaults to `openai/gpt-6-luna-fast`.                                                              |
 | `MAKO_E2E_MONGODB_URI`                | Isolated loopback MongoDB replica set named **mako_e2e**: reads the email code and writes the fake fixture.     |
-| `MAKO_E2E_EMAIL`, `MAKO_E2E_PASSWORD` | Optional fresh identity for OAuth/preview runs; fake mode generates a new email per attempt.                    |
+| `MAKO_E2E_EMAIL`, `MAKO_E2E_PASSWORD` | Optional fresh identity for OAuth runs; fake mode generates a new email per attempt.                            |
 | `MAKO_E2E_GITHUB_STATE`               | OAuth mode: Playwright storage state of a dedicated GitHub test account. Only github.com cookies are used.      |
 | `MAKO_E2E_GITHUB_REPO`                | OAuth mode: `owner/repo` of a disposable test repository. Fake mode uses the fake's repository.                 |
-| `MAKO_E2E_VERIFICATION_FILE`          | Previews: ignored JSON file containing the fresh identity and its real emailed code.                            |
 
 Isolated mode also needs `DEMO_DATABASE_URL` (dedicated PostgreSQL; the final
 query is `SELECT 19 + 23 AS mako_e2e_answer`), `SESSION_SECRET`,
@@ -94,15 +95,6 @@ pnpm exec playwright codegen --save-storage=.e2e/github-state.json https://githu
 Set `MAKO_E2E_GITHUB_STATE=.e2e/github-state.json`. Expired sessions, missing App
 consent, or missing repository access fail the check.
 
-## PR preview
-
-Use a fresh email address that receives mail and set `MAKO_E2E_EMAIL` explicitly.
-Set `MAKO_E2E_VERIFICATION_FILE=.e2e/verification.json`. When registration sends
-the email, write `{ "email": "the exact test address", "code": "123456" }` with
-the actual code to that file (write a temporary file then rename it atomically).
-The runner waits up to two minutes and rejects codes for another identity.
-Never commit this file.
-
 ## Results and limits
 
 `pnpm test:e2e:check` checks TypeScript. `pnpm test:e2e:list` lists the checks.
@@ -129,7 +121,9 @@ exact image and pnpm versions (pnpm 9, as in the other frontend CI jobs), frozen
 dependencies, local MongoDB/PostgreSQL and the loopback fakes.
 
 **Normal runs use no repository secrets.** They replay the committed recordings
-with the fakes, so fork pull requests are safe to run.
+with the fakes, so fork pull requests are safe to run. They pass
+`--strict-cache`: a recording that no longer replays fails as `REPLAY_STALE`
+(exit 2) instead of falling back to the keyless live agent; re-record it.
 
 **Recording** (`workflow_dispatch` with `record_cache=true`) additionally reads
 one secret, `E2E_AI_GATEWAY_API_KEY`: a Vercel AI Gateway key with a spend

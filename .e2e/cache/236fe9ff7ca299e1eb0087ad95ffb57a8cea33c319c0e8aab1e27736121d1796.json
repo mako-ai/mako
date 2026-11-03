@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-11-03T12:35:15.929Z",
+  "createdAt": "2026-11-03T13:30:20.227Z",
   "payload": {
     "actions": [
       {
@@ -40,7 +40,7 @@
       "targetId": "chromium",
       "instructionDigest": "bcf8b0b71cce5792945ef99436ca85f374762db00e4abafd11dfa8291afa5512"
     },
-    "summary": "Connected the existing repository mako-ai/test-workspace to this workspace. The GitHub settings page lists it on branch main with Mako root /; the app reports mirroring is inactive in this environment.",
+    "summary": "Connected the existing repository mako-ai/test-workspace to this workspace. The GitHub settings page shows it linked on branch main with Mako root /; no repository was created or modified.",
     "startPath": "/settings/github",
     "endPath": "/settings/github",
     "endAnchors": [
@@ -77,6 +77,6 @@
         "name": "Apps"
       }
     ],
-    "endWaitMs": 15359
+    "endWaitMs": 12206
   }
 }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-11-03T12:35:30.545Z",
+  "createdAt": "2026-11-03T13:30:35.403Z",
   "payload": {
     "actions": [
       {
@@ -39,11 +39,11 @@
     "recordedFor": {
       "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::07%20send%20chat%20and%20receive%20assistant%20response",
       "targetId": "chromium",
-      "instructionDigest": "40236a9e4482ac6f675216a484a166b6b7f5dc9d1506c1cabd3afc0b55b580bb"
+      "instructionDigest": "6c66b8c336ea8a30ea31a71104039aa8cde261be39bbb8b7d8f495c4f62f0595"
     },
-    "summary": "Sent the requested message in a new Mako chat. The assistant replied “42.”",
-    "startPath": "/settings/github",
-    "endPath": "/settings/github",
+    "summary": "Started a new Mako chat and sent the requested message. The assistant replied “42”.",
+    "startPath": "/settings",
+    "endPath": "/settings",
     "endAnchors": [
       {
         "text": "What is 19 plus 23? Reply with the number only. Do not use tools or modify any files."
@@ -59,8 +59,12 @@
       {
         "role": "log",
         "name": "Chat messages"
+      },
+      {
+        "role": "article",
+        "name": "Assistant message"
       }
     ],
-    "endWaitMs": 14279
+    "endWaitMs": 14601
   }
 }

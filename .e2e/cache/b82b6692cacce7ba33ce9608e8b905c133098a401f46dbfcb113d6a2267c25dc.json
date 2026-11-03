@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-11-03T12:34:46.234Z",
+  "createdAt": "2026-11-03T13:29:52.616Z",
   "payload": {
     "actions": [
       {
@@ -73,7 +73,7 @@
       "targetId": "chromium",
       "instructionDigest": "da07f952a790da6ce1783c2169a1b9ea5d3b7b28e033f57be8a7a10f3535bc19"
     },
-    "summary": "Completed the qualification quiz with role Developer / Engineer, company size Hobby / Personal project, primary database PostgreSQL, and warehouse I don't have one yet. The Choose your path screen is visible; no path was selected.",
+    "summary": "Completed the qualification quiz with Developer / Engineer, Hobby / Personal project, PostgreSQL, and I don't have one yet. The Choose your path screen is visible; no path was selected.",
     "startPath": "/",
     "endPath": "/",
     "endAnchors": [
@@ -108,6 +108,6 @@
         "name": "Try with Demo Database"
       }
     ],
-    "endWaitMs": 11763
+    "endWaitMs": 11542
   }
 }
