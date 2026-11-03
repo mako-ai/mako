@@ -1,0 +1,20 @@
+# blockwatch: https://github.com/mennanov/blockwatch
+#
+# A rule on a whole top-level constant, type or config key lives here and
+# points at it by name (`file.ts#/NAME`, `package.json#/version`). Each such
+# target is the whole declaration without the comment above it. Tags in
+# comments mark only part of a declaration, such as a Mongoose `enum` inside a
+# schema, or a docs section.
+
+# The app router: production and canary read one KV namespace, and the
+# README's cutover commands write to it.
+[[block]]
+target = 'cloudflare/app-router/wrangler.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
+name = 'app-routing-kv-id'
+same-as = 'cloudflare/app-router/wrangler.canary.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id,cloudflare/app-router/README.md:cutover-namespace'
+# The README's runbook writes the id once per command.
+same-as-mode = 'set'
+
+[[block]]
+target = 'cloudflare/app-router/wrangler.canary.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
+same-as = 'cloudflare/app-router/wrangler.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
