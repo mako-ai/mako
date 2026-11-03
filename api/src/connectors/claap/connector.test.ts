@@ -155,36 +155,402 @@ function testResolveSchemaForRecordings() {
   });
 }
 
-async function testRecordingsFetchRequestsAiFields() {
-  const connector = createConnector();
-  let capturedParams: Record<string, unknown> | undefined;
+type FakeResponse = {
+  data?: unknown;
+  headers?: Record<string, string>;
+};
 
-  (connector as any).claapApi = {
-    get: (_path: string, options?: { params?: Record<string, unknown> }) => {
-      capturedParams = options?.params;
-      return Promise.resolve({
-        data: {
-          result: {
-            recordings: [{ id: "rec_1", title: "Demo" }],
-            pagination: { nextCursor: undefined, totalCount: 1 },
-          },
-        },
-      });
+function listResponse(
+  recordings: Record<string, unknown>[],
+  options: { nextCursor?: string; dailyRemaining?: number } = {},
+): FakeResponse {
+  return {
+    headers:
+      options.dailyRemaining === undefined
+        ? {}
+        : { "x-ratelimit-daily-remaining": String(options.dailyRemaining) },
+    data: {
+      result: {
+        recordings,
+        pagination: { nextCursor: options.nextCursor, totalCount: 3 },
+      },
     },
   };
+}
+
+// Shape of a Ready recording from `GET /v1/recordings/{id}` (`result.recording`),
+// as documented by Claap; every value is synthetic.
+function detailRecording(id: string): Record<string, unknown> {
+  return {
+    id,
+    state: "Ready",
+    title: `Call ${id}`,
+    source: "GoogleMeet",
+    url: `https://app.claap.io/example-${id}`,
+    thumbnailUrl: `https://cdn.example.com/${id}.jpg`,
+    createdAt: "2026-10-01T09:00:00.000Z",
+    durationSeconds: 1800,
+    transcriptOnly: false,
+    labels: [],
+    channel: { id: "chan_1", name: "Sales calls" },
+    recorder: {
+      id: "user_1",
+      name: "Alex Example",
+      email: "alex@example.com",
+      attended: true,
+    },
+    workspace: { id: "ws_1", name: "Example Workspace" },
+    meeting: {
+      type: "external",
+      startingAt: "2026-10-01T09:00:00.000Z",
+      endingAt: "2026-10-01T09:30:00.000Z",
+      participants: [{ attended: true, email: "sam@example.org" }],
+    },
+    video: { url: `https://cdn.example.com/${id}.mp4` },
+    transcripts: [
+      {
+        langIso2: "en",
+        isTranscript: true,
+        isActive: true,
+        url: `https://cdn.example.com/${id}.json`,
+        textUrl: `https://cdn.example.com/${id}.txt`,
+      },
+    ],
+    aiFields: [{ title: "Next steps", description: "Send the proposal" }],
+    keyTakeaways: [{ langIso2: "en", text: "Wants a demo next week" }],
+    outlines: [{ langIso2: "en", text: "Intro, pricing, next steps" }],
+    actionItems: [
+      {
+        langIso2: "en",
+        items: [{ isChecked: false, description: "Send the proposal" }],
+      },
+    ],
+    companies: [{ id: "company_1", name: "Example Co" }],
+    analytics: { talkingRatio: 0.45, questionsPerHour: 12 },
+    insightTemplates: [],
+  };
+}
+
+function withoutAiFields(id: string, state = "Ready") {
+  const { aiFields: _aiFields, ...rest } = detailRecording(id);
+  return { ...rest, state };
+}
+
+function apiError(status: number) {
+  return Object.assign(new Error("Request failed"), {
+    isAxiosError: true,
+    response: { status, data: { message: `HTTP ${status}` } },
+  });
+}
+
+function createRecordingsConnector(
+  get: (path: string, params: Record<string, unknown>) => Promise<FakeResponse>,
+  config: Record<string, unknown> = {},
+) {
+  const connector = createConnector(config);
+  (connector as any).claapApi = {
+    get: (path: string, options?: { params?: Record<string, unknown> }) =>
+      get(path, options?.params ?? {}),
+  };
+  (connector as any).sleep = () => Promise.resolve();
+  return connector;
+}
+
+async function testRecordingsAreHydratedFromTheDetailEndpoint() {
+  const detailParams: Record<string, unknown>[] = [];
+  const listParams: Record<string, unknown>[] = [];
+  const connector = createRecordingsConnector((path, params) => {
+    if (path === "/v1/recordings") {
+      listParams.push(params);
+      // List items carry no AI output.
+      return Promise.resolve(
+        listResponse([{ id: "rec_1", title: "Call rec_1" }]),
+      );
+    }
+    assert.equal(path, "/v1/recordings/rec_1");
+    detailParams.push(params);
+    return Promise.resolve({
+      data: { result: { recording: detailRecording("rec_1") } },
+    });
+  });
 
   const batches: Record<string, unknown>[][] = [];
-  await connector.fetchEntityChunk({
+  const state = await connector.fetchEntityChunk({
     entity: "recordings",
     maxIterations: 1,
     onBatch: async records => {
       batches.push(records);
     },
-  } as any);
+  });
 
-  assert.equal(capturedParams?.returnAiFields, true);
+  assert.equal(listParams.length, 1);
+  assert.equal(listParams[0].createdAfter, undefined);
+  assert.equal(detailParams[0].returnAiFields, true);
+  assert.equal(state.hasMore, false);
+  assert.equal(state.totalProcessed, 1);
   assert.equal(batches.length, 1);
-  assert.equal(batches[0][0].id, "rec_1");
+  assert.deepEqual(batches[0][0], detailRecording("rec_1"));
+}
+
+async function testRecordingsSkipOnlyDeletedOrWithoutAiFields() {
+  const connector = createRecordingsConnector(path => {
+    if (path === "/v1/recordings") {
+      return Promise.resolve(
+        listResponse([
+          { id: "rec_1" },
+          { id: "rec_2" },
+          { id: "rec_3" },
+          { id: "rec_4" },
+        ]),
+      );
+    }
+    // Deleted between the list and the detail call.
+    if (path === "/v1/recordings/rec_1") return Promise.reject(apiError(404));
+    // Ready without aiFields: writing it would null the stored AI output.
+    if (path === "/v1/recordings/rec_2") {
+      return Promise.resolve({
+        data: { result: { recording: withoutAiFields("rec_2") } },
+      });
+    }
+    // Not processed yet: no AI output to lose, so it is written.
+    if (path === "/v1/recordings/rec_3") {
+      return Promise.resolve({
+        data: { result: { recording: withoutAiFields("rec_3", "Uploaded") } },
+      });
+    }
+    return Promise.resolve({
+      data: { result: { recording: detailRecording("rec_4") } },
+    });
+  });
+
+  const rows: Record<string, unknown>[] = [];
+  const logs: string[] = [];
+  const state = await connector.fetchEntityChunk({
+    entity: "recordings",
+    onBatch: async records => {
+      rows.push(...records);
+    },
+    onLog: (_level, message) => {
+      logs.push(message);
+    },
+  });
+
+  assert.deepEqual(
+    rows.map(row => row.id),
+    ["rec_3", "rec_4"],
+  );
+  assert.equal(state.totalProcessed, 2);
+  assert.equal(state.hasMore, false);
+  assert.ok(logs.some(message => /Skipped 2 Claap recording/.test(message)));
+}
+
+async function testRecordingsFailOnAnyOtherDetailError() {
+  // A skipped recording is never listed again on a poll (the anchor moves
+  // past it), so anything but a 404 fails the chunk. Rows read before the
+  // failure are still written.
+  for (const failure of [
+    () => Promise.reject(apiError(500)),
+    () => Promise.reject(apiError(403)),
+    // A response without the matching recording.
+    () => Promise.resolve({ data: { result: {} } }),
+  ]) {
+    const connector = createRecordingsConnector(path => {
+      if (path === "/v1/recordings") {
+        return Promise.resolve(
+          listResponse([{ id: "rec_1" }, { id: "rec_2" }, { id: "rec_3" }]),
+        );
+      }
+      if (path === "/v1/recordings/rec_2") return failure();
+      const id = path.split("/").pop() as string;
+      return Promise.resolve({
+        data: { result: { recording: detailRecording(id) } },
+      });
+    });
+
+    const rows: Record<string, unknown>[] = [];
+    await assert.rejects(
+      connector.fetchEntityChunk({
+        entity: "recordings",
+        onBatch: async records => {
+          rows.push(...records);
+        },
+      }),
+      /Could not read Claap recording rec_2/,
+    );
+    assert.deepEqual(
+      rows.map(row => row.id),
+      ["rec_1"],
+    );
+  }
+}
+
+async function testRecordingsChunkWithNothingWrittenFails() {
+  const connector = createRecordingsConnector(path => {
+    if (path === "/v1/recordings") {
+      return Promise.resolve(listResponse([{ id: "rec_1" }, { id: "rec_2" }]));
+    }
+    const id = path.split("/").pop() as string;
+    return Promise.resolve({
+      data: { result: { recording: withoutAiFields(id) } },
+    });
+  });
+
+  await assert.rejects(
+    connector.fetchEntityChunk({
+      entity: "recordings",
+      onBatch: async () => undefined,
+    }),
+    /None of the 2 Claap recording/,
+  );
+}
+
+async function testRecordingsStopAtDailyQuotaReserveAndResume() {
+  // 501 left: rec_1 (→500) and rec_2 (→499) are read, then 499 is below the
+  // 500-call reserve and the chunk stops before rec_3.
+  let remaining = 501;
+  const detailCalls: string[] = [];
+  const listCursors: unknown[] = [];
+  const get = (path: string, params: Record<string, unknown>) => {
+    if (path === "/v1/recordings") {
+      listCursors.push(params.cursor);
+      return Promise.resolve(
+        listResponse([{ id: "rec_1" }, { id: "rec_2" }, { id: "rec_3" }], {
+          dailyRemaining: remaining,
+        }),
+      );
+    }
+    const id = path.split("/").pop() as string;
+    detailCalls.push(id);
+    remaining--;
+    return Promise.resolve({
+      headers: { "x-ratelimit-daily-remaining": String(remaining) },
+      data: { result: detailRecording(id) },
+    });
+  };
+  const connector = createRecordingsConnector(get);
+
+  const rows: Record<string, unknown>[] = [];
+  const onBatch = async (records: Record<string, unknown>[]) => {
+    rows.push(...records);
+  };
+  const first = await connector.fetchEntityChunk({
+    entity: "recordings",
+    onBatch,
+  });
+  assert.deepEqual(detailCalls, ["rec_1", "rec_2"]);
+  assert.equal(first.hasMore, true);
+  assert.equal(first.totalProcessed, 2);
+  assert.equal(first.metadata?.pageOffset, 2);
+  assert.equal(first.metadata?.cursor, null);
+
+  // Quota still below the reserve and nothing read yet: the chunk fails
+  // without spending any detail call.
+  await assert.rejects(
+    connector.fetchEntityChunk({ entity: "recordings", onBatch, state: first }),
+    /daily API quota/,
+  );
+  assert.equal(detailCalls.length, 2);
+
+  // Once the window refills, the run resumes at the first unread recording.
+  remaining = 2500;
+  const resumed = await connector.fetchEntityChunk({
+    entity: "recordings",
+    onBatch,
+    state: first,
+  });
+  assert.deepEqual(detailCalls, ["rec_1", "rec_2", "rec_3"]);
+  assert.equal(resumed.hasMore, false);
+  assert.equal(resumed.totalProcessed, 3);
+  assert.deepEqual(
+    rows.map(row => row.id),
+    ["rec_1", "rec_2", "rec_3"],
+  );
+}
+
+async function testRecordingsQuotaStopOnAPollKeepsTheAnchor() {
+  // A poll stops on its first page (no cursor yet). The resumed chunk gets
+  // no `since`; without the saved anchor it would list from the oldest
+  // recording.
+  let remaining = 501;
+  const listParams: Record<string, unknown>[] = [];
+  const connector = createRecordingsConnector((path, params) => {
+    if (path === "/v1/recordings") {
+      listParams.push(params);
+      return Promise.resolve(
+        listResponse([{ id: "rec_1" }, { id: "rec_2" }, { id: "rec_3" }], {
+          dailyRemaining: remaining,
+        }),
+      );
+    }
+    remaining--;
+    const id = path.split("/").pop() as string;
+    return Promise.resolve({
+      headers: { "x-ratelimit-daily-remaining": String(remaining) },
+      data: { result: { recording: detailRecording(id) } },
+    });
+  });
+  const onBatch = async () => undefined;
+
+  const first = await connector.fetchEntityChunk({
+    entity: "recordings",
+    since: new Date("2026-10-20T00:00:00.000Z"),
+    onBatch,
+  });
+  assert.equal(first.hasMore, true);
+  assert.equal(first.metadata?.cursor, null);
+  assert.equal(first.metadata?.createdAfter, "2026-10-20T00:00:00.000Z");
+
+  remaining = 2500;
+  const resumed = await connector.fetchEntityChunk({
+    entity: "recordings",
+    onBatch,
+    state: first,
+  });
+  assert.equal(resumed.hasMore, false);
+  assert.equal(listParams[1].createdAfter, "2026-10-20T00:00:00.000Z");
+}
+
+async function testRecordingsLookbackWindowMovesTheAnchorBack() {
+  const listParams: Record<string, unknown>[] = [];
+  const get = (path: string, params: Record<string, unknown>) => {
+    if (path === "/v1/recordings") {
+      listParams.push(params);
+      return Promise.resolve(listResponse([]));
+    }
+    return Promise.reject(new Error("no detail call expected"));
+  };
+  const since = new Date("2026-10-20T00:00:00.000Z");
+
+  await createRecordingsConnector(get, {
+    recordings_lookback_days: 3,
+  }).fetchEntityChunk({
+    entity: "recordings",
+    since,
+    onBatch: async () => undefined,
+  });
+  // Capped at 7 days: every poll re-reads the whole window.
+  await createRecordingsConnector(get, {
+    recordings_lookback_days: 30,
+  }).fetchEntityChunk({
+    entity: "recordings",
+    since,
+    onBatch: async () => undefined,
+  });
+  // Default (0): only recordings created after the last sync.
+  await createRecordingsConnector(get).fetchEntityChunk({
+    entity: "recordings",
+    since,
+    onBatch: async () => undefined,
+  });
+
+  assert.equal(listParams[0].createdAfter, "2026-10-17T00:00:00.000Z");
+  assert.equal(listParams[1].createdAfter, "2026-10-13T00:00:00.000Z");
+  assert.equal(listParams[2].createdAfter, "2026-10-20T00:00:00.000Z");
+  assert.ok(
+    ClaapConnector.getConfigSchema().fields.some(
+      field => field.name === "recordings_lookback_days",
+    ),
+  );
 }
 
 function testTranscriptSegmentsParseEveryShape() {
@@ -513,7 +879,13 @@ async function main() {
   testWebhookPayloadIsExtractedForProcessing();
   testWebhookCdcRecordUsesRecordingsEntity();
   await testResolveSchemaForRecordings();
-  await testRecordingsFetchRequestsAiFields();
+  await testRecordingsAreHydratedFromTheDetailEndpoint();
+  await testRecordingsSkipOnlyDeletedOrWithoutAiFields();
+  await testRecordingsFailOnAnyOtherDetailError();
+  await testRecordingsChunkWithNothingWrittenFails();
+  await testRecordingsStopAtDailyQuotaReserveAndResume();
+  await testRecordingsQuotaStopOnAPollKeepsTheAnchor();
+  await testRecordingsLookbackWindowMovesTheAnchorBack();
   testSupportsResumableFetching();
   testEntityMetadataIncludesLayoutSuggestion();
   testTranscriptSegmentsParseEveryShape();

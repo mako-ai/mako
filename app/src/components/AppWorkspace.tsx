@@ -81,6 +81,13 @@ import {
   settleAppOpen,
 } from "../lib/app-open-gate";
 import { appFrameMessageOrigin, appFrameSandbox } from "../lib/app-frame";
+import {
+  APP_DUCKDB_MEMORY_MESSAGE,
+  clearAppFrame,
+  forgetAppFrame,
+  reportAppFrameMemory,
+  setAppFrameVisible,
+} from "../lib/app-memory";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
@@ -1191,6 +1198,12 @@ export default function AppWorkspace({
   // one in front — background tabs stay mounted (display: none), and the
   // dev-mode preview is the author building, not someone using the app.
   const isFrontTab = useConsoleStore(s => s.activeTabId === _tabId);
+  // The page-wide DuckDB budget asks background app frames to release, least
+  // recently shown first, never the one in front.
+  useEffect(() => {
+    setAppFrameVisible(_tabId, isFrontTab);
+  }, [_tabId, isFrontTab]);
+  useEffect(() => () => forgetAppFrame(_tabId), [_tabId]);
   useAppUsageBeacon({
     workspaceId,
     appId,
@@ -1368,7 +1381,27 @@ export default function AppWorkspace({
       const frame = pubIframeRef.current;
       if (!frame || event.source !== frame.contentWindow) return;
       if (event.origin !== appFrameMessageOrigin(frame.src)) return;
-      const data = event.data as { type?: unknown; search?: unknown } | null;
+      const data = event.data as {
+        type?: unknown;
+        search?: unknown;
+        bytes?: unknown;
+        canRelease?: unknown;
+      } | null;
+      // SDK >= 2.13: what this frame's heap holds, for the page-wide
+      // budget across app frames (lib/app-memory.ts).
+      if (
+        data?.type === APP_DUCKDB_MEMORY_MESSAGE &&
+        typeof data.bytes === "number"
+      ) {
+        reportAppFrameMemory(
+          _tabId,
+          event.source as Window,
+          event.origin,
+          data.bytes,
+          data.canRelease !== false,
+        );
+        return;
+      }
       if (
         !data ||
         data.type !== "mako-app:navigate" ||
@@ -1401,6 +1434,11 @@ export default function AppWorkspace({
     s => (s.tabs[_tabId]?.metadata?.appSearchSeed as number | undefined) ?? 0,
   );
   const seedKey = `${previewNonce}:${appSearchSeed}`;
+  // Each of these replaces or removes the published iframe under a live tab.
+  useEffect(
+    () => () => clearAppFrame(_tabId),
+    [_tabId, seedKey, viewUrl, editing],
+  );
   const seededSearchRef = useRef<{ key: string; search: string } | null>(null);
   if (
     seededSearchRef.current === null ||

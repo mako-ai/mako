@@ -183,7 +183,7 @@ describe("the app host gate", () => {
     expect(res.headers.get("X-Frame-Options")).toBeNull();
     expect(res.headers.get("Set-Cookie")).toBeNull();
     expect(res.headers.get("Access-Control-Allow-Credentials")).toBeNull();
-    expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(res.headers.get("Referrer-Policy")).toBe("strict-origin");
   });
 
   it("trusts X-Forwarded-Host from the edge Worker", async () => {

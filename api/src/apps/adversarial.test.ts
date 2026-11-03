@@ -74,9 +74,8 @@ beforeEach(async () => {
 
 describe("hostile file names", () => {
   it("survives names with spaces, quotes, $ and newlines", async () => {
-    const { ensureWorktree, writeFile, listFiles } = await import(
-      "./worktree.service"
-    );
+    const { ensureWorktree, writeFile, listFiles } =
+      await import("./worktree.service");
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
 
@@ -126,9 +125,8 @@ describe("hostile file names", () => {
 
 describe("hostile branch names", () => {
   it("handles branch names git allows but a shell would eat", async () => {
-    const { ensureWorktree, execInWorktree, listBranches } = await import(
-      "./worktree.service"
-    );
+    const { ensureWorktree, execInWorktree, listBranches } =
+      await import("./worktree.service");
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
 
@@ -158,9 +156,8 @@ describe("hostile branch names", () => {
 
 describe("concurrency", () => {
   it("parallel writes all land, or fail loudly — never silently lost", async () => {
-    const { ensureWorktree, writeFile, listFiles } = await import(
-      "./worktree.service"
-    );
+    const { ensureWorktree, writeFile, listFiles } =
+      await import("./worktree.service");
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
 
@@ -260,9 +257,8 @@ describe("losing the machine", () => {
 
 describe("silent loss", () => {
   it("a write into an ignored path does not report success and vanish", async () => {
-    const { ensureWorktree, writeFile, listFiles } = await import(
-      "./worktree.service"
-    );
+    const { ensureWorktree, writeFile, listFiles } =
+      await import("./worktree.service");
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
 
@@ -327,9 +323,8 @@ describe("silent loss", () => {
   }, 120_000);
 
   it("a large file survives the transfer", async () => {
-    const { ensureWorktree, writeFile, readFile } = await import(
-      "./worktree.service"
-    );
+    const { ensureWorktree, writeFile, readFile } =
+      await import("./worktree.service");
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
     const big = "x".repeat(2 * 1024 * 1024); // 2MB
@@ -429,9 +424,8 @@ describe("branch switching under pressure", () => {
   }, 180_000);
 
   it("refuses a branch that does not exist", async () => {
-    const { ensureWorktree, checkoutBranch } = await import(
-      "./worktree.service"
-    );
+    const { ensureWorktree, checkoutBranch } =
+      await import("./worktree.service");
     const project = await makeProject();
     await expect(
       checkoutBranch(await ensureWorktree(project, USER), "no-such-branch"),
@@ -476,9 +470,8 @@ describe("branch switching under pressure", () => {
 
 describe("a tree too large for a command line", () => {
   it("lists a huge tree with honest truncation instead of dying", async () => {
-    const { ensureWorktree, execInWorktree, listFiles } = await import(
-      "./worktree.service"
-    );
+    const { ensureWorktree, execInWorktree, listFiles } =
+      await import("./worktree.service");
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
 
@@ -516,9 +509,8 @@ describe("a tree too large for a command line", () => {
 
 describe("uncommitted work you cannot see", () => {
   it("reports repo-wide changes, not just this app's slice", async () => {
-    const { ensureWorktree, writeFile, worktreeStatus } = await import(
-      "./worktree.service"
-    );
+    const { ensureWorktree, writeFile, worktreeStatus } =
+      await import("./worktree.service");
     // One worktree serves every app in the workspace monorepo, so a file
     // another app's build wrote is uncommitted work for THIS app's checkout
     // too. Reporting only this app's slice is what let a lock file written by
@@ -656,9 +648,8 @@ describe("publishing", () => {
 
 describe("repeated operations are idempotent", () => {
   it("reading repeatedly does not change anything", async () => {
-    const { ensureWorktree, writeFile, worktreeStatus } = await import(
-      "./worktree.service"
-    );
+    const { ensureWorktree, writeFile, worktreeStatus } =
+      await import("./worktree.service");
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
     await writeFile(handle, "stable.txt", "same\n");
@@ -677,9 +668,8 @@ describe("repeated operations are idempotent", () => {
   }, 120_000);
 
   it("committing twice with nothing in between is a no-op", async () => {
-    const { ensureWorktree, writeFile, commitWorktree } = await import(
-      "./worktree.service"
-    );
+    const { ensureWorktree, writeFile, commitWorktree } =
+      await import("./worktree.service");
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
     await writeFile(handle, "once.txt", "1\n");
@@ -697,9 +687,8 @@ describe("repeated operations are idempotent", () => {
 
 describe("filenames that look like flags", () => {
   it("handles leading-dash names that a command could mistake for options", async () => {
-    const { ensureWorktree, writeFile, listFiles, readFile } = await import(
-      "./worktree.service"
-    );
+    const { ensureWorktree, writeFile, listFiles, readFile } =
+      await import("./worktree.service");
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
     // Quoting stops the shell reading these; it does not stop a COMMAND
@@ -715,9 +704,8 @@ describe("filenames that look like flags", () => {
   }, 120_000);
 
   it("stores an empty file and a file with no trailing newline exactly", async () => {
-    const { ensureWorktree, writeFile, readFile } = await import(
-      "./worktree.service"
-    );
+    const { ensureWorktree, writeFile, readFile } =
+      await import("./worktree.service");
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
     await writeFile(handle, "empty.txt", "");
@@ -791,9 +779,8 @@ describe("failure mid-flight", () => {
   }, 180_000);
 
   it("concurrent checkouts do not leave the branch disagreeing with the sandbox", async () => {
-    const { ensureWorktree, checkoutBranch, execInWorktree } = await import(
-      "./worktree.service"
-    );
+    const { ensureWorktree, checkoutBranch, execInWorktree } =
+      await import("./worktree.service");
     const project = await makeProject();
     await checkoutBranch(await ensureWorktree(project, USER), "side", {
       create: true,
@@ -820,9 +807,8 @@ describe("failure mid-flight", () => {
 describe("publishing a folder-only app (repo-imported, no row)", () => {
   it("materializes the row so publishedSha actually persists", async () => {
     const { initRepo, repoDirFor } = await import("./repository.service");
-    const { synthesizeProjectFromFolder, ensureProjectRow } = await import(
-      "./worktree.service"
-    );
+    const { synthesizeProjectFromFolder, ensureProjectRow } =
+      await import("./worktree.service");
     const { setPublishedSha } = await import("./deployment.service");
     const { AppProject } = await import("../database/workspace-schema");
 
@@ -897,5 +883,229 @@ describe("publishing a folder-only app (repo-imported, no row)", () => {
     expect((await AppProject.findOne({ _id: synth!._id }))?.owner_id).toBe(
       alice,
     );
+  }, 60_000);
+});
+
+describe("a personal app's row is its owner's alone", () => {
+  // The owner of a row under users/<handle>/apps is the handle mapping's
+  // answer for the folder, whoever's action creates or first touches the row.
+  // These go through resolveProjectRef, the shape the routes hand in.
+  const setup = async (files: Record<string, string>) => {
+    const { initRepo, repoDirFor } = await import("./repository.service");
+    const { WorkspaceUserHandle } =
+      await import("../database/workspace-schema");
+    const { invalidateOwnerDirectory } = await import("./user-handles.service");
+    const ws = new Types.ObjectId().toString();
+    const owner = new Types.ObjectId().toString();
+    await WorkspaceUserHandle.create({
+      workspaceId: new Types.ObjectId(ws),
+      userId: owner,
+      handle: "carol",
+    });
+    invalidateOwnerDirectory();
+    await initRepo(repoDirFor(ws), files);
+    await bindTestWorkspaceRepo(ws);
+    return { ws, owner };
+  };
+  const manifest = (title: string) => JSON.stringify({ title });
+  const newUser = () => new Types.ObjectId().toString();
+  /** The state row a push-deploy worker could leave: private, no owner. */
+  const ownerlessRow = async (
+    ws: string,
+    appPath: string,
+    fields: Record<string, unknown> = {},
+  ) => {
+    const { resolveProjectRef } = await import("./worktree.service");
+    const { AppProject } = await import("../database/workspace-schema");
+    const synth = await resolveProjectRef(ws, appPath);
+    expect(synth).not.toBeNull();
+    await AppProject.create({
+      _id: synth!._id,
+      workspaceId: synth!.workspaceId,
+      title: synth!.title,
+      slug: synth!.slug,
+      path: synth!.path,
+      access: "private",
+      createdBy: "",
+      defaultBranch: "main",
+      ...fields,
+    });
+    return synth!._id;
+  };
+
+  it("a new row goes to the folder's owner, private, for every other actor", async () => {
+    const { resolveProjectRef, ensureProjectRow, PUBLISH_ACTOR } =
+      await import("./worktree.service");
+    const { AppProject } = await import("../database/workspace-schema");
+    const { canManageSharing, canReadResource } =
+      await import("../utils/resource-acl");
+    const { ws, owner } = await setup({
+      "users/carol/apps/secret/mako.json": manifest("Secret"),
+    });
+    const other = newUser();
+    // A person, the deploy worker, and an API key with no acting user.
+    for (const actor of [other, PUBLISH_ACTOR, "api-key", ""]) {
+      const project = await resolveProjectRef(ws, "users/carol/apps/secret");
+      const row = await ensureProjectRow(project!, actor);
+      expect(row.owner_id).toBe(owner);
+      expect(row.createdBy).toBe(owner);
+      expect(row.access).toBe("private");
+      for (const role of ["owner", "admin", "member", "viewer"]) {
+        expect(canManageSharing(row, other, role)).toBe(false);
+        expect(canReadResource(row, other, role)).toBe(false);
+      }
+      expect(canManageSharing(row, owner, "member")).toBe(true);
+      await AppProject.deleteOne({ _id: row._id });
+    }
+  }, 60_000);
+
+  it("an ownerless personal row resolved by path or id goes to its owner", async () => {
+    const { resolveProjectRef, ensureProjectRow, PUBLISH_ACTOR } =
+      await import("./worktree.service");
+    const { AppProject } = await import("../database/workspace-schema");
+    const { canManageSharing } = await import("../utils/resource-acl");
+    const { ws, owner } = await setup({
+      "users/carol/apps/pushed/mako.json": manifest("Pushed"),
+    });
+    const id = await ownerlessRow(ws, "users/carol/apps/pushed");
+
+    const resolved = await resolveProjectRef(ws, "users/carol/apps/pushed");
+    expect(resolved?.owner_id ?? undefined).toBeUndefined();
+    const other = newUser();
+    const row = await ensureProjectRow(resolved!, other);
+    expect(row.owner_id).toBe(owner);
+    expect(canManageSharing(row, other, "admin")).toBe(false);
+
+    const byId = await resolveProjectRef(ws, id.toString());
+    expect((await ensureProjectRow(byId!, PUBLISH_ACTOR)).owner_id).toBe(owner);
+    expect((await AppProject.findOne({ _id: id }))?.owner_id).toBe(owner);
+  }, 60_000);
+
+  it("a personal folder whose handle nobody holds stays ownerless", async () => {
+    const { resolveProjectRef, ensureProjectRow } =
+      await import("./worktree.service");
+    const { AppProject } = await import("../database/workspace-schema");
+    const { canManageSharing } = await import("../utils/resource-acl");
+    const { ws } = await setup({
+      "users/nobody/apps/orphan/mako.json": manifest("Orphan"),
+    });
+    const project = await resolveProjectRef(ws, "users/nobody/apps/orphan");
+    expect(project).not.toBeNull();
+    const other = newUser();
+    for (const actor of [other, newUser()]) {
+      const row = await ensureProjectRow(project!, actor);
+      expect(row.owner_id ?? undefined).toBeUndefined();
+      expect(row.createdBy || undefined).toBeUndefined();
+      expect(row.access).toBe("private");
+      expect(canManageSharing(row, actor, "admin")).toBe(false);
+    }
+    // The same for a row that already exists when the next actor arrives.
+    const stored = await AppProject.findOne({ _id: project!._id });
+    expect(stored?.owner_id ?? undefined).toBeUndefined();
+  }, 60_000);
+
+  it("a row that already has an owner keeps it, handle or not", async () => {
+    const { resolveProjectRef, ensureProjectRow } =
+      await import("./worktree.service");
+    const { ws, owner } = await setup({
+      "users/carol/apps/kept/mako.json": manifest("Kept"),
+      "users/carol/apps/created/mako.json": manifest("Created"),
+    });
+    const previous = newUser();
+    await ownerlessRow(ws, "users/carol/apps/kept", {
+      owner_id: previous,
+      createdBy: previous,
+    });
+    await ownerlessRow(ws, "users/carol/apps/created", { createdBy: previous });
+    for (const actor of [owner, newUser()]) {
+      const kept = await resolveProjectRef(ws, "users/carol/apps/kept");
+      expect((await ensureProjectRow(kept!, actor)).owner_id).toBe(previous);
+      const created = await resolveProjectRef(ws, "users/carol/apps/created");
+      const row = await ensureProjectRow(created!, actor);
+      expect(row.owner_id ?? undefined).toBeUndefined();
+      expect(row.createdBy).toBe(previous);
+    }
+  }, 60_000);
+
+  it("a handle that changes takes the folder's unclaimed rows with it, never to the actor", async () => {
+    const { resolveProjectRef, ensureProjectRow } =
+      await import("./worktree.service");
+    const { WorkspaceUserHandle } =
+      await import("../database/workspace-schema");
+    const { invalidateOwnerDirectory } = await import("./user-handles.service");
+    const { ws, owner } = await setup({
+      "users/carol/apps/before/mako.json": manifest("Before"),
+      "users/carol/apps/after/mako.json": manifest("After"),
+      "users/carol-new/apps/moved/mako.json": manifest("Moved"),
+    });
+    const before = await resolveProjectRef(ws, "users/carol/apps/before");
+    expect((await ensureProjectRow(before!, newUser())).owner_id).toBe(owner);
+
+    await WorkspaceUserHandle.updateOne(
+      { workspaceId: new Types.ObjectId(ws), userId: owner },
+      { $set: { handle: "carol-new" } },
+    );
+    invalidateOwnerDirectory();
+
+    const other = newUser();
+    const kept = await resolveProjectRef(ws, "users/carol/apps/before");
+    expect((await ensureProjectRow(kept!, other)).owner_id).toBe(owner);
+    const old = await resolveProjectRef(ws, "users/carol/apps/after");
+    expect(
+      (await ensureProjectRow(old!, other)).owner_id ?? undefined,
+    ).toBeUndefined();
+    const moved = await resolveProjectRef(ws, "users/carol-new/apps/moved");
+    expect((await ensureProjectRow(moved!, other)).owner_id).toBe(owner);
+  }, 60_000);
+
+  it("a private ownerless row outside a resolvable personal tree stays ownerless", async () => {
+    const { resolveProjectRef, ensureProjectRow } =
+      await import("./worktree.service");
+    const { AppProject } = await import("../database/workspace-schema");
+    const { ws } = await setup({ "apps/x/mako.json": manifest("X") });
+    const workspaceId = new Types.ObjectId(ws);
+    // No path left (the index gives a row's path up to another app), and a
+    // personal path the parser refuses (the handle is not a valid handle).
+    const pathless = await AppProject.create({
+      workspaceId,
+      title: "Pathless",
+      slug: "pathless",
+      access: "private",
+      createdBy: "",
+    });
+    const unparsed = await AppProject.create({
+      workspaceId,
+      title: "Unparsed",
+      slug: "unparsed",
+      path: "users/Carol/apps/unparsed",
+      access: "workspace",
+      createdBy: "",
+    });
+    for (const doc of [pathless, unparsed]) {
+      const project = await resolveProjectRef(ws, doc._id.toString());
+      const row = await ensureProjectRow(project!, newUser());
+      expect(row.owner_id ?? undefined).toBeUndefined();
+    }
+  }, 60_000);
+
+  it("workspace-tree apps keep going to the acting person", async () => {
+    const { resolveProjectRef, ensureProjectRow, PUBLISH_ACTOR } =
+      await import("./worktree.service");
+    const { ws } = await setup({
+      "apps/shared/mako.json": manifest("Shared"),
+      "apps/ownerless/mako.json": manifest("Ownerless"),
+    });
+    const actor = newUser();
+    const shared = await resolveProjectRef(ws, "shared");
+    const row = await ensureProjectRow(shared!, actor);
+    expect(row.owner_id).toBe(actor);
+    expect(row.access).toBe("workspace");
+
+    const pushed = await resolveProjectRef(ws, "ownerless");
+    const deployed = await ensureProjectRow(pushed!, PUBLISH_ACTOR);
+    expect(deployed.owner_id ?? undefined).toBeUndefined();
+    const claimed = await ensureProjectRow(deployed, actor);
+    expect(claimed.owner_id).toBe(actor);
+    expect(claimed.access).toBe("workspace");
   }, 60_000);
 });
