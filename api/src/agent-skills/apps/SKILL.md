@@ -206,6 +206,10 @@ binding. Use `useQuery` / `useDuckDB` first. For anything custom (SDK ≥ 2.8):
   shared engine.
 - `ensureBinding(name)` loads a binding as a table and returns its name.
   `unloadBinding(name)` frees it.
+- Memory is managed for you (SDK ≥ 2.12): past 1.5 GiB of tables, the least
+  recently read become views over their parquet and turn back into tables on
+  their next read. Do not unload bindings by hand to save memory.
+  `setBindingMemoryBudget(bytes)` changes the cap.
 - `fetchBindingBytes(name, { onProgress, fresh })` returns the raw parquet
   bytes for a custom reader (register them with
   `getDuckDB().registerFileBuffer`).

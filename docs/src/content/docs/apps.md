@@ -61,6 +61,7 @@ For anything the hooks do not cover, use the SDK's escape hatches (2.8+) on the 
 | Your own SQL session | `getDuckDB()` returns the shared engine (never close or terminate it). `withConnection(conn => conn.query(sql))` |
 | A binding as a table | `await ensureBinding("orders")` returns `"orders"`. `unloadBinding(name)` frees it |
 | Raw parquet bytes | `fetchBindingBytes(name, { onProgress, fresh })` |
+| Memory cap for binding tables | `setBindingMemoryBudget(bytes)` (default 1.5 GiB; least recently read tables become views over their parquet, SDK 2.12) |
 
 `refresh()` POSTs to `__data/<name>/refresh`, the data URL's sibling, so the same server that serves the data rebuilds it — signed-in viewers can always refresh; a public share link only when its owner enabled live queries, throttled per binding. A refused refresh rejects with `status` 403/429 (with `retryAfterMs`), a failed query with 502 and its error message.
 

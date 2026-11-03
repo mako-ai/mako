@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  crashedEngineError,
+  isOutOfMemoryError,
+  retryDelayMs,
   mentionedBindings,
   missingBinding,
   quoteIdent,
@@ -297,4 +300,39 @@ test("readsCatalog spots table listings", () => {
 test("quoting", () => {
   assert.equal(quoteIdent('a"b'), '"a""b"');
   assert.equal(quoteString("it's"), "'it''s'");
+});
+
+test("isOutOfMemoryError reads DuckDB's message, the only signal duckdb-wasm passes", () => {
+  // Both shapes seen from duckdb-wasm 1.29.0 in Chrome.
+  assert.equal(isOutOfMemoryError(new Error("Out of Memory Error: failed to allocate data of size 1.0 MiB (3.1 GiB/3.1 GiB used)")), true);
+  assert.equal(isOutOfMemoryError(new Error("Out of Memory Error: could not allocate block of size 256.0 KiB (37.9 MiB/38.1 MiB used)")), true);
+  assert.equal(isOutOfMemoryError("Out of Memory Error: x"), true);
+  assert.equal(isOutOfMemoryError(new Error("Catalog Error: Table with name x does not exist")), false);
+  assert.equal(isOutOfMemoryError(null), false);
+});
+
+test("isOutOfMemoryError is anchored: quoting the words is not running out", () => {
+  assert.equal(isOutOfMemoryError(new Error("Binder Error: column nope, in msg = 'Out of Memory Error'")), false);
+  assert.equal(isOutOfMemoryError(new Error('Data for binding "x" could not be loaded (HTTP 502): Out of Memory Error: on the server')), false);
+});
+
+test("crashedEngineError knows the traps and no quoted word", () => {
+  for (const m of ["Invalid Error: std::bad_cast", "null function", "null function or function signature mismatch", "memory access out of bounds", "table index is out of bounds", "unreachable", "Maximum call stack size exceeded"]) {
+    assert.equal(crashedEngineError(new Error(m)), true, m);
+  }
+  assert.equal(crashedEngineError(new Error('Conversion Error: Could not convert string "unreachable" to INT32')), false);
+  assert.equal(crashedEngineError(new Error('Data for binding "x" could not be loaded (HTTP 502): host unreachable')), false);
+});
+
+test("retryDelayMs reads the tag, never the words", () => {
+  const tagged = (retry, extra) => Object.assign(new Error("anything"), { retry }, extra);
+  assert.equal(retryDelayMs(tagged("memory"), 0), 1000);
+  assert.equal(retryDelayMs(tagged("memory"), 4), 15000);
+  assert.equal(retryDelayMs(tagged("memory"), 5), Infinity, "5 retries, then a sign the answer could differ");
+  assert.equal(retryDelayMs(tagged("network"), 0), 5000);
+  assert.equal(retryDelayMs(tagged("network"), 2), 60000);
+  assert.equal(retryDelayMs(tagged("network"), 3), Infinity);
+  assert.equal(retryDelayMs(tagged("network", { retryAfterMs: 900000 }), 0), 900000);
+  assert.equal(retryDelayMs(new Error("Out of Memory Error: from a server"), 0), null);
+  assert.equal(retryDelayMs(new TypeError("Failed to fetch"), 0), null);
 });
