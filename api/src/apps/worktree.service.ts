@@ -133,6 +133,7 @@ import {
   ensureLocalRepo,
   freshenBeforeMainWrite,
   mirrorPushNow,
+  mirrorPushDefaultBranchNow,
   resolveMirrorTarget,
   queueMirrorPush,
   scheduleMirrorBranchReconcile,
@@ -1008,7 +1009,7 @@ export async function createProject(input: {
   // ephemeral cache. Hosts without a binding (dev, previews) stay local-only.
   try {
     if (mirror) {
-      await mirrorPushNow(input.workspaceId);
+      await mirrorPushDefaultBranchNow(input.workspaceId);
     }
   } catch (error) {
     await AppProject.deleteOne({
