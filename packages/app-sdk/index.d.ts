@@ -263,11 +263,16 @@ export interface RefreshOptions {
 /**
  * The page's shared DuckDB, booted on first call. Use it for anything the
  * hooks do not cover instead of importing @duckdb/duckdb-wasm, hyparquet or
- * apache-arrow readers. Never close or terminate it.
+ * apache-arrow readers. Never close or terminate it. Calling it keeps the
+ * engine for the page's life: Mako cannot give this frame's heap back when the
+ * page runs short (see withConnection, ensureBinding and SQL that writes).
  */
 export function getDuckDB(): Promise<SharedDuckDB>;
 
-/** Run `fn` on a fresh connection to the shared DuckDB; closed afterwards. */
+/**
+ * Run `fn` on a fresh connection to the shared DuckDB; closed afterwards. Keeps
+ * the engine for the page's life, like getDuckDB().
+ */
 export function withConnection<T>(fn: (conn: DuckDBConnection) => Promise<T>): Promise<T>;
 
 /**
@@ -275,7 +280,8 @@ export function withConnection<T>(fn: (conn: DuckDBConnection) => Promise<T>): P
  * concurrent callers share the download). Resolves with the table name.
  * Each call counts as a read for eviction. Under memory pressure the table
  * may become a view over its parquet (same name and rows, slower to query);
- * a binding loaded this way is never dropped outright.
+ * a binding loaded this way is never dropped outright. Keeps the engine for the
+ * page's life, like getDuckDB().
  */
 export function ensureBinding(name: string): Promise<string>;
 

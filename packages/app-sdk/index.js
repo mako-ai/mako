@@ -20,6 +20,7 @@ import {
   missingBinding,
   mentionedBindings,
   quoteIdent,
+  isReadOnlySql,
   readsCatalog,
   quoteString,
   crashedEngineError,
@@ -35,7 +36,7 @@ import {
  * in a page (or this export) says which SDK a deployed app actually runs.
  * Kept in step with package.json by snapshot.test.mjs.
  */
-export const SDK_VERSION = "2.12.0";
+export const SDK_VERSION = "2.13.0";
 if (typeof window !== "undefined") {
   try {
     window.__MAKO_APP_SDK__ = SDK_VERSION;
@@ -60,12 +61,29 @@ const DUCKDB_ESM =
 // ---------------------------------------------------------------------------
 let dbPromise = null;
 let liveEngine = null; // the resolved dbPromise: errors from an older one are history
+// createWorker() makes a new object URL per call and never revokes it, so each
+// reboot after a release would leak the worker script (about 742 KiB). One URL
+// per page, also one download fewer in a frame with no HTTP cache. Not through
+// the download gate: the CDN being down says nothing about Mako's server.
+let workerUrl = null;
+function startWorker(duckdb, script) {
+  if (typeof Worker === "undefined") return duckdb.createWorker(script);
+  workerUrl ??= fetch(script).then(async res => {
+    if (!res.ok) throw new Error("The DuckDB worker could not be loaded (HTTP " + res.status + ")");
+    return URL.createObjectURL(await res.blob());
+  });
+  workerUrl.catch(() => {
+    workerUrl = null;
+  });
+  return workerUrl.then(url => new Worker(url));
+}
+
 function getDb() {
   if (!dbPromise) {
     dbPromise = (async () => {
       const duckdb = await import(/* @vite-ignore */ DUCKDB_ESM);
       const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
-      const worker = await duckdb.createWorker(bundle.mainWorker);
+      const worker = await startWorker(duckdb, bundle.mainWorker);
       const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker);
       await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
       // read_parquet lives in an extension DuckDB fetches on first use
@@ -568,8 +586,99 @@ async function duckdbBytes(engine) {
   }
 }
 
-// Hook for whoever wants the figure (the host frame, in a later step).
-function reportMemory() {}
+// ---------------------------------------------------------------------------
+// Across apps (2.13). Each app frame has its own DuckDB and its own WASM heap,
+// so evicting inside one frame frees nothing for the next app opened. The SDK
+// tells Mako's shell what its heap holds; the shell keeps one budget across its
+// app frames and asks the least recently shown ones to release. A WASM heap
+// never shrinks: demoting a table frees DuckDB's accounting and leaves the bytes
+// reserved. So release means ending the worker, and the report is the most this
+// worker has held. It is measuredBytes, not bindingBytes: an app's own tables
+// sit in the same renderer. Parquet stays here as Blobs ("parked"): the next read
+// boots a new engine and decodes from them, with no download and no gate.
+//
+// A worker can end only when nothing lives in it but bindings. App code that may
+// hold the engine or keep its own state there keeps it for the page's life
+// (keepEngine), says so in its reports, and the shell asks another frame.
+//
+// A release is not a crash: it never counts against MAX_RESTARTS, never reruns a
+// hook, and leaves the gate and the download slots alone. They describe the
+// server. Nothing in flight also means no load holds a slot.
+// ---------------------------------------------------------------------------
+const MEMORY_MESSAGE = "mako-app:duckdb-memory";
+const RELEASE_MESSAGE = "mako-host:duckdb-release";
+const inFrame = typeof window !== "undefined" && window.parent != null && window.parent !== window;
+const parked = new Map(); // name -> Blob of a binding whose engine was released
+let engineKept = false;
+let heapBytes = 0; // the most this worker has held: its heap never gives it back
+let busy = 0; // hooks, withConnection calls and queries in flight
+let reportedBytes = null;
+let reportedKept = false;
+
+function reportMemory() {
+  heapBytes = Math.max(heapBytes, measuredBytes);
+  if (!inFrame || (heapBytes === reportedBytes && engineKept === reportedKept)) return;
+  reportedBytes = heapBytes;
+  reportedKept = engineKept;
+  try {
+    window.parent.postMessage({ type: MEMORY_MESSAGE, bytes: heapBytes, canRelease: !engineKept }, "*");
+  } catch {
+    /* a host that is not Mako: nothing to tell */
+  }
+}
+
+/** Something only this worker has may exist from now on: never end it. */
+function keepEngine() {
+  if (engineKept) return;
+  engineKept = true;
+  reportMemory();
+}
+
+/**
+ * The host's ask: give the memory back. Nothing in flight: park every Blob and
+ * end the worker. Rows already on screen stay (they are plain JS); the next
+ * query reboots. Busy: skipped, and the host asks again. A kept engine stays. So
+ * does one with a crash restart due: that ends it and reruns the panels that saw
+ * the crash, which a release would not.
+ */
+async function releaseEngine() {
+  const idle = () => !engineKept && !restartTimer && busy === 0 && loading.size === 0 && refreshes.size === 0;
+  const current = dbPromise;
+  if (!current || !idle()) return;
+  const engine = await current;
+  await catalog(async () => {
+    if (dbPromise !== current || !idle()) return;
+    // From here to dbPromise = null runs without a yield: no query can grab
+    // the old engine in between. liveEngine goes too: a crash report from this
+    // engine must not restart the next one.
+    for (const [name, entry] of entries) if (entry.blob) parked.set(name, entry.blob);
+    entries.clear();
+    registered.clear();
+    loadedBindings.clear();
+    liveEngine = null;
+    dbPromise = null;
+    measuredBytes = 0;
+    heapBytes = 0;
+    pressureUntil = 0; // the next engine starts with an empty heap
+    clearTimeout(pressureTimer);
+    reportMemory();
+    await engine.terminate().catch(() => {});
+  });
+}
+
+if (inFrame) {
+  window.addEventListener("message", event => {
+    // Only the frame's own parent may ask. The ask can do no harm beyond a
+    // slower next query, so the parent's origin (Mako's, whatever host it
+    // runs on) is not pinned here.
+    if (event.source !== window.parent) return;
+    const data = event.data;
+    if (!data || data.type !== RELEASE_MESSAGE) return;
+    releaseEngine().catch(() => {
+      /* the next ask, or the next load's trim, tries again */
+    });
+  });
+}
 
 /** The least recently read binding that passes `test` and nothing holds. */
 function leastRecent(test, pinnedToo = false) {
@@ -803,7 +912,14 @@ async function loadBinding(name, bust) {
   db.catch(() => {});
   loading.add(name);
   try {
-    const buf = await downloadBinding(name, bust, patch => setProgress(name, patch));
+    // Parked by a release: the same bytes, no download (unless a refresh made
+    // them stale). A Blob can stop being readable: then it downloads.
+    const kept = parked.get(name);
+    parked.delete(name);
+    const parkedBytes = kept && !bust ? await kept.arrayBuffer().catch(() => null) : null;
+    const buf = parkedBytes
+      ? new Uint8Array(parkedBytes)
+      : await downloadBinding(name, bust, patch => setProgress(name, patch));
     setProgress(name, { phase: "loading_duckdb" });
     const engine = await db;
     // Made before the buffer goes to the worker: the copy a demotion reads.
@@ -941,17 +1057,24 @@ export async function getBindingMemory() {
  * close or terminate it: every hook on the page reads from it.
  */
 export function getDuckDB() {
+  keepEngine();
   return getDb();
 }
 
 /** Run `fn` with a fresh connection to the shared DuckDB; always closed after. */
 export async function withConnection(fn) {
-  const db = await getDb();
-  const conn = await db.connect();
+  keepEngine();
+  busy++;
   try {
-    return await fn(conn);
+    const db = await getDb();
+    const conn = await db.connect();
+    try {
+      return await fn(conn);
+    } finally {
+      await conn.close();
+    }
   } finally {
-    await conn.close();
+    busy--;
   }
 }
 
@@ -963,6 +1086,7 @@ export async function withConnection(fn) {
  * view over its parquet (same name, same rows, slower); it is never dropped.
  */
 export async function ensureBinding(name) {
+  keepEngine(); // its contract: the name stays readable, by code the SDK cannot see
   externalBindings.add(name);
   await registerBinding(name);
   return name;
@@ -973,11 +1097,12 @@ export async function ensureBinding(name) {
  * The next query or ensureBinding() downloads it again.
  */
 export async function unloadBinding(name) {
+  parked.delete(name);
+  knownBindings.delete(name);
   const pending = registered.get(name);
   if (!pending) return;
   registered.delete(name);
   externalBindings.delete(name);
-  knownBindings.delete(name);
   await pending.catch(() => {});
   if (registered.has(name)) return; // read again meanwhile: it stays
   const engine = await getDb();
@@ -1217,22 +1342,31 @@ async function runSql(sql, rowLimit, format, reads) {
 
 async function runSqlOnce(sql, rowLimit, format) {
   const cap = rowLimit === null ? Infinity : (rowLimit ?? DEFAULT_ROW_LIMIT);
-  const db = await getDb();
-  const conn = await db.connect();
+  const writes = !isReadOnlySql(sql);
+  if (writes) keepEngine(); // CREATE TABLE journal_t: only this worker has it
+  busy++; // before the await: a release must not end the engine under it
   try {
-    const table = await conn.query(sql);
-    const rowCount = table.numRows;
-    if (format === "arrow") {
-      // The Arrow Table as DuckDB returned it: no row objects, no
-      // normalization, no row limit.
-      return { rows: table, fields: table.schema.fields.map(f => f.name), rowCount, truncated: false };
+    const db = await getDb();
+    const conn = await db.connect();
+    try {
+      const table = await conn.query(sql);
+      // No load follows to measure what the app just made, and the report owes it.
+      if (writes) catalog(() => measureNow(db)).catch(() => {});
+      const rowCount = table.numRows;
+      if (format === "arrow") {
+        // The Arrow Table as DuckDB returned it: no row objects, no
+        // normalization, no row limit.
+        return { rows: table, fields: table.schema.fields.map(f => f.name), rowCount, truncated: false };
+      }
+      const { rows, fields } = toPlainRows(table, cap);
+      return { rows, fields, rowCount, truncated: rowCount > rows.length };
+    } catch (error) {
+      throw markEngineError(error, db);
+    } finally {
+      await conn.close();
     }
-    const { rows, fields } = toPlainRows(table, cap);
-    return { rows, fields, rowCount, truncated: rowCount > rows.length };
-  } catch (error) {
-    throw markEngineError(error, db);
   } finally {
-    await conn.close();
+    busy--;
   }
 }
 
@@ -1261,7 +1395,9 @@ function restartEngine() {
   registered.clear();
   loadedBindings.clear();
   measuredBytes = 0;
+  heapBytes = 0;
   pressureUntil = 0;
+  reportMemory();
   old.terminate().catch(() => {});
   setBindingState({ ...bindingState, version: bindingState.version + 1 });
 }
@@ -1332,7 +1468,14 @@ function useAsyncQuery(run, deps, isRefreshing) {
       setState(s => (isRefresh && s.data !== null ? { ...s, refreshing: true } : EMPTY));
     }
     const held = [];
+    // From the first await to the last. Between a hook's load and its query
+    // nothing else is in flight, and a release there would end the engine
+    // holding the table the query is about to read.
+    busy++;
     const settled = run(name => held.push(pin(name)));
+    settled.catch(() => {}).finally(() => {
+      busy--;
+    });
     settled.then(
       result => {
         if (active) setState({ ...result, error: null, loading: false, refreshing: false });

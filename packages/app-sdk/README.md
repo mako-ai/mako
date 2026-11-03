@@ -173,6 +173,32 @@ for the whole heap, and `pressure`.
 - A failed `__data/index.json` is kept for 10 s. A query that needs no binding still
   answers. A query that fails then shows the index failure and retries.
 
+### Memory across apps (2.13)
+
+Inside Mako, each app frame posts what its heap holds. Past 2 GiB across the
+open app tabs, Mako asks the least recently shown ones to release, and asks a
+busy frame again 10 s later. A WASM heap never shrinks, so a release ends that
+frame's DuckDB worker. Its rows stay on screen and its parquet stays as Blobs.
+The next query there boots a new engine and reloads its parquet with no
+download. A reboot takes 0.6 s on the app's own origin and 0.6 to 2.6 s in an
+opaque frame, which has no HTTP cache and fetches the 35 MiB WASM again.
+
+- A frame keeps its engine for the page's life once app code calls
+  `getDuckDB()`, `withConnection()` or `ensureBinding()`, or sends `useDuckDB`
+  SQL that is not a plain read (`CREATE TABLE`, `SET`, anything the SDK does
+  not recognise). Only that worker has what they made. Mako counts its heap and
+  asks another frame, so an app that needs to be a good neighbour sticks to
+  read-only `useQuery` and `useDuckDB`.
+- A release is not a crash. It does not count toward the 3 restarts a page gets,
+  reruns no panel and leaves the download gate as it is. A parked binding reads
+  with no network even while the gate is closed.
+- Frames on an older SDK, the dev-mode preview and apps that boot their own
+  DuckDB send no report. Mako cannot count or ask them. An app gets 2.13 on its
+  next commit.
+- A report covers tables and parquet copies. Query scratch stays in the heap
+  unseen, so the real heap is larger (1037 MiB reported, about 1500 MiB in the
+  renderer).
+
 ### Loading cost (2.8)
 
 - `useDuckDB` downloads only the bindings its SQL names. A missed name (for
