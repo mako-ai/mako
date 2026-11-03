@@ -89,30 +89,36 @@ function getDb() {
       // read_parquet lives in an extension DuckDB fetches on first use
       // (~660 kB from extensions.duckdb.org). Load it now, while the
       // binding bytes are still downloading, not after they arrive.
-      const conn = await db.connect();
       try {
+        const conn = await db.connect();
         try {
-          await conn.query("LOAD parquet");
-        } catch {
-          /* autoload on first read_parquet still applies */
+          try {
+            await conn.query("LOAD parquet");
+          } catch {
+            /* autoload on first read_parquet still applies */
+          }
+          // 1.32 reads TIMESTAMPTZ in the browser's zone once ICU loads. Apps were
+          // written against 1.29, which read UTC. Fetches ICU from
+          // extensions.duckdb.org, like parquet above. A failure here fails the
+          // boot on purpose: the next query retries, where a skipped SET would
+          // shift every timestamp without a word.
+          try {
+            await conn.query("SET GLOBAL TimeZone='UTC'");
+          } catch (error) {
+            if (error instanceof Error) error.retry = "network"; // the XHR for ICU
+            throw error;
+          }
+          // Binding tables live here, compressed at CHECKPOINT: 17 bytes a row
+          // against 289 on Web Performance's 7d set. Tables an app creates stay in
+          // the default database, uncompressed.
+          await conn.query("ATTACH ':memory:' AS mako_tables (COMPRESS)");
+        } finally {
+          await conn.close();
         }
-        // 1.32 reads TIMESTAMPTZ in the browser's zone once ICU loads. Apps were
-        // written against 1.29, which read UTC. Fetches ICU from
-        // extensions.duckdb.org, like parquet above. A failure here fails the
-        // boot on purpose: the next query retries, where a skipped SET would
-        // shift every timestamp without a word.
-        try {
-          await conn.query("SET GLOBAL TimeZone='UTC'");
-        } catch (error) {
-          if (error instanceof Error) error.retry = "network"; // the XHR for ICU
-          throw error;
-        }
-        // Binding tables live here, compressed at CHECKPOINT: 17 bytes a row
-        // against 289 on Web Performance's 7d set. Tables an app creates stay in
-        // the default database, uncompressed.
-        await conn.query("ATTACH ':memory:' AS mako_tables (COMPRESS)");
-      } finally {
-        await conn.close();
+      } catch (error) {
+        // A failed boot retries with a new worker: end this one.
+        await db.terminate().catch(() => {});
+        throw error;
       }
       liveEngine = db;
       return db;
@@ -930,7 +936,11 @@ async function placeNow(engine, name, buf, blob) {
     return { storage: "view", file, fileBytes: size, demoted: true };
   };
   const asTable = async () => {
+    // The table is decoded in full before it compresses, and a WASM heap never
+    // gives that back. The commit compresses, so no later measure can see it.
+    const decoded = await estimateTable(engine, file, blob.size);
     const tableBytes = await tableFromFile(engine, name, file);
+    heapBytes = Math.max(heapBytes, measuredBytes + decoded);
     await engine.dropFile(file).catch(() => {});
     if (prev?.file) await engine.dropFile(prev.file).catch(() => {});
     return { storage: "table", file: null, fileBytes: 0, demoted: false, tableBytes };
@@ -1004,7 +1014,9 @@ async function promote(name) {
       entry.demoted = true;
       return;
     }
+    const decoded = await estimateTable(engine, entry.file, entry.fileBytes ?? 0);
     const tableBytes = await tableFromFile(engine, name, entry.file);
+    heapBytes = Math.max(heapBytes, measuredBytes + decoded); // decoded before it compressed
     await engine.dropFile(entry.file).catch(() => {});
     entries.set(name, { ...entry, storage: "table", file: null, fileBytes: 0, demoted: false, tableBytes });
     await trimNow(engine, name);
