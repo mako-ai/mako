@@ -495,8 +495,9 @@ try {
     const page = await newPage();
     await page.evaluate(sqls => window.H.mount(sqls), panelsOver(a).slice(0, 3));
     await settle(page, "first load with one failed shard");
-    await page.evaluate(() => new Promise(r => setTimeout(r, 35000)));
-    await settle(page, "35 s later, with no input");
+    const later = Number(opt("wait", 35));
+    await page.evaluate(ms => new Promise(r => setTimeout(r, ms)), later * 1000);
+    await settle(page, later + " s later, with no input");
     log({ at: "downloads", failed: a[2], count: served.get(a[2]) ?? 0 });
   } else {
     throw new Error("unknown scenario " + scenario);

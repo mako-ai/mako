@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  isNetworkError,
+  crashedEngineError,
   isOutOfMemoryError,
   retryDelayMs,
   mentionedBindings,
@@ -311,23 +311,28 @@ test("isOutOfMemoryError reads DuckDB's message, the only signal duckdb-wasm pas
   assert.equal(isOutOfMemoryError(null), false);
 });
 
-test("isNetworkError knows each browser's words and no server's", () => {
-  for (const m of ["Failed to fetch", "NetworkError when attempting to fetch resource.", "Load failed", "network error"]) {
-    assert.equal(isNetworkError(new TypeError(m)), true, m);
-  }
-  assert.equal(isNetworkError(new Error("Syntax error at line 1")), false);
-  assert.equal(isNetworkError(new Error('Data for binding "x" could not be loaded (HTTP 403)')), false);
-  assert.equal(isNetworkError(new Error('Data for binding "x" could not be loaded (HTTP 429)')), true);
-  assert.equal(isNetworkError(new Error('Data for binding "x" could not be loaded (HTTP 503)')), true);
+test("isOutOfMemoryError is anchored: quoting the words is not running out", () => {
+  assert.equal(isOutOfMemoryError(new Error("Binder Error: column nope, in msg = 'Out of Memory Error'")), false);
+  assert.equal(isOutOfMemoryError(new Error('Data for binding "x" could not be loaded (HTTP 502): Out of Memory Error: on the server')), false);
 });
 
-test("retryDelayMs: Out of Memory keeps trying, the network stops, the rest never start", () => {
-  const oom = new Error("Out of Memory Error: x");
-  assert.equal(retryDelayMs(oom, 0), 1000);
-  assert.equal(retryDelayMs(oom, 500), 30000);
-  const net = new TypeError("Failed to fetch");
-  assert.equal(retryDelayMs(net, 0), 5000);
-  assert.equal(retryDelayMs(net, 2), 60000);
-  assert.equal(retryDelayMs(net, 3), null, "a live binding builds on request: no storm");
-  assert.equal(retryDelayMs(new Error("Binder Error: no such column"), 0), null);
+test("crashedEngineError knows the traps and no quoted word", () => {
+  for (const m of ["Invalid Error: std::bad_cast", "null function", "null function or function signature mismatch", "memory access out of bounds", "table index is out of bounds", "unreachable", "Maximum call stack size exceeded"]) {
+    assert.equal(crashedEngineError(new Error(m)), true, m);
+  }
+  assert.equal(crashedEngineError(new Error('Conversion Error: Could not convert string "unreachable" to INT32')), false);
+  assert.equal(crashedEngineError(new Error('Data for binding "x" could not be loaded (HTTP 502): host unreachable')), false);
+});
+
+test("retryDelayMs reads the tag, never the words", () => {
+  const tagged = (retry, extra) => Object.assign(new Error("anything"), { retry }, extra);
+  assert.equal(retryDelayMs(tagged("memory"), 0), 1000);
+  assert.equal(retryDelayMs(tagged("memory"), 4), 15000);
+  assert.equal(retryDelayMs(tagged("memory"), 5), Infinity, "5 retries, then a sign the answer could differ");
+  assert.equal(retryDelayMs(tagged("network"), 0), 5000);
+  assert.equal(retryDelayMs(tagged("network"), 2), 60000);
+  assert.equal(retryDelayMs(tagged("network"), 3), Infinity);
+  assert.equal(retryDelayMs(tagged("network", { retryAfterMs: 900000 }), 0), 900000);
+  assert.equal(retryDelayMs(new Error("Out of Memory Error: from a server"), 0), null);
+  assert.equal(retryDelayMs(new TypeError("Failed to fetch"), 0), null);
 });

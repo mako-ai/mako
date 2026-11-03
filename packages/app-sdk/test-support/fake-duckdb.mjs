@@ -5,7 +5,8 @@
 // nothing, and duckdb_memory() reports the sum, as the real engine does
 // (a view's parquet copy sits in the heap outside duckdb_memory(), as measured).
 // A query whose SQL matches `oom` fails with DuckDB's Out of Memory message,
-// `oomTimes` times (default once). Like DuckDB, CREATE OR REPLACE refuses to
+// `oomTimes` times (default once). One matching `crash` traps like a corrupt heap.
+// parquet_metadata() estimates `estimate`, or `tableBytes` when unset. Like DuckDB, CREATE OR REPLACE refuses to
 // swap a view for a table or back.
 const state = (globalThis.__fakeDuck ??= {
   boots: 0,
@@ -35,6 +36,14 @@ export class AsyncDuckDB {
   async instantiate() {
     state.boots++;
   }
+  // The real worker takes its heap with it: every table, view and file goes.
+  async terminate() {
+    state.terminated = (state.terminated ?? 0) + 1;
+    state.tables.clear();
+    state.views.clear();
+    state.files.clear();
+    state.handles.clear();
+  }
   async registerFileBuffer(name, buf) {
     state.files.set(name, buf);
   }
@@ -51,15 +60,26 @@ export class AsyncDuckDB {
       async query(sql) {
         state.sql.push(sql);
         if (state.oom && state.oom.test(sql)) {
-          state.oomTimes = (state.oomTimes ?? 1) - 1;
+          state.oomTimes = (state.oomTimes ?? 1) - 1; // Infinity stays
           if (state.oomTimes <= 0) {
             state.oom = null;
             state.oomTimes = 1;
           }
           throw new Error("Out of Memory Error: failed to allocate data of size 1.0 MiB (3.1 GiB/3.1 GiB used)");
         }
+        if (state.crash && state.crash.test(sql)) {
+          state.crashTimes = (state.crashTimes ?? 1) - 1;
+          if (state.crashTimes <= 0) state.crash = null;
+          throw new Error("null function");
+        }
+        if (state.missing && sql.includes(state.missing) && !state.tables.has(state.missing) && !state.views.has(state.missing) && !/^(CREATE|DROP)/.test(sql)) {
+          throw new Error("Catalog Error: Table with name " + state.missing + " does not exist!");
+        }
         if (/FROM duckdb_memory\(\)/.test(sql)) {
-          return result(state.tables.size * state.tableBytes, [{ name: "bytes", type: "Float64" }]);
+          return result(state.tables.size * state.tableBytes + (state.appBytes ?? 0), [{ name: "bytes", type: "Float64" }]);
+        }
+        if (/parquet_metadata\(/.test(sql)) {
+          return result(state.estimate ?? state.tableBytes, [{ name: "estimate", type: "Float64" }]);
         }
         const t = /^CREATE OR REPLACE TABLE "(.+?)"/.exec(sql);
         if (t) {

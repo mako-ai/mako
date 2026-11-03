@@ -106,48 +106,72 @@ await db.registerFileBuffer("valuations.parquet", bytes);  // read_parquet with 
 
 Each app frame has its own DuckDB with a 3.1 GiB heap. Before 2.12 every
 binding table stayed in it for good, and an app with many bindings ran out
-of memory. Now tables stay under a 1.5 GiB budget, and the rest of the heap is
-for queries.
+of memory. Now bindings aim to stay under a 1.5 GiB budget, and the rest of the
+heap is for queries.
 
 | 8 panels over 15 shards (6M rows, 23 columns) | Heap for bindings | All 8 panels |
 | --- | --- | --- |
-| Tables | 2,068 MiB | 6.9 s |
-| Views over the parquet in the heap | about 150 MiB | 8.7 s |
+| Tables | 2,068 MiB | 5.3 s |
+| Views over the parquet in the heap | about 150 MiB | 7.4 s |
 
-- A new table lands only if it fits under the budget, after evicting tables no
-  one holds, least recently read first.
-- A binding that does not fit lands as a view: same name, same rows, slower.
-  A later read makes it a table when there is room, with no download.
-- The parquet stays in JS memory as a Blob, so these swaps never download. Past
-  512 MiB of Blobs, the oldest unpinned views are dropped and download again on
-  their next read.
+- The budget counts what the SDK placed. Your own tables do not shrink it.
+- A new table lands if the parquet's metadata says it fits, after evicting tables
+  no one holds, least recently read first. It is an estimate, so the budget can
+  overshoot (measured: 1,700 MiB against 1,536).
+- A mostly empty heap lets one table past the budget, up to twice its size. An
+  app with one large parquet keeps table speed.
+- A binding that does not fit lands as a view: same name, same rows, slower. A
+  later read makes it a table when there is room, with no download.
+- A table you changed loses the change when it becomes a view. The view reads the
+  parquet again. Copy a binding to your own table before you `UPDATE` or `ALTER` it.
+- The parquet stays in JS memory as a Blob, so a table can become a view with no
+  download. Past 512 MiB of Blobs, the oldest unpinned views are dropped and
+  download again on their next read. If a Blob stops being readable, its table is
+  dropped and downloads again on its next read.
+- Parquet copies in the heap stop at 2.5 GiB. Past it, the least recently read view
+  goes, even a pinned one, and downloads again on its next read. A parquet with no
+  room fails with a clear error.
 - A binding a mounted `useQuery`/`useDuckDB` reads is pinned: it goes last.
   `ensureBinding` bindings can become views but are never dropped.
-- A parquet over a quarter of the budget loads as a view from the start.
-- "Out of Memory" on a hook's query demotes unpinned tables, then pinned ones,
-  and runs again until it answers or no table is left. For the next minute no
-  table grows back past what is left. `withConnection` does not retry: your
-  `fn` may not be safe to run twice.
-- A mounted hook whose query still fails on memory runs it again by itself: 1,
-  2, 4, 8 and 15 s, then every 30 s. The error stays up until a run answers.
+- "Out of Memory" on a hook's query demotes unpinned tables, then the pinned tables
+  that query reads, and runs again until it answers or none is left. Other panels'
+  tables stay. For the next minute no table grows back past what is left, then
+  pinned views promote by themselves. `withConnection` does not retry: your `fn`
+  may not be safe to run twice.
+- A mounted hook whose query still fails on memory reruns after 1, 2, 4, 8 and 15 s,
+  then waits. Another hook letting go of its bindings, a budget change, or the tab
+  coming back starts one more run. A hidden tab never reruns. The error stays up
+  until a run answers.
 - Do not `registerFileHandle` a Blob with `BROWSER_FILEREADER`. In duckdb-wasm
   1.29.0 its size is lost when the allocator returns a pointer past 2 GiB, and
   reads fail with "too small to be a Parquet file". Use `registerFileBuffer`.
-- One query should read at most about 50 bindings. Around 60 in a double-read
-  `UNION ALL` overflowed the WASM stack and broke the engine until a reload.
+- A hook's query can name at most 50 bindings. A double-read `UNION ALL` of about 60
+  overflows the WASM stack and breaks the engine for every panel, so the SDK refuses
+  it with a clear error. `withConnection` and `getDuckDB()` have no such check.
+- If the engine traps anyway, a hook's query restarts it, at most once a minute and
+  3 times a page. Every panel reruns and every binding downloads again. A
+  `getDuckDB()` handle held across a restart is dead: call it again.
 
-`setBindingMemoryBudget(bytes)` changes the 1.5 GiB default;
-`getBindingMemory()` shows what is loaded, oldest first, and `pressure`.
+`setBindingMemoryBudget(bytes)` changes the 1.5 GiB default. `getBindingMemory()`
+shows what is loaded, oldest first, `bindingBytes` against the budget, `usedBytes`
+for the whole heap, and `pressure`.
 
 ### Failed downloads (2.12)
 
-- A download tries 3 times, 1 s and 3 s apart with jitter, on a rejected fetch, a
-  429 or a 503. A `retryAfterMs` up to 30 s sets the wait. No other status retries.
-- It retries only until headers arrive, on the first request and on the signed
-  download alike. A build that fails in its stream never runs again from here.
-- A mounted hook then runs its query again after 5, 20 and 60 s. Other errors
-  stay as they are until the query changes or the page reloads.
-- A failed `__data/index.json` is not kept: the panel shows the failure and asks again.
+- A page runs at most 6 downloads at once, and one after a failure.
+- A rejected fetch, a 429 or a 503 closes a page-wide gate for 1, 3, 9, 27, then
+  60 s, with jitter. Past 3 failures in a row, a request while it is closed fails
+  at once with no network. Any other answer opens it.
+- A download tries 3 times, on the first request and on the signed download alike,
+  and only until headers arrive. A `retryAfterMs` up to 30 s sets the wait.
+- A mounted hook then reruns after 5, 20 and 60 s, or after `retryAfterMs` if that
+  is longer. Then it waits for the tab or the network to come back, or for another
+  request to get an answer.
+- A failed build never runs again by itself: not a `failed` event, whatever its
+  text, and not a build stream cut halfway. Other HTTP statuses and SQL errors stay
+  as they are too. A new query or a reload asks again.
+- A failed `__data/index.json` is kept for 10 s. A query that needs no binding still
+  answers. A query that fails then shows the index failure and retries.
 
 ### Loading cost (2.8)
 
@@ -156,8 +180,8 @@ for queries.
   and the query re-runs. `SHOW TABLES` / `information_schema` load all.
 - Each binding is decoded once into a DuckDB table and its file buffer is
   freed. A refresh swaps the table in one commit, so a running query never
-  sees it missing. A table costs about 3x the parquet in memory (10 MB of
-  parquet, 149k rows: 33 MB).
+  sees it missing. A table costs about 15 bytes a cell (400k rows x 23 columns:
+  138 MiB from a 10 MiB parquet).
 - Tables are evicted least recently read first (2.12). Over the memory
   budget (default 1.5 GiB of DuckDB's 3.1 GiB heap), the oldest table becomes
   a view over its compressed parquet. Its next read turns it back into a table

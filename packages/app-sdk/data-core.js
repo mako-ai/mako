@@ -304,34 +304,42 @@ export function parseBindingSnapshot(body, rowLimit) {
  * across its worker as plain Errors with no type or code (measured on 1.29.0:
  * `{ name: "Error", message }`), so DuckDB's message, which starts with its
  * error type ("Out of Memory Error: failed to allocate …" or "… could not
- * allocate block …"), is the only signal there is.
+ * allocate block …"), is the only signal there is. Anchored: a Binder Error can
+ * quote the same words from the SQL, and a server's build error can too, so the
+ * SDK asks this only of errors from its own conn.query.
  */
 export function isOutOfMemoryError(error) {
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return /\bOut of Memory Error\b/i.test(message);
+  return /^Out of Memory Error\b/.test(message);
 }
 
 /**
- * Whether `error` is a request that never got an answer worth keeping: what
- * fetch throws in Chrome ("Failed to fetch"), Firefox ("NetworkError when...")
- * and Safari ("Load failed"), a body cut off mid-stream, or the server's 429 or
- * 503 once fetchRetrying has given up. Any other status said what it meant.
+ * Whether `error` is the WASM engine itself breaking: a trap, or the bad_cast of a
+ * corrupted heap. Anchored for the same reason. `Conversion Error: ... "unreachable"`
+ * quotes a value.
  */
-export function isNetworkError(error) {
+export function crashedEngineError(error) {
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return /\b(Failed to fetch|NetworkError|Load failed|network error|HTTP (429|503))\b/i.test(message);
+  return /^(Invalid Error: std::bad_cast|null function|memory access out of bounds|table index is out of bounds|unreachable|Maximum call stack size exceeded)/.test(message);
 }
 
-// When a mounted hook runs a failed query again. Out of Memory costs only this
-// tab, and only time frees memory, so it keeps trying. A network failure can
-// reach the warehouse (a live binding builds on request), so it stops.
-const OOM_RETRY_MS = [1000, 2000, 4000, 8000, 15000];
-const OOM_RETRY_MAX_MS = 30000;
-const NETWORK_RETRY_MS = [5000, 20000, 60000];
+// When a mounted hook runs a failed query again. The tag is set where the error
+// was caught, never read from its text: "memory" by the SDK's own conn.query,
+// "network" by a request that got no usable answer. A build's failure carries no
+// tag, because asking again runs the warehouse query again.
+const RETRY_MS = {
+  memory: [1000, 2000, 4000, 8000, 15000],
+  network: [5000, 20000, 60000],
+};
 
-/** Ms until retry number `retries` (from 0), or null: leave the error up. */
+/**
+ * Ms until retry number `retries` (from 0). Infinity: only a sign that the answer
+ * could differ (see wakeRetries). null: leave the error up. A server's
+ * `retryAfterMs` is a floor.
+ */
 export function retryDelayMs(error, retries) {
-  if (isOutOfMemoryError(error)) return OOM_RETRY_MS[retries] ?? OOM_RETRY_MAX_MS;
-  if (isNetworkError(error)) return NETWORK_RETRY_MS[retries] ?? null;
-  return null;
+  const table = RETRY_MS[error?.retry];
+  if (!table) return null;
+  const wait = table[retries] ?? Infinity;
+  return Math.max(wait, typeof error.retryAfterMs === "number" ? error.retryAfterMs : 0);
 }

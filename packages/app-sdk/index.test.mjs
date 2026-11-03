@@ -290,11 +290,75 @@ test("Out of Memory with nothing to free: the load lands as a view", opts, async
   assert.deepEqual(await storage(), { m_m: "view" });
 });
 
-test("a parquet over a quarter of the budget starts as a view", opts, async () => {
-  await freshMemory(40); // 11 bytes > 40 / 4
+test("metadata says a table cannot fit: a view, with no decode", opts, async () => {
+  await freshMemory(1000);
+  duck().estimate = 1e12;
   await sdk.ensureBinding("m_n");
   assert.deepEqual(await storage(), { m_n: "view" });
   assert.ok(!duck().sql.some(q => q.startsWith('CREATE OR REPLACE TABLE "m_n"')));
+  duck().estimate = undefined;
+  await freshMemory(sdk.DEFAULT_BINDING_MEMORY_BUDGET);
+});
+
+test("one table past the budget may try when the heap is mostly empty, not when it is not", opts, async () => {
+  await freshMemory(1000);
+  duck().estimate = 1500;
+  duck().tableBytes = 1500;
+  await sdk.ensureBinding("m_big");
+  assert.deepEqual(await storage(), { m_big: "table" }, "an ordinary app with one large parquet stays fast");
+  await sdk.ensureBinding("m_big2");
+  assert.equal((await storage()).m_big2, "view", "the heap is not empty any more");
+  duck().estimate = undefined;
+  await freshMemory(sdk.DEFAULT_BINDING_MEMORY_BUDGET);
+});
+
+test("an app's own tables do not shrink the budget, but do decide what fits the heap", opts, async () => {
+  await freshMemory(250);
+  duck().appBytes = 1000;
+  await sdk.ensureBinding("m_app1");
+  await sdk.ensureBinding("m_app2");
+  assert.deepEqual(await storage(), { m_app1: "table", m_app2: "table" });
+  const mem = await sdk.getBindingMemory();
+  assert.equal(mem.bindingBytes, 200);
+  assert.equal(mem.usedBytes, 1200);
+  duck().appBytes = 3200 * 1024 * 1024;
+  await sdk.ensureBinding("m_app3");
+  assert.equal((await storage()).m_app3, "view");
+  duck().appBytes = 0;
+  await freshMemory(sdk.DEFAULT_BINDING_MEMORY_BUDGET);
+});
+
+test("parquet copies stop at 2.5 GiB: the oldest view goes, pinned or not", opts, async () => {
+  const fresh = await import("./index.js?file-ceiling");
+  await fresh.getDuckDB();
+  duck().estimate = 1e12;
+  const gib = new Uint8Array(1024 * 1024 * 1024);
+  const real = globalThis.fetch;
+  globalThis.fetch = async url =>
+    String(url).startsWith("__data/m_gb") ? new Response(gib, { status: 200, headers: { "content-length": String(gib.length) } }) : real(url);
+  for (const n of ["m_gb1", "m_gb2"]) await fresh.ensureBinding(n).then(() => fresh.unloadBinding("nothing"));
+  const before = duck().files.size;
+  assert.ok(before >= 2);
+  // ensureBinding's views are never dropped, so: nothing to free, a clear error.
+  await assert.rejects(fresh.ensureBinding("m_gb3"), /does not fit in this page's DuckDB heap/);
+  await fresh.unloadBinding("m_gb1");
+  await fresh.unloadBinding("m_gb2");
+  globalThis.fetch = real;
+  duck().estimate = undefined;
+});
+
+test("an unreadable Blob does not block eviction, and first placement never reads it", opts, async () => {
+  const realRead = Blob.prototype.arrayBuffer;
+  await freshMemory(150);
+  Blob.prototype.arrayBuffer = () => Promise.reject(new DOMException("could not be read", "NotReadableError"));
+  try {
+    await sdk.ensureBinding("m_nr");
+    assert.equal((await storage()).m_nr, "table", "placement used the bytes in hand");
+    await sdk.ensureBinding("m_nr2");
+    assert.deepEqual(await storage(), { m_nr: "table", m_nr2: "view" }, "an ensureBinding table stays, and the new one lands from its bytes");
+  } finally {
+    Blob.prototype.arrayBuffer = realRead;
+  }
   await freshMemory(sdk.DEFAULT_BINDING_MEMORY_BUDGET);
 });
 
