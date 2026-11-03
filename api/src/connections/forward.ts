@@ -72,15 +72,7 @@ export function setTransportForTests(next: Transport | null): void {
   transport = next ?? safeRequest;
 }
 
-/** One SSRF-hardened request (or the test transport). */
-export function sendRequest(
-  url: string,
-  options: Parameters<typeof safeRequest>[1],
-): Promise<SafeRequestResult> {
-  return transport(url, options);
-}
-
-export const ALLOWED_METHODS = new Set([
+const ALLOWED_METHODS = new Set([
   "GET",
   "HEAD",
   "OPTIONS",
@@ -333,13 +325,29 @@ export async function send(
   return clean(answer, callable, config);
 }
 
-/** The service's answer, without the credential in its headers or body. */
+/**
+ * The service's answer without the credential: auth headers, cookies, and
+ * any header holding a secret value (also base64- or URL-encoded) are
+ * removed; the value is redacted from the body.
+ */
 function clean(
   answer: SafeRequestResult,
   callable: CallableConnection,
   config: ForwardConnection["config"],
 ): ForwardResult {
-  const { headers, text } = cleanAnswer(answer, secretsOf(callable, config));
+  const secrets = searchableSecrets(secretsOf(callable, config));
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(answer.headers)) {
+    const lower = name.toLowerCase();
+    if (
+      RESPONSE_HEADER_BLOCKLIST.has(lower) ||
+      containsSecret(value, secrets)
+    ) {
+      continue;
+    }
+    headers[lower] = value;
+  }
+  const text = redactSecrets(answer.body.toString("utf8"), secrets);
   const type = headers["content-type"] ?? "";
   let body: unknown = text;
   if (/\bjson\b/i.test(type) && text) {
@@ -350,34 +358,4 @@ function clean(
     }
   }
   return { status: answer.status, headers, body };
-}
-
-/**
- * An answer's headers and text without the credential: auth headers,
- * cookies, and any header holding a secret value (also base64- or
- * URL-encoded) are removed; the value is redacted from the text.
- */
-export function cleanAnswer(
-  answer: SafeRequestResult,
-  secretValues: string[],
-  /** More header names to drop (sandbox-fetch passes its own). */
-  droppedHeaders: string[] = [],
-): { headers: Record<string, string>; text: string } {
-  const secrets = searchableSecrets(secretValues);
-  const dropped = new Set([
-    ...RESPONSE_HEADER_BLOCKLIST,
-    ...droppedHeaders.map(h => h.toLowerCase()),
-  ]);
-  const headers: Record<string, string> = {};
-  for (const [name, value] of Object.entries(answer.headers)) {
-    const lower = name.toLowerCase();
-    if (dropped.has(lower) || containsSecret(value, secrets)) {
-      continue;
-    }
-    headers[lower] = value;
-  }
-  return {
-    headers,
-    text: redactSecrets(answer.body.toString("utf8"), secrets),
-  };
 }

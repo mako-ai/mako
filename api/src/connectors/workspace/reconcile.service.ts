@@ -181,14 +181,9 @@ async function reconcile(
       // `entry` is still backfilled: a row indexed before it was stored
       // defaults to connector.ts, and a connector whose yaml names another
       // file would otherwise keep running the wrong one forever.
-      if (
-        row.sha !== commit ||
-        row.entry !== parsed.value.entry ||
-        (row.credentials ?? "raw") !== parsed.value.credentials
-      ) {
+      if (row.sha !== commit || row.entry !== parsed.value.entry) {
         row.sha = commit;
         row.entry = parsed.value.entry;
-        row.credentials = parsed.value.credentials;
         await row.save();
       }
       result.unchanged++;
@@ -213,7 +208,6 @@ async function reconcile(
         row.set({
           runtime: parsed.value.runtime,
           entry: parsed.value.entry,
-          credentials: parsed.value.credentials,
           sha: commit,
           sourceSha,
           spec: spec.spec,
@@ -232,7 +226,6 @@ async function reconcile(
           slug,
           runtime: parsed.value.runtime,
           entry: parsed.value.entry,
-          credentials: parsed.value.credentials,
           sha: commit,
           sourceSha,
           spec: spec.spec,
