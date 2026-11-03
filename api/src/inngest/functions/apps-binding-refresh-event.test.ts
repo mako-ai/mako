@@ -237,7 +237,7 @@ describe("requestBindingRefreshes", () => {
 
     expect(inngest.send).toHaveBeenCalledWith([
       {
-        id: `binding-refresh-app-${sha}-a-1`,
+        id: expect.stringMatching(/^binding-refresh-app-.+-a-\d+-1$/),
         name: APPS_BINDING_MATERIALIZE_EVENT,
         data: {
           workspaceId: "ws",
@@ -247,10 +247,11 @@ describe("requestBindingRefreshes", () => {
           at: sha,
           afterPublish: true,
           attempt: 1,
+          release: expect.any(Number),
         },
       },
       {
-        id: `binding-refresh-app-${sha}-b-1`,
+        id: expect.stringMatching(/^binding-refresh-app-.+-b-\d+-1$/),
         name: APPS_BINDING_MATERIALIZE_EVENT,
         data: {
           workspaceId: "ws",
@@ -260,6 +261,7 @@ describe("requestBindingRefreshes", () => {
           at: sha,
           afterPublish: true,
           attempt: 1,
+          release: expect.any(Number),
         },
       },
     ]);

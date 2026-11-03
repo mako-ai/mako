@@ -600,6 +600,35 @@ export const APPS_DEPLOY_INLINE_BUILD_LIMIT = 2;
 let inlineBuildsRunning = 0;
 const inlineBuildWaiters: Array<() => void> = [];
 
+/**
+ * How long an inline build may hold its slot. The slowest build on 2026-11-03
+ * took 731 s. A hung socket would otherwise hold a slot for the life of the
+ * instance, and two would stop every publish on it. The timeout fails the
+ * release and frees the slot. The build itself has no cancel signal, so a slow
+ * one finishes in the background outside the limit.
+ */
+function inlineBuildTimeoutMs(): number {
+  const configured = Number(process.env.APPS_DEPLOY_INLINE_BUILD_TIMEOUT_MS);
+  return configured > 0 ? configured : 30 * 60_000;
+}
+
+async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Build timed out after ${ms} ms`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function withInlineBuildSlot<T>(build: () => Promise<T>): Promise<T> {
   if (inlineBuildsRunning >= APPS_DEPLOY_INLINE_BUILD_LIMIT) {
     await new Promise<void>(resolve => inlineBuildWaiters.push(resolve));
@@ -607,7 +636,7 @@ async function withInlineBuildSlot<T>(build: () => Promise<T>): Promise<T> {
     inlineBuildsRunning += 1;
   }
   try {
-    return await build();
+    return await withTimeout(build(), inlineBuildTimeoutMs());
   } finally {
     // A waiter inherits this slot, so the count stays right.
     const next = inlineBuildWaiters.shift();

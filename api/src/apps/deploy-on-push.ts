@@ -174,6 +174,43 @@ async function isAncestorAfterFetch(
 }
 
 /**
+ * Is `live` newer than `sha`? When git cannot place `live` after a fetch, the
+ * answer depends on `sha`. Main's head proceeds: the live commit was
+ * force-pushed away, garbage collected or belongs to a previous repo, and
+ * refusing would block every later deploy of the app for good. An older `sha`
+ * throws so Inngest retries, because a missing commit must never read as
+ * "this one is newer". So does a fetch that failed, since main's head on this
+ * instance then proves nothing.
+ */
+async function isSupersededBy(
+  workspaceId: string,
+  repoDir: string,
+  sha: string,
+  live: string,
+): Promise<boolean> {
+  try {
+    return await commitIsAncestor(repoDir, sha, live);
+  } catch {
+    const fetched = await ensureCommitLocally(workspaceId, live);
+    try {
+      return await commitIsAncestor(repoDir, sha, live);
+    } catch (error) {
+      const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+      if (fetched === false || head !== sha) throw error;
+      logger.warn(
+        "Apps deploy of main's head replaces an unknown live commit",
+        {
+          workspaceId,
+          sha,
+          live,
+        },
+      );
+      return false;
+    }
+  }
+}
+
+/**
  * May this deploy still repoint the app? Preparing data and building take
  * minutes, and Inngest cannot stop a running step, so a cancelled deploy keeps
  * going. Yes when the pointer has not moved, or moved forward to an ancestor of
@@ -241,13 +278,11 @@ export async function deployOneApp(
   // A delivery that arrives AFTER a newer commit of this app already went
   // live must not roll it back: Inngest's singleton cancels older runs when
   // a newer event arrives, but not the other way round.
-  // Throws when git cannot place the live commit even after a fetch: Inngest
-  // retries, and a missing commit must never read as "this one is newer".
   const liveAtStart = discovered.publishedSha ?? null;
   if (
     liveAtStart &&
     liveAtStart !== sha &&
-    (await isAncestorAfterFetch(workspaceId, repoDir, sha, liveAtStart))
+    (await isSupersededBy(workspaceId, repoDir, sha, liveAtStart))
   ) {
     await clearDeployProgress(discovered, sha);
     return { app: appRef, sha, outcome: "superseded" };

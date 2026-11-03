@@ -137,6 +137,10 @@ export default defineConfig({
       "src/apps/review1190-status.test.ts",
       "src/inngest/functions/review1190-refresh.test.ts",
       "src/services/review1190-token.test.ts",
+      "src/apps/review1190b-cas.test.ts",
+      "src/apps/review1190b-guard.test.ts",
+      "src/apps/review1190b-slots.test.ts",
+      "src/inngest/functions/review1190b-refresh.test.ts",
       "src/inngest/functions/apps-deploy.test.ts",
       // The hourly reconcile leaves a progressing deploy of main alone.
       "src/inngest/functions/apps-deploy-reconcile.test.ts",

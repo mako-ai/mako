@@ -60,6 +60,8 @@ interface MaterializeEventData {
   afterPublish?: boolean;
   /** Which try of that rebuild this is, from 1. */
   attempt?: number;
+  /** Which release queued it, so a later publish gets new event ids. */
+  release?: number;
 }
 
 /**
@@ -203,17 +205,22 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
 /** Rebuild attempts for a stale artifact a release went live on. */
 export const AFTER_PUBLISH_MAX_ATTEMPTS = 3;
 const AFTER_PUBLISH_RETRY_DELAY_MS = 10 * 60 * 1000;
+/** Releases of one commit inside this window share their refresh events. */
+const AFTER_PUBLISH_RELEASE_WINDOW_MS = 5 * 60 * 1000;
 
 function afterPublishEvent(
   project: { _id: unknown; workspaceId: unknown },
   sha: string,
   binding: string,
   attempt: number,
+  release: number,
 ) {
   const projectId = String(project._id);
   return {
-    // Two releases of one commit queue one refresh per binding, not two.
-    id: `binding-refresh-${projectId}-${sha}-${binding}-${attempt}`,
+    // Two landings of one release queue one refresh per binding, not two. A
+    // later publish of the same commit is a new release with new ids: Inngest
+    // would drop reused ones for 24 hours, even after 3 failed attempts.
+    id: `binding-refresh-${projectId}-${sha}-${binding}-${release}-${attempt}`,
     name: APPS_BINDING_MATERIALIZE_EVENT,
     data: {
       workspaceId: String(project.workspaceId),
@@ -223,6 +230,7 @@ function afterPublishEvent(
       at: sha,
       afterPublish: true,
       attempt,
+      release,
     } satisfies MaterializeEventData,
   };
 }
@@ -241,7 +249,7 @@ async function afterPublishRebuildFailed(
   const message = error instanceof Error ? error.message : String(error);
   try {
     await AppProject.updateOne(
-      { _id: project._id },
+      { _id: data.projectId },
       {
         $set: {
           [`bindingRefreshErrors.${data.binding}`]: {
@@ -264,7 +272,13 @@ async function afterPublishRebuildFailed(
   if (attempt >= AFTER_PUBLISH_MAX_ATTEMPTS || !data.at) return;
   try {
     await inngest.send({
-      ...afterPublishEvent(project, data.at, data.binding, attempt + 1),
+      ...afterPublishEvent(
+        project,
+        data.at,
+        data.binding,
+        attempt + 1,
+        data.release ?? 0,
+      ),
       ts: Date.now() + AFTER_PUBLISH_RETRY_DELAY_MS,
     });
   } catch (sendError) {
@@ -402,7 +416,8 @@ export async function requestBindingRefreshes(
   names: string[],
 ): Promise<void> {
   if (names.length === 0) return;
+  const release = Math.floor(Date.now() / AFTER_PUBLISH_RELEASE_WINDOW_MS);
   await inngest.send(
-    names.map(binding => afterPublishEvent(project, sha, binding, 1)),
+    names.map(binding => afterPublishEvent(project, sha, binding, 1, release)),
   );
 }
