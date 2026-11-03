@@ -327,6 +327,18 @@ export async function bindingArtifactKeyByName(
   });
 }
 
+/** git's wording for a path absent from a tree, and a sandbox's for a file. */
+function isFileMissingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const stderr =
+    error && typeof error === "object" && "stderr" in error
+      ? String((error as { stderr: unknown }).stderr)
+      : "";
+  return /does not exist in|exists on disk, but not in|no such file|enoent|file not found/i.test(
+    `${message}\n${stderr}`,
+  );
+}
+
 /**
  * ONE committed binding, parsed — the same narrow single-file read as
  * bindingArtifactKeyByName. Null when there is no such file or it names no
@@ -343,8 +355,12 @@ export async function readCommittedBinding(
   let file: { contents: string };
   try {
     file = await readFile(project, `bindings/${name}.sql`, actorId, at);
-  } catch {
-    return null;
+  } catch (error) {
+    // Only a file that is not there reads as "no such binding". A commit this
+    // instance cannot get says nothing about the binding, and the caller must
+    // not treat that as the binding being gone.
+    if (isFileMissingError(error)) return null;
+    throw error;
   }
   const legacy = parseBindingFrontMatter(file.contents).connection
     ? undefined

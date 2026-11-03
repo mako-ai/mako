@@ -107,6 +107,7 @@ import {
   ensureDeploymentBindings,
   readDeploymentAsset,
   serveDeploymentFile,
+  setPublishedSha,
 } from "./deployment.service";
 import {
   bindingArtifactKeyByName,
@@ -555,7 +556,7 @@ describe("deployment binding readiness", () => {
       return seen;
     }
 
-    it("builds only the 22 absent artifacts, 4 at a time, and refreshes the other 112 behind the release", async () => {
+    it("builds only the 22 absent artifacts, 2 at a time, and reports the other 112 for refresh", async () => {
       const { fresh, stale } = seedRelease();
       const builds = trackBuilds();
 
@@ -567,8 +568,9 @@ describe("deployment binding readiness", () => {
       expect(result.refreshing).toEqual(stale);
       expect(result.reused).toEqual([]);
       expect(materializeAppBinding).toHaveBeenCalledTimes(22);
-      expect(builds.peak).toBe(4);
-      expect(refreshes.send).toHaveBeenCalledWith(project, sha, stale);
+      expect(builds.peak).toBe(2);
+      // Queued by the repoint: a refresh stands down for a commit not yet live.
+      expect(refreshes.send).not.toHaveBeenCalled();
     });
 
     it("judges every binding before the first build, so a :55 crossing during the builds changes nothing", async () => {
@@ -632,23 +634,51 @@ describe("deployment binding readiness", () => {
         ensureDeploymentBindings(project, sha, { now: startedAt }),
       ).rejects.toThrow('Binding "new_1": HTTP 401');
 
-      // The four already running; the other 18 never start.
-      expect(materializeAppBinding).toHaveBeenCalledTimes(4);
-      expect(refreshes.send).not.toHaveBeenCalled();
+      // The two already running; the other 20 never start.
+      expect(materializeAppBinding).toHaveBeenCalledTimes(2);
       expect(stores.primary!.putBuffer).not.toHaveBeenCalled();
     });
 
-    it("a refresh that cannot be queued does not stop the release", async () => {
-      seedRelease();
-      trackBuilds();
+    it("a refresh that cannot be queued does not stop the repoint", async () => {
+      vi.mocked(AppProject.updateOne).mockResolvedValueOnce({
+        matchedCount: 1,
+      } as never);
       refreshes.send.mockRejectedValueOnce(new Error("inngest down"));
 
-      const result = await ensureDeploymentBindings(project, sha, {
-        now: startedAt,
-      });
+      await expect(
+        setPublishedSha(project, sha, { refreshing: ["old_0"] }),
+      ).resolves.toBe(true);
+    });
 
-      expect(result.materialized).toHaveLength(22);
-      expect(result.refreshing).toHaveLength(112);
+    it("the repoint queues the refreshes once the release is live", async () => {
+      vi.mocked(AppProject.updateOne).mockResolvedValueOnce({
+        matchedCount: 1,
+      } as never);
+
+      await setPublishedSha(project, sha, { refreshing: ["old_0", "old_1"] });
+
+      expect(refreshes.send).toHaveBeenCalledWith(project, sha, [
+        "old_0",
+        "old_1",
+      ]);
+    });
+
+    it("a conditional repoint that lost queues nothing and says so", async () => {
+      vi.mocked(AppProject.updateOne).mockResolvedValueOnce({
+        matchedCount: 0,
+      } as never);
+
+      await expect(
+        setPublishedSha(project, sha, {
+          expected: "1".repeat(40),
+          refreshing: ["old_0"],
+        }),
+      ).resolves.toBe(false);
+
+      expect(vi.mocked(AppProject.updateOne).mock.calls[0][0]).toMatchObject({
+        publishedSha: "1".repeat(40),
+      });
+      expect(refreshes.send).not.toHaveBeenCalled();
     });
   });
 
@@ -687,7 +717,6 @@ describe("deployment binding readiness", () => {
       expect(result.materialized).toEqual([]);
       expect(result.refreshing).toEqual(["sales"]);
       expect(materializeAppBinding).not.toHaveBeenCalled();
-      expect(refreshes.send).toHaveBeenCalledWith(project, sha, ["sales"]);
     });
 
     it("#992: a merge reverting the query to an older text queues a refresh of that text, whatever the scheduler state says", async () => {
@@ -712,8 +741,7 @@ describe("deployment binding readiness", () => {
 
       expect(result.reused).toEqual([]);
       expect(result.refreshing).toEqual(["sales"]);
-      expect(refreshes.send).toHaveBeenCalledTimes(1);
-      expect(refreshes.send).toHaveBeenCalledWith(project, sha, ["sales"]);
+      expect(materializeAppBinding).not.toHaveBeenCalled();
       expect(primary.getLastModified).toHaveBeenCalledTimes(1);
       expect(primary.getLastModified).toHaveBeenCalledWith(key);
     });

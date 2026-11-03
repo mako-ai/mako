@@ -2232,7 +2232,10 @@ export class DatabaseConnectionService {
         };
       }
 
-      const client = await this.getBigQueryHttpClient(
+      // Asked for again per poll and per page: a job or a stream can outlive
+      // the token it started with (smp0's 250+ seconds of pages ended in a 401
+      // for two deploys on 2026-11-03), and this call is what renews it.
+      let client = await this.getBigQueryHttpClient(
         service_account_json,
         api_base_url,
       );
@@ -2291,6 +2294,10 @@ export class DatabaseConnectionService {
         if (jobLocation) {
           params.location = jobLocation;
         }
+        client = await this.getBigQueryHttpClient(
+          service_account_json,
+          api_base_url,
+        );
         response = await client.get(
           `/projects/${project_id}/queries/${jobId}`,
           {
@@ -2335,14 +2342,11 @@ export class DatabaseConnectionService {
         if (jobLocation) {
           params.location = jobLocation;
         }
-        // Ask for the client per page: a stream can outlive the token it
-        // started with (smp0's 250+ seconds of pages ended in a 401 for two
-        // deploys on 2026-11-03), and this is the call that renews it.
-        const pageClient = await this.getBigQueryHttpClient(
+        client = await this.getBigQueryHttpClient(
           service_account_json,
           api_base_url,
         );
-        response = await pageClient.get(
+        response = await client.get(
           `/projects/${project_id}/queries/${jobId}`,
           {
             params,

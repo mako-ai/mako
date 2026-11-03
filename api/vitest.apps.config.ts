@@ -130,6 +130,13 @@ export default defineConfig({
       "src/inngest/functions/apps-binding-refresh-event.test.ts",
       // A BigQuery result stream renews its token between pages.
       "src/services/bigquery-stream-token.test.ts",
+      // The independent review of #1190: races, budget, status, refresh.
+      "src/apps/review1190-bindings.test.ts",
+      "src/apps/review1190-budget.test.ts",
+      "src/apps/review1190-guard.test.ts",
+      "src/apps/review1190-status.test.ts",
+      "src/inngest/functions/review1190-refresh.test.ts",
+      "src/services/review1190-token.test.ts",
       "src/inngest/functions/apps-deploy.test.ts",
       // The hourly reconcile leaves a progressing deploy of main alone.
       "src/inngest/functions/apps-deploy-reconcile.test.ts",

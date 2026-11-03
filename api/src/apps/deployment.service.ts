@@ -48,7 +48,8 @@ import {
   type AppBinding,
 } from "./bindings.service";
 import { isCronDue, nextCronRunAt } from "../services/cron-due";
-import { APPS_BINDING_WORKSPACE_BUILD_LIMIT } from "../inngest/functions/apps-binding-concurrency";
+import { commitIsAncestor, isOid } from "./git";
+import { repoDirFor } from "./repository.service";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
 import {
   clearDeployProgress,
@@ -181,6 +182,8 @@ async function walkFiles(dir: string, prefix = ""): Promise<string[]> {
 }
 
 export interface PublishResult {
+  /** False when a conditional repoint lost: the live pointer had moved. */
+  repointed?: boolean;
   sha: string;
   fileCount: number;
   /** True when this sha was already deployed and the upload was skipped. */
@@ -237,19 +240,82 @@ export async function uploadDeployment(
   return { sha, fileCount: files.length, reused: false };
 }
 
-/** Point the app at a deployment. Also how rollback works. */
-export async function setPublishedSha(
+/**
+ * Clear a recorded failure this repoint answers: one of this commit or of an
+ * ancestor. A failure of a newer commit stays, whoever landed in between, and
+ * so does one git cannot place. Best effort: the repoint already happened.
+ */
+async function clearAnsweredDeployError(
   project: IAppProject,
   sha: string,
 ): Promise<void> {
-  await AppProject.updateOne(
-    { _id: project._id, workspaceId: project.workspaceId },
+  try {
+    const row = await AppProject.findById(project._id)
+      .select("lastDeployError")
+      .lean();
+    const failedSha = row?.lastDeployError?.sha;
+    if (!failedSha) return;
+    const answered =
+      failedSha === sha ||
+      (isOid(failedSha) &&
+        isOid(sha) &&
+        (await commitIsAncestor(
+          repoDirFor(project.workspaceId.toString()),
+          failedSha,
+          sha,
+        )));
+    if (!answered) return;
+    await AppProject.updateOne(
+      { _id: project._id, "lastDeployError.sha": failedSha },
+      { $unset: { lastDeployError: 1 } },
+    );
+  } catch (error) {
+    logger.warn("Could not clear a recorded deploy failure", {
+      projectId: project._id.toString(),
+      sha,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * Point the app at a deployment. Also how rollback works.
+ *
+ * `expected` makes the repoint conditional on the live pointer still being
+ * that value: the check and the write are one update, so a deploy that was
+ * overtaken while it worked loses instead of moving the app back. Returns
+ * whether the pointer moved. `refreshing` names the stale artifacts this
+ * release goes live on: their rebuilds are queued once it is live, because
+ * the refresh skips a commit that is not live.
+ */
+export async function setPublishedSha(
+  project: IAppProject,
+  sha: string,
+  options: { expected?: string | null; refreshing?: string[] } = {},
+): Promise<boolean> {
+  const result = await AppProject.updateOne(
     {
-      $set: { publishedSha: sha, publishedAt: new Date() },
-      $unset: { lastDeployError: 1 },
+      _id: project._id,
+      workspaceId: project.workspaceId,
+      ...(options.expected !== undefined
+        ? { publishedSha: options.expected }
+        : {}),
     },
+    { $set: { publishedSha: sha, publishedAt: new Date() } },
   );
+  if (options.expected !== undefined && result?.matchedCount === 0) {
+    logger.info("Apps deployment overtaken: the live pointer moved", {
+      projectId: project._id.toString(),
+      sha,
+      expected: options.expected,
+    });
+    await clearDeployProgress(project, sha);
+    return false;
+  }
+  await clearAnsweredDeployError(project, sha);
   await clearDeployProgress(project, sha);
+  await queueBindingRefreshes(project, sha, options.refreshing ?? []);
+  return true;
 }
 
 /**
@@ -265,6 +331,42 @@ export async function clearPublishedSha(project: IAppProject): Promise<void> {
 }
 
 const DEPLOY_ERROR_MAX_CHARS = 8_000;
+
+/** A pointer moved this recently probably overtook a deploy git cannot place. */
+const RECENT_REPOINT_MS = 60 * 60 * 1000;
+
+/**
+ * Should this deploy's failure go on the row? No when the deploy was
+ * overtaken: a run that kept going after cancellation must not report a
+ * failure against an app already live on something newer.
+ */
+async function deployFailureStillApplies(
+  project: IAppProject,
+  sha: string,
+): Promise<boolean> {
+  try {
+    const row = await AppProject.findById(project._id)
+      .select("publishedSha publishedAt deployProgress")
+      .lean();
+    if (!row?.publishedSha) return true;
+    if (row.publishedSha === sha) return false;
+    if (row.deployProgress?.sha === sha) return true;
+    try {
+      return !(await commitIsAncestor(
+        repoDirFor(project.workspaceId.toString()),
+        sha,
+        row.publishedSha,
+      ));
+    } catch {
+      const publishedAt = row.publishedAt
+        ? new Date(row.publishedAt).getTime()
+        : 0;
+      return Date.now() - publishedAt > RECENT_REPOINT_MS;
+    }
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Remember why a deploy did not go live, on the row every status reader
@@ -283,16 +385,18 @@ export async function recordDeployFailure(
     full.length > DEPLOY_ERROR_MAX_CHARS
       ? `…${full.slice(-DEPLOY_ERROR_MAX_CHARS)}`
       : full;
-  await AppProject.updateOne(
-    { _id: project._id, workspaceId: project.workspaceId },
-    { $set: { lastDeployError: { sha, stage, message, at: new Date() } } },
-  ).catch(err => {
-    logger.warn("Could not record apps deploy failure", {
-      projectId: project._id.toString(),
-      sha,
-      error: err instanceof Error ? err.message : String(err),
+  if (await deployFailureStillApplies(project, sha)) {
+    await AppProject.updateOne(
+      { _id: project._id, workspaceId: project.workspaceId },
+      { $set: { lastDeployError: { sha, stage, message, at: new Date() } } },
+    ).catch(err => {
+      logger.warn("Could not record apps deploy failure", {
+        projectId: project._id.toString(),
+        sha,
+        error: err instanceof Error ? err.message : String(err),
+      });
     });
-  });
+  }
   // The deploy is over; lastDeployError now says why.
   await clearDeployProgress(project, sha);
 }
@@ -487,6 +591,32 @@ async function deploymentBindingIndex(
 const BINDING_CHECK_CONCURRENCY = 16;
 
 /**
+ * Binding builds a deploy may run in this process, across all its walks. These
+ * run outside Inngest's workspace budget, on an instance with 4 GiB and an
+ * in-memory /tmp: 4 builds of 300k rows reached 4.04 GiB in review.
+ */
+export const APPS_DEPLOY_INLINE_BUILD_LIMIT = 2;
+
+let inlineBuildsRunning = 0;
+const inlineBuildWaiters: Array<() => void> = [];
+
+async function withInlineBuildSlot<T>(build: () => Promise<T>): Promise<T> {
+  if (inlineBuildsRunning >= APPS_DEPLOY_INLINE_BUILD_LIMIT) {
+    await new Promise<void>(resolve => inlineBuildWaiters.push(resolve));
+  } else {
+    inlineBuildsRunning += 1;
+  }
+  try {
+    return await build();
+  } finally {
+    // A waiter inherits this slot, so the count stays right.
+    const next = inlineBuildWaiters.shift();
+    if (next) next();
+    else inlineBuildsRunning -= 1;
+  }
+}
+
+/**
  * Run `work` over `items`, at most `limit` at a time, in input order. After a
  * failure no new item starts; items in flight finish, then the first error
  * is thrown.
@@ -563,13 +693,13 @@ async function queueBindingRefreshes(
  * mutable worktree. Each binding is judged once, against the moment this
  * release started:
  *
- * - No artifact: built now, at most APPS_BINDING_WORKSPACE_BUILD_LIMIT at a
- *   time. Only this blocks the release: a page cannot read a table that does
- *   not exist. A failure propagates to the durable deploy job and the caller
- *   has not moved `publishedSha` yet.
+ * - No artifact: built now, at most APPS_DEPLOY_INLINE_BUILD_LIMIT at a time
+ *   in this process. Only this blocks the release: a page cannot read a table
+ *   that does not exist. A failure propagates to the durable deploy job and
+ *   the caller has not moved `publishedSha` yet.
  * - Artifact predates the schedule's latest occurrence: the release goes live
- *   on it and a rebuild is queued right behind it (isBindingArtifactCurrent).
- *   The queued rebuild keeps #992 fixed: scheduler state is per binding name
+ *   on it, and the caller passes `refreshing` to setPublishedSha, which queues
+ *   the rebuilds. They keep #992 fixed: scheduler state is per binding name
  *   and may believe a reverted query ran today, so the refresh judges the
  *   artifact's own write time.
  * - Otherwise: reused.
@@ -654,23 +784,26 @@ export async function ensureDeploymentBindings(
   await reportProgress();
   await forEachBounded(
     absent,
-    APPS_BINDING_WORKSPACE_BUILD_LIMIT,
+    APPS_DEPLOY_INLINE_BUILD_LIMIT,
     async binding => {
-      building.add(binding.name);
-      await reportProgress();
-      try {
-        await materializeAppBinding(project, binding.name, PUBLISH_ACTOR, {
-          at: sha,
-          binding,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Binding "${binding.name}": ${message}`, {
-          cause: error,
-        });
-      } finally {
-        building.delete(binding.name);
-      }
+      await withInlineBuildSlot(async () => {
+        building.add(binding.name);
+        await reportProgress();
+        try {
+          await materializeAppBinding(project, binding.name, PUBLISH_ACTOR, {
+            at: sha,
+            binding,
+          });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          throw new Error(`Binding "${binding.name}": ${message}`, {
+            cause: error,
+          });
+        } finally {
+          building.delete(binding.name);
+        }
+      });
       prepared += 1;
       await reportProgress();
     },
@@ -685,7 +818,6 @@ export async function ensureDeploymentBindings(
   };
 
   await writeDeploymentBindingIndex(projectId, sha, bindings);
-  await queueBindingRefreshes(project, sha, readiness.refreshing);
 
   logger.info("Apps deployment bindings ready", {
     projectId,
@@ -905,7 +1037,13 @@ export async function deployBuild(
   project: IAppProject,
   sha: string,
   handle: WorktreeHandle,
-  options: { bindingsReady?: boolean } = {},
+  options: {
+    bindingsReady?: boolean;
+    /** Stale artifacts this release goes live on (see setPublishedSha). */
+    refreshing?: string[];
+    /** Repoint only if the live pointer is still this (see setPublishedSha). */
+    expected?: string | null;
+  } = {},
 ): Promise<PublishResult> {
   // The build output lives in the sandbox — it is not in git, and the API
   // host no longer keeps a copy of the working tree. Copy just `dist/` out,
@@ -920,11 +1058,14 @@ export async function deployBuild(
     // paths can prepare bindings earlier to return a more specific error and
     // pass the proof here; a new caller that forgets still cannot publish a
     // frontend whose required data artifact is absent.
-    if (!options.bindingsReady) {
-      await ensureDeploymentBindings(project, sha);
-    }
-    await setPublishedSha(project, sha);
-    return result;
+    const refreshing = options.bindingsReady
+      ? options.refreshing
+      : (await ensureDeploymentBindings(project, sha)).refreshing;
+    const repointed = await setPublishedSha(project, sha, {
+      expected: options.expected,
+      refreshing,
+    });
+    return { ...result, repointed };
   } finally {
     await fs.rm(staging, { recursive: true, force: true });
   }

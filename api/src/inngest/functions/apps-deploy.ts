@@ -13,6 +13,7 @@
  */
 import { recordDeployFailure } from "../../apps/deployment.service";
 import {
+  clearDeployProgress,
   deployErrorStageFor,
   isDeployInFlight,
   markDeployQueued,
@@ -301,14 +302,29 @@ export const appsDeployReconcileFunction = inngest.createFunction(
               continue;
             }
           }
-          // Already deploying this commit: cancelling it to start over is how
-          // the 04:17 sweep of 2026-11-03 added a second walk to a running one.
-          if (isDeployInFlight(project.deployProgress, repo.head)) {
+          // Already deploying this commit, or one with this app's same content
+          // when another app's push moved main: cancelling it to start over is
+          // how the 04:17 sweep of 2026-11-03 added a second walk to a running
+          // one.
+          const walking = project.deployProgress?.sha;
+          if (
+            walking &&
+            isDeployInFlight(project.deployProgress, walking) &&
+            (walking === repo.head ||
+              !(await appFolderChanged(
+                workspaceId,
+                repo.dir,
+                appId,
+                walking,
+                repo.head,
+                trees,
+              ).catch(() => true)))
+          ) {
             log.info("Apps reconcile: deploy of main already in flight", {
               workspaceId,
               appId,
               app: project.path,
-              sha: repo.head,
+              sha: walking,
             });
             continue;
           }
@@ -349,10 +365,16 @@ export async function requestAppDeploys(
   // "queued" until the deploy function picks it up (two builds run per
   // workspace at a time). The newest request owns the row.
   await Promise.all(appIds.map(appId => markDeployQueued(appId, sha)));
-  await inngest.send(
-    appIds.map(appId => ({
-      name: APPS_DEPLOY_EVENT,
-      data: { workspaceId, appId, sha, reason } satisfies AppsDeployEventData,
-    })),
-  );
+  try {
+    await inngest.send(
+      appIds.map(appId => ({
+        name: APPS_DEPLOY_EVENT,
+        data: { workspaceId, appId, sha, reason } satisfies AppsDeployEventData,
+      })),
+    );
+  } catch (error) {
+    // Nothing is queued, so "queued" must not refuse the caller's retry.
+    await Promise.all(appIds.map(appId => clearDeployProgress(appId, sha)));
+    throw error;
+  }
 }

@@ -33,6 +33,12 @@ export const DEPLOY_STALL_MS: Record<AppDeployStage, number> = {
   publishing: 10 * 60_000,
 };
 
+/**
+ * A record with no heartbeat for this long describes no deploy. Stall flags
+ * cover the hours a deploy could still be alive; after that it only misleads.
+ */
+export const DEPLOY_ABANDONED_MS = 6 * 60 * 60_000;
+
 type ProjectRef = { _id: Types.ObjectId | string };
 
 function idOf(project: ProjectRef | string): Types.ObjectId | null {
@@ -240,6 +246,7 @@ export function describeDeployProgress(
   const stageStartedAt = new Date(progress.stageStartedAt);
   const lastProgressAt = new Date(progress.updatedAt);
   const idleMs = now.getTime() - lastProgressAt.getTime();
+  if (idleMs > DEPLOY_ABANDONED_MS) return null;
   const thresholdMs = DEPLOY_STALL_MS[progress.stage];
   const stageElapsedMs = now.getTime() - stageStartedAt.getTime();
 

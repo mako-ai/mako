@@ -17,7 +17,7 @@
  * app's id, which the manifest carries along.
  */
 import { loggers } from "../logging";
-import { isAncestorCommit, runGit } from "./git";
+import { commitIsAncestor, isAncestorCommit, runGit } from "./git";
 import {
   PUBLISH_ACTOR,
   appRootFor,
@@ -153,17 +153,60 @@ export class DeployBindingsError extends Error {
   }
 }
 
-/** Is a commit newer than `sha` already live for this app? */
-async function hasNewerLiveCommit(
-  project: { publishedSha?: string | null },
+/**
+ * commitIsAncestor, fetching on a miss: the instance running a deploy may never
+ * have seen the commit another instance just made live. Throws when git still
+ * cannot tell.
+ */
+async function isAncestorAfterFetch(
+  workspaceId: string,
+  repoDir: string,
+  ancestor: string,
+  descendant: string,
+): Promise<boolean> {
+  try {
+    return await commitIsAncestor(repoDir, ancestor, descendant);
+  } catch {
+    await ensureCommitLocally(workspaceId, ancestor);
+    await ensureCommitLocally(workspaceId, descendant);
+    return commitIsAncestor(repoDir, ancestor, descendant);
+  }
+}
+
+/**
+ * May this deploy still repoint the app? Preparing data and building take
+ * minutes, and Inngest cannot stop a running step, so a cancelled deploy keeps
+ * going. Yes when the pointer has not moved, or moved forward to an ancestor of
+ * `sha`. No for a newer commit, for a rollback, and whenever git cannot tell.
+ * Returns the pointer to repoint from, or null when overtaken.
+ */
+async function liveCommitToReplace(
+  workspaceId: string,
+  appRef: string,
   repoDir: string,
   sha: string,
-): Promise<boolean> {
-  return (
-    !!project.publishedSha &&
-    project.publishedSha !== sha &&
-    (await isAncestorCommit(repoDir, sha, project.publishedSha))
-  );
+  liveAtStart: string | null,
+): Promise<{ expected: string | null } | null> {
+  const row = await resolveProjectRef(workspaceId, appRef);
+  const live = row?.publishedSha ?? null;
+  if (live === liveAtStart || live === sha) return { expected: live };
+  if (!live) return null;
+  try {
+    const forward =
+      (await isAncestorAfterFetch(workspaceId, repoDir, live, sha)) &&
+      (!liveAtStart ||
+        (await isAncestorAfterFetch(workspaceId, repoDir, liveAtStart, live)));
+    return forward ? { expected: live } : null;
+  } catch (error) {
+    logger.warn("Apps deploy cannot place the live commit, standing down", {
+      workspaceId,
+      app: appRef,
+      sha,
+      live,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 }
 
 /**
@@ -198,7 +241,14 @@ export async function deployOneApp(
   // A delivery that arrives AFTER a newer commit of this app already went
   // live must not roll it back: Inngest's singleton cancels older runs when
   // a newer event arrives, but not the other way round.
-  if (await hasNewerLiveCommit(discovered, repoDir, sha)) {
+  // Throws when git cannot place the live commit even after a fetch: Inngest
+  // retries, and a missing commit must never read as "this one is newer".
+  const liveAtStart = discovered.publishedSha ?? null;
+  if (
+    liveAtStart &&
+    liveAtStart !== sha &&
+    (await isAncestorAfterFetch(workspaceId, repoDir, sha, liveAtStart))
+  ) {
     await clearDeployProgress(discovered, sha);
     return { app: appRef, sha, outcome: "superseded" };
   }
@@ -255,8 +305,9 @@ export async function deployOneApp(
   // BEFORE the build means a warehouse failure is reported without booting
   // a sandbox or paying for a vite build that could not go live anyway —
   // and the previous deployment keeps serving while Inngest retries.
+  let refreshing: string[] | undefined;
   try {
-    await ensureDeploymentBindings(project, sha);
+    refreshing = (await ensureDeploymentBindings(project, sha))?.refreshing;
   } catch (error) {
     await recordDeployFailure(project, sha, "bindings", error);
     throw new DeployBindingsError(
@@ -266,18 +317,26 @@ export async function deployOneApp(
       { cause: error },
     );
   }
-  // Preparing data can take minutes, and Inngest cannot stop a running step: a
-  // cancelled deploy keeps going here. It must not repoint the app past a
-  // newer commit that went live meanwhile.
-  const liveNow = await resolveProjectRef(workspaceId, appRef);
-  if (liveNow && (await hasNewerLiveCommit(liveNow, repoDir, sha))) {
-    await clearDeployProgress(liveNow, sha);
-    return { app: appRef, sha, outcome: "superseded" };
-  }
+  const overtaken = async () => {
+    await clearDeployProgress(project, sha);
+    return { app: appRef, sha, outcome: "superseded" as const };
+  };
+  const afterBindings = await liveCommitToReplace(
+    workspaceId,
+    appRef,
+    repoDir,
+    sha,
+    liveAtStart,
+  );
+  if (!afterBindings) return overtaken();
   if (await deploymentExists(project._id.toString(), sha)) {
     // The frontend was already uploaded (the Publish button got there
     // first, or a retry after a binding failure); it is just made live.
-    await setPublishedSha(project, sha);
+    const moved = await setPublishedSha(project, sha, {
+      expected: afterBindings.expected,
+      refreshing,
+    });
+    if (moved === false) return overtaken();
     return { app: appRef, sha, outcome: "already-built" };
   }
 
@@ -298,7 +357,22 @@ export async function deployOneApp(
     await recordDeployFailure(project, sha, "build", build.output);
     throw new Error(build.output);
   }
-  await deployBuild(project, sha, handle, { bindingsReady: true });
+  // The build took minutes too: judge the pointer again, then repoint only if
+  // it still holds what this judgement saw.
+  const afterBuild = await liveCommitToReplace(
+    workspaceId,
+    appRef,
+    repoDir,
+    sha,
+    liveAtStart,
+  );
+  if (!afterBuild) return overtaken();
+  const deployed = await deployBuild(project, sha, handle, {
+    bindingsReady: true,
+    refreshing,
+    expected: afterBuild.expected,
+  });
+  if (deployed?.repointed === false) return overtaken();
   logger.info("Deployed app from main", { workspaceId, app: appPath, sha });
   return { app: appRef, sha, outcome: "built" };
 }

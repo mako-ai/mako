@@ -10,9 +10,6 @@
  */
 import type { ConcurrencyOption } from "inngest/types";
 
-/** Binding builds a workspace may run at once. */
-export const APPS_BINDING_WORKSPACE_BUILD_LIMIT = 4;
-
 export const APPS_BINDING_BUILD_CONCURRENCY: [
   ConcurrencyOption,
   ConcurrencyOption,
@@ -20,7 +17,7 @@ export const APPS_BINDING_BUILD_CONCURRENCY: [
   {
     scope: "env" as const,
     key: '"apps-binding-ws:" + event.data.workspaceId',
-    limit: APPS_BINDING_WORKSPACE_BUILD_LIMIT,
+    limit: 4,
   },
   {
     scope: "env" as const,

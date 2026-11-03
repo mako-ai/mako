@@ -32,6 +32,9 @@ vi.mock("./git", () => ({
   isAncestorCommit: vi.fn(async (_dir: string, a: string, b: string) =>
     state.ancestry.has(`${a}>${b}`),
   ),
+  commitIsAncestor: vi.fn(async (_dir: string, a: string, b: string) =>
+    state.ancestry.has(`${a}>${b}`),
+  ),
   runGit: vi.fn(async (args: string[]) => {
     const spec = args[args.length - 1];
     // `merge-base --is-ancestor <sha> <publishedSha>`: never an ancestor

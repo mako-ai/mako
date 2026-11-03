@@ -193,6 +193,32 @@ export async function isAncestorCommit(
     .catch(() => false);
 }
 
+/**
+ * isAncestorCommit for a decision that must not guess: false only when git
+ * says so (exit 1), and it throws when git cannot tell, as for a commit this
+ * instance has never seen.
+ */
+export async function commitIsAncestor(
+  repoDir: string,
+  ancestor: string,
+  descendant: string,
+): Promise<boolean> {
+  try {
+    await runGit([
+      "-C",
+      repoDir,
+      "merge-base",
+      "--is-ancestor",
+      ancestor,
+      descendant,
+    ]);
+    return true;
+  } catch (error) {
+    if (error instanceof GitError && error.exitCode === 1) return false;
+    throw error;
+  }
+}
+
 export function isOid(value: string): boolean {
   return OID_RE.test(value);
 }

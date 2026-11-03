@@ -58,6 +58,8 @@ interface MaterializeEventData {
   at?: string;
   /** A release went live on this binding's stale artifact. */
   afterPublish?: boolean;
+  /** Which try of that rebuild this is, from 1. */
+  attempt?: number;
 }
 
 /**
@@ -86,17 +88,6 @@ export function isBindingDueAt(
     lastRunAt: lastAttempt ?? state?.lastMaterializedAt ?? null,
     now,
   });
-}
-
-async function isBindingDue(
-  projectId: string,
-  binding: AppBinding,
-): Promise<boolean> {
-  if (!binding.schedule) return false;
-  return isBindingDueAt(
-    binding,
-    await getBindingState(projectId, binding.name),
-  );
 }
 
 export const appsBindingSchedulerFunction = inngest.createFunction(
@@ -209,52 +200,174 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
   },
 );
 
+/** Rebuild attempts for a stale artifact a release went live on. */
+export const AFTER_PUBLISH_MAX_ATTEMPTS = 3;
+const AFTER_PUBLISH_RETRY_DELAY_MS = 10 * 60 * 1000;
+
+function afterPublishEvent(
+  project: { _id: unknown; workspaceId: unknown },
+  sha: string,
+  binding: string,
+  attempt: number,
+) {
+  const projectId = String(project._id);
+  return {
+    // Two releases of one commit queue one refresh per binding, not two.
+    id: `binding-refresh-${projectId}-${sha}-${binding}-${attempt}`,
+    name: APPS_BINDING_MATERIALIZE_EVENT,
+    data: {
+      workspaceId: String(project.workspaceId),
+      projectId,
+      binding,
+      key: `${projectId}:${binding}`,
+      at: sha,
+      afterPublish: true,
+      attempt,
+    } satisfies MaterializeEventData,
+  };
+}
+
+/**
+ * A stale artifact is live and its rebuild failed. Say so on the app row, where
+ * app_publish_status reads it, and retry while attempts remain: viewers are
+ * reading old numbers until this succeeds or the commit stops being live.
+ */
+async function afterPublishRebuildFailed(
+  project: { _id: unknown; workspaceId: unknown },
+  data: MaterializeEventData,
+  error: unknown,
+): Promise<void> {
+  const attempt = data.attempt ?? 1;
+  const message = error instanceof Error ? error.message : String(error);
+  try {
+    await AppProject.updateOne(
+      { _id: project._id },
+      {
+        $set: {
+          [`bindingRefreshErrors.${data.binding}`]: {
+            sha: data.at,
+            message: message.slice(0, 2_000),
+            attempts: attempt,
+            at: new Date(),
+          },
+        },
+      },
+    );
+  } catch (writeError) {
+    log.warn("Could not record a failed binding refresh", {
+      projectId: data.projectId,
+      binding: data.binding,
+      error:
+        writeError instanceof Error ? writeError.message : String(writeError),
+    });
+  }
+  if (attempt >= AFTER_PUBLISH_MAX_ATTEMPTS || !data.at) return;
+  try {
+    await inngest.send({
+      ...afterPublishEvent(project, data.at, data.binding, attempt + 1),
+      ts: Date.now() + AFTER_PUBLISH_RETRY_DELAY_MS,
+    });
+  } catch (sendError) {
+    log.warn("Could not queue a binding refresh retry", {
+      projectId: data.projectId,
+      binding: data.binding,
+      error: sendError instanceof Error ? sendError.message : String(sendError),
+    });
+  }
+}
+
+/** A later success answers an earlier recorded failure of this binding. */
+async function clearBindingRefreshError(
+  projectId: string,
+  binding: string,
+): Promise<void> {
+  try {
+    await AppProject.updateOne(
+      {
+        _id: projectId,
+        [`bindingRefreshErrors.${binding}`]: { $exists: true },
+      },
+      { $unset: { [`bindingRefreshErrors.${binding}`]: 1 } },
+    );
+  } catch (error) {
+    log.warn("Could not clear a failed binding refresh", {
+      projectId,
+      binding,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * Has a scheduled event nothing to do? State saying the binding ran is not
+ * enough: state is per binding NAME, so a run of another text (an after-publish
+ * refresh, a reverted query) must not stand in for this text's artifact. A
+ * failed last attempt does stand: a broken query must not re-run every tick.
+ */
+async function isScheduledBuildMoot(
+  projectId: string,
+  binding: AppBinding,
+): Promise<boolean> {
+  const state = await getBindingState(projectId, binding.name);
+  if (isBindingDueAt(binding, state)) return false;
+  if (state?.history?.[0]?.status === "error") return true;
+  return isBindingArtifactReady(binding, { projectId, sha: "main" });
+}
+
 /**
  * One binding build from an event. A scheduled event is judged by the
- * binding's scheduler state. An after-publish event is judged by the
- * artifact's write time, because scheduler state is per binding name and a
+ * binding's scheduler state and artifact. An after-publish event is judged by
+ * the artifact's write time, because scheduler state is per binding name and a
  * reverted query's artifact can be old while the state says it ran today
- * (#992).
+ * (#992). It stands down once its commit stops being live.
  */
 export async function runBindingMaterializeEvent(
   data: MaterializeEventData,
 ): Promise<
-  | { skipped: "project-gone" | "binding-gone" | "not-due" }
+  | {
+      skipped: "project-gone" | "binding-gone" | "not-due" | "superseded";
+    }
   | { ok: true; rowCount: number }
   | { ok: false }
 > {
   const { projectId, binding: name, at, afterPublish } = data;
   const project = await AppProject.findById(projectId);
   if (!project) return { skipped: "project-gone" };
-  // This binding's file only: reading all of them costs ~100 ms per binding
-  // in the app, per build.
-  const binding = await readCommittedBinding(
-    project,
-    name,
-    undefined as never,
-    at,
-  );
-  if (!binding) return { skipped: "binding-gone" };
-  // A later tick may have queued this binding again while the backlog was
-  // still draining; if a build landed in between, this one is moot.
-  const moot = afterPublish
-    ? await isBindingArtifactReady(binding, { projectId, sha: at ?? "main" })
-    : !(await isBindingDue(projectId, binding));
-  if (moot) return { skipped: "not-due" };
+  if (afterPublish && project.publishedSha !== at) {
+    return { skipped: "superseded" };
+  }
   try {
+    // This binding's file only: reading all of them costs ~100 ms per binding
+    // in the app, per build.
+    const binding = await readCommittedBinding(
+      project,
+      name,
+      undefined as never,
+      at,
+    );
+    if (!binding) return { skipped: "binding-gone" };
+    // A later tick may have queued this binding again while the backlog was
+    // still draining; if a build landed in between, this one is moot.
+    const moot = afterPublish
+      ? await isBindingArtifactReady(binding, { projectId, sha: at ?? "main" })
+      : await isScheduledBuildMoot(projectId, binding);
+    if (moot) return { skipped: "not-due" };
     const result = await materializeAppBinding(
       project,
       name,
       afterPublish ? PUBLISH_ACTOR : "scheduler",
       { at, binding },
     );
+    await clearBindingRefreshError(projectId, name);
     return { ok: true, rowCount: result.rowCount };
   } catch (error) {
     log.warn("Scheduled binding materialization failed", {
       projectId,
       binding: name,
+      afterPublish: afterPublish ?? false,
       error: error instanceof Error ? error.message : String(error),
     });
+    if (afterPublish) await afterPublishRebuildFailed(project, data, error);
     return { ok: false };
   }
 }
@@ -271,7 +384,8 @@ export const appsBindingMaterializeFunction = inngest.createFunction(
     priority: { run: "event.data.afterPublish == true ? 600 : 0" },
     // materializeAppBinding records the failure in the binding's state and
     // the next due check backs off from it; retrying here would re-run a
-    // broken warehouse query for nothing.
+    // broken warehouse query for nothing. An after-publish rebuild retries a
+    // bounded number of times by sending itself again.
     retries: 0,
     triggers: { event: APPS_BINDING_MATERIALIZE_EVENT },
   },
@@ -288,18 +402,7 @@ export async function requestBindingRefreshes(
   names: string[],
 ): Promise<void> {
   if (names.length === 0) return;
-  const projectId = String(project._id);
   await inngest.send(
-    names.map(binding => ({
-      name: APPS_BINDING_MATERIALIZE_EVENT,
-      data: {
-        workspaceId: String(project.workspaceId),
-        projectId,
-        binding,
-        key: `${projectId}:${binding}`,
-        at: sha,
-        afterPublish: true,
-      } satisfies MaterializeEventData,
-    })),
+    names.map(binding => afterPublishEvent(project, sha, binding, 1)),
   );
 }
