@@ -19,6 +19,7 @@ import {
   callerHeaders,
   formEncode,
   forward,
+  resolveRequest,
   setTransportForTests,
   urlUnder,
 } from "./forward";
@@ -93,11 +94,9 @@ describe("reads and writes", () => {
   });
 
   it("Close: POST /lead/ told to act as GET reads; POST /task/ writes", () => {
-    expect(
-      read("close", "POST", "/lead/", {
-        headers: { "x-http-method-override": "GET" },
-      }),
-    ).toBe(true);
+    expect(read("close", "POST", "/lead/", { methodOverride: "GET" })).toBe(
+      true,
+    );
     expect(read("close", "POST", "/data/search/")).toBe(true);
     expect(read("close", "POST", "/task/")).toBe(false);
     expect(read("close", "PUT", "/lead/lead_1/")).toBe(false);
@@ -105,7 +104,7 @@ describe("reads and writes", () => {
   });
 
   it("Close: the GET override reads only on a POST", () => {
-    const override = { headers: { "x-http-method-override": "GET" } };
+    const override = { methodOverride: "GET" };
     for (const method of ["DELETE", "PUT", "PATCH"]) {
       expect(read("close", method, "/lead/lead_1/", override)).toBe(false);
     }
@@ -164,6 +163,142 @@ describe("reads and writes", () => {
   it("GraphQL: fail closed, a query that only mentions mutation in a string is a write", () => {
     expect(isGraphqlQuery('{ search(text: "mutation") { id } }')).toBe(false);
     expect(isGraphqlQuery("{ subscriptions { id } }")).toBe(true);
+  });
+});
+
+describe("GraphQL: only a query POSTed to the endpoint reads", () => {
+  const graphql = { base_url: "https://x.example.com/graphql", graphql: true };
+  const read = (input: Parameters<typeof resolveRequest>[2]) =>
+    isReadRequest(
+      type("custom_api"),
+      resolveRequest(type("custom_api"), graphql, input),
+      graphql,
+    );
+
+  it("reads a query POSTed to the endpoint, in one operation or a batch", () => {
+    expect(
+      read({
+        method: "POST",
+        path: "/",
+        body: { query: "{ a }", variables: {}, operationName: null },
+      }),
+    ).toBe(true);
+    expect(
+      read({ method: "POST", path: "/", body: [{ query: "{ a }" }] }),
+    ).toBe(true);
+    expect(read({ method: "POST", path: "/", body: '{"query":"{ a }"}' })).toBe(
+      true,
+    );
+  });
+
+  it("a GET, HEAD or OPTIONS is a write, a query string mutation included", () => {
+    for (const method of ["GET", "HEAD", "OPTIONS"]) {
+      expect(read({ method, path: "/" })).toBe(false);
+    }
+    expect(
+      read({ method: "GET", path: "/", query: { query: "mutation { b }" } }),
+    ).toBe(false);
+  });
+
+  it("an operation in the URL is a write, whatever the body", () => {
+    const body = { query: "{ a }" };
+    for (const name of ["query", "documentId", "doc_id", "id", "extensions"]) {
+      expect(
+        read({ method: "POST", path: "/", query: { [name]: "x" }, body }),
+        name,
+      ).toBe(false);
+    }
+    expect(
+      read({ method: "POST", path: "/?query=mutation%20%7B%20b%20%7D", body }),
+    ).toBe(false);
+  });
+
+  it("a query POSTed elsewhere than the endpoint is a write", () => {
+    expect(
+      read({
+        method: "POST",
+        path: "/repos/x",
+        body: { query: "{a}", title: "x" },
+      }),
+    ).toBe(false);
+    expect(
+      read({ method: "POST", path: "/repos/x", body: { query: "{a}" } }),
+    ).toBe(false);
+  });
+
+  it("an extra or duplicated field is a write", () => {
+    expect(
+      read({ method: "POST", path: "/", body: { query: "{a}", title: "x" } }),
+    ).toBe(false);
+    expect(
+      read({
+        method: "POST",
+        path: "/",
+        body: '{"query":"mutation { b }","query":"{ a }"}',
+      }),
+    ).toBe(false);
+    expect(
+      read({ method: "POST", path: "/", body: '{"\\u0071uery":"{ a }"}' }),
+    ).toBe(false);
+    expect(
+      read({ method: "POST", path: "/", body: [{ query: "{a}" }, [1]] }),
+    ).toBe(false);
+  });
+});
+
+describe("no caller method override reaches the service", () => {
+  it("a GET with an override goes out without it, and _method is dropped", async () => {
+    const sent = answering(200, {});
+    const request = resolveRequest(
+      type("stripe"),
+      { api_key: KEY },
+      {
+        method: "GET",
+        path: "/v1/customers?_method=DELETE",
+        query: { _METHOD: "DELETE", limit: 1 },
+        headers: {
+          "X-HTTP-Method-Override": "DELETE",
+          "x-http-method": "DELETE",
+          "x-method-override": "DELETE",
+        },
+      },
+    );
+    expect(isReadRequest(type("stripe"), request, {})).toBe(true);
+    await forward(connection("stripe", { api_key: KEY }), type("stripe"), {
+      method: "GET",
+      path: "/v1/customers?_method=DELETE",
+      headers: { "X-HTTP-Method-Override": "DELETE", "x-http-method": "PUT" },
+    });
+    expect(sent[0].url).toBe("https://api.stripe.com/v1/customers");
+    expect(sent[0].headers["x-http-method-override"]).toBeUndefined();
+    expect(sent[0].headers["x-http-method"]).toBeUndefined();
+    expect(request.url.searchParams.toString()).toBe("limit=1");
+  });
+
+  it("Close: a POST told to act as GET reads and goes out with exactly GET", async () => {
+    const sent = answering(200, {});
+    const input = {
+      method: "POST",
+      path: "/lead/",
+      headers: { "X-HTTP-Method-Override": "get" },
+    };
+    const request = resolveRequest(type("close"), { api_key: KEY }, input);
+    expect(isReadRequest(type("close"), request, {})).toBe(true);
+    await forward(connection("close", { api_key: KEY }), type("close"), input);
+    expect(sent[0].headers["x-http-method-override"]).toBe("GET");
+  });
+
+  it("Close: a POST told to act as DELETE writes and goes out without it", async () => {
+    const sent = answering(200, {});
+    const input = {
+      method: "POST",
+      path: "/lead/lead_1/",
+      headers: { "x-http-method-override": "DELETE" },
+    };
+    const request = resolveRequest(type("close"), { api_key: KEY }, input);
+    expect(isReadRequest(type("close"), request, {})).toBe(false);
+    await forward(connection("close", { api_key: KEY }), type("close"), input);
+    expect(sent[0].headers["x-http-method-override"]).toBeUndefined();
   });
 });
 
@@ -349,6 +484,35 @@ describe("no secret in any answer", () => {
     expect(result.body).toEqual({
       payload: "[redacted]",
       header: "[redacted]",
+    });
+  });
+
+  it("scrubs a short key, and a key in escaped or encoded forms", async () => {
+    answering(200, { echoed: "k3y9", again: "id k3y9" });
+    let result = await forward(
+      connection("custom_api", {
+        base_url: "https://x.example.com",
+        auth_type: "api_key_header",
+        token: "k3y9",
+      }),
+      type("custom_api"),
+      { method: "GET", path: "/" },
+    );
+    expect(JSON.stringify(result)).not.toContain("k3y9");
+
+    const token = "ab/cd+ef/gh==";
+    answering(
+      200,
+      `{"escaped":"${token.replace(/\//g, "\\/")}","lower":"${encodeURIComponent(token).toLowerCase()}"}`,
+    );
+    result = await forward(
+      connection("custom_api", { base_url: "https://x.example.com", token }),
+      type("custom_api"),
+      { method: "GET", path: "/" },
+    );
+    expect(result.body).toEqual({
+      escaped: "[redacted]",
+      lower: "[redacted]",
     });
   });
 

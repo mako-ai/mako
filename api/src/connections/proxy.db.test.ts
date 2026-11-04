@@ -296,6 +296,37 @@ async function main() {
       (error: Error) => error.message,
     );
     assert.match(agentWrite, /^Agents only read/);
+    // Recorded as the agent's attempt, which no writers list can name.
+    recorded = await events(5);
+    assert.equal(recorded.at(-1)?.principal, "agent:workflow:fr-offer-to-cash");
+    assert.equal(recorded.at(-1)?.allowed, false);
+
+    // A viewer never writes, even when listed.
+    await WorkspaceMember.create({
+      workspaceId: ws,
+      userId: "vera",
+      role: "viewer",
+      joinedAt: new Date(),
+    });
+    await SourceConnection.updateOne(
+      { _id: close._id },
+      { $push: { writers: { principal: "user:vera" } } },
+    );
+    const sentBeforeViewer = sent.length;
+    const viewerWrite = await connectionRequest({
+      workspaceId: String(ws),
+      connection: "ch_close",
+      request: { method: "POST", path: "/task/" },
+      actor: "user:vera",
+    }).then(
+      () => "ok",
+      (error: Error) => error.message,
+    );
+    assert.match(viewerWrite, /^Viewers can't write through a connection/);
+    assert.equal(sent.length, sentBeforeViewer);
+    recorded = await events(6);
+    assert.equal(recorded.at(-1)?.principal, "user:vera");
+    assert.equal(recorded.at(-1)?.allowed, false);
     const agentRead = await connectionRequest({
       workspaceId: String(ws),
       connection: "ch_close",

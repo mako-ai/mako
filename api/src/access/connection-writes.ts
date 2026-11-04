@@ -263,6 +263,23 @@ export async function principalsOutsideWorkspace(
   return people.filter(p => !known.has(p));
 }
 
+/** The `user:` principals among `principals` whose workspace role is viewer. */
+export async function viewerPrincipals(
+  workspaceId: string,
+  principals: string[],
+): Promise<string[]> {
+  const people = principals.filter(p => p.startsWith("user:"));
+  if (people.length === 0) return [];
+  const viewers = await WorkspaceMember.find({
+    workspaceId: new Types.ObjectId(workspaceId),
+    userId: { $in: people.map(p => p.slice("user:".length)) },
+    role: "viewer",
+  })
+    .select("userId")
+    .lean();
+  return viewers.map(m => `user:${String(m.userId)}`);
+}
+
 /**
  * `query` inside a read-only transaction, sent as one string so it costs no
  * extra round trip (Postgres simple protocol). The newlines keep a trailing

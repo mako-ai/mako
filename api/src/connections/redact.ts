@@ -28,7 +28,10 @@ export function secretValuesOf(config: unknown): string[] {
   return [...found].sort((a, b) => b.length - a.length);
 }
 
-/** Replace every occurrence of each secret in `text`. */
+/**
+ * Replace every occurrence of each secret in `text`: as is, JSON-escaped
+ * (with `\/` slashes too), and percent-encoded in either hex case.
+ */
 export function redactSecrets(
   text: string,
   secrets: readonly string[],
@@ -40,7 +43,27 @@ export function redactSecrets(
     // JSON-escaped form too: a secret with a quote or a backslash in it
     // appears differently inside a serialized record than in prose.
     const escaped = JSON.stringify(secret).slice(1, -1);
-    if (escaped !== secret) out = out.split(escaped).join("[redacted]");
+    for (const form of [escaped, escaped.replace(/\//g, "\\/")]) {
+      if (form !== secret) out = out.split(form).join("[redacted]");
+    }
+    const encoded = percentEncodedPattern(secret);
+    if (encoded) out = out.replace(encoded, "[redacted]");
   }
   return out;
+}
+
+/** `value` URL-encoded, matching `%2f` as well as `%2F`; null if unchanged. */
+function percentEncodedPattern(value: string): RegExp | null {
+  const encoded = encodeURIComponent(value);
+  if (encoded === value) return null;
+  const hex = (c: string) => (/[A-F]/.test(c) ? `[${c}${c.toLowerCase()}]` : c);
+  const source = encoded
+    .split(/(%[0-9A-F]{2})/)
+    .map((part, i) =>
+      i % 2
+        ? `%${hex(part[1])}${hex(part[2])}`
+        : part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    )
+    .join("");
+  return new RegExp(source, "g");
 }

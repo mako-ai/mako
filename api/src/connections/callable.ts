@@ -89,6 +89,13 @@ export interface RequestShape {
   /** Lower-case names. */
   headers: Record<string, string>;
   body?: unknown;
+  /** The full URL, query string included, when resolved. */
+  url?: URL;
+  /**
+   * The caller's `x-http-method-override`, upper case. Never forwarded as
+   * sent: a profile may put back the one value it reads (`extraHeaders`).
+   */
+  methodOverride?: string;
 }
 
 type Config = ISourceConnection["config"];
@@ -102,6 +109,13 @@ export interface CallableConnection {
   credential(config: Config): Credential;
   /** A request other than GET, HEAD or OPTIONS that only reads. */
   reads?(request: RequestShape, config: Config): boolean;
+  /**
+   * True when only `reads` decides, for this config: GET, HEAD and OPTIONS
+   * are not reads by themselves (a GraphQL endpoint runs what it is sent).
+   */
+  onlyReads?(config: Config): boolean;
+  /** Headers the profile itself puts on a request, after the caller's. */
+  extraHeaders?(request: RequestShape): Record<string, string>;
   /** How an object body is sent. Default JSON. */
   bodyEncoding?: "json" | "form";
   /**
@@ -122,7 +136,9 @@ export function isReadRequest(
   request: RequestShape,
   config: Config,
 ): boolean {
-  if (SAFE_METHODS.has(request.method)) return true;
+  if (SAFE_METHODS.has(request.method) && !callable.onlyReads?.(config)) {
+    return true;
+  }
   return callable.reads?.(request, config) === true;
 }
 
@@ -180,17 +196,59 @@ export function isGraphqlQuery(document: unknown): boolean {
   return !/\b(mutation|subscription)\b/.test(document);
 }
 
-/** A GraphQL POST body (one operation, or a batch) that only queries. */
+/** The only fields a GraphQL operation that reads may carry. */
+const GRAPHQL_OPERATION_KEYS = new Set([
+  "query",
+  "variables",
+  "operationName",
+  "extensions",
+]);
+
+/**
+ * A GraphQL POST body (one operation, or a batch) that only queries: each
+ * operation has only the standard fields, and its `query` reads. A string
+ * body counts only as compact JSON (what JSON.stringify gives back), so no
+ * duplicate key or escaped name can mean something else to the service.
+ */
 export function isGraphqlReadBody(body: unknown): boolean {
   const parsed = typeof body === "string" ? safeJson(body) : body;
+  if (typeof body === "string" && JSON.stringify(parsed) !== body.trim()) {
+    return false;
+  }
   const operations = Array.isArray(parsed) ? parsed : [parsed];
   if (operations.length === 0) return false;
   return operations.every(
     op =>
       !!op &&
       typeof op === "object" &&
+      !Array.isArray(op) &&
+      Object.keys(op).every(key => GRAPHQL_OPERATION_KEYS.has(key)) &&
       isGraphqlQuery((op as { query?: unknown }).query),
   );
+}
+
+/** URL parameters a GraphQL server may run an operation from. */
+const GRAPHQL_URL_PARAMS = [
+  "query",
+  "documentId",
+  "doc_id",
+  "id",
+  "extensions",
+];
+
+/**
+ * A request to a GraphQL endpoint that only queries: a POST to the endpoint
+ * itself, no operation in the URL, and a body that reads. Anything else,
+ * a GET included, is a write.
+ */
+export function isGraphqlRead(request: RequestShape): boolean {
+  if (request.method !== "POST") return false;
+  if (request.path !== "/" && request.path !== "") return false;
+  const params = request.url?.searchParams;
+  if (params && GRAPHQL_URL_PARAMS.some(name => params.has(name))) {
+    return false;
+  }
+  return isGraphqlReadBody(request.body);
 }
 
 function safeJson(value: string): unknown {
@@ -208,6 +266,11 @@ function safeJson(value: string): unknown {
 /** The base URL the built-in Close connector uses (connectors/close). */
 const CLOSE_BASE_URL = "https://api.close.com/api/v1";
 
+/** A POST the caller asked Close to read as a GET. */
+function closeReadsAsGet(request: RequestShape): boolean {
+  return request.method === "POST" && request.methodOverride === "GET";
+}
+
 const close: CallableConnection = {
   type: "close",
   baseUrl: () => CLOSE_BASE_URL,
@@ -222,11 +285,12 @@ const close: CallableConnection = {
     // so (the connector lists leads that way), and its search API only
     // searches. Any other method writes, whatever its headers say.
     if (request.method !== "POST") return false;
-    if (request.headers["x-http-method-override"]?.toUpperCase() === "GET") {
-      return true;
-    }
+    if (closeReadsAsGet(request)) return true;
     return /^\/data\/search\/?$/.test(request.path);
   },
+  // The caller's override is never forwarded; this is the one Mako sends.
+  extraHeaders: (request): Record<string, string> =>
+    closeReadsAsGet(request) ? { "x-http-method-override": "GET" } : {},
   rateGate(connection) {
     // The connector's own gate: keyed by the key, at least 500 ms apart.
     return {
@@ -269,7 +333,8 @@ function customApiCredentialType(config: Config): CredentialTypeId | "none" {
 
 /**
  * Any HTTP API: an address, one credential type and its key. With `graphql`
- * on, a POST whose operation is a query reads; a mutation writes.
+ * on, only a POST of a query to the endpoint itself reads (isGraphqlRead);
+ * everything else, a GET included, writes.
  */
 export const customApi: CallableConnection = {
   type: CUSTOM_API_TYPE,
@@ -302,12 +367,9 @@ export const customApi: CallableConnection = {
     }
   },
   reads(request, config) {
-    return (
-      config.graphql === true &&
-      request.method === "POST" &&
-      isGraphqlReadBody(request.body)
-    );
+    return config.graphql === true && isGraphqlRead(request);
   },
+  onlyReads: config => config.graphql === true,
 };
 
 const CALLABLE = new Map<string, CallableConnection>(

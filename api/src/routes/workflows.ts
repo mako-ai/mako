@@ -872,6 +872,9 @@ workflowRuntimeRoutes.post(
             headers,
             body: body.body,
           },
+          // An MCP login is an agent acting for the person: it only reads.
+          // A person's API key and the deployed worker keep their rights.
+          readOnly: c.get("authType") === "mcpOAuth",
           signal: c.req.raw.signal,
         }),
       );

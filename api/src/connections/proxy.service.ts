@@ -11,7 +11,7 @@
  * (the same list and the same identity rule as database connections,
  * access/connection-writes.ts): a deployed workflow writes as
  * `workflow:<name>`, a person's own run as `user:<id>`, and a request that
- * identifies no one writes nothing. Agents only read. A listed writer writes
+ * identifies no one writes nothing, nor does a viewer. Agents only read. A listed writer writes
  * anywhere through the connection: a `where` stored on a source writer (the
  * list's schema is shared with database connections, where it limits a
  * schema or table) is ignored. Every write is recorded in the write log,
@@ -24,7 +24,7 @@ import {
   type ISourceConnection,
 } from "../database/workspace-schema";
 import { ConnectionWriteEvent } from "../access/connection-write-event";
-import { actingPrincipal } from "../access/connection-writes";
+import { actingPrincipal, viewerPrincipals } from "../access/connection-writes";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers } from "../logging";
 import { getRequestContext } from "../logging/context";
@@ -174,7 +174,8 @@ export async function connectionRequest(
     logger.info("Connection read", where);
   } else {
     if (params.readOnly) {
-      if (principal) recordProxyWrite(row, principal, target, false);
+      // Recorded as the agent's, which no list can name: never offered to allow.
+      if (principal) recordProxyWrite(row, `agent:${principal}`, target, false);
       logger.warn("Refused an agent write through a connection", where);
       throw new ConnectionRequestError(
         `Agents only read through connections; ${target} on ${row.name} is a write. Write from a workflow on the connection's writers list.`,
@@ -188,12 +189,21 @@ export async function connectionRequest(
         403,
       );
     }
-    const allowed = mayWrite(row.writers, principal);
+    // A viewer never writes, even when listed (the role may have changed).
+    const viewer =
+      (await viewerPrincipals(params.workspaceId, [principal])).length > 0;
+    const allowed = !viewer && mayWrite(row.writers, principal);
     recordProxyWrite(row, principal, target, allowed);
     if (!allowed) {
       logger.warn("Refused a connection write", where);
       // Not the database wording ("everyone can read it"): here reading
       // depends on live reads being on.
+      if (viewer) {
+        throw new ConnectionRequestError(
+          `Viewers can't write through a connection; ${principal} is a viewer of this workspace.`,
+          403,
+        );
+      }
       throw new ConnectionRequestError(
         `${principal} is not allowed to write to ${row.name}. An admin can allow ${principal} on the connection's Access tab.`,
         403,

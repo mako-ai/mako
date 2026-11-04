@@ -59,7 +59,11 @@ vi.mock("../access/connection-writes", async importOriginal => ({
 }));
 
 import { sourceConnectionRoutes } from "./source-connections";
-import { SourceConnection } from "../database/workspace-schema";
+import {
+  SourceConnection,
+  WorkspaceMember,
+} from "../database/workspace-schema";
+import { writersOutsideRefusal } from "../access/connection-writers-list";
 import { ConnectionWriteEvent } from "../access/connection-write-event";
 
 let mongo: MongoMemoryServer;
@@ -178,6 +182,37 @@ describe("source connection writers", () => {
     ).toBeUndefined();
   });
 
+  it("refuses a viewer, or an agent's attempt, as a writer", async () => {
+    await WorkspaceMember.create({
+      workspaceId: WS,
+      userId: "vera",
+      role: "viewer",
+      joinedAt: new Date(),
+    });
+    const viewer = await req("PUT", `/${id}/writers`, {
+      writers: [{ principal: "user:vera" }],
+    });
+    expect(viewer.status).toBe(400);
+    expect(((await viewer.json()) as { error: string }).error).toMatch(
+      /^Viewers can't write through a connection/,
+    );
+    expect(
+      (
+        await req("PUT", `/${id}/writers`, {
+          writers: [{ principal: "agent:user:manager1" }],
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      await writersOutsideRefusal(String(WS), [
+        { principal: "agent:user:manager1" },
+      ]),
+    ).toMatch(/cannot be on a writers list/);
+    expect(
+      (await SourceConnection.findById(id).lean())?.writers,
+    ).toBeUndefined();
+  });
+
   it("shows who tried to write, and what the list does not cover", async () => {
     // A `where` stored on a source writer (from before writers were
     // connection-wide) is ignored: the writer writes anywhere.
@@ -203,6 +238,7 @@ describe("source connection writers", () => {
       event("workflow:fr-offer-to-cash", "POST /task/", true),
       event("workflow:fr-offer-to-cash", "PUT /lead/lead_1/", false),
       event("worker:workflows", "POST /task/", false),
+      event("agent:user:manager1", "POST /task/", false),
     ]);
     const { data } = await (await req("GET", `/${id}/writers`)).json();
     expect(data.writers).toMatchObject([
@@ -218,6 +254,8 @@ describe("source connection writers", () => {
     expect(byPrincipal["workflow:fr-offer-to-cash"]).toEqual([]);
     // The worker naming no workflow cannot be listed, so it is not offered.
     expect(byPrincipal["worker:workflows"]).toBeUndefined();
+    // Nor an agent's refused attempt: agents never write.
+    expect(byPrincipal["agent:user:manager1"]).toBeUndefined();
   });
 
   it("is scoped to the workspace", async () => {

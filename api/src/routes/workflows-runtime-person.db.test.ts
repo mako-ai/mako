@@ -21,8 +21,12 @@ import { asSystem } from "../access/connection-writes";
 import { hashApiKey } from "../auth/api-key.middleware";
 import { mintMcpAccessTokenForUser } from "../auth/mcp-oauth.service";
 import { User } from "../database/schema";
+import { ConnectionWriteEvent } from "../access/connection-write-event";
+import { setTransportForTests } from "../connections/forward";
+import { encryptString } from "../services/crypto.service";
 import {
   DatabaseConnection,
+  SourceConnection,
   Workspace,
   WorkspaceMember,
 } from "../database/workspace-schema";
@@ -65,6 +69,9 @@ async function main() {
   const postgresUrl = process.env.MAKO_TEST_POSTGRES_URL;
   const mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  // The source connection manager reads through the main connection.
+  process.env.DATABASE_URL = mongo.getUri();
+  process.env.DATABASE_NAME = mongoose.connection.db?.databaseName ?? "test";
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
   process.env.AI_GATEWAY_API_KEY = "gateway-key";
   const ws = new Types.ObjectId();
@@ -208,6 +215,56 @@ async function main() {
     assert.equal(gateway.length, 1, JSON.stringify(sent.map(s => s.url)));
     assert.equal(gateway[0].auth, "Bearer gateway-key");
 
+    // Through a source connection, a login (an agent acting for marc) only
+    // reads, even with marc on the writers list; marc's own key writes.
+    const close = await SourceConnection.create({
+      workspaceId: ws,
+      name: "ch_close",
+      type: "close",
+      config: { api_key: encryptString("close_key_person_tests") },
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 0 },
+      createdBy: "deployer",
+      liveReads: true,
+      writers: [{ principal: "user:marc" }],
+    });
+    const forwarded: string[] = [];
+    setTransportForTests(async (url, options) => {
+      forwarded.push(`${options.method} ${url}`);
+      return {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: Buffer.from("{}"),
+      };
+    });
+    try {
+      const request = (key: string, method: string) =>
+        call("POST", `/connections/${close._id}/request`, key, {
+          method,
+          path: "/task/",
+        });
+      res = await request(login, "POST");
+      assert.equal(res.status, 403, JSON.stringify(res.body));
+      assert.match(res.body.error, /^Agents only read/);
+      assert.equal(forwarded.length, 0, "a refused write is never sent");
+      let attempt = null;
+      for (let i = 0; i < 40 && !attempt; i++) {
+        attempt = await ConnectionWriteEvent.findOne({}).lean();
+        if (!attempt) await new Promise(r => setTimeout(r, 50));
+      }
+      assert.equal(attempt?.principal, "agent:user:marc");
+      assert.equal(attempt?.allowed, false);
+      res = await request(login, "GET");
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      res = await request(MARC_RUN_KEY, "POST");
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      assert.deepEqual(
+        forwarded.map(f => f.split(" ")[0]),
+        ["GET", "POST"],
+      );
+    } finally {
+      setTransportForTests(null);
+    }
+
     // The deployed worker is unchanged: the workflow's rights.
     res = await query(WORKER_KEY, WRITE("workflows"), "billing-sync");
     assert.equal(res.status, 200, JSON.stringify(res.body));
@@ -249,6 +306,7 @@ async function main() {
         ),
       ).catch(() => undefined);
     }
+    await databaseConnectionService.closeAllConnections();
     await mongoose.disconnect();
     await mongo.stop();
   }

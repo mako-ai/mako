@@ -8,7 +8,10 @@
 import { Types } from "mongoose";
 import type { IConnectionWriter } from "../database/workspace-schema";
 import { ConnectionWriteEvent } from "./connection-write-event";
-import { principalsOutsideWorkspace } from "./connection-writes";
+import {
+  principalsOutsideWorkspace,
+  viewerPrincipals,
+} from "./connection-writes";
 
 /** A principal that can be put on a writers list. */
 export const LISTABLE_PRINCIPAL =
@@ -29,7 +32,7 @@ interface RecentWriter {
  * Who wrote or tried to write through `connectionId` lately, from the write
  * log, and what the list does not cover (what it refuses), to allow in one
  * click. Only principals that can be listed: the worker writing as no
- * workflow cannot be.
+ * workflow cannot be, nor an agent's refused attempt (`agent:<principal>`).
  */
 export async function recentWriters(
   connectionId: string,
@@ -121,16 +124,25 @@ export function writersEditor(
   return authType === "session" && user?.id ? user.id : null;
 }
 
-/** Why `writers` cannot be listed, or null: each must be in the workspace. */
+/**
+ * Why `writers` cannot be listed, or null: each is a listable principal (an
+ * agent's attempt never is) and a workspace member who is not a viewer.
+ */
 export async function writersOutsideRefusal(
   workspaceId: string,
   writers: { principal: string }[],
 ): Promise<string | null> {
-  const strangers = await principalsOutsideWorkspace(
-    workspaceId,
-    writers.map(w => w.principal),
-  );
-  return strangers.length > 0
-    ? `${strangers.join(", ")} is not a member of this workspace`
+  const principals = writers.map(w => w.principal);
+  const unlistable = principals.filter(p => !LISTABLE_PRINCIPAL.test(p));
+  if (unlistable.length > 0) {
+    return `${unlistable.join(", ")} cannot be on a writers list`;
+  }
+  const strangers = await principalsOutsideWorkspace(workspaceId, principals);
+  if (strangers.length > 0) {
+    return `${strangers.join(", ")} is not a member of this workspace`;
+  }
+  const viewers = await viewerPrincipals(workspaceId, principals);
+  return viewers.length > 0
+    ? `Viewers can't write through a connection (${viewers.join(", ")}).`
     : null;
 }

@@ -15,7 +15,7 @@ import {
   type SafeRequestResult,
 } from "../services/safe-fetch.service";
 import { throttledRequest } from "../connectors/rate-gate";
-import { redactSecrets, secretValuesOf } from "./redact";
+import { redactSecrets } from "./redact";
 import type { ISourceConnection } from "../database/workspace-schema";
 import {
   applyCredential,
@@ -95,6 +95,10 @@ const CALLER_HEADER_BLOCKLIST = new Set([
   "te",
   "trailer",
   "keep-alive",
+  // A method override would turn a read into a write behind Mako's back.
+  "x-http-method-override",
+  "x-http-method",
+  "x-method-override",
 ]);
 
 /** Response headers never passed back. */
@@ -222,21 +226,18 @@ export function callerHeaders(
 }
 
 function containsSecret(text: string, secrets: string[]): boolean {
-  return secrets.some(secret => text.includes(secret));
+  return redactSecrets(text, secrets) !== text;
 }
 
 /**
- * The values to search an answer for, longest first: each stored secret long
- * enough to search for (`secretValuesOf`), its URL encoding, and exactly what
- * the credential put on the wire (`applyCredential`).
+ * The values to search an answer for, longest first: every credential value
+ * and exactly what the credential put on the wire (`applyCredential`),
+ * whatever their length. `redactSecrets` also finds their encoded forms.
  */
 function searchableSecrets(secrets: string[], sent: string[]): string[] {
-  const values = secretValuesOf(secrets);
-  return secretValuesOf([
-    ...values,
-    ...values.map(s => encodeURIComponent(s)),
-    ...sent,
-  ]);
+  return [...new Set([...secrets, ...sent].filter(Boolean))].sort(
+    (a, b) => b.length - a.length,
+  );
 }
 
 /** A request checked and resolved: allowed method, path under the base URL. */
@@ -262,12 +263,22 @@ export function resolveRequest(
     input.path,
     input.query,
   );
+  // `_method` overrides the method on some frameworks: never forwarded.
+  for (const name of [...url.searchParams.keys()]) {
+    if (name.toLowerCase() === "_method") url.searchParams.delete(name);
+  }
+  const override = Object.entries(input.headers ?? {}).find(
+    ([name]) => name.toLowerCase() === "x-http-method-override",
+  )?.[1];
   return {
     method,
     url,
     path,
     headers: callerHeaders(input.headers),
     body: input.body,
+    ...(typeof override === "string"
+      ? { methodOverride: override.trim().toUpperCase() }
+      : {}),
   };
 }
 
@@ -299,7 +310,7 @@ export async function send(
 ): Promise<ForwardResult> {
   const config = connection.config ?? {};
   const url = new URL(request.url);
-  const headers = { ...request.headers };
+  const headers = { ...request.headers, ...callable.extraHeaders?.(request) };
   const body =
     request.method === "GET" || request.method === "HEAD"
       ? undefined

@@ -50,6 +50,7 @@ import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { summarizeConnectionForListing } from "./universal-tools";
 import { connectionRequest } from "../../connections/proxy.service";
 import { ConnectionRequestError } from "../../connections/forward";
+import { wrapUntrustedData } from "./shared/query-result-format";
 
 const logger = loggers.api("connector-tools");
 
@@ -515,7 +516,7 @@ export function createConnectorTools(workspaceId: string) {
     call_connection: tool({
       description: [
         "Send one READ request through a SOURCE connection (Close, Stripe, a Custom API): Mako adds the credential, which you never see, and returns status, headers and body. Needs live reads on in the connection's Access tab.",
-        "Reads: GET, a GraphQL query (Custom API with GraphQL on), a Close search or a Close POST with x-http-method-override: GET. Writes are refused; they belong to a workflow on the writers list.",
+        "Reads: GET, a GraphQL query POSTed to the endpoint (Custom API with GraphQL on, where a GET is a write), a Close search or a Close POST with x-http-method-override: GET. Writes are refused; they belong to a workflow on the writers list.",
         "`path` is under the connection's base URL (Close: /lead/, Stripe: /v1/customers). Prefer synced tables: this reads live.",
       ].join("\n"),
       inputSchema: z.object({
@@ -558,16 +559,16 @@ export function createConnectorTools(workspaceId: string) {
             request: { method, path, query, headers, body },
             readOnly: true,
           });
+          // The service's answer is data, never instructions: fenced.
           const text = JSON.stringify(answer.body ?? null);
+          const truncated = text.length > CALL_CONNECTION_MAX_CHARS;
           return {
             status: answer.status,
             headers: answer.headers,
-            ...(text.length > CALL_CONNECTION_MAX_CHARS
-              ? {
-                  body: text.slice(0, CALL_CONNECTION_MAX_CHARS),
-                  truncated: true,
-                }
-              : { body: answer.body }),
+            body: wrapUntrustedData(
+              truncated ? text.slice(0, CALL_CONNECTION_MAX_CHARS) : text,
+            ),
+            ...(truncated ? { truncated: true } : {}),
           };
         } catch (error) {
           if (error instanceof ConnectionRequestError) {
