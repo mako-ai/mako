@@ -171,26 +171,64 @@ async function loadUndici(): Promise<UndiciModule> {
   return undiciModulePromise;
 }
 
-async function readBodyWithLimit(
+interface BodyChunkReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array }>;
+  cancel(reason?: unknown): Promise<void>;
+  releaseLock(): void;
+}
+
+/**
+ * Read a response body, refusing it once it passes `maxBytes`. The count is
+ * of DECODED bytes: fetch transparently decompresses gzip/br/deflate/zstd, so
+ * `content-length` (the compressed size, absent when chunked) is only an early
+ * reject. The stream is cancelled as soon as the limit is crossed, so an
+ * oversized body is never buffered in full.
+ */
+export async function readBodyWithLimit(
   response: {
     headers: { get(name: string): string | null };
-    arrayBuffer(): Promise<ArrayBuffer>;
+    body: { getReader(): BodyChunkReader } | null;
   },
   maxBytes: number,
 ): Promise<Buffer> {
+  const tooLarge = () =>
+    new SafeFetchError(`Response body exceeds ${maxBytes} byte limit`);
+
   const contentLength = response.headers.get("content-length");
   if (contentLength) {
     const length = Number.parseInt(contentLength, 10);
     if (Number.isFinite(length) && length > maxBytes) {
-      throw new SafeFetchError(`Response body exceeds ${maxBytes} byte limit`);
+      if (response.body) {
+        await response.body
+          .getReader()
+          .cancel()
+          .catch(() => undefined);
+      }
+      throw tooLarge();
     }
   }
 
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.byteLength > maxBytes) {
-    throw new SafeFetchError(`Response body exceeds ${maxBytes} byte limit`);
+  if (!response.body) return Buffer.alloc(0);
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw tooLarge();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
   }
-  return buffer;
+  return Buffer.concat(chunks, total);
 }
 
 function mergeSignals(
