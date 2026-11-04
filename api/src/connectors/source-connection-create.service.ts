@@ -105,6 +105,53 @@ export class SourceConnectionInputError extends Error {
   }
 }
 
+export const INVALID_KEY_CHARACTER =
+  "This key contains an invalid character (a line break or control character).";
+
+/** A line break, tab or other control character (0x00-0x1f, 0x7f). */
+function hasControlCharacter(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/**
+ * Refuse a credential holding a control character inside it: the HTTP client
+ * refuses it as a header value and quotes it in its error. Multi-line fields
+ * (`textarea`: a PEM key, a service-account JSON) may hold line breaks.
+ */
+export function assertCredentialCharacters(
+  config: Record<string, unknown> | undefined,
+  schema: { fields: ConnectorFieldSchema[] } | null,
+): void {
+  if (!schema?.fields || !config) return;
+  const check = (target: any, fields: ConnectorFieldSchema[]): void => {
+    for (const field of fields) {
+      const val = target?.[field.name];
+      if (field.type === "object_array" && Array.isArray(val)) {
+        if (field.itemFields?.length) {
+          val.forEach((item: unknown) =>
+            check(item, field.itemFields as ConnectorFieldSchema[]),
+          );
+        }
+        continue;
+      }
+      if (
+        isSecretField(field) &&
+        field.type !== "textarea" &&
+        typeof val === "string" &&
+        // The ends are trimmed on use: only the inside counts.
+        hasControlCharacter(val.trim())
+      ) {
+        throw new SourceConnectionInputError(INVALID_KEY_CHARACTER);
+      }
+    }
+  };
+  check(config, schema.fields);
+}
+
 export interface CreateSourceConnectionInput {
   workspaceId: string;
   userId: string;
@@ -161,6 +208,7 @@ export async function createSourceConnection(
     type,
     workspaceId,
   );
+  assertCredentialCharacters(input.config, schema);
   const settings = (input.settings ?? {}) as Record<string, any>;
 
   const sourceConnection = new SourceConnection({

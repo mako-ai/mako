@@ -318,20 +318,50 @@ export async function send(
   const sent = applyCredential(callable.credential(config), headers, url);
 
   const gate = rateGateOf(callable, connection);
-  const answer = await throttledRequest(
-    gate.key,
-    () =>
-      transport(url.toString(), {
-        method: request.method,
-        headers,
-        body,
-        signal: options.signal,
-        timeoutMs: options.timeoutMs,
-      }),
-    gate.minDelayMs,
-    "proxy",
-  );
+  let answer: SafeRequestResult;
+  try {
+    answer = await throttledRequest(
+      gate.key,
+      () =>
+        transport(url.toString(), {
+          method: request.method,
+          headers,
+          body,
+          signal: options.signal,
+          timeoutMs: options.timeoutMs,
+        }),
+      gate.minDelayMs,
+      "proxy",
+    );
+  } catch (error) {
+    throw withoutSecrets(
+      error,
+      searchableSecrets(secretsOf(callable, config), sent),
+    );
+  }
   return clean(answer, callable, config, sent);
+}
+
+/**
+ * A transport error with every credential value redacted from its message:
+ * the HTTP client quotes a header value it refuses ("Bearer <key>" is an
+ * invalid header value), and that message reaches agents, tests and logs.
+ * Same class, name and status; a cause that quotes a secret is dropped.
+ */
+function withoutSecrets(error: unknown, secrets: string[]): unknown {
+  if (!(error instanceof Error)) {
+    return typeof error === "string" ? redactSecrets(error, secrets) : error;
+  }
+  const leaks = (value: unknown): boolean =>
+    value instanceof Error && containsSecret(value.message, secrets);
+  if (!leaks(error) && !leaks(error.cause)) return error;
+  const message = redactSecrets(error.message, secrets);
+  if (error instanceof ConnectionRequestError) {
+    return new ConnectionRequestError(message, error.status);
+  }
+  const clean = new Error(message);
+  clean.name = error.name;
+  return clean;
 }
 
 /**

@@ -516,6 +516,27 @@ describe("no secret in any answer", () => {
     });
   });
 
+  it("redacts a key the HTTP client quotes in its error", async () => {
+    const token = "tok_9f2c4e7a\nx";
+    setTransportForTests(async (_url, options) => {
+      throw new TypeError(
+        `Headers.append: "${options.headers.authorization}" is an invalid header value.`,
+        { cause: new Error(`invalid value ${token}`) },
+      );
+    });
+    const error = await forward(
+      connection("custom_api", { base_url: "https://x.example.com", token }),
+      type("custom_api"),
+      { method: "GET", path: "/" },
+    ).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    const err = error as Error;
+    expect(err.message).toContain("invalid header value");
+    expect(err.message).not.toContain("tok_9f2c4e7a");
+    expect(err.cause).toBeUndefined();
+    expect(String(err.stack)).not.toContain("tok_9f2c4e7a");
+  });
+
   it("drops a header echoing a Custom API's key", async () => {
     answering(200, "ok", { "content-type": "text/plain", "x-probo-key": KEY });
     const result = await forward(

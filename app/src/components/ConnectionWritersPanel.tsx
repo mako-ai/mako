@@ -319,6 +319,20 @@ export default function ConnectionWritersPanel({
       {/* Allowed */}
       <Box>
         <SectionTitle>Allowed to write</SectionTitle>
+        {source &&
+          (who?.kind === "workflow" ||
+            state.writers.some(
+              writer => describe(writer.principal).kind === "workflow",
+            )) && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mb: 1 }}
+            >
+              Workflows share one deployed identity today: allowing a workflow
+              lets any deployed workflow in this workspace write here.
+            </Typography>
+          )}
         {state.writers.length === 0 ? (
           <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
             {source

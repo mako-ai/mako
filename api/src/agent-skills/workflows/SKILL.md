@@ -202,7 +202,9 @@ document with the word `mutation` or `subscription` anywhere, even in a
 string or comment, is a write. Anything else is a write: it needs this
 workflow on that tab's writers list (a listed writer writes anywhere through
 the connection), and a refused one throws and shows there with Allow. Tell
-the user which connection to allow first. A test run writes as the
+the user which connection to allow first. Workflows share one deployed
+identity today: allowing a workflow lets any deployed workflow in this
+workspace write through that connection. A test run writes as the
 person running it. A step can be retried: look for the record before
 creating it, or send the service's idempotency header, the same on every
 retry: ``post(path, body, { headers: { "Idempotency-Key": `offer-${id}` } })``.

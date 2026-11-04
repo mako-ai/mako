@@ -105,6 +105,8 @@ export interface CallableConnection {
   type: string;
   /** Where every request goes; a path must stay under it. */
   baseUrl(config: Config): string;
+  /** The config fields `baseUrl` reads: changed only in the app. */
+  baseUrlFields: string[];
   /** The credential and the way it is sent. */
   credential(config: Config): Credential;
   /** A request other than GET, HEAD or OPTIONS that only reads. */
@@ -274,6 +276,7 @@ function closeReadsAsGet(request: RequestShape): boolean {
 const close: CallableConnection = {
   type: "close",
   baseUrl: () => CLOSE_BASE_URL,
+  baseUrlFields: [],
   // Close: the API key as the basic-auth username, no password.
   credential: config => ({
     type: "basic",
@@ -307,6 +310,7 @@ const stripe: CallableConnection = {
   type: "stripe",
   baseUrl: config =>
     trimSlash(text(config.api_base_url) || "https://api.stripe.com"),
+  baseUrlFields: ["api_base_url"],
   credential: config => ({ type: "bearer", token: text(config.api_key) }),
   bodyEncoding: "form",
 };
@@ -315,6 +319,7 @@ const wise: CallableConnection = {
   type: "wise",
   baseUrl: config =>
     trimSlash(text(config.api_base_url) || "https://api.wise.com"),
+  baseUrlFields: ["api_base_url"],
   credential: config => ({ type: "bearer", token: text(config.api_key) }),
   otherSecrets: config => [text(config.sca_private_key)],
 };
@@ -339,6 +344,7 @@ function customApiCredentialType(config: Config): CredentialTypeId | "none" {
 export const customApi: CallableConnection = {
   type: CUSTOM_API_TYPE,
   baseUrl: config => trimSlash(text(config.base_url)),
+  baseUrlFields: ["base_url"],
   credential(config): Credential {
     const token = text(config.token);
     switch (customApiCredentialType(config)) {

@@ -383,6 +383,93 @@ describe("managers list", () => {
   });
 });
 
+describe("in the app only", () => {
+  it("a key is revealed to a session, never to an API key", async () => {
+    as("member", "member1", "api_key");
+    const res = await reveal(mine);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe(
+      "Keys can only be revealed in the app",
+    );
+    as("member", "member1");
+    expect((await reveal(mine)).status).toBe(200);
+  });
+
+  it("an API key cannot change the address or type, but can rename", async () => {
+    const api = String(
+      (
+        await SourceConnection.create({
+          workspaceId: WS,
+          name: "api",
+          type: "custom_api",
+          config: { base_url: "https://a.example.com", token: "tok_123456" },
+          settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+          createdBy: "member1",
+        })
+      )._id,
+    );
+    as("member", "member1", "api_key");
+    const moved = await req("PUT", `/${api}`, {
+      config: { base_url: "https://evil.example.com" },
+    });
+    expect(moved.status).toBe(403);
+    expect((await moved.json()).error).toBe(
+      "The address can only be changed in the app",
+    );
+    expect((await req("PUT", `/${mine}`, { type: "stripe" })).status).toBe(403);
+    const row = await SourceConnection.findById(api).lean();
+    expect(row?.config?.base_url).toBe("https://a.example.com");
+    expect((await req("PUT", `/${api}`, { name: "renamed" })).status).toBe(200);
+    // The same address sent back unchanged is not a change.
+    expect(
+      (
+        await req("PUT", `/${api}`, {
+          config: { base_url: "https://a.example.com" },
+        })
+      ).status,
+    ).toBe(200);
+    as("member", "member1");
+    expect(
+      (
+        await req("PUT", `/${api}`, {
+          config: { base_url: "https://b.example.com" },
+        })
+      ).status,
+    ).toBe(200);
+  });
+});
+
+describe("a key with a control character inside", () => {
+  beforeEach(() => as("member", "member1"));
+  const REFUSAL =
+    "This key contains an invalid character (a line break or control character).";
+
+  it("is refused on create and on update", async () => {
+    const created = await req("POST", "/", {
+      name: "bad",
+      type: "close",
+      config: { api_key: "abc\ndef" },
+    });
+    expect(created.status).toBe(400);
+    expect((await created.json()).error).toBe(REFUSAL);
+    const updated = await req("PUT", `/${mine}`, {
+      config: { api_key: "abc\u0000def" },
+    });
+    expect(updated.status).toBe(400);
+    expect((await updated.json()).error).toBe(REFUSAL);
+    expect(await SourceConnection.countDocuments()).toBe(2);
+  });
+
+  it("a line break at either end is trimmed, not refused", async () => {
+    const created = await req("POST", "/", {
+      name: "pasted",
+      type: "close",
+      config: { api_key: "abcdef\n" },
+    });
+    expect(created.status).toBe(201);
+  });
+});
+
 describe("not a member", () => {
   it("is refused at the door", async () => {
     as(null, "stranger");

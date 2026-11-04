@@ -26,6 +26,7 @@ import {
   type ConnectorFieldSchema,
   SourceConnectionInputError,
   applySchemaEncryption,
+  assertCredentialCharacters,
   createSourceConnection,
 } from "../connectors/source-connection-create.service";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
@@ -439,6 +440,23 @@ sourceConnectionRoutes.openapi(
   },
 );
 
+/**
+ * Whether an update changes the connection's type or a field its call
+ * profile reads its base URL from (connections/callable.ts).
+ */
+function changesAddress(
+  body: { type?: unknown; config?: unknown },
+  current: { type: string; config?: unknown },
+): boolean {
+  if (body.type !== undefined && body.type !== current.type) return true;
+  const incoming = body.config as Record<string, unknown> | undefined;
+  if (!incoming || typeof incoming !== "object") return false;
+  const stored = (current.config ?? {}) as Record<string, unknown>;
+  return (callableFor(current.type)?.baseUrlFields ?? []).some(
+    field => incoming[field] !== undefined && incoming[field] !== stored[field],
+  );
+}
+
 sourceConnectionRoutes.openapi(
   createRoute({
     method: "put",
@@ -482,6 +500,21 @@ sourceConnectionRoutes.openapi(
 
       // Get the current values (decrypted) for comparison
       const currentValues = sourceConnection.toObject();
+
+      // Where a key is sent is a person's choice, in the app: an API key or
+      // agent cannot point a stored credential at another address.
+      if (
+        c.get("authType") !== "session" &&
+        changesAddress(body, currentValues)
+      ) {
+        return c.json(
+          {
+            success: false,
+            error: "The address can only be changed in the app",
+          },
+          403,
+        );
+      }
 
       // Track if any changes were made
       let hasChanges = false;
@@ -541,6 +574,20 @@ sourceConnectionRoutes.openapi(
             sourceConnection.type,
             workspaceId,
           );
+          // Only what this call changes: a stored value stays as it is.
+          const changed = Object.fromEntries(
+            Object.keys(incoming)
+              .filter(key => incoming[key] !== currentConfig[key])
+              .map(key => [key, incoming[key]]),
+          );
+          try {
+            assertCredentialCharacters(changed, schema);
+          } catch (error) {
+            if (error instanceof SourceConnectionInputError) {
+              return c.json({ success: false, error: error.message }, 400);
+            }
+            throw error;
+          }
           sourceConnection.config = applySchemaEncryption(newConfig, schema);
           hasChanges = true;
         }
@@ -1199,6 +1246,14 @@ sourceConnectionRoutes.openapi(
       const user = c.get("user");
       if (!user) {
         return c.json({ success: false, error: VIEWER_REFUSAL }, 403);
+      }
+      // A key is shown to a person, in the app: never to an API key, MCP
+      // client or agent.
+      if (c.get("authType") !== "session") {
+        return c.json(
+          { success: false, error: "Keys can only be revealed in the app" },
+          403,
+        );
       }
 
       // The ciphertext comes from OUR record for THIS workspace — never from

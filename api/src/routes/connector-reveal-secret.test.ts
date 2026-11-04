@@ -47,6 +47,8 @@ vi.mock("../auth/unified-auth.middleware", () => ({
     next: () => Promise<void>,
   ) => {
     c.set("user", { id: "u1" });
+    // Keys are revealed in the app only: a signed-in session.
+    c.set("authType", "session");
     await next();
   },
 }));
