@@ -175,7 +175,7 @@ test("app hosts are refused while APPS_DOMAIN is unset", async () => {
   assert.deepEqual(await response.json(), { error: "unsupported_host" });
 });
 
-test("app hosts proxy only the published asset route, to app.mako.ai's origin", async () => {
+test("app hosts proxy only the published asset route and the ping, to app.mako.ai's origin", async () => {
   const env = {
     ...createEnv({ "route:app.mako.ai": route("https://origin.run.app") }),
     APPS_DOMAIN: "makoapps.dev",
@@ -196,7 +196,15 @@ test("app hosts proxy only the published asset route, to app.mako.ai's origin", 
     `${APP_ID}.makoapps.dev`,
   );
 
-  for (const path of ["/", "/api/auth/me", "/api/apps-preview/static-token/"]) {
+  upstream = undefined;
+  const ping = await worker.fetch(
+    new Request(`https://${APP_ID}.makoapps.dev/__mako/ping`),
+    env,
+  );
+  assert.equal(ping.status, 200);
+  assert.equal(new URL(upstream.url).pathname, "/__mako/ping");
+
+  for (const path of ["/", "/api/auth/me", "/api/apps-preview/static-token/", "/__mako/ping/x", "/__mako/other"]) {
     upstream = undefined;
     const refused = await worker.fetch(
       new Request(`https://${APP_ID}.makoapps.dev${path}`),
