@@ -16,11 +16,10 @@ import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import { requireWorkspaceRepo } from "../apps/workspace-repo-required";
 import {
+  commitToWorkspace,
   connectedTierEnabled,
   freshenBeforeMainWrite,
   resolveMirrorTarget,
-  mirrorPushNow,
-  queueMirrorPush,
 } from "../apps/cloud-repo.service";
 import {
   DEFAULT_BRANCH,
@@ -42,8 +41,9 @@ import {
 const logger = loggers.api("flow-config");
 
 /**
- * Commit whole-file writes/deletes onto main and queue the mirror push.
- * Shared by flow saves and history restores (flows, workspace connectors).
+ * Commit whole-file writes/deletes onto main through `commitToWorkspace`:
+ * done once GitHub has it, else it throws. Shared by flow saves and history
+ * restores (flows, workspace connectors).
  */
 export async function commitConfigToMain(
   workspaceId: string,
@@ -52,12 +52,12 @@ export async function commitConfigToMain(
   author?: GitAuthor,
 ): Promise<void> {
   const repoDir = await requireWorkspaceRepo(workspaceId);
-  await freshenBeforeMainWrite(workspaceId);
-  const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
-    message,
-    author,
-  });
-  if (!result.unchanged) queueMirrorPush(workspaceId);
+  await commitToWorkspace(workspaceId, () =>
+    commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
+      message,
+      author,
+    }),
+  );
 }
 
 /** Write-through: the file is committed first; the caller then updates the index. */
@@ -281,7 +281,6 @@ export async function exportWorkspaceFlows(
       for (const { id, sha } of shaBySlug.values()) {
         await Flow.updateOne({ _id: id }, { $set: { sourceBlobSha: sha } });
       }
-      await mirrorPushNow(workspaceId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       for (const slug of shaBySlug.keys()) {

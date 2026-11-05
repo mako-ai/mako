@@ -23,7 +23,7 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
-import { ensureLocalRepo, queueMirrorPush } from "../apps/cloud-repo.service";
+import { commitToWorkspace, ensureLocalRepo } from "../apps/cloud-repo.service";
 import { RepoRequiredError } from "../apps/config";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import {
@@ -140,21 +140,23 @@ export async function checkpointNotebook(
 
   const deletes =
     index.path && index.path !== wantedPath ? [index.path] : undefined;
-  await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    { writes: { [wantedPath]: contents }, deletes },
-    {
-      message: deletes?.length
-        ? `notebook: move to ${wantedPath}`
-        : `notebook: checkpoint "${index.name}"`,
-      author: actorUserId ? await authorForUser(actorUserId) : undefined,
-    },
+  const author = actorUserId ? await authorForUser(actorUserId) : undefined;
+  await commitToWorkspace(workspaceId, () =>
+    commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { [wantedPath]: contents }, deletes },
+      {
+        message: deletes?.length
+          ? `notebook: move to ${wantedPath}`
+          : `notebook: checkpoint "${index.name}"`,
+        author,
+      },
+    ),
   );
   index.path = wantedPath;
   index.checkpointBlobSha = sha;
   await index.save();
-  queueMirrorPush(workspaceId);
   return { committed: true };
 }
 
@@ -173,16 +175,16 @@ export async function removeNotebookFile(
     });
     return;
   }
-  await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    { deletes: [index.path] },
-    {
-      message: `notebook: delete "${index.name}"`,
-      author: actorUserId ? await authorForUser(actorUserId) : undefined,
-    },
+  const path = index.path;
+  const author = actorUserId ? await authorForUser(actorUserId) : undefined;
+  await commitToWorkspace(workspaceId, () =>
+    commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { deletes: [path] },
+      { message: `notebook: delete "${index.name}"`, author },
+    ),
   );
-  queueMirrorPush(workspaceId);
 }
 
 // ---------------------------------------------------------------------------
@@ -391,20 +393,21 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
     stamps.push({ index, path, sha });
   }
   if (Object.keys(writes).length > 0) {
-    await commitBlobsOnBranch(
-      repoDir,
-      DEFAULT_BRANCH,
-      { writes },
-      {
-        message: `notebook: adopt ${Object.keys(writes).length} notebooks into git (apps.md §24)`,
-      },
+    await commitToWorkspace(workspaceId, () =>
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes },
+        {
+          message: `notebook: adopt ${Object.keys(writes).length} notebooks into git (apps.md §24)`,
+        },
+      ),
     );
     for (const { index, path, sha } of stamps) {
       index.path = path;
       index.checkpointBlobSha = sha;
       await index.save();
     }
-    queueMirrorPush(workspaceId);
   }
   return { notebooks: indexes.length, written: Object.keys(writes).length };
 }

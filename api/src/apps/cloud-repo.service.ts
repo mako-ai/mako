@@ -6,11 +6,14 @@
  * there, restores clone from there. A customer remote is never force-pushed:
  * heads and tags go without force (a direct GitHub-side push is never
  * clobbered), and only Mako's own `refs/mako/*` WIP namespace is forced.
- * The mirror is the source of truth and the local repo its cache: every
- * write onto `main` here freshens from the mirror first
- * (`freshenBeforeMainWrite`), and a local branch found diverged from the
- * mirror is reset to it with its commits parked under `refs/mako/diverged/*`
- * (`fetchFromCloud`).
+ * The mirror is the source of truth and every instance's local repo a read
+ * cache of it. GitHub is the commit point for server-side saves: every one
+ * goes through `commitToWorkspace` (freshen, commit, push without force,
+ * await, retry on a non-fast-forward, fail the save otherwise), so no clone
+ * holds a save GitHub does not have. A shared per-branch head pointer
+ * (`branch-head.service`) tells reads when their clone is behind. A local
+ * branch found diverged from the mirror is reset to it with its commits
+ * parked under `refs/mako/diverged/*` (`fetchFromCloud`).
  *
  * Reads always use a connected repo when one is bound: serverless preview
  * instances have an empty filesystem and must be able to rebuild their local
@@ -20,16 +23,17 @@
  * real workspace content without a test commit ever landing in a customer
  * repo.
  *
- * The local bare repo remains the working store the API reads from; the
- * mirror is the durable replica. Mirror pushes run after commits/merges
- * (not per WIP flush — too chatty), serialized per workspace and coalesced
- * so concurrent commits produce one trailing push, never an interleaving.
+ * Sandbox pushes are the exception: the box is a working copy, so its pushes
+ * land here and reach the mirror in the background (`queueMirrorPush`), with
+ * the receive hook refusing what GitHub would refuse
+ * (`fetchMirrorTipsForReceive`). Pushes are serialized per workspace and
+ * coalesced, never interleaved.
  */
 import { resolveRepoToken } from "../integrations/github/app-auth";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { runGit } from "./git";
+import { GitError, runGit } from "./git";
 import { appsConnectedRepoPushEnv, appsRequireConnectedRepo } from "./config";
 import {
   DEFAULT_BRANCH,
@@ -37,9 +41,11 @@ import {
   repoDirFor,
   repoExists,
   resolveCommit,
+  updateRefCas,
   type GitAuthor,
 } from "./repository.service";
 import { initialWorkspaceFiles } from "./workspace-template";
+import { advanceBranchHead, readBranchHead } from "./branch-head.service";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps");
@@ -202,23 +208,28 @@ export async function ensureLocalRepo(workspaceId: string): Promise<void> {
 // when it RUNS, so a caller that needs its just-made commit mirrored must
 // wait for a push that STARTS after that commit; that is exactly what
 // `schedulePush` guarantees.
-const inFlight = new Map<string, Promise<void>>();
-type MirrorPushScope = "all" | "default-branch";
+const inFlight = new Map<string, Promise<string | undefined>>();
+/** "all" pushes every head; `branch:<name>` pushes that one branch. */
+type MirrorPushScope = "all" | `branch:${string}`;
 // Requests of the same scope coalesce; different scopes stay separate so an
 // all-ref push cannot turn a queued create push into a failing operation.
-const queuedPushes = new Map<string, Map<MirrorPushScope, Promise<void>>>();
+const queuedPushes = new Map<
+  string,
+  Map<MirrorPushScope, Promise<string | undefined>>
+>();
 
+/** Resolves to the oid pushed for a branch scope, undefined otherwise. */
 async function runPush(
   workspaceId: string,
   scope: MirrorPushScope,
-): Promise<void> {
+): Promise<string | undefined> {
   const target = await resolveMirrorTarget(workspaceId);
-  if (!target) return;
-  if (scope === "default-branch") {
-    await pushDefaultBranchMirror(workspaceId, target);
-    return;
+  if (!target) return undefined;
+  if (scope.startsWith("branch:")) {
+    return pushBranchMirror(workspaceId, target, scope.slice("branch:".length));
   }
   await pushMirror(workspaceId, target);
+  return undefined;
 }
 
 /**
@@ -229,7 +240,7 @@ async function runPush(
 function schedulePush(
   workspaceId: string,
   scope: MirrorPushScope = "all",
-): Promise<void> {
+): Promise<string | undefined> {
   const running = inFlight.get(workspaceId);
   if (!running) {
     const p = runPush(workspaceId, scope).finally(() => {
@@ -268,21 +279,22 @@ function schedulePush(
   return queued;
 }
 
-async function pushDefaultBranchMirror(
+async function pushBranchMirror(
   workspaceId: string,
   target: MirrorTarget,
-): Promise<void> {
+  branch: string,
+): Promise<string> {
   const repoDir = repoDirFor(workspaceId);
   const token = await tokenFor(target);
   const url = remoteUrl(target.owner, target.repo);
-  const branchRef = `refs/heads/${DEFAULT_BRANCH}`;
+  const branchRef = `refs/heads/${branch}`;
   const localOid = (
     await runGit(["-C", repoDir, "rev-parse", "--verify", branchRef])
   ).stdout.trim();
 
-  // App creation only adds content to the default branch. Pushing every local
-  // head here lets an unrelated stale feature branch reject creation after
-  // main has advanced. Keep active non-default branches out of this write.
+  // A save only changes its own branch. Pushing every local head here lets an
+  // unrelated stale feature branch reject the save after main has advanced.
+  // Without force: GitHub's fast-forward check is the compare-and-swap.
   await runGit([
     "-C",
     repoDir,
@@ -296,9 +308,10 @@ async function pushDefaultBranchMirror(
     "-C",
     repoDir,
     "update-ref",
-    `${MIRROR_TRACKING_PREFIX}${DEFAULT_BRANCH}`,
+    `${MIRROR_TRACKING_PREFIX}${branch}`,
     localOid,
   ]).catch(() => undefined);
+  return localOid;
 }
 
 async function pushMirror(
@@ -503,9 +516,9 @@ export async function reconcileMirrorDeletionsForTests(
 }
 
 /**
- * Queue a fire-and-forget mirror push. Never throws — durability is
- * best-effort on top of the local store, and a failed push must not fail the
- * user's commit. Failures are logged for a future reconciler to sweep. Loads
+ * Queue a fire-and-forget mirror push. Never throws. Only for commits that
+ * already exist elsewhere (a box push, a parked diverged tip): a server-side
+ * save uses `commitToWorkspace`, which awaits its push. Failures are logged. Loads
  * the target itself so callers holding only ids (commit paths) can use it,
  * and so a binding or pointer attached after their doc snapshot is still
  * seen.
@@ -536,7 +549,7 @@ export async function mirrorPushDefaultBranchNow(
   workspaceId: string,
 ): Promise<void> {
   if (!connectedTierEnabled()) return;
-  await schedulePush(workspaceId, "default-branch");
+  await schedulePush(workspaceId, `branch:${DEFAULT_BRANCH}`);
 }
 
 /**
@@ -614,26 +627,76 @@ export async function ensureCommitLocally(
  * webhook instance had the commit, the instance serving the sandbox's
  * fetch did not, and the deploy burned its retries inside the window).
  *
- * Throttled per workspace: bursts of fetches (a clone is several requests)
- * share one mirror pull. Failure is non-fatal — serve local state and let
- * the client's git command produce the specific error.
+ * The shared branch-head pointer (`branch-head.service`) decides whether to
+ * fetch: a local head that matches it is current and is served as is (a
+ * slow backstop fetch still runs, for pushes no webhook reported); one that
+ * differs is fetched now. Without a pointer the fetch is throttled per
+ * workspace, so bursts of fetches (a clone is several requests) share one
+ * mirror pull. `intervalMs` 0 always fetches. Failure is non-fatal — serve
+ * local state and let the client's git command produce the specific error.
  */
 const FRESHEN_INTERVAL_MS = 3_000;
+/** How long a clone that matches the pointer goes without a fetch. */
+const POINTER_BACKSTOP_MS = 30_000;
 const lastFreshenAt = new Map<string, number>();
 const freshenInFlight = new Map<string, Promise<void>>();
 
-export async function freshenForServe(
+/** Whether the local head is what the pointer says GitHub has. */
+async function pointerVerdict(
   workspaceId: string,
-  intervalMs: number = FRESHEN_INTERVAL_MS,
-  intent: "serve" | "write" = "serve",
+  branch: string,
+): Promise<"current" | "behind" | "unknown"> {
+  const pointer = await readBranchHead(workspaceId, branch);
+  if (!pointer) return "unknown";
+  const repoDir = repoDirFor(workspaceId);
+  const local = await resolveCommit(repoDir, `refs/heads/${branch}`).catch(
+    () => null,
+  );
+  if (local === pointer) return "current";
+  // Local AHEAD of GitHub (a box push whose mirror push has not landed) is
+  // not behind: a fetch would change nothing.
+  if (
+    local &&
+    (await commitPresent(repoDir, pointer)) &&
+    (await runGit([
+      "-C",
+      repoDir,
+      "merge-base",
+      "--is-ancestor",
+      pointer,
+      local,
+    ])
+      .then(() => true)
+      .catch(() => false))
+  ) {
+    return "current";
+  }
+  return "behind";
+}
+
+async function freshenBranch(
+  workspaceId: string,
+  branch: string,
+  intervalMs: number,
+  intent: "serve" | "write",
 ): Promise<void> {
-  if (Date.now() - (lastFreshenAt.get(workspaceId) ?? 0) < intervalMs) return;
-  const existing = freshenInFlight.get(workspaceId);
+  const key =
+    branch === DEFAULT_BRANCH ? workspaceId : `${workspaceId}#${branch}`;
+  if (intervalMs > 0) {
+    const since = Date.now() - (lastFreshenAt.get(key) ?? 0);
+    const verdict = await pointerVerdict(workspaceId, branch);
+    if (verdict === "current" && since < POINTER_BACKSTOP_MS) return;
+    if (verdict === "unknown" && since < intervalMs) return;
+  }
+  const existing = freshenInFlight.get(key);
   if (existing) return existing;
   const run = (async () => {
     try {
-      await fetchFromCloud(workspaceId, DEFAULT_BRANCH);
+      await fetchFromCloud(workspaceId, branch);
     } catch (error) {
+      // A session branch that was never pushed is absent on the mirror, and
+      // the fetch fails: that is the normal case, not an error.
+      if (branch !== DEFAULT_BRANCH) return;
       const details = {
         workspaceId,
         error: error instanceof Error ? error.message : String(error),
@@ -658,19 +721,42 @@ export async function freshenForServe(
         );
       }
     } finally {
-      lastFreshenAt.set(workspaceId, Date.now());
+      lastFreshenAt.set(key, Date.now());
     }
-  })().finally(() => freshenInFlight.delete(workspaceId));
-  freshenInFlight.set(workspaceId, run);
+  })().finally(() => freshenInFlight.delete(key));
+  freshenInFlight.set(key, run);
   return run;
 }
 
-export async function fetchFromCloud(
+export async function freshenForServe(
+  workspaceId: string,
+  intervalMs: number = FRESHEN_INTERVAL_MS,
+  intent: "serve" | "write" = "serve",
+): Promise<void> {
+  return freshenBranch(workspaceId, DEFAULT_BRANCH, intervalMs, intent);
+}
+
+/**
+ * Bring `branch` up to date with the mirror before a read: `main` exactly as
+ * {@link freshenForServe}, plus the branch itself when it is another one.
+ * Never throws; a branch absent on the mirror is simply read locally.
+ */
+export async function freshenBranchForRead(
   workspaceId: string,
   branch: string,
 ): Promise<void> {
+  await freshenForServe(workspaceId);
+  if (branch === DEFAULT_BRANCH) return;
+  await freshenBranch(workspaceId, branch, FRESHEN_INTERVAL_MS, "serve");
+}
+
+/** Resolves to the mirror's head of `branch`, or undefined with no mirror. */
+export async function fetchFromCloud(
+  workspaceId: string,
+  branch: string,
+): Promise<string | undefined> {
   const target = await resolveReadableMirrorTarget(workspaceId);
-  if (!target) return;
+  if (!target) return undefined;
   const repoDir = repoDirFor(workspaceId);
   const token = await tokenFor(target);
   const url = remoteUrl(target.owner, target.repo);
@@ -703,9 +789,9 @@ export async function fetchFromCloud(
       `refs/heads/${branch}`,
       remoteOid,
     ]);
-    return;
+    return remoteOid;
   }
-  if (localOid === remoteOid) return;
+  if (localOid === remoteOid) return remoteOid;
   const isAncestor = (ancestor: string, descendant: string) =>
     runGit(["-C", repoDir, "merge-base", "--is-ancestor", ancestor, descendant])
       .then(() => true)
@@ -720,12 +806,12 @@ export async function fetchFromCloud(
       remoteOid,
       localOid,
     ]);
-    return;
+    return remoteOid;
   }
   if (await isAncestor(remoteOid, localOid)) {
     // Local is ahead: commits made here whose mirror push has not landed yet
     // (or is in flight). Nothing to reconcile — the push carries them up.
-    return;
+    return remoteOid;
   }
   // DIVERGED: both sides have commits the other lacks. The local repo is a
   // cache of the mirror, and a cache that disagrees with its source is wrong
@@ -755,6 +841,7 @@ export async function fetchFromCloud(
     { workspaceId, branch, localOid, remoteOid, parkedRef, swapped },
   );
   queueMirrorPush(workspaceId);
+  return remoteOid;
 }
 
 /**
@@ -773,6 +860,217 @@ export function freshenBeforeMainWrite(workspaceId: string): Promise<void> {
   // write can occasionally inherit a serve's warn — acceptable, since the
   // failure is still reported and the next write logs it at full volume.
   return freshenForServe(workspaceId, 0, "write");
+}
+
+/**
+ * GitHub's heads as of now, for judging a box push (`routes/apps-git.ts`).
+ *
+ * The box is a working copy and its pushes land here first, with the mirror
+ * push in the background. GitHub refuses a push that is not a fast-forward of
+ * its tip, and a push accepted here that GitHub then refuses is parked later
+ * while the box was told "pushed". So before receive-pack runs, GitHub's
+ * heads are fetched into `refs/remotes/mirror-live/*` (hidden from clones;
+ * separate from the deletion bookkeeping under refs/remotes/mirror/), and the
+ * pre-receive hook refuses what GitHub would refuse.
+ *
+ * Returns whether the tips are current. False (no mirror, push tier off,
+ * GitHub unreachable) leaves the hook check off: the push is accepted as
+ * before rather than blocked by an outage.
+ */
+export async function fetchMirrorTipsForReceive(
+  workspaceId: string,
+): Promise<boolean> {
+  const target = await resolveMirrorTarget(workspaceId);
+  if (!target) return false;
+  const repoDir = repoDirFor(workspaceId);
+  try {
+    await runGit([
+      "-C",
+      repoDir,
+      ...authArgs(await tokenFor(target)),
+      "fetch",
+      "--quiet",
+      "--prune",
+      "--no-tags",
+      remoteUrl(target.owner, target.repo),
+      `+refs/heads/*:${MIRROR_LIVE_PREFIX}*`,
+    ]);
+    return true;
+  } catch (error) {
+    logger.warn("Mirror tips fetch before a box push failed; not checked", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
+/** GitHub's heads as last fetched for a box push; never pushed or served. */
+const MIRROR_LIVE_PREFIX = "refs/remotes/mirror-live/";
+
+/**
+ * Thrown when a server-side save could not be pushed to the workspace's
+ * GitHub repository. The save did not happen: the local commit is undone.
+ */
+export class WorkspaceSaveNotPushedError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `The save could not be pushed to the workspace's GitHub repository (${
+        cause instanceof GitError
+          ? cause.stderr.trim() || cause.message
+          : cause instanceof Error
+            ? cause.message
+            : String(cause)
+      }). It was not saved; retry.`,
+    );
+    this.name = "WorkspaceSaveNotPushedError";
+  }
+}
+
+/** GitHub refused the push because the branch moved: retry on its new tip. */
+function isStaleTipRejection(error: unknown): boolean {
+  const text =
+    error instanceof GitError
+      ? `${error.stderr}\n${error.message}`
+      : error instanceof Error
+        ? error.message
+        : String(error);
+  return /non-fast-forward|fetch first|stale info|cannot lock ref|failed to update ref/i.test(
+    text,
+  );
+}
+
+/** Push attempts per save; each after the first follows a stale-tip rejection. */
+const COMMIT_PUSH_ATTEMPTS = 3;
+
+// One server-side save at a time per (workspace, branch) on this instance.
+// Two saves interleaving would push each other's commits and could undo each
+// other on failure; across instances, GitHub's fast-forward check serializes.
+const commitLocks = new Map<string, Promise<unknown>>();
+
+function withCommitLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const previous = commitLocks.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(run);
+  const tail = next.catch(() => undefined);
+  commitLocks.set(key, tail);
+  void tail.then(() => {
+    if (commitLocks.get(key) === tail) commitLocks.delete(key);
+  });
+  return next;
+}
+
+/**
+ * THE write primitive for server-side saves to the workspace repo (dbt,
+ * consoles, skills, prompt, flows, notebooks, server-side moves of `main`).
+ * GitHub is the commit point: a save counts only once GitHub accepted it.
+ *
+ *  1. Freshen `branch` from the mirror.
+ *  2. Run `write`, which commits onto the local `branch` (one commit, or a
+ *     merge; whatever it leaves at the tip is what is pushed).
+ *  3. Push that one branch without force and await it.
+ *  4. GitHub refused because the branch moved (non-fast-forward): undo the
+ *     local commit, fetch, and run `write` again on GitHub's tip. Bounded.
+ *  5. Still refused, or refused for any other reason (protection rule,
+ *     outage): undo the local commit and throw
+ *     {@link WorkspaceSaveNotPushedError}. The clone never keeps a commit
+ *     GitHub does not have.
+ *
+ * `write` may therefore run more than once and must be safe to re-run; every
+ * caller's write is a pure function of its input applied to the current tip.
+ * A `write` that changes nothing (the tip does not move) pushes nothing.
+ * Without a mirror (dev, previews) it is just `write`: the local repo is the
+ * store. Sandbox pushes do not come through here — the box is a working copy
+ * and its pushes stay in the background.
+ */
+export async function commitToWorkspace<T>(
+  workspaceId: string,
+  write: () => Promise<T>,
+  opts: { branch?: string } = {},
+): Promise<T> {
+  const branch = opts.branch ?? DEFAULT_BRANCH;
+  const target = await resolveMirrorTarget(workspaceId);
+  if (!target) return write();
+  const repoDir = repoDirFor(workspaceId);
+  const branchRef = `refs/heads/${branch}`;
+
+  return withCommitLock(`${workspaceId}#${branch}`, async () => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < COMMIT_PUSH_ATTEMPTS; attempt++) {
+      // Un-throttled: a commit judged against a stale tip cannot be pushed.
+      // A branch absent on the mirror (a new session branch) fails to fetch,
+      // and the push creates it.
+      const remoteTip = await fetchFromCloud(workspaceId, branch).catch(
+        error => {
+          if (branch === DEFAULT_BRANCH) {
+            logger.warn("Freshen before a save failed", {
+              workspaceId,
+              branch,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return undefined;
+        },
+      );
+      const before = await resolveCommit(repoDir, branchRef);
+      const result = await write();
+      const after = await resolveCommit(repoDir, branchRef);
+      if (!after || after === before) {
+        // Nothing new to push, unless the tip itself never reached GitHub
+        // (a save whose earlier push failed before this fix existed).
+        if (!after || !remoteTip || after === remoteTip) return result;
+      }
+      try {
+        const pushed = await schedulePush(workspaceId, `branch:${branch}`);
+        if (
+          pushed !== after &&
+          !(
+            pushed &&
+            (await runGit([
+              "-C",
+              repoDir,
+              "merge-base",
+              "--is-ancestor",
+              after,
+              pushed,
+            ])
+              .then(() => true)
+              .catch(() => false))
+          )
+        ) {
+          // Something reset the branch between our commit and the push (a
+          // concurrent freshen found the mirror had moved and parked our
+          // commit): what reached GitHub is not this save.
+          throw new GitError(
+            "branch moved before the push (stale info)",
+            [],
+            1,
+            "stale info",
+          );
+        }
+        await advanceBranchHead(workspaceId, branch, remoteTip, pushed);
+        return result;
+      } catch (error) {
+        lastError = error;
+        // Undo exactly our commit; if the branch moved since, it is no
+        // longer ours to undo.
+        if (before) {
+          await updateRefCas(repoDir, branchRef, before, after);
+        } else {
+          await runGit(["-C", repoDir, "update-ref", "-d", branchRef, after])
+            .then(() => undefined)
+            .catch(() => undefined);
+        }
+        if (!isStaleTipRejection(error)) break;
+        logger.warn("Save push rejected; retrying on the mirror's tip", {
+          workspaceId,
+          branch,
+          attempt: attempt + 1,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    throw new WorkspaceSaveNotPushedError(lastError);
+  });
 }
 
 /**

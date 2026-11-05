@@ -54,6 +54,7 @@ import { assertDevLoginSafeAtBoot } from "./auth/dev-login";
 import { initAppBindingParquetWriteOptions } from "./utils/parquet-compression";
 import { initParquetRowLimits } from "./utils/parquet-row-limit";
 import { attachAppsTerminalWs } from "./apps/terminal-ws";
+import { WorkspaceSaveNotPushedError } from "./apps/cloud-repo.service";
 import {
   isGkeWorkerConfigured,
   rollWorkersToRuntimeImage,
@@ -163,6 +164,16 @@ app.onError((err, c) => {
       method: c.req.method,
     });
     return c.json({ success: false, error: err.message }, err.status);
+  }
+  // GitHub did not take a save (outage, protection rule, kept moving): the
+  // save did not happen and the caller can retry. Not a bug here.
+  if (err instanceof WorkspaceSaveNotPushedError) {
+    logger.warn("Save not pushed to GitHub", {
+      error: err.message,
+      path: c.req.path,
+      method: c.req.method,
+    });
+    return c.json({ success: false, error: err.message }, 503);
   }
   logger.error("Unhandled API error", {
     error: err,

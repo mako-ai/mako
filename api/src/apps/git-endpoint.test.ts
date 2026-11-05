@@ -620,4 +620,65 @@ describe("pushes against a connected mirror", () => {
       delete process.env.APPS_CONNECTED_REPO_PUSH;
     }
   });
+  it("a branch push GitHub would refuse is refused to the box", async () => {
+    // Only main is freshened when refs are advertised, so a feature branch
+    // GitHub moved is the case that used to be accepted here and parked later.
+    const remotesRoot = path.join(tmpRoot, "remotes-branch");
+    const remoteDir = path.join(remotesRoot, "acme", "mirror.git");
+    await fs.mkdir(path.dirname(remoteDir), { recursive: true });
+    await run("git", ["init", "-q", "--bare", "-b", "main", remoteDir]);
+    process.env.APPS_GITHUB_REMOTE_BASE = `file://${remotesRoot}`;
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    mirror.binding = { owner: "acme", repo: "mirror" };
+    try {
+      const box = await freshClone(token());
+      await run("git", ["-C", box, "checkout", "-qb", "feat"]);
+      await fs.writeFile(path.join(box, "f0.txt"), "f0\n");
+      await run("git", ["-C", box, "add", "-A"]);
+      await run("git", ["-C", box, "commit", "-qm", "f0"]);
+      await run("git", ["-C", box, "push", "-q", "origin", "HEAD:feat"], {
+        env: gitEnv(token()),
+      });
+      // The mirror push carried feat to GitHub, then a laptop moved it there.
+      await run("git", [
+        "-C",
+        repoDir,
+        "push",
+        "-q",
+        remoteDir,
+        "refs/heads/*:refs/heads/*",
+      ]);
+      const laptop = await fs.mkdtemp(path.join(tmpRoot, "laptop-feat-"));
+      await run("git", ["clone", "-q", "-b", "feat", remoteDir, laptop]);
+      await run("git", ["-C", laptop, "config", "user.email", "l@l"]);
+      await run("git", ["-C", laptop, "config", "user.name", "L"]);
+      await fs.writeFile(path.join(laptop, "f1.txt"), "f1\n");
+      await run("git", ["-C", laptop, "add", "-A"]);
+      await run("git", ["-C", laptop, "commit", "-qm", "f1 on GitHub"]);
+      await run("git", ["-C", laptop, "push", "-q", "origin", "HEAD:feat"]);
+
+      // The box commits on its feat and pushes: a fast-forward HERE, not on
+      // GitHub. It must be told, not accepted and parked later.
+      await fs.writeFile(path.join(box, "f2.txt"), "f2\n");
+      await run("git", ["-C", box, "add", "-A"]);
+      await run("git", ["-C", box, "commit", "-qm", "f2"]);
+      await expect(
+        run("git", ["-C", box, "push", "-q", "origin", "HEAD:feat"], {
+          env: gitEnv(token()),
+        }),
+      ).rejects.toThrow(/behind, pull first/);
+
+      // A push that includes GitHub's tip goes through. (Merged from GitHub
+      // directly: this server's feat has not fetched the laptop's commit.)
+      await run("git", ["-C", box, "fetch", "-q", remoteDir, "feat"]);
+      await run("git", ["-C", box, "merge", "-q", "--no-edit", "FETCH_HEAD"]);
+      await run("git", ["-C", box, "push", "-q", "origin", "HEAD:feat"], {
+        env: gitEnv(token()),
+      });
+    } finally {
+      mirror.binding = null;
+      delete process.env.APPS_GITHUB_REMOTE_BASE;
+      delete process.env.APPS_CONNECTED_REPO_PUSH;
+    }
+  });
 });

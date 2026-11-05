@@ -12,7 +12,7 @@ import {
   boundRepoDirIfExists,
   requireWorkspaceRepo,
 } from "./workspace-repo-required";
-import { freshenBeforeMainWrite, queueMirrorPush } from "./cloud-repo.service";
+import { commitToWorkspace } from "./cloud-repo.service";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -62,25 +62,25 @@ async function commitWorkspaceTextFile(
   messages: { update: string; clear: string },
 ): Promise<{ commitOid?: string; unchanged: boolean }> {
   const repoDir = await requireWorkspaceRepo(workspaceId);
-  await freshenBeforeMainWrite(workspaceId);
   const author = actorUserId ? await authorForUser(actorUserId) : undefined;
   const trimmed = content.trim();
-  const result = await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    trimmed
-      ? {
-          writes: {
-            [relPath]: content.endsWith("\n") ? content : `${content}\n`,
-          },
-        }
-      : { deletes: [relPath] },
-    {
-      message: trimmed ? messages.update : messages.clear,
-      author,
-    },
+  const result = await commitToWorkspace(workspaceId, () =>
+    commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      trimmed
+        ? {
+            writes: {
+              [relPath]: content.endsWith("\n") ? content : `${content}\n`,
+            },
+          }
+        : { deletes: [relPath] },
+      {
+        message: trimmed ? messages.update : messages.clear,
+        author,
+      },
+    ),
   );
-  if (!result.unchanged) queueMirrorPush(workspaceId);
   return {
     commitOid: result.unchanged ? undefined : result.commitOid,
     unchanged: result.unchanged,

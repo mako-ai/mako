@@ -130,12 +130,11 @@ import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
 export { derivedAppId } from "./app-paths";
 import { createAppsScaffold } from "./scaffold";
 import {
+  WorkspaceSaveNotPushedError,
+  commitToWorkspace,
   ensureCommitLocally,
   ensureLocalRepo,
-  freshenBeforeMainWrite,
-  mirrorPushNow,
-  mirrorPushDefaultBranchNow,
-  resolveMirrorTarget,
+  fetchFromCloud,
   queueMirrorPush,
   scheduleMirrorBranchReconcile,
 } from "./cloud-repo.service";
@@ -941,7 +940,6 @@ export async function createProject(input: {
   // dbt, and prompt writes skip the 412. A GitHub binding (or a test that
   // already seeded the bare repo) is required.
   const repoDir = await requireWorkspaceRepo(input.workspaceId);
-  const mirror = await resolveMirrorTarget(input.workspaceId);
   const target: AppFolderTarget = input.folder ?? {
     scope: "workspace",
     folderSegments: [],
@@ -980,7 +978,10 @@ export async function createProject(input: {
   // §10 monorepo: commit the scaffold under its folder onto main. The row's
   // id goes into the manifest: that is the app's identity from here on,
   // whatever folder it is later filed under.
-  let scaffoldCommit: { commitOid: string; previousHead: string } | null;
+  // Durable tier (§13.17): the connected repo. When one is bound, the push
+  // is REQUIRED — on serverless hosts the local repo is an ephemeral cache —
+  // so the commit goes through the primitive, which undoes it if GitHub does
+  // not take it. Hosts without a binding (dev, previews) stay local-only.
   try {
     const scaffold = createAppsScaffold({
       title: project.title,
@@ -991,11 +992,13 @@ export async function createProject(input: {
     for (const [rel, contents] of Object.entries(scaffold)) {
       prefixed[`${appPath}/${rel}`] = contents;
     }
-    scaffoldCommit = await commitFilesOnBranch(
-      repoDir,
-      DEFAULT_BRANCH,
-      { writes: prefixed },
-      { message: `Create app "${title}" (${appPath})`, author: input.author },
+    await commitToWorkspace(input.workspaceId, () =>
+      commitFilesOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: prefixed },
+        { message: `Create app "${title}" (${appPath})`, author: input.author },
+      ),
     );
   } catch (error) {
     // Don't leave a content-less project behind.
@@ -1003,43 +1006,13 @@ export async function createProject(input: {
       _id: project._id,
       workspaceId: project.workspaceId,
     });
-    throw error;
-  }
-  // Durable tier (§13.17): the connected repo. When one is bound, the
-  // durable push is REQUIRED — on serverless hosts the local repo is an
-  // ephemeral cache. Hosts without a binding (dev, previews) stay local-only.
-  try {
-    if (mirror) {
-      await mirrorPushDefaultBranchNow(input.workspaceId);
-    }
-  } catch (error) {
-    await AppProject.deleteOne({
-      _id: project._id,
-      workspaceId: project.workspaceId,
-    });
-    // Roll the scaffold commit back so the repo matches the docs. The CAS
-    // returns false (it does not throw) when main moved on meanwhile; that
-    // leaves the scaffold on a tip the mirror never received — say so.
-    const rolledBack = await updateRefCas(
-      repoDir,
-      `refs/heads/${DEFAULT_BRANCH}`,
-      scaffoldCommit.previousHead,
-      scaffoldCommit.commitOid,
-    ).catch(() => false);
-    if (!rolledBack) {
-      logger.warn("Apps scaffold rollback skipped: main moved on", {
+    if (error instanceof WorkspaceSaveNotPushedError) {
+      logger.error("Apps creation aborted: durable push failed", {
         projectId: project._id.toString(),
-        commit: scaffoldCommit.commitOid,
+        error: error.message,
       });
     }
-    logger.error("Apps creation aborted: durable push failed", {
-      projectId: project._id.toString(),
-      error: error instanceof Error ? error.message : String(error),
-    });
-    throw new Error(
-      `Could not store the app durably (GitHub push failed): ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error },
-    );
+    throw error;
   }
   logger.info("Apps project created", {
     projectId: project._id.toString(),
@@ -1058,13 +1031,18 @@ export async function deleteProject(project: IAppProject): Promise<void> {
   // workspace repo (and other apps, worktrees, history) are untouched.
   const repoDir = await repoForWorkspace(project.workspaceId.toString());
   if (await repoExists(repoDir)) {
-    await commitFilesOnBranch(
-      repoDir,
-      project.defaultBranch || DEFAULT_BRANCH,
-      { deletePrefixes: [appRootFor(project)] },
-      { message: `Delete app "${project.title}" (${appRootFor(project)})` },
+    const branch = project.defaultBranch || DEFAULT_BRANCH;
+    await commitToWorkspace(
+      project.workspaceId.toString(),
+      () =>
+        commitFilesOnBranch(
+          repoDir,
+          branch,
+          { deletePrefixes: [appRootFor(project)] },
+          { message: `Delete app "${project.title}" (${appRootFor(project)})` },
+        ),
+      { branch },
     );
-    queueMirrorPush(project.workspaceId.toString());
   }
   await AppProject.deleteOne({
     _id: project._id,
@@ -1180,39 +1158,17 @@ export async function commitOnMainDurably(
   mutation: MainMutation | (() => Promise<MainMutation>),
   options: { message: string; author?: GitAuthor },
 ): Promise<void> {
-  const mirror = await resolveMirrorTarget(workspaceId);
-  // Commit onto the mirror's main, not a stale local copy of it — a laptop
-  // push this instance has not seen would make the result unmirrorable.
-  await freshenBeforeMainWrite(workspaceId);
+  // Freshened, pushed and awaited by the primitive; a function mutation is
+  // recomputed on every attempt, against the mirror's current main.
   invalidateAppsIndexCache(workspaceId);
-  const commit = await commitFilesOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    typeof mutation === "function" ? await mutation() : mutation,
-    options,
-  );
-  try {
-    if (mirror) await mirrorPushNow(workspaceId);
-  } catch (error) {
-    // The CAS returns false (it does not throw) when main moved on
-    // meanwhile; the commit then stays on a local tip the mirror never got.
-    const rolledBack = await updateRefCas(
+  await commitToWorkspace(workspaceId, async () =>
+    commitFilesOnBranch(
       repoDir,
-      `refs/heads/${DEFAULT_BRANCH}`,
-      commit.previousHead,
-      commit.commitOid,
-    ).catch(() => false);
-    if (!rolledBack) {
-      logger.warn("Apps lifecycle commit rollback skipped: main moved on", {
-        workspaceId,
-        commit: commit.commitOid,
-      });
-    }
-    throw new Error(
-      `Could not store the change durably (GitHub push failed): ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error },
-    );
-  }
+      DEFAULT_BRANCH,
+      typeof mutation === "function" ? await mutation() : mutation,
+      options,
+    ),
+  );
   invalidateAppsIndexCache(workspaceId);
   await syncAppsIndexFromRepo(workspaceId).catch(() => undefined);
 }
@@ -2914,9 +2870,41 @@ export async function mergeBranchToMain(
       reason: "Cannot merge the default branch into itself",
     };
   }
-  // Merge onto the mirror's main, not a stale cached tip (see
-  // freshenBeforeMainWrite for why that would be unmirrorable).
-  await freshenBeforeMainWrite(scope.workspaceId);
+  // The branch as GitHub has it (a box push through another instance lands
+  // there first); a branch never pushed is simply merged as it is here.
+  await fetchFromCloud(scope.workspaceId, branch).catch(() => undefined);
+  // Moving main is a save like any other: freshened, pushed and awaited by
+  // the primitive, and re-run on GitHub's tip if main moved meanwhile.
+  const result = await commitToWorkspace(
+    scope.workspaceId,
+    () => mergeOntoMain(scope, repoDir, branch, author, actorUserId),
+    { branch: defaultBranch },
+  );
+  if (result.merged) {
+    if (!result.fastForward) {
+      logger.info("Apps branch merged", {
+        workspaceId: scope.workspaceId,
+        branch,
+        commitOid: result.commitOid,
+      });
+    }
+    pokeApp(scope.workspaceId, scope.projectId ?? null, "merge");
+    invalidatePullThrottle();
+    // A merge writes main here, not through the git endpoint.
+    deployWorkflows(scope.workspaceId);
+  }
+  return result;
+}
+
+/** The local half of {@link mergeBranchToMain}: moves main, pushes nothing. */
+async function mergeOntoMain(
+  scope: RepoScope,
+  repoDir: string,
+  branch: string,
+  author: GitAuthor | undefined,
+  actorUserId: string | undefined,
+): Promise<MergeResult> {
+  const defaultBranch = scope.defaultBranch;
   const mainRef = `refs/heads/${defaultBranch}`;
   const branchHead = await resolveCommit(repoDir, `refs/heads/${branch}`);
   const mainHead = await resolveCommit(repoDir, mainRef);
@@ -2960,11 +2948,6 @@ export async function mergeBranchToMain(
     if (!swapped) {
       throw new WorktreeConflictError("Main advanced concurrently; retry.");
     }
-    queueMirrorPush(scope.workspaceId);
-    pokeApp(scope.workspaceId, scope.projectId ?? null, "merge");
-    invalidatePullThrottle();
-    // A merge writes main here, not through the git endpoint.
-    deployWorkflows(scope.workspaceId);
     return { merged: true, commitOid: branchHead, fastForward: true };
   } catch (error) {
     if (error instanceof WorktreeConflictError) throw error;
@@ -2990,15 +2973,6 @@ export async function mergeBranchToMain(
   if (!swapped) {
     throw new WorktreeConflictError("Main advanced concurrently; retry.");
   }
-  logger.info("Apps branch merged", {
-    workspaceId: scope.workspaceId,
-    branch,
-    commitOid,
-  });
-  queueMirrorPush(scope.workspaceId);
-  pokeApp(scope.workspaceId, scope.projectId ?? null, "merge");
-  invalidatePullThrottle();
-  deployWorkflows(scope.workspaceId);
   return { merged: true, commitOid, fastForward: false };
 }
 
