@@ -83,7 +83,7 @@ describe("rate gate", () => {
     );
     await expect(late).rejects.toBeInstanceOf(RateGateBusyError);
     await expect(late).rejects.toThrow(
-      "This service is busy with a sync; try again shortly.",
+      "Too many requests are waiting for this service's rate limit; try again shortly.",
     );
     const controller = new AbortController();
     const cancelled = throttledRequest(

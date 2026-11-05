@@ -289,17 +289,123 @@ describe("no caller method override reaches the service", () => {
     expect(sent[0].headers["x-http-method-override"]).toBe("GET");
   });
 
-  it("Close: a POST told to act as DELETE writes and goes out without it", async () => {
+  it("Close: an override other than GET is refused, and nothing is sent", async () => {
     const sent = answering(200, {});
+    for (const value of ["DELETE", "PUT", "get, delete"]) {
+      const input = {
+        method: "POST",
+        path: "/lead/lead_1/",
+        headers: { "x-http-method-override": value },
+      };
+      expect(() =>
+        resolveRequest(type("close"), { api_key: KEY }, input),
+      ).toThrow(/may only be GET/);
+      await expect(
+        forward(connection("close", { api_key: KEY }), type("close"), input),
+      ).rejects.toMatchObject({ status: 400 });
+    }
+    expect(sent).toHaveLength(0);
+  });
+});
+
+describe("a request a profile reads goes out as JSON", () => {
+  const graphql = {
+    base_url: "https://x.example.com/graphql",
+    graphql: true,
+    token: KEY,
+  };
+
+  it("GraphQL: a caller's form content type is replaced, so variables cannot become form fields", async () => {
+    const body = {
+      query: "{ a }",
+      variables: { x: "&query=mutation { drop }" },
+    };
     const input = {
       method: "POST",
-      path: "/lead/lead_1/",
-      headers: { "x-http-method-override": "DELETE" },
+      path: "/",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
     };
-    const request = resolveRequest(type("close"), { api_key: KEY }, input);
-    expect(isReadRequest(type("close"), request, {})).toBe(false);
-    await forward(connection("close", { api_key: KEY }), type("close"), input);
-    expect(sent[0].headers["x-http-method-override"]).toBeUndefined();
+    const request = resolveRequest(type("custom_api"), graphql, input);
+    expect(isReadRequest(type("custom_api"), request, graphql)).toBe(true);
+    const sent = answering(200, {});
+    await forward(connection("custom_api", graphql), type("custom_api"), input);
+    expect(sent[0].headers["content-type"]).toBe("application/json");
+    expect(JSON.parse(sent[0].body ?? "")).toEqual(body);
+  });
+
+  it("GraphQL: a string body read goes out re-serialized as JSON", async () => {
+    const sent = answering(200, {});
+    await forward(connection("custom_api", graphql), type("custom_api"), {
+      method: "POST",
+      path: "/",
+      headers: { "content-type": "text/plain" },
+      body: '{"query":"{ a }"}',
+    });
+    expect(sent[0].headers["content-type"]).toBe("application/json");
+    expect(sent[0].body).toBe('{"query":"{ a }"}');
+  });
+
+  it("Close: a search or a POST read as GET goes out as JSON; a string that is not JSON is refused", async () => {
+    let sent = answering(200, {});
+    await forward(connection("close", { api_key: KEY }), type("close"), {
+      method: "POST",
+      path: "/data/search/",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: { query: { type: "and" } },
+    });
+    expect(sent[0].headers["content-type"]).toBe("application/json");
+    sent = answering(200, {});
+    await expect(
+      forward(connection("close", { api_key: KEY }), type("close"), {
+        method: "POST",
+        path: "/lead/",
+        headers: { "x-http-method-override": "GET" },
+        body: "a=1&b=2",
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("a write keeps the caller's content type", async () => {
+    const sent = answering(200, {});
+    await forward(connection("close", { api_key: KEY }), type("close"), {
+      method: "POST",
+      path: "/task/",
+      headers: { "content-type": "text/plain" },
+      body: "x",
+    });
+    expect(sent[0].headers["content-type"]).toBe("text/plain");
+  });
+
+  it("OPTIONS goes out without a body", async () => {
+    const sent = answering(200, {});
+    await forward(
+      connection("custom_api", {
+        base_url: "https://x.example.com",
+        token: KEY,
+      }),
+      type("custom_api"),
+      { method: "OPTIONS", path: "/x", body: { a: 1 } },
+    );
+    expect(sent[0].body).toBeUndefined();
+  });
+
+  it("GraphQL: a persisted query is never a read", () => {
+    expect(
+      isGraphqlReadBody({
+        query: "{ a }",
+        extensions: { persistedQuery: { version: 1, sha256Hash: "abc" } },
+      }),
+    ).toBe(false);
+    expect(
+      isGraphqlReadBody([
+        { query: "{ a }" },
+        { query: "{ b }", extensions: { persistedQuery: {} } },
+      ]),
+    ).toBe(false);
+    expect(isGraphqlReadBody({ query: "{ a }", extensions: "x" })).toBe(false);
+    expect(isGraphqlReadBody({ query: "{ a }", extensions: {} })).toBe(true);
   });
 });
 
@@ -353,6 +459,34 @@ describe("paths stay under the base URL", () => {
     expect(urlUnder(tenant, "/items/..a%2Fb..").path).toBe("/items/..a%2Fb..");
   });
 
+  it("refuses a segment a server may read as a dot segment", () => {
+    for (const path of [
+      "/..;/admin",
+      "/.;/x",
+      "/..%3b/admin",
+      "/..%3B/admin",
+      "/..%00/admin",
+      "/..%20/admin",
+      "/..%09/admin",
+      "/．．/admin",
+      "/..。/admin",
+      "/%E2%80%A4%E2%80%A4/admin",
+      "/%EF%B9%92./admin",
+      "/.../admin",
+    ]) {
+      expect(() => urlUnder(base, path), path).toThrow(ConnectionRequestError);
+    }
+    for (const path of [
+      "/lead/lead_1;v=2/",
+      "/files/a..b",
+      "/files/.env",
+      "/v1.2/items",
+      "/items/x.json",
+    ]) {
+      expect(() => urlUnder(base, path), path).not.toThrow();
+    }
+  });
+
   it("refuses a sibling of the base path", () => {
     expect(() => urlUnder("https://api.example.com/v1", "/../v10/x")).toThrow();
   });
@@ -385,6 +519,16 @@ describe("each credential is added the type's way", () => {
       "application/x-www-form-urlencoded",
     );
     expect(sent[0].body).toBe("email=a%40b.c&metadata%5Bsource%5D=mako");
+  });
+
+  it("Stripe: the caller's Stripe-Account header goes out (Connect)", async () => {
+    const sent = answering(200, {});
+    await forward(connection("stripe", { api_key: KEY }), type("stripe"), {
+      method: "GET",
+      path: "/v1/customers",
+      headers: { "Stripe-Account": "acct_123" },
+    });
+    expect(sent[0].headers["stripe-account"]).toBe("acct_123");
   });
 
   it("Wise: Bearer on the configured base URL", async () => {

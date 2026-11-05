@@ -25,7 +25,9 @@ const PROXY_QUEUE_MS = 30_000;
 /** A request that waited too long for its turn. */
 export class RateGateBusyError extends Error {
   constructor() {
-    super("This service is busy with a sync; try again shortly.");
+    super(
+      "Too many requests are waiting for this service's rate limit; try again shortly.",
+    );
     this.name = "RateGateBusyError";
   }
 }

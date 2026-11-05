@@ -11,6 +11,8 @@ import {
   splitCloseSearchFieldSelection,
 } from "./schema";
 import { MAKO_SYSTEM_FIELDS } from "../base/BaseConnector";
+import { throttledRequest } from "../rate-gate";
+import { callableFor } from "../../connections/callable";
 
 function createConnector() {
   return new CloseConnector({
@@ -40,6 +42,56 @@ function testCloseApiErrorResponseIsFormattedForLogs() {
     formatCloseApiErrorResponse(error),
     '{"error":"Invalid field selection","field-errors":{"_fields":["Unsupported field"]}}',
   );
+}
+
+/**
+ * Sync and the connection proxy wait at one rate gate for one key, even when
+ * the stored key has surrounding spaces: both key the gate by the trimmed key.
+ */
+async function testSyncAndProxyShareTheTrimmedKeysGate() {
+  const config = { api_key: "  gate-key-trim  " };
+  const proxyGate = callableFor("close")?.rateGate?.({
+    _id: "c1",
+    config,
+    settings: {},
+  } as any);
+  assert.equal(proxyGate?.key, "gate-key-trim");
+
+  const connector = new CloseConnector({
+    id: "ds_close_gate",
+    name: "Close",
+    type: "close",
+    config,
+    settings: { rate_limit_delay_ms: 0 },
+  } as any);
+  const api = (connector as any).getCloseClient();
+  const ran: string[] = [];
+  api.defaults.adapter = async (request: any) => {
+    ran.push("sync");
+    return {
+      data: {},
+      status: 200,
+      statusText: "OK",
+      headers: {},
+      config: request,
+    };
+  };
+  let release: () => void = () => {};
+  const blocking = throttledRequest(
+    "gate-key-trim",
+    () => new Promise<void>(resolve => (release = resolve)),
+    0,
+    "proxy",
+  );
+  // The proxy's request holds the gate before the sync request asks.
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const sync = api.get("/me/");
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.deepEqual(ran, [], "the sync request waits behind the proxy's");
+  release();
+  await blocking;
+  await sync;
+  assert.deepEqual(ran, ["sync"]);
 }
 
 function testUserWebhookEventsAreSupported() {
@@ -1420,6 +1472,7 @@ async function main() {
   testCustomActivityBackfillAndWebhookShapesMatch();
   await testActivitySearchRequestsEverySchemaColumn();
   await testCustomActivityReplansWhenCustomFieldDeleted();
+  await testSyncAndProxyShareTheTrimmedKeysGate();
 }
 
 main().catch(error => {

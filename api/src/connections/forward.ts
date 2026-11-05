@@ -20,6 +20,7 @@ import type { ISourceConnection } from "../database/workspace-schema";
 import {
   applyCredential,
   rateGateOf,
+  readsByProfile,
   secretsOf,
   type CallableConnection,
   type RequestShape,
@@ -111,11 +112,26 @@ const RESPONSE_HEADER_BLOCKLIST = new Set([
 
 const MAX_PATH_LENGTH = 2048;
 
+/** Characters a server may read as a dot: `.`, and dot-like ones NFKC keeps. */
+const DOT_LIKE = /[.\u2024\uFF0E\u3002\uFE52]/;
+const DOT_SEGMENT = /^[.\u2024\uFF0E\u3002\uFE52\s\0]+$/;
+
+/**
+ * Whether one path segment is, or a server may read it as, `.` or `..`: after
+ * NFKC, without `;` parameters (`..;`), made only of dots or dot-like
+ * characters and trailing spaces, tabs or NUL that some servers strip.
+ */
+function isDotSegment(segment: string): boolean {
+  const bare = segment.normalize("NFKC").split(";")[0];
+  return DOT_SEGMENT.test(bare) && DOT_LIKE.test(bare);
+}
+
 /**
  * Whether `path`, decoded as often as it changes (a service or a gateway in
- * front of it may decode `%2F` or `%252F`), has a `.` or `..` segment, `/`
- * and `\` both separating. The path is still sent as given, so an encoded
- * `/` inside an id works when it forms no such segment. Undecodable: refused.
+ * front of it may decode `%2F` or `%252F`), has a segment that is or may be
+ * read as `.` or `..` (isDotSegment), `/` and `\` both separating. The path
+ * is still sent as given, so an encoded `/` inside an id works when it forms
+ * no such segment. Undecodable: refused.
  */
 export function hasDotSegment(path: string): boolean {
   let decoded = path.split("?")[0];
@@ -127,7 +143,7 @@ export function hasDotSegment(path: string): boolean {
       return true;
     }
     if (next === decoded) {
-      return decoded.split(/[/\\]/).some(s => s === "." || s === "..");
+      return decoded.split(/[/\\]/).some(isDotSegment);
     }
     decoded = next;
   }
@@ -233,6 +249,29 @@ function encodeBody(
   return JSON.stringify(body);
 }
 
+/**
+ * The body of a request its profile reads (`readsByProfile`): always JSON,
+ * the caller's content type replaced, so a service cannot read the checked
+ * body as a form or anything else. A string body is re-serialized from its
+ * parsed JSON; one that is not JSON is refused.
+ */
+function encodeReadBody(
+  body: unknown,
+  headers: Record<string, string>,
+): string | undefined {
+  headers["content-type"] = "application/json";
+  if (body === undefined || body === null) return undefined;
+  if (typeof body !== "string") return JSON.stringify(body);
+  try {
+    return JSON.stringify(JSON.parse(body));
+  } catch {
+    throw new ConnectionRequestError("A request that reads sends a JSON body.");
+  }
+}
+
+/** Methods sent without a body. */
+const NO_BODY = new Set(["GET", "HEAD", "OPTIONS"]);
+
 /** The caller's headers Mako forwards, lower-cased: allowlisted ones only. */
 export function callerHeaders(
   headers: Record<string, string> | undefined,
@@ -292,15 +331,25 @@ export function resolveRequest(
   const override = Object.entries(input.headers ?? {}).find(
     ([name]) => name.toLowerCase() === "x-http-method-override",
   )?.[1];
+  const methodOverride =
+    typeof override === "string" ? override.trim().toUpperCase() : undefined;
+  // A profile that reads an override takes only the values it knows.
+  if (
+    methodOverride !== undefined &&
+    callable.methodOverrides &&
+    !callable.methodOverrides.includes(methodOverride)
+  ) {
+    throw new ConnectionRequestError(
+      `X-HTTP-Method-Override may only be ${callable.methodOverrides.join(" or ")} on this connection.`,
+    );
+  }
   return {
     method,
     url,
     path,
     headers: callerHeaders(input.headers, callable.callerHeaders),
     body: input.body,
-    ...(typeof override === "string"
-      ? { methodOverride: override.trim().toUpperCase() }
-      : {}),
+    ...(methodOverride !== undefined ? { methodOverride } : {}),
   };
 }
 
@@ -309,7 +358,7 @@ export function resolveRequest(
  * its answer without any credential in it. Errors from the network are
  * thrown; every HTTP status is returned.
  */
-export function forward(
+export async function forward(
   connection: ForwardConnection,
   callable: CallableConnection,
   input: ForwardInput,
@@ -332,10 +381,14 @@ export async function send(
 ): Promise<ForwardResult> {
   const config = connection.config ?? {};
   const url = new URL(request.url);
-  const headers = { ...request.headers, ...callable.extraHeaders?.(request) };
-  const body =
-    request.method === "GET" || request.method === "HEAD"
-      ? undefined
+  const headers = {
+    ...request.headers,
+    ...callable.extraHeaders?.(request, config),
+  };
+  const body = NO_BODY.has(request.method)
+    ? undefined
+    : readsByProfile(callable, request, config)
+      ? encodeReadBody(request.body, headers)
       : encodeBody(request.body, callable, headers);
   const sent = applyCredential(callable.credential(config), headers, url);
 

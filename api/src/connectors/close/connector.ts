@@ -702,6 +702,9 @@ export class CloseConnector extends BaseConnector {
       }
 
       const apiKey = this.dataSource.config.api_key;
+      // The rate gate's key as the connection proxy keys it (trimmed,
+      // connections/callable.ts), so sync and proxy wait at one gate.
+      const gateKey = String(apiKey).trim();
       const minDelayMs = Math.max(500, this.getRateLimitDelay());
 
       const rawClient = axios.create({
@@ -730,7 +733,7 @@ export class CloseConnector extends BaseConnector {
           ) {
             return (...args: unknown[]) =>
               throttledRequest(
-                apiKey,
+                gateKey,
                 () => {
                   const requestId = `close_req_${Date.now()}_${++seqRef.seq}`;
                   emitLog("info", "Close API request sent", {

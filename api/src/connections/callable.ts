@@ -117,7 +117,13 @@ export interface CallableConnection {
    */
   onlyReads?(config: Config): boolean;
   /** Headers the profile itself puts on a request, after the caller's. */
-  extraHeaders?(request: RequestShape): Record<string, string>;
+  extraHeaders?(request: RequestShape, config: Config): Record<string, string>;
+  /**
+   * The `x-http-method-override` values the profile reads (`reads`,
+   * `extraHeaders`); a request with any other is refused. Without it, an
+   * override is dropped.
+   */
+  methodOverrides?: readonly string[];
   /**
    * Caller headers forwarded besides the common ones (connections/forward.ts),
    * lower case.
@@ -147,6 +153,22 @@ export function isReadRequest(
     return true;
   }
   return callable.reads?.(request, config) === true;
+}
+
+/**
+ * Whether `request` is a POST (or other non-safe method) its profile counts
+ * as a read: it goes out as JSON, whatever content type the caller set
+ * (connections/forward.ts), so the service reads the body Mako checked.
+ */
+export function readsByProfile(
+  callable: CallableConnection,
+  request: RequestShape,
+  config: Config,
+): boolean {
+  return (
+    !SAFE_METHODS.has(request.method) &&
+    callable.reads?.(request, config) === true
+  );
 }
 
 /** Every value that must never appear in an answer. */
@@ -232,7 +254,21 @@ export function isGraphqlReadBody(body: unknown): boolean {
       typeof op === "object" &&
       !Array.isArray(op) &&
       Object.keys(op).every(key => GRAPHQL_OPERATION_KEYS.has(key)) &&
+      !persistedQuery(op as { extensions?: unknown }) &&
       isGraphqlQuery((op as { query?: unknown }).query),
+  );
+}
+
+/**
+ * A persisted query: the server may run the document it stored under the
+ * hash instead of the `query` sent, so it is never a read.
+ */
+function persistedQuery(op: { extensions?: unknown }): boolean {
+  const { extensions } = op;
+  return (
+    extensions !== undefined &&
+    extensions !== null &&
+    (typeof extensions !== "object" || "persistedQuery" in extensions)
   );
 }
 
@@ -299,6 +335,7 @@ const close: CallableConnection = {
     return /^\/data\/search\/?$/.test(request.path);
   },
   // The caller's override is never forwarded; this is the one Mako sends.
+  methodOverrides: ["GET"],
   extraHeaders: (request): Record<string, string> =>
     closeReadsAsGet(request) ? { "x-http-method-override": "GET" } : {},
   rateGate(connection) {
@@ -319,7 +356,7 @@ const stripe: CallableConnection = {
     trimSlash(text(config.api_base_url) || "https://api.stripe.com"),
   baseUrlFields: ["api_base_url"],
   credential: config => ({ type: "bearer", token: text(config.api_key) }),
-  callerHeaders: ["stripe-version"],
+  callerHeaders: ["stripe-version", "stripe-account"],
   bodyEncoding: "form",
 };
 
