@@ -9,6 +9,7 @@
 import { createSign } from "crypto";
 
 import {
+  getGitHubApiBaseUrl,
   getGitHubAppClientId,
   getGitHubAppClientSecret,
   getGitHubAppId,
@@ -16,8 +17,6 @@ import {
   getGitHubDevToken,
   isGitHubAppConfigured,
 } from "./config";
-
-const GITHUB_API = "https://api.github.com";
 
 function base64url(input: Buffer | string): string {
   return Buffer.from(input)
@@ -69,7 +68,7 @@ export async function getInstallationToken(
     return cached.token;
   }
   const res = await fetch(
-    `${GITHUB_API}/app/installations/${installationId}/access_tokens`,
+    `${getGitHubApiBaseUrl()}/app/installations/${installationId}/access_tokens`,
     {
       method: "POST",
       headers: {
@@ -103,13 +102,16 @@ export interface InstallationMeta {
 export async function getInstallationMeta(
   installationId: number,
 ): Promise<InstallationMeta> {
-  const res = await fetch(`${GITHUB_API}/app/installations/${installationId}`, {
-    headers: {
-      Authorization: `Bearer ${createAppJwt()}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
+  const res = await fetch(
+    `${getGitHubApiBaseUrl()}/app/installations/${installationId}`,
+    {
+      headers: {
+        Authorization: `Bearer ${createAppJwt()}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
     },
-  });
+  );
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(
@@ -176,7 +178,7 @@ export async function listUserInstallations(
   const out: Array<{ id: number } & InstallationMeta> = [];
   for (let page = 1; page <= 20; page++) {
     const res = await fetch(
-      `${GITHUB_API}/user/installations?per_page=100&page=${page}`,
+      `${getGitHubApiBaseUrl()}/user/installations?per_page=100&page=${page}`,
       {
         headers: {
           Authorization: `Bearer ${userToken}`,
@@ -221,7 +223,7 @@ export async function userControlsInstallation(
 ): Promise<boolean> {
   for (let page = 1; page <= 20; page++) {
     const res = await fetch(
-      `${GITHUB_API}/user/installations?per_page=100&page=${page}`,
+      `${getGitHubApiBaseUrl()}/user/installations?per_page=100&page=${page}`,
       {
         headers: {
           Authorization: `Bearer ${userToken}`,

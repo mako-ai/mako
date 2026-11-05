@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-11-03T13:30:35.403Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap button \"New chat\"",
+        "target": {
+          "role": "button",
+          "name": "New chat"
+        }
+      },
+      {
+        "name": "type",
+        "summary": "type \"What is 19 plus 23? Reply with the numb…\" into textbox \"Message\" in \"Select Model\"",
+        "target": {
+          "role": "textbox",
+          "name": "Message",
+          "placeholder": "Ask Mako...",
+          "within": "Select Model"
+        },
+        "value": "What is 19 plus 23? Reply with the number only. Do not use tools or modify any files."
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Send message\" in \"Select Model\"",
+        "target": {
+          "role": "button",
+          "name": "Send message",
+          "within": "Select Model"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::07%20send%20chat%20and%20receive%20assistant%20response",
+      "targetId": "chromium",
+      "instructionDigest": "6c66b8c336ea8a30ea31a71104039aa8cde261be39bbb8b7d8f495c4f62f0595"
+    },
+    "summary": "Started a new Mako chat and sent the requested message. The assistant replied “42”.",
+    "startPath": "/settings",
+    "endPath": "/settings",
+    "endAnchors": [
+      {
+        "text": "What is 19 plus 23? Reply with the number only. Do not use tools or modify any files."
+      },
+      {
+        "role": "button",
+        "name": "Copy message"
+      },
+      {
+        "name": "Session usage",
+        "text": "2 · $0.0000"
+      },
+      {
+        "role": "log",
+        "name": "Chat messages"
+      },
+      {
+        "role": "article",
+        "name": "Assistant message"
+      }
+    ],
+    "endWaitMs": 14601
+  }
+}

@@ -1903,6 +1903,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
               onChange={handleEditorChange}
               options={{
                 ...EDITOR_OPTIONS.code,
+                ariaLabel: "Console editor",
                 readOnly: isReadOnly,
                 fontSize: 12,
                 wordWrap: "on",

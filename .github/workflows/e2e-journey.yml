@@ -1,0 +1,139 @@
+name: Mako E2E journey
+
+# Replays the reviewed AI recordings in .e2e/cache against local MongoDB,
+# PostgreSQL and loopback GitHub/AI Gateway fakes (tests/e2e/fake-services.ts).
+# Normal runs use no repository secrets. Only an explicit recording dispatch
+# reads the budgeted E2E_AI_GATEWAY_API_KEY, and only for the test runner.
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      record_cache:
+        description: Re-record replay actions with the live AI agent (needs E2E_AI_GATEWAY_API_KEY)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-journey-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  journey:
+    name: User journey (replay, local fakes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16.15
+        env:
+          POSTGRES_USER: mako
+          POSTGRES_PASSWORD: e2e-local-only
+          POSTGRES_DB: demo
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mako -d demo"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Check E2E types
+        run: pnpm test:e2e:check
+
+      # 8.2: MongoDB 8.3/9.0 refuse to start on the runner's kernel (SERVER-121912).
+      - name: Start isolated MongoDB replica set
+        run: |
+          docker run --detach --name mako-e2e-mongo \
+            --publish 127.0.0.1:27017:27017 mongo:8.2.12 \
+            --replSet rs0 --bind_ip_all
+          for attempt in {1..30}; do
+            if docker exec mako-e2e-mongo mongosh --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec mako-e2e-mongo mongosh --quiet --eval \
+            'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+          for attempt in {1..30}; do
+            if docker exec mako-e2e-mongo mongosh --quiet --eval 'if (!db.hello().isWritablePrimary) quit(1)' >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Run Mako journey
+        env:
+          # Empty unless a maintainer dispatches a recording run.
+          AI_GATEWAY_API_KEY: ${{ inputs.record_cache && secrets.E2E_AI_GATEWAY_API_KEY || '' }}
+          MAKO_E2E_RECORD_CACHE: ${{ inputs.record_cache && '1' || '0' }}
+          MAKO_E2E_GITHUB_AUTH: fake
+          MAKO_E2E_BASE_URL: http://127.0.0.1:5173
+          MAKO_E2E_MONGODB_URI: mongodb://127.0.0.1:27017/mako_e2e?replicaSet=rs0
+          DEMO_DATABASE_URL: postgresql://mako:e2e-local-only@127.0.0.1:5432/demo
+          MAKO_E2E_START_APP: "1"
+          E2E_TELEMETRY_DISABLED: "1"
+        run: |
+          set -euo pipefail
+          umask 077
+          if [ "$MAKO_E2E_RECORD_CACHE" = 1 ] && [ -z "$AI_GATEWAY_API_KEY" ]; then
+            echo "::error::Recording needs the E2E_AI_GATEWAY_API_KEY secret; see tests/e2e/README.md"
+            exit 1
+          fi
+          mkdir -p .e2e/logs
+          export SESSION_SECRET="$(openssl rand -hex 32)"
+          export ENCRYPTION_KEY="$(openssl rand -hex 32)"
+          export APPS_GIT_ROOT="$RUNNER_TEMP/mako-e2e-git"
+          export APPS_SESSIONS_ROOT="$RUNNER_TEMP/mako-e2e-sessions"
+          # Replays must match the committed recordings: a stale one fails as
+          # REPLAY_STALE (exit 2) instead of falling back to a keyless agent.
+          pnpm test:e2e --reporter list,junit \
+            $([ "$MAKO_E2E_RECORD_CACHE" = 1 ] || echo --strict-cache)
+
+      - name: Show MongoDB logs
+        if: ${{ failure() }}
+        run: docker logs --tail 100 mako-e2e-mongo || true
+
+      # Upload runner-redacted diagnostics, never app logs or browser state.
+      - name: Save test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mako-e2e-results
+          path: |
+            .e2e/report.json
+            .e2e/junit.xml
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Save browser diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mako-e2e-artifacts
+          path: .e2e/artifacts
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Save replay recordings for review
+        if: ${{ success() && inputs.record_cache }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mako-e2e-cache
+          path: .e2e/cache
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7

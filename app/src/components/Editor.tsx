@@ -2336,6 +2336,7 @@ function Editor({
                                 component="span"
                                 size="small"
                                 className="tab-close-btn"
+                                aria-label={`Close ${tab.title}`}
                                 onClick={e => {
                                   e.stopPropagation();
                                   closeConsole(tab.id);
