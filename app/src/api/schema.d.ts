@@ -12354,7 +12354,7 @@ export interface operations {
             content: {
                 "application/json": {
                     writers: {
-                        /** @example workflow:fr-offer-to-cash */
+                        /** @example workflow:* */
                         principal: string;
                     }[];
                     liveReads?: boolean;
@@ -12939,7 +12939,7 @@ export interface operations {
             content: {
                 "application/json": {
                     writers: {
-                        /** @example workflow:fr-offer-to-cash */
+                        /** @example workflow:* */
                         principal: string;
                     }[];
                     liveReads?: boolean;

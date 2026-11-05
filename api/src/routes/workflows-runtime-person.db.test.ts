@@ -32,12 +32,15 @@ import {
 } from "../database/workspace-schema";
 import { loggingMiddleware } from "../logging";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { setKey } from "../workflows/on-push";
 import { WORKER_KEY_SCOPES, workerKeyName } from "../workflows/worker-key";
 import { workflowRuntimeRoutes } from "./workflows";
 
 const WORKER_KEY = "revops_worker_runtime_person_tests_";
 const NO_RUN_KEY = "revops_person_without_run_scope_xx";
 const MARC_RUN_KEY = "revops_marc_run_key_person_tests_";
+const OWN_RUN_KEY = "revops_marc_own_sandbox_run_key_xx";
+const AGENT_RUN_KEY = "revops_marc_agent_sandbox_run_key";
 const SCHEMA = `mako_rp_${Date.now().toString(36)}`;
 const WRITE = (table: string) =>
   `INSERT INTO ${SCHEMA}.${table} (id) VALUES (1)`;
@@ -260,6 +263,42 @@ async function main() {
       assert.deepEqual(
         forwarded.map(f => f.split(" ")[0]),
         ["GET", "POST"],
+      );
+
+      // A sandbox run's key acts as marc: his own run (from the app) writes;
+      // one an agent started only reads, and its attempt is the agent's.
+      await setKey(
+        String(ws),
+        "marc",
+        "Workflows sandbox marc sandbox-own",
+        OWN_RUN_KEY,
+        {
+          agentRun: false,
+        },
+      );
+      await setKey(
+        String(ws),
+        "marc",
+        "Workflows sandbox marc sandbox-agent",
+        AGENT_RUN_KEY,
+        {
+          agentRun: true,
+        },
+      );
+      res = await request(OWN_RUN_KEY, "POST");
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      await ConnectionWriteEvent.deleteMany({});
+      res = await request(AGENT_RUN_KEY, "POST");
+      assert.equal(res.status, 403, JSON.stringify(res.body));
+      assert.match(res.body.error, /^Agents only read/);
+      attempt = await ConnectionWriteEvent.findOne({}).lean();
+      assert.equal(attempt?.principal, "agent:user:marc");
+      assert.equal(attempt?.allowed, false);
+      res = await request(AGENT_RUN_KEY, "GET");
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      assert.deepEqual(
+        forwarded.map(f => f.split(" ")[0]),
+        ["GET", "POST", "POST", "GET"],
       );
     } finally {
       setTransportForTests(null);

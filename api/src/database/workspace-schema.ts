@@ -223,6 +223,11 @@ export interface IWorkspaceApiKey {
   createdAt: Date;
   lastUsedAt?: Date;
   createdBy: string;
+  /**
+   * A sandbox run an agent started: it acts as its person but only reads
+   * through connections (connections/proxy.service.ts).
+   */
+  agentRun?: boolean;
 }
 
 /**
@@ -1526,6 +1531,7 @@ const WorkspaceSchema = new Schema<IWorkspace>(
           ref: "User",
           required: true,
         },
+        agentRun: { type: Boolean },
       },
     ],
   },

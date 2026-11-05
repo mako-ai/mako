@@ -343,11 +343,15 @@ workflowRoutes.openapi(
       if (!userId) {
         throw new HatchetError("A sandbox needs a signed-in user", 400);
       }
+      // The person's own run from the app writes as them; one started with
+      // a key or an MCP login may be an agent's, so it only reads through
+      // connections.
       const { runId } = await startSandboxRun(
         workspaceId,
         userId,
         name,
         body.input,
+        { byAgent: c.get("authType") !== "session" },
       );
       return c.json({ success: true as const, runId, sandbox: true }, 200);
     }
@@ -872,9 +876,14 @@ workflowRuntimeRoutes.post(
             headers,
             body: body.body,
           },
-          // An MCP login is an agent acting for the person: it only reads.
-          // A person's API key and the deployed worker keep their rights.
-          readOnly: c.get("authType") === "mcpOAuth",
+          // An MCP login is an agent acting for the person: it only reads,
+          // as does a sandbox run an agent started (its key says so). A
+          // person's API key, their own runs and the deployed worker keep
+          // their rights.
+          readOnly:
+            c.get("authType") === "mcpOAuth" ||
+            (c.get("apiKey") as { agentRun?: boolean } | undefined)
+              ?.agentRun === true,
           signal: c.req.raw.signal,
         }),
       );
