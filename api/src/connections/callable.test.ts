@@ -11,6 +11,7 @@ import {
   isGraphqlQuery,
   isGraphqlReadBody,
   isReadRequest,
+  staticHeadersRefusal,
   type CallableConnection,
 } from "./callable";
 import { sourceConnectionKind } from "./kinds";
@@ -586,6 +587,67 @@ describe("each credential is added the type's way", () => {
       );
       check(sent[0]);
     }
+  });
+
+  it("Custom API: static headers go out after the caller's, the credential last", async () => {
+    const sent = answering(200, {});
+    const config = {
+      base_url: "https://api.notion.com/v1",
+      token: KEY,
+      extra_headers: [
+        { name: "Notion-Version", value: "2022-06-28" },
+        { name: "anthropic-version", value: "2023-06-01" },
+        { name: "Accept", value: "application/json" },
+        { name: "", value: "" },
+      ],
+    };
+    await forward(connection("custom_api", config), type("custom_api"), {
+      method: "GET",
+      path: "/users",
+      headers: { Accept: "text/csv" },
+    });
+    expect(sent[0].headers["notion-version"]).toBe("2022-06-28");
+    expect(sent[0].headers["anthropic-version"]).toBe("2023-06-01");
+    expect(sent[0].headers.accept).toBe("application/json");
+    expect(sent[0].headers.authorization).toBe(`Bearer ${KEY}`);
+  });
+
+  it("Custom API: a static header list that could not be saved sends none", async () => {
+    expect(
+      staticHeadersRefusal({
+        extra_headers: [{ name: "Authorization", value: "x" }],
+      }),
+    ).toMatch(/cannot be set/);
+    expect(
+      staticHeadersRefusal({
+        auth_type: "api_key_header",
+        header_name: "X-Key",
+        extra_headers: [{ name: "x-key", value: "x" }],
+      }),
+    ).toMatch(/cannot be set/);
+    expect(
+      staticHeadersRefusal({ extra_headers: [{ name: "X-A", value: "a\nb" }] }),
+    ).toMatch(/control character/);
+    expect(
+      staticHeadersRefusal({
+        extra_headers: [{ name: "Notion-Version", value: "1" }],
+      }),
+    ).toBeNull();
+    const sent = answering(200, {});
+    await forward(
+      connection("custom_api", {
+        base_url: "https://x.example.com",
+        auth_type: "none",
+        extra_headers: [
+          { name: "X-Fine", value: "1" },
+          { name: "Cookie", value: "a=b" },
+        ],
+      }),
+      type("custom_api"),
+      { method: "GET", path: "/x" },
+    );
+    expect(sent[0].headers.cookie).toBeUndefined();
+    expect(sent[0].headers["x-fine"]).toBeUndefined();
   });
 
   it("a caller cannot set or replace the credential", async () => {

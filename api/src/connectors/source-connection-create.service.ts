@@ -7,6 +7,7 @@
  * of this path is how a credential ends up stored in plaintext on one of
  * them; there is one.
  */
+import { callableFor } from "../connections/callable";
 import { connectorRegistry } from "./registry";
 import { connectorTypeExists } from "./workspace/catalog";
 import { isWorkspaceConnectorType } from "./workspace/SandboxedConnector";
@@ -208,6 +209,8 @@ export async function createSourceConnection(
     workspaceId,
   );
   assertCredentialCharacters(input.config, schema);
+  const refusal = callableFor(type)?.configRefusal?.(input.config ?? {});
+  if (refusal) throw new SourceConnectionInputError(refusal);
   const settings = (input.settings ?? {}) as Record<string, any>;
 
   const sourceConnection = new SourceConnection({

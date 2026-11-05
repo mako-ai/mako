@@ -96,6 +96,30 @@ export class CustomApiConnector extends BaseConnector {
             "On: a POST that only queries is a read; a mutation is a write.",
         },
         {
+          name: "extra_headers",
+          label: "Headers",
+          type: "object_array",
+          required: false,
+          helperText:
+            "Optional. Sent with every request, e.g. Notion-Version. Not for keys: anyone who can see the connection sees them. The credential's header and transport headers cannot be set.",
+          itemFields: [
+            {
+              name: "name",
+              label: "Header name",
+              type: "string",
+              required: true,
+              placeholder: "Notion-Version",
+            },
+            {
+              name: "value",
+              label: "Value",
+              type: "string",
+              required: true,
+              placeholder: "2022-06-28",
+            },
+          ],
+        },
+        {
           name: "test_path",
           label: "Test path",
           type: "string",

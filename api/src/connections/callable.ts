@@ -107,6 +107,13 @@ export interface CallableConnection {
   baseUrl(config: Config): string;
   /** The config fields `baseUrl` reads: changed only in the app. */
   baseUrlFields: string[];
+  /**
+   * Other config fields changed only in the app: how the key is sent, what
+   * counts as a read, and headers sent with it.
+   */
+  appOnlyFields?: string[];
+  /** Why `config` cannot be saved, or null (checked on create and update). */
+  configRefusal?(config: Config): string | null;
   /** The credential and the way it is sent. */
   credential(config: Config): Credential;
   /** A request other than GET, HEAD or OPTIONS that only reads. */
@@ -381,6 +388,107 @@ function customApiCredentialType(config: Config): CredentialTypeId | "none" {
     : "bearer";
 }
 
+/** At most this many static headers on a Custom API connection. */
+const MAX_STATIC_HEADERS = 20;
+const MAX_STATIC_HEADER_VALUE = 1000;
+
+/** An HTTP header name (RFC 9110 token). */
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/**
+ * Header names a static header may not set: the credential's, the
+ * transport's, and any a gateway in front of the service could read as a
+ * different path, host or method.
+ */
+const RESERVED_HEADERS = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "host",
+  "content-length",
+  "transfer-encoding",
+  "connection",
+  "te",
+  "upgrade",
+  "keep-alive",
+  "forwarded",
+  "x-method-override",
+  "x-original-url",
+  "x-rewrite-url",
+  "x-original-method",
+]);
+
+function reservedHeader(lower: string): boolean {
+  return (
+    RESERVED_HEADERS.has(lower) ||
+    lower.startsWith("x-http-method") ||
+    lower.startsWith("x-forwarded-")
+  );
+}
+
+/** A control character (0x00-0x1f, 0x7f). */
+function hasControl(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/** The Custom API's stored static headers, as entered. */
+function staticHeaderRows(config: Config): { name: string; value: string }[] {
+  const rows = config.extra_headers;
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map(row => ({
+      name: text((row as { name?: unknown })?.name),
+      value: text((row as { value?: unknown })?.value),
+    }))
+    .filter(row => row.name || row.value);
+}
+
+/** Why a Custom API's static headers cannot be saved, or null. */
+export function staticHeadersRefusal(config: Config): string | null {
+  const raw = config.extra_headers;
+  if (raw === undefined || raw === null) return null;
+  if (!Array.isArray(raw)) return "Headers must be a list of names and values.";
+  const rows = staticHeaderRows(config);
+  if (rows.length > MAX_STATIC_HEADERS) {
+    return `At most ${MAX_STATIC_HEADERS} headers.`;
+  }
+  const credential = customApi.credential(config);
+  const keyHeader =
+    credential.type === "api_key_header" ? credential.header.toLowerCase() : "";
+  for (const { name, value } of rows) {
+    if (!HEADER_NAME.test(name)) {
+      return `${JSON.stringify(name).slice(0, 80)} is not a valid header name.`;
+    }
+    const lower = name.toLowerCase();
+    if (reservedHeader(lower) || lower === keyHeader) {
+      return `The ${name} header cannot be set here.`;
+    }
+    if (hasControl(value) || value.length > MAX_STATIC_HEADER_VALUE) {
+      return `The ${name} header's value is too long or has a line break or control character.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * The static headers a Custom API sends with every request, lower case. Only
+ * a list that could be saved (staticHeadersRefusal) is sent; any other sends
+ * none.
+ */
+function staticHeaders(config: Config): Record<string, string> {
+  if (staticHeadersRefusal(config) !== null) return {};
+  return Object.fromEntries(
+    staticHeaderRows(config).map(({ name, value }) => [
+      name.toLowerCase(),
+      value,
+    ]),
+  );
+}
+
 /**
  * Any HTTP API: an address, one credential type and its key. With `graphql`
  * on, only a POST of a query to the endpoint itself reads (isGraphqlRead);
@@ -390,6 +498,16 @@ export const customApi: CallableConnection = {
   type: CUSTOM_API_TYPE,
   baseUrl: config => trimSlash(text(config.base_url)),
   baseUrlFields: ["base_url"],
+  appOnlyFields: [
+    "auth_type",
+    "header_name",
+    "query_param",
+    "graphql",
+    "extra_headers",
+  ],
+  configRefusal: staticHeadersRefusal,
+  // After the caller's headers; the credential is added after these.
+  extraHeaders: (_request, config) => staticHeaders(config ?? {}),
   credential(config): Credential {
     const token = text(config.token);
     switch (customApiCredentialType(config)) {

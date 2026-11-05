@@ -414,7 +414,7 @@ describe("in the app only", () => {
     });
     expect(moved.status).toBe(403);
     expect((await moved.json()).error).toBe(
-      "The address can only be changed in the app",
+      "The address, how the key is sent and the headers can only be changed in the app",
     );
     expect((await req("PUT", `/${mine}`, { type: "stripe" })).status).toBe(403);
     const row = await SourceConnection.findById(api).lean();
@@ -436,6 +436,101 @@ describe("in the app only", () => {
         })
       ).status,
     ).toBe(200);
+  });
+
+  it("an API key cannot change how a Custom API sends its key, what reads, or its headers", async () => {
+    const stored = {
+      base_url: "https://a.example.com",
+      token: "tok_123456",
+      auth_type: "api_key_header",
+      header_name: "X-Key",
+      graphql: false,
+      extra_headers: [{ name: "Notion-Version", value: "2022-06-28" }],
+    };
+    const api = String(
+      (
+        await SourceConnection.create({
+          workspaceId: WS,
+          name: "api_fields",
+          type: "custom_api",
+          config: stored,
+          settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+          createdBy: "member1",
+        })
+      )._id,
+    );
+    as("member", "member1", "api_key");
+    for (const config of [
+      { auth_type: "api_key_query" },
+      { header_name: "X-Other" },
+      { query_param: "k" },
+      { graphql: true },
+      { extra_headers: [{ name: "X-Tenant", value: "other" }] },
+    ]) {
+      const res = await req("PUT", `/${api}`, { config });
+      expect(res.status, JSON.stringify(config)).toBe(403);
+    }
+    // The same values sent back are not a change.
+    expect(
+      (
+        await req("PUT", `/${api}`, {
+          config: {
+            graphql: false,
+            extra_headers: [{ name: "Notion-Version", value: "2022-06-28" }],
+          },
+        })
+      ).status,
+    ).toBe(200);
+    const row = await SourceConnection.findById(api).lean();
+    expect(row?.config?.auth_type).toBe("api_key_header");
+    expect(row?.config?.extra_headers).toEqual(stored.extra_headers);
+    as("member", "member1");
+    expect(
+      (
+        await req("PUT", `/${api}`, {
+          config: {
+            extra_headers: [{ name: "Anthropic-Version", value: "2023-06-01" }],
+          },
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it("refuses a static header that sets the credential or the transport, in the app too", async () => {
+    const api = String(
+      (
+        await SourceConnection.create({
+          workspaceId: WS,
+          name: "api_headers",
+          type: "custom_api",
+          config: {
+            base_url: "https://a.example.com",
+            token: "tok_123456",
+            auth_type: "api_key_header",
+            header_name: "X-Key",
+          },
+          settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+          createdBy: "member1",
+        })
+      )._id,
+    );
+    as("member", "member1");
+    for (const [name, value] of [
+      ["Authorization", "Bearer x"],
+      ["cookie", "a=b"],
+      ["X-Forwarded-Host", "evil"],
+      ["X-HTTP-Method-Override", "DELETE"],
+      ["x-key", "other"],
+      ["Bad Name", "x"],
+      ["X-Ok", "line\r\nInjected: 1"],
+    ]) {
+      const res = await req("PUT", `/${api}`, {
+        config: { extra_headers: [{ name, value }] },
+      });
+      expect(res.status, name).toBe(400);
+    }
+    const row = await SourceConnection.findById(api).lean();
+    expect(row?.config?.extra_headers).toBeUndefined();
   });
 });
 

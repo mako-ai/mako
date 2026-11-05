@@ -442,8 +442,9 @@ sourceConnectionRoutes.openapi(
 );
 
 /**
- * Whether an update changes the connection's type or a field its call
- * profile reads its base URL from (connections/callable.ts).
+ * Whether an update changes the connection's type, a field its call profile
+ * reads its base URL from, or another field only the app changes: how the
+ * key is sent, what reads, static headers (connections/callable.ts).
  */
 function changesAddress(
   body: { type?: unknown; config?: unknown },
@@ -453,8 +454,14 @@ function changesAddress(
   const incoming = body.config as Record<string, unknown> | undefined;
   if (!incoming || typeof incoming !== "object") return false;
   const stored = (current.config ?? {}) as Record<string, unknown>;
-  return (callableFor(current.type)?.baseUrlFields ?? []).some(
-    field => incoming[field] !== undefined && incoming[field] !== stored[field],
+  const callable = callableFor(current.type);
+  return [
+    ...(callable?.baseUrlFields ?? []),
+    ...(callable?.appOnlyFields ?? []),
+  ].some(
+    field =>
+      incoming[field] !== undefined &&
+      JSON.stringify(incoming[field]) !== JSON.stringify(stored[field]),
   );
 }
 
@@ -511,7 +518,8 @@ sourceConnectionRoutes.openapi(
         return c.json(
           {
             success: false,
-            error: "The address can only be changed in the app",
+            error:
+              "The address, how the key is sent and the headers can only be changed in the app",
           },
           403,
         );
@@ -583,6 +591,10 @@ sourceConnectionRoutes.openapi(
           );
           try {
             assertCredentialCharacters(changed, schema);
+            const refusal = callableFor(sourceConnection.type)?.configRefusal?.(
+              newConfig,
+            );
+            if (refusal) throw new SourceConnectionInputError(refusal);
           } catch (error) {
             if (error instanceof SourceConnectionInputError) {
               return c.json({ success: false, error: error.message }, 400);
