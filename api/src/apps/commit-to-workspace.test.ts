@@ -43,6 +43,7 @@ import {
   commitToWorkspace,
   ensureLocalRepo,
   freshenForServe,
+  mirrorPushNow,
 } from "./cloud-repo.service";
 import { advanceBranchHead, readBranchHead } from "./branch-head.service";
 import {
@@ -279,6 +280,24 @@ describe("commitToWorkspace", () => {
     ).rejects.toBeInstanceOf(WorkspaceSaveNotPushedError);
     expect(await mirrorHead()).toBe(before);
     expect(await on("a", localHead)).toBe(before);
+
+    // GitHub did not move, so it refused for a reason a retry cannot fix:
+    // the write runs once.
+    let runs = 0;
+    await expect(
+      on("a", () =>
+        commitToWorkspace(WS, async () => {
+          runs++;
+          return commitBlobsOnBranch(
+            repoDirFor(WS),
+            DEFAULT_BRANCH,
+            { writes: { "x.txt": "x\n" } },
+            { message: "x" },
+          );
+        }),
+      ),
+    ).rejects.toBeInstanceOf(WorkspaceSaveNotPushedError);
+    expect(runs).toBe(1);
   });
 
   it("moves the shared head pointer on every push", async () => {
@@ -286,6 +305,20 @@ describe("commitToWorkspace", () => {
     expect(await readBranchHead(WS, DEFAULT_BRANCH)).toBe(await mirrorHead());
     await on("b", () => commitWorkspacePrompt(WS, "two\n"));
     expect(await readBranchHead(WS, DEFAULT_BRANCH)).toBe(await mirrorHead());
+  });
+
+  it("moves the pointer on a background push too (a box push)", async () => {
+    await on("a", async () => {
+      await commitBlobsOnBranch(
+        repoDirFor(WS),
+        DEFAULT_BRANCH,
+        { writes: { "box.txt": "box\n" } },
+        { message: "from a box" },
+      );
+      await mirrorPushNow(WS);
+    });
+    expect(await readBranchHead(WS, DEFAULT_BRANCH)).toBe(await mirrorHead());
+    expect(await mirrorFile("box.txt")).toBe("box\n");
   });
 
   it("a read on another instance sees a save at once via the pointer", async () => {

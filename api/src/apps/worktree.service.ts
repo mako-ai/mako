@@ -2911,7 +2911,21 @@ async function mergeOntoMain(
   if (!branchHead || !mainHead) {
     return { merged: false, reason: "Branch not found" };
   }
-  if (branchHead === mainHead) {
+  // Already contained (equal, or merged earlier): nothing to do. Also what
+  // makes a re-run after a merge that did reach GitHub a no-op.
+  if (
+    branchHead === mainHead ||
+    (await runGit([
+      "-C",
+      repoDir,
+      "merge-base",
+      "--is-ancestor",
+      branchHead,
+      mainHead,
+    ])
+      .then(() => true)
+      .catch(() => false))
+  ) {
     return { merged: false, reason: "Already up to date" };
   }
   // Main is where workflows go live. The git endpoint lets only admins push
