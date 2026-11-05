@@ -31,6 +31,8 @@ export default defineConfig({
       "src/connections/callable.test.ts",
       "src/connectors/rate-gate.test.ts",
       "src/routes/source-connection-writers.test.ts",
+      // A database connection's writers list, changed in the app.
+      "src/routes/database-writers-session.test.ts",
       // Who started a run: an agent's runs only read through connections.
       "src/routes/workflows-run-starter.test.ts",
     ],
