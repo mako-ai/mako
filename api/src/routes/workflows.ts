@@ -7,6 +7,8 @@
  * runtime routes accept a workspace API key with the `workflows:runtime`
  * scope, which a person cannot put on a key; the key decides the workspace.
  */
+import { connectionRequest } from "../connections/proxy.service";
+import { ConnectionRequestError } from "../connections/forward";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -53,6 +55,7 @@ import {
   readWorkflowFlow,
   readWorkflowsOverview,
   retryRun,
+  runStartedBy,
 } from "../workflows/runs";
 import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
 import { readWorkflowCost } from "../workflows/costs";
@@ -341,17 +344,25 @@ workflowRoutes.openapi(
       if (!userId) {
         throw new HatchetError("A sandbox needs a signed-in user", 400);
       }
+      // The person's own run from the app writes as them; one started with
+      // a key or an MCP login may be an agent's, so it only reads through
+      // connections.
       const { runId } = await startSandboxRun(
         workspaceId,
         userId,
         name,
         body.input,
+        { byAgent: c.get("authType") !== "session" },
       );
       return c.json({ success: true as const, runId, sandbox: true }, 200);
     }
+    // As for a sandbox run: started with a key or an MCP login, it may be
+    // an agent's, so its deployed code only reads through connections.
+    const session = c.get("authType") === "session";
     const runId = await startRun(await requireTenant(workspaceId), name, {
       input: body?.input,
-      trigger: c.get("authType") === "session" ? "ui" : "api",
+      trigger: session ? "ui" : "api",
+      startedBy: session ? "person" : "agent",
     });
     return c.json({ success: true as const, runId }, 200);
   },
@@ -434,7 +445,11 @@ workflowHookRoutes.post(
       ? await readWorkspaceTenant(workspaceId)
       : null;
     if (!tenant) return c.json({ error: "Not found" }, 404);
-    const runId = await startRun(tenant, name, { input, trigger: "webhook" });
+    const runId = await startRun(tenant, name, {
+      input,
+      trigger: "webhook",
+      startedBy: "trigger",
+    });
     return c.json({ runId }, 202);
   },
 );
@@ -532,10 +547,22 @@ const asWorker =
     { person = false } = {},
   ) =>
   async (c: AuthenticatedContext) => {
-    const worker = workerOf(c) ?? (person ? personOf(c) : null);
-    return worker
-      ? handler(c, worker)
-      : c.json({ error: "Invalid worker key" }, 401);
+    const worker = workerOf(c);
+    if (worker) return handler(c, worker);
+    const self = person ? personOf(c) : null;
+    if (!self) return c.json({ error: "Invalid worker key" }, 401);
+    // A person acts as themselves only while they belong to the workspace:
+    // a key outlives its owner's membership, its rights do not.
+    if (!(await workspaceService.getMember(self.workspaceId, self.userId))) {
+      return c.json(
+        {
+          error:
+            "This key's owner is no longer a member of this workspace, so it cannot run workflow code here.",
+        },
+        403,
+      );
+    }
+    return handler(c, self);
   };
 
 /** The SQL, model and agent routes, which a person's own run calls too. */
@@ -810,6 +837,68 @@ workflowRuntimeRoutes.post(
     } catch (error) {
       if (error instanceof WorkflowQueryError) {
         return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+  }),
+);
+
+// One request to a service through a source connection (lib/mako
+// `connection(id)`): Mako adds the stored credential, which workflow code
+// never sees. A read needs live reads on for the connection; a write needs
+// this workflow ("All deployed workflows") or, on a person's own run, this
+// person on the connection's writers list (connections/proxy.service.ts).
+// The service's status comes back as is.
+workflowRuntimeRoutes.post(
+  "/connections/:connection/request",
+  asWorkerOrPerson(async (c, worker) => {
+    const body = (await c.req.json().catch(() => null)) as {
+      method?: unknown;
+      path?: unknown;
+      query?: unknown;
+      headers?: unknown;
+      body?: unknown;
+    } | null;
+    if (typeof body?.method !== "string" || typeof body.path !== "string") {
+      return c.json({ error: "A method and a path are required" }, 400);
+    }
+    const record = (value: unknown) =>
+      value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, never>)
+        : undefined;
+    // Idempotency-Key, like every caller header, comes in `headers`.
+    const headers: Record<string, string> = { ...record(body.headers) };
+    try {
+      return c.json(
+        await connectionRequest({
+          workspaceId: worker.workspaceId,
+          connection: c.req.param("connection") ?? "",
+          request: {
+            method: body.method,
+            path: body.path,
+            query: record(body.query),
+            headers,
+            body: body.body,
+          },
+          // An MCP login is an agent acting for the person: it only reads,
+          // as does a sandbox run an agent started (its key says so). A
+          // person's API key, their own runs and the deployed worker keep
+          // their rights. A person's API key keeps the person's write rights
+          // whoever holds it, an agent included: Mako cannot tell who uses a
+          // key, so a key given to an agent writes as its person.
+          readOnly:
+            c.get("authType") === "mcpOAuth" ||
+            (c.get("apiKey") as { agentRun?: boolean } | undefined)
+              ?.agentRun === true,
+          // A deployed run an agent started reads only too: asked on a write.
+          runStarter: () =>
+            runStartedBy(worker.workspaceId, workflowRunOf(c)?.runId),
+          signal: c.req.raw.signal,
+        }),
+      );
+    } catch (error) {
+      if (error instanceof ConnectionRequestError) {
+        return c.json({ error: error.message }, error.status);
       }
       throw error;
     }

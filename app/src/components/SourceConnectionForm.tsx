@@ -16,6 +16,8 @@ import {
   IconButton,
   Tooltip,
   Snackbar,
+  Tab,
+  Tabs,
 } from "@mui/material";
 import {
   Visibility,
@@ -35,6 +37,9 @@ import { useSourceConnectionStore } from "../store/sourceConnectionStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { connectorIconUrl } from "../lib/connector-icon";
 import { EntityHistoryButton } from "./EntityHistoryButton";
+import ConnectionManagersPanel from "./ConnectionManagersPanel";
+import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
+import ConnectionWritersPanel from "./ConnectionWritersPanel";
 
 /** `ws:acme` — a connector defined in the workspace repo (`connectors/acme/`). */
 const WORKSPACE_TYPE_PREFIX = "ws:";
@@ -67,6 +72,29 @@ export interface ConnectorFieldSchema {
 
 export interface ConnectorSchemaResponse {
   fields: ConnectorFieldSchema[];
+}
+
+/**
+ * Whether a top-level field's `showIf` holds. A field not filled in yet
+ * counts as its schema default, so a cached schema (whose defaults were not
+ * applied to the form) shows the same fields as a fresh one.
+ */
+function isFieldShown(
+  field: ConnectorFieldSchema,
+  fields: ConnectorFieldSchema[],
+  watch: (name: string) => unknown,
+): boolean {
+  if (!field.showIf) return true;
+  const other = fields.find(f => f.name === field.showIf?.field);
+  const value = watch(field.showIf.field) ?? other?.default;
+  const { equals: eq, notEquals: ne } = field.showIf;
+  const eqOk = Array.isArray(eq)
+    ? eq.includes(value as string | number | boolean)
+    : eq === undefined || value === eq;
+  const neOk = Array.isArray(ne)
+    ? !ne.includes(value as string | number | boolean)
+    : ne === undefined || value !== ne;
+  return eqOk && neOk;
 }
 
 interface SourceConnectionFormProps {
@@ -135,6 +163,14 @@ function SourceConnectionForm({
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
+  const [tab, setTab] = useState<"connection" | "managers" | "access">(
+    "connection",
+  );
 
   const draftRef = useRef<Record<string, any> | undefined>(
     tabId
@@ -214,6 +250,10 @@ function SourceConnectionForm({
   } = form;
 
   const selectedType = watch("type");
+  // The server refuses a change by someone who may not make it; say so first.
+  const readOnly = connector
+    ? connector.canEdit === false
+    : currentWorkspace?.role === "viewer";
 
   useEffect(() => {
     if (connector) {
@@ -232,6 +272,8 @@ function SourceConnectionForm({
     }
     if (schemas[selectedType]) {
       setSchema(schemas[selectedType]);
+      // A second fetch that raced the first answered null; the schema is here.
+      setSchemaError(null);
       const currentValues = form.getValues();
       schemas[selectedType].fields.forEach((field: ConnectorFieldSchema) => {
         if (field.type === "object_array" && !currentValues[field.name]) {
@@ -477,6 +519,22 @@ function SourceConnectionForm({
     }
   };
 
+  // Test the saved connection: the server uses the stored credential.
+  const runTest = async () => {
+    if (!currentWorkspace || !connector?._id) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      setTestResult(
+        await useSourceConnectionEntitiesStore
+          .getState()
+          .test(currentWorkspace.id, connector._id),
+      );
+    } finally {
+      setTesting(false);
+    }
+  };
+
   const onSubmitError = (errors: Record<string, any>) => {
     console.error("[SourceConnectionForm] validation errors", errors);
   };
@@ -499,7 +557,9 @@ function SourceConnectionForm({
     } = field;
     const fieldType = type === "password" ? "password" : "text";
 
-    const shouldShowDecrypt = encrypted === true || type === "password";
+    // Revealing a key is a manager's act: no eye on a read-only form.
+    const shouldShowDecrypt =
+      !readOnly && (encrypted === true || type === "password");
 
     const isNested = name.includes(".");
 
@@ -512,7 +572,13 @@ function SourceConnectionForm({
           rules={{ required }}
           render={({ field }) => (
             <FormControlLabel
-              control={<Switch {...field} checked={field.value ?? false} />}
+              control={
+                <Switch
+                  {...field}
+                  checked={field.value ?? false}
+                  disabled={readOnly}
+                />
+              }
               label={label}
             />
           )}
@@ -530,7 +596,7 @@ function SourceConnectionForm({
           render={({ field }) => (
             <FormControl fullWidth margin="normal" variant="outlined">
               <InputLabel>{label}</InputLabel>
-              <Select {...field} label={label}>
+              <Select {...field} label={label} disabled={readOnly}>
                 {options.map(opt => {
                   const val =
                     typeof opt.value === "boolean"
@@ -564,6 +630,7 @@ function SourceConnectionForm({
             render={({ field, fieldState }) => (
               <TextField
                 {...field}
+                disabled={readOnly}
                 fullWidth
                 margin="normal"
                 multiline
@@ -653,6 +720,7 @@ function SourceConnectionForm({
           render={({ field, fieldState }) => (
             <TextField
               {...field}
+              disabled={readOnly}
               fullWidth
               margin="normal"
               type={showDecryptedFields[name] ? "text" : fieldType}
@@ -768,6 +836,7 @@ function SourceConnectionForm({
               <IconButton
                 size="small"
                 color="error"
+                disabled={readOnly}
                 onClick={() => remove(index)}
               >
                 <DeleteIcon fontSize="small" />
@@ -784,6 +853,7 @@ function SourceConnectionForm({
               const hasError = !!fieldState.error;
 
               const commonTextProps = {
+                disabled: readOnly,
                 fullWidth: true,
                 margin: "normal" as const,
                 label: subField.label,
@@ -832,7 +902,11 @@ function SourceConnectionForm({
                     render={({ field }) => (
                       <FormControl fullWidth margin="normal" variant="outlined">
                         <InputLabel>{subField.label}</InputLabel>
-                        <Select {...field} label={subField.label}>
+                        <Select
+                          {...field}
+                          label={subField.label}
+                          disabled={readOnly}
+                        >
                           {(subField.options || []).map(opt => {
                             const val =
                               typeof opt.value === "boolean"
@@ -873,6 +947,7 @@ function SourceConnectionForm({
                     key={fieldPath}
                     control={
                       <Switch
+                        disabled={readOnly}
                         checked={Boolean(
                           (item as Record<string, unknown>)[subField.name],
                         )}
@@ -907,6 +982,7 @@ function SourceConnectionForm({
         <Button
           variant="outlined"
           size="small"
+          disabled={readOnly}
           onClick={() => append(createNewItem())}
         >
           Add Query
@@ -923,7 +999,12 @@ function SourceConnectionForm({
         control={control}
         rules={{ required: true }}
         render={({ field }) => (
-          <Select {...field} variant="outlined" size="small">
+          <Select
+            {...field}
+            variant="outlined"
+            size="small"
+            disabled={readOnly}
+          >
             {connectorTypes.map(connector => (
               <MenuItem key={connector.type} value={connector.type}>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -957,6 +1038,7 @@ function SourceConnectionForm({
         render={({ field, fieldState }) => (
           <TextField
             {...field}
+            disabled={readOnly}
             fullWidth
             margin="normal"
             label="Name"
@@ -982,7 +1064,10 @@ function SourceConnectionForm({
           {schemaError}
         </Alert>
       )}
-      {schema && schema.fields.map(f => renderDynamicField(f, form))}
+      {schema &&
+        schema.fields
+          .filter(f => isFieldShown(f, schema.fields, watch))
+          .map(f => renderDynamicField(f, form))}
       {!schemaLoading && !schema && (
         <Typography
           sx={{
@@ -1012,6 +1097,7 @@ function SourceConnectionForm({
           render={({ field, fieldState }) => (
             <TextField
               {...field}
+              disabled={readOnly}
               fullWidth
               label="Sync Batch Size"
               type="number"
@@ -1032,6 +1118,7 @@ function SourceConnectionForm({
           render={({ field, fieldState }) => (
             <TextField
               {...field}
+              disabled={readOnly}
               fullWidth
               label="Rate Limit Delay (ms)"
               type="number"
@@ -1054,6 +1141,7 @@ function SourceConnectionForm({
           render={({ field }) => (
             <TextField
               {...field}
+              disabled={readOnly}
               fullWidth
               label="Max Retries"
               type="number"
@@ -1070,6 +1158,7 @@ function SourceConnectionForm({
           render={({ field }) => (
             <TextField
               {...field}
+              disabled={readOnly}
               fullWidth
               label="Timeout (ms)"
               type="number"
@@ -1112,6 +1201,14 @@ function SourceConnectionForm({
       {errorMessage && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {errorMessage}
+        </Alert>
+      )}
+
+      {readOnly && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {currentWorkspace?.role === "viewer"
+            ? "Viewers can see source connections but not change them."
+            : "Only this connection's managers can change it. The Managers tab shows who they are."}
         </Alert>
       )}
 
@@ -1179,9 +1276,33 @@ function SourceConnectionForm({
           {basicInformationSection}
           {connectionConfigSection}
           {advancedSettingsSection}
+          {testResult && (
+            <Alert
+              severity={testResult.success ? "success" : "error"}
+              sx={{ mt: 2 }}
+              onClose={() => setTestResult(null)}
+            >
+              {testResult.message ||
+                (testResult.success ? "Connected" : "The test failed")}
+            </Alert>
+          )}
           <Box
             sx={{ display: "flex", justifyContent: "flex-end", gap: 1, mt: 2 }}
           >
+            {connector?._id && (
+              <Button
+                onClick={() => void runTest()}
+                disabled={testing || isSubmitting || isDirty}
+                sx={{ mr: "auto" }}
+                startIcon={
+                  testing ? (
+                    <CircularProgress size={16} color="inherit" />
+                  ) : undefined
+                }
+              >
+                {testing ? "Testing…" : "Test connection"}
+              </Button>
+            )}
             <Button onClick={onClose} disabled={isSubmitting}>
               Cancel
             </Button>
@@ -1189,7 +1310,7 @@ function SourceConnectionForm({
               type="submit"
               variant="contained"
               disableElevation
-              disabled={isSubmitting}
+              disabled={isSubmitting || readOnly}
               startIcon={
                 isSubmitting ? (
                   <CircularProgress size={16} color="inherit" />
@@ -1227,7 +1348,40 @@ function SourceConnectionForm({
       sx={{ p: 2, maxWidth: "800px", mx: "auto" }}
       data-form-type="other"
     >
-      {formContent}
+      {connector?._id && (
+        <Tabs
+          value={tab}
+          onChange={(_, value) => setTab(value)}
+          sx={{
+            minHeight: 40,
+            borderBottom: 1,
+            borderColor: "divider",
+            "& .MuiTab-root": { minHeight: 40, textTransform: "none" },
+          }}
+        >
+          <Tab value="connection" label="Connection" />
+          <Tab value="managers" label="Managers" />
+          <Tab value="access" label="Access" />
+        </Tabs>
+      )}
+      {tab === "managers" && connector?._id ? (
+        <Box sx={{ py: 2 }}>
+          <ConnectionManagersPanel connectionId={connector._id} />
+        </Box>
+      ) : tab === "access" && connector?._id ? (
+        <Box sx={{ py: 2 }}>
+          <ConnectionWritersPanel
+            // Reload when the caller's edit rights change (a manager removed
+            // themself), so the writers controls match the managers list.
+            key={String(connector.canEdit)}
+            kind="source"
+            connectionId={connector._id}
+            connectionName={connector.name || "this connection"}
+          />
+        </Box>
+      ) : (
+        formContent
+      )}
 
       <Snackbar
         open={!!snackbarMessage}

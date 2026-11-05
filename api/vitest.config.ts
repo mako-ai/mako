@@ -23,9 +23,18 @@ export default defineConfig({
       "src/routes/connector-reveal-secret.test.ts",
       "src/routes/source-connection-ids.test.ts",
       "src/routes/source-connection-secrets.test.ts",
+      "src/routes/source-connection-roles.test.ts",
       "src/routes/connector-probe.test.ts",
       "src/routes/connector-catalog-tenancy.test.ts",
       "src/agent-lib/tools/dbt-*.test.ts",
+      // Connections: credential types, the proxy, writers on source connections.
+      "src/connections/callable.test.ts",
+      "src/connectors/rate-gate.test.ts",
+      "src/routes/source-connection-writers.test.ts",
+      // A database connection's writers list, changed in the app.
+      "src/routes/database-writers-session.test.ts",
+      // Who started a run: an agent's runs only read through connections.
+      "src/routes/workflows-run-starter.test.ts",
     ],
     exclude: [
       "**/node_modules/**",

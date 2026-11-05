@@ -7,6 +7,7 @@
  * pieces of both legacy forms (destination + schema/prefix, entity layout
  * table, webhook secret/provisioning block, cron presets).
  */
+import { isSyncSource } from "../lib/source-connection-kind";
 import { useEffect, useState, useMemo, useRef } from "react";
 import { useForm, Controller, useFieldArray } from "react-hook-form";
 import {
@@ -1422,28 +1423,36 @@ export function SyncFlowForm({
                           }
                           disabled={isLoadingConnectors || !isNewMode}
                         >
-                          {connectors.map(source => (
-                            <MenuItem key={source._id} value={source._id}>
-                              <Box
-                                sx={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 1,
-                                }}
-                              >
-                                {source.name}
-                                <Chip label={source.type} size="small" />
-                                {webhookCapabilitiesByType[source.type]
-                                  ?.supported && (
-                                  <Chip
-                                    label="webhook"
-                                    size="small"
-                                    variant="outlined"
-                                  />
-                                )}
-                              </Box>
-                            </MenuItem>
-                          ))}
+                          {connectors
+                            .filter(
+                              source =>
+                                // Custom API connections are called, never
+                                // synced; one already chosen stays visible.
+                                isSyncSource(source.type) ||
+                                source._id === field.value,
+                            )
+                            .map(source => (
+                              <MenuItem key={source._id} value={source._id}>
+                                <Box
+                                  sx={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 1,
+                                  }}
+                                >
+                                  {source.name}
+                                  <Chip label={source.type} size="small" />
+                                  {webhookCapabilitiesByType[source.type]
+                                    ?.supported && (
+                                    <Chip
+                                      label="webhook"
+                                      size="small"
+                                      variant="outlined"
+                                    />
+                                  )}
+                                </Box>
+                              </MenuItem>
+                            ))}
                         </Select>
                         {errors.dataSourceId && (
                           <FormHelperText>

@@ -3,9 +3,12 @@
  * the workspace reads; only the people and workflows listed write, each
  * anywhere or only to one schema or table.
  *
- * Changes save as they are made. While the workspace only reports, the tab
- * also shows who really wrote here lately, to allow them in one click before
- * anything is refused.
+ * Changes save as they are made. The tab also shows who tried to write here
+ * lately and was refused, to allow them in one click.
+ *
+ * Both kinds of connection: a database (`where` is a schema or table) and a
+ * source connection, written through Mako's proxy (a writer writes anywhere
+ * there; live reads can be turned off).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -16,8 +19,10 @@ import {
   Button,
   Chip,
   CircularProgress,
+  FormControlLabel,
   IconButton,
   Stack,
+  Switch,
   TextField,
   Tooltip,
   Typography,
@@ -41,12 +46,27 @@ import {
   type ConnectionWriters,
 } from "../store/schemaStore";
 import { useWorkflowsStore } from "../store/workflowsStore";
+import {
+  useSourceConnectionEntitiesStore,
+  type SourceConnectionWriters,
+} from "../store/sourceConnectionEntitiesStore";
+import { initials } from "../lib/initials";
+
+type ConnectionKind = "database" | "source";
 
 type Who = { principal: string; label: string; kind: "person" | "workflow" };
 
+const ALL_WORKFLOWS: Who = {
+  principal: "workflow:*",
+  label: "All deployed workflows",
+  kind: "workflow",
+};
+
 const ANYWHERE = "Anywhere";
 
-function whereLabel(where?: string | null) {
+type Place = { text: string; kind: "anywhere" | "schema" | "table" };
+
+function whereLabel(where?: string | null): Place {
   if (!where) return { text: "Anywhere", kind: "anywhere" as const };
   return where.includes(".")
     ? { text: where, kind: "table" as const }
@@ -79,23 +99,24 @@ async function writePlaces(
   return [...new Set(places.map(n => n.label))];
 }
 
-function initials(text: string) {
-  const name = text.split("@")[0] ?? text;
-  const parts = name.split(/[._-]+/).filter(Boolean);
-  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "?";
-}
-
 export default function ConnectionWritersPanel({
   connectionId,
   connectionName,
+  kind = "database",
 }: {
   connectionId: string;
   connectionName: string;
+  kind?: ConnectionKind;
 }) {
+  const source = kind === "source";
   const { currentWorkspace, members, loadMembers } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const getWriters = useSchemaStore(s => s.getConnectionWriters);
-  const setWriters = useSchemaStore(s => s.setConnectionWriters);
+  const getDatabaseWriters = useSchemaStore(s => s.getConnectionWriters);
+  const setDatabaseWriters = useSchemaStore(s => s.setConnectionWriters);
+  const getSourceWriters = useSourceConnectionEntitiesStore(s => s.getWriters);
+  const setSourceWriters = useSourceConnectionEntitiesStore(s => s.setWriters);
+  const getWriters = source ? getSourceWriters : getDatabaseWriters;
+  const setWriters = source ? setSourceWriters : setDatabaseWriters;
   const ensureTreeRoot = useSchemaStore(s => s.ensureTreeRoot);
   const ensureTreeChildren = useSchemaStore(s => s.ensureTreeChildren);
   const fetchWorkflows = useWorkflowsStore(s => s.fetchOverview);
@@ -103,7 +124,13 @@ export default function ConnectionWritersPanel({
     workspaceId ? s.overviewByWorkspace[workspaceId]?.workflows : undefined,
   );
 
-  const [state, setState] = useState<ConnectionWriters | null>(null);
+  const [state, setState] = useState<
+    ConnectionWriters | SourceConnectionWriters | null
+  >(null);
+  const liveReads =
+    !source || (state as SourceConnectionWriters | null)?.liveReads === true;
+  const callable =
+    !source || (state as SourceConnectionWriters | null)?.callable !== false;
   const [namespaces, setNamespaces] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -125,6 +152,8 @@ export default function ConnectionWritersPanel({
     void load();
     void loadMembers?.();
     void fetchWorkflows(workspaceId);
+    // A source connection has no schemas, so no place to pick.
+    if (source) return;
     void writePlaces(
       workspaceId,
       connectionId,
@@ -141,6 +170,7 @@ export default function ConnectionWritersPanel({
     fetchWorkflows,
     ensureTreeRoot,
     ensureTreeChildren,
+    source,
   ]);
 
   const people = useMemo<Who[]>(
@@ -152,17 +182,22 @@ export default function ConnectionWritersPanel({
       })),
     [members],
   );
+  // A source connection allows deployed workflows together (they share one
+  // identity today): one option, never each workflow.
   const flows = useMemo<Who[]>(
     () =>
-      (workflows ?? []).map(w => ({
-        principal: `workflow:${w.workflowId}`,
-        label: w.workflowId,
-        kind: "workflow",
-      })),
-    [workflows],
+      source
+        ? [ALL_WORKFLOWS]
+        : (workflows ?? []).map(w => ({
+            principal: `workflow:${w.workflowId}`,
+            label: w.workflowId,
+            kind: "workflow",
+          })),
+    [workflows, source],
   );
   const describe = useCallback(
     (principal: string): Who => {
+      if (principal === ALL_WORKFLOWS.principal) return ALL_WORKFLOWS;
       const known = [...people, ...flows].find(w => w.principal === principal);
       if (known) return known;
       const [kind, name] = principal.split(":");
@@ -175,18 +210,18 @@ export default function ConnectionWritersPanel({
     [people, flows],
   );
 
-  const save = async (next: ConnectionWriter[]): Promise<boolean> => {
+  const save = async (
+    next: ConnectionWriter[],
+    nextLiveReads?: boolean,
+  ): Promise<boolean> => {
     if (!workspaceId) return false;
     setBusy(true);
     try {
-      await setWriters(
-        workspaceId,
-        connectionId,
-        next.map(w => ({
-          principal: w.principal,
-          ...(w.where ? { where: w.where } : {}),
-        })),
-      );
+      const writers = next.map(w => ({
+        principal: w.principal,
+        ...(w.where ? { where: w.where } : {}),
+      }));
+      await setWriters(workspaceId, connectionId, writers, nextLiveReads);
       await load();
       return true;
     } catch (err) {
@@ -247,8 +282,11 @@ export default function ConnectionWritersPanel({
       >
         <Summary
           icon={<BookOpen size={16} />}
-          label="Read"
-          value="Everyone in the workspace"
+          label={source ? "Read live" : "Read"}
+          value={
+            liveReads ? "Everyone in the workspace" : "Off: synced tables only"
+          }
+          tone={liveReads ? "normal" : "muted"}
         />
         <Summary
           icon={<PenLine size={16} />}
@@ -262,13 +300,56 @@ export default function ConnectionWritersPanel({
         />
       </Box>
 
+      {source && !callable && (
+        <Alert severity="info">
+          Mako cannot call this connection&apos;s service yet; the list applies
+          once it can.
+        </Alert>
+      )}
+
+      {source && state.canEdit && (
+        <FormControlLabel
+          control={
+            <Switch
+              size="small"
+              checked={liveReads}
+              disabled={busy}
+              onChange={(_, checked) => void save(state.writers, checked)}
+            />
+          }
+          label={
+            <Typography variant="body2">
+              Live reads: workflows and agents may read {connectionName}{" "}
+              directly, not only its synced tables. Off until a manager turns it
+              on. When on, everyone in this workspace, viewers included, and
+              their agents can read live through this key.
+            </Typography>
+          }
+        />
+      )}
+
       {/* Allowed */}
       <Box>
         <SectionTitle>Allowed to write</SectionTitle>
+        {source &&
+          (who?.kind === "workflow" ||
+            state.writers.some(
+              writer => describe(writer.principal).kind === "workflow",
+            )) && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mb: 1 }}
+            >
+              Workflows are allowed together: they share one deployed identity
+              today, so Mako cannot tell one from another.
+            </Typography>
+          )}
         {state.writers.length === 0 ? (
           <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
-            No one writes through {connectionName}. Syncs, flows and dbt are not
-            affected.
+            {source
+              ? `No one writes through ${connectionName}. Syncs are not affected.`
+              : `No one writes through ${connectionName}. Syncs, flows and dbt are not affected.`}
           </Typography>
         ) : (
           <Box
@@ -342,7 +423,10 @@ export default function ConnectionWritersPanel({
             sx={{
               mt: 1.5,
               display: "grid",
-              gridTemplateColumns: { xs: "1fr", sm: "1.4fr 1fr auto" },
+              gridTemplateColumns: {
+                xs: "1fr",
+                sm: source ? "1fr auto" : "1.4fr 1fr auto",
+              },
               gap: 1,
               alignItems: "stretch",
             }}
@@ -363,21 +447,25 @@ export default function ConnectionWritersPanel({
                 />
               )}
             />
-            <Autocomplete
-              size="small"
-              freeSolo
-              options={[ANYWHERE, ...namespaces]}
-              value={where}
-              onChange={(_, value) => setWhere(value ?? ANYWHERE)}
-              onInputChange={(_, value) => setWhere(value || ANYWHERE)}
-              renderInput={params => (
-                <TextField
-                  {...params}
-                  margin="none"
-                  placeholder="schema or schema.table"
-                />
-              )}
-            />
+            {/* A source writer writes anywhere through the connection: no
+                place to pick. */}
+            {!source && (
+              <Autocomplete
+                size="small"
+                freeSolo
+                options={[ANYWHERE, ...namespaces]}
+                value={where}
+                onChange={(_, value) => setWhere(value ?? ANYWHERE)}
+                onInputChange={(_, value) => setWhere(value || ANYWHERE)}
+                renderInput={params => (
+                  <TextField
+                    {...params}
+                    margin="none"
+                    placeholder="schema or schema.table"
+                  />
+                )}
+              />
+            )}
             <Button
               variant="contained"
               disableElevation
@@ -395,7 +483,9 @@ export default function ConnectionWritersPanel({
             color="text.secondary"
             sx={{ display: "block", mt: 1 }}
           >
-            Only the workspace owner and admins can change who writes.
+            {source
+              ? "Only this connection's managers and the workspace owner can change who writes."
+              : "Only the workspace owner and admins can change who writes."}
           </Typography>
         )}
       </Box>
@@ -495,11 +585,7 @@ function PrincipalAvatar({ who }: { who: Who }) {
   );
 }
 
-function PlaceChip({
-  place,
-}: {
-  place: { text: string; kind: "anywhere" | "schema" | "table" };
-}) {
+function PlaceChip({ place }: { place: Place }) {
   const icon =
     place.kind === "anywhere" ? (
       <Database size={14} />

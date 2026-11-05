@@ -1,8 +1,9 @@
 /**
  * One write through a connection by a person or workflow: who, where, and
- * whether their writers list allowed it. Kept 90 days: the Access tab shows
- * who tried to write, with Allow. Never the statement itself: only its
- * target.
+ * whether their writers list allowed it, and for an allowed proxy write what
+ * the service answered (recorded before it is sent). Kept 90 days: the
+ * Access tab shows who tried to write, with Allow. Never the statement
+ * itself: only its target.
  */
 import mongoose, { Schema, Types } from "mongoose";
 
@@ -12,6 +13,10 @@ export interface IConnectionWriteEvent {
   principal: string;
   target?: string;
   allowed: boolean;
+  /** An allowed proxy write: the service's HTTP status, once answered. */
+  status?: number;
+  /** An allowed proxy write that got no answer: why (credential-free). */
+  error?: string;
   at: Date;
 }
 
@@ -22,6 +27,8 @@ const ConnectionWriteEventSchema = new Schema<IConnectionWriteEvent>(
     principal: { type: String, required: true },
     target: { type: String },
     allowed: { type: Boolean, required: true },
+    status: { type: Number },
+    error: { type: String },
     at: { type: Date, default: () => new Date() },
   },
   { collection: "connection_write_events", versionKey: false },

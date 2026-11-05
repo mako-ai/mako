@@ -15,7 +15,9 @@ import {
   HatchetError,
   hasInstanceHatchet,
   isHatchetId,
+  readWorkspaceTenant,
   tenantJson,
+  type RunStarter,
   tenantOfToken,
   type WorkspaceTenant,
 } from "./hatchet";
@@ -67,7 +69,7 @@ function inputOf(value: unknown): unknown {
 }
 
 const metadataOf = (run: Row) =>
-  (run.additionalMetadata ?? {}) as { trigger?: string };
+  (run.additionalMetadata ?? {}) as { trigger?: string; startedBy?: string };
 
 const runSummary = (run: Row, workflowName: unknown = run.workflowName) => ({
   runId: idOf(run),
@@ -286,6 +288,45 @@ const readDetail = (tenant: WorkspaceTenant, runId: string) => {
   if (!isHatchetId(runId)) throw new HatchetError("Invalid run id", 400);
   return tenantJson<RunDetail>(tenant, `/api/v1/stable/workflow-runs/${runId}`);
 };
+
+/** Who started each run looked up, by tenant and run: it never changes. */
+const starters = new Map<string, RunStarter>();
+const MAX_STARTERS = 5000;
+
+/**
+ * Who started the workspace's run `runId` (hatchet.ts `RunStarter`), or null
+ * when Mako cannot tell: no run id, no tenant, a run the tenant does not
+ * have, or Hatchet not answering. A run started before Mako kept
+ * `startedBy` is an agent's when its trigger was an agent's tool or an API
+ * call, as those are now; a run with neither (a schedule) is a trigger's.
+ */
+export async function runStartedBy(
+  workspaceId: string,
+  runId: string | undefined,
+): Promise<RunStarter | null> {
+  if (!runId || !isHatchetId(runId)) return null;
+  const tenant = await readWorkspaceTenant(workspaceId).catch(() => null);
+  if (!tenant) return null;
+  const key = `${tenant.tenantId}:${runId}`;
+  const known = starters.get(key);
+  if (known) return known;
+  const detail = await readDetail(tenant, runId).catch(() => null);
+  if (!detail?.run || idOf(detail.run) !== runId) return null;
+  const { startedBy, trigger } = metadataOf(detail.run);
+  const starter: RunStarter =
+    startedBy === "agent" || startedBy === "person" || startedBy === "trigger"
+      ? startedBy
+      : trigger === "agent" || trigger === "api"
+        ? "agent"
+        : trigger === "ui"
+          ? "person"
+          : "trigger";
+  if (starters.size >= MAX_STARTERS) {
+    starters.delete(starters.keys().next().value as string);
+  }
+  starters.set(key, starter);
+  return starter;
+}
 
 /** One run of the workspace's Hatchet; `full` keeps every log line. */
 export async function readRun(

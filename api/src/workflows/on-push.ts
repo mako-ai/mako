@@ -62,6 +62,7 @@ export async function setKey(
   userId: string,
   name: string,
   key: string,
+  { agentRun = false }: { agentRun?: boolean } = {},
 ): Promise<void> {
   const _id = new Types.ObjectId(workspaceId);
   const keyHash = hashApiKey(key);
@@ -87,6 +88,7 @@ export async function setKey(
           scopes: WORKER_KEY_SCOPES,
           createdAt: new Date(),
           createdBy: userId,
+          ...(agentRun ? { agentRun: true } : {}),
         },
       },
     },

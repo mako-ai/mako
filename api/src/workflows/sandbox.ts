@@ -7,7 +7,9 @@
  * ends a run. A run is in its person's box only, so only they read it.
  *
  * The steps call Mako with a key made for the run that acts as the person
- * (routes/workflows.ts), so a test can do what they can do.
+ * (routes/workflows.ts), so a test can do what they can do. A run an agent
+ * started (the in-chat agent, an MCP client) is marked on its key: through
+ * connections it only reads, as the agent itself does.
  */
 import { randomUUID } from "node:crypto";
 import { Types } from "mongoose";
@@ -70,6 +72,8 @@ export async function startSandboxRun(
   userId: string,
   workflowId: string,
   input: object = {},
+  /** Started by an agent, not by the person themselves. */
+  { byAgent }: { byAgent: boolean } = { byAgent: true },
 ) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(workflowId)) {
     throw new HatchetError(`Invalid workflow: ${workflowId}`, 400);
@@ -80,7 +84,9 @@ export async function startSandboxRun(
   const runId = `sandbox-${randomUUID()}`;
   await pruneRunKeys(workspaceId, userId);
   const { key } = generateApiKey();
-  await setKey(workspaceId, userId, keyNameOf(userId, runId), key);
+  await setKey(workspaceId, userId, keyNameOf(userId, runId), key, {
+    agentRun: byAgent,
+  });
 
   const dir = runsDir(provider.scratch(ctx));
   const file = `${dir}/${runId}`;

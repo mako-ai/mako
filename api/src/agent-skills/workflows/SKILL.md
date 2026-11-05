@@ -15,6 +15,8 @@ entities:
   - scheduled job
   - background job
   - build error
+  - connection(
+  - API key
 ---
 
 # Workflows
@@ -31,7 +33,8 @@ workflows/
 That one file is all a workflow needs. `../hatchet` (the Hatchet client) and
 `../lib/mako` (Mako data access) are supplied when it is built: do not create
 them, and they are not in the repo to read. `../lib/mako` exports `query`,
-`execute`, `call`, `agent`, `model`, `decide` and `tools`, each shown below.
+`execute`, `connection`, `call`, `agent`, `model`, `decide` and `tools`, each
+shown below.
 
 With `workflowId: "daily-digest"`, file paths are relative to that folder:
 the file above is `path: "workflow.ts"`.
@@ -173,6 +176,37 @@ changed; `query` also runs a write and returns its `RETURNING` rows. A
 test run (laptop or sandbox) writes as the person running it, under their
 own access. A dbt
 job (`call("dbt_run_job", { ... })`) remains the way to rebuild models.
+
+## Calling a service through a connection
+
+`connection(id)` calls a service (Close, Stripe, a Custom API such as Probo)
+with the source connection's stored credential; the workflow never sees the
+key. Never put an API key in workflow code.
+
+```ts
+import { connection } from "../lib/mako";
+
+const close = connection("ch_close"); // id or name, from list_connections
+const leads = await close.get("/lead/", { query: { query: "status:Won" } });
+await close.post("/task/", { lead_id: "lead_1", text: "Send the offer" });
+```
+
+Paths are relative to the base URL and cannot leave it. `get`/`post`/`put`/
+`patch`/`delete` return the body and throw `ConnectionError` (`status`,
+`body`) at 400 or more; `request(method, path, body)` returns `{ status,
+headers, body }` at any status. GraphQL: `post("/", { query, variables })`.
+
+GETs, GraphQL queries and Close searches are reads: on once a manager turns
+live reads on in the connection's Access tab (every connection starts off).
+A GraphQL document with the word `mutation` or `subscription` anywhere, even
+in a string or comment, is a write. Anything else is a write: it needs "All
+deployed workflows" on that tab's writers list (workflows share one deployed
+identity today, so they are allowed together; a listed writer writes
+anywhere through the connection), and a refused one throws and shows there
+with Allow. Tell the user which connection to allow first. A test run writes
+as the person running it; one an agent started only reads. A step can be retried: look for the record before
+creating it, or send the service's idempotency header, the same on every
+retry: ``post(path, body, { headers: { "Idempotency-Key": `offer-${id}` } })``.
 
 ## Calling a Mako tool in a step
 

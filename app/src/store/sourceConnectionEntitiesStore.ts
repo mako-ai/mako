@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { api, unwrapBody } from "../api";
+import type { ConnectionWriters } from "./schemaStore";
 import { reconcileSourceConnectionTabs } from "../lib/source-connection-tabs";
 
 interface SourceConnectionEntity {
@@ -15,12 +16,30 @@ interface SourceConnectionEntity {
   createdAt: string;
   updatedAt: string;
   workspaceId: string;
+  /**
+   * Whether the signed-in person may configure it: its managers and the
+   * workspace owner. Being an admin is not enough.
+   */
+  canEdit?: boolean;
+  /**
+   * User ids that configure it: its managers who can act today, else the
+   * workspace owner.
+   */
+  managers?: string[];
 }
 
 interface ApiResponse<T> {
   success: boolean;
   data: T;
   error?: string;
+}
+
+/** A source connection's Access tab: the writers list plus live reads. */
+export interface SourceConnectionWriters extends ConnectionWriters {
+  /** Off: the proxy refuses reads too. */
+  liveReads: boolean;
+  /** Whether Mako can call this connection's service yet. */
+  callable: boolean;
 }
 
 interface EntitiesState {
@@ -48,6 +67,28 @@ interface EntitiesState {
     workspaceId: string,
     connectorId: string,
   ) => Promise<{ success: boolean; error: string | null }>;
+  /** Change who configures the connection, then refresh its row. */
+  setManagers: (
+    workspaceId: string,
+    connectorId: string,
+    managers: string[],
+  ) => Promise<void>;
+  /** Who may write through the connection's proxy (its Access tab). */
+  getWriters: (
+    workspaceId: string,
+    connectorId: string,
+  ) => Promise<SourceConnectionWriters>;
+  setWriters: (
+    workspaceId: string,
+    connectorId: string,
+    writers: { principal: string; where?: string }[],
+    liveReads?: boolean,
+  ) => Promise<void>;
+  /** Test the saved connection with its stored credential. */
+  test: (
+    workspaceId: string,
+    connectorId: string,
+  ) => Promise<{ success: boolean; message: string }>;
 }
 
 function makeKey(workspaceId: string, connectorId: string) {
@@ -251,6 +292,80 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
         return {
           success: false,
           error: err?.message || "Failed to delete",
+        };
+      }
+    },
+    setManagers: async (workspaceId, connectorId, managers) => {
+      const res = unwrapBody(
+        await api.PUT(
+          "/api/workspaces/{workspaceId}/connections/sources/{id}/managers",
+          {
+            params: { path: { workspaceId, id: connectorId } },
+            body: { managers },
+          },
+        ),
+      ) as ApiResponse<{ managers: string[] }>;
+      if (!res.success) throw new Error(res.error ?? "Couldn't save.");
+      // Who may edit changed, so the cached row's canEdit is stale. Refresh it
+      // in place: dropping it would unmount the open form and lose its tab.
+      const fresh = unwrapBody(
+        await api.GET(
+          "/api/workspaces/{workspaceId}/connections/sources/{id}",
+          {
+            params: { path: { workspaceId, id: connectorId } },
+          },
+        ),
+      ) as ApiResponse<SourceConnectionEntity>;
+      if (fresh.success && fresh.data) {
+        get().upsert({ ...fresh.data, workspaceId });
+      }
+    },
+    getWriters: async (workspaceId, connectorId) => {
+      const res = unwrapBody(
+        await api.GET(
+          "/api/workspaces/{workspaceId}/connections/sources/{id}/writers",
+          { params: { path: { workspaceId, id: connectorId } } },
+        ),
+      ) as ApiResponse<SourceConnectionWriters>;
+      if (!res.success || !res.data) {
+        throw new Error(res.error ?? "Couldn't load who can write.");
+      }
+      return res.data;
+    },
+    setWriters: async (workspaceId, connectorId, writers, liveReads) => {
+      const res = unwrapBody(
+        await api.PUT(
+          "/api/workspaces/{workspaceId}/connections/sources/{id}/writers",
+          {
+            params: { path: { workspaceId, id: connectorId } },
+            body: {
+              writers,
+              ...(liveReads === undefined ? {} : { liveReads }),
+            },
+          },
+        ),
+      ) as ApiResponse<null>;
+      if (!res.success) throw new Error(res.error ?? "Couldn't save.");
+    },
+    test: async (workspaceId, connectorId) => {
+      try {
+        const body = unwrapBody(
+          await api.POST(
+            "/api/workspaces/{workspaceId}/connections/sources/{id}/test",
+            { params: { path: { workspaceId, id: connectorId } } },
+          ),
+        ) as ApiResponse<{ success?: boolean; message?: string }>;
+        if (body.success && body.data) {
+          return {
+            success: body.data.success === true,
+            message: body.data.message || "",
+          };
+        }
+        return { success: false, message: body.error || "The test failed" };
+      } catch (err: any) {
+        return {
+          success: false,
+          message: err?.message || "The test failed",
         };
       }
     },

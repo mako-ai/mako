@@ -138,6 +138,19 @@ export class WorkspaceService {
   }
 
   /**
+   * The user ids of the workspace's owners
+   */
+  async getOwnerIds(workspaceId: string): Promise<string[]> {
+    const owners = await WorkspaceMember.find({
+      workspaceId: new Types.ObjectId(workspaceId),
+      role: "owner",
+    })
+      .select("userId")
+      .lean();
+    return owners.map(o => String(o.userId));
+  }
+
+  /**
    * Whether the user is an owner or admin of the workspace
    */
   async isAdmin(workspaceId: string, userId: string): Promise<boolean> {

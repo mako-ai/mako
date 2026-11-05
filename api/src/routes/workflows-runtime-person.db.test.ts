@@ -21,18 +21,26 @@ import { asSystem } from "../access/connection-writes";
 import { hashApiKey } from "../auth/api-key.middleware";
 import { mintMcpAccessTokenForUser } from "../auth/mcp-oauth.service";
 import { User } from "../database/schema";
+import { ConnectionWriteEvent } from "../access/connection-write-event";
+import { setTransportForTests } from "../connections/forward";
+import { encryptString } from "../services/crypto.service";
 import {
   DatabaseConnection,
+  SourceConnection,
   Workspace,
   WorkspaceMember,
 } from "../database/workspace-schema";
 import { loggingMiddleware } from "../logging";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { setKey } from "../workflows/on-push";
 import { WORKER_KEY_SCOPES, workerKeyName } from "../workflows/worker-key";
 import { workflowRuntimeRoutes } from "./workflows";
 
 const WORKER_KEY = "revops_worker_runtime_person_tests_";
 const NO_RUN_KEY = "revops_person_without_run_scope_xx";
+const MARC_RUN_KEY = "revops_marc_run_key_person_tests_";
+const OWN_RUN_KEY = "revops_marc_own_sandbox_run_key_xx";
+const AGENT_RUN_KEY = "revops_marc_agent_sandbox_run_key";
 const SCHEMA = `mako_rp_${Date.now().toString(36)}`;
 const WRITE = (table: string) =>
   `INSERT INTO ${SCHEMA}.${table} (id) VALUES (1)`;
@@ -64,6 +72,9 @@ async function main() {
   const postgresUrl = process.env.MAKO_TEST_POSTGRES_URL;
   const mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  // The source connection manager reads through the main connection.
+  process.env.DATABASE_URL = mongo.getUri();
+  process.env.DATABASE_NAME = mongoose.connection.db?.databaseName ?? "test";
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
   process.env.AI_GATEWAY_API_KEY = "gateway-key";
   const ws = new Types.ObjectId();
@@ -101,6 +112,12 @@ async function main() {
       apiKeys: [
         key(workerKeyName(), WORKER_KEY, WORKER_KEY_SCOPES, "deployer"),
         key("Marc's MCP", NO_RUN_KEY, ["mcp", "query:write"], "marc"),
+        key(
+          "Marc's runs",
+          MARC_RUN_KEY,
+          ["mcp", "query:read", "workflows:run"],
+          "marc",
+        ),
       ],
       workflows: {
         live: { sha: "a".repeat(40), tree: "t", names: ["billing-sync"] },
@@ -201,6 +218,92 @@ async function main() {
     assert.equal(gateway.length, 1, JSON.stringify(sent.map(s => s.url)));
     assert.equal(gateway[0].auth, "Bearer gateway-key");
 
+    // Through a source connection, a login (an agent acting for marc) only
+    // reads, even with marc on the writers list; marc's own key writes.
+    const close = await SourceConnection.create({
+      workspaceId: ws,
+      name: "ch_close",
+      type: "close",
+      config: { api_key: encryptString("close_key_person_tests") },
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 0 },
+      createdBy: "deployer",
+      liveReads: true,
+      writers: [{ principal: "user:marc" }],
+    });
+    const forwarded: string[] = [];
+    setTransportForTests(async (url, options) => {
+      forwarded.push(`${options.method} ${url}`);
+      return {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: Buffer.from("{}"),
+      };
+    });
+    try {
+      const request = (key: string, method: string) =>
+        call("POST", `/connections/${close._id}/request`, key, {
+          method,
+          path: "/task/",
+        });
+      res = await request(login, "POST");
+      assert.equal(res.status, 403, JSON.stringify(res.body));
+      assert.match(res.body.error, /^Agents only read/);
+      assert.equal(forwarded.length, 0, "a refused write is never sent");
+      let attempt = null;
+      for (let i = 0; i < 40 && !attempt; i++) {
+        attempt = await ConnectionWriteEvent.findOne({}).lean();
+        if (!attempt) await new Promise(r => setTimeout(r, 50));
+      }
+      assert.equal(attempt?.principal, "agent:user:marc");
+      assert.equal(attempt?.allowed, false);
+      res = await request(login, "GET");
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      res = await request(MARC_RUN_KEY, "POST");
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      assert.deepEqual(
+        forwarded.map(f => f.split(" ")[0]),
+        ["GET", "POST"],
+      );
+
+      // A sandbox run's key acts as marc: his own run (from the app) writes;
+      // one an agent started only reads, and its attempt is the agent's.
+      await setKey(
+        String(ws),
+        "marc",
+        "Workflows sandbox marc sandbox-own",
+        OWN_RUN_KEY,
+        {
+          agentRun: false,
+        },
+      );
+      await setKey(
+        String(ws),
+        "marc",
+        "Workflows sandbox marc sandbox-agent",
+        AGENT_RUN_KEY,
+        {
+          agentRun: true,
+        },
+      );
+      res = await request(OWN_RUN_KEY, "POST");
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      await ConnectionWriteEvent.deleteMany({});
+      res = await request(AGENT_RUN_KEY, "POST");
+      assert.equal(res.status, 403, JSON.stringify(res.body));
+      assert.match(res.body.error, /^Agents only read/);
+      attempt = await ConnectionWriteEvent.findOne({}).lean();
+      assert.equal(attempt?.principal, "agent:user:marc");
+      assert.equal(attempt?.allowed, false);
+      res = await request(AGENT_RUN_KEY, "GET");
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      assert.deepEqual(
+        forwarded.map(f => f.split(" ")[0]),
+        ["GET", "POST", "POST", "GET"],
+      );
+    } finally {
+      setTransportForTests(null);
+    }
+
     // The deployed worker is unchanged: the workflow's rights.
     res = await query(WORKER_KEY, WRITE("workflows"), "billing-sync");
     assert.equal(res.status, 200, JSON.stringify(res.body));
@@ -218,6 +321,17 @@ async function main() {
     res = await query(NO_RUN_KEY, "SELECT 1 AS one");
     assert.equal(res.status, 403);
 
+    // A person's own key works while its owner is a member, and stops when
+    // they leave the workspace; the worker's key is not concerned.
+    res = await query(MARC_RUN_KEY, "SELECT 1 AS one");
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    await WorkspaceMember.deleteOne({ workspaceId: ws, userId: "marc" });
+    res = await query(MARC_RUN_KEY, "SELECT 1 AS one");
+    assert.equal(res.status, 403, JSON.stringify(res.body));
+    assert.match(res.body.error, /no longer a member of this workspace/);
+    res = await query(WORKER_KEY, "SELECT 1 AS one", "billing-sync");
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+
     console.log(
       `workflow runtime person tests passed${postgresUrl ? " (real Postgres)" : ""}`,
     );
@@ -231,6 +345,7 @@ async function main() {
         ),
       ).catch(() => undefined);
     }
+    await databaseConnectionService.closeAllConnections();
     await mongoose.disconnect();
     await mongo.stop();
   }

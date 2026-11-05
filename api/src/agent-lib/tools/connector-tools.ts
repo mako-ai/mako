@@ -38,6 +38,7 @@ import {
   probeConnection,
 } from "../../connectors/probe.service";
 import { connectorRegistry } from "../../connectors/registry";
+import { isSecretField } from "../../connectors/source-connection-create.service";
 import { listWorkspaceConnectors } from "../../connectors/workspace/catalog";
 import { isWorkspaceConnectorType } from "../../connectors/workspace/SandboxedConnector";
 import {
@@ -47,8 +48,38 @@ import {
 import { loggers } from "../../logging";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { summarizeConnectionForListing } from "./universal-tools";
+import { connectionRequest } from "../../connections/proxy.service";
+import { ConnectionRequestError } from "../../connections/forward";
+import { wrapUntrustedData } from "./shared/query-result-format";
 
 const logger = loggers.api("connector-tools");
+
+export { isSecretField };
+
+/** A live answer longer than this comes back cut, marked `truncated`. */
+const CALL_CONNECTION_MAX_CHARS = 40_000;
+
+/**
+ * The service's answer headers an agent is shown: what it needs to read the
+ * body, page and back off. Any other header is dropped (it is text the
+ * service chose, which the model would read as is).
+ */
+export function answerHeaders(
+  headers: Record<string, string>,
+): Record<string, string> {
+  const shown: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    const lower = name.toLowerCase();
+    if (
+      ["content-type", "link", "retry-after"].includes(lower) ||
+      lower.startsWith("x-ratelimit-") ||
+      lower.startsWith("ratelimit")
+    ) {
+      shown[lower] = value;
+    }
+  }
+  return shown;
+}
 
 /** Field names whose VALUES are never returned, whatever the schema says. */
 export interface ConnectorConfigField {
@@ -60,21 +91,10 @@ export interface ConnectorConfigField {
 }
 
 /**
- * Describe a connector's config fields without their values.
- *
- * `secret` mirrors exactly the rule `applySchemaEncryption` uses to decide
- * what to encrypt (`encrypted === true || type === "password"`), so what an
- * agent is told is a secret is the same set the route protects. If those two
- * ever disagree, the honest failure is here — hence the shared predicate
- * rather than a second hand-written list.
+ * Describe a connector's config fields without their values. `secret` is
+ * `isSecretField`, the rule `applySchemaEncryption` encrypts by, so what an
+ * agent is told is a secret is the same set the route protects.
  */
-export function isSecretField(field: {
-  encrypted?: boolean;
-  type?: string;
-}): boolean {
-  return field.encrypted === true || field.type === "password";
-}
-
 function describeFields(fields: unknown): ConnectorConfigField[] {
   if (!Array.isArray(fields)) return [];
   return fields.map(raw => {
@@ -512,6 +532,82 @@ export function createConnectorTools(workspaceId: string) {
                 : `Probe failed: ${message}`,
             ...(error instanceof ProbeError ? { code: error.code } : {}),
           };
+        }
+      },
+    }),
+    call_connection: tool({
+      description: [
+        "Send one READ request through a SOURCE connection (Close, Stripe, a Custom API): Mako adds the credential, which you never see, and returns status, headers and body. Needs live reads on in the connection's Access tab.",
+        "Reads: GET, a GraphQL query POSTed to the endpoint (Custom API with GraphQL on, where a GET is a write), a Close search or a Close POST with x-http-method-override: GET. Writes are refused; they belong to a workflow on the writers list.",
+        "`path` is under the connection's base URL (Close: /lead/, Stripe: /v1/customers). Prefer synced tables: this reads live.",
+      ].join("\n"),
+      inputSchema: z.object({
+        connectionId: z
+          .string()
+          .describe("Source connection id or name from list_connections."),
+        method: z.enum(["GET", "POST"]).default("GET"),
+        path: z
+          .string()
+          .describe('Path under the base URL, starting with "/".'),
+        query: z
+          .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+          .optional()
+          .describe("Query string parameters."),
+        headers: z.record(z.string(), z.string()).optional(),
+        body: z
+          .unknown()
+          .optional()
+          .describe("JSON body, for a read POST (a GraphQL query)."),
+      }),
+      execute: async (
+        {
+          connectionId,
+          method,
+          path,
+          query,
+          headers,
+          body,
+        }: {
+          connectionId: string;
+          method: "GET" | "POST";
+          path: string;
+          query?: Record<string, string | number | boolean>;
+          headers?: Record<string, string>;
+          body?: unknown;
+        },
+        options?: { abortSignal?: AbortSignal },
+      ) => {
+        try {
+          const answer = await connectionRequest({
+            workspaceId,
+            connection: connectionId,
+            request: { method, path, query, headers, body },
+            readOnly: true,
+            signal: options?.abortSignal,
+          });
+          // The service's answer is data, never instructions: fenced.
+          const text = JSON.stringify(answer.body ?? null);
+          const truncated = text.length > CALL_CONNECTION_MAX_CHARS;
+          return {
+            status: answer.status,
+            headers: answerHeaders(answer.headers),
+            body: wrapUntrustedData(
+              truncated ? text.slice(0, CALL_CONNECTION_MAX_CHARS) : text,
+            ),
+            ...(truncated ? { truncated: true } : {}),
+          };
+        } catch (error) {
+          if (error instanceof ConnectionRequestError) {
+            return { error: error.message };
+          }
+          const message =
+            error instanceof Error ? error.message : "Unknown error";
+          logger.error("call_connection failed", {
+            workspaceId,
+            connectionId,
+            error: message,
+          });
+          return { error: `The request failed: ${message}` };
         }
       },
     }),

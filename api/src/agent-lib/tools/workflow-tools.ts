@@ -106,18 +106,21 @@ export function createWorkflowTools({
             if (!userId) {
               return { success: false, error: "A sandbox needs a person." };
             }
+            // An agent's run only reads through connections.
             const { runId } = await startSandboxRun(
               workspaceId,
               userId,
               workflowId,
               input,
+              { byAgent: true },
             );
             return { success: true, sandbox: true, runId, workflowId };
           }
           const runId = await startRun(
             await requireTenant(workspaceId),
             workflowId,
-            { input, trigger: "agent" },
+            // Its deployed code only reads through connections.
+            { input, trigger: "agent", startedBy: "agent" },
           );
           return { success: true, runId, workflowId };
         } catch (error) {
