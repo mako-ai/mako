@@ -46,11 +46,12 @@ import {
   type Caller,
 } from "../access/source-connection-access";
 import {
-  LISTABLE_PRINCIPAL,
   WRITERS_IN_APP_ONLY,
   nextWriters,
   publicWriters,
   recentWriters,
+  SOURCE_LISTABLE_PRINCIPAL,
+  sourceWriterPrincipal,
   writersEditor,
   writersOutsideRefusal,
 } from "../access/connection-writers-list";
@@ -1458,11 +1459,21 @@ export const dataSourceRoutes = sourceConnectionRoutes;
 // Syncs are not concerned.
 
 const SourceWriterSchema = z.object({
+  // `workflow:*`: every deployed workflow. A `workflow:<name>` is taken as
+  // that (they share one identity today).
   principal: z
     .string()
-    .regex(LISTABLE_PRINCIPAL)
-    .openapi({ example: "workflow:fr-offer-to-cash" }),
+    .regex(SOURCE_LISTABLE_PRINCIPAL)
+    .openapi({ example: "workflow:*" }),
 });
+
+/** One entry per principal, any `workflow:<name>` as `workflow:*`. */
+function sourceWriters<T extends { principal: string }>(writers: T[]): T[] {
+  const seen = new Set<string>();
+  return writers
+    .map(w => ({ ...w, principal: sourceWriterPrincipal(w.principal) }))
+    .filter(w => !seen.has(w.principal) && seen.add(w.principal));
+}
 
 /**
  * The list as the Access tab shows it, one entry per principal. A `where`
@@ -1470,10 +1481,10 @@ const SourceWriterSchema = z.object({
  * connections) is ignored by the proxy, so it is not shown either.
  */
 function publicSourceWriters(writers: IConnectionWriter[] | undefined) {
-  const seen = new Set<string>();
-  return publicWriters(writers)
-    .filter(w => !seen.has(w.principal) && seen.add(w.principal))
-    .map(w => ({ ...w, where: null }));
+  return sourceWriters(publicWriters(writers)).map(w => ({
+    ...w,
+    where: null,
+  }));
 }
 
 sourceConnectionRoutes.openapi(
@@ -1517,8 +1528,10 @@ sourceConnectionRoutes.openapi(
         liveReads: row.liveReads === true,
         // Whether the proxy can call this connection at all yet.
         callable: callableFor(row.type) !== null,
-        recent: await recentWriters(id, principal =>
-          mayWrite(row.writers, principal),
+        recent: await recentWriters(
+          id,
+          principal => mayWrite(row.writers, principal),
+          { allWorkflows: true },
         ),
       },
     });
@@ -1573,10 +1586,20 @@ sourceConnectionRoutes.openapi(
     if (!(await mayChangeSourceConnection(caller, row))) {
       return c.json({ success: false, error: changeRefusal(caller.role) }, 403);
     }
-    const { writers, liveReads } = c.req.valid("json");
-    const outside = await writersOutsideRefusal(workspaceId, writers);
+    const json = c.req.valid("json");
+    const writers = sourceWriters(json.writers);
+    const { liveReads } = json;
+    // Plain entries: a stored `where` is ignored on a source connection.
+    const stored = sourceWriters(
+      (row.writers ?? []).map(w => ({
+        principal: w.principal,
+        addedBy: w.addedBy,
+        addedAt: w.addedAt,
+      })),
+    );
+    const outside = await writersOutsideRefusal(workspaceId, writers, stored);
     if (outside) return c.json({ success: false, error: outside }, 400);
-    row.writers = nextWriters(row.writers, writers, userId);
+    row.writers = nextWriters(stored, writers, userId);
     if (liveReads !== undefined) row.liveReads = liveReads;
     await row.save();
     logger.info("Source connection writers changed", {

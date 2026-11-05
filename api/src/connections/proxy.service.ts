@@ -2,20 +2,24 @@
  * The connection proxy: workflows and agents call a service through a source
  * connection without ever seeing its credential.
  *
- * Reads are live reads: on only where an admin turned them on in the Access
- * tab (a new Custom API connection starts on; every older connection, with
- * no `liveReads` stored, is off), and then for everyone in the workspace.
- * GET, HEAD, OPTIONS, a connection's `reads` (a Close search POST) and a
- * GraphQL query are reads; everything
- * else is a write, for the principals on the connection's writers list only
- * (the same list and the same identity rule as database connections,
- * access/connection-writes.ts): a deployed workflow writes as
- * `workflow:<name>`, a person's own run as `user:<id>`, and a request that
- * identifies no one writes nothing, nor does a viewer. Agents only read. A listed writer writes
+ * Reads are live reads: on only where a manager turned them on in the Access
+ * tab (every connection starts off, and one made before live reads existed,
+ * with no `liveReads` stored, is off), and then for everyone in the
+ * workspace. GET, HEAD, OPTIONS, a connection's `reads` (a Close search POST)
+ * and a GraphQL query are reads; everything else is a write, for the
+ * principals on the connection's writers list only (the same list and the
+ * same identity rule as database connections, access/connection-writes.ts):
+ * a person's own run writes as `user:<id>`, and a request that identifies no
+ * one writes nothing, nor does a viewer. Deployed workflows share one
+ * identity today (the worker's key; the name a request sends cannot be
+ * trusted), so a source connection lists them as one, `workflow:*` ("All
+ * deployed workflows"): a deployed workflow writes iff it is listed. Agents
+ * only read, also through a sandbox run they started. A listed writer writes
  * anywhere through the connection: a `where` stored on a source writer (the
  * list's schema is shared with database connections, where it limits a
- * schema or table) is ignored. Every write is recorded in the write log,
- * allowed or not; every read is logged.
+ * schema or table) is ignored. Every write, allowed or not, is in the write
+ * log, an allowed one before it is sent (none is sent unrecorded) with its
+ * outcome after; every read is logged.
  */
 import { Types } from "mongoose";
 import {
@@ -24,6 +28,7 @@ import {
   type ISourceConnection,
 } from "../database/workspace-schema";
 import { ConnectionWriteEvent } from "../access/connection-write-event";
+import { sourceWriterPrincipal } from "../access/connection-writers-list";
 import { actingPrincipal, viewerPrincipals } from "../access/connection-writes";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers } from "../logging";
@@ -58,13 +63,18 @@ export interface ConnectionRequestResult extends ForwardResult {
 
 /**
  * Whether `principal` may write through a source connection with `writers`:
- * it is listed. A stored `where` is ignored (see the header).
+ * it is listed, a deployed workflow as `workflow:*` (any `workflow:<name>`
+ * stored counts as that, as the Access tab shows it). A stored `where` is
+ * ignored (see the header).
  */
 export function mayWrite(
   writers: IConnectionWriter[] | undefined,
   principal: string,
 ): boolean {
-  return (writers ?? []).some(w => w.principal === principal);
+  const wanted = sourceWriterPrincipal(principal);
+  return (writers ?? []).some(
+    w => sourceWriterPrincipal(w.principal) === wanted,
+  );
 }
 
 /**
@@ -97,20 +107,39 @@ async function findConnection(
   return byName[0] ?? null;
 }
 
-function recordProxyWrite(
+/**
+ * Record a write attempt in the write log; answers the row's id, or null when
+ * it could not be recorded.
+ */
+async function recordProxyWrite(
   connection: Pick<ISourceConnection, "_id" | "workspaceId">,
   principal: string,
   target: string,
   allowed: boolean,
-): void {
-  void ConnectionWriteEvent.create({
-    workspaceId: new Types.ObjectId(String(connection.workspaceId)),
-    connectionId: new Types.ObjectId(String(connection._id)),
-    principal,
-    target,
-    allowed,
-  }).catch(error =>
-    logger.warn("Could not record a connection write", { error }),
+): Promise<Types.ObjectId | null> {
+  try {
+    const row = await ConnectionWriteEvent.create({
+      workspaceId: new Types.ObjectId(String(connection.workspaceId)),
+      connectionId: new Types.ObjectId(String(connection._id)),
+      principal,
+      target,
+      allowed,
+    });
+    return row._id;
+  } catch (error) {
+    logger.warn("Could not record a connection write", { error });
+    return null;
+  }
+}
+
+/** What became of a recorded write: the service's status, or why none. */
+async function recordOutcome(
+  id: Types.ObjectId,
+  outcome: { status: number } | { error: string },
+): Promise<void> {
+  await ConnectionWriteEvent.updateOne({ _id: id }, { $set: outcome }).catch(
+    error =>
+      logger.warn("Could not record a connection write's outcome", { error }),
   );
 }
 
@@ -154,6 +183,8 @@ export async function connectionRequest(
   const read = isReadRequest(callable, request, config);
   const principal = actingPrincipal(params.actor);
   const target = `${request.method} ${path}`;
+  /** The write log's row for an allowed write, to add its outcome to. */
+  let logId: Types.ObjectId | null = null;
   const where = {
     workspaceId: params.workspaceId,
     connectionId: String(row._id),
@@ -163,11 +194,11 @@ export async function connectionRequest(
   };
 
   if (read) {
-    // Off unless an admin turned it on (a Custom API starts on): a missing
-    // field on a connection made before live reads existed means off.
+    // Off unless a manager turned it on: a missing field on a connection
+    // made before live reads existed means off.
     if (row.liveReads !== true) {
       throw new ConnectionRequestError(
-        `Live reads are off for ${row.name}: read its synced tables, or ask an admin to turn live reads on in its Access tab.`,
+        `Live reads are off for ${row.name}: read its synced tables, or ask one of this connection's managers or the workspace owner to turn live reads on in its Access tab.`,
         403,
       );
     }
@@ -175,7 +206,9 @@ export async function connectionRequest(
   } else {
     if (params.readOnly) {
       // Recorded as the agent's, which no list can name: never offered to allow.
-      if (principal) recordProxyWrite(row, `agent:${principal}`, target, false);
+      if (principal) {
+        await recordProxyWrite(row, `agent:${principal}`, target, false);
+      }
       logger.warn("Refused an agent write through a connection", where);
       throw new ConnectionRequestError(
         `Agents only read through connections; ${target} on ${row.name} is a write. Write from a workflow on the connection's writers list.`,
@@ -193,7 +226,18 @@ export async function connectionRequest(
     const viewer =
       (await viewerPrincipals(params.workspaceId, [principal])).length > 0;
     const allowed = !viewer && mayWrite(row.writers, principal);
-    recordProxyWrite(row, principal, target, allowed);
+    const recorded = await recordProxyWrite(row, principal, target, allowed);
+    if (allowed && !recorded) {
+      logger.warn(
+        "Refused a connection write that could not be recorded",
+        where,
+      );
+      throw new ConnectionRequestError(
+        "Mako could not record this write, so it was not sent.",
+        503,
+      );
+    }
+    logId = recorded;
     if (!allowed) {
       logger.warn("Refused a connection write", where);
       // Not the database wording ("everyone can read it"): here reading
@@ -204,24 +248,43 @@ export async function connectionRequest(
           403,
         );
       }
+      // A workflow is allowed as every deployed workflow.
+      const shown = principal.startsWith("workflow:")
+        ? "All deployed workflows"
+        : principal;
       throw new ConnectionRequestError(
-        `${principal} is not allowed to write to ${row.name}. An admin can allow ${principal} on the connection's Access tab.`,
+        `${principal} is not allowed to write to ${row.name}. Ask one of this connection's managers or the workspace owner to allow ${shown} on the connection's Access tab.`,
         403,
       );
     }
     logger.info("Connection write", where);
   }
 
-  const answer = await send(
-    {
-      _id: row._id,
-      type: row.type,
-      config,
-      settings: loaded.settings as ISourceConnection["settings"],
-    },
-    callable,
-    request,
-    { signal: params.signal },
-  );
+  let answer: ForwardResult;
+  try {
+    answer = await send(
+      {
+        _id: row._id,
+        type: row.type,
+        config,
+        settings: loaded.settings as ISourceConnection["settings"],
+      },
+      callable,
+      request,
+      { signal: params.signal },
+    );
+  } catch (error) {
+    // `send` strips every credential from its errors.
+    if (logId) {
+      await recordOutcome(logId, {
+        error: (error instanceof Error ? error.message : String(error)).slice(
+          0,
+          500,
+        ),
+      });
+    }
+    throw error;
+  }
+  if (logId) await recordOutcome(logId, { status: answer.status });
   return { ...answer, read };
 }

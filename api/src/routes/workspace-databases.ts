@@ -1,4 +1,8 @@
-import { checkConnectionWrite, covers } from "../access/connection-writes";
+import {
+  checkConnectionWrite,
+  covers,
+  principalsOutsideWorkspace,
+} from "../access/connection-writes";
 import {
   LISTABLE_PRINCIPAL,
   nextWriters,
@@ -6,7 +10,6 @@ import {
   recentWriters,
   WRITERS_IN_APP_ONLY,
   writersEditor,
-  writersOutsideRefusal,
 } from "../access/connection-writers-list";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Db } from "mongodb";
@@ -1074,8 +1077,21 @@ workspaceDatabaseRoutes.openapi(
       return c.json({ success: false, error: "Database not found" }, 404);
     }
     const { writers } = c.req.valid("json");
-    const outside = await writersOutsideRefusal(String(workspace._id), writers);
-    if (outside) return c.json({ success: false, error: outside }, 400);
+    // As before source connections shared this list: only strangers are
+    // refused here (a viewer listed is refused when writing).
+    const strangers = await principalsOutsideWorkspace(
+      String(workspace._id),
+      writers.map(w => w.principal),
+    );
+    if (strangers.length > 0) {
+      return c.json(
+        {
+          success: false,
+          error: `${strangers.join(", ")} is not a member of this workspace`,
+        },
+        400,
+      );
+    }
     database.writers = nextWriters(database.writers, writers, userId);
     await database.save();
     logger.info("Connection writers changed", {

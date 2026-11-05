@@ -7,7 +7,10 @@
  *
  * Pins: live reads are off on a connection that never had the field; once
  * on, a read passes for an unlisted workflow; an unlisted write is refused
- * and recorded; a listed `workflow:<name>` writes; a person's own run acts as
+ * and recorded; with `workflow:*` listed any deployed workflow writes (they
+ * share one identity), the worker naming none does not; an allowed write is
+ * recorded before it is sent, with its outcome after, and is not sent when
+ * it cannot be recorded; a person's own run acts as
  * the person, whatever workflow it names; agents and unidentified callers
  * only read; a name two connections share is refused. What is a read, where
  * a path may go and that no answer carries the key are pinned without a
@@ -86,7 +89,15 @@ async function main() {
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
 
   const sent: Sent[] = [];
-  setTransportForTests(async (url, options) => {
+  /** The allowed writes in the log when each request was sent. */
+  const loggedAtSend: { status?: number }[][] = [];
+  const transportBack: Parameters<typeof setTransportForTests>[0] = async (
+    url,
+    options,
+  ) => {
+    loggedAtSend.push(
+      await ConnectionWriteEvent.find({ allowed: true }).sort({ at: 1 }).lean(),
+    );
     sent.push({
       url,
       method: options.method,
@@ -98,7 +109,8 @@ async function main() {
       headers: { "content-type": "application/json" },
       body: Buffer.from(JSON.stringify({ ok: true })),
     };
-  });
+  };
+  setTransportForTests(transportBack);
 
   const app = new Hono();
   app.use("*", loggingMiddleware({}));
@@ -155,7 +167,6 @@ async function main() {
       config: { api_key: encryptString(CLOSE_KEY) },
       settings,
       createdBy: "deployer",
-      writers: [{ principal: "workflow:fr-offer-to-cash" }],
     });
     const twin = {
       workspaceId: ws,
@@ -222,9 +233,9 @@ async function main() {
         worker.connection("ch_close").post("/task/", { text: "x" }),
       ),
     );
-    assert.match(
+    assert.equal(
       refused,
-      /^workflow:other-flow is not allowed to write to ch_close/,
+      "workflow:other-flow is not allowed to write to ch_close. Ask one of this connection's managers or the workspace owner to allow All deployed workflows on the connection's Access tab.",
     );
     assert.equal(sent.length, before);
     let recorded = await events(1);
@@ -232,7 +243,11 @@ async function main() {
     assert.equal(recorded[0].target, "POST /task/");
     assert.equal(recorded[0].allowed, false);
 
-    // The listed workflow writes, as itself.
+    // Deployed workflows are listed together: any of them writes, as itself.
+    await SourceConnection.updateOne(
+      { _id: close._id },
+      { $set: { writers: [{ principal: "workflow:*" }] } },
+    );
     assert.equal(
       await running.run("fr-offer-to-cash", () =>
         attempt(() =>
@@ -252,6 +267,81 @@ async function main() {
     recorded = await events(2);
     assert.equal(recorded[1].principal, "workflow:fr-offer-to-cash");
     assert.equal(recorded[1].allowed, true);
+    // Recorded before it was sent, its outcome after.
+    assert.equal(loggedAtSend.at(-1)?.length, 1);
+    assert.equal(loggedAtSend.at(-1)?.[0].status, undefined);
+    assert.equal(recorded[1].status, 200);
+    assert.equal(
+      await running.run("other-flow", () =>
+        attempt(() => worker.connection("ch_close").post("/task/", {})),
+      ),
+      "ok",
+    );
+    // The worker naming no deployed workflow is not one of them.
+    assert.match(
+      await running.run("not-deployed", () =>
+        attempt(() => worker.connection("ch_close").post("/task/", {})),
+      ),
+      /^worker:workflows is not allowed to write to ch_close/,
+    );
+
+    // A write the log cannot take is not sent; a refusal is still answered.
+    const realCreate = ConnectionWriteEvent.create.bind(ConnectionWriteEvent);
+    (ConnectionWriteEvent as unknown as { create: unknown }).create =
+      async () => {
+        throw new Error("log down");
+      };
+    const sentBeforeLogDown = sent.length;
+    try {
+      const down = await running
+        .run("fr-offer-to-cash", () =>
+          worker.connection("ch_close").request("POST", "/task/", {}),
+        )
+        .then(
+          answer => ({
+            status: answer.status,
+            text: JSON.stringify(answer.body),
+          }),
+          (error: { status?: number; message: string }) => ({
+            status: error.status,
+            text: error.message,
+          }),
+        );
+      assert.equal(down.status, 503, down.text);
+      assert.match(
+        down.text,
+        /Mako could not record this write, so it was not sent\./,
+      );
+      assert.match(
+        await running.run("not-deployed", () =>
+          attempt(() => worker.connection("ch_close").post("/task/", {})),
+        ),
+        /^worker:workflows is not allowed/,
+      );
+    } finally {
+      (ConnectionWriteEvent as unknown as { create: unknown }).create =
+        realCreate;
+    }
+    assert.equal(sent.length, sentBeforeLogDown);
+
+    // A write that gets no answer is recorded with why.
+    setTransportForTests(async () => {
+      throw new Error("Refused: a private address");
+    });
+    assert.match(
+      await running.run("fr-offer-to-cash", () =>
+        attempt(() => worker.connection("ch_close").post("/task/", {})),
+      ),
+      /private address|failed/i,
+    );
+    setTransportForTests(transportBack);
+    const failed = await ConnectionWriteEvent.findOne({})
+      .sort({ at: -1 })
+      .lean();
+    assert.equal(failed?.allowed, true);
+    assert.match(failed?.error ?? "", /a private address/);
+    assert.equal(failed?.status, undefined);
+    await ConnectionWriteEvent.deleteMany({});
 
     // A listed writer writes anywhere through the connection: no path limit.
     assert.equal(
@@ -273,7 +363,7 @@ async function main() {
       ),
       /^user:deployer is not allowed to write to ch_close/,
     );
-    recorded = await events(4);
+    recorded = await events(2);
     assert.equal(recorded.at(-1)?.principal, "user:deployer");
     assert.equal(recorded.at(-1)?.allowed, false);
     // ...and reads like anyone.
@@ -297,7 +387,7 @@ async function main() {
     );
     assert.match(agentWrite, /^Agents only read/);
     // Recorded as the agent's attempt, which no writers list can name.
-    recorded = await events(5);
+    recorded = await events(3);
     assert.equal(recorded.at(-1)?.principal, "agent:workflow:fr-offer-to-cash");
     assert.equal(recorded.at(-1)?.allowed, false);
 
@@ -324,7 +414,7 @@ async function main() {
     );
     assert.match(viewerWrite, /^Viewers can't write through a connection/);
     assert.equal(sent.length, sentBeforeViewer);
-    recorded = await events(6);
+    recorded = await events(4);
     assert.equal(recorded.at(-1)?.principal, "user:vera");
     assert.equal(recorded.at(-1)?.allowed, false);
     const agentRead = await connectionRequest({
@@ -394,7 +484,7 @@ async function main() {
       /Live reads are off/,
     );
 
-    // A new Custom API starts with live reads on; any other kind off.
+    // Every new connection starts with live reads off, a Custom API too.
     await connectorRegistry.ready();
     const custom = await createSourceConnection({
       workspaceId: String(ws),
@@ -403,7 +493,7 @@ async function main() {
       type: "custom_api",
       config: { base_url: "https://x.example.com", token: "t0ken_value" },
     });
-    assert.equal(custom.liveReads, true);
+    assert.equal(custom.liveReads, undefined);
     const builtin = await createSourceConnection({
       workspaceId: String(ws),
       userId: "deployer",

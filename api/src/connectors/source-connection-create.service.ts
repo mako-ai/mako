@@ -13,7 +13,6 @@ import { isWorkspaceConnectorType } from "./workspace/SandboxedConnector";
 import { SourceConnection } from "../database/workspace-schema";
 import { encryptString } from "../services/crypto.service";
 import { syncConnectorRegistry } from "../sync/connector-registry";
-import { sourceConnectionKind } from "../connections/kinds";
 
 export type ConnectorFieldSchema = {
   name: string;
@@ -228,9 +227,8 @@ export async function createSourceConnection(
     createdBy: input.userId,
     managers: [input.userId],
     isActive: input.isActive !== false,
-    // A Custom API exists to be called: its live reads start on. Every other
-    // kind starts off, as connections made before the proxy are.
-    ...(sourceConnectionKind(type) === "custom" ? { liveReads: true } : {}),
+    // Live reads start off for every kind, a Custom API too: a manager turns
+    // them on in the Access tab (they open the key to the whole workspace).
   });
 
   await sourceConnection.save();

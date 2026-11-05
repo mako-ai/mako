@@ -56,6 +56,12 @@ type ConnectionKind = "database" | "source";
 
 type Who = { principal: string; label: string; kind: "person" | "workflow" };
 
+const ALL_WORKFLOWS: Who = {
+  principal: "workflow:*",
+  label: "All deployed workflows",
+  kind: "workflow",
+};
+
 const ANYWHERE = "Anywhere";
 
 type Place = { text: string; kind: "anywhere" | "schema" | "table" };
@@ -176,17 +182,22 @@ export default function ConnectionWritersPanel({
       })),
     [members],
   );
+  // A source connection allows deployed workflows together (they share one
+  // identity today): one option, never each workflow.
   const flows = useMemo<Who[]>(
     () =>
-      (workflows ?? []).map(w => ({
-        principal: `workflow:${w.workflowId}`,
-        label: w.workflowId,
-        kind: "workflow",
-      })),
-    [workflows],
+      source
+        ? [ALL_WORKFLOWS]
+        : (workflows ?? []).map(w => ({
+            principal: `workflow:${w.workflowId}`,
+            label: w.workflowId,
+            kind: "workflow",
+          })),
+    [workflows, source],
   );
   const describe = useCallback(
     (principal: string): Who => {
+      if (principal === ALL_WORKFLOWS.principal) return ALL_WORKFLOWS;
       const known = [...people, ...flows].find(w => w.principal === principal);
       if (known) return known;
       const [kind, name] = principal.split(":");
@@ -310,7 +321,8 @@ export default function ConnectionWritersPanel({
             <Typography variant="body2">
               Live reads: workflows and agents may read {connectionName}{" "}
               directly, not only its synced tables. Off until a manager turns it
-              on (a new Custom API starts on).
+              on. When on, everyone in this workspace, viewers included, and
+              their agents can read live through this key.
             </Typography>
           }
         />
@@ -329,8 +341,8 @@ export default function ConnectionWritersPanel({
               color="text.secondary"
               sx={{ display: "block", mb: 1 }}
             >
-              Workflows share one deployed identity today: allowing a workflow
-              lets any deployed workflow in this workspace write here.
+              Workflows are allowed together: they share one deployed identity
+              today, so Mako cannot tell one from another.
             </Typography>
           )}
         {state.writers.length === 0 ? (

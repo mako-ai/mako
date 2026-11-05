@@ -196,16 +196,15 @@ Paths are relative to the base URL and cannot leave it. `get`/`post`/`put`/
 `body`) at 400 or more; `request(method, path, body)` returns `{ status,
 headers, body }` at any status. GraphQL: `post("/", { query, variables })`.
 
-GETs, GraphQL queries and Close searches are reads: on once live reads are
-on in the connection's Access tab (a Custom API starts on). A GraphQL
-document with the word `mutation` or `subscription` anywhere, even in a
-string or comment, is a write. Anything else is a write: it needs this
-workflow on that tab's writers list (a listed writer writes anywhere through
-the connection), and a refused one throws and shows there with Allow. Tell
-the user which connection to allow first. Workflows share one deployed
-identity today: allowing a workflow lets any deployed workflow in this
-workspace write through that connection. A test run writes as the
-person running it. A step can be retried: look for the record before
+GETs, GraphQL queries and Close searches are reads: on once a manager turns
+live reads on in the connection's Access tab (every connection starts off).
+A GraphQL document with the word `mutation` or `subscription` anywhere, even
+in a string or comment, is a write. Anything else is a write: it needs "All
+deployed workflows" on that tab's writers list (workflows share one deployed
+identity today, so they are allowed together; a listed writer writes
+anywhere through the connection), and a refused one throws and shows there
+with Allow. Tell the user which connection to allow first. A test run writes
+as the person running it; one an agent started only reads. A step can be retried: look for the record before
 creating it, or send the service's idempotency header, the same on every
 retry: ``post(path, body, { headers: { "Idempotency-Key": `offer-${id}` } })``.
 

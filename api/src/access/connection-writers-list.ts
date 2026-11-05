@@ -17,6 +17,22 @@ import {
 export const LISTABLE_PRINCIPAL =
   /^(user:[A-Za-z0-9_-]+|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$/;
 
+/**
+ * Every deployed workflow, on a source connection's writers list. Deployed
+ * workflows share one identity today (the worker's key), so the workflow name
+ * a request sends cannot be trusted to tell one from another: a source
+ * connection lists them all at once or none.
+ */
+export const ALL_WORKFLOWS = "workflow:*";
+
+/** A principal a source connection's writers list takes. */
+export const SOURCE_LISTABLE_PRINCIPAL =
+  /^(user:[A-Za-z0-9_-]+|workflow:\*|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$/;
+
+/** A source writer's principal: any `workflow:<name>` is every workflow. */
+export const sourceWriterPrincipal = (principal: string): string =>
+  principal.startsWith("workflow:") ? ALL_WORKFLOWS : principal;
+
 const RECENT_WRITES_DAYS = 30;
 
 interface RecentWriter {
@@ -37,6 +53,8 @@ interface RecentWriter {
 export async function recentWriters(
   connectionId: string,
   covered: (principal: string, target: string) => boolean,
+  /** Source connections: every workflow's attempts, offered as one. */
+  { allWorkflows = false }: { allWorkflows?: boolean } = {},
 ): Promise<RecentWriter[]> {
   const since = new Date(Date.now() - RECENT_WRITES_DAYS * 86_400_000);
   const recent = await ConnectionWriteEvent.aggregate<{
@@ -62,19 +80,40 @@ export async function recentWriters(
     { $sort: { count: -1 } },
     { $limit: 50 },
   ]);
-  return recent
-    .filter(r => LISTABLE_PRINCIPAL.test(r._id))
-    .map(r => {
-      const targets = r.targets.filter((t): t is string => !!t);
-      return {
-        principal: r._id,
-        count: r.count,
-        lastAt: r.lastAt,
-        targets: targets.slice(0, 5),
-        // Against the list as it is now, not as it was then.
-        uncovered: targets.filter(t => !covered(r._id, t)).slice(0, 5),
-      };
-    });
+  const merged = new Map<
+    string,
+    { count: number; lastAt: Date; targets: string[]; uncovered: string[] }
+  >();
+  for (const r of recent.filter(r => LISTABLE_PRINCIPAL.test(r._id))) {
+    const principal = allWorkflows ? sourceWriterPrincipal(r._id) : r._id;
+    // The name a workflow sent stays visible: it is all Mako knows of it.
+    const label = (t: string) =>
+      principal === r._id
+        ? t
+        : `${t} (the workflow sent the name ${r._id.slice("workflow:".length)})`;
+    const targets = r.targets.filter((t): t is string => !!t);
+    const into = merged.get(principal) ?? {
+      count: 0,
+      lastAt: r.lastAt,
+      targets: [],
+      uncovered: [],
+    };
+    into.count += r.count;
+    if (r.lastAt > into.lastAt) into.lastAt = r.lastAt;
+    into.targets.push(...targets.map(label));
+    // Against the list as it is now, not as it was then.
+    into.uncovered.push(
+      ...targets.filter(t => !covered(principal, t)).map(label),
+    );
+    merged.set(principal, into);
+  }
+  return [...merged].map(([principal, r]) => ({
+    principal,
+    count: r.count,
+    lastAt: r.lastAt,
+    targets: r.targets.slice(0, 5),
+    uncovered: r.uncovered.slice(0, 5),
+  }));
 }
 
 /** The list as the Access tab shows it. */
@@ -125,15 +164,20 @@ export function writersEditor(
 }
 
 /**
- * Why `writers` cannot be listed, or null: each is a listable principal (an
- * agent's attempt never is) and a workspace member who is not a viewer.
+ * Why `writers` cannot be listed, or null. Only principals new to the list
+ * (not in `stored`) are checked: each is a listable principal (an agent's
+ * attempt never is) and a workspace member who is not a viewer. One already
+ * stored passes, so an unrelated change still saves; a writer who became a
+ * viewer or left is refused when writing.
  */
 export async function writersOutsideRefusal(
   workspaceId: string,
   writers: { principal: string }[],
+  stored: { principal: string }[] = [],
 ): Promise<string | null> {
-  const principals = writers.map(w => w.principal);
-  const unlistable = principals.filter(p => !LISTABLE_PRINCIPAL.test(p));
+  const known = new Set(stored.map(w => w.principal));
+  const principals = writers.map(w => w.principal).filter(p => !known.has(p));
+  const unlistable = principals.filter(p => !SOURCE_LISTABLE_PRINCIPAL.test(p));
   if (unlistable.length > 0) {
     return `${unlistable.join(", ")} cannot be on a writers list`;
   }

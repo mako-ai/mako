@@ -140,15 +140,20 @@ describe("source connection writers", () => {
     expect(
       (await (await req("GET", `/${id}/writers`)).json()).data.liveReads,
     ).toBe(true);
+    // Any workflow is every deployed workflow (they share one identity).
     const put = await req("PUT", `/${id}/writers`, {
-      writers: [{ principal: "workflow:fr-offer-to-cash" }],
+      writers: [
+        { principal: "workflow:fr-offer-to-cash" },
+        { principal: "workflow:other-flow" },
+      ],
       liveReads: false,
     });
     expect(put.status).toBe(200);
     const stored = await SourceConnection.findById(id).lean();
     expect(stored?.writers).toMatchObject([
-      { principal: "workflow:fr-offer-to-cash", addedBy: "manager1" },
+      { principal: "workflow:*", addedBy: "manager1" },
     ]);
+    expect(stored?.writers).toHaveLength(1);
     expect(stored?.writers?.[0].where).toBeUndefined();
     expect(stored?.liveReads).toBe(false);
   });
@@ -241,8 +246,9 @@ describe("source connection writers", () => {
       event("agent:user:manager1", "POST /task/", false),
     ]);
     const { data } = await (await req("GET", `/${id}/writers`)).json();
+    // Shown as every deployed workflow, which is what it allows.
     expect(data.writers).toMatchObject([
-      { principal: "workflow:fr-offer-to-cash", where: null },
+      { principal: "workflow:*", where: null },
     ]);
     const byPrincipal = Object.fromEntries(
       data.recent.map((r: { principal: string; uncovered: string[] }) => [
@@ -250,12 +256,80 @@ describe("source connection writers", () => {
         r.uncovered,
       ]),
     );
-    expect(byPrincipal["workflow:other-flow"]).toEqual(["POST /task/"]);
-    expect(byPrincipal["workflow:fr-offer-to-cash"]).toEqual([]);
+    // Every workflow's attempts are one entry, all covered now.
+    expect(byPrincipal["workflow:*"]).toEqual([]);
+    expect(byPrincipal["workflow:other-flow"]).toBeUndefined();
     // The worker naming no workflow cannot be listed, so it is not offered.
     expect(byPrincipal["worker:workflows"]).toBeUndefined();
     // Nor an agent's refused attempt: agents never write.
     expect(byPrincipal["agent:user:manager1"]).toBeUndefined();
+  });
+
+  it("offers refused workflows once, with the name each one sent", async () => {
+    const event = (principal: string, target: string) => ({
+      workspaceId: WS,
+      connectionId: new Types.ObjectId(id),
+      principal,
+      target,
+      allowed: false,
+    });
+    await ConnectionWriteEvent.create([
+      event("workflow:a-flow", "POST /task/"),
+      event("workflow:b-flow", "PUT /lead/1/"),
+    ]);
+    const { data } = await (await req("GET", `/${id}/writers`)).json();
+    expect(data.recent).toHaveLength(1);
+    expect(data.recent[0].principal).toBe("workflow:*");
+    expect(data.recent[0].count).toBe(2);
+    expect([...data.recent[0].uncovered].sort()).toEqual([
+      "POST /task/ (the workflow sent the name a-flow)",
+      "PUT /lead/1/ (the workflow sent the name b-flow)",
+    ]);
+    // Allowing that entry allows every deployed workflow.
+    expect(
+      (
+        await req("PUT", `/${id}/writers`, {
+          writers: [{ principal: "workflow:*" }],
+        })
+      ).status,
+    ).toBe(200);
+    const after = await (await req("GET", `/${id}/writers`)).json();
+    expect(after.data.recent[0].uncovered).toEqual([]);
+  });
+
+  it("checks only writers new to the list: a stored viewer blocks no other change", async () => {
+    await WorkspaceMember.create({
+      workspaceId: WS,
+      userId: "vera",
+      role: "viewer",
+      joinedAt: new Date(),
+    });
+    // Listed before vera became a viewer.
+    await SourceConnection.updateOne(
+      { _id: id },
+      { $set: { writers: [{ principal: "user:vera" }] } },
+    );
+    const toggle = await req("PUT", `/${id}/writers`, {
+      writers: [{ principal: "user:vera" }],
+      liveReads: true,
+    });
+    expect(toggle.status).toBe(200);
+    expect((await SourceConnection.findById(id).lean())?.liveReads).toBe(true);
+    // A newcomer is still checked.
+    expect(
+      (
+        await req("PUT", `/${id}/writers`, {
+          writers: [{ principal: "user:vera" }, { principal: "user:stranger" }],
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      await writersOutsideRefusal(
+        String(WS),
+        [{ principal: "user:vera" }],
+        [{ principal: "user:vera" }],
+      ),
+    ).toBeNull();
   });
 
   it("is scoped to the workspace", async () => {
