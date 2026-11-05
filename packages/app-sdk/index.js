@@ -36,7 +36,7 @@ import {
  * in a page (or this export) says which SDK a deployed app actually runs.
  * Kept in step with package.json by snapshot.test.mjs.
  */
-export const SDK_VERSION = "2.14.0";
+export const SDK_VERSION = "2.14.1";
 if (typeof window !== "undefined") {
   try {
     window.__MAKO_APP_SDK__ = SDK_VERSION;
@@ -113,7 +113,7 @@ function getDb() {
           // the default database, uncompressed.
           await conn.query("ATTACH ':memory:' AS mako_tables (COMPRESS)");
         } finally {
-          await conn.close();
+          await conn.close().catch(() => {});
         }
       } catch (error) {
         // A failed boot retries with a new worker: end this one.
@@ -326,30 +326,11 @@ async function downloadBinding(name, bust, report) {
   const what = 'Data for binding "' + name + '" could not be loaded';
   report({ phase: "requesting", rowsWritten: null, bytes: null, bytesTotal: null });
   // A slot holds the connection, not the wait for a build: one slow warehouse
-  // query must not hold up twelve bindings that are ready.
-  let res = await withSlot(() =>
-    fetchRetrying(path + (bust ? "?refresh=" + Date.now() : ""), {
-      headers: { accept: PROGRESS_ACCEPT },
-    }),
-  );
-  let signed = null;
-  if (isProgressResponse(res)) {
-    let final;
-    try {
-      final = await readProgressStream(res, e => report(progressPatch(e)));
-    } catch (error) {
-      // A cut build stream may have cost a warehouse query. Asking again costs another.
-      throw new Error(what + ": the build's stream was cut (" + (error instanceof Error ? error.message : String(error)) + ")");
-    }
-    if (final.phase === "failed") throw progressError(final, what);
-    report({ phase: "downloading", rowsWritten: null, bytes: 0 });
-    // No url: the server streams the bytes itself — the same path, asked
-    // plainly, serves them (the build already staged or cached them).
-    signed = final.url || path;
-    res = null;
-  }
-  return withSlot(async () => {
-    res ??= await fetchRetrying(signed);
+  // query must not hold up twelve bindings that are ready. A plain answer is read
+  // inside the slot that fetched it. Its body holds a connection, and over HTTP/1.1
+  // (6 per host, `vite dev`) queueing that body behind fetches waiting for one
+  // stalled Web Performance for good.
+  const readPlain = async res => {
     if (!res.ok) throw await responseError(res, what);
     try {
       return await readBytes(res, (bytes, bytesTotal) =>
@@ -359,7 +340,26 @@ async function downloadBinding(name, bust, report) {
       if (error instanceof TypeError) error.retry = "network"; // the body cut off: no build behind it
       throw error;
     }
+  };
+  const first = await withSlot(async () => {
+    const res = await fetchRetrying(path + (bust ? "?refresh=" + Date.now() : ""), {
+      headers: { accept: PROGRESS_ACCEPT },
+    });
+    return isProgressResponse(res) ? { stream: res } : { bytes: await readPlain(res) };
   });
+  if (!first.stream) return first.bytes;
+  let final;
+  try {
+    final = await readProgressStream(first.stream, e => report(progressPatch(e)));
+  } catch (error) {
+    // A cut build stream may have cost a warehouse query. Asking again costs another.
+    throw new Error(what + ": the build's stream was cut (" + (error instanceof Error ? error.message : String(error)) + ")");
+  }
+  if (final.phase === "failed") throw progressError(final, what);
+  report({ phase: "downloading", rowsWritten: null, bytes: 0 });
+  // No url: the server streams the bytes itself — the same path, asked
+  // plainly, serves them (the build already staged or cached them).
+  return withSlot(async () => readPlain(await fetchRetrying(final.url || path)));
 }
 
 // ---------------------------------------------------------------------------
@@ -465,6 +465,24 @@ function catalog(fn) {
   return run;
 }
 
+// A trap in close() must not replace the query's own answer or error: a finally
+// that throws wins over the catch, and the panel showed raw "null function".
+// Nor may a close wait forever: on a trapped worker it can stay pending until
+// restartEngine terminates that worker, and then it never settles. The hook and
+// the query around it stayed counted in `busy` for the page's life, so every
+// later release was skipped.
+const CLOSE_WAIT_MS = 1000;
+async function closeConn(conn, engine) {
+  let timer;
+  try {
+    await Promise.race([conn.close(), new Promise(resolve => (timer = setTimeout(resolve, CLOSE_WAIT_MS)))]);
+  } catch (error) {
+    markEngineError(error, engine);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // The statements in one transaction, so another connection never sees the
 // name missing between a DROP and a CREATE.
 async function exec(engine, statements) {
@@ -485,7 +503,7 @@ async function exec(engine, statements) {
   } catch (error) {
     throw markEngineError(error, engine);
   } finally {
-    await conn.close();
+    await closeConn(conn, engine);
   }
 }
 
@@ -590,7 +608,7 @@ async function estimateTable(engine, file, parquetBytes) {
   } catch {
     /* no metadata to read: the file's own error surfaces when it is read */
   } finally {
-    await conn.close();
+    await closeConn(conn, engine);
   }
   return parquetBytes * 16;
 }
@@ -636,7 +654,7 @@ async function duckdbBytes(engine) {
     markEngineError(error, engine);
     return null; /* the OOM retry still applies */
   } finally {
-    await conn.close();
+    await closeConn(conn, engine);
   }
 }
 
@@ -1133,7 +1151,7 @@ export async function withConnection(fn) {
     try {
       return await fn(conn);
     } finally {
-      await conn.close();
+      await closeConn(conn, db);
     }
   } finally {
     busy--;
@@ -1402,7 +1420,25 @@ async function runSql(sql, rowLimit, format, reads) {
   }
 }
 
+// The first query to trap an engine is its culprit: the others in flight only
+// failed because the engine was already gone. Twice first means it traps every
+// engine it runs on, so it stops running. Without this a mounted panel reruns on
+// each restart, traps that engine too and takes every other panel down with it,
+// until the 3 restarts are spent and the page stays dead. A changed query is a
+// different string, so a new filter still runs.
+const CULPRIT_LIMIT = 2;
+const culprits = new Map();
+let blamedEngine = null;
+function blameFirstTrap(sql, error, engine) {
+  if (!crashedEngineError(error) || blamedEngine === engine) return;
+  blamedEngine = engine;
+  culprits.set(sql, (culprits.get(sql) ?? 0) + 1);
+}
+
 async function runSqlOnce(sql, rowLimit, format) {
+  if ((culprits.get(sql) ?? 0) >= CULPRIT_LIMIT) {
+    throw new Error("This query crashed the data engine twice, so it stopped running. Change the filter or reload the page.");
+  }
   const cap = rowLimit === null ? Infinity : (rowLimit ?? DEFAULT_ROW_LIMIT);
   const writes = !isReadOnlySql(sql);
   if (writes) keepEngine(); // CREATE TABLE journal_t: only this worker has it
@@ -1423,9 +1459,10 @@ async function runSqlOnce(sql, rowLimit, format) {
       const { rows, fields } = toPlainRows(table, cap);
       return { rows, fields, rowCount, truncated: rowCount > rows.length };
     } catch (error) {
+      blameFirstTrap(sql, error, db);
       throw markEngineError(error, db);
     } finally {
-      await conn.close();
+      await closeConn(conn, db);
     }
   } finally {
     busy--;

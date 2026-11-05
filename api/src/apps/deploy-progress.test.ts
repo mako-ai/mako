@@ -12,6 +12,7 @@ import {
   clearDeployProgress,
   deployErrorStageFor,
   describeDeployProgress,
+  isDeployInFlight,
   markBindingProgress,
   markDeployQueued,
   markDeployStage,
@@ -154,5 +155,39 @@ describe("describeDeployProgress", () => {
     expect(deployErrorStageFor("publishing")).toBe("publish");
     expect(deployErrorStageFor("build")).toBe("build");
     expect(deployErrorStageFor(undefined)).toBe("build");
+  });
+});
+
+describe("isDeployInFlight", () => {
+  const updatedAt = new Date("2026-11-03T04:17:00Z");
+  const progress = {
+    sha: SHA_A,
+    stage: "bindings" as const,
+    startedAt: updatedAt,
+    stageStartedAt: updatedAt,
+    updatedAt,
+  };
+
+  it("is true for this commit while the stage is progressing", () => {
+    expect(
+      isDeployInFlight(progress, SHA_A, new Date("2026-11-03T04:18:00Z")),
+    ).toBe(true);
+  });
+
+  it("is false once the stage stalled, so a new request can take over", () => {
+    const now = new Date(updatedAt.getTime() + DEPLOY_STALL_MS.bindings + 1);
+    expect(isDeployInFlight(progress, SHA_A, now)).toBe(false);
+  });
+
+  it("is false for another commit and for no record", () => {
+    expect(isDeployInFlight(progress, SHA_B, updatedAt)).toBe(false);
+    expect(isDeployInFlight(undefined, SHA_A, updatedAt)).toBe(false);
+  });
+
+  it("accepts the ISO strings a step.run round trip leaves", () => {
+    const roundTripped = JSON.parse(JSON.stringify(progress));
+    expect(
+      isDeployInFlight(roundTripped, SHA_A, new Date("2026-11-03T04:18:00Z")),
+    ).toBe(true);
   });
 });

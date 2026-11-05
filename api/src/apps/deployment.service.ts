@@ -8,10 +8,10 @@
  * prefix, rolling back is repointing `publishedSha` at an earlier sha — no
  * build, no sandbox, and no risk that "the last good version" has drifted.
  * It also means a deployment can be linked to by sha. The one thing a
- * rollback does prepare first is its DATA: a scheduled binding whose artifact
- * predates the schedule's latest occurrence is re-materialized before the
- * repoint (ensureDeploymentBindings), so an old sha never brings old numbers
- * back with it.
+ * rollback does prepare first is its DATA: a binding with no artifact is
+ * built before the repoint, and a scheduled binding whose artifact predates
+ * the schedule's latest occurrence is refreshed right behind it
+ * (ensureDeploymentBindings), so an old sha cannot keep old numbers.
  *
  * Deployments live in the same artifact store as bindings (GCS
  * in deployed environments), so they survive API restarts and are shared
@@ -48,6 +48,8 @@ import {
   type AppBinding,
 } from "./bindings.service";
 import { isCronDue, nextCronRunAt } from "../services/cron-due";
+import { commitIsAncestor, isOid } from "./git";
+import { repoDirFor } from "./repository.service";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
 import {
   clearDeployProgress,
@@ -180,6 +182,8 @@ async function walkFiles(dir: string, prefix = ""): Promise<string[]> {
 }
 
 export interface PublishResult {
+  /** False when a conditional repoint lost: the live pointer had moved. */
+  repointed?: boolean;
   sha: string;
   fileCount: number;
   /** True when this sha was already deployed and the upload was skipped. */
@@ -236,19 +240,82 @@ export async function uploadDeployment(
   return { sha, fileCount: files.length, reused: false };
 }
 
-/** Point the app at a deployment. Also how rollback works. */
-export async function setPublishedSha(
+/**
+ * Clear a recorded failure this repoint answers: one of this commit or of an
+ * ancestor. A failure of a newer commit stays, whoever landed in between, and
+ * so does one git cannot place. Best effort: the repoint already happened.
+ */
+async function clearAnsweredDeployError(
   project: IAppProject,
   sha: string,
 ): Promise<void> {
-  await AppProject.updateOne(
-    { _id: project._id, workspaceId: project.workspaceId },
+  try {
+    const row = await AppProject.findById(project._id)
+      .select("lastDeployError")
+      .lean();
+    const failedSha = row?.lastDeployError?.sha;
+    if (!failedSha) return;
+    const answered =
+      failedSha === sha ||
+      (isOid(failedSha) &&
+        isOid(sha) &&
+        (await commitIsAncestor(
+          repoDirFor(project.workspaceId.toString()),
+          failedSha,
+          sha,
+        )));
+    if (!answered) return;
+    await AppProject.updateOne(
+      { _id: project._id, "lastDeployError.sha": failedSha },
+      { $unset: { lastDeployError: 1 } },
+    );
+  } catch (error) {
+    logger.warn("Could not clear a recorded deploy failure", {
+      projectId: project._id.toString(),
+      sha,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * Point the app at a deployment. Also how rollback works.
+ *
+ * `expected` makes the repoint conditional on the live pointer still being
+ * that value: the check and the write are one update, so a deploy that was
+ * overtaken while it worked loses instead of moving the app back. Returns
+ * whether the pointer moved. `refreshing` names the stale artifacts this
+ * release goes live on: their rebuilds are queued once it is live, because
+ * the refresh skips a commit that is not live.
+ */
+export async function setPublishedSha(
+  project: IAppProject,
+  sha: string,
+  options: { expected?: string | null; refreshing?: string[] } = {},
+): Promise<boolean> {
+  const result = await AppProject.updateOne(
     {
-      $set: { publishedSha: sha, publishedAt: new Date() },
-      $unset: { lastDeployError: 1 },
+      _id: project._id,
+      workspaceId: project.workspaceId,
+      ...(options.expected !== undefined
+        ? { publishedSha: options.expected }
+        : {}),
     },
+    { $set: { publishedSha: sha, publishedAt: new Date() } },
   );
+  if (options.expected !== undefined && result?.matchedCount === 0) {
+    logger.info("Apps deployment overtaken: the live pointer moved", {
+      projectId: project._id.toString(),
+      sha,
+      expected: options.expected,
+    });
+    await clearDeployProgress(project, sha);
+    return false;
+  }
+  await clearAnsweredDeployError(project, sha);
   await clearDeployProgress(project, sha);
+  await queueBindingRefreshes(project, sha, options.refreshing ?? []);
+  return true;
 }
 
 /**
@@ -264,6 +331,42 @@ export async function clearPublishedSha(project: IAppProject): Promise<void> {
 }
 
 const DEPLOY_ERROR_MAX_CHARS = 8_000;
+
+/** A pointer moved this recently probably overtook a deploy git cannot place. */
+const RECENT_REPOINT_MS = 60 * 60 * 1000;
+
+/**
+ * Should this deploy's failure go on the row? No when the deploy was
+ * overtaken: a run that kept going after cancellation must not report a
+ * failure against an app already live on something newer.
+ */
+async function deployFailureStillApplies(
+  project: IAppProject,
+  sha: string,
+): Promise<boolean> {
+  try {
+    const row = await AppProject.findById(project._id)
+      .select("publishedSha publishedAt deployProgress")
+      .lean();
+    if (!row?.publishedSha) return true;
+    if (row.publishedSha === sha) return false;
+    if (row.deployProgress?.sha === sha) return true;
+    try {
+      return !(await commitIsAncestor(
+        repoDirFor(project.workspaceId.toString()),
+        sha,
+        row.publishedSha,
+      ));
+    } catch {
+      const publishedAt = row.publishedAt
+        ? new Date(row.publishedAt).getTime()
+        : 0;
+      return Date.now() - publishedAt > RECENT_REPOINT_MS;
+    }
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Remember why a deploy did not go live, on the row every status reader
@@ -282,16 +385,18 @@ export async function recordDeployFailure(
     full.length > DEPLOY_ERROR_MAX_CHARS
       ? `…${full.slice(-DEPLOY_ERROR_MAX_CHARS)}`
       : full;
-  await AppProject.updateOne(
-    { _id: project._id, workspaceId: project.workspaceId },
-    { $set: { lastDeployError: { sha, stage, message, at: new Date() } } },
-  ).catch(err => {
-    logger.warn("Could not record apps deploy failure", {
-      projectId: project._id.toString(),
-      sha,
-      error: err instanceof Error ? err.message : String(err),
+  if (await deployFailureStillApplies(project, sha)) {
+    await AppProject.updateOne(
+      { _id: project._id, workspaceId: project.workspaceId },
+      { $set: { lastDeployError: { sha, stage, message, at: new Date() } } },
+    ).catch(err => {
+      logger.warn("Could not record apps deploy failure", {
+        projectId: project._id.toString(),
+        sha,
+        error: err instanceof Error ? err.message : String(err),
+      });
     });
-  });
+  }
   // The deploy is over; lastDeployError now says why.
   await clearDeployProgress(project, sha);
 }
@@ -307,10 +412,16 @@ export async function deploymentExists(
 export interface DeploymentBindingReadiness {
   /** Parquet bindings that a published deployment must be able to serve. */
   required: string[];
-  /** Bindings whose existing content-addressed artifact was reused. */
+  /** Bindings whose existing artifact is current for their schedule. */
   reused: string[];
-  /** Bindings materialized by this readiness check. */
+  /** Bindings with no artifact, built by this readiness check. */
   materialized: string[];
+  /**
+   * Scheduled bindings whose artifact predates the schedule's latest
+   * occurrence. The release goes live on these artifacts; each one is queued
+   * for a rebuild behind it.
+   */
+  refreshing: string[];
   /**
    * Files under bindings/ that are not servable (bad filename, no
    * connection). They do not block the release — their data URL 404s
@@ -321,7 +432,8 @@ export interface DeploymentBindingReadiness {
 }
 
 /**
- * Whether an artifact that already exists for `binding` may be served as-is.
+ * Whether an artifact that already exists for `binding` is current for its
+ * schedule. A stale one still serves; the release queues its rebuild.
  *
  * Content addressing answers "same query?", not "current data?". Scheduler
  * state is per binding NAME, so when a merge reverts a query to an earlier
@@ -380,7 +492,7 @@ async function isBindingArtifactCurrent(
   ) {
     return true;
   }
-  logger.info("Apps deployment rebuilds stale binding artifact", {
+  logger.info("Apps deployment found stale binding artifact", {
     projectId,
     sha,
     binding: binding.name,
@@ -475,20 +587,157 @@ async function deploymentBindingIndex(
   return keys;
 }
 
+/** Metadata reads per release: one or two store round trips per binding. */
+const BINDING_CHECK_CONCURRENCY = 16;
+
+/**
+ * Binding builds a deploy may run in this process, across all its walks. These
+ * run outside Inngest's workspace budget, on an instance with 4 GiB and an
+ * in-memory /tmp: 4 builds of 300k rows reached 4.04 GiB in review.
+ */
+export const APPS_DEPLOY_INLINE_BUILD_LIMIT = 2;
+
+let inlineBuildsRunning = 0;
+const inlineBuildWaiters: Array<() => void> = [];
+
+/**
+ * How long an inline build may hold its slot. The slowest build on 2026-11-03
+ * took 731 s. A hung socket would otherwise hold a slot for the life of the
+ * instance, and two would stop every publish on it. The timeout fails the
+ * release and frees the slot. The build itself has no cancel signal, so a slow
+ * one finishes in the background outside the limit.
+ */
+function inlineBuildTimeoutMs(): number {
+  const configured = Number(process.env.APPS_DEPLOY_INLINE_BUILD_TIMEOUT_MS);
+  return configured > 0 ? configured : 30 * 60_000;
+}
+
+async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Build timed out after ${ms} ms`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function withInlineBuildSlot<T>(build: () => Promise<T>): Promise<T> {
+  if (inlineBuildsRunning >= APPS_DEPLOY_INLINE_BUILD_LIMIT) {
+    await new Promise<void>(resolve => inlineBuildWaiters.push(resolve));
+  } else {
+    inlineBuildsRunning += 1;
+  }
+  try {
+    return await withTimeout(build(), inlineBuildTimeoutMs());
+  } finally {
+    // A waiter inherits this slot, so the count stays right.
+    const next = inlineBuildWaiters.shift();
+    if (next) next();
+    else inlineBuildsRunning -= 1;
+  }
+}
+
+/**
+ * Run `work` over `items`, at most `limit` at a time, in input order. After a
+ * failure no new item starts; items in flight finish, then the first error
+ * is thrown.
+ */
+async function forEachBounded<T>(
+  items: T[],
+  limit: number,
+  work: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  let failed = false;
+  let firstError: unknown;
+  const worker = async () => {
+    while (!failed && next < items.length) {
+      const index = next++;
+      try {
+        await work(items[index], index);
+      } catch (error) {
+        if (!failed) firstError = error;
+        failed = true;
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
+  if (failed) throw firstError;
+}
+
+/**
+ * Is the artifact of `binding` present and current for its schedule? The
+ * after-publish refresh asks this right before it builds, so a binding that
+ * another build already refreshed is not built twice.
+ */
+export async function isBindingArtifactReady(
+  binding: AppBinding,
+  context: { projectId: string; sha: string; now?: Date },
+): Promise<boolean> {
+  const key = bindingArtifactKey(binding);
+  const store = await artifactStoreForRead(key);
+  if (!store) return false;
+  return isBindingArtifactCurrent(store, key, binding, {
+    ...context,
+    now: context.now ?? new Date(),
+  });
+}
+
+/** Queue rebuilds for a release's stale artifacts. A failed send only logs. */
+async function queueBindingRefreshes(
+  project: IAppProject,
+  sha: string,
+  names: string[],
+): Promise<void> {
+  if (names.length === 0) return;
+  try {
+    const { requestBindingRefreshes } =
+      await import("../inngest/functions/apps-binding-refresh");
+    await requestBindingRefreshes(project, sha, names);
+  } catch (error) {
+    // The binding's own schedule still rebuilds it at its next due tick.
+    logger.warn("Apps deployment could not queue binding refreshes", {
+      projectId: project._id.toString(),
+      sha,
+      bindings: names.length,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 /**
  * Make the data contract of a deployment ready before it becomes live.
  *
  * Binding definitions are read at the exact deployment commit, never from a
- * mutable worktree. Their artifacts are content-addressed, so an unchanged
- * query is a cheap existence check while a changed/new query is materialized
- * once — unless the binding is scheduled and the existing artifact predates
- * the schedule's latest occurrence (isBindingArtifactCurrent), in which case
- * it is rebuilt exactly like a missing one. A failure propagates to the
- * durable deploy job and, critically, the caller has not moved
- * `publishedSha` yet. That includes a scheduled binding whose query is
- * currently broken: once its artifact is overdue it blocks every publish
- * and rollback of the app (silent reuse of the old artifact IS #992) —
- * fix or unschedule the binding to release.
+ * mutable worktree. Each binding is judged once, against the moment this
+ * release started:
+ *
+ * - No artifact: built now, at most APPS_DEPLOY_INLINE_BUILD_LIMIT at a time
+ *   in this process. Only this blocks the release: a page cannot read a table
+ *   that does not exist. A failure propagates to the durable deploy job and
+ *   the caller has not moved `publishedSha` yet.
+ * - Artifact predates the schedule's latest occurrence: the release goes live
+ *   on it, and the caller passes `refreshing` to setPublishedSha, which queues
+ *   the rebuilds. They keep #992 fixed: scheduler state is per binding name
+ *   and may believe a reverted query ran today, so the refresh judges the
+ *   artifact's own write time.
+ * - Otherwise: reused.
+ *
+ * This walk used to rebuild every stale artifact in sequence and judge each
+ * binding at its own turn. On 2026-11-03 a 134-binding app on an hourly cron
+ * walked for 124 minutes: 77 builds, 10 of them stale only because the walk
+ * itself crossed the :55. It outlived Cloud Run's 3,600 s request limit and
+ * the live frontend waited for all of it.
  */
 export async function ensureDeploymentBindings(
   project: IAppProject,
@@ -520,52 +769,82 @@ export async function ensureDeploymentBindings(
     );
   }
 
-  const readiness: DeploymentBindingReadiness = {
-    required: bindings.map(binding => binding.name),
-    reused: [],
-    materialized: [],
-    skipped,
-  };
-  // Visible in app_publish_status as "bindings: n of m prepared".
+  // One moment for the whole release: a schedule coming due during
+  // preparation must not change what this release considers ready.
+  const judgedAt = options.now ?? new Date();
   await markDeployStage(project, sha, "bindings");
-  let prepared = 0;
   await markBindingProgress(project, sha, {
     total: bindings.length,
-    prepared,
+    prepared: 0,
   });
-  for (const binding of bindings) {
-    const key = bindingArtifactKey(binding);
-    const store = await artifactStoreForRead(key);
-    // Judged per binding: an earlier binding's rebuild can take minutes, and
-    // a schedule may have come due meanwhile.
-    const now = options.now ?? new Date();
-    if (
-      store &&
-      (await isBindingArtifactCurrent(store, key, binding, {
+
+  const verdicts = new Array<"absent" | "stale" | "current">(bindings.length);
+  await forEachBounded(
+    bindings,
+    BINDING_CHECK_CONCURRENCY,
+    async (binding, index) => {
+      const key = bindingArtifactKey(binding);
+      const store = await artifactStoreForRead(key);
+      if (!store) {
+        verdicts[index] = "absent";
+        return;
+      }
+      verdicts[index] = (await isBindingArtifactCurrent(store, key, binding, {
         projectId,
         sha,
-        now,
+        now: judgedAt,
       }))
-    ) {
-      readiness.reused.push(binding.name);
+        ? "current"
+        : "stale";
+    },
+  );
+  const namesWith = (verdict: (typeof verdicts)[number]) =>
+    bindings.filter((_, i) => verdicts[i] === verdict).map(b => b.name);
+
+  const absent = bindings.filter((_, i) => verdicts[i] === "absent");
+  let prepared = bindings.length - absent.length;
+  const building = new Set<string>();
+  const reportProgress = () =>
+    markBindingProgress(project, sha, {
+      total: bindings.length,
+      prepared,
+      ...(building.size > 0 ? { current: [...building].join(", ") } : {}),
+    });
+  await reportProgress();
+  await forEachBounded(
+    absent,
+    APPS_DEPLOY_INLINE_BUILD_LIMIT,
+    async binding => {
+      await withInlineBuildSlot(async () => {
+        building.add(binding.name);
+        await reportProgress();
+        try {
+          await materializeAppBinding(project, binding.name, PUBLISH_ACTOR, {
+            at: sha,
+            binding,
+          });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          throw new Error(`Binding "${binding.name}": ${message}`, {
+            cause: error,
+          });
+        } finally {
+          building.delete(binding.name);
+        }
+      });
       prepared += 1;
-      continue;
-    }
-    await markBindingProgress(project, sha, {
-      total: bindings.length,
-      prepared,
-      current: binding.name,
-    });
-    await materializeAppBinding(project, binding.name, PUBLISH_ACTOR, {
-      at: sha,
-    });
-    readiness.materialized.push(binding.name);
-    prepared += 1;
-    await markBindingProgress(project, sha, {
-      total: bindings.length,
-      prepared,
-    });
-  }
+      await reportProgress();
+    },
+  );
+
+  const readiness: DeploymentBindingReadiness = {
+    required: bindings.map(binding => binding.name),
+    reused: namesWith("current"),
+    materialized: namesWith("absent"),
+    refreshing: namesWith("stale"),
+    skipped,
+  };
 
   await writeDeploymentBindingIndex(projectId, sha, bindings);
 
@@ -575,6 +854,7 @@ export async function ensureDeploymentBindings(
     required: readiness.required.length,
     reused: readiness.reused.length,
     materialized: readiness.materialized.length,
+    refreshing: readiness.refreshing.length,
     skipped: readiness.skipped.length,
   });
   return readiness;
@@ -786,7 +1066,13 @@ export async function deployBuild(
   project: IAppProject,
   sha: string,
   handle: WorktreeHandle,
-  options: { bindingsReady?: boolean } = {},
+  options: {
+    bindingsReady?: boolean;
+    /** Stale artifacts this release goes live on (see setPublishedSha). */
+    refreshing?: string[];
+    /** Repoint only if the live pointer is still this (see setPublishedSha). */
+    expected?: string | null;
+  } = {},
 ): Promise<PublishResult> {
   // The build output lives in the sandbox — it is not in git, and the API
   // host no longer keeps a copy of the working tree. Copy just `dist/` out,
@@ -801,11 +1087,14 @@ export async function deployBuild(
     // paths can prepare bindings earlier to return a more specific error and
     // pass the proof here; a new caller that forgets still cannot publish a
     // frontend whose required data artifact is absent.
-    if (!options.bindingsReady) {
-      await ensureDeploymentBindings(project, sha);
-    }
-    await setPublishedSha(project, sha);
-    return result;
+    const refreshing = options.bindingsReady
+      ? options.refreshing
+      : (await ensureDeploymentBindings(project, sha)).refreshing;
+    const repointed = await setPublishedSha(project, sha, {
+      expected: options.expected,
+      refreshing,
+    });
+    return { ...result, repointed };
   } finally {
     await fs.rm(staging, { recursive: true, force: true });
   }

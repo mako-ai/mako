@@ -33,6 +33,12 @@ export const DEPLOY_STALL_MS: Record<AppDeployStage, number> = {
   publishing: 10 * 60_000,
 };
 
+/**
+ * A record with no heartbeat for this long describes no deploy. Stall flags
+ * cover the hours a deploy could still be alive; after that it only misleads.
+ */
+export const DEPLOY_ABANDONED_MS = 6 * 60 * 60_000;
+
 type ProjectRef = { _id: Types.ObjectId | string };
 
 function idOf(project: ProjectRef | string): Types.ObjectId | null {
@@ -188,6 +194,22 @@ export function clearDeployProgress(
   );
 }
 
+/**
+ * Is a deploy of `sha` running and still making progress? A new request for
+ * the same commit would only cancel it and start over, and the cancelled
+ * run's step keeps building: on 2026-11-03 three walks of one commit ran side
+ * by side and spent 129 builds on 85 bindings.
+ */
+export function isDeployInFlight(
+  progress: IAppDeployProgress | null | undefined,
+  sha: string,
+  now: Date = new Date(),
+): boolean {
+  if (!progress?.sha || progress.sha !== sha) return false;
+  const idleMs = now.getTime() - new Date(progress.updatedAt).getTime();
+  return idleMs < DEPLOY_STALL_MS[progress.stage];
+}
+
 export interface DeployProgressView {
   sha: string;
   stage: AppDeployStage;
@@ -224,6 +246,7 @@ export function describeDeployProgress(
   const stageStartedAt = new Date(progress.stageStartedAt);
   const lastProgressAt = new Date(progress.updatedAt);
   const idleMs = now.getTime() - lastProgressAt.getTime();
+  if (idleMs > DEPLOY_ABANDONED_MS) return null;
   const thresholdMs = DEPLOY_STALL_MS[progress.stage];
   const stageElapsedMs = now.getTime() - stageStartedAt.getTime();
 

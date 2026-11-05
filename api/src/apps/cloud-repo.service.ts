@@ -555,7 +555,7 @@ export async function mirrorPushDefaultBranchNow(
  * look again. Coalesced per (workspace, sha) so a page asking for sixteen
  * bindings at once triggers one fetch, not sixteen.
  */
-const commitFetchInFlight = new Map<string, Promise<void>>();
+const commitFetchInFlight = new Map<string, Promise<boolean>>();
 
 async function commitPresent(repoDir: string, sha: string): Promise<boolean> {
   return runGit(["-C", repoDir, "cat-file", "-e", `${sha}^{commit}`])
@@ -567,17 +567,18 @@ export async function ensureCommitLocally(
   workspaceId: string,
   sha: string,
   branch: string = DEFAULT_BRANCH,
-): Promise<void> {
-  if (!/^[0-9a-f]{7,40}$/.test(sha)) return;
+): Promise<boolean> {
+  if (!/^[0-9a-f]{7,40}$/.test(sha)) return true;
   await ensureLocalRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  if (await commitPresent(repoDir, sha)) return;
+  if (await commitPresent(repoDir, sha)) return true;
   const key = `${workspaceId}#${sha}`;
   const existing = commitFetchInFlight.get(key);
   if (existing) return existing;
   const run = (async () => {
     try {
       await fetchFromCloud(workspaceId, branch);
+      return true;
     } catch (error) {
       // Not fatal here: the caller's git command produces the real, specific
       // error if the commit is still missing after this.
@@ -586,6 +587,7 @@ export async function ensureCommitLocally(
         sha,
         error: error instanceof Error ? error.message : String(error),
       });
+      return false;
     }
   })().finally(() => commitFetchInFlight.delete(key));
   commitFetchInFlight.set(key, run);

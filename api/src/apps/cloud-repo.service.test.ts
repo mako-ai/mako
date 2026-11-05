@@ -743,7 +743,7 @@ describe("ensureCommitLocally", () => {
     // the present-commit path never reached the network.
     await expect(
       ensureCommitLocally(workspaceId, local as string),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
   });
 
   it("leaves the caller's own error for a sha that is nowhere", async () => {
@@ -756,7 +756,7 @@ describe("ensureCommitLocally", () => {
     // next is what reports the real, specific failure), not throw here.
     await expect(
       ensureCommitLocally(workspaceId, "0".repeat(40)),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
   });
 });
 

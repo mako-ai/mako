@@ -4918,6 +4918,15 @@ export interface IAppProject extends Document {
    */
   deployProgress?: IAppDeployProgress;
   /**
+   * Stale artifacts a release went live on whose rebuild failed, by binding
+   * name. Viewers read old numbers until a later build clears the entry.
+   * app_publish_status reports the entries for the live commit.
+   */
+  bindingRefreshErrors?: Record<
+    string,
+    { sha: string; message: string; attempts: number; at: Date }
+  >;
+  /**
    * Anonymous read-only link to the PUBLISHED deployment, optionally password
    * protected. Same primitive v1 apps used, so the management
    * routes and the /api/share/:token consumption side are shared verbatim.
@@ -4984,6 +4993,7 @@ const AppProjectSchema = new Schema<IAppProject>(
       ),
       default: undefined,
     },
+    bindingRefreshErrors: { type: Schema.Types.Mixed, default: undefined },
     deployProgress: {
       type: new Schema(
         {

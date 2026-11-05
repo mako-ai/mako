@@ -3965,8 +3965,12 @@ appsRoutes.openapi(
       }
 
       if (await deploymentExists(loaded.project._id.toString(), sha)) {
+        let refreshing: string[];
         try {
-          await ensureDeploymentBindings(loaded.project, sha);
+          ({ refreshing } = await ensureDeploymentBindings(
+            loaded.project,
+            sha,
+          ));
         } catch (bindingError) {
           await recordDeployFailure(
             loaded.project,
@@ -3987,7 +3991,7 @@ appsRoutes.openapi(
             422,
           );
         }
-        await setPublishedSha(loaded.project, sha);
+        await setPublishedSha(loaded.project, sha, { refreshing });
         return c.json(
           { success: true as const, sha, fileCount: 0, reused: true },
           200,
@@ -4011,8 +4015,9 @@ appsRoutes.openapi(
         );
       }
 
+      let refreshing: string[];
       try {
-        await ensureDeploymentBindings(loaded.project, sha);
+        ({ refreshing } = await ensureDeploymentBindings(loaded.project, sha));
       } catch (bindingError) {
         await recordDeployFailure(
           loaded.project,
@@ -4036,6 +4041,7 @@ appsRoutes.openapi(
 
       const result = await deployBuild(loaded.project, sha, handle, {
         bindingsReady: true,
+        refreshing,
       });
 
       return c.json(
@@ -4096,8 +4102,9 @@ appsRoutes.openapi(
           404,
         );
       }
+      let refreshing: string[];
       try {
-        await ensureDeploymentBindings(loaded.project, sha);
+        ({ refreshing } = await ensureDeploymentBindings(loaded.project, sha));
       } catch (bindingError) {
         await recordDeployFailure(
           loaded.project,
@@ -4118,7 +4125,7 @@ appsRoutes.openapi(
           422,
         );
       }
-      await setPublishedSha(loaded.project, sha);
+      await setPublishedSha(loaded.project, sha, { refreshing });
       return c.json({ success: true as const, sha }, 200);
     } catch (error) {
       return handleError(c, error);

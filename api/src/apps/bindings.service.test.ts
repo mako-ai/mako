@@ -23,8 +23,10 @@ import {
   bindingArtifactKey,
   bindingArtifactKeyByName,
   getBindingState,
+  materializeAppBinding,
   readBindings,
   readBindingsTolerant,
+  readCommittedBinding,
   recordBindingRun,
 } from "./bindings.service";
 import { createProject, ensureWorktree, writeFile } from "./worktree.service";
@@ -158,6 +160,40 @@ describe("bindingArtifactKeyByName", () => {
     await expect(
       bindingArtifactKeyByName(project, "../../etc/passwd", USER),
     ).resolves.toBeNull();
+  });
+});
+
+describe("building one binding without reading the app", () => {
+  it("readCommittedBinding gives the all-bindings definition and survives a malformed neighbour", async () => {
+    const project = await projectWithBindings({
+      revenue: "-- connection: conn-a\n-- schedule: 55 * * * *\nSELECT 1\n",
+      broken: "SELECT 2\n", // no `-- connection:` front matter
+    });
+
+    const binding = await readCommittedBinding(project, "revenue", USER);
+
+    expect(binding?.name).toBe("revenue");
+    expect(binding?.schedule).toBe("55 * * * *");
+    expect(bindingArtifactKey(binding!)).toBe(
+      bindingArtifactKey({ connectionId: "conn-a", code: "SELECT 1" }),
+    );
+    await expect(
+      readCommittedBinding(project, "broken", USER),
+    ).resolves.toBeNull();
+  });
+
+  it("records a failed run when the binding's connection is missing", async () => {
+    const project = await projectWithBindings({
+      revenue: "-- connection: conn-a\nSELECT 1\n",
+    });
+    const binding = await readCommittedBinding(project, "revenue", USER);
+
+    await expect(
+      materializeAppBinding(project, "revenue", USER, { binding: binding! }),
+    ).rejects.toThrow("Connection conn-a not found");
+
+    const state = await getBindingState(project._id.toString(), "revenue");
+    expect(state?.history?.[0]?.status).toBe("error");
   });
 });
 

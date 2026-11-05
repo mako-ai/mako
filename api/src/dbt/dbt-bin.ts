@@ -44,6 +44,9 @@ const DBT_ENV_ALLOWLIST = [
   "CURL_CA_BUNDLE",
 ] as const;
 
+/** Python warning filter for dbt child processes (see buildDbtBaseEnv). */
+export const DEFAULT_DBT_PYTHONWARNINGS = "ignore::FutureWarning";
+
 /**
  * Build the base environment for any dbt child process.
  *
@@ -66,6 +69,12 @@ export function buildDbtBaseEnv(): Record<string, string> {
   for (const [key, value] of Object.entries(process.env)) {
     if (key.startsWith("UV_") && value !== undefined) env[key] = value;
   }
+  // google-api-core (and ~15 sibling google packages) warn on import that
+  // the runner's Python is nearing end of life — a FutureWarning per package
+  // on every dbt invocation. dbt reports its own deprecations through its
+  // event log, not Python warnings, so nothing actionable is lost. An
+  // operator can still set PYTHONWARNINGS to see them.
+  env.PYTHONWARNINGS = process.env.PYTHONWARNINGS ?? DEFAULT_DBT_PYTHONWARNINGS;
   return env;
 }
 
