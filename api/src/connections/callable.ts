@@ -118,6 +118,11 @@ export interface CallableConnection {
   onlyReads?(config: Config): boolean;
   /** Headers the profile itself puts on a request, after the caller's. */
   extraHeaders?(request: RequestShape): Record<string, string>;
+  /**
+   * Caller headers forwarded besides the common ones (connections/forward.ts),
+   * lower case.
+   */
+  callerHeaders?: readonly string[];
   /** How an object body is sent. Default JSON. */
   bodyEncoding?: "json" | "form";
   /**
@@ -147,11 +152,13 @@ export function isReadRequest(
 /** Every value that must never appear in an answer. */
 export function secretsOf(callable: CallableConnection, config: Config) {
   const credential = callable.credential(config);
+  // Basic auth: the password, or the username when it is the key (Close,
+  // no password); a plain username like `api` would scrub ordinary text.
   const carried =
     credential.type === "none"
       ? []
       : credential.type === "basic"
-        ? [credential.password, credential.username]
+        ? [credential.password || credential.username]
         : [credential.token];
   return [...carried, ...(callable.otherSecrets?.(config) ?? [])].filter(
     Boolean,
@@ -312,6 +319,7 @@ const stripe: CallableConnection = {
     trimSlash(text(config.api_base_url) || "https://api.stripe.com"),
   baseUrlFields: ["api_base_url"],
   credential: config => ({ type: "bearer", token: text(config.api_key) }),
+  callerHeaders: ["stripe-version"],
   bodyEncoding: "form",
 };
 

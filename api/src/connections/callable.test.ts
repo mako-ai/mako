@@ -24,6 +24,7 @@ import {
   urlUnder,
 } from "./forward";
 import { CustomApiConnector } from "../connectors/custom_api/connector";
+import { isSecretField } from "../connectors/source-connection-create.service";
 import type { ISourceConnection } from "../database/workspace-schema";
 
 const KEY = "api_live_7f3a9c1e2b4d";
@@ -332,6 +333,26 @@ describe("paths stay under the base URL", () => {
     }
   });
 
+  it("refuses a dot segment however it is encoded, keeps an encoded slash", () => {
+    const tenant = "https://api.example.com/v1/tenant-a";
+    for (const path of [
+      "/..%2f..%2fadmin/users",
+      "/..%5cadmin",
+      "/%252e%252e/admin",
+      "/a/%2e/b",
+      "/%E0%A4%A",
+    ]) {
+      expect(() => urlUnder(tenant, path), path).toThrow(
+        ConnectionRequestError,
+      );
+    }
+    // Sent as given: the service reads the id's own `/`.
+    expect(urlUnder(tenant, "/items/a%2Fb").url.toString()).toBe(
+      "https://api.example.com/v1/tenant-a/items/a%2Fb",
+    );
+    expect(urlUnder(tenant, "/items/..a%2Fb..").path).toBe("/items/..a%2Fb..");
+  });
+
   it("refuses a sibling of the base path", () => {
     expect(() => urlUnder("https://api.example.com/v1", "/../v10/x")).toThrow();
   });
@@ -434,6 +455,82 @@ describe("each credential is added the type's way", () => {
       }),
     ).toEqual({ accept: "application/json" });
   });
+
+  it("forwards only allowlisted caller headers, plus the profile's", async () => {
+    const asked = {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "Idempotency-Key": "k-1",
+      "Stripe-Version": "2024-06-20",
+      "X-Original-URL": "/admin",
+      "X-Rewrite-URL": "/admin",
+      "X-Forwarded-Host": "evil.example.com",
+      "X-Forwarded-Prefix": "/admin",
+      "X-Original-Method": "DELETE",
+      "X-Foo": "bar",
+    };
+    let sent = answering(200, {});
+    await forward(connection("stripe", { api_key: KEY }), type("stripe"), {
+      method: "POST",
+      path: "/v1/customers",
+      headers: asked,
+      body: "a=1",
+    });
+    const forwarded = Object.keys(sent[0].headers).sort();
+    expect(forwarded).toEqual(
+      [
+        "accept",
+        "authorization",
+        "content-type",
+        "idempotency-key",
+        "stripe-version",
+      ].sort(),
+    );
+    // A profile's extra is its own: not forwarded to another service.
+    sent = answering(200, {});
+    await forward(
+      connection("custom_api", {
+        base_url: "https://x.example.com",
+        token: KEY,
+      }),
+      type("custom_api"),
+      { method: "GET", path: "/", headers: asked },
+    );
+    expect(sent[0].headers["stripe-version"]).toBeUndefined();
+    expect(sent[0].headers["x-original-url"]).toBeUndefined();
+    expect(sent[0].headers.accept).toBe("application/json");
+  });
+
+  it("gives a string body the profile's content type unless the caller set one", async () => {
+    let sent = answering(200, {});
+    await forward(connection("stripe", { api_key: KEY }), type("stripe"), {
+      method: "POST",
+      path: "/v1/customers",
+      body: "email=a%40b.c",
+    });
+    expect(sent[0].headers["content-type"]).toBe(
+      "application/x-www-form-urlencoded",
+    );
+    sent = answering(200, {});
+    const custom = connection("custom_api", {
+      base_url: "https://x.example.com",
+      token: KEY,
+    });
+    await forward(custom, type("custom_api"), {
+      method: "POST",
+      path: "/x",
+      body: '{"a":1}',
+    });
+    expect(sent[0].headers["content-type"]).toBe("application/json");
+    sent = answering(200, {});
+    await forward(custom, type("custom_api"), {
+      method: "POST",
+      path: "/x",
+      headers: { "Content-Type": "text/csv" },
+      body: "a,b",
+    });
+    expect(sent[0].headers["content-type"]).toBe("text/csv");
+  });
 });
 
 describe("no secret in any answer", () => {
@@ -484,6 +581,26 @@ describe("no secret in any answer", () => {
     expect(result.body).toEqual({
       payload: "[redacted]",
       header: "[redacted]",
+    });
+  });
+
+  it("keeps a plain basic-auth username in the answer when there is a password", async () => {
+    const payload = Buffer.from("api:s3cret_pw").toString("base64");
+    answering(200, { api_version: 1, echo: "s3cret_pw", payload });
+    const result = await forward(
+      connection("custom_api", {
+        base_url: "https://x.example.com",
+        auth_type: "basic",
+        username: "api",
+        password: "s3cret_pw",
+      }),
+      type("custom_api"),
+      { method: "GET", path: "/" },
+    );
+    expect(result.body).toEqual({
+      api_version: 1,
+      echo: "[redacted]",
+      payload: "[redacted]",
     });
   });
 
@@ -563,6 +680,17 @@ describe("the Custom API connection", () => {
   it("is never a sync source", () => {
     const c = conn({ base_url: "https://x.example.com" });
     expect(c.getAvailableEntities()).toEqual([]);
+  });
+
+  it("stores the basic-auth username as a secret, like the password", () => {
+    const fields = CustomApiConnector.getConfigSchema().fields;
+    const secret = (name: string) =>
+      fields.find(f => f.name === name) as {
+        encrypted?: boolean;
+        type: string;
+      };
+    expect(isSecretField(secret("username"))).toBe(true);
+    expect(isSecretField(secret("password"))).toBe(true);
   });
 
   it("tests with GET on the test path, or { __typename } for GraphQL", async () => {

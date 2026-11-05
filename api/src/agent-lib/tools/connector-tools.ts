@@ -59,6 +59,28 @@ export { isSecretField };
 /** A live answer longer than this comes back cut, marked `truncated`. */
 const CALL_CONNECTION_MAX_CHARS = 40_000;
 
+/**
+ * The service's answer headers an agent is shown: what it needs to read the
+ * body, page and back off. Any other header is dropped (it is text the
+ * service chose, which the model would read as is).
+ */
+export function answerHeaders(
+  headers: Record<string, string>,
+): Record<string, string> {
+  const shown: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    const lower = name.toLowerCase();
+    if (
+      ["content-type", "link", "retry-after"].includes(lower) ||
+      lower.startsWith("x-ratelimit-") ||
+      lower.startsWith("ratelimit")
+    ) {
+      shown[lower] = value;
+    }
+  }
+  return shown;
+}
+
 /** Field names whose VALUES are never returned, whatever the schema says. */
 export interface ConnectorConfigField {
   name: string;
@@ -537,34 +559,38 @@ export function createConnectorTools(workspaceId: string) {
           .optional()
           .describe("JSON body, for a read POST (a GraphQL query)."),
       }),
-      execute: async ({
-        connectionId,
-        method,
-        path,
-        query,
-        headers,
-        body,
-      }: {
-        connectionId: string;
-        method: "GET" | "POST";
-        path: string;
-        query?: Record<string, string | number | boolean>;
-        headers?: Record<string, string>;
-        body?: unknown;
-      }) => {
+      execute: async (
+        {
+          connectionId,
+          method,
+          path,
+          query,
+          headers,
+          body,
+        }: {
+          connectionId: string;
+          method: "GET" | "POST";
+          path: string;
+          query?: Record<string, string | number | boolean>;
+          headers?: Record<string, string>;
+          body?: unknown;
+        },
+        options?: { abortSignal?: AbortSignal },
+      ) => {
         try {
           const answer = await connectionRequest({
             workspaceId,
             connection: connectionId,
             request: { method, path, query, headers, body },
             readOnly: true,
+            signal: options?.abortSignal,
           });
           // The service's answer is data, never instructions: fenced.
           const text = JSON.stringify(answer.body ?? null);
           const truncated = text.length > CALL_CONNECTION_MAX_CHARS;
           return {
             status: answer.status,
-            headers: answer.headers,
+            headers: answerHeaders(answer.headers),
             body: wrapUntrustedData(
               truncated ? text.slice(0, CALL_CONNECTION_MAX_CHARS) : text,
             ),

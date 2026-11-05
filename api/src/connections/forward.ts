@@ -14,7 +14,7 @@ import {
   safeRequest,
   type SafeRequestResult,
 } from "../services/safe-fetch.service";
-import { throttledRequest } from "../connectors/rate-gate";
+import { RateGateBusyError, throttledRequest } from "../connectors/rate-gate";
 import { redactSecrets } from "./redact";
 import type { ISourceConnection } from "../database/workspace-schema";
 import {
@@ -29,7 +29,7 @@ import {
 export class ConnectionRequestError extends Error {
   constructor(
     message: string,
-    public readonly status: 400 | 403 | 404 | 409 = 400,
+    public readonly status: 400 | 403 | 404 | 409 | 503 = 400,
   ) {
     super(message);
     this.name = "ConnectionRequestError";
@@ -82,23 +82,17 @@ const ALLOWED_METHODS = new Set([
   "DELETE",
 ]);
 
-/** Headers a caller may never set: the credential and transport are Mako's. */
-const CALLER_HEADER_BLOCKLIST = new Set([
-  "authorization",
-  "proxy-authorization",
-  "cookie",
-  "host",
-  "content-length",
-  "connection",
-  "transfer-encoding",
-  "upgrade",
-  "te",
-  "trailer",
-  "keep-alive",
-  // A method override would turn a read into a write behind Mako's back.
-  "x-http-method-override",
-  "x-http-method",
-  "x-method-override",
+/**
+ * The only caller headers forwarded (plus a profile's `callerHeaders`); any
+ * other is dropped. The credential, the transport and anything a gateway in
+ * front of the service could read as a different path, host or method are
+ * Mako's.
+ */
+const CALLER_HEADERS = new Set([
+  "accept",
+  "accept-language",
+  "content-type",
+  "idempotency-key",
 ]);
 
 /** Response headers never passed back. */
@@ -116,6 +110,29 @@ const RESPONSE_HEADER_BLOCKLIST = new Set([
 ]);
 
 const MAX_PATH_LENGTH = 2048;
+
+/**
+ * Whether `path`, decoded as often as it changes (a service or a gateway in
+ * front of it may decode `%2F` or `%252F`), has a `.` or `..` segment, `/`
+ * and `\` both separating. The path is still sent as given, so an encoded
+ * `/` inside an id works when it forms no such segment. Undecodable: refused.
+ */
+export function hasDotSegment(path: string): boolean {
+  let decoded = path.split("?")[0];
+  for (let i = 0; i < 10; i++) {
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      return true;
+    }
+    if (next === decoded) {
+      return decoded.split(/[/\\]/).some(s => s === "." || s === "..");
+    }
+    decoded = next;
+  }
+  return true;
+}
 
 /**
  * The full URL of `path` under `baseUrl`, and the path relative to it as the
@@ -149,7 +166,7 @@ export function urlUnder(
     path.length > MAX_PATH_LENGTH ||
     path.startsWith("//") ||
     /[\\#\s]/.test(path) ||
-    /(^|\/)(\.|%2e){2}(\/|$|\?)/i.test(path)
+    hasDotSegment(path)
   ) {
     throw new ConnectionRequestError(
       "The path must stay under the connection's base URL.",
@@ -201,7 +218,13 @@ function encodeBody(
   headers: Record<string, string>,
 ): string | undefined {
   if (body === undefined || body === null) return undefined;
-  if (typeof body === "string") return body;
+  if (typeof body === "string") {
+    headers["content-type"] ??=
+      callable.bodyEncoding === "form"
+        ? "application/x-www-form-urlencoded"
+        : "application/json";
+    return body;
+  }
   if (callable.bodyEncoding === "form") {
     headers["content-type"] ??= "application/x-www-form-urlencoded";
     return formEncode(body).join("&");
@@ -210,16 +233,15 @@ function encodeBody(
   return JSON.stringify(body);
 }
 
-/** The caller's headers Mako forwards, lower-cased. */
+/** The caller's headers Mako forwards, lower-cased: allowlisted ones only. */
 export function callerHeaders(
   headers: Record<string, string> | undefined,
+  extra: readonly string[] = [],
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers ?? {})) {
     const lower = name.toLowerCase();
-    if (CALLER_HEADER_BLOCKLIST.has(lower) || lower.startsWith("proxy-")) {
-      continue;
-    }
+    if (!CALLER_HEADERS.has(lower) && !extra.includes(lower)) continue;
     if (typeof value === "string") out[lower] = value;
   }
   return out;
@@ -274,7 +296,7 @@ export function resolveRequest(
     method,
     url,
     path,
-    headers: callerHeaders(input.headers),
+    headers: callerHeaders(input.headers, callable.callerHeaders),
     body: input.body,
     ...(typeof override === "string"
       ? { methodOverride: override.trim().toUpperCase() }
@@ -332,8 +354,12 @@ export async function send(
         }),
       gate.minDelayMs,
       "proxy",
+      { signal: options.signal },
     );
   } catch (error) {
+    if (error instanceof RateGateBusyError) {
+      throw new ConnectionRequestError(error.message, 503);
+    }
     throw withoutSecrets(
       error,
       searchableSecrets(secretsOf(callable, config), sent),

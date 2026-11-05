@@ -3,7 +3,7 @@
  * at a time per key, first come first served within a lane, sync first.
  */
 import { describe, expect, it } from "vitest";
-import { throttledRequest } from "./rate-gate";
+import { RateGateBusyError, throttledRequest } from "./rate-gate";
 
 describe("rate gate", () => {
   it("runs one request at a time per key, in order", async () => {
@@ -50,5 +50,56 @@ describe("rate gate", () => {
       ),
     ).rejects.toThrow("boom");
     await expect(throttledRequest("key-3", async () => 1, 0)).resolves.toBe(1);
+  });
+
+  it("gives a waiting proxy request a turn after four sync requests", async () => {
+    const order: string[] = [];
+    const job = (name: string) => async () => {
+      order.push(name);
+      await new Promise(r => setTimeout(r, 1));
+    };
+    const syncs = ["s1", "s2", "s3", "s4", "s5", "s6"].map(n =>
+      throttledRequest("key-4", job(n), 0),
+    );
+    const proxy = throttledRequest("key-4", job("p1"), 0, "proxy");
+    await Promise.all([...syncs, proxy]);
+    expect(order).toEqual(["s1", "s2", "s3", "s4", "p1", "s5", "s6"]);
+  });
+
+  it("refuses a proxy request that waits too long, and lets its signal cancel it", async () => {
+    let release: () => void = () => {};
+    const blocking = throttledRequest(
+      "key-5",
+      () => new Promise<void>(r => (release = r)),
+      0,
+    );
+    const ran: string[] = [];
+    const late = throttledRequest(
+      "key-5",
+      async () => ran.push("late"),
+      0,
+      "proxy",
+      { queueMs: 5 },
+    );
+    await expect(late).rejects.toBeInstanceOf(RateGateBusyError);
+    await expect(late).rejects.toThrow(
+      "This service is busy with a sync; try again shortly.",
+    );
+    const controller = new AbortController();
+    const cancelled = throttledRequest(
+      "key-5",
+      async () => ran.push("cancelled"),
+      0,
+      "proxy",
+      { signal: controller.signal },
+    );
+    controller.abort(new Error("stopped"));
+    await expect(cancelled).rejects.toThrow("stopped");
+    release();
+    await blocking;
+    await expect(
+      throttledRequest("key-5", async () => 2, 0, "proxy"),
+    ).resolves.toBe(2);
+    expect(ran).toEqual([]);
   });
 });

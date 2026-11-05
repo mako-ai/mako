@@ -74,6 +74,8 @@ export class CustomApiConnector extends BaseConnector {
           name: "username",
           label: "Username",
           type: "string",
+          // Often the key itself (Close-style, no password): kept as one.
+          encrypted: true,
           required: false,
           showIf: { field: "auth_type", equals: "basic" },
         },
