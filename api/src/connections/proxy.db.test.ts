@@ -46,6 +46,7 @@ import { ConnectionRequestError, setTransportForTests } from "./forward";
 import { connectorRegistry } from "../connectors/registry";
 import { createSourceConnection } from "../connectors/source-connection-create.service";
 import { connectionRequest } from "./proxy.service";
+import { setKey } from "../workflows/on-push";
 
 const WORKER_KEY = "revops_worker_proxy_key_tests_only";
 const PERSON_KEY = "revops_person_proxy_key_tests_only";
@@ -424,6 +425,73 @@ async function main() {
       readOnly: true,
     });
     assert.equal(agentRead.read, true);
+
+    // A sandbox run's key outlives its person's membership; its rights do
+    // not: a former member's write and read are refused, recorded, not sent.
+    const LEAVER_KEY = "revops_leaver_sandbox_key_tests_only";
+    await User.create({ _id: "leaver", email: "leaver@example.com" });
+    await WorkspaceMember.create({
+      workspaceId: ws,
+      userId: "leaver",
+      role: "member",
+      joinedAt: new Date(),
+    });
+    await SourceConnection.updateOne(
+      { _id: close._id },
+      { $push: { writers: { principal: "user:leaver" } } },
+    );
+    await setKey(
+      String(ws),
+      "leaver",
+      "Workflows sandbox leaver run",
+      LEAVER_KEY,
+      {
+        agentRun: false,
+      },
+    );
+    const leaver = await load(LEAVER_KEY);
+    assert.equal(
+      await attempt(() => leaver.connection("ch_close").post("/task/", {})),
+      "ok",
+      "a member's own sandbox run writes while listed",
+    );
+    await WorkspaceMember.deleteOne({ workspaceId: ws, userId: "leaver" });
+    const sentBeforeLeaver = sent.length;
+    const leaverWrite = await leaver
+      .connection("ch_close")
+      .request("POST", "/task/", {})
+      .then(
+        () => ({ status: 200, message: "ok" }),
+        (error: { status?: number; message: string }) => error,
+      );
+    assert.equal(leaverWrite.status, 403);
+    assert.match(leaverWrite.message, /^user:leaver is not a member/);
+    const leaverRead = await leaver
+      .connection("ch_close")
+      .request("GET", "/lead/")
+      .then(
+        () => ({ status: 200, message: "ok" }),
+        (error: { status?: number; message: string }) => error,
+      );
+    assert.equal(leaverRead.status, 403);
+    assert.equal(
+      sent.length,
+      sentBeforeLeaver,
+      "nothing a former member asks is sent",
+    );
+    const leaverRows = await ConnectionWriteEvent.find({
+      principal: "user:leaver",
+    })
+      .sort({ at: 1 })
+      .lean();
+    assert.deepEqual(
+      leaverRows.map(r => [r.target, r.allowed]),
+      [
+        ["POST /task/", true],
+        ["POST /task/", false],
+        ["GET /lead/", false],
+      ],
+    );
 
     // No one identified: the write is refused.
     const nobody = await connectionRequest({

@@ -29,7 +29,11 @@ import {
 } from "../database/workspace-schema";
 import { ConnectionWriteEvent } from "../access/connection-write-event";
 import { sourceWriterPrincipal } from "../access/connection-writers-list";
-import { actingPrincipal, viewerPrincipals } from "../access/connection-writes";
+import {
+  actingPrincipal,
+  principalsOutsideWorkspace,
+  viewerPrincipals,
+} from "../access/connection-writes";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers } from "../logging";
 import { getRequestContext } from "../logging/context";
@@ -192,6 +196,21 @@ export async function connectionRequest(
     target,
     path: getRequestContext()?.path,
   };
+
+  // A person acts only while a member: a key (a sandbox run's included)
+  // outlives its owner's membership, its rights do not. Reads too.
+  if (
+    principal?.startsWith("user:") &&
+    (await principalsOutsideWorkspace(params.workspaceId, [principal])).length >
+      0
+  ) {
+    await recordProxyWrite(row, principal, target, false);
+    logger.warn("Refused a connection request by a former member", where);
+    throw new ConnectionRequestError(
+      `${principal} is not a member of this workspace, so it cannot call ${row.name}.`,
+      403,
+    );
+  }
 
   if (read) {
     // Off unless a manager turned it on: a missing field on a connection

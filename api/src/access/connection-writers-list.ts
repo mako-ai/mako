@@ -167,8 +167,9 @@ export function writersEditor(
  * Why `writers` cannot be listed, or null. Only principals new to the list
  * (not in `stored`) are checked: each is a listable principal (an agent's
  * attempt never is) and a workspace member who is not a viewer. One already
- * stored passes, so an unrelated change still saves; a writer who became a
- * viewer or left is refused when writing.
+ * stored passes, so an unrelated change still saves. A stored writer who
+ * became a viewer is refused when writing, and one who left the workspace
+ * is refused any request, read or write (connections/proxy.service.ts).
  */
 export async function writersOutsideRefusal(
   workspaceId: string,

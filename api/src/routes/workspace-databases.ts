@@ -1078,7 +1078,8 @@ workspaceDatabaseRoutes.openapi(
     }
     const { writers } = c.req.valid("json");
     // As before source connections shared this list: only strangers are
-    // refused here (a viewer listed is refused when writing).
+    // refused here. A viewer may be listed on a database connection; its
+    // write check (access/connection-writes.ts) does not look at roles.
     const strangers = await principalsOutsideWorkspace(
       String(workspace._id),
       writers.map(w => w.principal),
