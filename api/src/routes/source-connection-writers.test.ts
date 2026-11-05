@@ -106,6 +106,8 @@ beforeEach(async () => {
   who.role = "member";
   await SourceConnection.deleteMany({});
   await ConnectionWriteEvent.deleteMany({});
+  // Tests that add a viewer each create her.
+  await WorkspaceMember.deleteMany({ userId: "vera" });
   const row = await SourceConnection.create({
     workspaceId: WS,
     name: "ch_close",
