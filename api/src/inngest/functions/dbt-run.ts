@@ -242,6 +242,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
         commands: run.commands,
         gitBranch: run.gitBranch ?? null,
         workingTreeUserId: run.workingTreeUserId ?? null,
+        sourceSha: run.sourceSha ?? null,
         localOverlayKey: run.localOverlay?.key ?? null,
         // A laptop run builds in its owner's own warm dir, like a
         // working-tree build: never the shared committed-deploy dir.
@@ -302,6 +303,9 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             // user's draft overlay. Default: the project default branch.
             branch: runInfo.gitBranch ?? undefined,
             userId: runInfo.workingTreeUserId ?? undefined,
+            // The commit pinned at trigger time, so every command builds the
+            // same tree whichever instance runs it.
+            commit: runInfo.sourceSha ?? undefined,
             // `mako dbt run`: the developer's uploaded files over their base.
             overlay: runInfo.localOverlayKey
               ? await loadLocalOverlay(runInfo.localOverlayKey)

@@ -4210,6 +4210,13 @@ export interface IDbtRun extends Document {
    */
   sourceBranch?: string;
   /**
+   * The commit this run builds, resolved (after a freshen from the mirror)
+   * when the run is triggered. Every command builds this one tree, whichever
+   * API instance executes it. Unset on laptop runs (the overlay names its own
+   * base) and on runs that predate it, which build their branch's tip.
+   */
+  sourceSha?: string;
+  /**
    * Ad-hoc/agent runs only: run with `--defer --state <prod manifest>` so
    * unselected refs resolve to the last production build instead of
    * rebuilding the whole upstream DAG in the target schema. Job runs read
@@ -4319,6 +4326,7 @@ const DbtRunSchema = new Schema<IDbtRun>(
     gitBranch: { type: String },
     workingTreeUserId: { type: String },
     sourceBranch: { type: String },
+    sourceSha: { type: String },
     deferToProduction: { type: Boolean },
     localOverlay: {
       type: new Schema(

@@ -29,6 +29,7 @@ import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import {
   ensureLocalRepo,
   freshenBeforeMainWrite,
+  freshenForServe,
   queueMirrorPush,
 } from "../apps/cloud-repo.service";
 import {
@@ -91,7 +92,11 @@ export async function listJobDefinitionsAtMain(
 ): Promise<JobDefinitionAtMain[]> {
   if (!(await getWorkspaceRepo(workspaceId))) return [];
   const repoDir = await boundRepoDirIfExists(workspaceId);
-  if (repoDir == null || !(await resolveCommit(repoDir, MAIN))) return [];
+  if (repoDir == null) return [];
+  // A job file another instance committed is invisible to a clone that has
+  // not fetched it: listing it, then "Job not found" on run, by instance.
+  await freshenForServe(workspaceId);
+  if (!(await resolveCommit(repoDir, MAIN))) return [];
   const paths = await globTree(repoDir, MAIN, "dbt/jobs/*.yml", 1000);
   const definitions: JobDefinitionAtMain[] = [];
   for (const path of paths.sort()) {
