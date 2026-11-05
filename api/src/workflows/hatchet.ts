@@ -30,7 +30,7 @@ export function workflowsNamePrefix(): string {
 export function hasInstanceHatchet(): boolean {
   return Boolean(
     process.env.HATCHET_CLIENT_TOKEN ||
-      (process.env.HATCHET_ADMIN_PASSWORD && process.env.HATCHET_API_URL),
+    (process.env.HATCHET_ADMIN_PASSWORD && process.env.HATCHET_API_URL),
   );
 }
 
@@ -289,11 +289,20 @@ export function isHatchetId(value: string): boolean {
   return /^[0-9a-fA-F-]{36}$/.test(value);
 }
 
+/**
+ * Who started a run, kept on it (Hatchet's additional metadata) when it is
+ * started: an agent (the agent's tool, an MCP login, an API key), a person
+ * in the app, or a trigger (a webhook). A run Hatchet starts on a schedule
+ * has none. A run an agent started only reads through connections
+ * (connections/proxy.service.ts).
+ */
+export type RunStarter = "agent" | "person" | "trigger";
+
 /** Start a run of a workflow. Returns the run's id. */
 export async function startRun(
   tenant: WorkspaceTenant,
   workflowName: string,
-  run: { input?: object; trigger: string },
+  run: { input?: object; trigger: string; startedBy: RunStarter },
 ): Promise<string | undefined> {
   const started = await tenantJson<{ run?: { metadata?: { id?: string } } }>(
     tenant,
@@ -303,7 +312,7 @@ export async function startRun(
       body: {
         workflowName,
         input: run.input ?? {},
-        additionalMetadata: { trigger: run.trigger },
+        additionalMetadata: { trigger: run.trigger, startedBy: run.startedBy },
       },
     },
   ).catch(error => {

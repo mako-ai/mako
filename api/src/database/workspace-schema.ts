@@ -388,14 +388,15 @@ export interface ISourceConnection extends Document {
   /**
    * Who may write through this connection's proxy (connections/proxy.service.ts):
    * the same list as on a database connection. Absent or empty: no one.
-   * Everyone may read; syncs are not concerned.
+   * Reading live depends on `liveReads`; syncs are not concerned.
    */
   writers?: IConnectionWriter[];
   /**
    * On: workflows and agents may read the service live through the proxy.
    * Absent or false: off, so a connection made before the proxy existed
    * shows no more than its synced tables until a manager or the workspace
-   * owner turns this on. A new Custom API connection is created with it on.
+   * owner turns this on. Every new connection, a Custom API one too, starts
+   * with it off.
    */
   liveReads?: boolean;
   createdBy: string;

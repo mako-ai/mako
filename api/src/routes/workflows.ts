@@ -55,6 +55,7 @@ import {
   readWorkflowFlow,
   readWorkflowsOverview,
   retryRun,
+  runStartedBy,
 } from "../workflows/runs";
 import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
 import { readWorkflowCost } from "../workflows/costs";
@@ -355,9 +356,13 @@ workflowRoutes.openapi(
       );
       return c.json({ success: true as const, runId, sandbox: true }, 200);
     }
+    // As for a sandbox run: started with a key or an MCP login, it may be
+    // an agent's, so its deployed code only reads through connections.
+    const session = c.get("authType") === "session";
     const runId = await startRun(await requireTenant(workspaceId), name, {
       input: body?.input,
-      trigger: c.get("authType") === "session" ? "ui" : "api",
+      trigger: session ? "ui" : "api",
+      startedBy: session ? "person" : "agent",
     });
     return c.json({ success: true as const, runId }, 200);
   },
@@ -440,7 +445,11 @@ workflowHookRoutes.post(
       ? await readWorkspaceTenant(workspaceId)
       : null;
     if (!tenant) return c.json({ error: "Not found" }, 404);
-    const runId = await startRun(tenant, name, { input, trigger: "webhook" });
+    const runId = await startRun(tenant, name, {
+      input,
+      trigger: "webhook",
+      startedBy: "trigger",
+    });
     return c.json({ runId }, 202);
   },
 );
@@ -836,9 +845,10 @@ workflowRuntimeRoutes.post(
 
 // One request to a service through a source connection (lib/mako
 // `connection(id)`): Mako adds the stored credential, which workflow code
-// never sees. Reads are for everyone; a write needs this workflow (or, on a
-// person's own run, this person) on the connection's writers list
-// (connections/proxy.service.ts). The service's status comes back as is.
+// never sees. A read needs live reads on for the connection; a write needs
+// this workflow ("All deployed workflows") or, on a person's own run, this
+// person on the connection's writers list (connections/proxy.service.ts).
+// The service's status comes back as is.
 workflowRuntimeRoutes.post(
   "/connections/:connection/request",
   asWorkerOrPerson(async (c, worker) => {
@@ -848,7 +858,6 @@ workflowRuntimeRoutes.post(
       query?: unknown;
       headers?: unknown;
       body?: unknown;
-      idempotencyKey?: unknown;
     } | null;
     if (typeof body?.method !== "string" || typeof body.path !== "string") {
       return c.json({ error: "A method and a path are required" }, 400);
@@ -857,13 +866,8 @@ workflowRuntimeRoutes.post(
       value && typeof value === "object" && !Array.isArray(value)
         ? (value as Record<string, never>)
         : undefined;
-    // `idempotencyKey`: what an older lib/mako sent; now a plain header.
-    const headers: Record<string, string> = {
-      ...(typeof body.idempotencyKey === "string"
-        ? { "idempotency-key": body.idempotencyKey.slice(0, 255) }
-        : {}),
-      ...record(body.headers),
-    };
+    // Idempotency-Key, like every caller header, comes in `headers`.
+    const headers: Record<string, string> = { ...record(body.headers) };
     try {
       return c.json(
         await connectionRequest({
@@ -879,11 +883,16 @@ workflowRuntimeRoutes.post(
           // An MCP login is an agent acting for the person: it only reads,
           // as does a sandbox run an agent started (its key says so). A
           // person's API key, their own runs and the deployed worker keep
-          // their rights.
+          // their rights. A person's API key keeps the person's write rights
+          // whoever holds it, an agent included: Mako cannot tell who uses a
+          // key, so a key given to an agent writes as its person.
           readOnly:
             c.get("authType") === "mcpOAuth" ||
             (c.get("apiKey") as { agentRun?: boolean } | undefined)
               ?.agentRun === true,
+          // A deployed run an agent started reads only too: asked on a write.
+          runStarter: () =>
+            runStartedBy(worker.workspaceId, workflowRunOf(c)?.runId),
           signal: c.req.raw.signal,
         }),
       );

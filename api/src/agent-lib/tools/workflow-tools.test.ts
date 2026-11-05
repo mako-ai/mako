@@ -182,6 +182,8 @@ async function main() {
     assert.equal(requests.at(-1)?.body.workflowName, "daily-digest");
     assert.deepEqual(requests.at(-1)?.body.input, { limit: 5 });
     assert.equal(requests.at(-1)?.body.additionalMetadata.trigger, "agent");
+    // Its deployed code only reads through connections.
+    assert.equal(requests.at(-1)?.body.additionalMetadata.startedBy, "agent");
 
     // One run: its steps, with long text and long logs cut down.
     const detail = await call(tools, "workflows_status", { runId: RUN });

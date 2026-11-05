@@ -119,7 +119,8 @@ export function createWorkflowTools({
           const runId = await startRun(
             await requireTenant(workspaceId),
             workflowId,
-            { input, trigger: "agent" },
+            // Its deployed code only reads through connections.
+            { input, trigger: "agent", startedBy: "agent" },
           );
           return { success: true, runId, workflowId };
         } catch (error) {

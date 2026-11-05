@@ -14,7 +14,10 @@
  * identity today (the worker's key; the name a request sends cannot be
  * trusted), so a source connection lists them as one, `workflow:*` ("All
  * deployed workflows"): a deployed workflow writes iff it is listed. Agents
- * only read, also through a sandbox run they started. A listed writer writes
+ * only read, also through a run they started: a sandbox run (its key says
+ * so) or a deployed run (the run Mako started records it, and the worker
+ * names its run with each request, X-Mako-Run; a deployed workflow's write
+ * from a run Mako cannot tell is refused). A listed writer writes
  * anywhere through the connection: a `where` stored on a source writer (the
  * list's schema is shared with database connections, where it limits a
  * schema or table) is ignored. Every write, allowed or not, is in the write
@@ -37,6 +40,7 @@ import {
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers } from "../logging";
 import { getRequestContext } from "../logging/context";
+import type { RunStarter } from "../workflows/hatchet";
 import { callableFor, isReadRequest } from "./callable";
 import {
   ConnectionRequestError,
@@ -57,6 +61,13 @@ export interface ConnectionRequestParams {
   readOnly?: boolean;
   /** Who is acting, when not the request's own person or workflow. */
   actor?: string;
+  /**
+   * Who started the deployed workflow run the request comes from
+   * (workflows/runs.ts `runStartedBy`), asked only for a write by a deployed
+   * workflow. A run an agent started only reads; a write from a run Mako
+   * cannot tell (null, or not given) is refused.
+   */
+  runStarter?: () => Promise<RunStarter | null>;
   signal?: AbortSignal;
 }
 
@@ -240,6 +251,28 @@ export async function connectionRequest(
         `Mako could not tell who is writing to ${row.name}, so the write was refused. Writes need a signed-in person, an API key, or a workflow on the connection's writers list.`,
         403,
       );
+    }
+    if (principal.startsWith("workflow:")) {
+      const starter = params.runStarter
+        ? await params.runStarter().catch(() => null)
+        : null;
+      if (starter === "agent") {
+        // Recorded as the agent's, as an agent's own attempt is.
+        await recordProxyWrite(row, `agent:${principal}`, target, false);
+        logger.warn("Refused a write by a run an agent started", where);
+        throw new ConnectionRequestError(
+          `This run was started by an agent, and a run an agent starts only reads through connections; ${target} on ${row.name} is a write. Start the workflow from the app, a schedule or a webhook to write.`,
+          403,
+        );
+      }
+      if (!starter) {
+        await recordProxyWrite(row, principal, target, false);
+        logger.warn("Refused a write by a run Mako could not tell", where);
+        throw new ConnectionRequestError(
+          `Mako could not tell which run of ${principal.slice("workflow:".length)} this write comes from, so it was not sent. The worker sends its run with each request (X-Mako-Run); update the workflows runtime, or try again if Hatchet was unreachable.`,
+          403,
+        );
+      }
     }
     // A viewer never writes, even when listed (the role may have changed).
     const viewer =
