@@ -15,7 +15,10 @@ import {
   type IDbtEnvironment,
   type IDbtProject,
 } from "../database/workspace-schema";
-import { loadWorkingTreeContents } from "./dbt-working-tree.service";
+import {
+  getCheckoutBranch,
+  loadWorkingTreeContents,
+} from "./dbt-working-tree.service";
 import { applyLocalOverlay, type LocalOverlay } from "./local-overlay";
 import { ensureCommitLocally } from "../apps/cloud-repo.service";
 import { renderDbtProfile, type RenderedProfile } from "./adapter-map";
@@ -65,6 +68,12 @@ export async function loadDbtProjectSnapshot(params: {
   /** Explicit branch (CI runs building a PR head). */
   branch?: string;
   /**
+   * Exactly this commit (a run's pinned `sourceSha`), fetched from the
+   * mirror when this instance lacks it. Wins over `userId` / `branch`, which
+   * then only say where to fetch it from.
+   */
+  commit?: string;
+  /**
    * A laptop checkout (`mako dbt run`): the tree at `overlay.baseSha` with
    * the uploaded files laid over it, or the uploaded tree alone. Wins over
    * `userId` / `branch`.
@@ -110,6 +119,13 @@ export async function loadDbtProjectSnapshot(params: {
   if (overlay?.baseSha) {
     await ensureCommitLocally(params.workspaceId, overlay.baseSha);
   }
+  if (!overlay && params.commit) {
+    await ensureCommitLocally(
+      params.workspaceId,
+      params.commit,
+      params.branch ?? (await getCheckoutBranch(project, params.userId)),
+    );
+  }
   const files = overlay
     ? applyLocalOverlay(
         overlay.baseSha
@@ -117,10 +133,12 @@ export async function loadDbtProjectSnapshot(params: {
           : [],
         overlay,
       )
-    : await loadWorkingTreeContents(project, {
-        userId: params.userId,
-        branch: params.branch,
-      });
+    : await loadWorkingTreeContents(
+        project,
+        params.commit
+          ? { commit: params.commit }
+          : { userId: params.userId, branch: params.branch },
+      );
   if (!files.some(f => f.path === "dbt_project.yml")) {
     throw new Error(
       "No dbt project found: the workspace repo has no dbt/dbt_project.yml on this branch",

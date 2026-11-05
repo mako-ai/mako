@@ -16,7 +16,10 @@ import {
   type IDbtRun,
 } from "../database/workspace-schema";
 import { assertAdhocDbtRunAllowed } from "./dbt-environments.service";
-import { getCheckoutBranch } from "./dbt-working-tree.service";
+import {
+  getCheckoutBranch,
+  resolveWorkingTreeCommit,
+} from "./dbt-working-tree.service";
 import { parseDbtCommands } from "./commands";
 import { cancelLocalRun } from "./dbt-run-registry";
 import type { AdhocDbtResult } from "./dbt-project.service";
@@ -280,6 +283,16 @@ export async function triggerDbtRun(params: {
     if (active) return active;
   }
 
+  // Pin the tree now: building "the branch" per command would build whatever
+  // the executing instance last fetched, and could change between commands.
+  const sourceSha =
+    project && !params.localOverlay
+      ? ((await resolveWorkingTreeCommit(project, {
+          branch: params.gitBranch,
+          userId: params.workingTreeUserId,
+        })) ?? undefined)
+      : undefined;
+
   const run = await DbtRun.create({
     workspaceId: new Types.ObjectId(params.workspaceId),
     projectId: new Types.ObjectId(params.projectId),
@@ -292,6 +305,7 @@ export async function triggerDbtRun(params: {
     gitBranch: params.gitBranch,
     workingTreeUserId: params.workingTreeUserId,
     sourceBranch,
+    sourceSha,
     deferToProduction: params.deferToProduction,
     ...(params.localOverlay
       ? {
@@ -442,6 +456,7 @@ export async function triggerDbtRunRetry(params: {
     gitBranch: source.gitBranch,
     workingTreeUserId: source.workingTreeUserId,
     sourceBranch: source.sourceBranch,
+    sourceSha: source.sourceSha,
     ...(source.localOverlay
       ? {
           localOverlay: {

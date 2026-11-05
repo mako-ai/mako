@@ -166,7 +166,17 @@ const cloneInFlight = new Map<string, Promise<void>>();
 
 export async function ensureLocalRepo(workspaceId: string): Promise<void> {
   const repoDir = repoDirFor(workspaceId);
-  if (await repoExists(repoDir)) return;
+  if (await repoExists(repoDir)) {
+    // A clone taken while the mirror was still empty has HEAD but no default
+    // branch, and nothing else ever fetches into it: this instance answers
+    // "no files" and "connect a repository first" for good, while a sibling
+    // that seeded the mirror has main. Pull it (throttled; a still-empty
+    // mirror simply leaves the clone as it is).
+    if (!(await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`))) {
+      await freshenForServe(workspaceId);
+    }
+    return;
+  }
   const existing = cloneInFlight.get(workspaceId);
   if (existing) return existing;
   const run = (async () => {
