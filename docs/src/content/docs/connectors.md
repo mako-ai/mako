@@ -51,6 +51,22 @@ The result carries the check outcome, then `entity.records`, `entity.schema` (de
 
 Nothing is written: no destination table, no sync cursor. The one side effect is the same one **Test connection** has — a workspace source connection's last-check mark, which is what moves its connector to *verified*.
 
+## Calling a Service Live
+
+Workflows and agents can also call a source connection's service directly, through Mako, without ever seeing its key: Close, Stripe, Wise, and **Custom API** connections. Mako adds the stored credential, keeps every request under the connection's address, and removes the credential from what comes back.
+
+**Custom API** is any HTTP or GraphQL API with a stored key. It is never synced; it is only called. Set its address, a credential type (bearer token, API key in a header or in the query string, basic auth, or none), and optionally headers sent with every request (for example `Notion-Version`). Those headers are not secret: anyone who can see the connection sees them, and the credential's own header and transport headers (`Authorization`, `Cookie`, `Host`, …) cannot be set there. With **GraphQL API** on, only a query POSTed to the endpoint is a read; a mutation, and any GET, is a write.
+
+**Managers** configure a connection: its creator, whoever a manager adds, and the workspace owner. The address, the credential type and the headers can only be changed in the app, never with an API key or by an agent.
+
+The connection's **Access** tab decides who may call it:
+
+- **Live reads**: off for every connection until a manager turns them on. Then anyone in the workspace (workflows and agents included) may read: GET and HEAD, a GraphQL query, a Close search or a Close POST read as GET.
+- **Writers**: who may write (POST, PUT, PATCH, DELETE). Add people, or **All deployed workflows** (deployed workflows share one identity, so they are allowed together). Viewers and agents never write, and a person who left the workspace can no longer call it at all.
+- **Refused attempts**: every write, allowed or not, is logged; refused ones are listed with who tried, so a manager can allow that person or the deployed workflows (an agent's attempt cannot be allowed).
+
+From a workflow, see [Workflows](/workflows/#calling-a-service-through-a-connection); from an MCP client, `call_connection` reads only.
+
 ## Building Custom Connectors
 
 See the [Building Connectors](/guides/building-connectors/) guide for implementing new connectors.
