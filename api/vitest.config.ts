@@ -29,6 +29,7 @@ export default defineConfig({
       "src/agent-lib/tools/dbt-*.test.ts",
       // Connections: credential types, the proxy, writers on source connections.
       "src/connections/callable.test.ts",
+      "src/connections/google-service-account.test.ts",
       "src/connectors/rate-gate.test.ts",
       "src/routes/source-connection-writers.test.ts",
       // A database connection's writers list, changed in the app.

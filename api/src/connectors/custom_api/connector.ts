@@ -41,6 +41,14 @@ export class CustomApiConnector extends BaseConnector {
             { label: "API key in a header", value: "api_key_header" },
             { label: "API key in the query string", value: "api_key_query" },
             { label: "Basic auth (username and password)", value: "basic" },
+            {
+              label: "Google service account (access token)",
+              value: "google_service_account",
+            },
+            {
+              label: "Google service account (ID token: Cloud Run, IAP)",
+              value: "google_id_token",
+            },
             { label: "None", value: "none" },
           ],
         },
@@ -85,6 +93,55 @@ export class CustomApiConnector extends BaseConnector {
           type: "password",
           required: false,
           showIf: { field: "auth_type", equals: "basic" },
+        },
+        {
+          name: "service_account_json",
+          label: "Service account key (JSON)",
+          type: "textarea",
+          rows: 10,
+          encrypted: true,
+          required: false,
+          placeholder: `{
+  "type": "service_account",
+  "client_email": "svc@project.iam.gserviceaccount.com",
+  "private_key": "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n",
+  ...
+}`,
+          helperText:
+            "The JSON key file. Each request gets a short-lived Google token made from it; the key itself is never sent.",
+          showIf: {
+            field: "auth_type",
+            equals: ["google_service_account", "google_id_token"],
+          },
+        },
+        {
+          name: "scopes",
+          label: "Scopes",
+          type: "string",
+          required: false,
+          placeholder: "https://www.googleapis.com/auth/cloud-platform",
+          helperText: "Separated by spaces or commas. Default: cloud-platform.",
+          showIf: { field: "auth_type", equals: "google_service_account" },
+        },
+        {
+          name: "subject",
+          label: "Act as user (optional)",
+          type: "string",
+          required: false,
+          placeholder: "someone@yourcompany.com",
+          helperText:
+            "Google Workspace APIs only: the user the service account acts for, with domain-wide delegation.",
+          showIf: { field: "auth_type", equals: "google_service_account" },
+        },
+        {
+          name: "audience",
+          label: "Audience (optional)",
+          type: "string",
+          required: false,
+          placeholder: "https://my-service-abc123-ew.a.run.app",
+          helperText:
+            "Who the ID token is for. Default: the address's origin, as Cloud Run expects. For IAP, the OAuth client ID.",
+          showIf: { field: "auth_type", equals: "google_id_token" },
         },
         {
           name: "graphql",
