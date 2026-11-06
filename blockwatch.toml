@@ -1,0 +1,73 @@
+# blockwatch: https://github.com/mennanov/blockwatch
+#
+# A rule on a whole top-level constant, type or config key lives here and
+# points at it by name (`file.ts#/NAME`, `package.json#/version`). Each such
+# target is the whole declaration without the comment above it. Tags in
+# comments mark only part of a declaration, such as a Mongoose `enum` inside a
+# schema, or a docs section.
+
+# The app router: production and canary read one KV namespace, and the
+# README's cutover commands write to it.
+[[block]]
+target = 'cloudflare/app-router/wrangler.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
+name = 'app-routing-kv-id'
+same-as = 'cloudflare/app-router/wrangler.canary.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id,cloudflare/app-router/README.md:cutover-namespace'
+# The README's runbook writes the id once per command.
+same-as-mode = 'set'
+
+[[block]]
+target = 'cloudflare/app-router/wrangler.canary.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
+same-as = 'cloudflare/app-router/wrangler.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
+
+# Canary exists to prove what production will run.
+[[block]]
+target = 'cloudflare/app-router/wrangler.jsonc#/compatibility_date'
+same-as = 'cloudflare/app-router/wrangler.canary.jsonc#/compatibility_date'
+
+[[block]]
+target = 'cloudflare/app-router/wrangler.canary.jsonc#/compatibility_date'
+same-as = 'cloudflare/app-router/wrangler.jsonc#/compatibility_date'
+
+# The CLI asks only for scopes the server issues (it drops unknown ones).
+[[block]]
+target = 'packages/cli/src/login.js#/loginScopes'
+same-as = 'api/src/auth/mcp-oauth.service.ts#/MCP_OAUTH_SCOPES'
+same-as-mode = 'subset'
+same-as-pattern = '"(?P<value>mcp|[^"\s]+:[^"\s]+)"'
+
+# Machine-local env vars: never synced to Secret Manager, each listed once.
+[[block]]
+target = 'scripts/secrets.ts#/LOCAL_ONLY'
+keep-unique = '^"(?P<value>[A-Z0-9_]+)",$'
+affects = 'CLAUDE.md:local-only-env-vars'
+
+# Constants the MCP server docs list.
+[[block]]
+target = 'api/src/auth/api-key-scopes.ts#/DEFAULT_WORKSPACE_API_KEY_SCOPES'
+affects = 'docs/src/content/docs/mcp-server.md:default-api-key-scopes'
+
+[[block]]
+target = 'api/src/services/database-connection.service.ts#/READ_ONLY_UNSUPPORTED_TYPES'
+affects = 'docs/src/content/docs/mcp-server.md:read-only-unsupported-engines'
+
+# `mako_ai.__version__` must report the version that was published.
+[[block]]
+target = 'packages/mako-sdk-py/pyproject.toml#/project/version'
+same-as = 'packages/mako-sdk-py/src/mako_ai/__init__.py#/__version__'
+
+# Constants and types the agent docs list.
+[[block]]
+target = 'api/src/agent-lib/tool-catalog.ts#/MAX_ACTIVE_TOOLS'
+affects = 'docs/src/content/docs/ai-agent.md:tool-budgets'
+
+[[block]]
+target = 'api/src/agent-lib/tool-catalog.ts#/MAX_ACTIVE_TOOL_TOKENS'
+affects = 'docs/src/content/docs/ai-agent.md:tool-budgets'
+
+[[block]]
+target = 'api/src/agent-lib/tool-catalog.ts#/PROVIDER_TOOL_CAPS'
+affects = 'docs/src/content/docs/ai-agent.md:tool-budgets'
+
+[[block]]
+target = 'api/src/agents/modes/types.ts#/ExpertiseModeId'
+affects = 'docs/src/content/docs/ai-agent.md:expertise-modes'

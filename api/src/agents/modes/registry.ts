@@ -33,13 +33,17 @@ export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
   "update_self_directive",
   // Skills: retrieval + save + tier-3 resource reads stay core (skills /
   // mode prompts name them every turn). list/delete/search stay deferred.
+  // <block name="core-skill-tools" affects="docs/src/content/docs/ai-agent.md:skill-tool-tiers">
   "get_relevant_skills",
   "load_skill",
   "save_skill",
   "read_skill_resource",
+  // </block>
   // Public web access (useful in every modality, not modality-specific)
+  // <block name="core-web-tools" same-as="docs/src/content/docs/ai-agent.md:web-tools" same-as-pattern='"(?P<value>[a-z_]+)"'>
   "fetch_url",
   "web_search",
+  // </block>
 ];
 
 /**
@@ -52,9 +56,11 @@ export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
  */
 export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   // Skill management rarer ops (retrieval/save/read_skill_resource are core)
+  // <block name="deferred-skill-tools" affects="docs/src/content/docs/ai-agent.md:skill-tool-tiers">
   delete_skill: "skills",
   list_skills: "skills",
   search_skills: "skills",
+  // </block>
   // Pre-push check for `flows/<slug>.yml` (RFC: agent-authored flows). Its
   // audience is an agent with the WORKSPACE repo checked out, reaching Mako
   // over MCP; in-chat it is registered and executable but stays out of the

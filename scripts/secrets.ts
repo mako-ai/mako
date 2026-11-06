@@ -47,9 +47,9 @@ const LOCAL_ONLY = new Set([
   "APPS_GIT_ROOT",
   "APPS_SESSIONS_ROOT",
   // Pre-rename names — keep excluded so stale .env entries never sync.
-  "APPS_SANDBOX_PROVIDER",
-  "APPS_GIT_ROOT",
-  "APPS_SESSIONS_ROOT",
+  "APPS_V2_SANDBOX_PROVIDER",
+  "APPS_V2_GIT_ROOT",
+  "APPS_V2_SESSIONS_ROOT",
   "NODE_ENV",
   // The connected-repo push OPT-IN is per-machine by doctrine (§13.17):
   // dev DBs are prod clones carrying real customer bindings, so a synced
