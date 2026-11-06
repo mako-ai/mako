@@ -57,7 +57,9 @@ Workflows and agents can also call a source connection's service directly, throu
 
 **Custom API** is any HTTP or GraphQL API with a stored key. It is never synced; it is only called. Set its address, a credential type (bearer token, API key in a header or in the query string, basic auth, or none), and optionally headers sent with every request (for example `Notion-Version`). Those headers are not secret: anyone who can see the connection sees them, and the credential's own header and transport headers (`Authorization`, `Cookie`, `Host`, …) cannot be set there. With **GraphQL API** on, only a query POSTed to the endpoint is a read; a mutation, and any GET, is a write.
 
-**Managers** configure a connection: its creator, whoever a manager adds, and the workspace owner. The address, the credential type and the headers can only be changed in the app, never with an API key or by an agent.
+**Access by role.** Viewers can read connections (list, open, test, entities) but not create or change them. Members create connections and change only those they manage. The workspace owner can change any. An API key acts with its creator's role.
+
+**Managers** configure a connection: its creator, whoever a manager adds, and the workspace owner. Admins are not managers unless added. Managers must be members or admins, not viewers. The address, the credential type and the headers can only be changed in the app, never with an API key or by an agent.
 
 The connection's **Access** tab decides who may call it:
 

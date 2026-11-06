@@ -190,6 +190,9 @@ table of connectors and entities. Summary:
 - Supports custom queries with offset or cursor pagination
 - Required config: `endpoint`, `queries` (configured on the Flow, not the connector)
 
+### Custom API (`custom_api`)
+Any HTTP or GraphQL API with a stored key (bearer, API key in a header or query string, basic auth, or none). Never synced: no entities, hidden from the flow source picker (`syncable: false`). It is only called, through the connection proxy (`connections/proxy.service.ts`). See the [Calling a Service Live](/connectors/#calling-a-service-live) docs.
+
 ### Google Cloud Storage (`gcs`)
 
 Import CSV files from a GCS bucket. Credentials (service account + bucket) live
