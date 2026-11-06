@@ -238,15 +238,21 @@ async function main() {
       assert.equal(sent.get("ai-model-id"), "typesafe-ai/jev");
       // A plain fetch omits the gateway protocol version; Mako adds it.
       assert.equal(sent.get("ai-gateway-protocol-version"), "0.0.1");
-      assert.deepEqual(
-        JSON.parse(
-          Buffer.from(forwarded.init.body as ArrayBuffer).toString("utf8"),
-        ),
-        {
-          stateParts: [{ type: "json", value: { text: "hi" } }],
-          questions: [{ name: "intent" }],
+      // The request as the step sent it, plus who the call is billed to.
+      const forwardedBody = JSON.parse(String(forwarded.init.body)) as {
+        providerOptions: { gateway: { user: string; tags: string[] } };
+      };
+      assert.equal(typeof forwardedBody.providerOptions.gateway.user, "string");
+      assert.deepEqual(forwardedBody, {
+        stateParts: [{ type: "json", value: { text: "hi" } }],
+        questions: [{ name: "intent" }],
+        providerOptions: {
+          gateway: {
+            user: forwardedBody.providerOptions.gateway.user,
+            tags: [`ws:${id}`, "type:workflow"],
+          },
         },
-      );
+      });
       assert.equal(await usageRows(1), 1);
       const row = await LlmUsage.findOne({ workspaceId: id }).lean();
       assert.equal(row?.invocationType, "workflow");

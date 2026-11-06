@@ -1754,7 +1754,7 @@ appsRoutes.openapi(
       const role =
         (c.get("memberRole") as string | undefined) ??
         (await memberRoleFor(workspaceId, userId));
-      prefetchQueryEmbedding(q);
+      prefetchQueryEmbedding(workspaceId, q);
       const [visible, usage] = await Promise.all([
         listHomeDiscoveryApps(workspaceId, userId, role),
         appUsageScores(workspaceId),

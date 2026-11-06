@@ -462,7 +462,7 @@ function buildTools(
       }),
       execute: async ({ query, limit }) => {
         try {
-          prefetchQueryEmbedding(query);
+          prefetchQueryEmbedding(workspaceId, query);
           const [apps, snapshot, directory, usage] = await Promise.all([
             visibleApps(),
             loadAppsIndex(workspaceId),

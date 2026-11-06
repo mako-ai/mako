@@ -251,15 +251,14 @@ export async function saveProbedThinkingMode(
 async function probeThinkingMode(
   modelId: string,
 ): Promise<Exclude<AnthropicThinkingMode, "none"> | null> {
-  const [{ generateText }, { getModel }] = await Promise.all([
-    import("ai"),
-    import("../agent-lib/ai-gateway"),
-  ]);
+  const [{ generateText }, { getModel, systemProviderOptions }] =
+    await Promise.all([import("ai"), import("../agent-lib/ai-gateway")]);
   try {
     await generateText({
       model: getModel(modelId),
       prompt: "ok",
       providerOptions: {
+        ...systemProviderOptions("model_probe"),
         anthropic: { thinking: { type: "enabled", budgetTokens: 1024 } },
       },
       maxOutputTokens: 2048,

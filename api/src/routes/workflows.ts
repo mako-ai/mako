@@ -26,6 +26,7 @@ import {
 } from "../auth/api-key-scopes";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { checkBillingLimits } from "../billing/usage-limit.middleware";
+import { withGatewayAttribution } from "../agent-lib/ai-gateway";
 import { type IWorkflowRunRef } from "../database/schema";
 import { AppProject, Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
@@ -667,7 +668,12 @@ async function forwardToGateway(
   const res = await fetch(`${base}/${kind}`, {
     method: "POST",
     headers,
-    body: await c.req.arrayBuffer(),
+    // The step's own SDK sends no attribution Mako can trust, so Mako sets it.
+    body: withGatewayAttribution(await c.req.text(), {
+      userId,
+      workspaceId,
+      invocationType: "workflow",
+    }),
   }).catch(() => {
     throw new HatchetError("The AI gateway is unreachable", 502);
   });
