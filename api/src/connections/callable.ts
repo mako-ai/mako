@@ -13,6 +13,12 @@
  */
 import type { ISourceConnection } from "../database/workspace-schema";
 import { CUSTOM_API_TYPE } from "./kinds";
+import {
+  DEFAULT_GOOGLE_SCOPE,
+  googleToken,
+  parseServiceAccountKey,
+  serviceAccountKeyRefusal,
+} from "./google-service-account";
 
 // ---------------------------------------------------------------------------
 // Credential types: how a key is sent with a request
@@ -22,18 +28,21 @@ import { CUSTOM_API_TYPE } from "./kinds";
  * Four ways, whatever the service: a bearer token, an API key in a header or
  * in the query string, or basic auth. A connector fixes its own (Close sends
  * its key as basic auth, Stripe and Wise as a bearer token); a Custom API
- * connection picks one.
+ * connection picks one, or a Google service account, whose key makes a
+ * short-lived bearer token for each request (`wireCredential`).
  */
 const CREDENTIAL_TYPES = [
   "bearer",
   "api_key_header",
   "api_key_query",
   "basic",
+  "google_service_account",
+  "google_id_token",
 ] as const;
 type CredentialTypeId = (typeof CREDENTIAL_TYPES)[number];
 
-/** One filled-in credential, as a request needs it. */
-export type Credential =
+/** A credential as it goes on the wire. */
+export type WireCredential =
   | { type: "bearer"; token: string }
   | { type: "api_key_header"; token: string; header: string }
   | { type: "api_key_query"; token: string; param: string }
@@ -41,13 +50,79 @@ export type Credential =
   /** No credential (a public API). */
   | { type: "none" };
 
+/** One filled-in credential, as stored. */
+export type Credential =
+  | WireCredential
+  /** A Google access token for `scopes`, as the service account or `subject`. */
+  | {
+      type: "google_service_account";
+      key: string;
+      scopes: string[];
+      subject?: string;
+    }
+  /** A Google ID token for `audience` (Cloud Run, Cloud Functions, IAP). */
+  | { type: "google_id_token"; key: string; audience: string };
+
+/**
+ * Whether `url` is a Google API (googleapis.com or a subdomain), the only
+ * place a Google access token is sent: one valid for every Google API the
+ * service account can reach must not go to any other host.
+ */
+export function isGoogleApiUrl(url: string | URL): boolean {
+  try {
+    const { protocol, hostname } = new URL(url);
+    const host = hostname.toLowerCase();
+    return (
+      protocol === "https:" &&
+      (host === "googleapis.com" || host.endsWith(".googleapis.com"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `credential` as a request to `url` sends it: a Google service account's
+ * key becomes a bearer token made for it; any other is sent as stored. An
+ * access token goes only to a Google API (`isGoogleApiUrl`).
+ */
+export async function wireCredential(
+  credential: Credential,
+  url: URL,
+): Promise<WireCredential> {
+  switch (credential.type) {
+    case "google_service_account":
+      if (!isGoogleApiUrl(url)) {
+        throw new Error(GOOGLE_API_ONLY);
+      }
+      return {
+        type: "bearer",
+        token: await googleToken(credential.key, {
+          kind: "access",
+          scopes: credential.scopes,
+          ...(credential.subject ? { subject: credential.subject } : {}),
+        }),
+      };
+    case "google_id_token":
+      return {
+        type: "bearer",
+        token: await googleToken(credential.key, {
+          kind: "id",
+          audience: credential.audience,
+        }),
+      };
+    default:
+      return credential;
+  }
+}
+
 /**
  * Add `credential` to a request's headers (lower-case names) or URL, and
  * return every value it put on the wire (a whole header value, a basic-auth
  * payload, a query value as encoded), to scrub exactly those from the answer.
  */
 export function applyCredential(
-  credential: Credential,
+  credential: WireCredential,
   headers: Record<string, string>,
   url: URL,
 ): string[] {
@@ -178,20 +253,34 @@ export function readsByProfile(
   );
 }
 
+/** The stored values a credential holds that must never be passed back. */
+function carriedSecrets(credential: Credential): string[] {
+  switch (credential.type) {
+    case "none":
+      return [];
+    case "basic":
+      // The password, or the username when it is the key (Close, no
+      // password); a plain username like `api` would scrub ordinary text.
+      return [credential.password || credential.username];
+    case "google_service_account":
+    case "google_id_token":
+      // The key file, and its private key on its own. The token made from
+      // it is scrubbed as sent (`applyCredential`).
+      return [
+        credential.key,
+        parseServiceAccountKey(credential.key)?.private_key ?? "",
+      ];
+    default:
+      return [credential.token];
+  }
+}
+
 /** Every value that must never appear in an answer. */
 export function secretsOf(callable: CallableConnection, config: Config) {
-  const credential = callable.credential(config);
-  // Basic auth: the password, or the username when it is the key (Close,
-  // no password); a plain username like `api` would scrub ordinary text.
-  const carried =
-    credential.type === "none"
-      ? []
-      : credential.type === "basic"
-        ? [credential.password || credential.username]
-        : [credential.token];
-  return [...carried, ...(callable.otherSecrets?.(config) ?? [])].filter(
-    Boolean,
-  );
+  return [
+    ...carriedSecrets(callable.credential(config)),
+    ...(callable.otherSecrets?.(config) ?? []),
+  ].filter(Boolean);
 }
 
 /** The rate gate of `connection`: its profile's, else one per connection. */
@@ -474,6 +563,58 @@ export function staticHeadersRefusal(config: Config): string | null {
   return null;
 }
 
+/** Scopes as entered (spaces, commas or new lines between them). */
+function googleScopes(config: Config): string[] {
+  const scopes = text(config.scopes)
+    .split(/[\s,]+/)
+    .filter(Boolean);
+  return scopes.length ? scopes : [DEFAULT_GOOGLE_SCOPE];
+}
+
+/**
+ * The audience an ID token is made for: as entered, else the base URL's
+ * origin (what Cloud Run and Cloud Functions expect).
+ */
+function googleAudience(config: Config): string {
+  const entered = text(config.audience);
+  if (entered) return entered;
+  try {
+    return new URL(text(config.base_url)).origin;
+  } catch {
+    return "";
+  }
+}
+
+const GOOGLE_API_ONLY =
+  "A Google access token is sent only to https://*.googleapis.com. For your own service on Cloud Run, Cloud Functions or IAP, pick the ID token.";
+
+/** Why a Custom API's Google service account cannot be saved, or null. */
+export function googleCredentialRefusal(config: Config): string | null {
+  const type = customApiCredentialType(config);
+  if (type !== "google_service_account" && type !== "google_id_token") {
+    return null;
+  }
+  if (
+    type === "google_service_account" &&
+    !isGoogleApiUrl(text(config.base_url))
+  ) {
+    return GOOGLE_API_ONLY;
+  }
+  const keyRefusal = serviceAccountKeyRefusal(config.service_account_json);
+  if (keyRefusal) return keyRefusal;
+  const values =
+    type === "google_service_account"
+      ? [...googleScopes(config), text(config.subject)]
+      : [googleAudience(config)];
+  if (type === "google_id_token" && !values[0]) {
+    return "Set the audience the ID token is for.";
+  }
+  if (values.some(value => hasControl(value) || value.length > 1000)) {
+    return "A scope, subject or audience is too long or has a control character.";
+  }
+  return null;
+}
+
 /**
  * The static headers a Custom API sends with every request, lower case. Only
  * a list that could be saved (staticHeadersRefusal) is sent; any other sends
@@ -504,8 +645,13 @@ export const customApi: CallableConnection = {
     "query_param",
     "graphql",
     "extra_headers",
+    // Who the Google token speaks for and where it is valid.
+    "scopes",
+    "subject",
+    "audience",
   ],
-  configRefusal: staticHeadersRefusal,
+  configRefusal: config =>
+    staticHeadersRefusal(config) ?? googleCredentialRefusal(config),
   // After the caller's headers; the credential is added after these.
   extraHeaders: (_request, config) => staticHeaders(config ?? {}),
   credential(config): Credential {
@@ -530,6 +676,19 @@ export const customApi: CallableConnection = {
           type: "basic",
           username: text(config.username),
           password: text(config.password),
+        };
+      case "google_service_account":
+        return {
+          type: "google_service_account",
+          key: text(config.service_account_json),
+          scopes: googleScopes(config),
+          ...(text(config.subject) ? { subject: text(config.subject) } : {}),
+        };
+      case "google_id_token":
+        return {
+          type: "google_id_token",
+          key: text(config.service_account_json),
+          audience: googleAudience(config),
         };
       case "none":
         return { type: "none" };

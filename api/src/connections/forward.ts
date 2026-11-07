@@ -22,6 +22,7 @@ import {
   rateGateOf,
   readsByProfile,
   secretsOf,
+  wireCredential,
   type CallableConnection,
   type RequestShape,
 } from "./callable";
@@ -390,7 +391,11 @@ export async function send(
     : readsByProfile(callable, request, config)
       ? encodeReadBody(request.body, headers)
       : encodeBody(request.body, callable, headers);
-  const sent = applyCredential(callable.credential(config), headers, url);
+  const sent = applyCredential(
+    await wireCredential(callable.credential(config), url),
+    headers,
+    url,
+  );
 
   const gate = rateGateOf(callable, connection);
   let answer: SafeRequestResult;
