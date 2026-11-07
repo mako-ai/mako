@@ -504,10 +504,11 @@ would fall through to the SPA fallback and poison client discovery.
   (`MCP_OAUTH_SCOPES`: `mcp`, `query:read`, `warehouse:write`,
   `connections:write`), whatever scope the client requests. There are no
   per-permission consent options on the authorize page; what a viewer may not
-  do is decided by their LIVE workspace role at each tool call (the dbt and
-  connection tools require at least the member role). `mako dbt run` builds a
-  laptop checkout through `/api/workspaces/:id/dbt/local-runs` with any
-  MCP/CLI login (`mcp` scope); the route's RBAC keeps viewers out, and which
+  do is decided by their LIVE workspace role at each tool call (connection tools
+  require at least the member role; dbt tools let members read and validate,
+  while changing or running dbt needs admin). `mako dbt run` builds a
+  laptop checkout through `/api/workspaces/:id/dbt/local-runs` with an
+  admin/owner MCP/CLI login (`mcp` scope); the route's RBAC keeps members and viewers out, and which
   environment may be built (the caller's own by default; never another
   person's, never the prod-like one) is decided in the route. Raw
   `query:write`, membership, and other administrative scopes are never
