@@ -32,6 +32,7 @@ import type { Context } from "hono";
 import { appsReposRoot } from "../apps/config";
 import {
   ensureLocalRepo,
+  fetchMirrorTipsForReceive,
   freshenBeforeMainWrite,
   freshenForServe,
 } from "../apps/cloud-repo.service";
@@ -90,6 +91,23 @@ while read old new ref; do
         exit 1
       fi ;;
   esac
+
+  # GitHub is where the push has to land, and it refuses anything that is not
+  # a fast-forward of its own tip. The endpoint fetched GitHub's heads into
+  # refs/remotes/mirror-live/* just before this push (MAKO_MIRROR_CHECK), so
+  # refuse here what GitHub would refuse later, while the box can still act
+  # on it - instead of accepting it and parking it when the mirror push fails.
+  if [ -n "$MAKO_MIRROR_CHECK" ] && [ "$new" != "$zero" ]; then
+    case "$ref" in
+      refs/heads/*)
+        tip=$(git rev-parse -q --verify "refs/remotes/mirror-live/\${ref#refs/heads/}")
+        if [ -n "$tip" ] && [ "$tip" != "$new" ] && ! git merge-base --is-ancestor "$tip" "$new"; then
+          echo "mako: refusing $ref - GitHub has commits on it that this push does not include (behind, pull first)." >&2
+          echo "mako: run git pull, then push again." >&2
+          exit 1
+        fi ;;
+    esac
+  fi
 
   # Authorship: a commit this push INTRODUCES (reachable from the new tip but
   # from no ref already on the server) must be authored by the pushing user.
@@ -256,6 +274,14 @@ async function serveGit(c: Context): Promise<Response> {
     parts.rest === "/info/refs" && service === "git-receive-pack";
   if (isUploadPack) await freshenForServe(payload.wsId);
   else if (isReceiveAdvert) await freshenBeforeMainWrite(payload.wsId);
+  // The push itself is judged against GitHub, not only against this clone:
+  // the hook refuses a ref GitHub would refuse as non-fast-forward. Only the
+  // pushed branches' tips are compared; editing in the box is untouched, and
+  // when GitHub cannot be reached the push is accepted as before.
+  const mirrorChecked =
+    isReceivePack && c.req.method === "POST"
+      ? await fetchMirrorTipsForReceive(payload.wsId)
+      : false;
   return runHttpBackend({
     repoRoot: appsReposRoot(),
     hooksDir: await hooksDir(),
@@ -281,6 +307,7 @@ async function serveGit(c: Context): Promise<Response> {
     authorEmail: payload.email,
     // The role as it is now, not as it was when the token was minted: a
     // demoted admin stops changing workflows with the next push.
+    mirrorChecked,
     workflowsAdmin:
       isReceivePack &&
       (await workspaceService
@@ -308,6 +335,8 @@ interface BackendInput {
   authorEmail?: string;
   /** Whether the pusher may change `workflows/` (a workspace admin). */
   workflowsAdmin?: boolean;
+  /** GitHub's heads were fetched; the hook refuses non-fast-forwards of them. */
+  mirrorChecked?: boolean;
   /** Request body, streamed — a push can be arbitrarily large. */
   body: ReadableStream<Uint8Array> | null;
   /** Called once when a receive-pack completed cleanly (see module doc). */
@@ -338,6 +367,7 @@ function runHttpBackend(input: BackendInput): Promise<Response> {
       // a missing identity, never on a mismatch).
       ...(input.authorEmail ? { MAKO_AUTHOR_EMAIL: input.authorEmail } : {}),
       ...(input.workflowsAdmin ? { MAKO_WORKFLOWS_ADMIN: "1" } : {}),
+      ...(input.mirrorChecked ? { MAKO_MIRROR_CHECK: "1" } : {}),
       // Config injected per invocation instead of written into the repo:
       // it applies to exactly this serving path (updateRefCas and the mirror
       // push never see it), and there is no migration to run over existing

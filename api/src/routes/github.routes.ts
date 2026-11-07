@@ -36,6 +36,7 @@ import { workspaceService } from "../services/workspace.service";
 import { loggers } from "../logging";
 import { deployAppsForPush } from "../apps/deploy-on-push";
 import { ensureLocalRepo, fetchFromCloud } from "../apps/cloud-repo.service";
+import { advanceBranchHead } from "../apps/branch-head.service";
 import { findWorkspaceIdsByRepoBinding } from "../services/workspace-repos.service";
 import { syncRepoBackedResources } from "../apps/worktree.service";
 import { repoDirFor } from "../apps/repository.service";
@@ -141,6 +142,12 @@ async function handleAppsPush(input: {
   // matched through the workspace's binding.
   const workspaceIds = await findWorkspaceIdsByRepoBinding(owner, repo);
   if (workspaceIds.length === 0) return;
+  // Every instance compares its clone against this pointer before a read, so
+  // a push from a laptop (or a merge on GitHub) is seen on the next read
+  // everywhere, not after a timer. Any branch: session branches are read too.
+  for (const workspaceId of workspaceIds) {
+    await advanceBranchHead(workspaceId, branch, before, after);
+  }
   if (branch !== (defaultBranch || "main")) return;
 
   for (const workspaceId of workspaceIds) {

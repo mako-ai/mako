@@ -34,7 +34,7 @@ import { loggers } from "../logging";
 import { APP_SDK_DIR } from "./app-sdk-package";
 import { workspaceRootGitignore } from "./box";
 import { grepTree, readBlob, resolveCommit } from "./repository.service";
-import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
+import { commitToWorkspace } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
@@ -420,38 +420,35 @@ export async function planTemplateRefresh(
 
 /**
  * Bring a workspace repo's `main` up to the current template with one
- * Mako-authored commit, then queue the mirror push. Returns the commit oid,
- * or null when nothing needed doing.
+ * Mako-authored commit, pushed to GitHub before this returns. Returns the
+ * commit oid, or null when nothing needed doing.
  */
 export async function ensureWorkspaceTemplate(
   workspaceId: string,
   repoDir: string,
 ): Promise<string | null> {
-  // The bare repo is a cache of the mirror; a laptop push or another API
-  // deployment (dev and prod can share one connected repo) may have moved
-  // `main` since we last looked. Write on top of the mirror's head, or the
-  // push is rejected as non-fast-forward and the refresh strands a commit.
-  await fetchFromCloud(workspaceId, "main").catch(error => {
-    logger.warn("Apps workspace template: mirror fetch failed; continuing", {
-      workspaceId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  });
-  const plan = await planTemplateRefresh(repoDir, workspaceId);
-  if (!plan) return null;
   // Lazy import: worktree.service imports this module for initRepo.
   const { commitFilesOnBranch } = await import("./worktree.service");
-  const { commitOid } = await commitFilesOnBranch(repoDir, "main", plan, {
-    message: `Update Mako workspace template to v${WORKSPACE_TEMPLATE_VERSION}`,
+  // The primitive writes on top of the mirror's head (a laptop push or
+  // another API deployment may have moved `main`) and waits for GitHub; the
+  // plan is recomputed on every attempt.
+  const refreshed = await commitToWorkspace(workspaceId, async () => {
+    const plan = await planTemplateRefresh(repoDir, workspaceId);
+    if (!plan) return null;
+    const result = await commitFilesOnBranch(repoDir, "main", plan, {
+      message: `Update Mako workspace template to v${WORKSPACE_TEMPLATE_VERSION}`,
+    });
+    return { commitOid: result.commitOid, plan };
   });
-  queueMirrorPush(workspaceId);
+  if (!refreshed) return null;
+  const { plan } = refreshed;
   logger.info("Apps workspace template refreshed", {
     workspaceId,
     version: WORKSPACE_TEMPLATE_VERSION,
     files: Object.keys(plan.writes).length,
     retired: plan.deletePrefixes,
   });
-  return commitOid;
+  return refreshed.commitOid;
 }
 
 const REFRESH_INTERVAL_MS = 60 * 60 * 1000;

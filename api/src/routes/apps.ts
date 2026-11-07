@@ -166,12 +166,12 @@ import {
   serveDeploymentFile,
 } from "../apps/deployment.service";
 import {
+  WorkspaceSaveNotPushedError,
   adoptConnectedRepo,
+  commitToWorkspace,
   type ConnectedRepoAdoption,
   freshenBeforeMainWrite,
-  mirrorPushNow,
 } from "../apps/cloud-repo.service";
-import { updateRefCas } from "../apps/repository.service";
 import { publishState } from "../apps/publish-state";
 import fs from "node:fs/promises";
 import { readBoxDir } from "../apps/box";
@@ -3923,9 +3923,27 @@ appsRoutes.openapi(
       // safe: production is `publishedSha`, which only ever moves to a
       // SUCCESSFUL build — so a failed build leaves the live app untouched and
       // just shows main ahead of what is deployed. (apps.md §13.3.1)
+      // Moving main is a server-side save: the primitive pushes it and waits
+      // for GitHub. Main having moved (here, or on GitHub so the push is
+      // refused) fails the compare-and-swap on retry: nothing shipped. A push
+      // that fails for any other reason undoes the promote, so this clone and
+      // GitHub agree and the sandbox can still fetch main.
       try {
-        await promoteToMain(handle, { sha, expectedMain });
-      } catch {
+        await commitToWorkspace(loaded.project.workspaceId.toString(), () =>
+          promoteToMain(handle, { sha, expectedMain }),
+        );
+      } catch (promoteError) {
+        if (promoteError instanceof WorkspaceSaveNotPushedError) {
+          return c.json(
+            {
+              success: false,
+              error:
+                "Could not save the change durably — the push to the git mirror failed, so nothing was published. Try again.",
+              output: promoteError.message,
+            },
+            502,
+          );
+        }
         return c.json(
           {
             success: false,
@@ -3933,34 +3951,6 @@ appsRoutes.openapi(
               "main moved while this publish was running — nothing shipped. Try again.",
           },
           409,
-        );
-      }
-      try {
-        await mirrorPushNow(loaded.project.workspaceId.toString());
-      } catch (pushError) {
-        // main advanced locally but the durable push (to the git mirror)
-        // failed — bad credentials, GitHub down, a rejected ref. Roll main
-        // back to where it was so the local repo and the durable store agree:
-        // otherwise a serverless instance recycle would restore from the
-        // (unchanged) mirror and silently "lose" this commit, and the sandbox
-        // could no longer fetch it ("not our ref"). Nothing published; retry.
-        await updateRefCas(
-          handle.repoDir,
-          `refs/heads/${loaded.project.defaultBranch || "main"}`,
-          expectedMain,
-          sha,
-        ).catch(() => undefined);
-        return c.json(
-          {
-            success: false,
-            error:
-              "Could not save the change durably — the push to the git mirror failed, so nothing was published. Try again.",
-            output:
-              pushError instanceof Error
-                ? pushError.message
-                : String(pushError),
-          },
-          502,
         );
       }
 

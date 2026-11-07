@@ -62,9 +62,9 @@ import {
   validateScheduledConsoleSchedule,
 } from "../services/scheduled-query-schedule.service";
 import {
+  commitToWorkspace,
   freshenBeforeMainWrite,
   mirrorPushNow,
-  queueMirrorPush,
   resolveMirrorTarget,
 } from "./cloud-repo.service";
 import { RepoRequiredError, appsRequireConnectedRepo } from "./config";
@@ -717,11 +717,15 @@ export async function commitConsoleBatch(input: {
     input.workspaceId,
     input.actorUserId ?? "api-key",
   );
-  const result = await commitBlobsOnBranch(repoDir, branch, input.mutation, {
-    message: input.message,
-    author,
-  });
-  if (!result.unchanged) queueMirrorPush(input.workspaceId);
+  const result = await commitToWorkspace(
+    input.workspaceId,
+    () =>
+      commitBlobsOnBranch(repoDir, branch, input.mutation, {
+        message: input.message,
+        author,
+      }),
+    { branch },
+  );
   return { commitOid: result.commitOid, unchanged: result.unchanged };
 }
 

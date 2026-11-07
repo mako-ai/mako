@@ -32,6 +32,8 @@ export default defineConfig({
       "src/apps/adversarial.test.ts",
       "src/agent-lib/tools/apps-tools-workflow-target.test.ts",
       "src/apps/git-endpoint.test.ts",
+      // GitHub as the commit point: every content type, two instances.
+      "src/apps/commit-to-workspace.test.ts",
       "src/apps/workspace-consoles.service.test.ts",
       "src/apps/workspace-skills.service.test.ts",
       "src/apps/box-state.service.test.ts",

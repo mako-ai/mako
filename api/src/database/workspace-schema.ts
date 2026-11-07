@@ -5788,3 +5788,45 @@ export const WorkspaceUserHandle = mongoose.model<IWorkspaceUserHandle>(
   "WorkspaceUserHandle",
   WorkspaceUserHandleSchema,
 );
+
+// ---------------------------------------------------------------------------
+// Workspace repo branch heads — the shared view of what GitHub holds
+// ---------------------------------------------------------------------------
+
+/**
+ * The last head SHA of one workspace-repo branch known to be on GitHub.
+ *
+ * Every API instance keeps its own clone, so "is my clone current?" cannot be
+ * answered locally. This row answers it: it moves after every successful
+ * server-side push (`commitToWorkspace`) and on every GitHub push webhook, and
+ * a read fetches only when its local head differs. Both writers compare and
+ * swap on the previous SHA; a writer that loses deletes the row instead, so a
+ * missing row means "unknown, fall back to a timed fetch", never "stale".
+ */
+export interface IWorkspaceRepoHead extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  branch: string;
+  sha: string;
+  updatedAt: Date;
+}
+
+const WorkspaceRepoHeadSchema = new Schema<IWorkspaceRepoHead>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    branch: { type: String, required: true },
+    sha: { type: String, required: true },
+  },
+  { collection: "workspace_repo_heads", timestamps: true },
+);
+
+WorkspaceRepoHeadSchema.index({ workspaceId: 1, branch: 1 }, { unique: true });
+
+export const WorkspaceRepoHead = mongoose.model<IWorkspaceRepoHead>(
+  "WorkspaceRepoHead",
+  WorkspaceRepoHeadSchema,
+);
