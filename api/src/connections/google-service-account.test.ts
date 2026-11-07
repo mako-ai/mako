@@ -6,7 +6,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Types } from "mongoose";
-import { callableFor, googleCredentialRefusal } from "./callable";
+import {
+  callableFor,
+  googleCredentialRefusal,
+  isGoogleApiUrl,
+} from "./callable";
 import { forward, setTransportForTests } from "./forward";
 import {
   parseServiceAccountKey,
@@ -139,6 +143,50 @@ describe("access token", () => {
       path: "/",
     });
     expect(minted).toHaveLength(2);
+  });
+});
+
+describe("an access token goes only to a Google API", () => {
+  it("knows googleapis.com and its subdomains over https, nothing else", () => {
+    expect(isGoogleApiUrl("https://sheets.googleapis.com/v4")).toBe(true);
+    expect(isGoogleApiUrl("https://googleapis.com")).toBe(true);
+    expect(isGoogleApiUrl("https://evil-googleapis.com")).toBe(false);
+    expect(isGoogleApiUrl("https://googleapis.com.evil.io")).toBe(false);
+    expect(isGoogleApiUrl("http://sheets.googleapis.com")).toBe(false);
+    expect(isGoogleApiUrl("https://api.example.com")).toBe(false);
+    expect(isGoogleApiUrl("")).toBe(false);
+  });
+
+  it("refuses to save one for any other address", () => {
+    expect(
+      googleCredentialRefusal({
+        base_url: "https://api.example.com",
+        auth_type: "google_service_account",
+        service_account_json: KEY_FILE,
+      }),
+    ).toMatch(/googleapis\.com/);
+    expect(
+      googleCredentialRefusal({
+        base_url: "https://billing-abc123-ew.a.run.app",
+        auth_type: "google_id_token",
+        service_account_json: KEY_FILE,
+      }),
+    ).toBeNull();
+  });
+
+  it("never makes or sends one for another address, saved or not", async () => {
+    const error = await forward(
+      connection({
+        base_url: "https://api.example.com",
+        auth_type: "google_service_account",
+        service_account_json: KEY_FILE,
+      }),
+      customApi,
+      { method: "GET", path: "/" },
+    ).catch((e: Error) => e);
+    expect((error as Error).message).toMatch(/googleapis\.com/);
+    expect(minted).toHaveLength(0);
+    expect(sent).toHaveLength(0);
   });
 });
 

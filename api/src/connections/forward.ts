@@ -392,7 +392,7 @@ export async function send(
       ? encodeReadBody(request.body, headers)
       : encodeBody(request.body, callable, headers);
   const sent = applyCredential(
-    await wireCredential(callable.credential(config)),
+    await wireCredential(callable.credential(config), url),
     headers,
     url,
   );

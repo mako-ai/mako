@@ -64,14 +64,37 @@ export type Credential =
   | { type: "google_id_token"; key: string; audience: string };
 
 /**
- * `credential` as a request sends it: a Google service account's key becomes
- * a bearer token made for it; any other is sent as stored.
+ * Whether `url` is a Google API (googleapis.com or a subdomain), the only
+ * place a Google access token is sent: one valid for every Google API the
+ * service account can reach must not go to any other host.
+ */
+export function isGoogleApiUrl(url: string | URL): boolean {
+  try {
+    const { protocol, hostname } = new URL(url);
+    const host = hostname.toLowerCase();
+    return (
+      protocol === "https:" &&
+      (host === "googleapis.com" || host.endsWith(".googleapis.com"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `credential` as a request to `url` sends it: a Google service account's
+ * key becomes a bearer token made for it; any other is sent as stored. An
+ * access token goes only to a Google API (`isGoogleApiUrl`).
  */
 export async function wireCredential(
   credential: Credential,
+  url: URL,
 ): Promise<WireCredential> {
   switch (credential.type) {
     case "google_service_account":
+      if (!isGoogleApiUrl(url)) {
+        throw new Error(GOOGLE_API_ONLY);
+      }
       return {
         type: "bearer",
         token: await googleToken(credential.key, {
@@ -562,11 +585,20 @@ function googleAudience(config: Config): string {
   }
 }
 
+const GOOGLE_API_ONLY =
+  "A Google access token is sent only to https://*.googleapis.com. For your own service on Cloud Run, Cloud Functions or IAP, pick the ID token.";
+
 /** Why a Custom API's Google service account cannot be saved, or null. */
 export function googleCredentialRefusal(config: Config): string | null {
   const type = customApiCredentialType(config);
   if (type !== "google_service_account" && type !== "google_id_token") {
     return null;
+  }
+  if (
+    type === "google_service_account" &&
+    !isGoogleApiUrl(text(config.base_url))
+  ) {
+    return GOOGLE_API_ONLY;
   }
   const keyRefusal = serviceAccountKeyRefusal(config.service_account_json);
   if (keyRefusal) return keyRefusal;
