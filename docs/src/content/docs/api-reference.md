@@ -140,10 +140,27 @@ A _connector_ is code (Stripe, Close, PostHog, a workspace-authored `ws:` connec
 | `POST`   | `/api/workspaces/:wid/connections/sources/:id/probe`    | Probe live: test the credential and read one bounded page of an entity       |
 | `GET`    | `/api/workspaces/:wid/connections/sources/:id/entities` | Entities the connection's connector offers                                   |
 | `PATCH`  | `/api/workspaces/:wid/connections/sources/:id/enable`   | Enable or disable                                                            |
+| `POST`   | `/api/workspaces/:wid/connections/sources/:id/reveal-secret` | Reveal one stored secret field (`{ field }`; managers and the workspace owner only; logged) |
+| `PUT`    | `/api/workspaces/:wid/connections/sources/:id/managers` | Change who configures the connection (`{ managers: [userId, …] }`; app session only) |
+| `GET`    | `/api/workspaces/:wid/connections/sources/:id/writers`  | Who may write through the connection, plus `liveReads`, `canEdit`, `callable` and recent refused writes |
+| `PUT`    | `/api/workspaces/:wid/connections/sources/:id/writers`  | Set the writers list and live reads (`{ writers: [{ principal }], liveReads? }`; app session only) |
 
 The same methods are also served at `/api/workspaces/:wid/connectors` (and `/connectors/:id/…`) as a deprecated alias.
 
 Workspace-authored connector code has git history too: `GET /api/workspaces/:wid/connector-definitions/:slug/git/history` (also `/git/commit`, `/git/file-versions`) and `POST …/git/restore` (workspace editors only). See [Version History](/version-history/).
+
+### Source Connection Access
+
+- **Roles.** Viewers read only (list, open, test, entities). Members create connections and change the ones they manage. The workspace owner can change any connection. Each returned connection carries `managers` and `canEdit` for the caller. An API key acts with its creator's role.
+- **Managers.** A connection's managers are its creator, then whoever a manager adds. They edit it, reveal or replace its key, disable or delete it, and change the list. Admins are not managers unless added; the owner always can. Every manager must be a member or admin, never a viewer. `PUT …/managers` is refused (403) for API keys, MCP clients and agents: only a person in the app changes it.
+- **Reveal.** `POST …/reveal-secret` takes `{ field }`, which must be a top-level config field the connector declares encrypted, and answers `{ success, data: { value, wasEncrypted } }`. Every reveal is logged with actor, connection and field.
+- **Writers and live reads.** `GET …/writers` answers `writers`, `liveReads` (off by default), `canEdit`, `callable` (whether the proxy can call this connection type yet) and `recent` refused writes. `PUT …/writers` takes `writers` (each `{ principal }`, where `workflow:*` means every deployed workflow) and optionally `liveReads`. Writers can only be changed in the app by a manager or the owner, and must be members of the workspace.
+
+### Calling a Service Through a Connection
+
+`POST /api/workflows/runtime/connections/:connection/request` sends one request to a service through a source connection. `:connection` is the connection's id or name. Mako adds the stored credential; the caller never sees it. Body: `method` and `path` (required), `query`, `headers` (including `Idempotency-Key`) and `body`. The service's status and answer come back as is, with credentials removed. The path must stay under the connection's address.
+
+A read needs live reads on for the connection. A write needs the calling deployed workflow (`workflow:*`) or, on a person's own run, that person on the writers list. Agents and MCP logins only read, and every write is logged. Errors from Mako itself carry an `error` message and the matching HTTP status. Workflow code normally uses `connection(id)` from `lib/mako` instead of calling the route; see [Workflows](/workflows/#calling-a-service-through-a-connection).
 
 ### Probe Request
 

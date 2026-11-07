@@ -59,7 +59,9 @@ Workflows and agents can also call a source connection's service directly, throu
 
 A **Google service account** connection stores the service account's JSON key file, encrypted, and sends a short-lived Google token with each request; the key itself never leaves Mako. Pick **access token** for Google APIs; it is sent only to an address under `https://*.googleapis.com` (set scopes, default `cloud-platform`; for Google Workspace APIs, optionally a user to act as, which needs domain-wide delegation), or **ID token** for your own service behind Google sign-in (Cloud Run, Cloud Functions, IAP). An ID token's audience defaults to the address's origin, which is what Cloud Run expects; for IAP, set it to the OAuth client ID. The service account needs the role that lets it call the service, for example `roles/run.invoker` on a Cloud Run service.
 
-**Managers** configure a connection: its creator, whoever a manager adds, and the workspace owner. The address, the credential type and the headers can only be changed in the app, never with an API key or by an agent.
+**Access by role.** Viewers can read connections (list, open, test, entities) but not create or change them. Members create connections and change only those they manage. The workspace owner can change any. An API key acts with its creator's role.
+
+**Managers** configure a connection: its creator, whoever a manager adds, and the workspace owner. Admins are not managers unless added. Managers must be members or admins, not viewers. The address, the credential type and the headers can only be changed in the app, never with an API key or by an agent.
 
 The connection's **Access** tab decides who may call it:
 
