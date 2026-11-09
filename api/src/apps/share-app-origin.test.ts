@@ -59,7 +59,11 @@ vi.mock("./binding-refresh", async importOriginal => ({
 import { appsHostGate } from "../middleware/apps-host-gate";
 import { appsPreviewRoutes } from "../routes/apps-preview";
 import { publicShareRoutes } from "../routes/public-share";
-import { AppProject, type IAppProject } from "../database/workspace-schema";
+import {
+  AppProject,
+  WorkspaceMember,
+  type IAppProject,
+} from "../database/workspace-schema";
 import {
   mintPublishedGrant,
   resolvePreviewGrant,
@@ -97,6 +101,7 @@ beforeEach(async () => {
   served.calls.length = 0;
   served.refreshes.length = 0;
   await AppProject.deleteMany({});
+  await WorkspaceMember.deleteMany({});
   const passwordHash = await bcrypt.hash("pw", 4);
   const base = {
     workspaceId: new Types.ObjectId(),
@@ -224,12 +229,14 @@ describe("the token a share mints", () => {
     expect((await content(OPEN)).data?.appUrl).toBe(first);
     vi.setSystemTime(new Date("2026-10-22T11:00:01Z"));
     expect((await content(OPEN)).data?.appUrl).not.toBe(first);
-    // An already-minted token lives on until its window ends + 30 min,
-    // then stops working whatever happens to the share.
+    // An already-minted token outlives any open tab (window end + 7 days):
+    // access is re-checked on every use, not left to the expiry.
     const grant = resolvePreviewGrant(tokenOf(first));
-    expect(grant?.expiresAt).toBe(Date.parse("2026-10-22T11:30:00Z"));
+    expect(grant?.expiresAt).toBe(
+      Date.parse("2026-10-22T11:00:00Z") + 7 * 24 * HOUR,
+    );
     vi.setSystemTime(new Date("2026-10-22T11:30:01Z"));
-    expect(resolvePreviewGrant(tokenOf(first))).toBeNull();
+    expect(resolvePreviewGrant(tokenOf(first))).not.toBeNull();
   });
 
   it("is refused for a disabled, rotated or unpublished share", async () => {
@@ -272,13 +279,11 @@ describe("password shares", () => {
     vi.setSystemTime(unlockedAt);
     const cookie = await unlock(LOCKED);
     const unlockEnds = unlockedAt + 12 * HOUR;
-    // Early on, the usual window bound applies (identical URLs per window).
+    // The unlock, shorter than the token's own life, is the bound throughout.
     const early = resolvePreviewGrant(
       tokenOf((await content(LOCKED, cookie)).data?.appUrl),
     );
-    expect(early?.expiresAt).toBe(
-      Date.parse("2026-10-22T01:00:00Z") + 30 * 60 * 1000,
-    );
+    expect(early?.expiresAt).toBe(unlockEnds);
     // Near the end of the unlock, the unlock is the bound.
     vi.setSystemTime(unlockEnds - 10 * 60 * 1000);
     const late = resolvePreviewGrant(
@@ -308,6 +313,28 @@ describe("the app host gate", () => {
       "frame-ancestors https://app.mako.ai",
     );
     expect(res.headers.get("Set-Cookie")).toBeNull();
+  });
+
+  it("stops serving an open tab within a minute of the share being disabled or rotated", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-22T10:00:01Z"));
+    const url = new URL(String((await content(OPEN)).data?.appUrl));
+    expect((await onHost(url.host, url.pathname)).status).toBe(200);
+    // Past the old 30 min expiry, the tab still loads.
+    vi.setSystemTime(new Date("2026-10-22T11:45:00Z"));
+    expect((await onHost(url.host, url.pathname)).status).toBe(200);
+    await AppProject.updateOne(
+      { _id: open._id },
+      { $set: { "publicShare.enabled": false } },
+    );
+    vi.setSystemTime(new Date("2026-10-22T11:46:01Z"));
+    expect((await onHost(url.host, url.pathname)).status).toBe(404);
+    await AppProject.updateOne(
+      { _id: open._id },
+      { $set: { "publicShare.enabled": true, "publicShare.token": "rotated" } },
+    );
+    vi.setSystemTime(new Date("2026-10-22T11:47:02Z"));
+    expect((await onHost(url.host, url.pathname)).status).toBe(404);
   });
 
   it("refuses a share token on another app's host", async () => {
@@ -381,6 +408,11 @@ describe("refresh under a share token", () => {
   });
 
   it("leaves a member's view token on the member path (no share cooldown)", async () => {
+    await WorkspaceMember.create({
+      workspaceId: open.workspaceId,
+      userId: "u1",
+      role: "member",
+    });
     const member = mintPublishedGrant({
       workspaceId: open.workspaceId.toString(),
       projectId: open._id.toString(),
@@ -391,5 +423,33 @@ describe("refresh under a share token", () => {
     const res = await refresh(member.token);
     expect(res.status).toBe(200);
     expect(served.refreshes[0]?.cooldownMs).toBeUndefined();
+  });
+
+  it("refuses a member's view token within a minute of their removal", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-22T10:00:01Z"));
+    await WorkspaceMember.create({
+      workspaceId: open.workspaceId,
+      userId: "u2",
+      role: "member",
+    });
+    const member = mintPublishedGrant({
+      workspaceId: open.workspaceId.toString(),
+      projectId: open._id.toString(),
+      sha: SHA,
+      viewer: { id: "u2", email: "kim@acme.com" },
+      stableWindowMs: HOUR,
+    });
+    const host = `${open._id}.makoapps.dev`;
+    const page = `/api/apps-preview/${member.token}/`;
+    // A tab opened at 10:00 still loads at 11:45, past the old expiry.
+    vi.setSystemTime(new Date("2026-10-22T11:45:00Z"));
+    expect((await onHost(host, page)).status).toBe(200);
+    await WorkspaceMember.deleteOne({
+      workspaceId: open.workspaceId,
+      userId: "u2",
+    });
+    vi.setSystemTime(new Date("2026-10-22T11:46:01Z"));
+    expect((await onHost(host, page)).status).toBe(404);
   });
 });

@@ -11,6 +11,10 @@ const served = vi.hoisted(() => ({
   calls: [] as Array<Record<string, unknown>>,
 }));
 
+// Origin and caching behaviour only; access re-checks have their own tests.
+vi.mock("./published-grant-access", () => ({
+  publishedGrantAllowed: async () => true,
+}));
 vi.mock("./deployment.service", () => ({
   contentTypeFor: () => "text/html; charset=utf-8",
   serveDeploymentFile: async (input: Record<string, unknown>) => {
