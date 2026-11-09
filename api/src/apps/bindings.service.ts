@@ -327,14 +327,27 @@ export async function bindingArtifactKeyByName(
   });
 }
 
-/** git's wording for a path absent from a tree, and a sandbox's for a file. */
-function isFileMissingError(error: unknown): boolean {
+/**
+ * git's wording for a path absent from a tree, and a sandbox's for a file.
+ * E2B reads a missing file as `FileNotFoundError: path '<p>' does not exist`
+ * (no " in"), so a binding that is only in the live box's draft — a new
+ * `bindings/<name>.sql` not committed yet — must match too, or every dev
+ * build of it fails instead of building the draft.
+ */
+export function isFileMissingError(error: unknown): boolean {
+  for (let e: unknown = error, depth = 0; e && depth < 5; depth++) {
+    if (e instanceof Error && e.name === "FileNotFoundError") return true;
+    e =
+      e && typeof e === "object" && "cause" in e
+        ? (e as { cause: unknown }).cause
+        : null;
+  }
   const message = error instanceof Error ? error.message : String(error);
   const stderr =
     error && typeof error === "object" && "stderr" in error
       ? String((error as { stderr: unknown }).stderr)
       : "";
-  return /does not exist in|exists on disk, but not in|no such file|enoent|file not found/i.test(
+  return /does not exist in|path '[^']*' does not exist|exists on disk, but not in|no such file|enoent|file not found/i.test(
     `${message}\n${stderr}`,
   );
 }
