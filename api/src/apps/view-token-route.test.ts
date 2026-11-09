@@ -131,7 +131,8 @@ describe("view token", () => {
       appId: published._id.toString(),
     });
     expect(body.url).toBe(`/api/apps-preview/${body.token}/`);
-    // Same claims and lifetime as before: workspace, app, sha, viewer, 30 min.
+    // Same claims as before: workspace, app, sha, viewer. A member's token
+    // lives 7 days; access is re-checked on each use (published-grant-access).
     const grant = resolvePreviewGrant(body.token);
     expect(grant).toMatchObject({
       workspaceId: workspaceId.toString(),
@@ -139,8 +140,9 @@ describe("view token", () => {
       publishedSha: SHA,
       viewer: { id: "member", email: "member@example.com" },
     });
-    expect(body.expiresAt).toBeGreaterThanOrEqual(before + 30 * 60 * 1000);
-    expect(body.expiresAt).toBeLessThanOrEqual(Date.now() + 30 * 60 * 1000);
+    const week = 7 * 24 * 60 * 60 * 1000;
+    expect(body.expiresAt).toBeGreaterThanOrEqual(before + week);
+    expect(body.expiresAt).toBeLessThanOrEqual(Date.now() + week);
   });
 
   it("leaves a private app the caller cannot read to the full resolver", async () => {
