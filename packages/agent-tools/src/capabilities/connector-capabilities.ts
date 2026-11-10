@@ -16,13 +16,15 @@
  * source connection's proxy. Both read external data, so like
  * `sql_execute_query` it is hidden from credentials without query access.
  *
- * `create_connection` is the one write: it stores a new SOURCE connection
- * (a credential) for a connector, so an agent can go from "this connector
- * exists" to probing it without a human round-trip through the UI. It is
- * external-MCP only: every MCP/CLI credential holds its grant
- * (`connections-write`), and the caller's live role must be at least member,
- * as in the UI. It is kept out of the in-product chat so a prompt-injected
- * page cannot plant a credential the workspace then syncs from.
+ * `create_connection` stores a new SOURCE connection (a credential) for a
+ * connector, so an agent can go from "this connector exists" to probing it
+ * without a human round-trip through the UI; `update_connection` renames one
+ * or changes its plain settings, and `delete_connection` removes one. They
+ * are external-MCP only: every MCP/CLI credential holds their grant
+ * (`connections-write`), the caller's live role must be at least member, and
+ * changing or deleting takes being one of the connection's managers, as in
+ * the UI. They are kept out of the in-product chat so a prompt-injected page
+ * cannot plant, repoint or remove a credential the workspace syncs from.
  *
  * Deliberately NOT the same thing as the `list_data_sources` /
  * `inspect_data_source` family, which operate on in-browser DuckDB
@@ -98,6 +100,26 @@ export const CONNECTOR_CAPABILITIES = [
     requiredGrant: "connections-write",
     // Anyone who can create a connection in the UI (any member) — never a
     // viewer, and re-checked against the live role on every call.
+    minimumWorkspaceRole: "member",
+    surfaces: EXTERNAL_MCP_ONLY,
+    resultKind: "data",
+  }),
+  // Renames, describes, disables, or changes plain config. Secrets, where the
+  // key is sent and the Access tab stay in the app.
+  define({
+    name: "update_connection",
+    pack: "connector-admin",
+    risk: "write",
+    requiredGrant: "connections-write",
+    minimumWorkspaceRole: "member",
+    surfaces: EXTERNAL_MCP_ONLY,
+    resultKind: "data",
+  }),
+  define({
+    name: "delete_connection",
+    pack: "connector-admin",
+    risk: "destructive",
+    requiredGrant: "connections-write",
     minimumWorkspaceRole: "member",
     surfaces: EXTERNAL_MCP_ONLY,
     resultKind: "data",

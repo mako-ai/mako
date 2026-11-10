@@ -205,6 +205,10 @@ user to configure it in Mako (Sources → Add), or create it with the
 `create_connection` MCP tool (needs the `connections:write` grant and at least
 the member role). `list_connections({ kind: "source" })` for its id,
 `probe_connection` to see it work, then write the file. Never write an API key into a repo file.
+A new connection starts with live reads off and no writers (`inspect_connection`
+shows its `access`); only a manager turns them on, in the app's Access tab.
+Reference a connection by id: `update_connection` can rename it, and a name in
+code then stops resolving.
 
 ## Gotchas that have bitten
 

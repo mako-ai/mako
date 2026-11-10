@@ -261,6 +261,11 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // grant) and refused below the member role, both enforced from the
   // capability registry at listing and at execution.
   create_connection: bridge({ openWorldHint: true }),
+  // Change or remove an existing source connection: the same grant and role,
+  // plus being one of its managers (checked in the tools, as the app's
+  // routes do). Neither reaches the platform behind it.
+  update_connection: bridge(),
+  delete_connection: bridge({ destructiveHint: true }),
   // The pre-push check for flow files. Reads only — it says what a push
   // WOULD do to running streams and performs none of it — so it is bridged
   // next to the discovery pair it completes: discover ids, write the file,

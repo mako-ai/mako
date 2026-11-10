@@ -536,8 +536,11 @@ writes; those use the separate, double-gated `query:write` API-key scope.
 
 The `connections:write` scope maps to the `connections-write` grant behind the
 external-MCP `create_connection` tool (creates a new source connection, runs its
-credential check and deletes it again if the check fails; never reads, changes
-or deletes existing connections). Like `warehouse:write` it is carried by every
+credential check and deletes it again if the check fails) and the
+`update_connection` / `delete_connection` tools (rename, plain config, remove;
+only for the connection's managers or the workspace owner, as in the app, and
+never a secret, the address a key is sent to, or the Access tab's live reads
+and writers). Like `warehouse:write` it is carried by every
 OAuth login and is not a default for new API keys.
 
 The opt-in `query:write` scope is double-gated: it yields "write-opt-in"

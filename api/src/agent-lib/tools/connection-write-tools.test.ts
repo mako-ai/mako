@@ -101,4 +101,24 @@ const entry = MCP_BRIDGE_POLICY.create_connection;
 assert.ok(entry);
 assert.equal(entry.status, "bridge");
 
+// update_connection / delete_connection: the same grant, role and surface;
+// delete is marked destructive so MCP clients confirm it.
+for (const [name, risk] of [
+  ["update_connection", "write"],
+  ["delete_connection", "destructive"],
+] as const) {
+  const manage = AGENT_CAPABILITY_BY_NAME.get(name);
+  assert.ok(manage, `${name} must be in the capability registry`);
+  assert.equal(manage.requiredGrant, "connections-write");
+  assert.equal(manage.minimumWorkspaceRole, "member");
+  assert.equal(manage.risk, risk);
+  assert.deepEqual([...manage.surfaces], ["external-mcp"]);
+  const policy = MCP_BRIDGE_POLICY[name];
+  assert.ok(policy && policy.status === "bridge");
+}
+const deletePolicy = MCP_BRIDGE_POLICY.delete_connection;
+assert.ok(
+  deletePolicy?.status === "bridge" && deletePolicy.destructiveHint === true,
+);
+
 console.log("connection-write-tools tests passed");
