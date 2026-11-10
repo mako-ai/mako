@@ -13,7 +13,7 @@ small comparison inside a card.
 
 ```tsx
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
-import { tableTooltip } from "@makoai/app-sdk/ui";
+import { tableTooltip, tooltipCell } from "@makoai/app-sdk/ui";
 
 <div style={{ height: 280 }}>
   <ResponsiveContainer width="100%" height="100%">
@@ -25,7 +25,7 @@ import { tableTooltip } from "@makoai/app-sdk/ui";
         content={tableTooltip((d) => ({
           title: d.country,
           columns: ["Revenue"],
-          rows: [{ label: "Revenue", color: "var(--chart-1)", cells: [fmtEur(d.revenue)] }],
+          rows: [{ label: "Revenue", color: "var(--chart-1)", cells: [tooltipCell(d.revenue, fmtEur)] }],
         }))}
       />
       <Bar dataKey="revenue" fill="var(--chart-1)" radius={[4, 4, 0, 0]} />
@@ -57,11 +57,16 @@ Never ship recharts' default tooltip or a custom one that lists coloured
 - **One row per series.** A 9px swatch in the series colour on the left, the
   label in plain text. Never colour the label or the value by series.
 - **Numbers right-aligned**, tabular figures. Value, then count, then share.
-- **Reading order.** Rows read top-down as drawn: a stack's top segment first,
-  lines highest first, an overlaid line or target before the segments.
-  `tooltipSeriesRows(d, SERIES, { stacked })` does this and drops empty
-  values. One `SERIES = [{ key, label, color }]` list, bottom-up, drives the
-  marks, the legend and the tooltip.
+- **Every legend series, in every bucket.** The tooltip lists every series
+  of the chart's legend, in legend order, so its height and column widths
+  never change while the pointer moves. A stack reads top segment first; an
+  overlaid line or target comes before the segments. A zero shows a muted
+  "0" (a muted "0%" for a rate). A missing value (no data, or a metric the
+  bucket cannot compute) shows a muted "–". `tooltipSeriesRows(d, SERIES,
+  { stacked })` keeps every row (SDK ≥ 2.15) and `tooltipCell(value, fmt,
+  { percent })` renders the muted cells. Never filter its rows. One
+  `SERIES = [{ key, label, color }]` list, bottom-up, drives the marks, the
+  legend and the tooltip.
 - **A total row.** Bold, under a rule: the stack total (100%), "All
   selected" for per-country lines, or the base a rate is of. Growth (YoY) is a
   column on each row and on the total, never a row of its own.

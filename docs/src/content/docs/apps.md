@@ -102,6 +102,7 @@ import { PageHeader, Card, KpiRow, KpiTile, Button, StatusDot,
 - `PageHeader`, `Card`, `KpiRow` / `KpiTile`, `Button`, `StatusDot` — page furniture.
 - `MultiSelect` — controlled filter; an empty selection means "all" unless `emptyMeansAll={false}`. On phones the menu is a bottom sheet.
 - `DataTable` (SDK 2.11+) — the house data table: click-to-sort headers, sticky header, optional pinned first column, right-aligned tabular numbers, a pager footer (25 / 50 / 100 per page), an empty state and CSV export. Columns are declared with `value` (sort/CSV value) and an optional `render`; see the SDK README for the full props.
+- `TableTooltip` / `tableTooltip` / `tooltipSeriesRows` (SDK 2.10+) — the house chart tooltip, a table. From SDK 2.15 `tooltipSeriesRows` keeps every series in legend order, and `tooltipCell` shows a zero as a muted "0" ("0%") and a missing value as a muted "–", so the tooltip never changes height. `hideEmpty: true` restores the old dropping of empty rows.
 - `FreshnessBadge` — presentational: the app decides what "fresh" means and passes a `tone`, a `headline` and per-source rows.
 - `RefreshAllButton` — rebuilds every binding (`refreshBinding`) a few at a time, with a progress modal. Feed it the binding names through a build-time `__APP_BINDING_NAMES__` define in `vite.config.ts` (the scaffold sets this up).
 

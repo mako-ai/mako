@@ -48,16 +48,57 @@ export function formatSeconds(s) {
 }
 
 /**
- * The rows a chart tooltip shows for one hovered datum, in the order the eye
- * reads the chart: a stack top segment first (series are given bottom-up, the
- * order they are drawn), lines highest first. Empty (null, undefined, 0)
- * values are left out. Returns `{ key, label, color, value }`.
+ * What a tooltip cell holds: "missing" (null, undefined, "", NaN, ±Infinity:
+ * no data, or a metric the bucket cannot compute), "zero", or "value".
  */
-export function tooltipSeriesRows(datum, series, { stacked = false } = {}) {
-  const rows = series
-    .map(s => ({ key: s.key, label: s.label ?? s.key, color: s.color, value: datum?.[s.key] }))
-    .filter(r => r.value != null && r.value !== 0 && !Number.isNaN(Number(r.value)));
-  return stacked ? rows.reverse() : rows.sort((a, b) => Number(b.value) - Number(a.value));
+export function tooltipValueState(v) {
+  if (v == null || v === "") return "missing";
+  const n = typeof v === "bigint" ? Number(v) : Number(v);
+  if (!Number.isFinite(n)) return "missing";
+  return n === 0 ? "zero" : "value";
+}
+
+/**
+ * The rows a chart tooltip shows for one hovered datum: every series, in a
+ * fixed order, so the tooltip keeps its height and columns while the pointer
+ * moves. A stack reads top segment first (series are given bottom-up, the
+ * order they are drawn); other charts keep the series (legend) order. A zero
+ * stays as a row with `state: "zero"`; a missing value stays with
+ * `value: null` and `state: "missing"`. Render the cells with `tooltipCell`.
+ *
+ * Opt-outs, for a caller that truly needs the pre-2.15 behaviour:
+ * `hideEmpty: true` drops zero and missing rows; `byValue: true` sorts
+ * non-stacked rows highest value first (missing last).
+ * Returns `{ key, label, color, value, state }`.
+ */
+export function tooltipSeriesRows(datum, series, { stacked = false, hideEmpty = false, byValue = false } = {}) {
+  let rows = series.map(s => {
+    const raw = datum?.[s.key];
+    const state = tooltipValueState(raw);
+    return { key: s.key, label: s.label ?? s.key, color: s.color, value: state === "missing" ? null : Number(raw), state };
+  });
+  if (hideEmpty) rows = rows.filter(r => r.state === "value");
+  if (stacked) return rows.reverse();
+  if (!byValue) return rows;
+  return rows
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => {
+      if (a.r.value == null || b.r.value == null) return a.r.value == null ? (b.r.value == null ? a.i - b.i : 1) : -1;
+      return b.r.value - a.r.value || a.i - b.i;
+    })
+    .map(x => x.r);
+}
+
+/**
+ * The text a tooltip value cell shows, and whether it is muted: a missing
+ * value → muted "–", a zero → muted "0" ("0%" with `percent`), else
+ * `format(value)`.
+ */
+export function tooltipCellText(value, format = String, { percent = false } = {}) {
+  const state = tooltipValueState(value);
+  if (state === "missing") return { text: "–", muted: true };
+  if (state === "zero") return { text: percent ? "0%" : "0", muted: true };
+  return { text: format(Number(value)), muted: false };
 }
 
 // ---------------------------------------------------------------------------
