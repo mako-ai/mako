@@ -29,6 +29,11 @@ import {
   assertCredentialCharacters,
   createSourceConnection,
 } from "../connectors/source-connection-create.service";
+import {
+  KeyRequestError,
+  loadKeyRequest,
+  submitKey,
+} from "../connectors/connection-key-request.service";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -603,6 +608,19 @@ sourceConnectionRoutes.openapi(
           }
           sourceConnection.config = applySchemaEncryption(newConfig, schema);
           hasChanges = true;
+          // The key a link waited for, set in the form instead (an expired
+          // link's way out): the connection stops waiting and turns on.
+          const awaited = sourceConnection.keyRequest?.fields ?? [];
+          if (
+            awaited.length > 0 &&
+            awaited.every(field => {
+              const value = newConfig[field];
+              return value !== undefined && value !== "" && value !== null;
+            })
+          ) {
+            sourceConnection.keyRequest = undefined;
+            sourceConnection.isActive = true;
+          }
         }
       }
 
@@ -1365,6 +1383,123 @@ sourceConnectionRoutes.openapi(
         },
         500,
       );
+    }
+  },
+);
+
+// --- Key links ---------------------------------------------------------------
+// An agent creates a connection without its key and hands the user a link
+// (connectors/connection-key-request.service.ts). These two routes are the
+// link's page: what it asks for, and the key the person pastes. A person in
+// the app only — never an API key or MCP client — and at least a member.
+
+const KeyTokenParam = WorkspaceParam.extend({
+  token: z.string().openapi({ param: { name: "token", in: "path" } }),
+});
+
+const KEY_REQUEST_HTTP_STATUS = {
+  not_found: 404,
+  expired: 410,
+  invalid_input: 400,
+  check_failed: 422,
+} as const;
+
+/** Refusal for a caller who may not use a key link, or null. */
+async function keyLinkRefusal(
+  c: AuthenticatedContext,
+  workspaceId: string,
+): Promise<Response | null> {
+  if (c.get("authType") !== "session" || !c.get("user")) {
+    return c.json(
+      { success: false, error: "Key links are opened in the app, signed in" },
+      403,
+    );
+  }
+  const caller = await callerOf(c, workspaceId);
+  if (!mayCreateSourceConnection(caller.role)) {
+    return c.json({ success: false, error: changeRefusal(caller.role) }, 403);
+  }
+  return null;
+}
+
+function keyRequestErrorResponse(c: AuthenticatedContext, error: unknown) {
+  if (error instanceof KeyRequestError) {
+    return c.json(
+      { success: false, error: error.message, code: error.code },
+      KEY_REQUEST_HTTP_STATUS[error.code],
+    );
+  }
+  logger.error("Key link endpoint error", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+  return c.json({ success: false, error: "Could not use this key link" }, 500);
+}
+
+sourceConnectionRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/key-requests/{token}",
+    tags: ["Source Connections"],
+    summary: "What a key link asks for: the connection and its secret fields",
+    security: AUTH_SECURITY,
+    request: { params: KeyTokenParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const { workspaceId, token } = c.req.valid("param");
+    const refused = await keyLinkRefusal(c, workspaceId);
+    if (refused) return refused;
+    try {
+      return c.json({
+        success: true,
+        data: await loadKeyRequest(workspaceId, token),
+      });
+    } catch (error) {
+      return keyRequestErrorResponse(c, error);
+    }
+  },
+);
+
+sourceConnectionRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/key-requests/{token}",
+    tags: ["Source Connections"],
+    summary:
+      "Set a waiting connection's key through its one-time key link (checked, then stored encrypted)",
+    security: AUTH_SECURITY,
+    request: {
+      params: KeyTokenParam,
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              config: z.record(z.string(), z.string()).openapi({
+                description:
+                  "Values for the fields the link asks for, keyed by field name.",
+              }),
+            }),
+          },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const { workspaceId, token } = c.req.valid("param");
+    const refused = await keyLinkRefusal(c, workspaceId);
+    if (refused) return refused;
+    try {
+      const { config } = c.req.valid("json");
+      const result = await submitKey({
+        workspaceId,
+        token,
+        userId: (c.get("user") as { id: string }).id,
+        values: config,
+      });
+      return c.json({ success: true, data: result });
+    } catch (error) {
+      return keyRequestErrorResponse(c, error);
     }
   },
 );

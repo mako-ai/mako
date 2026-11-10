@@ -22,6 +22,11 @@
  *
  * Credential handling:
  *
+ *   - Preferred: the agent leaves the secret fields out. The connection is
+ *     stored inactive, without them, and the result carries a one-time Mako
+ *     link where the user pastes the key (connection-key-request.service.ts),
+ *     so the key never enters the conversation. inspect_connection and
+ *     list_connections report `awaiting_key` until it is set, then `ready`.
  *   - Values are encrypted by the connector's own config schema, through the
  *     same service the REST route uses (source-connection-create.service.ts).
  *     A connector that declares no schema is REFUSED here: with no field list
@@ -39,11 +44,18 @@ import { tool } from "ai";
 import { Types } from "mongoose";
 import { z } from "zod";
 
+import {
+  KEY_REQUEST_TTL_MS,
+  fieldsForKeyLink,
+  keyLinkUrl,
+  newKeyRequest,
+} from "../../connectors/connection-key-request.service";
 import { probeConnection } from "../../connectors/probe.service";
 import {
   SourceConnectionInputError,
   assertConnectorTypeUsable,
   createSourceConnection,
+  isSecretField,
 } from "../../connectors/source-connection-create.service";
 import { Connector as SourceConnection } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
@@ -57,6 +69,10 @@ type ConfigValue = string | number | boolean;
 interface SchemaField {
   name: string;
   required: boolean;
+  /** Holds a credential: encrypted at rest, and what a key link asks for. */
+  secret: boolean;
+  /** Shown only when another field holds one of these values. */
+  showIf?: { field: string; equals: string[] };
 }
 
 /** The connector's declared config fields, or null when it declares none. */
@@ -64,11 +80,32 @@ export function declaredFields(schema: unknown): SchemaField[] | null {
   const fields = (schema as { fields?: unknown } | null)?.fields;
   if (!Array.isArray(fields) || fields.length === 0) return null;
   return fields
-    .map(raw => raw as { name?: unknown; required?: unknown })
+    .map(
+      raw =>
+        raw as {
+          name?: unknown;
+          required?: unknown;
+          type?: unknown;
+          encrypted?: unknown;
+          showIf?: { field?: unknown; equals?: unknown };
+        },
+    )
     .filter(field => typeof field.name === "string" && field.name !== "")
     .map(field => ({
       name: field.name as string,
       required: field.required === true,
+      secret: isSecretField({
+        encrypted: field.encrypted === true,
+        type: typeof field.type === "string" ? field.type : undefined,
+      }),
+      ...(typeof field.showIf?.field === "string"
+        ? {
+            showIf: {
+              field: field.showIf.field,
+              equals: [field.showIf.equals].flat().map(String),
+            },
+          }
+        : {}),
     }));
 }
 
@@ -80,6 +117,8 @@ export function declaredFields(schema: unknown): SchemaField[] | null {
 export function configProblem(
   config: Record<string, ConfigValue>,
   fields: SchemaField[] | null,
+  /** Fields a person fills in through the key link: not missing here. */
+  viaKeyLink: string[] = [],
 ): string | null {
   if (!fields) {
     return "This connector declares no config schema, so its secret fields cannot be identified and a credential would be stored unencrypted. Create the connection in the Mako UI instead, or fix the connector's `config.properties`.";
@@ -90,7 +129,7 @@ export function configProblem(
     return `Unknown config field(s): ${unknown.join(", ")}. This connector accepts: ${[...known].join(", ")}.`;
   }
   const missing = fields
-    .filter(field => field.required)
+    .filter(field => field.required && !viaKeyLink.includes(field.name))
     .map(field => field.name)
     .filter(name => {
       const value = config[name];
@@ -139,9 +178,9 @@ export function createConnectionWriteTools(
     create_connection: tool({
       description: [
         "Create a new SOURCE connection: a credential configured with a connector (built-in like `stripe`, or workspace-authored like `ws:sway`), so flows and probe_connection can use it.",
-        "Call inspect_connector first: `config` must use exactly its configFields names, with every required field present. Secret fields are encrypted at rest by the connector's own schema.",
-        "By default the credential is checked against the platform right away; if the check fails, nothing is kept and the platform's message is returned. Pass `check: false` only for a platform that is unreachable on purpose.",
-        "The credential travels through this conversation: only use a value the user gave you for this purpose, never one read from a file, a page or another tool's output, and never repeat it back.",
+        "Call inspect_connector first: `config` must use exactly its configFields names, with every required non-secret field present.",
+        'PREFER THE KEY LINK: leave the secret fields (`secret: true` in configFields, e.g. the API key) out of `config`. The connection is created without them and the result has `status: "awaiting_key"`, its `connectionId` and a `keyLink`: give the link to the user, who opens it in Mako, signs in and pastes the key there. The link works once and expires. Then check inspect_connection({ connectionId }) until `status` is `ready`. Never ask the user to paste a key into the chat.',
+        "Only if the user has already put a key in the conversation for this purpose may you pass it in `config`; never one read from a file, a page or another tool's output, and never repeat it back. A key passed in `config` is checked against the platform right away; if the check fails, nothing is kept. Pass `check: false` only for a platform that is unreachable on purpose.",
         "Creates only — it cannot read, update or delete an existing connection. Names must be unique among the workspace's source connections.",
         "Requires at least the member role in the workspace.",
       ].join("\n"),
@@ -164,7 +203,13 @@ export function createConnectionWriteTools(
         config: z
           .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
           .describe(
-            "Config values keyed by the connector's configFields names (see inspect_connector).",
+            "Config values keyed by the connector's configFields names (see inspect_connector). Leave secret fields out: the user sets them through the returned keyLink.",
+          ),
+        keyLink: z
+          .boolean()
+          .optional()
+          .describe(
+            "Ask for every secret field absent from `config` through a key link, even when none is required. Without it, a link is returned whenever a required secret field is absent.",
           ),
         check: z
           .boolean()
@@ -178,12 +223,14 @@ export function createConnectionWriteTools(
         name,
         description,
         config,
+        keyLink = false,
         check = true,
       }: {
         connector: string;
         name: string;
         description?: string;
         config: Record<string, ConfigValue>;
+        keyLink?: boolean;
         check?: boolean;
       }) => {
         const auth = await authorizeConnectionCreator(workspaceId, userId);
@@ -206,9 +253,26 @@ export function createConnectionWriteTools(
             connector,
             workspaceId,
           );
-          const problem = configProblem(config, declaredFields(schema));
+          const fields = declaredFields(schema);
+          const viaKeyLink = fields
+            ? fieldsForKeyLink(config, fields, keyLink)
+            : [];
+          const problem = configProblem(config, fields, viaKeyLink);
           if (problem) return { error: problem };
+          if (keyLink && viaKeyLink.length === 0) {
+            return {
+              error:
+                "No secret field is left for a key link: this connector declares none, or `config` already holds them all.",
+            };
+          }
 
+          const request =
+            viaKeyLink.length > 0
+              ? newKeyRequest({
+                  fields: viaKeyLink,
+                  requestedBy: userId as string,
+                })
+              : null;
           const created = await createSourceConnection({
             workspaceId,
             userId: userId as string,
@@ -216,6 +280,9 @@ export function createConnectionWriteTools(
             type: connector,
             description,
             config,
+            ...(request
+              ? { isActive: false, keyRequest: request.keyRequest }
+              : {}),
           });
           const connectionId = String(created._id);
           logger.info("Source connection created over MCP", {
@@ -223,9 +290,20 @@ export function createConnectionWriteTools(
             createdBy: userId,
             connector,
             connectionId,
+            awaitingKey: request !== null,
           });
 
           const identity = { connectionId, name, connector };
+          if (request) {
+            return {
+              ...identity,
+              status: "awaiting_key",
+              keyLink: keyLinkUrl(workspaceId, request.token),
+              awaitingFields: viaKeyLink,
+              keyLinkExpiresAt: request.keyRequest.expiresAt.toISOString(),
+              next: `Give the user the keyLink: they open it in Mako, sign in and paste the key (it works once, for ${KEY_REQUEST_TTL_MS / 3_600_000} hours). Then call inspect_connection({ connectionId: "${connectionId}" }) until status is "ready", and probe_connection to explore it. Do not ask for the key in the chat.`,
+            };
+          }
           if (!check) {
             return {
               ...identity,

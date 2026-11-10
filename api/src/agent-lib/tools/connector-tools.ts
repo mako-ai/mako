@@ -37,6 +37,7 @@ import {
   ProbeError,
   probeConnection,
 } from "../../connectors/probe.service";
+import { describeKeyStatus } from "../../connectors/connection-key-request.service";
 import { connectorRegistry } from "../../connectors/registry";
 import { isSecretField } from "../../connectors/source-connection-create.service";
 import { listWorkspaceConnectors } from "../../connectors/workspace/catalog";
@@ -44,6 +45,7 @@ import { isWorkspaceConnectorType } from "../../connectors/workspace/SandboxedCo
 import {
   Connector as SourceConnection,
   DatabaseConnection,
+  type ISourceConnectionKeyRequest,
 } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
@@ -125,6 +127,7 @@ interface SourceRow {
   type?: string;
   description?: string;
   isActive?: boolean;
+  keyRequest?: ISourceConnectionKeyRequest;
 }
 
 /** A source connection's identity, from a projection that never loads `config`. */
@@ -136,7 +139,7 @@ async function findSourceConnection(
     _id: new Types.ObjectId(connectionId),
     workspaceId: new Types.ObjectId(workspaceId),
   })
-    .select("_id name type description isActive")
+    .select("_id name type description isActive keyRequest")
     .lean()) as SourceRow | null;
 }
 
@@ -213,6 +216,7 @@ async function describeSourceConnection(
     connector: type,
     description: row.description ?? "",
     active: row.isActive !== false,
+    ...describeKeyStatus(row.keyRequest),
     entities: capabilities.entities,
     incremental: capabilities.incremental,
     configFields,
