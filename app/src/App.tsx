@@ -76,6 +76,7 @@ const SourceControlExplorer = lazy(
 );
 const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
 const AppViewerPage = lazy(() => import("./pages/AppViewerPage"));
+const ConnectionKeyPage = lazy(() => import("./pages/ConnectionKeyPage"));
 const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
@@ -1075,6 +1076,18 @@ function App() {
           element={
             <Suspense fallback={<LoadingScreen />}>
               <AppViewerPage />
+            </Suspense>
+          }
+        />
+
+        {/* A key link: paste the API key of a connection an agent created.
+            The token is in the fragment, never the path (analytics records
+            paths). Signs the visitor in first (the page redirects to /login). */}
+        <Route
+          path="/connection-key/:workspaceId"
+          element={
+            <Suspense fallback={<LoadingScreen />}>
+              <ConnectionKeyPage />
             </Suspense>
           }
         />

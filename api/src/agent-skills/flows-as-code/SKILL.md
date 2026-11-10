@@ -202,9 +202,21 @@ destination via `execute_query`.
 
 A flow file references a source connection that must already exist. Ask the
 user to configure it in Mako (Sources → Add), or create it with the
-`create_connection` MCP tool (needs the `connections:write` grant and at least
-the member role). `list_connections({ kind: "source" })` for its id,
-`probe_connection` to see it work, then write the file. Never write an API key into a repo file.
+`create_connection` MCP tool (at least the member role).
+
+Never ask the user to paste an API key into the chat: the key would stay in
+the transcript. Call `create_connection` with the secret fields left out of
+`config`. The result has `status: "awaiting_key"`, the `connectionId` and a
+`keyLink`. Give the user the link: they open it in Mako, sign in, check where
+the key will be sent (the address and settings you chose) and paste the key
+there. The link works once, expires in 24 hours, and only the connection's
+managers can use it — at first, the person who owns your MCP credential. Then call
+`inspect_connection({ connectionId })` until `status` is `ready`. If it says
+`key_link_expired`, the user pastes the key in the connection's settings in
+Mako instead.
+
+`list_connections({ kind: "source" })` for its id, `probe_connection` to see it
+work, then write the file. Never write an API key into a repo file.
 A new connection starts with live reads off and no writers (`inspect_connection`
 shows its `access`); only a manager turns them on, in the app's Access tab.
 Reference a connection by id: `update_connection` can rename it, and a name in

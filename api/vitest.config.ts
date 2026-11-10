@@ -25,6 +25,8 @@ export default defineConfig({
       "src/routes/source-connection-secrets.test.ts",
       "src/routes/source-connection-roles.test.ts",
       "src/routes/connector-probe.test.ts",
+      // Key links: a connection created without its key, set in the app.
+      "src/routes/source-connection-key-link.test.ts",
       "src/routes/connector-catalog-tenancy.test.ts",
       "src/agent-lib/tools/dbt-*.test.ts",
       // Connections: credential types, the proxy, writers on source connections.

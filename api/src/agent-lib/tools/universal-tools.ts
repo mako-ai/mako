@@ -13,8 +13,10 @@ import {
   Connector as SourceConnection,
   DatabaseConnection,
   type IDatabaseConnection,
+  type ISourceConnectionKeyRequest,
 } from "../../database/workspace-schema";
 import type { AgentToolExecutionContext } from "../../agents/types";
+import { keyRequestStatus } from "../../connectors/connection-key-request.service";
 import type { QueryAccess } from "../../auth/api-key-scopes";
 import type { ConsoleDataV2 } from "../types";
 import {
@@ -169,7 +171,7 @@ export async function listAllConnectionsImpl(
       ? []
       : (
           (await SourceConnection.find({ workspaceId: wsId })
-            .select("_id name type description isActive")
+            .select("_id name type description isActive keyRequest")
             .sort({ name: 1 })
             .lean()) as Array<{
             _id: { toString(): string };
@@ -177,6 +179,7 @@ export async function listAllConnectionsImpl(
             type?: string;
             description?: string;
             isActive?: boolean;
+            keyRequest?: ISourceConnectionKeyRequest;
           }>
         ).map(row => ({
           id: row._id.toString(),
@@ -187,6 +190,7 @@ export async function listAllConnectionsImpl(
           description: row.description ?? "",
           displayName: `${row.name ?? ""} (source: ${row.type ?? "?"} — sync or probe_connection, not SQL)`,
           active: row.isActive !== false,
+          status: keyRequestStatus(row.keyRequest),
           queryable: false,
         }));
 

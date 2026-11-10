@@ -11,7 +11,10 @@ import { callableFor } from "../connections/callable";
 import { connectorRegistry } from "./registry";
 import { connectorTypeExists } from "./workspace/catalog";
 import { isWorkspaceConnectorType } from "./workspace/SandboxedConnector";
-import { SourceConnection } from "../database/workspace-schema";
+import {
+  SourceConnection,
+  type ISourceConnectionKeyRequest,
+} from "../database/workspace-schema";
 import { encryptString } from "../services/crypto.service";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 
@@ -164,6 +167,8 @@ export interface CreateSourceConnectionInput {
   settings?: Record<string, unknown>;
   targetDatabases?: unknown[];
   isActive?: boolean;
+  /** Stored without its key: a person sets it through a one-time link. */
+  keyRequest?: ISourceConnectionKeyRequest;
 }
 
 /**
@@ -230,6 +235,7 @@ export async function createSourceConnection(
     createdBy: input.userId,
     managers: [input.userId],
     isActive: input.isActive !== false,
+    keyRequest: input.keyRequest,
     // Live reads start off for every kind, a Custom API too: a manager turns
     // them on in the Access tab (they open the key to the whole workspace).
   });

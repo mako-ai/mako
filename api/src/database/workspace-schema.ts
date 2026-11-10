@@ -410,6 +410,23 @@ export interface ISourceConnection extends Document {
   updatedAt: Date;
   lastSyncedAt?: Date;
   isActive: boolean;
+  /**
+   * Set while the connection waits for a person to paste its key in the app
+   * (connectors/connection-key-request.service.ts). An agent creates the
+   * connection without the secret and hands the user a one-time link; the
+   * key never travels through the conversation. Unset once the key is set.
+   */
+  keyRequest?: ISourceConnectionKeyRequest;
+}
+
+export interface ISourceConnectionKeyRequest {
+  /** SHA-256 of the link's token: the token itself is never stored. */
+  tokenHash: string;
+  expiresAt: Date;
+  /** Config fields the person fills in: the connector's secret fields. */
+  fields: string[];
+  requestedBy: string;
+  createdAt: Date;
 }
 
 /** @deprecated use ISourceConnection */
@@ -1787,6 +1804,19 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
     isActive: {
       type: Boolean,
       default: true,
+    },
+    keyRequest: {
+      type: new Schema<ISourceConnectionKeyRequest>(
+        {
+          tokenHash: { type: String, required: true },
+          expiresAt: { type: Date, required: true },
+          fields: { type: [String], required: true },
+          requestedBy: { type: String, required: true },
+          createdAt: { type: Date, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
     },
   },
   {
