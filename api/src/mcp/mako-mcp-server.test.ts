@@ -1122,6 +1122,18 @@ async function main() {
         inputSchema: z.object({}),
         execute: async () => "committed",
       },
+      create_connection: {
+        description: "stub write with an oversized result",
+        inputSchema: z.object({}),
+        execute: async () => ({ rows: "x".repeat(250_000) }),
+      },
+      modify_console: {
+        description: "stub write that throws",
+        inputSchema: z.object({}),
+        execute: async () => {
+          throw new Error("boom");
+        },
+      },
       list_connections: {
         description: "stub read",
         inputSchema: z.object({}),
@@ -1149,6 +1161,8 @@ async function main() {
       [
         call("create_console"),
         call("app_commit"),
+        call("create_connection"),
+        call("modify_console"),
         call("list_connections"),
       ] as unknown as JSONRPCMessage[],
       5_000,
@@ -1171,6 +1185,27 @@ async function main() {
     const committed = byId.get("app_commit");
     assert.equal(committed?.content[0].text, "committed");
     assert.deepEqual(JSON.parse(committed?.content[1]?.text ?? "{}"), {
+      workspace: expected,
+    });
+
+    // Truncation of a huge result must not cut the workspace: it leads.
+    const huge = byId.get("create_connection");
+    assert.match(huge?.content[0].text ?? "", /truncated/);
+    assert.ok(
+      huge?.content[0].text.startsWith(
+        `{"workspace":${JSON.stringify(expected)}`,
+      ),
+      "workspace must lead an oversized write result",
+    );
+
+    // A thrown write still says which workspace it ran against.
+    const failed = byId.get("modify_console");
+    assert.equal(failed?.isError, true);
+    assert.match(
+      failed?.content[0].text ?? "",
+      /Tool modify_console failed: boom/,
+    );
+    assert.deepEqual(JSON.parse(failed?.content[1]?.text ?? "{}"), {
       workspace: expected,
     });
 
