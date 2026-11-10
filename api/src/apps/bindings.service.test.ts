@@ -23,6 +23,7 @@ import {
   bindingArtifactKey,
   bindingArtifactKeyByName,
   getBindingState,
+  isFileMissingError,
   materializeAppBinding,
   readBindings,
   readBindingsTolerant,
@@ -194,6 +195,43 @@ describe("building one binding without reading the app", () => {
 
     const state = await getBindingState(project._id.toString(), "revenue");
     expect(state?.history?.[0]?.status).toBe("error");
+  });
+});
+
+describe("isFileMissingError", () => {
+  // A new binding exists only in the live box until it is committed: its
+  // committed read must be "no such binding" (a draft), not a failure.
+  it("reads the E2B sandbox's missing-file error as missing", () => {
+    const e2b = Object.assign(
+      new Error("path '/home/user/app/apps/x/bindings/pnl.sql' does not exist"),
+      { name: "FileNotFoundError" },
+    );
+    expect(isFileMissingError(e2b)).toBe(true);
+    expect(
+      isFileMissingError(
+        new Error("path '/home/user/app/a.sql' does not exist"),
+      ),
+    ).toBe(true);
+    expect(isFileMissingError(new Error("wrapped", { cause: e2b }))).toBe(true);
+  });
+
+  it("still reads git's wording as missing", () => {
+    expect(
+      isFileMissingError(
+        new Error(
+          "fatal: path 'apps/x/bindings/pnl.sql' does not exist in 'main'",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not read a commit this instance cannot get as missing", () => {
+    expect(isFileMissingError(new Error("fatal: bad object 1234abcd"))).toBe(
+      false,
+    );
+    expect(
+      isFileMissingError(new Error("Sandbox is probably not running anymore")),
+    ).toBe(false);
   });
 });
 
