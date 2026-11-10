@@ -20,6 +20,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
+  BindingNotFoundError,
   bindingArtifactKey,
   bindingArtifactKeyByName,
   getBindingState,
@@ -28,9 +29,16 @@ import {
   readBindings,
   readBindingsTolerant,
   readCommittedBinding,
+  readMainBinding,
   recordBindingRun,
 } from "./bindings.service";
-import { createProject, ensureWorktree, writeFile } from "./worktree.service";
+import {
+  appRootFor,
+  commitFilesOnBranch,
+  createProject,
+  ensureWorktree,
+  writeFile,
+} from "./worktree.service";
 import { initRepo, repoDirFor } from "./repository.service";
 import { seededTemplateFiles } from "./workspace-template";
 import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
@@ -195,6 +203,71 @@ describe("building one binding without reading the app", () => {
 
     const state = await getBindingState(project._id.toString(), "revenue");
     expect(state?.history?.[0]?.status).toBe("error");
+  });
+});
+
+// 2026-11-10: a binding pushed to main from a laptop (funnel_lead_details)
+// read as missing because every read went through the person's cloud
+// sandbox, which was live but had not pulled since before the commit. The
+// laptop dev build answered HTTP 500 and app_materialize "No binding named".
+describe("a binding on main that a live sandbox has not pulled", () => {
+  async function staleBoxProject() {
+    // A live box with the app checked out...
+    const project = await projectWithBindings({
+      revenue: "-- connection: conn-a\nSELECT 1\n",
+    });
+    // ...then a laptop pushes a new binding to main. The box never pulls it.
+    await commitFilesOnBranch(
+      repoDirFor(WS),
+      "main",
+      {
+        writes: {
+          [`${appRootFor(project)}/bindings/fresh.sql`]:
+            "-- connection: conn-a\nSELECT 2 AS fresh\n",
+        },
+      },
+      { message: "laptop push" },
+    );
+    return project;
+  }
+
+  it("is missing from the actor's (sandbox) view", async () => {
+    const project = await staleBoxProject();
+    await expect(
+      readCommittedBinding(project, "fresh", USER),
+    ).resolves.toBeNull();
+  });
+
+  it("readMainBinding reads it from main in git, not the sandbox", async () => {
+    const project = await staleBoxProject();
+    const binding = await readMainBinding(project, "fresh");
+    expect(binding?.code.trim()).toBe("SELECT 2 AS fresh");
+    expect(bindingArtifactKey(binding!)).toBe(
+      bindingArtifactKey({ connectionId: "conn-a", code: "SELECT 2 AS fresh" }),
+    );
+    await expect(readMainBinding(project, "nope")).resolves.toBeNull();
+  });
+
+  it("materialize finds it on main, by default and with from: main", async () => {
+    const project = await staleBoxProject();
+    // Resolved from main: the build gets as far as the connection lookup
+    // (none exists in this test) instead of "No binding named".
+    await expect(materializeAppBinding(project, "fresh", USER)).rejects.toThrow(
+      "Connection conn-a not found",
+    );
+    await expect(
+      materializeAppBinding(project, "fresh", USER, { from: "main" }),
+    ).rejects.toThrow("Connection conn-a not found");
+  });
+
+  it("a binding on neither is a BindingNotFoundError (a 404, not a 500)", async () => {
+    const project = await staleBoxProject();
+    await expect(
+      materializeAppBinding(project, "nope", USER),
+    ).rejects.toBeInstanceOf(BindingNotFoundError);
+    await expect(
+      materializeAppBinding(project, "nope", USER, { from: "main" }),
+    ).rejects.toBeInstanceOf(BindingNotFoundError);
   });
 });
 

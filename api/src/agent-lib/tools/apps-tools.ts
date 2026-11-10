@@ -1499,24 +1499,33 @@ function buildTools(
 
     app_materialize: tool({
       description:
-        "Build (or rebuild) the parquet artifact for a data binding of an Apps project. Bindings are files: bindings/<name>.sql with '-- connection: <id>' front matter (see the apps skill). Reads THIS conversation's branch, so it works before merging to main. The build runs synchronously against the warehouse (read-only enforced) and the preview serves the result at __data/<name>.parquet.",
+        "Build (or rebuild) the parquet artifact for a data binding of an Apps project. Bindings are files: bindings/<name>.sql with '-- connection: <id>' front matter (see the apps skill). By default reads THIS conversation's branch (the sandbox), so it works before merging to main; a binding missing there is read from main. From a laptop checkout pass from: \"main\" to build the binding as pushed to main, without the sandbox. The build runs synchronously against the warehouse (read-only enforced) and the preview serves the result at __data/<name>.parquet.",
       inputSchema: z.object({
         appId: z.string(),
         name: z.string().describe("Binding name (= filename without .sql)"),
+        from: z
+          .enum(["branch", "main"])
+          .optional()
+          .describe(
+            'Where to read bindings/<name>.sql: "branch" (default) = this conversation\'s sandbox/branch; "main" = the workspace repo\'s main in git, never the sandbox (use from a laptop checkout).',
+          ),
       }),
-      execute: async ({ appId, name }) => {
+      execute: async ({ appId, name, from }) => {
         const loaded = await loadProject(appId, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
-          // Binding reads prefer a live sandbox. Make an existing checkout
-          // see the latest pushed binding before resolving its file; this
-          // never boots an idle sandbox.
-          await catchUpLiveBox(loaded.project, actorId);
+          if (from !== "main") {
+            // Binding reads prefer a live sandbox. Make an existing checkout
+            // see the latest pushed binding before resolving its file; this
+            // never boots an idle sandbox.
+            await catchUpLiveBox(loaded.project, actorId);
+          }
           markTouched(loaded.project);
           const result = await materializeAppBinding(
             loaded.project,
             name,
             actorId,
+            from === "main" ? { from: "main" } : {},
           );
           return { success: true, ...result };
         } catch (error) {

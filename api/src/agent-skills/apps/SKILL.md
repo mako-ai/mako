@@ -191,7 +191,8 @@ SELECT ...
 Front matter is a leading block of `-- key: value` SQL comments; the first
 SQL line ends it. Keep queries read-only SELECTs. Build the artifact with
 `app_materialize` (appId + binding name) — it reads the working branch, so
-it works before merging to main; errors come back verbatim
+it works before merging to main (from a laptop checkout pass `from: "main"`
+to build the binding as pushed, without the sandbox); errors come back verbatim
 (fix the SQL and retry). At runtime the preview
 serves each artifact at the APP-RELATIVE URL `__data/<name>.parquet`
 (no leading slash — use `new URL("__data/x.parquet", document.baseURI)`).

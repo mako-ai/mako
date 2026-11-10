@@ -353,12 +353,7 @@ export async function runBindingMaterializeEvent(
   try {
     // This binding's file only: reading all of them costs ~100 ms per binding
     // in the app, per build.
-    const binding = await readCommittedBinding(
-      project,
-      name,
-      undefined as never,
-      at,
-    );
+    const binding = await readCommittedBinding(project, name, undefined, at);
     if (!binding) return { skipped: "binding-gone" };
     // A later tick may have queued this binding again while the backlog was
     // still draining; if a build landed in between, this one is moot.
