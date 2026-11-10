@@ -134,6 +134,12 @@ export const MCP_MAX_RUN_WAIT_MS = 45_000;
 
 export interface MakoMcpContext {
   workspaceId: string;
+  /**
+   * Bound workspace's display name. Echoed in get_mcp_capabilities and every
+   * write result so a client with several Mako servers connected can tell
+   * which workspace it is changing.
+   */
+  workspaceName?: string;
   /** Acting user (the API key's creator). */
   userId?: string;
   /** Live workspace role, resolved on every MCP request. */
@@ -383,11 +389,13 @@ export function buildMakoMcpToolset(
 
   exposed.get_mcp_capabilities = {
     description:
-      "Report this MCP connection's effective scopes, grants, available " +
+      "Report which workspace this MCP connection is bound to (name + id), " +
+      "its effective scopes, grants, available " +
       "tools, and grant-gated tools that are hidden. Call this when a tool " +
       "seems missing or before planning dbt warehouse execution.",
     inputSchema: z.object({}),
     execute: async () => ({
+      workspace: boundWorkspace(context),
       scopes,
       queryAccess,
       grants: [...grants].sort(),
@@ -403,6 +411,32 @@ export function buildMakoMcpToolset(
   };
 
   return exposed;
+}
+
+/** The workspace this MCP connection acts on, as echoed back to clients. */
+export function boundWorkspace(context: MakoMcpContext): {
+  id: string;
+  name: string | null;
+} {
+  return { id: context.workspaceId, name: context.workspaceName ?? null };
+}
+
+/**
+ * Stamp the bound workspace onto a write tool's result. Plain-object results
+ * get a `workspace` field (a tool's own `workspace` key wins); anything else
+ * gets a trailing text block, added by the caller.
+ */
+function withBoundWorkspace(result: unknown, context: MakoMcpContext): unknown {
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    Array.isArray(result) ||
+    "mcpContent" in result ||
+    "workspace" in result
+  ) {
+    return result;
+  }
+  return { ...result, workspace: boundWorkspace(context) };
 }
 
 function capabilityScopeForGrant(
@@ -642,12 +676,28 @@ export function buildMakoMcpServer(
             context: undefined,
           }),
       );
-      const richContent = extractMcpContent(result);
+      // Writes echo the bound workspace so a client juggling several Mako
+      // servers sees where the change landed (reads stay lean).
+      const isWrite = !mcpReadOnlyHint(name, queryAccess);
+      const stamped = isWrite ? withBoundWorkspace(result, context) : result;
+      const workspaceBlock =
+        isWrite && stamped === result
+          ? [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ workspace: boundWorkspace(context) }),
+              },
+            ]
+          : [];
+      const richContent = extractMcpContent(stamped);
       if (richContent) {
-        return { content: richContent };
+        return { content: [...richContent, ...workspaceBlock] };
       }
       return {
-        content: [{ type: "text" as const, text: serializeToolResult(result) }],
+        content: [
+          { type: "text" as const, text: serializeToolResult(stamped) },
+          ...workspaceBlock,
+        ],
       };
     } catch (error) {
       logger.error("MCP tool execution failed", {
