@@ -36,7 +36,7 @@ import {
  * in a page (or this export) says which SDK a deployed app actually runs.
  * Kept in step with package.json by snapshot.test.mjs.
  */
-export const SDK_VERSION = "2.14.1";
+export const SDK_VERSION = "2.14.2";
 if (typeof window !== "undefined") {
   try {
     window.__MAKO_APP_SDK__ = SDK_VERSION;
@@ -902,6 +902,11 @@ function startPressure() {
 
 /** Pinned views come back on their own: a mounted panel may not read again soon. */
 async function endPressure() {
+  // The timer, not the clock, ends pressure: a timer can fire a millisecond
+  // before Date.now() reaches pressureUntil, and roomForTable would then still
+  // see pressure and refuse every promotion, with nothing left to retry it.
+  pressureUntil = 0;
+  pressureTimer = null;
   const waiting = [...entries]
     .filter(([name, entry]) => entry.demoted && isPinned(name) && !loading.has(name))
     .sort(([a], [b]) => (lastUse.get(b) ?? 0) - (lastUse.get(a) ?? 0));
