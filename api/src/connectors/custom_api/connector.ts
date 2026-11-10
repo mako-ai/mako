@@ -13,41 +13,55 @@ interface TestExpectation {
 }
 
 /**
- * APIs that answer 200 with an error in the body, and the field that says so.
+ * APIs that answer 200 with an error in the body, the field that says so,
+ * and a path that needs the credential (their root may only redirect).
  * Used when the connection sets no `test_expect` of its own.
  */
-const DEFAULT_EXPECTATIONS: { host: RegExp; expect: string }[] = [
-  { host: /(^|\.)slack\.com$/i, expect: "ok=true" },
+const DEFAULT_EXPECTATIONS: { host: RegExp; expect: string; path: string }[] = [
+  { host: /(^|\.)slack\.com$/i, expect: "ok=true", path: "/auth.test" },
 ];
 
-/** `path=value` (or `path==value`), or null when it has no `=`. */
+/** `path=value` (or `path==value`), or null when it is not that shape. */
 export function parseTestExpectation(text: string): TestExpectation | null {
   const match = /^\s*([^=\s]+)\s*==?\s*(.*?)\s*$/.exec(text);
   return match ? { path: match[1], raw: match[2] } : null;
 }
 
-function testExpectation(
-  config: Record<string, unknown>,
-): TestExpectation | null {
+/**
+ * What Test checks in the answer: the connection's own `test_expect`, or a
+ * known API's default together with that API's test path when none is set.
+ */
+function testExpectation(config: Record<string, unknown>): {
+  expectation?: TestExpectation;
+  defaultPath?: string;
+  error?: string;
+} {
   if (typeof config.test_expect === "string" && config.test_expect.trim()) {
-    return parseTestExpectation(config.test_expect);
+    const expectation = parseTestExpectation(config.test_expect);
+    return expectation
+      ? { expectation }
+      : {
+          error: `Test expects must be path=value (e.g. ok=true), not "${config.test_expect.trim().slice(0, 100)}".`,
+        };
   }
   if (config.graphql === true || typeof config.base_url !== "string") {
-    return null;
+    return {};
   }
   let host: string;
   try {
     host = new URL(config.base_url).hostname;
   } catch {
-    return null;
+    return {};
   }
   const known = DEFAULT_EXPECTATIONS.find(d => d.host.test(host));
-  return known ? parseTestExpectation(known.expect) : null;
+  const expectation = known && parseTestExpectation(known.expect);
+  return expectation ? { expectation, defaultPath: known.path } : {};
 }
 
 /**
  * Why the answer does not meet the expectation, or null when it does. The
- * value is compared as JSON (true, 1, null, "x") and, failing that, as text.
+ * value is compared as JSON (true, 1, null, "x", {"a":1}) and, failing that,
+ * as text.
  */
 export function unmetExpectation(
   body: unknown,
@@ -68,6 +82,9 @@ export function unmetExpectation(
   }
   const same =
     actual === expected ||
+    (typeof expected === "object" &&
+      expected !== null &&
+      JSON.stringify(actual) === JSON.stringify(expected)) ||
     (typeof actual !== "object" && String(actual) === expectation.raw);
   if (same) return null;
   const shown =
@@ -267,7 +284,7 @@ export class CustomApiConnector extends BaseConnector {
           required: false,
           placeholder: "ok=true",
           helperText:
-            "Optional. A JSON field and the value Test needs in the answer, as path=value (e.g. ok=true, data.status=active). For APIs that report errors in a 200 body. Slack is checked for ok=true by default.",
+            "Optional. A JSON field and the value Test needs in the answer, as path=value (e.g. ok=true, data.status=active). For APIs that report errors in a 200 body. Slack is checked for ok=true (on /auth.test unless a test path is set) by default.",
         },
       ],
     };
@@ -287,10 +304,12 @@ export class CustomApiConnector extends BaseConnector {
     // A missing or non-http(s) address is refused by the proxy's own check
     // (connections/forward.ts `urlUnder`), with a message the form shows.
     const config = this.dataSource.config ?? {};
+    const { expectation, defaultPath, error } = testExpectation(config);
+    if (error) return { success: false, message: error };
     const testPath =
       typeof config.test_path === "string" && config.test_path.trim()
         ? config.test_path.trim()
-        : "/";
+        : (defaultPath ?? "/");
     try {
       const answer = await forward(
         this.dataSource,
@@ -312,7 +331,6 @@ export class CustomApiConnector extends BaseConnector {
           message: `The service answered HTTP ${answer.status}. Set a test path that exists.`,
         };
       }
-      const expectation = testExpectation(config);
       const problem = expectation && unmetExpectation(answer.body, expectation);
       if (problem) return { success: false, message: problem };
       return {
