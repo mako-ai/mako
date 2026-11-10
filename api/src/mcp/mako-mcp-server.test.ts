@@ -99,6 +99,7 @@ async function main() {
     "query:read",
     "warehouse:write",
     "connections:write",
+    "connections:manage",
     "workflows:run",
   ];
   for (const requested of [
@@ -121,6 +122,7 @@ async function main() {
     "query:read",
     "warehouse:write",
     "connections:write",
+    "connections:manage",
     "workflows:run",
   ]);
   // The scope names still map to their grants (stored keys keep parsing),
@@ -820,6 +822,30 @@ async function main() {
       (await listFor(["mcp", "query:read"], "viewer")).has("create_connection"),
       false,
       "a viewer must not create connections",
+    );
+
+    // Changing or removing an existing credential is not implicit: a key
+    // minted with the defaults cannot rename, disable or delete one.
+    const defaults = await listFor(["mcp", "query:read"]);
+    for (const manage of ["update_connection", "delete_connection"]) {
+      assert.equal(
+        defaults.has(manage),
+        false,
+        `${manage} must need the connections:manage scope`,
+      );
+    }
+    const managing = await listFor(["mcp", "query:read", "connections:manage"]);
+    assert.ok(managing.has("update_connection"));
+    assert.equal(
+      managing.get("delete_connection")?.annotations?.destructiveHint,
+      true,
+    );
+    assert.equal(
+      (
+        await listFor(["mcp", "query:read", "connections:manage"], "viewer")
+      ).has("update_connection"),
+      false,
+      "a viewer must not change connections, whatever the key carries",
     );
 
     const [call] = await exchange([

@@ -157,15 +157,56 @@ const CREDENTIAL_LIKE_KEY =
   /pass(word|wd)?$|secret|token|api[_-]?key|private[_-]?key|service_account|credential|headers?$/i;
 
 /**
+ * Config fields that decide where a connector sends its key, for the
+ * connectors whose address is a plain config field read by their sync and
+ * probe code (the callable ones declare theirs in connections/callable.ts).
+ * Changing one would let an agent point a stored credential at a host it
+ * picked, then probe it there.
+ */
+const ADDRESS_FIELDS_BY_TYPE: Readonly<Record<string, readonly string[]>> = {
+  graphql: ["endpoint", "headers"],
+  rest: ["api_base_url", "headers"],
+  posthog: ["api_base_url"],
+  calendly: ["api_base_url"],
+  claap: ["api_base_url"],
+  pandadoc: ["api_base_url"],
+  bigquery: ["api_base_url"],
+};
+
+/**
+ * Field names that look like an address, for every connector (a `ws:` one
+ * included, whose code no declaration covers): fail closed.
+ */
+const ADDRESS_LIKE_KEY =
+  /url|uri|endpoint|host|domain|address|server|origin|region|subdomain/i;
+
+/** A value that reads as a URL or a hostname (`api.example.com`). */
+const ADDRESS_LIKE_VALUE =
+  /^[a-z][a-z0-9+.-]*:\/\/|^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}(:\d+)?(\/|$)/i;
+
+/** Every field of `type` that is changed only in the app as an address. */
+function addressFields(type: string): Set<string> {
+  const callable = callableFor(type);
+  return new Set([
+    ...(callable?.baseUrlFields ?? []),
+    ...(callable?.appOnlyFields ?? []),
+    ...(ADDRESS_FIELDS_BY_TYPE[type] ?? []),
+  ]);
+}
+
+/**
  * Why `config` cannot be changed over MCP, or null. Only declared, plain
  * fields: never a secret (a key is replaced in the app), never where or how
- * the key is sent (the app-only fields of `PUT /sources/{id}`). Names
- * fields, never values. Exported for tests.
+ * the key is sent. An address is a declared address field, a field named
+ * like one, or a field whose new or stored value reads as a URL or a host:
+ * anything that might be one is refused. Names fields, never values.
+ * Exported for tests.
  */
 export function configUpdateProblem(
   config: Record<string, ConfigValue>,
   schema: unknown,
   type: string,
+  stored: Record<string, unknown> = {},
 ): string | null {
   const raw = (schema as { fields?: unknown } | null)?.fields;
   if (!Array.isArray(raw) || raw.length === 0) {
@@ -181,11 +222,7 @@ export function configUpdateProblem(
   if (unknown.length > 0) {
     return `Unknown config field(s): ${unknown.join(", ")}. This connector accepts: ${[...fields.keys()].join(", ")}.`;
   }
-  const callable = callableFor(type);
-  const appOnly = new Set([
-    ...(callable?.baseUrlFields ?? []),
-    ...(callable?.appOnlyFields ?? []),
-  ]);
+  const appOnly = addressFields(type);
   const secret = keys.filter(key => {
     const field = fields.get(key) as ConnectorFieldSchema;
     return isSecretField(field) || CREDENTIAL_LIKE_KEY.test(key);
@@ -193,7 +230,14 @@ export function configUpdateProblem(
   if (secret.length > 0) {
     return `${secret.join(", ")} hold(s) a credential, which cannot be changed over MCP. A manager replaces the key in the app.`;
   }
-  const inApp = keys.filter(key => appOnly.has(key));
+  const inApp = keys.filter(
+    key =>
+      appOnly.has(key) ||
+      ADDRESS_LIKE_KEY.test(key) ||
+      ADDRESS_LIKE_VALUE.test(String(config[key])) ||
+      (typeof stored[key] === "string" &&
+        ADDRESS_LIKE_VALUE.test(stored[key] as string)),
+  );
   if (inApp.length > 0) {
     return `${inApp.join(", ")}: where and how the key is sent is changed only in the app, by one of the connection's managers.`;
   }
@@ -213,15 +257,40 @@ async function callerFor(
   };
 }
 
-/** A source connection of this workspace by id or name, with what access needs. */
+const OBJECT_ID = /^[0-9a-f]{24}$/i;
+
+/**
+ * A source connection of this workspace by id or name, with what access
+ * needs. Only a 24-hex string is an id (`Types.ObjectId.isValid` accepts any
+ * 12 characters, so `stripe_prod1` would be read as one). Names are not
+ * unique: when several connections share one, nothing is picked.
+ */
 async function findOwnSourceConnection(workspaceId: string, ref: string) {
   const workspace = new Types.ObjectId(workspaceId);
-  const query = Types.ObjectId.isValid(ref)
-    ? { workspaceId: workspace, _id: new Types.ObjectId(ref) }
-    : { workspaceId: workspace, name: ref };
-  return SourceConnection.findOne(query)
-    .select("_id name type description isActive createdBy managers")
+  const fields = "_id name type description isActive createdBy managers config";
+  if (OBJECT_ID.test(ref)) {
+    const row = await SourceConnection.findOne({
+      workspaceId: workspace,
+      _id: new Types.ObjectId(ref),
+    })
+      .select(fields)
+      .lean();
+    return row ? { row } : { error: NOT_FOUND };
+  }
+  const rows = await SourceConnection.find({
+    workspaceId: workspace,
+    name: ref,
+  })
+    .select(fields)
+    .limit(2)
     .lean();
+  if (rows.length === 0) return { error: NOT_FOUND };
+  if (rows.length > 1) {
+    return {
+      error: `Several source connections are named "${ref}". Pass the id from list_connections({ kind: "source" }) instead; nothing was changed.`,
+    };
+  }
+  return { row: rows[0] };
 }
 
 const NOT_FOUND =
@@ -440,8 +509,12 @@ export function createConnectionWriteTools(
         const auth = await authorizeConnectionCreator(workspaceId, userId);
         if (!auth.ok) return { error: auth.reason };
         try {
-          const row = await findOwnSourceConnection(workspaceId, connectionId);
-          if (!row) return { error: NOT_FOUND };
+          const found = await findOwnSourceConnection(
+            workspaceId,
+            connectionId,
+          );
+          if (!found.row) return { error: found.error };
+          const row = found.row;
           const caller = await callerFor(workspaceId, userId);
           if (!(await mayChangeSourceConnection(caller, row))) {
             return { error: changeRefusal(caller.role) };
@@ -473,7 +546,12 @@ export function createConnectionWriteTools(
               row.type,
               workspaceId,
             );
-            const problem = configUpdateProblem(config, schema, row.type);
+            const problem = configUpdateProblem(
+              config,
+              schema,
+              row.type,
+              (row.config ?? {}) as Record<string, unknown>,
+            );
             if (problem) return { error: problem };
             assertCredentialCharacters(config, schema);
             // One path per plain field: a secret stored next to them is
@@ -557,8 +635,12 @@ export function createConnectionWriteTools(
         const auth = await authorizeConnectionCreator(workspaceId, userId);
         if (!auth.ok) return { error: auth.reason };
         try {
-          const row = await findOwnSourceConnection(workspaceId, connectionId);
-          if (!row) return { error: NOT_FOUND };
+          const found = await findOwnSourceConnection(
+            workspaceId,
+            connectionId,
+          );
+          if (!found.row) return { error: found.error };
+          const row = found.row;
           if (confirmName !== row.name) {
             return {
               error: `confirmName does not match: this connection is named "${row.name}". Nothing was deleted.`,

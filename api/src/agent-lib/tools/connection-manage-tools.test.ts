@@ -245,6 +245,99 @@ describe("update_connection", () => {
     );
   });
 
+  it("refuses a graphql endpoint, any address-like field, and a field holding a URL", async () => {
+    const GQL = { _id: new Types.ObjectId() };
+    // Raw insert: the typed model declares `headers` as an object, the
+    // GraphQL connector stores it encrypted, as a string.
+    await SourceConnection.collection.insertOne({
+      _id: GQL._id,
+      workspaceId: new Types.ObjectId(WS),
+      name: "gql",
+      type: "graphql",
+      config: {
+        endpoint: "https://api.example.com/graphql",
+        headers: encryptString('{"Authorization":"Bearer x"}'),
+      },
+      settings: { rate_limit_delay_ms: 100, sync_batch_size: 100 },
+      createdBy: "manager1",
+      managers: ["manager1"],
+      isActive: true,
+    });
+    const endpoint = await writeTools("manager1").update_connection.execute({
+      connectionId: String(GQL._id),
+      config: { endpoint: "https://attacker.example/x" },
+    });
+    expect(String(endpoint.error)).toMatch(/endpoint: where and how the key/);
+    expect(
+      (await SourceConnection.findById(GQL._id).lean())?.config?.endpoint,
+    ).toBe("https://api.example.com/graphql");
+
+    const schema = {
+      fields: [
+        { name: "api_base_url", type: "string" },
+        { name: "tenant_host", type: "string" },
+        { name: "label", type: "string" },
+        { name: "page_size", type: "number" },
+      ],
+    };
+    for (const [config, stored] of [
+      [{ api_base_url: "x" }, {}],
+      [{ tenant_host: "x" }, {}],
+      [{ label: "https://attacker.example" }, {}],
+      [{ label: "attacker.example.com" }, {}],
+      [{ label: "plain" }, { label: "https://api.vendor.com" }],
+    ] as const) {
+      expect(
+        configUpdateProblem({ ...config }, schema, "ws:any", { ...stored }),
+        JSON.stringify(config),
+      ).toMatch(/only in the app/);
+    }
+    expect(
+      configUpdateProblem(
+        { label: "Finance", page_size: 1.5 },
+        schema,
+        "ws:any",
+      ),
+    ).toBeNull();
+  });
+
+  it("reads a 12-character name as a name, and refuses a name several connections share", async () => {
+    await SourceConnection.updateOne(
+      { _id: API },
+      { $set: { name: "stripe_prod1" } },
+    );
+    const byName = await writeTools("manager1").update_connection.execute({
+      connectionId: "stripe_prod1",
+      description: "d",
+    });
+    expect(byName.error).toBeUndefined();
+    expect(byName.connectionId).toBe(API.toString());
+
+    await SourceConnection.create({
+      workspaceId: new Types.ObjectId(WS),
+      name: "stripe_prod1",
+      type: "stripe",
+      config: {},
+      settings: { rate_limit_delay_ms: 100, sync_batch_size: 100 },
+      createdBy: "manager1",
+    });
+    for (const call of [
+      writeTools("manager1").update_connection.execute({
+        connectionId: "stripe_prod1",
+        description: "e",
+      }),
+      writeTools("manager1").delete_connection.execute({
+        connectionId: "stripe_prod1",
+        confirmName: "stripe_prod1",
+      }),
+    ]) {
+      expect(String((await call).error)).toMatch(/Several source connections/);
+    }
+    expect(
+      await SourceConnection.countDocuments({ name: "stripe_prod1" }),
+    ).toBe(2);
+  });
+
   it("only the connection's managers and the workspace owner may change it", async () => {
     const member = await writeTools("member2").update_connection.execute({
       connectionId: API.toString(),

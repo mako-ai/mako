@@ -502,7 +502,7 @@ would fall through to the SPA fallback and poison client discovery.
   `authType: "mcpOAuth"` with the grant's workspace binding and scopes.
 - Every browser OAuth grant carries the full MCP scope set
   (`MCP_OAUTH_SCOPES`: `mcp`, `query:read`, `warehouse:write`,
-  `connections:write`), whatever scope the client requests. There are no
+  `connections:write`, `connections:manage`, `workflows:run`), whatever scope the client requests. There are no
   per-permission consent options on the authorize page; what a viewer may not
   do is decided by their LIVE workspace role at each tool call (the dbt and
   connection tools require at least the member role). `mako dbt run` builds a
@@ -537,7 +537,9 @@ writes; those use the separate, double-gated `query:write` API-key scope.
 The `connections:write` scope maps to the `connections-write` grant behind the
 external-MCP `create_connection` tool (creates a new source connection, runs its
 credential check and deletes it again if the check fails) and the
+`connections:manage` scope to the `connections-manage` grant behind the
 `update_connection` / `delete_connection` tools (rename, plain config, remove;
+an explicit per-key scope, carried by OAuth sign-ins;
 only for the connection's managers or the workspace owner, as in the app, and
 never a secret, the address a key is sent to, or the Access tab's live reads
 and writers). Like `warehouse:write` it is carried by every

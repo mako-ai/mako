@@ -20,10 +20,12 @@
  * connector, so an agent can go from "this connector exists" to probing it
  * without a human round-trip through the UI; `update_connection` renames one
  * or changes its plain settings, and `delete_connection` removes one. They
- * are external-MCP only: every MCP/CLI credential holds their grant
- * (`connections-write`), the caller's live role must be at least member, and
- * changing or deleting takes being one of the connection's managers, as in
- * the UI. They are kept out of the in-product chat so a prompt-injected page
+ * are external-MCP only. Every MCP/CLI credential holds the create grant
+ * (`connections-write`); changing or deleting needs `connections-manage`,
+ * which an API key carries only with the explicit `connections:manage`
+ * scope (OAuth sign-ins carry it). The caller's live role must be at least
+ * member, and changing or deleting takes being one of the connection's
+ * managers, as in the UI. They are kept out of the in-product chat so a prompt-injected page
  * cannot plant, repoint or remove a credential the workspace syncs from.
  *
  * Deliberately NOT the same thing as the `list_data_sources` /
@@ -110,7 +112,7 @@ export const CONNECTOR_CAPABILITIES = [
     name: "update_connection",
     pack: "connector-admin",
     risk: "write",
-    requiredGrant: "connections-write",
+    requiredGrant: "connections-manage",
     minimumWorkspaceRole: "member",
     surfaces: EXTERNAL_MCP_ONLY,
     resultKind: "data",
@@ -119,7 +121,7 @@ export const CONNECTOR_CAPABILITIES = [
     name: "delete_connection",
     pack: "connector-admin",
     risk: "destructive",
-    requiredGrant: "connections-write",
+    requiredGrant: "connections-manage",
     minimumWorkspaceRole: "member",
     surfaces: EXTERNAL_MCP_ONLY,
     resultKind: "data",

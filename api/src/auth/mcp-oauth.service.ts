@@ -42,6 +42,7 @@ export const MCP_OAUTH_SCOPES = [
   "query:read",
   "warehouse:write",
   "connections:write",
+  "connections:manage",
   "workflows:run",
 ] as const satisfies readonly WorkspaceApiKeyScope[];
 

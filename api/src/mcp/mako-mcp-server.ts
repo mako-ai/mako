@@ -412,6 +412,7 @@ function capabilityScopeForGrant(
   if (grant === "git-write") return "git:write";
   if (grant === "members-write") return "members:write";
   if (grant === "connections-write") return "connections:write";
+  if (grant === "connections-manage") return "connections:manage";
   if (grant === "workflows-run") return "workflows:run";
   return undefined;
 }

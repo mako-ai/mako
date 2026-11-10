@@ -83,6 +83,17 @@ assert.deepEqual(
   ["connections-write"],
 );
 assert.ok(CAPABILITY_GRANTS.includes("connections-write"));
+// Changing or deleting is an explicit scope, never implicit.
+assert.deepEqual(
+  capabilityGrantsFromScopes(
+    resolveWorkspaceApiKeyScopes(["mcp", "connections:manage"]),
+  ),
+  ["connections-manage"],
+);
+assert.ok(
+  !/EXTERNAL_MCP_IMPLICIT_GRANTS[^\]]*"connections-manage"/.test(serverSource),
+  "connections-manage must not be an implicit grant",
+);
 
 // --- the capability is gated, external-MCP only, and bridged ---------------
 
@@ -109,7 +120,7 @@ for (const [name, risk] of [
 ] as const) {
   const manage = AGENT_CAPABILITY_BY_NAME.get(name);
   assert.ok(manage, `${name} must be in the capability registry`);
-  assert.equal(manage.requiredGrant, "connections-write");
+  assert.equal(manage.requiredGrant, "connections-manage");
   assert.equal(manage.minimumWorkspaceRole, "member");
   assert.equal(manage.risk, risk);
   assert.deepEqual([...manage.surfaces], ["external-mcp"]);
