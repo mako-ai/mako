@@ -36,6 +36,12 @@ import type { CapabilityGrant } from "@mako/agent-tools";
  *
  * `members:write` and `query:write` are the remaining opt-ins; workspace admins opt a
  * key in explicitly.
+ *
+ * `connections:manage` maps to the `connections-manage` grant behind
+ * update_connection / delete_connection. Unlike creating, changing or
+ * removing an existing credential can break what already runs on it, so a
+ * key carries it only when asked for (OAuth sign-ins carry it, like
+ * `workflows:run`).
  */
 export const WORKSPACE_API_KEY_SCOPES = [
   "mcp",
@@ -45,6 +51,7 @@ export const WORKSPACE_API_KEY_SCOPES = [
   "git:write",
   "members:write",
   "connections:write",
+  "connections:manage",
   // Start workflow runs and add webhooks over MCP: that executes the
   // workspace's own workflow code, so a read-only key cannot.
   "workflows:run",
@@ -170,6 +177,9 @@ export function capabilityGrantsFromScopes(
   }
   if (hasWorkspaceApiKeyScope(scopes, "connections:write")) {
     grants.push("connections-write");
+  }
+  if (hasWorkspaceApiKeyScope(scopes, "connections:manage")) {
+    grants.push("connections-manage");
   }
   if (hasWorkspaceApiKeyScope(scopes, "workflows:run")) {
     grants.push("workflows-run");

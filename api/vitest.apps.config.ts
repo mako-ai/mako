@@ -69,6 +69,9 @@ export default defineConfig({
       // scrubbed; real Mongo for tenancy) and its tool wiring/gating.
       "src/connectors/probe.service.test.ts",
       "src/agent-lib/tools/connector-tools.test.ts",
+      // Source connections over MCP: plain settings and access, update,
+      // delete; the app's permission rules, no secret in or out.
+      "src/agent-lib/tools/connection-manage-tools.test.ts",
       "src/agent-lib/tools/apps-tools-consistency.test.ts",
       // Tool-output caps: no single result may flood the prompt.
       "src/agent-lib/tools/apps-tools-output-caps.test.ts",
