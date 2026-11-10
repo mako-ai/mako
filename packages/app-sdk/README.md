@@ -391,17 +391,26 @@ import {
   and declare it once (`src/vite-env.d.ts`):
   `declare const __APP_BINDING_NAMES__: string[];`
 
-### Chart tooltips: `TableTooltip` (2.10+)
+### Chart tooltips: `TableTooltip` (2.10+, every series from 2.15)
 
 Every chart tooltip is a table, never recharts' coloured `name : value` list:
 a bold title, small muted column headers, one row per series with a 9px
 swatch in the series colour and the label in plain text, right-aligned
 tabular numbers, and a bold total row under a rule.
 
-```tsx
-import { tableTooltip, tooltipSeriesRows } from "@makoai/app-sdk/ui";
+The tooltip lists every legend series, in legend order, in every bucket. Its
+height and column widths never change while the pointer moves.
 
-const SEGMENTS = [ // bottom-up, as stacked; drives the bars AND the tooltip
+- A zero shows a muted "0", or a muted "0%" for a rate.
+- A missing value shows a muted "–". Missing means the bucket has no data, or
+  the metric cannot be computed (a rate over a zero base).
+- The value columns have a fixed minimum width (`--mk-tip-col`, default
+  `7ch`).
+
+```tsx
+import { tableTooltip, tooltipCell, tooltipSeriesRows } from "@makoai/app-sdk/ui";
+
+const SEGMENTS = [ // bottom-up, as stacked; drives the bars, the legend AND the tooltip
   { key: "new", label: "New", color: "var(--positive)" },
   { key: "churn", label: "Churn", color: "var(--negative)" },
 ];
@@ -411,22 +420,40 @@ const SEGMENTS = [ // bottom-up, as stacked; drives the bars AND the tooltip
     title: d.month,
     columns: ["MRR", "Orgs", "% of start"],
     rows: tooltipSeriesRows(d, SEGMENTS, { stacked: true }).map((r) => ({
-      ...r, cells: [fmtEur(r.value), fmtInt(d[`orgs_${r.key}`]), fmtPct(r.value / d.start)],
+      ...r,
+      cells: [
+        tooltipCell(r.value, fmtEur),
+        tooltipCell(d[`orgs_${r.key}`], fmtInt),
+        tooltipCell(r.value == null || !d.start ? null : r.value / d.start, fmtPct, { percent: true }),
+      ],
     })),
     total: { label: "Net change", cells: [fmtEur(d.net), fmtInt(d.netOrgs), fmtPct(d.net / d.start)] },
   }))}
 />
 ```
 
-- `tooltipSeriesRows(datum, series, { stacked })` puts the rows in reading
-  order (a stack's top segment first, lines highest first) and drops empty
-  values.
+- `tooltipSeriesRows(datum, series, { stacked })` returns one row per series,
+  `{ key, label, color, value, state }`. A stack reads top segment first.
+  Other charts keep the series order, which is the legend order. `state` is
+  `"value"`, `"zero"` or `"missing"`. A missing `value` is `null`.
+- `tooltipCell(value, format, { percent })` renders a cell: a muted "–" when
+  missing, a muted "0" or "0%" when zero, else `format(value)`.
+  `tooltipCellText` returns the same as `{ text, muted }` for non-React code.
+- A `null` or `undefined` cell in `TableTooltip` shows a muted "–". An empty
+  string stays blank.
 - `total` is the stack total, "All selected", or the base the % is of.
   `after` rows follow it, apart: a value on another axis.
 - Precompute what the tooltip shows (totals, counts, bases) in each data row.
   The builder only reads and formats.
 - On a chart with an HTML overlay (a donut's centre label), lift the tooltip:
   `<Tooltip wrapperStyle={{ zIndex: 20 }} … />`.
+
+**Opt-out.** Before 2.15, `tooltipSeriesRows` dropped zero and missing values
+and sorted line charts highest value first. A caller that truly needs that
+passes `{ hideEmpty: true, byValue: true }`. `hideEmpty` drops zero and
+missing rows. `byValue` sorts non-stacked rows highest first, missing last.
+Both make the tooltip change height or order between buckets, so the house
+rule is to leave them off.
 
 ### Data tables: `DataTable` (2.11+)
 

@@ -28,7 +28,9 @@ import {
   serializeResetKey,
   sortRows,
   toCsv,
+  tooltipCellText,
   tooltipSeriesRows,
+  tooltipValueState,
 } from "./ui-core.js";
 
 export {
@@ -47,7 +49,9 @@ export {
   serializeResetKey,
   sortRows,
   toCsv,
+  tooltipCellText,
   tooltipSeriesRows,
+  tooltipValueState,
 };
 
 const h = React.createElement;
@@ -246,16 +250,30 @@ function TooltipRow({ row, className }) {
       h("span", { className: "mk-tip-swatch", style: { background: row.color ?? "transparent" } }),
       row.label,
     ),
-    ...(row.cells ?? []).map((c, i) => h("td", { key: i }, c)),
+    ...(row.cells ?? []).map((c, i) => h("td", { key: i }, c == null ? MISSING_CELL : c)),
   );
+}
+
+/** A missing value: no data in the bucket, or a metric it cannot compute. */
+const MISSING_CELL = h("span", { className: "mk-tip-muted" }, "–");
+
+/**
+ * A tooltip value cell: a missing value (null, undefined, NaN) → muted "–",
+ * a zero → muted "0" (or "0%" with `percent: true`), else `format(value)`.
+ * The row stays either way, so the tooltip never changes height.
+ */
+export function tooltipCell(value, format, opts) {
+  const { text, muted } = tooltipCellText(value, format, opts);
+  return muted ? h("span", { className: "mk-tip-muted" }, text) : text;
 }
 
 /**
  * The house chart tooltip: a bold title, small muted column headers, one row
  * per series with a 9px swatch in the series colour and the label in the
- * popover's text colour, right-aligned tabular numbers, then a bold `total`
- * row under a rule. `after` rows follow the total, apart (a value on another
- * axis, such as an average next to a rate).
+ * popover's text colour, right-aligned tabular numbers in columns of a fixed
+ * minimum width, then a bold `total` row under a rule. `after` rows follow
+ * the total, apart (a value on another axis, such as an average next to a
+ * rate). A null or undefined cell shows a muted "–"; "" stays blank.
  */
 export function TableTooltip({ title, columns = [], rows = [], total, after, className }) {
   return h(

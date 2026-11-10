@@ -145,6 +145,7 @@ export interface TooltipRow {
   label: React.ReactNode;
   /** The series colour for the 9px swatch; omit for no swatch. */
   color?: string;
+  /** A null or undefined cell shows a muted "–"; "" stays blank. */
   cells: React.ReactNode[];
   key?: string;
 }
@@ -166,15 +167,51 @@ export function TableTooltip(props: TableTooltipProps): React.ReactElement;
 export function tableTooltip<D = any>(
   build: (datum: D, label: unknown) => TableTooltipProps | null,
 ): (props: { active?: boolean; payload?: readonly { payload?: unknown }[]; label?: unknown }) => React.ReactElement | null;
+/** "missing" (null, undefined, "", NaN, ±Infinity), "zero" or "value". */
+export type TooltipValueState = "missing" | "zero" | "value";
+export function tooltipValueState(value: unknown): TooltipValueState;
+export interface TooltipSeriesRow<K extends string = string> {
+  key: K;
+  label: string;
+  color?: string;
+  /** null when missing. */
+  value: number | null;
+  state: TooltipValueState;
+}
+export interface TooltipSeriesRowsOptions {
+  /** Pass series bottom-up, as drawn; the rows read top segment first. */
+  stacked?: boolean;
+  /** Opt-out: drop zero and missing rows (pre-2.15). Breaks the fixed tooltip height. */
+  hideEmpty?: boolean;
+  /** Opt-out: sort non-stacked rows highest value first, missing last (pre-2.15). */
+  byValue?: boolean;
+}
 /**
- * The hovered datum's series in reading order: stacked = top segment first
- * (pass series bottom-up, as drawn), else highest value first. Drops empty.
+ * Every series of the hovered datum, in a fixed order: stacked = top segment
+ * first (pass series bottom-up, as drawn), else legend (series) order. Zero
+ * and missing values keep their row; render the cells with `tooltipCell`.
  */
 export function tooltipSeriesRows<K extends string>(
   datum: Record<string, unknown> | null | undefined,
   series: readonly { key: K; label?: string; color?: string }[],
-  opts?: { stacked?: boolean },
-): { key: K; label: string; color?: string; value: number }[];
+  opts?: TooltipSeriesRowsOptions,
+): TooltipSeriesRow<K>[];
+export interface TooltipCellOptions {
+  /** A zero shows "0%" instead of "0". */
+  percent?: boolean;
+}
+/** A cell's text and whether it is muted (zero or missing). */
+export function tooltipCellText(
+  value: unknown,
+  format?: (value: number) => string,
+  opts?: TooltipCellOptions,
+): { text: string; muted: boolean };
+/** A value cell: missing → muted "–", zero → muted "0" / "0%", else `format(value)`. */
+export function tooltipCell(
+  value: unknown,
+  format?: (value: number) => string,
+  opts?: TooltipCellOptions,
+): React.ReactNode;
 
 /** A table sort: the column id and its direction. */
 export interface DataTableSort {

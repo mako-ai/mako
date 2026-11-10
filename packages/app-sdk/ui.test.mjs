@@ -56,7 +56,7 @@ test("the injected theme keeps every v1 token name", () => {
   }
 });
 
-test("tooltipSeriesRows: a stack reads top segment first, lines highest first, empties dropped", async () => {
+test("tooltipSeriesRows: a stack reads top segment first, lines keep legend order, every series kept", async () => {
   const { tooltipSeriesRows } = await import("./ui-core.js");
   const series = [
     { key: "new", label: "New", color: "g" },
@@ -64,8 +64,97 @@ test("tooltipSeriesRows: a stack reads top segment first, lines highest first, e
     { key: "react", label: "Reactivation", color: "b" },
   ];
   const datum = { new: 74438, exp: 0, react: 15359 };
-  assert.deepEqual(tooltipSeriesRows(datum, series, { stacked: true }).map(r => r.key), ["react", "new"]);
-  assert.deepEqual(tooltipSeriesRows({ new: 1, exp: 3, react: null }, series).map(r => r.label), ["Expansion", "New"]);
+  assert.deepEqual(tooltipSeriesRows(datum, series, { stacked: true }).map(r => r.key), ["react", "exp", "new"]);
+  assert.deepEqual(tooltipSeriesRows({ new: 1, exp: 3, react: null }, series).map(r => r.label), ["New", "Expansion", "Reactivation"]);
+});
+
+test("tooltipSeriesRows: a zero and a missing value keep their rows; the row count never changes", async () => {
+  const { tooltipSeriesRows, tooltipCellText } = await import("./ui-core.js");
+  const series = [
+    { key: "fr", label: "France" },
+    { key: "es", label: "Spain" },
+    { key: "it", label: "Italy" },
+  ];
+  const buckets = [
+    { fr: 120, es: 0, it: undefined }, // one zero, one missing
+    { fr: 0, es: null, it: Number.NaN },
+    { fr: 3, es: 4, it: 5 },
+    {},
+  ];
+  const counts = buckets.map(d => tooltipSeriesRows(d, series).length);
+  assert.deepEqual(counts, [3, 3, 3, 3]);
+  for (const d of buckets) {
+    assert.deepEqual(tooltipSeriesRows(d, series).map(r => r.key), ["fr", "es", "it"]);
+  }
+  const rows = tooltipSeriesRows(buckets[0], series);
+  assert.deepEqual(
+    rows.map(r => [r.key, r.value, r.state]),
+    [["fr", 120, "value"], ["es", 0, "zero"], ["it", null, "missing"]],
+  );
+  const fmt = v => `€${v}`;
+  assert.deepEqual(rows.map(r => tooltipCellText(r.value, fmt)), [
+    { text: "€120", muted: false },
+    { text: "0", muted: true },
+    { text: "–", muted: true },
+  ]);
+  assert.deepEqual(tooltipCellText(0, v => `${v * 100}%`, { percent: true }), { text: "0%", muted: true });
+  assert.deepEqual(tooltipCellText(Infinity, String), { text: "–", muted: true });
+  assert.deepEqual(tooltipCellText("", String), { text: "–", muted: true });
+});
+
+test("tooltipSeriesRows: hideEmpty and byValue restore the pre-2.15 behaviour", async () => {
+  const { tooltipSeriesRows } = await import("./ui-core.js");
+  const series = [
+    { key: "new", label: "New" },
+    { key: "exp", label: "Expansion" },
+    { key: "react", label: "Reactivation" },
+  ];
+  const datum = { new: 74438, exp: 0, react: 15359 };
+  assert.deepEqual(tooltipSeriesRows(datum, series, { stacked: true, hideEmpty: true }).map(r => r.key), ["react", "new"]);
+  const old = { hideEmpty: true, byValue: true };
+  assert.deepEqual(tooltipSeriesRows({ new: 1, exp: 3, react: null }, series, old).map(r => r.label), ["Expansion", "New"]);
+  // byValue alone keeps every row: missing last, ties in legend order.
+  assert.deepEqual(
+    tooltipSeriesRows({ new: 2, exp: null, react: 2 }, series, { byValue: true }).map(r => r.key),
+    ["new", "react", "exp"],
+  );
+});
+
+test("TableTooltip: tooltipCell mutes a zero and a missing value, and every row renders", async t => {
+  let React, server, ui;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    ui = await import("./ui.js");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const series = [
+    { key: "fr", label: "France", color: "#00f" },
+    { key: "es", label: "Spain", color: "#f00" },
+    { key: "it", label: "Italy", color: "#0f0" },
+  ];
+  const render = d =>
+    server.renderToStaticMarkup(
+      React.createElement(ui.TableTooltip, {
+        title: "W45",
+        columns: ["Leads", "% of total"],
+        rows: ui.tooltipSeriesRows(d, series).map(r => ({
+          ...r,
+          cells: [ui.tooltipCell(r.value, String), ui.tooltipCell(r.value == null ? null : r.value / 120, v => `${Math.round(v * 100)}%`, { percent: true })],
+        })),
+        total: { label: "Total", cells: ["120", undefined] },
+      }),
+    );
+  const html = render({ fr: 120, es: 0 });
+  assert.equal((html.match(/<tr/g) ?? []).length, 1 + 3 + 1); // header, 3 series, total
+  assert.match(html, /Spain<\/th><td><span class="mk-tip-muted">0<\/span><\/td><td><span class="mk-tip-muted">0%<\/span><\/td>/);
+  assert.match(html, /Italy<\/th><td><span class="mk-tip-muted">–<\/span><\/td><td><span class="mk-tip-muted">–<\/span><\/td>/);
+  assert.match(html, /France<\/th><td>120<\/td><td>100%<\/td>/);
+  // An undefined cell shows a muted dash too.
+  assert.match(html, /Total<\/th><td>120<\/td><td><span class="mk-tip-muted">–<\/span><\/td>/);
+  assert.equal((render({}).match(/<tr/g) ?? []).length, 5);
 });
 
 test("TableTooltip renders a table: swatch + label, cells, a total row under a rule", async t => {

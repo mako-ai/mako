@@ -174,7 +174,12 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
 .mk-tip table { border-collapse: collapse; }
 .mk-tip thead th { color: var(--muted-foreground); font-weight: 500; text-align: right; padding-left: 12px; }
 .mk-tip tbody th { text-align: left; font-weight: 400; padding-top: 2px; }
-.mk-tip td { text-align: right; padding: 2px 0 0 12px; font-variant-numeric: tabular-nums; }
+/* Value columns hold a fixed minimum width (override with --mk-tip-col), so
+ * the box never resizes while the pointer slides across the chart. */
+.mk-tip td { text-align: right; padding: 2px 0 0 12px; font-variant-numeric: tabular-nums; min-width: var(--mk-tip-col, 7ch); }
+.mk-tip thead th:not(:first-child) { min-width: var(--mk-tip-col, 7ch); }
+/* A zero ("0", "0%") or a missing value ("–"): kept, but muted. */
+.mk-tip-muted { color: var(--muted-foreground); font-weight: 400; }
 .mk-tip-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
 .mk-tip-total th, .mk-tip-total td { font-weight: 600; }
 .mk-tip-rule th, .mk-tip-rule td { border-top: 1px solid var(--border); padding-top: 3px; }
