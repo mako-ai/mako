@@ -72,16 +72,19 @@ switches it on. Like n8n: test, then activate.
    with a type error it does not run, ends `FAILED` with no steps, and
    answers the `tsc` output in `typeErrors`. Fix those first.
 4. Fix and repeat from 1 until the run is `COMPLETED`.
-5. Review: `workflow_commit`. From main it commits to the workflow's
-   preview branch, `workflow/<name>` (made on its first commit), and
-   deploys nothing. Show the user what changed and ask them to review it.
-6. Deploy, on the user's go-ahead: `workflow_merge_to_main` (it merges the
-   branch you are on). Then `workflows_status({ wait: 90, sha })`, with
-   the `commitOid` the merge answered, waits until `deployment.liveSha` is
-   that commit; call it again while it answers `deploying: true`
-   (`deployment.buildError` says why not; the previous version keeps
-   running meanwhile). Only admins put workflows on main: for a
-   member, the merge is refused; ask an admin to merge the branch.
+5. Review: `workflow_commit`. From main it puts main plus the workflow's
+   folder, as it is in your checkout, on your preview branch for it
+   (`workflow/<you>/<name>`, answered as `branch`), and deploys nothing.
+   Your checkout stays on main. Each commit replaces the branch. Show the
+   user what changed and ask them to review it.
+6. Deploy, only on the user's go-ahead: `workflow_merge_to_main` (from
+   main it merges your preview branch). Then
+   `workflows_status({ wait: 90, sha })`, with the `commitOid` the merge
+   answered, waits until `deployment.liveSha` is that commit; call it again
+   while it answers `deploying: true` (`deployment.buildError` says why
+   not; the previous version keeps running meanwhile). Only admins put
+   workflows on main: for a member, the merge is refused; ask an admin to
+   merge the branch.
 7. Run it once by hand on the workers (`workflows_run` without `sandbox`)
    and read it with `workflows_status({ runId, wait: 90 })`. This is the
    first run with the workflow's own rights: a write a test could do as
@@ -106,9 +109,9 @@ attempt you give up on is deleted from the checkout (`rm -rf` its folder with
 already on main is removed by deleting its folder, committing that and
 merging it.
 
-After `workflow_commit` your checkout stays on the preview branch. Before
-starting another workflow, go back to main (`git checkout main && git pull`
-with `workflow_bash`), or its commit lands on this branch too.
+Main changes only through `workflow_merge_to_main` after the user said to
+deploy. Never `git commit` or `git push` on main with `workflow_bash`: for
+an admin, nothing stops that push, and it deploys unreviewed code.
 
 ## A workflow file
 

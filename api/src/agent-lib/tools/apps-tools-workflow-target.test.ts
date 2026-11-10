@@ -197,48 +197,33 @@ describe("workflowId as the tools' target", () => {
       message: "Add score-leads",
     });
     expect(commit.success, commit.error).toBe(true);
-    // Committed from main, it went to the workflow's preview branch.
-    expect(commit.branch).toBe("workflow/score-leads");
+    // Committed from main, it went to the workflow's preview branch, and the
+    // shared checkout did not move.
+    const preview = String(commit.branch);
+    expect(preview).toMatch(/^workflow\/(.+\/)?score-leads$/);
     expect(commit.deployed).toBe(false);
+    const git = (command: string) =>
+      call(tools, "workflow_bash", { ...target, command });
+    expect(String((await git("git branch --show-current")).stdout)).toBe(
+      "main\n",
+    );
 
     // On the branch, not on main: nothing is live yet.
     const repoDir = repoDirFor(WS);
     const file = "workflows/score-leads/workflow.ts";
-    const onBranch = await runGit([
-      "-C",
-      repoDir,
-      "show",
-      `workflow/score-leads:${file}`,
-    ]);
-    expect(onBranch.stdout).toContain("Scores leads");
-    await expect(
-      runGit(["-C", repoDir, "show", `main:${file}`]),
-    ).rejects.toThrow();
+    const show = (rev: string) =>
+      runGit(["-C", repoDir, "show", `${rev}:${file}`]);
+    expect((await show(preview)).stdout).toContain("Scores leads");
+    await expect(show("main")).rejects.toThrow();
 
-    // The merge is the deploy: a member cannot do it, even from the
-    // Source Control panel, which merges without the tools.
-    const { mergeBranchToMain, workspaceScope } =
-      await import("../../apps/worktree.service");
-    await expect(
-      mergeBranchToMain(
-        workspaceScope(WS),
-        "workflow/score-leads",
-        undefined,
-        MEMBER,
-      ),
-    ).rejects.toThrow(/Only workspace admins put workflows on main/);
-
-    const merge = await call(tools, "workflow_merge_to_main", target);
-    expect(merge.success, merge.error).toBe(true);
-    const onMain = await runGit(["-C", repoDir, "show", `main:${file}`]);
-    expect(onMain.stdout).toContain("Scores leads");
-
-    // The next change, made on main, goes to the same preview branch.
-    const back = await call(tools, "workflow_bash", {
-      ...target,
-      command: "git checkout -q main && git pull -q --ff-only",
+    // Another try replaces the branch: main plus the folder as it is now,
+    // one commit, nothing stacked on the first. Other work in the shared
+    // checkout stays out of it.
+    await call(tools, "workflow_write_file", {
+      workflowId: "other-work",
+      path: "workflow.ts",
+      contents: WORKFLOW,
     });
-    expect(back.success, String(back.stderr)).toBe(true);
     await call(tools, "workflow_edit_file", {
       ...target,
       path: "workflow.ts",
@@ -250,9 +235,42 @@ describe("workflowId as the tools' target", () => {
       message: "Reword score-leads",
     });
     expect(again.success, again.error).toBe(true);
-    expect(again.branch).toBe("workflow/score-leads");
-    const stillLive = await runGit(["-C", repoDir, "show", `main:${file}`]);
-    expect(stillLive.stdout).not.toContain("Scores new leads");
+    expect(again.branch).toBe(preview);
+    expect((await show(preview)).stdout).toContain("Scores new leads");
+    const ahead = await runGit([
+      ...["-C", repoDir, "rev-list", "--count", `main..${preview}`],
+    ]);
+    expect(ahead.stdout.trim()).toBe("1");
+    const files = await runGit([
+      ...["-C", repoDir, "diff", "--name-only", `main...${preview}`],
+    ]);
+    expect(files.stdout.trim()).toBe(file);
+
+    // The merge is the deploy: a member cannot do it, even from the
+    // Source Control panel, which merges without the tools.
+    const { mergeBranchToMain, workspaceScope } =
+      await import("../../apps/worktree.service");
+    await expect(
+      mergeBranchToMain(workspaceScope(WS), preview, undefined, MEMBER),
+    ).rejects.toThrow(/Only workspace admins put workflows on main/);
+
+    // From main, the merge takes the preview branch.
+    const merge = await call(tools, "workflow_merge_to_main", target);
+    expect(merge.success, merge.error).toBe(true);
+    expect(merge.branch).toBe(preview);
+    expect((await show("main")).stdout).toContain("Scores new leads");
+
+    // The checkout caught up: the merged edits are no longer uncommitted,
+    // and the work that was not merged still is.
+    const dirty = String(
+      (await git("git status --porcelain --untracked-files=all -- ..")).stdout,
+    );
+    expect(dirty).not.toContain("score-leads");
+    expect(dirty).toContain("other-work");
+    const head = await git("git rev-parse HEAD");
+    const mainHead = await runGit(["-C", repoDir, "rev-parse", "main"]);
+    expect(String(head.stdout).trim()).toBe(mainHead.stdout.trim());
+    await git("rm -rf ../other-work");
   }, 120_000);
 
   it("edit_file takes oldString/newString or Claude Code's old_string/new_string", async () => {

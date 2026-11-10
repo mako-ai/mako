@@ -854,6 +854,60 @@ export async function boxCommitAll(input: {
   return { committed: true, commitOid: head.stdout.trim(), message };
 }
 
+/**
+ * Commit one path as it is in the working copy onto `branch`, without moving
+ * the checkout: HEAD, index and working tree stay as they are, so the other
+ * chats and the UI sharing this working copy notice nothing.
+ *
+ * The commit is built on origin's `base` in a throwaway index, and the branch
+ * is force-pushed to it. So the branch always holds `base` plus this path's
+ * current state: one left by an earlier attempt, merged or not, is replaced,
+ * never stacked on.
+ */
+export async function boxCommitPathToBranch(input: {
+  ctx: SandboxExecContext;
+  path: string;
+  branch: string;
+  base: string;
+  message: string;
+}): Promise<BoxCommitResult> {
+  const { ctx, branch, base, message } = input;
+  const path = safeRepoPath(input.path);
+  const script = [
+    "set -e",
+    `cd ${sh(boxRoot(ctx))}`,
+    "git fetch -q origin",
+    `base=$(git rev-parse --verify -q ${sh(`refs/remotes/origin/${base}^{commit}`)})`,
+    // Neither in the working copy nor on base: nothing to commit, and a
+    // pathspec that matches nothing makes `git add` fail.
+    `if [ ! -e ${sh(path)} ] && ! git cat-file -e "$base:"${sh(path)} 2>/dev/null; then echo mako-unchanged; exit 0; fi`,
+    `idx="$(git rev-parse --absolute-git-dir)/mako-branch-index.$$"`,
+    `trap 'rm -f "$idx"' EXIT`,
+    `GIT_INDEX_FILE="$idx" git read-tree "$base"`,
+    `GIT_INDEX_FILE="$idx" git add -A -- ${sh(path)}`,
+    `tree=$(GIT_INDEX_FILE="$idx" git write-tree)`,
+    `if [ "$tree" = "$(git rev-parse "$base^{tree}")" ]; then echo mako-unchanged; exit 0; fi`,
+    `commit=$(git commit-tree "$tree" -p "$base" -m ${sh(message)})`,
+    `git push -q origin "+$commit:"${sh(`refs/heads/${branch}`)}`,
+    `echo "mako-commit $commit"`,
+  ].join("\n");
+  let result = await boxExec(ctx, script, { timeoutMs: 180_000 });
+  if (result.exitCode !== 0 && isUnreachableOrigin(result.stderr)) {
+    await healBoxOrigin(ctx);
+    result = await boxExec(ctx, script, { timeoutMs: 180_000 });
+  }
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Could not commit to ${branch}: ${(result.stderr || result.stdout).slice(-300)}`,
+    );
+  }
+  const commitOid = /mako-commit ([0-9a-f]+)/.exec(result.stdout)?.[1];
+  if (!commitOid) {
+    return { committed: false, reason: `No changes against ${base}` };
+  }
+  return { committed: true, commitOid, message };
+}
+
 /** A repo-relative path that stays inside the repo. */
 function safeRepoPath(relPath: string): string {
   if (
@@ -1104,30 +1158,40 @@ export async function healBoxOrigin(ctx: SandboxExecContext): Promise<void> {
  * A conflict is left in the working copy rather than resolved on the user's
  * behalf: it is a real conflict in a real checkout, and it is fixable there.
  */
+/**
+ * Drop uncommitted changes under `workflows/` that upstream now holds
+ * byte for byte. A workflow is committed to its preview branch without
+ * moving the checkout (boxCommitPathToBranch), so once that branch is merged
+ * the working copy still has the same edits uncommitted, and git refuses a
+ * merge over them even though they are identical. Nothing is lost: each
+ * dropped file is exactly what the merge brings.
+ */
+const SETTLE_MERGED_WORKFLOWS = [
+  `git status --porcelain --untracked-files=all -- workflows/ | while IFS= read -r line; do`,
+  `p="\${line#???}"`,
+  `[ -f "$p" ] || continue`,
+  `up=$(git rev-parse -q --verify "@{u}:$p") || continue`,
+  `[ "$(git hash-object -- "$p")" = "$up" ] || continue`,
+  `if git cat-file -e "HEAD:$p" 2>/dev/null; then git checkout -q HEAD -- "$p"; else git rm -q --cached --ignore-unmatch -- "$p"; rm -f -- "$p"; fi`,
+  `done`,
+].join("\n");
+
 export async function boxPull(ctx: SandboxExecContext): Promise<void> {
   // The merge may legitimately refuse (uncommitted work in the way, or a
   // real conflict) — that is the user's to resolve in their checkout, not
   // ours to force. But refusing SILENTLY cost a debugging session when a
   // stale box kept lacking an app that main had for days: log what git said
   // so "the box is behind and won't catch up" has a trail.
-  let result = await boxExec(
-    ctx,
-    [
-      boxGit(ctx, "fetch", "-q", "origin"),
-      `${boxGit(ctx, "merge", "--no-edit", "@{u}")}`,
-    ].join(" && "),
-    { timeoutMs: 180_000 },
-  );
+  const pull = [
+    boxGit(ctx, "fetch", "-q", "origin"),
+    // Best effort: whatever it could not settle, the merge reports.
+    `{ (cd ${sh(boxRoot(ctx))} && ${SETTLE_MERGED_WORKFLOWS}); true; }`,
+    `${boxGit(ctx, "merge", "--no-edit", "@{u}")}`,
+  ].join(" && ");
+  let result = await boxExec(ctx, pull, { timeoutMs: 180_000 });
   if (result.exitCode !== 0 && isUnreachableOrigin(result.stderr)) {
     await healBoxOrigin(ctx);
-    result = await boxExec(
-      ctx,
-      [
-        boxGit(ctx, "fetch", "-q", "origin"),
-        `${boxGit(ctx, "merge", "--no-edit", "@{u}")}`,
-      ].join(" && "),
-      { timeoutMs: 180_000 },
-    );
+    result = await boxExec(ctx, pull, { timeoutMs: 180_000 });
   }
   if (result.exitCode !== 0) {
     logger.warn("Apps box pull did not merge", {

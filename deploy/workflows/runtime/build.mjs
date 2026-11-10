@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 
 export const RUNTIME_DIR = dirname(fileURLToPath(import.meta.url));
 const START_TIMEOUT_MS = 60_000;
+const TYPECHECK_TIMEOUT_MS = 120_000;
 
 /**
  * Make `root` (a folder holding `workflows/`) loadable: the Hatchet client
@@ -41,7 +42,10 @@ export function prepare(root) {
   writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module" }));
 }
 
-/** Typecheck `workflows/` under a prepared `root`. Returns the errors, or null. */
+/**
+ * Typecheck `workflows/` under a prepared `root`. Returns the errors, or null;
+ * throws when tsc itself could not run.
+ */
 export function typecheck(root) {
   const tsconfig = join(root, "tsconfig.workflows.json");
   writeFileSync(
@@ -64,10 +68,18 @@ export function typecheck(root) {
     execFileSync(join(RUNTIME_DIR, "node_modules/.bin/tsc"), ["-p", tsconfig], {
       cwd: root,
       stdio: "pipe",
+      timeout: TYPECHECK_TIMEOUT_MS,
     });
     return null;
   } catch (err) {
-    return err.stdout?.toString() || err.message;
+    const errors = err.stdout?.toString();
+    // tsc exits 2 with its errors on stdout. Anything else (no tsc, a
+    // timeout, a crash) is not the code's fault: thrown, not reported as
+    // type errors.
+    if (err.status === 2 && errors) return errors;
+    throw new Error(
+      `The typecheck could not run: ${err.code ?? err.signal ?? `exit ${err.status}`}${err.stderr?.length ? `\n${err.stderr}` : ""}`,
+    );
   }
 }
 

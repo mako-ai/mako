@@ -47,7 +47,7 @@ import { workspaceService } from "../../services/workspace.service";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import {
   WorktreeConflictError,
-  checkoutBranch,
+  commitPathToBranch,
   commitWorktree,
   catchUpLiveBox,
   createProject,
@@ -80,7 +80,10 @@ import {
   isSafeSegment,
   parseAppRepoPath,
 } from "../../apps/app-paths";
-import { loadOwnerDirectory } from "../../apps/user-handles.service";
+import {
+  handleForUser,
+  loadOwnerDirectory,
+} from "../../apps/user-handles.service";
 import { loadAppsIndex } from "../../apps/app-index.service";
 import { rankApps } from "../../apps/app-search";
 import {
@@ -186,9 +189,6 @@ const targetInputFor = (kind: TargetKind, describe = true): TargetInput => {
   } as unknown as TargetInput;
 };
 
-/** Where a workflow's commits wait for review before main, the deploy. */
-export const previewBranchOf = (workflowId: string) => `workflow/${workflowId}`;
-
 /** The `workflow_*` tools: the app tool each one is, and what it says it does. */
 const WORKFLOW_TOOLS: Record<string, string> = {
   bash: "Run a bash command in your sandbox. cwd is the workflow's folder (workflows/<workflowId>) inside the workspace repo. Use it for git (status, checkout, pull, push) and for looking around; run a workflow with workflows_run, not from here.",
@@ -203,9 +203,9 @@ const WORKFLOW_TOOLS: Record<string, string> = {
   status:
     "Show the checkout's git state for a workflow: branch, base commit, and changed files.",
   commit:
-    "Commit this workflow's uncommitted work with a message. Nothing deploys: from main the commit goes to the workflow's preview branch, workflow/<workflowId> (made on its first commit); on another branch, onto that branch. The user reviews it, then workflow_merge_to_main deploys it.",
+    "Commit this workflow's folder with a message. Nothing deploys: from main the commit goes to your preview branch for the workflow (workflow/<you>/<workflowId>: main plus the folder as it is in your checkout, replaced on each commit), and your checkout stays on main. On another branch, it commits onto that branch. The user reviews it; workflow_merge_to_main deploys it.",
   merge_to_main:
-    "Merge a branch into main, the deploy (default: the branch you are on, such as workflow/<workflowId>). Merge only after the user has reviewed the change and said to deploy it; only workspace admins may put workflow changes on main.",
+    "Merge a branch into main: the deploy. From main, `branch` defaults to your preview branch for this workflow. Call it only after the user has reviewed the change and said to deploy it; only workspace admins may put workflow changes on main.",
 };
 
 export function createAppsTools(options: AppsToolsOptions): ToolSet {
@@ -256,6 +256,17 @@ function buildTools(
   // switches branches mid-conversation.
   const currentActorBranch = async (project: IAppProject) =>
     (await ensureActorWorktree(project)).doc.branch;
+  // Where a workflow's commits wait for review before main, the deploy: one
+  // branch per person and workflow, so two people never replace each
+  // other's.
+  const previewBranchFor = async (workflowId: string) => {
+    const handle = await handleForUser(workspaceId, userId).catch(
+      () => undefined,
+    );
+    return handle
+      ? `workflow/${handle}/${workflowId}`
+      : `workflow/${workflowId}`;
+  };
 
   // Read-before-edit freshness tracking (a Claude Code reliability hallmark):
   // the agent must read a file before a blind full-rewrite, so it never
@@ -1520,8 +1531,13 @@ function buildTools(
       execute: async ({ appId, workflowId, branch }) => {
         const loaded = await loadTarget({ appId, workflowId }, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
-        const target = branch ?? (await currentActorBranch(loaded.project));
-        if (target === (loaded.project.defaultBranch || "main")) {
+        const main = loaded.project.defaultBranch || "main";
+        let target = branch ?? (await currentActorBranch(loaded.project));
+        // From main, a workflow's own branch is its preview branch.
+        if (workflowId && target === main && !branch) {
+          target = await previewBranchFor(workflowId);
+        }
+        if (target === main) {
           return {
             success: false,
             error:
@@ -1535,6 +1551,11 @@ function buildTools(
             undefined,
             userId,
           );
+          // The merger's checkout still holds the merged edits uncommitted;
+          // the pull drops those main now has, so it catches up.
+          if (result.merged && workflowId) {
+            await catchUpLiveBox(loaded.project, actorId);
+          }
           return { success: result.merged, ...result, branch: target };
         } catch (error) {
           logger.error("app_merge_to_main failed", { error, appId });
@@ -1595,19 +1616,28 @@ function buildTools(
           const handle = await ensureActorWorktree(loaded.project);
           markTouched(loaded.project);
           // A workflow on main goes to its preview branch: a commit on main is
-          // the deploy, and that is the person's to review and merge. Git
-          // carries the uncommitted work across, or refuses and names it.
+          // the deploy, and that is the person's to review and merge. The
+          // checkout stays on main: it is shared by the UI and every chat.
           const main = loaded.project.defaultBranch || "main";
-          const preview =
-            workflowId && handle.doc.branch === main
-              ? previewBranchOf(workflowId)
-              : undefined;
-          if (preview) {
-            await checkoutBranch(handle, preview).catch(error =>
-              /No such branch/.test(errorMessage(error))
-                ? checkoutBranch(handle, preview, { create: true })
-                : Promise.reject(error),
+          if (workflowId && handle.doc.branch === main) {
+            const branch = await previewBranchFor(workflowId);
+            const result = await commitPathToBranch(
+              handle,
+              handle.appRoot,
+              branch,
+              { base: main, message },
             );
+            return {
+              success: result.committed,
+              ...result,
+              branch,
+              ...(result.committed
+                ? {
+                    deployed: false,
+                    next: `Not deployed: ${branch} is ${main} plus this workflow as it is in your checkout; your checkout stays on ${main}. Show the user what changed, and only on their go-ahead deploy it with workflow_merge_to_main (an admin's call). A later workflow_commit replaces the branch.`,
+                  }
+                : {}),
+            };
           }
           // Scoped to THIS app's folder: the working copy is shared by every
           // chat this user runs, so an unscoped commit would sweep a
@@ -1615,18 +1645,7 @@ function buildTools(
           const result = await commitWorktree(handle, message, undefined, {
             paths: [handle.appRoot],
           });
-          if (!workflowId) return { success: result.committed, ...result };
-          return {
-            success: result.committed,
-            ...result,
-            branch: handle.doc.branch,
-            ...(result.committed && handle.doc.branch !== main
-              ? {
-                  deployed: false,
-                  next: `Not deployed: the commit is on ${handle.doc.branch}. Show the user what changed, and on their go-ahead merge it with workflow_merge_to_main (an admin's call).`,
-                }
-              : {}),
-          };
+          return { success: result.committed, ...result };
         } catch (error) {
           logger.error("app_commit failed", { error, appId });
           return { success: false, error: errorMessage(error) };
