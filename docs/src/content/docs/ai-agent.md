@@ -84,7 +84,11 @@ Beyond the always-on self-directive, Mako supports **skills** — named, workspa
 
 Every turn, Mako puts the complete skill index (every skill's name and description) in the prompt, plus budgeted body excerpts for skills marked `pinned: true` in their `SKILL.md`. The agent loads complete bodies by name. Skills are files in the workspace repo (`skills/<name>/SKILL.md`) and nothing else — there is no live index database, no embeddings, and no usage counters. See [Skills](/skills/) for the file format, admin UI, and REST API.
 
+<!-- <block name="skill-tool-tiers"> -->
+
 Skill _retrieval_ and _writes_ (`get_relevant_skills`, `load_skill`, `save_skill`, `read_skill_resource`) are always active — the skills prompt names them every turn, so keeping them core avoids search/load round-trips. Long-tail lookups (`delete_skill`, `list_skills`, `search_skills`) are deferred tools the agent activates on demand — see [Tool paging](#tool-paging) below.
+
+<!-- </block> -->
 
 ## Expertise Modes
 
@@ -92,14 +96,19 @@ Mako runs a **single unified agent**, not a fleet of separate agents. Capability
 
 On a fresh request the default mode is picked from what you're looking at — the flow editor opens in **Sync Flow**, an app in **React App**, a dbt file/job in **Transforms**, a notebook in **Notebook** — otherwise **Query**. The agent then switches as the task demands.
 
+<!-- <block name="expertise-modes"> -->
+
 | Mode                | Does                                                                                                                                              |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Query** (default) | Build and run queries in consoles (SQL, MongoDB), funnels, reports, and analyses                                                                  |
 | **Sync Flow**       | Configure database-to-database sync flows, query templates, and schema mapping                                                                    |
 | **React App**       | Build [React apps](/apps/) wired to workspace data — edit files in a git-backed sandbox, run shell commands, create data bindings                 |
 | **Transforms**      | Build and run [dbt transformations](/transforms/) — edit project files, compile, test, and run models against the warehouse                       |
+| **Workflow**        | Write, test, and deploy [workflows](/workflows/) — scheduled or multi-step TypeScript jobs in the workspace repo, run by Hatchet                  |
 | **Notebook**        | Build [notebooks](/notebooks/) — add SQL/Python/Markdown cells, run SQL against data sources and Python on the managed kernel, iterate on results |
-| **Explore**         | Read-only investigation across connections, consoles, apps, and memory                                                                           |
+| **Explore**         | Read-only investigation across connections, consoles, apps, and memory                                                                            |
+
+<!-- </block> -->
 
 `Explore` is read-only by design. Mode ids persist in chat history, so renames stay backward-compatible (the legacy `dbt` mode resolves to `transform`). Enabling a mode adds its tools — modes accumulate across a turn rather than replacing one another.
 
@@ -113,7 +122,11 @@ The provider request carries a bounded **working set** of tools instead of every
 
 Deferred tools are discoverable via the `search_tools` meta-tool (compact cards, no schemas) and activated with `load_tools`, which mutates the active set exactly like `enable_mode` and replays statelessly from the chat transcript. A deterministic per-turn relevance preload activates obviously-relevant deferred tools from the last user message, so common cases need no search/load round-trip. To close the named-but-not-loaded trap, the system prompt always carries a compact name-only inventory: every built-in tool name grouped by tier (core/mode/deferred, no schemas) plus MCP servers with tool counts — individual MCP tool names are only discoverable via `search_tools`.
 
+<!-- <block name="tool-budgets"> -->
+
 Budgets: at most 110 active tools and ~12k tokens of tool definitions per step, whichever binds first — with per-provider hard caps as a backstop (xAI rejects requests above 250 tools, OpenAI above 128). Core and mode tools are never evicted; loaded deferred tools are evicted oldest-first. Small workspaces whose whole tool surface fits the budget bypass paging entirely and keep the zero-friction behavior. When paging is active, the system prompt lists deferred sources one line per connector, and provider-facing MCP tool descriptions are truncated (full descriptions stay in the search catalog).
+
+<!-- </block> -->
 
 `pnpm --filter api tools:measure` prints per-tool token weights and per-mode totals.
 
@@ -134,16 +147,19 @@ Both are workspace-scoped. See [Version History](/version-history/).
 
 The agent can capture screenshots of the live UI for visual QA via the **`capture_screenshot`** client tool. It runs in the browser (no server round-trip) and returns a PNG that the agent inspects directly. Supported targets:
 
-| Target             | Captures                                                   |
-| ------------------ | ---------------------------------------------------------- |
-| `active_tab`       | The current main tab                                       |
-| `app_shell`        | The full Mako app UI                                       |
-| `viewport`         | The current visible page                                   |
-| `selector`         | A specific element matched by a CSS selector               |
+| Target       | Captures                                     |
+| ------------ | -------------------------------------------- |
+| `active_tab` | The current main tab                         |
+| `app_shell`  | The full Mako app UI                         |
+| `viewport`   | The current visible page                     |
+| `selector`   | A specific element matched by a CSS selector |
 
 This lets the agent verify rendering (chart legibility, overlap, layout reflow) and debug UI issues by actually looking at the result rather than reasoning blind.
 
 ## Web Access
+
+<!-- <block name="web-tools" same-as="api/src/agents/modes/registry.ts:core-web-tools"
+     same-as-pattern='^\| `(?P<value>[a-z_]+)` +\|'> -->
 
 When a request needs information from the public internet — a pasted URL, an online document, or fresh facts not in your data — the agent reaches for two web tools. They are always active in every expertise mode (usage guidance lives in the `web` skill):
 
@@ -151,6 +167,8 @@ When a request needs information from the public internet — a pasted URL, an o
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `fetch_url`  | Reads a specific public URL in full. Handles HTML, PDF, CSV, JSON, and plain text. Returns up to `max_chars` characters (20k default, 50k max).     |
 | `web_search` | Searches the web for current information. Returns ranked results as `{ title, url, snippet }`. Follow up with `fetch_url` to read a result in full. |
+
+<!-- </block> -->
 
 Typical flow: if you paste a URL, the agent calls `fetch_url` directly; for an open-ended question needing fresh context, it runs `web_search` first, then `fetch_url` on the best one or two results, and cites the source.
 

@@ -94,7 +94,9 @@ export interface IWorkspaceBilling {
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
   subscriptionStatus:
+    // <block name="workspace-subscription-status-union" same-as=":workspace-subscription-status-enum" same-as-pattern='"(?P<value>[^"]+)"'>
     "active" | "past_due" | "canceled" | "trialing" | "incomplete" | null;
+  // </block>
   currentPeriodStart: Date | null;
   currentPeriodEnd: Date | null;
   usageQuotaUsd: number;
@@ -237,7 +239,9 @@ export interface IWorkspaceMember extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   userId: string;
+  // <block name="workspace-member-role-union" same-as=":workspace-member-role-enum" same-as-pattern='"(?P<value>[^"]+)"'>
   role: "owner" | "admin" | "member" | "viewer";
+  // </block>
   joinedAt: Date;
   /** True only for the first workspace auto-created during user onboarding */
   isDefaultMembership?: boolean;
@@ -266,6 +270,7 @@ export interface IDatabaseConnection extends Document {
   workspaceId: Types.ObjectId;
   name: string;
   type:
+    // <block name="database-connection-type-union" same-as=":database-connection-type-enum" same-as-pattern='"(?P<value>[^"]+)"'>
     | "mongodb"
     | "postgresql"
     | "redshift"
@@ -277,6 +282,7 @@ export interface IDatabaseConnection extends Document {
     | "clickhouse"
     | "cloudflare-d1"
     | "cloudflare-kv";
+  // </block>
   connection: {
     host?: string;
     port?: number;
@@ -530,6 +536,7 @@ export interface ISavedConsole extends Document {
   mongoOptions?: {
     collection: string;
     operation:
+      // <block name="saved-console-operation-union" same-as=":saved-console-operation-enum" same-as-pattern='"(?P<value>[^"]+)"'>
       | "find"
       | "aggregate"
       | "insertMany"
@@ -538,6 +545,7 @@ export interface ISavedConsole extends Document {
       | "findOne"
       | "updateOne"
       | "deleteOne";
+    // </block>
   };
   createdBy: string;
   /** @deprecated Use `access` field instead */
@@ -592,7 +600,9 @@ export interface ISavedConsole extends Document {
    */
   lastRun?: {
     at: Date;
+    // <block name="saved-console-status-union" same-as=":saved-console-status-enum" same-as-pattern='"(?P<value>[^"]+)"'>
     status: "running" | "success" | "error" | "cancelled";
+    // </block>
     rowCount?: number;
     durationMs: number;
     error?: string;
@@ -630,7 +640,9 @@ export interface IScheduledQueryRun extends Document {
   triggeredAt: Date;
   startedAt?: Date;
   completedAt?: Date;
+  // <block name="scheduled-query-run-status-union" same-as=":scheduled-query-run-status-enum" same-as-pattern='"(?P<value>[^"]+)"'>
   status: "queued" | "running" | "success" | "error";
+  // </block>
   triggerType: "schedule" | "manual";
   triggeredBy?: string;
   durationMs?: number;
@@ -903,7 +915,9 @@ export interface ITablePartitioning {
   enabled: boolean;
   type?: "time" | "ingestion";
   field?: string;
+  // <block name="flow-table-partition-granularity-union" same-as=":flow-table-partition-granularity-enum" same-as-pattern='"(?P<value>[^"]+)"'>
   granularity?: "day" | "hour" | "month" | "year";
+  // </block>
   requirePartitionFilter?: boolean;
 }
 
@@ -922,7 +936,9 @@ export interface IEntityLayout {
   entity: string;
   label?: string;
   partitionField: string;
+  // <block name="flow-partition-granularity-union" same-as=":flow-partition-granularity-enum" same-as-pattern='"(?P<value>[^"]+)"'>
   partitionGranularity: "day" | "hour" | "month" | "year";
+  // </block>
   clusterFields: string[];
   enabled?: boolean;
 }
@@ -954,7 +970,9 @@ export interface IIncrementalConfig {
  */
 export interface IConflictConfig {
   keyColumns: string[]; // Columns that form the unique key
+  // <block name="flow-conflict-strategy-union" same-as=":flow-conflict-strategy-enum" same-as-pattern='"(?P<value>[^"]+)"'>
   strategy: "update" | "ignore" | "replace" | "upsert";
+  // </block>
 }
 
 /**
@@ -1158,12 +1176,16 @@ export interface IFlowExecution extends Document {
   startedAt: Date;
   completedAt?: Date;
   lastHeartbeat?: Date;
+  // <block name="flow-execution-status-union" same-as=":flow-execution-status-enum" same-as-pattern='"(?P<value>[^"]+)"'>
   status: "running" | "completed" | "failed" | "cancelled" | "abandoned";
+  // </block>
   success: boolean;
   duration?: number;
   logs: Array<{
     timestamp: Date;
+    // <block name="flow-execution-log-level-union" same-as=":flow-execution-log-level-enum" same-as-pattern='"(?P<value>[^"]+)"'>
     level: "debug" | "info" | "warn" | "error";
+    // </block>
     message: string;
     metadata?: any;
   }>;
@@ -1187,7 +1209,9 @@ export interface IWebhookEvent extends Document {
   eventType: string; // e.g., "customer.updated"
   receivedAt: Date;
   processedAt?: Date;
+  // <block name="webhook-event-status-union" same-as=":webhook-event-status-enum" same-as-pattern='"(?P<value>[^"]+)"'>
   status: "pending" | "processing" | "completed" | "failed";
+  // </block>
   attempts: number;
   error?: {
     message: string;
@@ -1200,7 +1224,9 @@ export interface IWebhookEvent extends Document {
   entity?: string;
   operation?: "upsert" | "delete";
   recordId?: string;
+  // <block name="webhook-event-apply-status-union" same-as=":webhook-event-apply-status-enum" same-as-pattern='"(?P<value>[^"]+)"'>
   applyStatus?: "pending" | "applied" | "failed" | "dropped";
+  // </block>
   appliedAt?: Date;
   applyAttempts?: number;
   applyError?: {
@@ -1235,7 +1261,9 @@ export interface ICdcChangeEvent extends Document {
     message: string;
     code?: string;
   };
+  // <block name="cdc-change-materialization-status-union" same-as=":cdc-change-materialization-status-enum" same-as-pattern='"(?P<value>[^"]+)"'>
   materializationStatus: "pending" | "applied" | "failed" | "dropped";
+  // </block>
   materializationAttemptCount: number;
   appliedAt?: Date;
   materializationError?: {
@@ -1278,7 +1306,9 @@ export interface ICdcEntityState extends Document {
   lastFailureError?: string;
   // Progress of an in-place destination-table repartition (layout change).
   repartition?: {
+    // <block name="cdc-repartition-status-union" same-as=":cdc-repartition-status-enum" same-as-pattern='"(?P<value>[^"]+)"'>
     status: "pending" | "running" | "done" | "failed";
+    // </block>
     startedAt?: Date;
     completedAt?: Date;
     error?: string;
@@ -1322,6 +1352,7 @@ export interface IQueryExecution extends Document {
 
   // Execution context
   source:
+    // <block name="query-execution-source-union" same-as=":query-execution-source-enum" same-as-pattern='"(?P<value>[^"]+)"'>
     | "console_ui"
     | "console_ui_admin_override"
     | "api"
@@ -1329,11 +1360,14 @@ export interface IQueryExecution extends Document {
     | "agent"
     | "flow"
     | "scheduled_query";
+  // </block>
   databaseType: string; // postgresql, mongodb, bigquery, etc.
   queryLanguage: "sql" | "mongodb" | "javascript";
 
   // Results
+  // <block name="query-execution-status-union" same-as=":query-execution-status-enum" same-as-pattern='"(?P<value>[^"]+)"'>
   status: "success" | "error" | "cancelled" | "timeout";
+  // </block>
   executionTimeMs: number;
   rowCount?: number; // Rows returned (if applicable)
   errorType?: string; // If failed: syntax, connection, timeout, permission
@@ -1355,7 +1389,9 @@ export interface IConnectionVerification extends Document {
   databaseType: string;
 
   // Where in the product the test ran
+  // <block name="connection-verification-trigger-union" same-as=":connection-verification-trigger-enum" same-as-pattern='"(?P<value>[^"]+)"'>
   trigger: "standalone_test" | "create_verify" | "update_verify" | "saved_test";
+  // </block>
 
   // Outcome
   success: boolean;
@@ -1431,12 +1467,14 @@ const WorkspaceSchema = new Schema<IWorkspace>(
       subscriptionStatus: {
         type: String,
         enum: [
+          // <block name="workspace-subscription-status-enum" same-as=":workspace-subscription-status-union" same-as-pattern='"(?P<value>[^"]+)"'>
           "active",
           "past_due",
           "canceled",
           "trialing",
           "incomplete",
           null,
+          // </block>
         ],
         default: null,
       },
@@ -1560,7 +1598,9 @@ const WorkspaceMemberSchema = new Schema<IWorkspaceMember>({
   },
   role: {
     type: String,
+    // <block name="workspace-member-role-enum" same-as=":workspace-member-role-union" same-as-pattern='"(?P<value>[^"]+)"'>
     enum: ["owner", "admin", "member", "viewer"],
+    // </block>
     required: true,
   },
   joinedAt: {
@@ -1657,6 +1697,7 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
     type: {
       type: String,
       enum: [
+        // <block name="database-connection-type-enum" same-as=":database-connection-type-union" same-as-pattern='"(?P<value>[^"]+)"'>
         "mongodb",
         "postgresql",
         "redshift",
@@ -1668,6 +1709,7 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
         "clickhouse",
         "cloudflare-d1",
         "cloudflare-kv",
+        // </block>
       ],
       required: true,
     },
@@ -1942,6 +1984,7 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       operation: {
         type: String,
         enum: [
+          // <block name="saved-console-operation-enum" same-as=":saved-console-operation-union" same-as-pattern='"(?P<value>[^"]+)"'>
           "find",
           "aggregate",
           "insertMany",
@@ -1950,6 +1993,7 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
           "findOne",
           "updateOne",
           "deleteOne",
+          // </block>
         ],
       },
     },
@@ -2071,7 +2115,9 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
           at: { type: Date, required: true },
           status: {
             type: String,
+            // <block name="saved-console-status-enum" same-as=":saved-console-status-union" same-as-pattern='"(?P<value>[^"]+)"'>
             enum: ["running", "success", "error", "cancelled"],
+            // </block>
             required: true,
           },
           rowCount: { type: Number },
@@ -2514,7 +2560,9 @@ const FlowSchema = new Schema<IFlow>(
         enabled: { type: Boolean, default: false },
         type: { type: String, enum: ["time", "ingestion"] },
         field: String,
+        // <block name="flow-table-partition-granularity-enum" same-as=":flow-table-partition-granularity-union" same-as-pattern='"(?P<value>[^"]+)"'>
         granularity: { type: String, enum: ["day", "hour", "month", "year"] },
+        // </block>
         requirePartitionFilter: { type: Boolean, default: false },
       },
       clustering: {
@@ -2676,7 +2724,9 @@ const FlowSchema = new Schema<IFlow>(
         partitionField: { type: String, required: true },
         partitionGranularity: {
           type: String,
+          // <block name="flow-partition-granularity-enum" same-as=":flow-partition-granularity-union" same-as-pattern='"(?P<value>[^"]+)"'>
           enum: ["day", "hour", "month", "year"],
+          // </block>
           default: "day",
         },
         clusterFields: [String],
@@ -2697,7 +2747,9 @@ const FlowSchema = new Schema<IFlow>(
       keyColumns: [String],
       strategy: {
         type: String,
+        // <block name="flow-conflict-strategy-enum" same-as=":flow-conflict-strategy-union" same-as-pattern='"(?P<value>[^"]+)"'>
         enum: ["update", "ignore", "replace", "upsert"],
+        // </block>
         default: "update",
       },
     },
@@ -2815,7 +2867,9 @@ const FlowExecutionSchema = new Schema<IFlowExecution>(
     lastHeartbeat: Date,
     status: {
       type: String,
+      // <block name="flow-execution-status-enum" same-as=":flow-execution-status-union" same-as-pattern='"(?P<value>[^"]+)"'>
       enum: ["running", "completed", "failed", "cancelled", "abandoned"],
+      // </block>
       required: true,
     },
     success: { type: Boolean, required: true },
@@ -2825,7 +2879,9 @@ const FlowExecutionSchema = new Schema<IFlowExecution>(
         timestamp: { type: Date, required: true },
         level: {
           type: String,
+          // <block name="flow-execution-log-level-enum" same-as=":flow-execution-log-level-union" same-as-pattern='"(?P<value>[^"]+)"'>
           enum: ["debug", "info", "warn", "error"],
+          // </block>
           required: true,
         },
         message: { type: String, required: true },
@@ -2862,7 +2918,9 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
     processedAt: Date,
     status: {
       type: String,
+      // <block name="webhook-event-status-enum" same-as=":webhook-event-status-union" same-as-pattern='"(?P<value>[^"]+)"'>
       enum: ["pending", "processing", "completed", "failed"],
+      // </block>
       default: "pending",
       required: true,
     },
@@ -2883,7 +2941,9 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
     recordId: String,
     applyStatus: {
       type: String,
+      // <block name="webhook-event-apply-status-enum" same-as=":webhook-event-apply-status-union" same-as-pattern='"(?P<value>[^"]+)"'>
       enum: ["pending", "applied", "failed", "dropped"],
+      // </block>
       default: "pending",
       required: true,
     },
@@ -2990,7 +3050,9 @@ const CdcChangeEventSchema = new Schema<ICdcChangeEvent>(
     },
     materializationStatus: {
       type: String,
+      // <block name="cdc-change-materialization-status-enum" same-as=":cdc-change-materialization-status-union" same-as-pattern='"(?P<value>[^"]+)"'>
       enum: ["pending", "applied", "failed", "dropped"],
+      // </block>
       default: "pending",
       required: true,
     },
@@ -3094,7 +3156,9 @@ const CdcEntityStateSchema = new Schema<ICdcEntityState>(
     repartition: {
       status: {
         type: String,
+        // <block name="cdc-repartition-status-enum" same-as=":cdc-repartition-status-union" same-as-pattern='"(?P<value>[^"]+)"'>
         enum: ["pending", "running", "done", "failed"],
+        // </block>
       },
       startedAt: Date,
       completedAt: Date,
@@ -3164,7 +3228,9 @@ const ConnectionVerificationSchema = new Schema<IConnectionVerification>(
     databaseType: { type: String, required: true },
     trigger: {
       type: String,
+      // <block name="connection-verification-trigger-enum" same-as=":connection-verification-trigger-union" same-as-pattern='"(?P<value>[^"]+)"'>
       enum: ["standalone_test", "create_verify", "update_verify", "saved_test"],
+      // </block>
       required: true,
     },
     success: { type: Boolean, required: true },
@@ -3222,6 +3288,7 @@ const QueryExecutionSchema = new Schema<IQueryExecution>(
     source: {
       type: String,
       enum: [
+        // <block name="query-execution-source-enum" same-as=":query-execution-source-union" same-as-pattern='"(?P<value>[^"]+)"'>
         "console_ui",
         "console_ui_admin_override",
         "api",
@@ -3229,6 +3296,7 @@ const QueryExecutionSchema = new Schema<IQueryExecution>(
         "agent",
         "flow",
         "scheduled_query",
+        // </block>
       ],
       required: true,
     },
@@ -3242,7 +3310,9 @@ const QueryExecutionSchema = new Schema<IQueryExecution>(
     // Results
     status: {
       type: String,
+      // <block name="query-execution-status-enum" same-as=":query-execution-status-union" same-as-pattern='"(?P<value>[^"]+)"'>
       enum: ["success", "error", "cancelled", "timeout"],
+      // </block>
       required: true,
     },
     executionTimeMs: { type: Number, required: true },
@@ -3294,7 +3364,9 @@ const ScheduledQueryRunSchema = new Schema<IScheduledQueryRun>(
     },
     status: {
       type: String,
+      // <block name="scheduled-query-run-status-enum" same-as=":scheduled-query-run-status-union" same-as-pattern='"(?P<value>[^"]+)"'>
       enum: ["queued", "running", "success", "error"],
+      // </block>
       required: true,
     },
     triggerType: {
