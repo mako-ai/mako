@@ -2,10 +2,13 @@
  * Dev builds — the laptop's uncommitted `bindings/<name>.sql`, built through
  * the API. What these pin:
  *
- *   - text identical to the committed binding reuses the committed artifact
- *     (read access suffices), or materializes it exactly as materialize does;
- *   - edited text, or a dev dbt environment that changes the rendered SQL, is
- *     a draft: built through the shared builder and NEVER stored/recorded;
+ *   - a writer's build reads no repo and no sandbox: the text's stored,
+ *     content-addressed artifact answers, or the text is built as a draft;
+ *   - a read-only caller gets only the artifact of the binding committed on
+ *     main (the one repo read), never a build;
+ *   - edited text, a binding only on the laptop, a refresh, or a dev dbt
+ *     environment that changes the rendered SQL is a draft: built through
+ *     the shared builder and NEVER stored as the app's artifact;
  *   - a dbt environment that renders like prod does not demote to a draft;
  *   - building anything needs write access; bad input is a 400, a failed
  *     query a 502.
@@ -57,13 +60,11 @@ function deps(overrides: Partial<DevBuildDeps> = {}): DevBuildDeps {
         environment ? `dbt_${environment.name}` : "dbt_prod",
       ),
     })),
-    artifactExists: vi.fn(async () => true),
-    materialize: vi.fn(async () => ({
-      rowCount: 5,
-      byteSize: 50,
-      materializedAt: new Date("2026-09-28T10:00:00Z"),
-      filePath: "/tmp/materialized.parquet",
-    })),
+    // Stored: the committed binding's build and any kept draft.
+    artifactExists: vi.fn(
+      async (key: string) =>
+        key === committedKey || key.startsWith("apps/drafts/"),
+    ),
     build: vi.fn(async () => ({
       filePath: "/tmp/draft.parquet",
       rowCount: 3,
@@ -101,28 +102,62 @@ describe("devBuildAppBinding", () => {
       source: "committed",
     });
     expect(d.build).not.toHaveBeenCalled();
-    expect(d.materialize).not.toHaveBeenCalled();
   });
 
-  it("materializes (stores) the committed binding when it has no artifact or on refresh", async () => {
+  it("serves a writer the stored artifact of unchanged text without reading the repo", async () => {
+    // 2026-11-10: the committed binding was read through the caller's cloud
+    // sandbox, stuck at a commit before the binding existed, and every
+    // `vite dev` load of it answered HTTP 500. A writer's text is now the
+    // whole input: its content-addressed key finds the stored build.
+    const d = deps({
+      committedBinding: vi.fn(async () => {
+        throw new Error(
+          "path '/home/user/app/bindings/leads.sql' does not exist",
+        );
+      }),
+    });
+    const result = await devBuildAppBinding(input(), d);
+    expect(result).toEqual({
+      kind: "artifact",
+      artifactKey: committedKey,
+      source: "committed",
+    });
+    expect(d.committedBinding).not.toHaveBeenCalled();
+  });
+
+  it("builds a binding that exists only on the laptop, without reading the repo", async () => {
+    const d = deps({
+      committedBinding: vi.fn(async () => {
+        throw new Error("must not be read");
+      }),
+    });
+    const source = `-- connection: ${CONN}\nselect * from brand_new`;
+    const result = await devBuildAppBinding(
+      input({ name: "brand_new", source }),
+      d,
+    );
+    expect(result).toMatchObject({ kind: "draft", rowCount: 3 });
+    expect(d.committedBinding).not.toHaveBeenCalled();
+    expect(d.build).toHaveBeenCalledWith(
+      project,
+      expect.objectContaining({ name: "brand_new", connectionId: CONN }),
+      connection,
+      "select * from brand_new",
+    );
+  });
+
+  it("builds unchanged text as a draft when it has no stored artifact or on refresh", async () => {
+    // Stored artifacts are built by publish, the schedule and materialize;
+    // a laptop never writes one.
     const cases: Array<[DevBuildDeps, boolean]> = [
       [deps({ artifactExists: vi.fn(async () => false) }), false],
       [deps(), true],
     ];
     for (const [d, refresh] of cases) {
       const result = await devBuildAppBinding(input({ refresh }), d);
-      expect(result).toMatchObject({
-        kind: "materialized",
-        filePath: "/tmp/materialized.parquet",
-        rowCount: 5,
-      });
-      // The binding it compared, as read — not a second read by name.
-      expect(d.materialize).toHaveBeenCalledWith(
-        project,
-        { binding: committedBinding, connection },
-        "u1",
-      );
-      expect(d.build).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ kind: "draft", rowCount: 3 });
+      expect(d.build).toHaveBeenCalledTimes(1);
+      expect(d.committedBinding).not.toHaveBeenCalled();
     }
   });
 
@@ -131,8 +166,7 @@ describe("devBuildAppBinding", () => {
     const source = `${COMMITTED}\nwhere connected`;
     const result = await devBuildAppBinding(input({ source }), d);
     expect(result).toMatchObject({ kind: "draft", rowCount: 3 });
-    expect(d.materialize).not.toHaveBeenCalled();
-    expect(d.artifactExists).not.toHaveBeenCalled();
+    expect(d.artifactExists).not.toHaveBeenCalledWith(committedKey);
     expect(d.build).toHaveBeenCalledWith(
       project,
       expect.objectContaining({ name: "leads", connectionId: CONN }),
@@ -161,8 +195,8 @@ describe("devBuildAppBinding", () => {
       connection,
       "select * from dbt_joan.leads",
     );
-    // A personal schema must never reach the app's stored artifact.
-    expect(d.materialize).not.toHaveBeenCalled();
+    // A personal schema is never answered with the app's stored artifact.
+    expect(d.artifactExists).not.toHaveBeenCalledWith(committedKey);
   });
 
   it("passes dbtDefer: false through as an opt-out", async () => {
@@ -192,11 +226,12 @@ describe("devBuildAppBinding", () => {
     });
   });
 
-  it("builds a draft when nothing is committed under that name", async () => {
+  it("refuses a read-only caller when nothing is committed under that name", async () => {
     const d = deps({ committedBinding: vi.fn(async () => null) });
-    const result = await devBuildAppBinding(input(), d);
-    expect(result.kind).toBe("draft");
-    expect(d.materialize).not.toHaveBeenCalled();
+    await expect(
+      devBuildAppBinding(input({ canWrite: false }), d),
+    ).rejects.toMatchObject({ status: 403, message: /differs/ });
+    expect(d.build).not.toHaveBeenCalled();
   });
 
   it("treats a CRLF checkout of the committed file as the committed binding", async () => {
@@ -215,19 +250,18 @@ describe("devBuildAppBinding", () => {
     });
   });
 
-  it("a changed dbt_project alone is a draft, not the committed artifact", async () => {
+  it("a changed dbt_project alone is not the committed binding for a read-only caller", async () => {
     const d = deps();
     const source = COMMITTED.replace(
       "-- dbt_project: p1",
       "-- dbt_project: p2",
     );
-    const result = await devBuildAppBinding(input({ source }), d);
-    expect(result.kind).toBe("draft");
-    expect(d.artifactExists).not.toHaveBeenCalled();
-    expect(d.materialize).not.toHaveBeenCalled();
+    await expect(
+      devBuildAppBinding(input({ source, canWrite: false }), d),
+    ).rejects.toMatchObject({ status: 403 });
   });
 
-  it("a committed LIVE binding copied locally as parquet is never materialized", async () => {
+  it("a committed LIVE binding copied locally as parquet is not served to a read-only caller", async () => {
     const d = deps({
       committedBinding: vi.fn(async () =>
         bindingFromSource(
@@ -239,31 +273,9 @@ describe("devBuildAppBinding", () => {
         ),
       ),
     });
-    const result = await devBuildAppBinding(input(), d);
-    expect(result.kind).toBe("draft");
-    expect(d.materialize).not.toHaveBeenCalled();
-  });
-
-  it("materializes what it compared even if the repo moves on meanwhile", async () => {
-    // The first (and only) read is the comparison; a commit landing after it
-    // must not change what is built under this caller's text.
-    let reads = 0;
-    const d = deps({
-      artifactExists: vi.fn(async () => false),
-      committedBinding: vi.fn(async () => {
-        reads++;
-        return reads === 1
-          ? committedBinding
-          : bindingFromSource("leads", `${COMMITTED} where other`);
-      }),
-    });
-    await devBuildAppBinding(input(), d);
-    expect(reads).toBe(1);
-    expect(d.materialize).toHaveBeenCalledWith(
-      project,
-      { binding: committedBinding, connection },
-      "u1",
-    );
+    await expect(
+      devBuildAppBinding(input({ canWrite: false }), d),
+    ).rejects.toMatchObject({ status: 403 });
   });
 
   it("builds a live binding as a draft (it has no artifact)", async () => {
@@ -294,7 +306,6 @@ describe("devBuildAppBinding", () => {
       ),
     ).rejects.toMatchObject({ status: 403 });
     expect(d.build).not.toHaveBeenCalled();
-    expect(d.materialize).not.toHaveBeenCalled();
   });
 
   it("rejects bad input before running anything", async () => {
@@ -470,7 +481,6 @@ describe("devBuildAppBinding", () => {
     );
     expect(plan.kind).toBe("build");
     expect(d.build).not.toHaveBeenCalled();
-    expect(d.materialize).not.toHaveBeenCalled();
     if (plan.kind === "build") {
       expect((await plan.run()).kind).toBe("draft");
       expect(d.build).toHaveBeenCalledTimes(1);

@@ -200,6 +200,7 @@ import {
   type BuiltParquetFile,
 } from "../services/parquet-build.service";
 import { globFiles, readFile } from "./worktree.service";
+import { freshenForServe } from "./cloud-repo.service";
 import { ParquetRowLimitError } from "../utils/streaming-parquet-builder";
 import {
   bindingRowLimitMessage,
@@ -360,7 +361,8 @@ export function isFileMissingError(error: unknown): boolean {
 export async function readCommittedBinding(
   project: IAppProject,
   name: string,
-  actorId: string,
+  /** Whose view to read; undefined reads the default branch in git. */
+  actorId: string | undefined,
   /** Read the binding as of this commit rather than the actor's view. */
   at?: string,
 ): Promise<AppBinding | null> {
@@ -379,6 +381,34 @@ export async function readCommittedBinding(
     ? undefined
     : (await legacyConnectionIds(project, actorId, at)).get(name);
   return bindingFromSource(name, file.contents, legacy);
+}
+
+/**
+ * ONE binding as committed on the workspace repo's default branch (main), read
+ * from git after a freshen from the mirror. Never the actor's sandbox: a laptop
+ * checkout pushes to main, while the person's cloud sandbox may sit at any
+ * older commit. Reading through the sandbox made a binding added on main read
+ * as missing (or as its older text) whenever the box had not pulled since.
+ * Null when main has no such binding or it names no connection.
+ */
+export async function readMainBinding(
+  project: IAppProject,
+  name: string,
+): Promise<AppBinding | null> {
+  if (!NAME_RE.test(name)) return null;
+  // Best-effort and throttled: a mirror that cannot be reached leaves the
+  // local copy of main, which is still never a sandbox.
+  await freshenForServe(project.workspaceId.toString());
+  return readCommittedBinding(project, name, undefined);
+}
+
+/** No `bindings/<name>.sql` where the build looked for it. */
+export class BindingNotFoundError extends Error {
+  readonly status = 404;
+  constructor(message: string) {
+    super(message);
+    this.name = "BindingNotFoundError";
+  }
 }
 
 /** CRLF/CR → LF, no trailing whitespace at the end — not part of a query. */
@@ -436,7 +466,7 @@ export async function readBindingMaterialization(
  */
 async function legacyConnectionIds(
   project: IAppProject,
-  actorId: string,
+  actorId: string | undefined,
   at?: string,
 ): Promise<Map<string, string>> {
   const byName = new Map<string, string>();
@@ -627,7 +657,7 @@ async function resolveBindingForBuild(
   const bindings = await readBindings(project, actorId, at);
   const binding = bindings.find(b => b.name === name);
   if (!binding) {
-    throw new Error(
+    throw new BindingNotFoundError(
       `No binding named "${name}" — create bindings/${name}.sql with "-- connection: <id>" front matter`,
     );
   }
@@ -661,11 +691,12 @@ export async function resolveDraftBinding(
   project: IAppProject,
   name: string,
   source: string,
-  actorId: string,
 ): Promise<{ binding: AppBinding; connection: IDatabaseConnection }> {
+  // The legacy manifest, when the text names no connection, comes from main
+  // in git: the text came from a laptop, never from the caller's sandbox.
   const legacy = parseBindingFrontMatter(source).connection
     ? undefined
-    : (await legacyConnectionIds(project, actorId)).get(name);
+    : (await legacyConnectionIds(project, undefined)).get(name);
   const binding = bindingFromSource(name, source, legacy);
   if (!binding) {
     throw new Error(
@@ -836,6 +867,14 @@ export interface MaterializeOptions {
    * 2026-11-03, against 1.5-3 s for small apps.
    */
   binding?: AppBinding;
+  /**
+   * Where to read the binding when neither `resolved` nor `binding` is given:
+   * "view" (default) = the actor's view (live sandbox, else their branch),
+   * falling back to main when that view has no such binding; "main" = main
+   * in git only, never a sandbox (a laptop checkout's committed binding).
+   * Ignored with `at`.
+   */
+  from?: "view" | "main";
 }
 
 export interface MaterializeResult {
@@ -858,6 +897,15 @@ export async function materializeAppBinding(
   const startedAt = Date.now();
   let built;
   try {
+    const resolveFromMain = async () => {
+      const binding = await readMainBinding(project, name);
+      if (!binding) {
+        throw new BindingNotFoundError(
+          `No binding named "${name}" on ${project.defaultBranch || "main"} — commit and push bindings/${name}.sql with "-- connection: <id>" front matter`,
+        );
+      }
+      return { binding, connection: await bindingConnection(project, binding) };
+    };
     const resolved =
       opts.resolved ??
       (opts.binding
@@ -865,14 +913,34 @@ export async function materializeAppBinding(
             binding: opts.binding,
             connection: await bindingConnection(project, opts.binding),
           }
-        : undefined);
-    built = await buildBindingParquet(
-      project,
-      name,
-      actorId,
-      opts.at,
-      resolved,
-    );
+        : opts.from === "main" && !opts.at
+          ? await resolveFromMain()
+          : undefined);
+    try {
+      built = await buildBindingParquet(
+        project,
+        name,
+        actorId,
+        opts.at,
+        resolved,
+      );
+    } catch (error) {
+      // The actor's view (a sandbox that has not pulled, a branch behind
+      // main) lacks a binding main has: build main's, rather than fail on
+      // a checkout the caller may not even be using.
+      if (resolved || opts.at || !(error instanceof BindingNotFoundError)) {
+        throw error;
+      }
+      built = await buildBindingParquet(
+        project,
+        name,
+        actorId,
+        undefined,
+        await resolveFromMain().catch(mainError => {
+          throw mainError instanceof BindingNotFoundError ? error : mainError;
+        }),
+      );
+    }
   } catch (error) {
     await recordBindingRun(projectId, name, {
       at: new Date(),

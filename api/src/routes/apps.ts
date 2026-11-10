@@ -210,6 +210,7 @@ import { getSandboxProvider } from "../apps/sandbox/provider";
 import { Readable } from "node:stream";
 import { createReadStream } from "node:fs";
 import {
+  BindingNotFoundError,
   bindingArtifactKeyByName,
   getBindingState,
   materializeAppBinding,
@@ -586,6 +587,9 @@ function handleError(c: AuthenticatedContext, error: unknown) {
     );
   }
   if (error instanceof WorkspaceRepoNotBoundError) {
+    return c.json({ success: false, error: error.message }, 404);
+  }
+  if (error instanceof BindingNotFoundError) {
     return c.json({ success: false, error: error.message }, 404);
   }
   logger.error("Apps route error", { error });
@@ -2801,9 +2805,12 @@ appsRoutes.openapi(
       "The laptop dev loop behind `makoData()`: send the local " +
       "`bindings/<name>.sql` text and get back the parquet of exactly that " +
       "query, run read-only through the workspace connection its front " +
-      "matter names. Text identical to the committed binding is served from " +
-      "(or materialized into) the app's stored artifact; anything else — an " +
-      "uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` " +
+      "matter names. The text is the whole input: no sandbox and (for a " +
+      "caller with edit access) no repo state is read, so a binding that " +
+      "exists only in the local checkout builds. Text whose content-addressed " +
+      "build is already stored (the published binding) is served from that " +
+      "artifact; anything else — an edit, a new binding, a refresh, or " +
+      "`dbtEnvironment` rendering `{{ dbt_schema }}` " +
       "against a dev dbt environment (per relation: ones the environment " +
       "has not built read prod, unless `dbtDefer: false`) — is a draft: " +
       "built and streamed back, reused for 30 minutes (same connection + " +

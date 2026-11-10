@@ -10,24 +10,32 @@
  * same read-only gate and the same schema probe (`buildResolvedBindingParquet`
  * — there is no second builder).
  *
+ * The laptop's text is the whole input. A dev build never reads, starts or
+ * waits on the caller's cloud sandbox (that box is for working inside
+ * app.mako.ai and may sit at any older commit), and a writer's build reads no
+ * repo state at all. It used to resolve "the committed binding" through the
+ * sandbox, so a binding pushed to main after the box last pulled answered
+ * HTTP 500 (`path '…/bindings/<name>.sql' does not exist`).
+ *
  * What it must never do is change what anyone else reads. So:
  *
- *   - text identical to the committed binding, rendered against the prod-like
- *     dbt schema, IS the committed binding: served from its stored artifact,
- *     or materialized exactly as `POST …/materialize` would (stored, run
- *     recorded) when there is none or the caller asked to refresh;
- *   - anything else — an uncommitted edit, or `{{ dbt_schema }}` rendered
- *     against a developer's environment — is a DRAFT: built and streamed
- *     back. Never stored as the app's artifact and never recorded as a run,
- *     so no published viewer can ever see uncommitted SQL or a personal
- *     schema. A draft is kept for half an hour under its own
- *     `apps/drafts/<project>/…` key (binding-draft-cache.ts) so a cold
- *     laptop cache does not re-run it, and a draft that keeps failing is
- *     refused for a growing window instead of re-run on every reload.
+ *   - text whose content-addressed build is already stored (the published
+ *     binding, rendered against the prod-like dbt schema) is served from
+ *     that artifact;
+ *   - anything else — an edit, a binding only on the laptop, a refresh, or
+ *     `{{ dbt_schema }}` rendered against a developer's environment — is a
+ *     DRAFT: built and streamed back. Never stored as the app's artifact and
+ *     never recorded as a run, so no published viewer can ever see
+ *     uncommitted SQL or a personal schema. Stored artifacts are built by
+ *     the production paths (publish, schedule, materialize). A draft is kept
+ *     for half an hour under its own `apps/drafts/<project>/…` key
+ *     (binding-draft-cache.ts) so a cold laptop cache does not re-run it,
+ *     and a draft that keeps failing is refused for a growing window instead
+ *     of re-run on every reload.
  *
- * Reading an already-built committed artifact needs read access (what `GET
- * …/artifact` needs); building anything needs write access (what
- * materialize needs).
+ * Building anything needs write access (what materialize needs). A
+ * read-only caller gets only the stored artifact of the binding as committed
+ * on main, read from git (never a sandbox): the one check that needs the repo.
  */
 import { withDefaultQueryLabels } from "../services/bigquery-labels";
 import type {
@@ -37,9 +45,8 @@ import type {
 import {
   bindingArtifactKey,
   buildResolvedBindingParquet,
-  materializeAppBinding,
   normalizeBindingText,
-  readCommittedBinding,
+  readMainBinding,
   resolveDraftBinding,
   sameBindingDefinition,
   type AppBinding,
@@ -69,7 +76,7 @@ const NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 export interface DevBuildInput {
   project: IAppProject;
   name: string;
-  /** Whose view of the repo decides what "committed" means. */
+  /** Who asked: query labels and draft jobs. */
   actorId: string;
   /** The signed-in user, when there is one — owns personal dbt environments. */
   userId?: string;
@@ -97,8 +104,8 @@ export interface DevBuildInput {
 export type DevBuildResult =
   | {
       /**
-       * A stored artifact answers as-is: the committed binding's, or a
-       * recent build of this exact draft (binding-draft-cache.ts).
+       * A stored artifact answers as-is: the stored build of this exact
+       * text ("committed"), or a recent draft build (binding-draft-cache.ts).
        */
       kind: "artifact";
       artifactKey: string;
@@ -106,17 +113,15 @@ export type DevBuildResult =
     }
   | {
       /**
-       * "materialized": the committed binding, rebuilt and stored.
-       * "draft": uncommitted text or a dev dbt schema — built now; kept only
-       * as a short-lived draft, never as the app's artifact.
+       * Built now from the caller's text; kept only as a short-lived draft,
+       * never as the app's artifact.
        */
-      kind: "materialized" | "draft";
+      kind: "draft";
       /** Local temp file; the caller streams it and deletes it. */
       filePath: string;
       /**
-       * Where the build was stored: the app's artifact ("materialized"), or
-       * this draft's own per-build key in the draft cache ("draft", when it
-       * could be kept).
+       * This draft's own per-build key in the draft cache, when it could be
+       * kept.
        */
       artifactKey?: string;
       rowCount: number;
@@ -142,13 +147,14 @@ export interface DevBuildDeps {
     project: IAppProject,
     name: string,
     source: string,
-    actorId: string,
   ) => Promise<{ binding: AppBinding; connection: IDatabaseConnection }>;
-  /** The committed binding (actor's view), or null when there is none. */
+  /**
+   * The committed binding on main in git (never a sandbox), or null when
+   * main has none.
+   */
   committedBinding: (
     project: IAppProject,
     name: string,
-    actorId: string,
   ) => Promise<AppBinding | null>;
   /**
    * binding.code with `{{ dbt_schema }}` rendered (prod without
@@ -162,18 +168,6 @@ export interface DevBuildDeps {
     environment?: { name: string; userId?: string; defer: boolean },
   ) => Promise<{ code: string; devModifiedAt?: number | null }>;
   artifactExists: (key: string) => Promise<boolean>;
-  /** Materialize exactly `resolved` — never a re-read of the repo. */
-  materialize: (
-    project: IAppProject,
-    resolved: { binding: AppBinding; connection: IDatabaseConnection },
-    actorId: string,
-  ) => Promise<{
-    artifactKey?: string;
-    rowCount: number;
-    byteSize: number;
-    materializedAt: Date;
-    filePath?: string;
-  }>;
   build: (
     project: IAppProject,
     binding: AppBinding,
@@ -190,7 +184,7 @@ export interface DevBuildDeps {
 
 const defaultDeps: DevBuildDeps = {
   resolveDraft: resolveDraftBinding,
-  committedBinding: readCommittedBinding,
+  committedBinding: readMainBinding,
   render: async (project, binding, connection, environment) => {
     if (!environment) {
       return {
@@ -226,11 +220,6 @@ const defaultDeps: DevBuildDeps = {
     };
   },
   artifactExists: key => getArtifactStore().exists(key),
-  materialize: (project, resolved, actorId) =>
-    materializeAppBinding(project, resolved.binding.name, actorId, {
-      keepFile: true,
-      resolved,
-    }),
   build: buildResolvedBindingParquet,
   drafts: {
     lookup: lookupDraft,
@@ -283,7 +272,7 @@ async function planDevBuildUnlabelled(
   input: DevBuildInput,
   deps: DevBuildDeps,
 ): Promise<DevBuildPlan> {
-  const { project, name, actorId } = input;
+  const { project, name } = input;
   if (!NAME_RE.test(name)) {
     throw new DevBuildError("Invalid binding name", 400);
   }
@@ -298,7 +287,6 @@ async function planDevBuildUnlabelled(
       project,
       name,
       normalizeBindingText(input.source),
-      actorId,
     );
     rendered = await deps.render(
       project,
@@ -330,30 +318,50 @@ async function planDevBuildUnlabelled(
     throw new DevBuildError(message, 400);
   }
 
-  // Committed = the whole definition matches (connection, database, dbt
-  // link, materialization, row limit, query), not just the artifact key, which ignores
-  // the dbt link and the mode. From here on the COMMITTED binding is what is
-  // served or built: its key is the one published readers resolve, and
-  // materializing it as read here (not re-read by name) means a commit
-  // landing mid-request cannot put other SQL under this caller's text.
-  const committed =
-    asPublished && !input.unregistered
-      ? await deps.committedBinding(project, name, actorId)
+  // The stored artifact for this text is content-addressed (connection,
+  // database, query): its key comes from the text alone, so no repo and no
+  // sandbox is read to find it. Only a parquet binding rendered as published
+  // (prod dbt schema) can match a stored build; a dev dbt environment or a
+  // live binding is always a draft, and so is every binding of an app not on
+  // main yet.
+  const storedKey =
+    asPublished &&
+    !input.unregistered &&
+    draft.binding.materialization === "parquet"
+      ? bindingArtifactKey(draft.binding)
       : null;
-  const isCommitted =
-    committed !== null &&
-    committed.materialization === "parquet" &&
-    sameBindingDefinition(committed, draft.binding);
-  const committedKey = isCommitted ? bindingArtifactKey(committed) : null;
 
-  if (
-    committedKey &&
-    !input.refresh &&
-    (await deps.artifactExists(committedKey))
-  ) {
-    return { kind: "artifact", artifactKey: committedKey, source: "committed" };
-  }
-  if (!input.canWrite) {
+  if (input.canWrite) {
+    // A writer may build any text, so serving the stored build of exactly
+    // this text gives them nothing they could not run themselves. Nothing
+    // here reads git or a sandbox: the laptop's text is the whole input.
+    if (storedKey && !input.refresh && (await deps.artifactExists(storedKey))) {
+      return { kind: "artifact", artifactKey: storedKey, source: "committed" };
+    }
+  } else {
+    // A read-only caller may only read what main publishes. That is the one
+    // check that needs the repo, and it reads main in git, never a sandbox.
+    // Committed = the whole definition matches (connection, database, dbt
+    // link, materialization, row limit, query), not just the artifact key.
+    const committed = storedKey
+      ? await deps.committedBinding(project, name)
+      : null;
+    const isCommitted =
+      committed !== null &&
+      committed.materialization === "parquet" &&
+      sameBindingDefinition(committed, draft.binding);
+    const committedKey = isCommitted ? bindingArtifactKey(committed) : null;
+    if (
+      committedKey &&
+      !input.refresh &&
+      (await deps.artifactExists(committedKey))
+    ) {
+      return {
+        kind: "artifact",
+        artifactKey: committedKey,
+        source: "committed",
+      };
+    }
     throw new DevBuildError(
       input.unregistered
         ? `This app is not on main yet; building its bindings/${name}.sql needs member (not viewer) access to the workspace`
@@ -373,7 +381,7 @@ async function planDevBuildUnlabelled(
     devModifiedAt: rendered.devModifiedAt ?? null,
     rowLimit: draft.binding.rowLimit,
   });
-  if (!isCommitted && !input.refresh) {
+  if (!input.refresh) {
     // An explicit refresh skips both: it rebuilds, and a person clicking it
     // is not the reload loop the backoff exists for.
     let cached = await deps.drafts.lookup(projectId, hash);
@@ -406,22 +414,6 @@ async function planDevBuildUnlabelled(
     Exclude<DevBuildResult, { kind: "artifact" }>
   > {
     try {
-      if (isCommitted && committed) {
-        const result = await deps.materialize(
-          project,
-          { binding: committed, connection: draft.connection },
-          actorId,
-        );
-        if (!result.filePath) throw new Error("Materialize kept no file");
-        return {
-          kind: "materialized",
-          filePath: result.filePath,
-          artifactKey: result.artifactKey,
-          rowCount: result.rowCount,
-          byteSize: result.byteSize,
-          builtAt: result.materializedAt,
-        };
-      }
       let built: { filePath: string; rowCount: number; byteSize: number };
       try {
         built = await deps.build(

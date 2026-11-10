@@ -145,9 +145,6 @@ describe("planDevBuild for an app not on main yet", () => {
       ),
       render: vi.fn(async (_p, binding) => ({ code: binding.code })),
       artifactExists: vi.fn(async () => true),
-      materialize: vi.fn(async () => {
-        throw new Error("must not materialize");
-      }),
       build: vi.fn(async () => ({
         filePath: "/tmp/draft.parquet",
         rowCount: 1,
@@ -185,7 +182,6 @@ describe("planDevBuild for an app not on main yet", () => {
       rowCount: 1,
     });
     expect(d.committedBinding).not.toHaveBeenCalled();
-    expect(d.materialize).not.toHaveBeenCalled();
     expect(d.drafts.built).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: project._id.toString() }),
     );
