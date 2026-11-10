@@ -13,6 +13,7 @@ export type CapabilityRisk = "read" | "write" | "destructive";
 
 export type CapabilityGrant =
   | "artifact-write"
+  | "connections-manage"
   | "connections-write"
   | "git-write"
   | "members-write"
@@ -22,6 +23,11 @@ export type CapabilityGrant =
 
 export const CAPABILITY_GRANTS = [
   "artifact-write",
+  // Rename, change or delete an existing source connection. An explicit
+  // per-key scope (`connections:manage`), carried by every OAuth sign-in like
+  // `workflows:run`; a key minted with the defaults cannot remove the
+  // credential a running flow uses. The connection's managers gate it too.
+  "connections-manage",
   // Store a new credential (a source connection) in the workspace. Held by
   // every external MCP/CLI credential; the member role gates it.
   "connections-write",
@@ -55,10 +61,7 @@ export interface CapabilityInputConditionalGrant {
 
 /** Mirrors the MCP bridge policy's exclusion taxonomy. */
 export type CapabilityMcpExclusionWhy =
-  | "client-only"
-  | "security"
-  | "in-product-only"
-  | "deferred";
+  "client-only" | "security" | "in-product-only" | "deferred";
 
 export interface AgentCapabilityDefinition<
   Domain extends string = string,

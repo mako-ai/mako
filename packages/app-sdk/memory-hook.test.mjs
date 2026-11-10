@@ -639,6 +639,10 @@ test("a hidden tab does not retry until it is shown", opts, async () => {
 
 test("pinned views promote when pressure ends, with no new read", opts, async () => {
   const fast = fastTimers();
+  // Timers here fire a little early, as a real one can against Date.now(): the
+  // end of pressure must not depend on the clock having passed its deadline.
+  const fastSet = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => fastSet(fn, Math.max(0, (ms ?? 0) - 100), ...rest);
   const sdk = await freshSdk();
   await sdk.getDuckDB();
   duck().tableBytes = 100;
@@ -649,8 +653,15 @@ test("pinned views promote when pressure ends, with no new read", opts, async ()
   const q = await mount(() => sdk.useDuckDB("SELECT 9 FROM pr_a"));
   const storage = async () => Object.fromEntries((await sdk.getBindingMemory()).bindings.map(b => [b.name, b.storage]));
   assert.equal((await storage()).pr_a, "view");
-  await wait(3200); // 64 s here
+  assert.equal((await sdk.getBindingMemory()).pressure, true);
+  // Wait for the promotion itself, not a fixed sleep: pressure lasts 3 s of
+  // real time here, and a loaded runner may take longer to get there.
+  const t0 = realDateNow();
+  while ((await storage()).pr_a !== "table" && realDateNow() - t0 < 15000) {
+    await env.act(() => new Promise(r => realTimeout(r, 20)));
+  }
   assert.equal((await storage()).pr_a, "table");
+  assert.equal((await sdk.getBindingMemory()).pressure, false);
   await a.unmount();
   await q.unmount();
   fast();

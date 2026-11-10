@@ -19,13 +19,18 @@
  * page of an entity, written nowhere — rules in `connectors/probe.service.ts`,
  * shared with the REST route and the CLI).
  *
- * NO CONFIG VALUES ARE RETURNED, from any tool. A connection's `config` is
- * where its credential lives, and the model decrypts it on read via a getter,
- * so any path that returns `config` returns the secret. `inspect_connection`
- * returns the config field *names* and whether each is a secret — which is
- * what an agent actually needs ("what does this connector require?") — and
- * never a value. Every result is built field-by-field: an allowlist, never a
- * spread of the document, because a spread inherits every field added later.
+ * NO SECRET IS RETURNED, from any tool. A connection's `config` is where its
+ * credential lives, and the model decrypts it on read via a getter, so any
+ * path that returns `config` returns the secret. `inspect_connection`
+ * returns the config field *names* and whether each is a secret, and the
+ * VALUES of the plain settings only (`base_url`, `auth_type`, an account id):
+ * fields the connector's schema declares, not secret, not named like a
+ * credential, not headers, scalar, and never ciphertext (`nonSecretConfig`).
+ * Every result is built field-by-field: an allowlist, never a spread of the
+ * document, because a spread inherits every field added later.
+ *
+ * It also returns the connection's access settings (live reads, writers),
+ * which a person changes in the app's Access tab; an agent only reads them.
  */
 import { tool } from "ai";
 import { Types } from "mongoose";
@@ -45,10 +50,15 @@ import { isWorkspaceConnectorType } from "../../connectors/workspace/SandboxedCo
 import {
   Connector as SourceConnection,
   DatabaseConnection,
+  type IConnectionWriter,
   type ISourceConnectionKeyRequest,
 } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
+import { isEncryptedValue } from "../../services/crypto.service";
+import { redactConnectionString } from "../../utils/connection-secrets";
+import { sourceWriterPrincipal } from "../../access/connection-writers-list";
+import { callableFor } from "../../connections/callable";
 import { summarizeConnectionForListing } from "./universal-tools";
 import { connectionRequest } from "../../connections/proxy.service";
 import { ConnectionRequestError } from "../../connections/forward";
@@ -121,16 +131,106 @@ function describeFields(fields: unknown): ConnectorConfigField[] {
 const CONNECTION_NOT_FOUND =
   "Connection not found in this workspace. Call list_connections for valid ids.";
 
+/**
+ * Config keys whose value is never shown, whatever the schema says: names
+ * that hold a credential, and headers (a static header can carry one).
+ */
+const NEVER_SHOWN_CONFIG_KEY =
+  /pass(word|wd)?$|secret|token|api[_-]?key|private[_-]?key|service_account|credential|headers?$/i;
+
+const URI = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+type PlainValue = string | number | boolean;
+
+/**
+ * The plain settings of a stored config: the values of the declared fields
+ * that are not secrets. Fails closed — an undeclared key, a secret field, a
+ * key named like a credential or a header, an object or list, a ciphertext
+ * and a URL carrying a password are all left out. Exported for tests.
+ */
+export function nonSecretConfig(
+  config: unknown,
+  fields: ConnectorConfigField[],
+): Record<string, PlainValue> {
+  const stored =
+    config && typeof config === "object" && !Array.isArray(config)
+      ? (config as Record<string, unknown>)
+      : {};
+  const shown: Record<string, PlainValue> = {};
+  for (const field of fields) {
+    if (field.secret || NEVER_SHOWN_CONFIG_KEY.test(field.name)) continue;
+    const value = stored[field.name];
+    if (typeof value === "number" || typeof value === "boolean") {
+      shown[field.name] = value;
+    } else if (typeof value === "string" && !isEncryptedValue(value)) {
+      if (URI.test(value) && redactConnectionString(value) !== value) continue;
+      shown[field.name] = value;
+    }
+  }
+  return shown;
+}
+
+/** The names of the secret fields that hold a value (never the value). */
+function secretsSet(config: unknown, fields: ConnectorConfigField[]): string[] {
+  const stored = (config ?? {}) as Record<string, unknown>;
+  return fields
+    .filter(field => field.secret)
+    .map(field => field.name)
+    .filter(name => stored[name] !== undefined && stored[name] !== "");
+}
+
+/** The app page of a source connection; its Access tab sets live reads and writers. */
+export function connectionUiUrl(connectionId: string): string {
+  const base = (
+    process.env.CLIENT_URL ||
+    process.env.PUBLIC_URL ||
+    "http://localhost:5173"
+  ).replace(/\/$/, "");
+  return `${base}/cx/${connectionId}`;
+}
+
+/**
+ * Who may use a source connection through its proxy, as the Access tab
+ * shows it: live reads on or off, and the writers list (any
+ * `workflow:<name>` stands for every workflow). Read-only for an agent.
+ */
+export function sourceConnectionAccess(row: {
+  _id: Types.ObjectId | string;
+  type?: string;
+  liveReads?: boolean;
+  writers?: IConnectionWriter[];
+}) {
+  const writers = [
+    ...new Set(
+      (row.writers ?? []).map(w => sourceWriterPrincipal(w.principal)),
+    ),
+  ];
+  return {
+    // Absent (every connection older than the proxy) means off.
+    liveReads: row.liveReads === true,
+    writers,
+    // Whether the proxy can call this connector at all yet.
+    callable: callableFor(row.type ?? "") !== null,
+    changeIn: `Live reads and writers are set by one of the connection's managers in the app: ${connectionUiUrl(String(row._id))}, Access tab. They cannot be changed over MCP.`,
+  };
+}
+
 interface SourceRow {
   _id: Types.ObjectId;
   name?: string;
   type?: string;
   description?: string;
   isActive?: boolean;
+  config?: unknown;
+  liveReads?: boolean;
+  writers?: IConnectionWriter[];
   keyRequest?: ISourceConnectionKeyRequest;
 }
 
-/** A source connection's identity, from a projection that never loads `config`. */
+/**
+ * A source connection, lean: `config` stays as stored, so a secret field is
+ * ciphertext and only {@link nonSecretConfig} reads it.
+ */
 async function findSourceConnection(
   workspaceId: string,
   connectionId: string,
@@ -139,7 +239,9 @@ async function findSourceConnection(
     _id: new Types.ObjectId(connectionId),
     workspaceId: new Types.ObjectId(workspaceId),
   })
-    .select("_id name type description isActive keyRequest")
+    .select(
+      "_id name type description isActive config liveReads writers keyRequest",
+    )
     .lean()) as SourceRow | null;
 }
 
@@ -198,7 +300,10 @@ async function configFieldsFor(
   return describeFields((schema as { fields?: unknown } | null)?.fields);
 }
 
-/** Describe one source connection: identity, what its connector offers, its fields. */
+/**
+ * Describe one source connection: identity, what its connector offers, its
+ * fields, its plain settings and its access.
+ */
 async function describeSourceConnection(
   workspaceId: string,
   row: SourceRow,
@@ -220,6 +325,9 @@ async function describeSourceConnection(
     entities: capabilities.entities,
     incremental: capabilities.incremental,
     configFields,
+    config: nonSecretConfig(row.config, configFields),
+    secretsSet: secretsSet(row.config, configFields),
+    access: sourceConnectionAccess(row),
     next: "probe_connection reads one page of an entity live; a flow file references this id as source.connection_id.",
   };
 }
@@ -399,7 +507,7 @@ export function createConnectorTools(workspaceId: string) {
     inspect_connection: tool({
       description: [
         "Inspect one CONNECTION from list_connections, of either kind.",
-        "A `source` connection (Stripe key, Vercel key, …) answers with its connector, the entities it can sync, whether incremental is valid, and the config field names (never values) — what a flow's `entities` and `sync.mode` need. A `database` connection answers with its engine and identity — then list_databases / list_tables / inspect_table for its schema.",
+        "A `source` connection (Stripe key, Vercel key, …) answers with its connector, the entities it can sync, whether incremental is valid, the config field names, and what a flow's `entities` and `sync.mode` need. It also returns `config`: the values of the non-secret fields only (`base_url`, `auth_type`, …), `secretsSet`: which secret fields hold a value (never the value), and `access`: whether live reads are on and who is on the writers list — check it before a workflow or call_connection depends on the connection. A `database` connection answers with its engine and identity — then list_databases / list_tables / inspect_table for its schema.",
         "Credentials are never returned by any tool.",
       ].join("\n"),
       inputSchema: z.object({

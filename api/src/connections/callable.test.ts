@@ -922,6 +922,132 @@ describe("the Custom API connection", () => {
     });
   });
 
+  it("checks a JSON field when test_expect is set", async () => {
+    answering(200, { data: { status: "active", count: 2 } });
+    let result = await conn({
+      base_url: "https://x.example.com",
+      token: KEY,
+      test_expect: "data.status=active",
+    }).testConnection();
+    expect(result.success).toBe(true);
+
+    answering(200, { data: { status: "active", count: 2 } });
+    result = await conn({
+      base_url: "https://x.example.com",
+      token: KEY,
+      test_expect: "data.count == 2",
+    }).testConnection();
+    expect(result.success).toBe(true);
+
+    answering(200, { data: { status: "suspended" } });
+    result = await conn({
+      base_url: "https://x.example.com",
+      token: KEY,
+      test_expect: "data.status=active",
+    }).testConnection();
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('data.status is "suspended"');
+
+    answering(200, {});
+    result = await conn({
+      base_url: "https://x.example.com",
+      token: KEY,
+      test_expect: "ok=true",
+    }).testConnection();
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("ok is missing");
+  });
+
+  it("checks ok=true on Slack by default, which says 200 to a bad token", async () => {
+    answering(200, { ok: false, error: "invalid_auth" });
+    let result = await conn({
+      base_url: "https://slack.com/api",
+      token: "bad",
+      test_path: "/auth.test",
+    }).testConnection();
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("ok is false, not true");
+    expect(result.message).toContain("invalid_auth");
+
+    answering(200, { ok: true, team: "T1" });
+    result = await conn({
+      base_url: "https://slack.com/api",
+      token: KEY,
+      test_path: "/auth.test",
+    }).testConnection();
+    expect(result.success).toBe(true);
+
+    // Another API's 200 is not read for `ok`.
+    answering(200, { ok: false });
+    result = await conn({
+      base_url: "https://x.example.com",
+      token: KEY,
+    }).testConnection();
+    expect(result.success).toBe(true);
+  });
+
+  it("tests Slack on /auth.test when no test path is set", async () => {
+    let sent = answering(200, { ok: false, error: "invalid_auth" });
+    let result = await conn({
+      base_url: "https://slack.com/api",
+      token: "bad",
+    }).testConnection();
+    expect(sent[0].url).toBe("https://slack.com/api/auth.test");
+    expect(result.success).toBe(false);
+
+    sent = answering(200, { ok: true });
+    result = await conn({
+      base_url: "https://slack.com/api",
+      token: KEY,
+    }).testConnection();
+    expect(sent[0].url).toBe("https://slack.com/api/auth.test");
+    expect(result.success).toBe(true);
+  });
+
+  it("refuses a test_expect that is not path=value, without calling", async () => {
+    for (const bad of ["ok", "ok:true", "ok true"]) {
+      const sent = answering(200, { ok: false });
+      const result = await conn({
+        base_url: "https://slack.com/api",
+        token: "bad",
+        test_expect: bad,
+      }).testConnection();
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("Test expects must be path=value");
+      expect(sent).toHaveLength(0);
+    }
+  });
+
+  it("compares an object or array expected value as JSON", async () => {
+    answering(200, { data: { tags: ["a", "b"], owner: { id: 1 } } });
+    let result = await conn({
+      base_url: "https://x.example.com",
+      token: KEY,
+      test_expect: 'data.tags=["a","b"]',
+    }).testConnection();
+    expect(result.success).toBe(true);
+
+    answering(200, { data: { owner: { id: 2 } } });
+    result = await conn({
+      base_url: "https://x.example.com",
+      token: KEY,
+      test_expect: 'data.owner={"id":1}',
+    }).testConnection();
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('data.owner is {"id":2}');
+  });
+
+  it("fails test_expect on a 200 answer that is not JSON", async () => {
+    answering(200, "<html>ok</html>", { "content-type": "text/html" });
+    const result = await conn({
+      base_url: "https://x.example.com",
+      token: KEY,
+      test_expect: "ok=true",
+    }).testConnection();
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("ok is missing");
+  });
+
   it("reports a refused credential and a bad base URL", async () => {
     answering(401, { error: "no" });
     expect(

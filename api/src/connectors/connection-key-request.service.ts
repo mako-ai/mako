@@ -12,8 +12,9 @@
  *
  *   - carries a random 256-bit token; only its SHA-256 is stored, so a
  *     database read does not yield a working link;
- *   - needs a signed-in session of a workspace member (member role or
- *     above, the bar for creating a connection) — never an API key;
+ *   - needs a signed-in session of one of the connection's managers (the
+ *     bar for editing its key, who can also read it back) — never an API
+ *     key or MCP client;
  *   - expires after {@link KEY_REQUEST_TTL_MS};
  *   - works once: the key is stored and the request removed in one atomic
  *     update filtered on the token, so two submissions cannot both win. A key

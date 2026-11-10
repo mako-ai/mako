@@ -665,6 +665,20 @@ sourceConnectionRoutes.openapi(
         }
       }
 
+      // Still waiting for its key after this update: it cannot be switched
+      // on (the same answer as PATCH /enable). Setting the key above ends
+      // the wait and turns it on.
+      if (body.isActive === true && sourceConnection.keyRequest) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "This connection is waiting for its key. Set the key (through its key link, or in its settings) before enabling it.",
+          },
+          409,
+        );
+      }
+
       // Only save if there were actual changes
       if (hasChanges) {
         await sourceConnection.save();

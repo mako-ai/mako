@@ -433,6 +433,22 @@ describe("enabling a connection that waits for its key", () => {
       ),
     );
     expect(refused.status).toBe(409);
+
+    // The edit form's PUT gives the same answer.
+    const put = await Promise.resolve(
+      app.request(`/api/workspaces/${WS}/connections/sources/${connectionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: true }),
+      }),
+    );
+    expect(put.status).toBe(409);
+
+    // And so does update_connection over MCP.
+    const update = createConnectionWriteTools(WS, "u1").update_connection
+      .execute as unknown as (input: unknown) => Promise<ToolResult>;
+    const updated = await update({ connectionId, active: true });
+    expect(String(updated.error)).toMatch(/waiting for its key/);
     expect(
       ((await Connector.findById(connectionId).lean()) as any).isActive,
     ).toBe(false);
