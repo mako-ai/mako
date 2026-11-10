@@ -128,6 +128,8 @@ export type RunResult = {
   status: string;
   startedAt: string;
   durationMs: number;
+  /** The typecheck's errors (`tsc` output): the run did not start. */
+  typeErrors?: string;
   tasks: Array<{
     name: string;
     status: string;
@@ -165,6 +167,7 @@ export function shapeSandboxRun(
     startedAt: result.startedAt,
     durationMs: result.durationMs,
     input: text(result.input, max),
+    ...(result.typeErrors ? { typeErrors: text(result.typeErrors, max) } : {}),
     steps: result.tasks.map(task => {
       const lines = task.logs.map(line => `${line.level}: ${line.message}`);
       const shown = Number.isFinite(keep) ? lines.slice(-keep) : lines;

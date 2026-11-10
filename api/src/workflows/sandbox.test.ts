@@ -76,10 +76,21 @@ async function main() {
   assert.equal(cut.steps[0].logs.length, 5);
   assert.equal(cut.steps[0].logLinesOmitted, 25);
 
+  // Type errors end a run before it starts: no steps, the errors whole.
+  const typeErrors =
+    "workflows/eval/workflow.ts(9,3): error TS2322: Type 'string' is not assignable to type 'number'.\n";
+  const typed = shapeSandboxRun(RUN, { ...result, tasks: [], typeErrors });
+  assert.deepEqual(
+    [typed.status, typed.typeErrors, typed.steps],
+    ["FAILED", typeErrors, []],
+  );
+  assert.equal("typeErrors" in summary, false);
+
   // The box gets the runtime and `mako workflow run` itself.
   const install = installRuntimeCommand();
   for (const file of [
     "run.mjs",
+    "build.mjs",
     "defaults/lib/mako.ts",
     "cli/workflow.js",
     "cli/workflow-runner.js",

@@ -153,12 +153,6 @@ describe("workflowId as the tools' target", () => {
     const tools = await toolsFor(ADMIN);
     const target = { workflowId: "score-leads" };
 
-    const branch = await call(tools, "workflow_bash", {
-      ...target,
-      command: "git checkout -b workflow/score-leads",
-    });
-    expect(branch.success, String(branch.stderr)).toBe(true);
-
     const write = await call(tools, "workflow_write_file", {
       ...target,
       path: "workflow.ts",
@@ -203,6 +197,9 @@ describe("workflowId as the tools' target", () => {
       message: "Add score-leads",
     });
     expect(commit.success, commit.error).toBe(true);
+    // Committed from main, it went to the workflow's preview branch.
+    expect(commit.branch).toBe("workflow/score-leads");
+    expect(commit.deployed).toBe(false);
 
     // On the branch, not on main: nothing is live yet.
     const repoDir = repoDirFor(WS);
@@ -235,6 +232,27 @@ describe("workflowId as the tools' target", () => {
     expect(merge.success, merge.error).toBe(true);
     const onMain = await runGit(["-C", repoDir, "show", `main:${file}`]);
     expect(onMain.stdout).toContain("Scores leads");
+
+    // The next change, made on main, goes to the same preview branch.
+    const back = await call(tools, "workflow_bash", {
+      ...target,
+      command: "git checkout -q main && git pull -q --ff-only",
+    });
+    expect(back.success, String(back.stderr)).toBe(true);
+    await call(tools, "workflow_edit_file", {
+      ...target,
+      path: "workflow.ts",
+      oldString: "Scores leads",
+      newString: "Scores new leads",
+    });
+    const again = await call(tools, "workflow_commit", {
+      ...target,
+      message: "Reword score-leads",
+    });
+    expect(again.success, again.error).toBe(true);
+    expect(again.branch).toBe("workflow/score-leads");
+    const stillLive = await runGit(["-C", repoDir, "show", `main:${file}`]);
+    expect(stillLive.stdout).not.toContain("Scores new leads");
   }, 120_000);
 
   it("edit_file takes oldString/newString or Claude Code's old_string/new_string", async () => {

@@ -1,15 +1,21 @@
 // What it takes to run `workflows/`: the shared files the image supplies, the
 // runtime's packages, a typecheck, and a started worker. Used by
-// entrypoint.mjs (a commit, in the workspace's worker).
+// entrypoint.mjs (a commit, in the workspace's worker) and run.mjs (the
+// typecheck before a sandbox run).
 import { execFileSync, fork } from "node:child_process";
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const RUNTIME_DIR = dirname(fileURLToPath(import.meta.url));
@@ -62,6 +68,26 @@ export function typecheck(root) {
     return null;
   } catch (err) {
     return err.stdout?.toString() || err.message;
+  }
+}
+
+/**
+ * Typecheck the `workflows/` of a checkout as the worker's build does, on a
+ * copy: preparing writes files a person's checkout must not get. Returns the
+ * errors, paths relative to the checkout, or null.
+ */
+export function typecheckCheckout(checkout) {
+  // Real path: tsc prints paths relative to it, and macOS's tmpdir is a link.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mako-typecheck-")));
+  try {
+    cpSync(join(checkout, "workflows"), join(root, "workflows"), {
+      recursive: true,
+      filter: path => basename(path) !== "node_modules",
+    });
+    prepare(root);
+    return typecheck(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 }
 
