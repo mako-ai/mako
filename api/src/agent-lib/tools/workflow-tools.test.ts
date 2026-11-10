@@ -168,6 +168,20 @@ async function main() {
     const pending = await call(tools, "workflows_status", { wait: 0.1 });
     assert.equal(pending.deploying, true);
     assert.equal(pending.deployment.liveSha, SHA_A);
+    // A cancelled call stops waiting at once.
+    const cancel = new AbortController();
+    setTimeout(() => cancel.abort(), 200);
+    const startedAt = Date.now();
+    const cancelled = await (
+      tools.workflows_status as unknown as {
+        execute: (i: object, o: object) => Promise<Result>;
+      }
+    ).execute(
+      { wait: 30 },
+      { toolCallId: "t", messages: [], abortSignal: cancel.signal },
+    );
+    assert.equal(cancelled.deploying, true);
+    assert.ok(Date.now() - startedAt < 5000);
     const goesLive = setTimeout(
       () =>
         void Workspace.updateOne(
@@ -176,12 +190,14 @@ async function main() {
         ).exec(),
       500,
     );
-    // The deploy of a commit main has not reached yet is not under way.
-    const notYet = await call(tools, "workflows_status", {
-      wait: 0.1,
+    // A commit the repository does not hold: an error, not a wait that
+    // never ends.
+    const unknown = await call(tools, "workflows_status", {
+      wait: 1,
       sha: "c".repeat(40),
     });
-    assert.equal(notYet.deploying, true);
+    assert.equal(unknown.success, false);
+    assert.match(unknown.error, /not in this workspace's repository/);
     const settled = await call(tools, "workflows_status", {
       wait: 10,
       sha: SHA_B,

@@ -219,6 +219,34 @@ describe("search is a keyword match over the catalog", () => {
       expect.objectContaining({ scope: "workspace", body: "Ours." }),
     ]);
   });
+
+  it("a system skill matches only on what it says it is for, never on stopwords", async () => {
+    // Long system bodies mention "the", "for" and most business words.
+    expect(await searchSkills(WS, "the")).toEqual([]);
+    const unrelated = await searchSkills(
+      WS,
+      "churn definition for our customers",
+    );
+    expect(unrelated.filter(h => h.scope === "system")).toEqual([]);
+
+    // A workspace skill matching in its description still makes the top 3.
+    await saveSkill(
+      WS,
+      {
+        name: "revenue_watch",
+        loadWhen: "when revenue numbers move",
+        body: "Look at the finance mart first.",
+      },
+      "u1",
+    );
+    const hits = await searchSkills(
+      WS,
+      "send slack alert when revenue drops",
+      3,
+    );
+    expect(hits.map(h => h.name)).toContain("revenue_watch");
+    expect(hits[0]).toMatchObject({ name: "workflows", scope: "system" });
+  });
 });
 
 describe("admin surface", () => {

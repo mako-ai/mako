@@ -99,21 +99,19 @@ function deployment(slot?: IWorkflowSlot) {
 /**
  * Whether a deploy is over: the worker runs the wanted commit, or that commit
  * failed to build (the old code keeps running), or nothing was ever pushed.
- * With `sha`, the deploy of that commit: the target is set a few seconds
- * after main moves, so until it is that commit its deploy has not started.
  */
-export function deploySettled(
-  { liveSha, targetSha, buildError }: ReturnType<typeof deployment>,
-  sha?: string,
-): boolean {
-  if (sha && targetSha !== sha) return liveSha === sha;
+export function deploySettled({
+  liveSha,
+  targetSha,
+  buildError,
+}: ReturnType<typeof deployment>): boolean {
   return !targetSha || liveSha === targetSha || buildError !== null;
 }
 
 /** Just the deploy state, cheap to read again and again while waiting. */
 export async function readDeployment(workspaceId: string) {
   const { state } = await loadState(workspaceId);
-  return deployment(state?.live);
+  return { deployment: deployment(state?.live), tree: state?.live?.tree };
 }
 
 function statusOf(state: IWorkspaceWorkflows | undefined, repoLinked: boolean) {

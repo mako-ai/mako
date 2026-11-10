@@ -11,7 +11,7 @@ import { Types } from "mongoose";
 
 import { WORKFLOWS_DIR } from "../apps/app-paths";
 import { ensureLocalRepo, freshenForServe } from "../apps/cloud-repo.service";
-import { runGit } from "../apps/git";
+import { isAncestorCommit, runGit } from "../apps/git";
 import {
   DEFAULT_BRANCH,
   repoDirFor,
@@ -50,6 +50,41 @@ async function workflowsTree(
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether the deploy of `target` carries commit `sha`: `workflows/` at `sha`
+ * is the target's (a commit that left `workflows/` alone moves no target), or
+ * `sha` is behind the target (a later push replaced it). Throws when `sha` is
+ * not on main, as nothing would ever deploy it.
+ */
+export async function deployCarries(
+  workspaceId: string,
+  sha: string,
+  target: { sha: string; tree: string },
+): Promise<boolean> {
+  await ensureLocalRepo(workspaceId);
+  const repoDir = repoDirFor(workspaceId);
+  const main = `refs/heads/${DEFAULT_BRANCH}`;
+  const onMain = async () =>
+    Boolean(await resolveCommit(repoDir, sha)) &&
+    isAncestorCommit(repoDir, sha, main);
+  // This instance may not have the commit yet: another one took the push.
+  if (!(await onMain())) {
+    await freshenForServe(workspaceId, 0);
+    if (!(await resolveCommit(repoDir, sha))) {
+      throw new Error(
+        `Commit ${sha} is not in this workspace's repository. Pass the commitOid that workflow_commit or workflow_merge_to_main answered.`,
+      );
+    }
+    if (!(await onMain())) {
+      throw new Error(
+        `Commit ${sha} is not on main, so it is not deployed. Merge it first (workflow_merge_to_main).`,
+      );
+    }
+  }
+  if ((await workflowsTree(repoDir, sha)) === target.tree) return true;
+  return isAncestorCommit(repoDir, sha, target.sha);
 }
 
 /**

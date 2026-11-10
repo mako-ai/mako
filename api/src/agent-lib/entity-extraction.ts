@@ -17,7 +17,8 @@
  * synchronous lets us run it every turn without latency or cost.
  */
 
-const STOPWORDS = new Set([
+/** Common English words no search should match on. */
+export const STOPWORDS = new Set([
   "the",
   "and",
   "for",

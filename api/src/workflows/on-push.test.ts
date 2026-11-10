@@ -26,7 +26,7 @@ async function main() {
   const { Workspace } = await import("../database/workspace-schema");
   const { runGit } = await import("../apps/git");
   const { initRepo, repoDirFor } = await import("../apps/repository.service");
-  const { deployWorkflowsFromRepo, hasWorkflowsToDeploy } =
+  const { deployCarries, deployWorkflowsFromRepo, hasWorkflowsToDeploy } =
     await import("./on-push");
   try {
     const id = new Types.ObjectId();
@@ -121,6 +121,38 @@ async function main() {
     await commit("main", "main", { "README.md": "changed\n" });
     await deployWorkflowsFromRepo(ws);
     assert.equal((await slots())?.live?.sha, onMain);
+
+    // What a wait on a commit's deploy asks (workflows_status { sha }): a
+    // commit that left `workflows/` alone is carried by the target as it
+    // is, though the target never becomes that commit.
+    const live = async () => {
+      const slot = (await slots())?.live;
+      return { sha: slot!.sha, tree: slot!.tree };
+    };
+    const readme = (await git("rev-parse", "refs/heads/main")).stdout.trim();
+    assert.equal(await deployCarries(ws, readme, await live()), true);
+    // Commit A, then B before A went live: B's deploy carries A.
+    const a = await commit("main", "main", {
+      "workflows/digest/workflow.ts": `${WORKFLOW}// a\n`,
+    });
+    const before = await live();
+    assert.equal(await deployCarries(ws, a, before), false);
+    const b = await commit("main", "main", {
+      "workflows/digest/workflow.ts": `${WORKFLOW}// b\n`,
+    });
+    await deployWorkflowsFromRepo(ws);
+    assert.equal((await slots())?.live?.sha, b);
+    assert.equal(await deployCarries(ws, a, await live()), true);
+    // A commit main does not hold is never deployed: say so, not wait.
+    const branchOnly = await commit("side", "main", { "x.txt": "x\n" });
+    await assert.rejects(
+      deployCarries(ws, branchOnly, await live()),
+      /not on main/,
+    );
+    await assert.rejects(
+      deployCarries(ws, "c".repeat(40), await live()),
+      /not in this workspace's repository/,
+    );
 
     // `workflows/` deleted on main: still a deploy (something is live to
     // drop), and then nothing is live and nothing more to ask for.

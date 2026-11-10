@@ -6,6 +6,7 @@
  */
 import { readRunCosts } from "./costs";
 import { requireTenant } from "./hatchet";
+import { deployCarries } from "./on-push";
 import { deploySettled, readDeployment, readRun } from "./runs";
 import { isSandboxRunId, readSandboxRun } from "./sandbox";
 import { waitFor, waitSeconds } from "./wait";
@@ -16,7 +17,7 @@ export async function waitForRun(
   workspaceId: string,
   userId: string | undefined,
   runId: string,
-  options: { wait?: number; full?: boolean } = {},
+  options: { wait?: number; full?: boolean; signal?: AbortSignal } = {},
 ) {
   const sandbox = isSandboxRunId(runId);
   const read = async () => {
@@ -46,6 +47,7 @@ export async function waitForRun(
     {
       seconds: waitSeconds(options.wait),
       intervalMs: sandbox ? 2000 : 3000,
+      signal: options.signal,
     },
   );
   return { run, done };
@@ -55,14 +57,43 @@ export async function waitForRun(
  * Wait up to `wait` seconds for the deploy under way (a commit on main), or
  * of commit `sha`, to be over: live on the worker, or failed to build. A
  * build takes a minute or two, so this saves the caller polling for it.
+ * The target is set a few seconds after main moves, and only when
+ * `workflows/` changed: until it carries `sha`, that deploy has not started.
  */
 export async function waitForDeploy(
   workspaceId: string,
-  options: { wait?: number; sha?: string } = {},
+  options: { wait?: number; sha?: string; signal?: AbortSignal } = {},
 ) {
-  return waitFor(
-    () => readDeployment(workspaceId),
-    deployment => deploySettled(deployment, options.sha),
-    { seconds: waitSeconds(options.wait), intervalMs: 3000 },
+  const { sha } = options;
+  // Asked of git once per target, not once per read.
+  let known: { target: string; carries: boolean } | undefined;
+  const read = async () => {
+    const { deployment, tree } = await readDeployment(workspaceId);
+    const target = deployment.targetSha;
+    if (
+      !sha ||
+      !target ||
+      !tree ||
+      [target, deployment.liveSha].includes(sha)
+    ) {
+      return { deployment, carries: true };
+    }
+    if (known?.target !== target) {
+      known = {
+        target,
+        carries: await deployCarries(workspaceId, sha, { sha: target, tree }),
+      };
+    }
+    return { deployment, carries: known.carries };
+  };
+  const { value, done } = await waitFor(
+    read,
+    ({ deployment, carries }) => carries && deploySettled(deployment),
+    {
+      seconds: waitSeconds(options.wait),
+      intervalMs: 3000,
+      signal: options.signal,
+    },
   );
+  return { deployment: value.deployment, done };
 }

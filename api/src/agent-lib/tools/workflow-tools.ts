@@ -63,11 +63,15 @@ export function createWorkflowTools({
           .optional()
           .describe("With a sandbox runId: the whole run, not a summary"),
       }),
-      execute: async ({ runId, wait, sha, full }) => {
+      execute: async ({ runId, wait, sha, full }, { abortSignal }) => {
         try {
           if (!runId) {
             const deploy = wait
-              ? await waitForDeploy(workspaceId, { wait, sha })
+              ? await waitForDeploy(workspaceId, {
+                  wait,
+                  sha,
+                  signal: abortSignal,
+                })
               : { done: true };
             return {
               success: true,
@@ -82,6 +86,7 @@ export function createWorkflowTools({
           const { run, done } = await waitForRun(workspaceId, userId, runId, {
             wait,
             full,
+            signal: abortSignal,
           });
           return { success: true, run, ...(done ? {} : { running: true }) };
         } catch (error) {
