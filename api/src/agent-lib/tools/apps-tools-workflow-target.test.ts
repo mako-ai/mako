@@ -287,4 +287,50 @@ describe("workflowId as the tools' target", () => {
     expect(neither.parsed.error?.message).toContain("oldString is required");
     expect(neither.parsed.error?.message).toContain("newString is required");
   });
+
+  it("overwrites a file after a partial read, or with overwrite: true", async () => {
+    const target = { workflowId: "overwrite-guard" };
+    const contents = Array.from({ length: 50 }, (_, i) => `// ${i}`).join("\n");
+    const first = await call(await toolsFor(ADMIN), "workflow_write_file", {
+      ...target,
+      path: "workflow.ts",
+      contents,
+    });
+    expect(first.success, first.error).toBe(true);
+
+    // A fresh tool set is a fresh exchange (each MCP call is one): nothing
+    // was read in it, so a blind rewrite is refused with what to do instead.
+    const blind = await call(await toolsFor(ADMIN), "workflow_write_file", {
+      ...target,
+      path: "workflow.ts",
+      contents: WORKFLOW,
+    });
+    expect(blind.success).toBe(false);
+    expect(blind.error).toContain(
+      "workflow_write_file again with overwrite: true",
+    );
+    expect(blind.error).not.toContain("app_");
+
+    const tools = await toolsFor(ADMIN);
+    const part = await call(tools, "workflow_read_file", {
+      ...target,
+      path: "workflow.ts",
+      limit: 5,
+    });
+    expect(part.nextOffset).toBe(6);
+    const afterPart = await call(tools, "workflow_write_file", {
+      ...target,
+      path: "workflow.ts",
+      contents: WORKFLOW,
+    });
+    expect(afterPart.success, afterPart.error).toBe(true);
+
+    const forced = await call(await toolsFor(ADMIN), "workflow_write_file", {
+      ...target,
+      path: "workflow.ts",
+      contents: `${WORKFLOW}// again\n`,
+      overwrite: true,
+    });
+    expect(forced.success, forced.error).toBe(true);
+  });
 });

@@ -155,6 +155,49 @@ async function main() {
       { workflowId: "weekly-report", active: true },
     ]);
     assert.equal(overview.mayChange, false);
+    // A failed build ends a deploy: no wait, and nothing said of deploying.
+    const failedBuild = await call(tools, "workflows_status", { wait: 30 });
+    assert.equal(failedBuild.deploying, undefined);
+
+    // A deploy under way: `wait` answers once the worker runs the commit,
+    // or with `deploying: true` when the time is up first.
+    await Workspace.updateOne(
+      { _id: id },
+      { $unset: { "workflows.live.failed": 1 } },
+    );
+    const pending = await call(tools, "workflows_status", { wait: 0.1 });
+    assert.equal(pending.deploying, true);
+    assert.equal(pending.deployment.liveSha, SHA_A);
+    const goesLive = setTimeout(
+      () =>
+        void Workspace.updateOne(
+          { _id: id },
+          { $set: { "workflows.live.running.sha": SHA_B } },
+        ).exec(),
+      500,
+    );
+    // The deploy of a commit main has not reached yet is not under way.
+    const notYet = await call(tools, "workflows_status", {
+      wait: 0.1,
+      sha: "c".repeat(40),
+    });
+    assert.equal(notYet.deploying, true);
+    const settled = await call(tools, "workflows_status", {
+      wait: 10,
+      sha: SHA_B,
+    });
+    clearTimeout(goesLive);
+    assert.equal(settled.deploying, undefined);
+    assert.equal(settled.deployment.liveSha, SHA_B);
+    await Workspace.updateOne(
+      { _id: id },
+      {
+        $set: {
+          "workflows.live.running.sha": SHA_A,
+          "workflows.live.failed": { sha: SHA_B, error: "error TS2322" },
+        },
+      },
+    );
     assert.equal(
       (await call(admin, "workflows_status", {})).workflows[0].webhookUrl,
       null,

@@ -2,10 +2,11 @@
  * One run, sandbox (read from the person's box, sandbox.ts) or deployed
  * (read from the workspace's Hatchet, runs.ts), waiting on the server up to
  * `wait` seconds for it to end. Shared by workflows_status and the routes.
+ * And the deploy, waited on the same way.
  */
 import { readRunCosts } from "./costs";
 import { requireTenant } from "./hatchet";
-import { readRun } from "./runs";
+import { deploySettled, readDeployment, readRun } from "./runs";
 import { isSandboxRunId, readSandboxRun } from "./sandbox";
 import { waitFor, waitSeconds } from "./wait";
 
@@ -48,4 +49,20 @@ export async function waitForRun(
     },
   );
   return { run, done };
+}
+
+/**
+ * Wait up to `wait` seconds for the deploy under way (a commit on main), or
+ * of commit `sha`, to be over: live on the worker, or failed to build. A
+ * build takes a minute or two, so this saves the caller polling for it.
+ */
+export async function waitForDeploy(
+  workspaceId: string,
+  options: { wait?: number; sha?: string } = {},
+) {
+  return waitFor(
+    () => readDeployment(workspaceId),
+    deployment => deploySettled(deployment, options.sha),
+    { seconds: waitSeconds(options.wait), intervalMs: 3000 },
+  );
 }

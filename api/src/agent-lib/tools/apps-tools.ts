@@ -185,7 +185,7 @@ const WORKFLOW_TOOLS: Record<string, string> = {
   glob: "Find files of a workflow by glob pattern (e.g. `**/*.ts`).",
   grep: "Search a workflow's files with a regex. Returns path:line:text matches.",
   write_file:
-    "Create or fully overwrite a file of a workflow in your checkout. Nothing is committed, at the end of the turn either, until workflow_commit. For small edits prefer workflow_edit_file.",
+    "Create or fully overwrite a file of a workflow in your checkout. Nothing is committed, at the end of the turn either, until workflow_commit. Overwriting an existing file needs a read of it first (any part counts) or `overwrite: true`. For small edits prefer workflow_edit_file.",
   edit_file:
     "Anchored string-replacement edit of a workflow's file. oldString must match exactly once unless replaceAll is set.",
   status:
@@ -852,13 +852,25 @@ function buildTools(
 
     app_write_file: tool({
       description:
-        "Create or fully overwrite a file in an Apps project's working copy. Uncommitted until you commit, like any checkout. For surgical edits prefer app_edit_file.",
+        "Create or fully overwrite a file in an Apps project's working copy. Uncommitted until you commit, like any checkout. Overwriting an existing file needs a read of it first (any part counts) or `overwrite: true`. For surgical edits prefer app_edit_file.",
       inputSchema: z.object({
         ...targetInput,
         path: z.string().min(1),
         contents: z.string(),
+        overwrite: z
+          .boolean()
+          .optional()
+          .describe(
+            "Replace an existing file you have not read in this call's exchange",
+          ),
       }),
-      execute: async ({ appId, workflowId, path: givenPath, contents }) => {
+      execute: async ({
+        appId,
+        workflowId,
+        path: givenPath,
+        contents,
+        overwrite,
+      }) => {
         const loaded = await loadTarget({ appId, workflowId }, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         const relPath = toRelPath(loaded.project, givenPath);
@@ -866,8 +878,10 @@ function buildTools(
           // Read-before-overwrite guard (Claude Code hallmark): a full rewrite
           // of an EXISTING file it hasn't read this turn risks clobbering
           // content blindly. Creating a new file is fine. Anchored edits are
-          // exempt (they fail safely on a bad anchor).
-          if (!wasRead(loaded.project, relPath)) {
+          // exempt (they fail safely on a bad anchor). A read of any part
+          // counts. Over MCP each call is its own exchange, so nothing read
+          // earlier is remembered: `overwrite` is the explicit way past.
+          if (!overwrite && !wasRead(loaded.project, relPath)) {
             let exists = false;
             try {
               await readFile(loaded.project, relPath, actorId);
@@ -878,7 +892,7 @@ function buildTools(
             if (exists) {
               return {
                 success: false,
-                error: `${relPath} already exists and was not read this turn. Read it first (app_read_file) so you don't overwrite content blindly, or use app_edit_file for a targeted change.`,
+                error: `${relPath} already exists and was not read this turn. To replace it, call ${kind}_write_file again with overwrite: true, or read it first (${kind}_read_file; any part counts); for a targeted change use ${kind}_edit_file. Do not delete it through ${kind}_bash.`,
               };
             }
           }

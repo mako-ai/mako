@@ -205,7 +205,7 @@ export function createSkillTools(workspaceId: string, userId?: string) {
     }),
     get_relevant_skills: tool({
       description: [
-        "Keyword-match workspace skills against a task and return the best",
+        "Keyword-match skills (workspace and system) against a task and return the best",
         "matches with their full bodies. Call this at the start of a",
         "multi-step task when the index in your prompt did not point at an",
         "obvious skill; otherwise prefer load_skill by name.",
@@ -243,7 +243,7 @@ export function createSkillTools(workspaceId: string, userId?: string) {
     }),
     search_skills: tool({
       description:
-        "Search workspace skills by keywords (names, descriptions, entities, bodies). Use when no index line rang a bell. Returns matches with full bodies.",
+        "Search skills (workspace and system) by keywords (names, descriptions, entities, bodies). Use when no index line rang a bell. Returns matches with full bodies.",
       inputSchema: searchSkillsSchema,
       execute: async ({ query, limit }) => {
         const hits = await searchSkills(workspaceId, query, limit ?? 5);

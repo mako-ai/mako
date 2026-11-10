@@ -198,6 +198,27 @@ describe("search is a keyword match over the catalog", () => {
     expect(hits[0]!.body).toBe("How MRR is computed.");
     expect(await searchSkills(WS, "")).toEqual([]);
   });
+
+  it("finds system skills too, with the workspace's own first on a tie", async () => {
+    const hits = await searchSkills(WS, "workflow cron webhook slack", 3);
+    expect(hits[0]).toMatchObject({ name: "workflows", scope: "system" });
+    expect(hits[0]!.body).toContain("# Workflows");
+
+    // A workspace skill of the same name is the one load_skill serves.
+    await saveSkill(
+      WS,
+      {
+        name: "workflows",
+        loadWhen: "our workflow cron webhook slack rules",
+        body: "Ours.",
+      },
+      "u1",
+    );
+    const shadowed = await searchSkills(WS, "workflow cron webhook slack", 3);
+    expect(shadowed.filter(h => h.name === "workflows")).toEqual([
+      expect.objectContaining({ scope: "workspace", body: "Ours." }),
+    ]);
+  });
 });
 
 describe("admin surface", () => {

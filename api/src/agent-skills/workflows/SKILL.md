@@ -1,6 +1,6 @@
 ---
 name: workflows
-description: Load when writing, changing, testing, running or debugging a workflow — a scheduled or multi-step job written as a Hatchet TypeScript file in workflows/<name>/workflow.ts of the workspace repo — "run this every morning", "build a workflow that…", "test it in the sandbox", "why did the run fail".
+description: Load when writing, changing, testing, running or debugging a workflow — a scheduled, webhook-started or multi-step job written as a Hatchet TypeScript file in workflows/<name>/workflow.ts of the workspace repo — "run this every morning", "post to Slack when…", "build a workflow that…", "test it in the sandbox", "why did the run fail".
 entities:
   - workflows/
   - workflow.ts
@@ -14,6 +14,13 @@ entities:
   - schedule
   - scheduled job
   - background job
+  - webhook
+  - trigger
+  - slack
+  - email
+  - sendgrid
+  - notification
+  - alert
   - build error
   - connection(
   - API key
@@ -61,8 +68,10 @@ switches it on. Like n8n: test, then activate.
    past that it says `cut`, and the whole run is `resultFile` in your
    sandbox: read it with `workflow_bash` (`node -e` or `jq`).
 4. Fix and repeat from 1 until the run is `COMPLETED`.
-5. Go-live: `workflow_commit`. On main that is the deploy; `workflows_status`
-   until `deployment.liveSha` is your commit (`deployment.buildError` says
+5. Go-live: `workflow_commit`. On main that is the deploy;
+   `workflows_status({ wait: 90, sha })`, with the `commitOid` the commit or
+   merge answered, waits until `deployment.liveSha` is that commit; call it
+   again while it answers `deploying: true` (`deployment.buildError` says
    why not, type errors included: a test run does not typecheck, the build
    does; the previous version keeps running meanwhile). A member commits to
    a branch and asks an admin to merge: only admins put workflows on main.

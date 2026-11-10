@@ -334,7 +334,7 @@ export async function searchSkills(
   const terms = queryTerms(query);
   if (terms.length === 0) return [];
   const catalog = await loadSkillCatalog(workspaceId);
-  const ranked: SkillRetrievalHit[] = catalog.skills
+  const workspace: SkillRetrievalHit[] = catalog.skills
     .filter(skill => !skill.suppressed)
     .map(skill => ({
       id: skill.id,
@@ -343,9 +343,35 @@ export async function searchSkills(
       body: skill.body,
       score: keywordScore(terms, skill),
       scope: "workspace" as const,
-    }))
-    .filter(hit => hit.score > 0);
-  ranked.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+    }));
+  // System skills too: they are in the same index, and an agent outside the
+  // product (MCP) finds them only by asking. A workspace skill of the same
+  // name is the one load_skill serves, so it shadows the system one.
+  const taken = new Set(catalog.skills.map(skill => skill.name));
+  const system: SkillRetrievalHit[] = getSystemSkillIndex()
+    .filter(entry => !taken.has(entry.name))
+    .flatMap(entry => {
+      const skill = getSystemSkill(entry.name);
+      if (!skill) return [];
+      return [
+        {
+          id: skill.id,
+          name: skill.name,
+          loadWhen: skill.description,
+          body: skill.body,
+          score: keywordScore(terms, { ...skill, loadWhen: skill.description }),
+          scope: "system" as const,
+        },
+      ];
+    });
+  const ranked = [...workspace, ...system].filter(hit => hit.score > 0);
+  // On a tie the workspace's own skill comes first.
+  ranked.sort(
+    (a, b) =>
+      b.score - a.score ||
+      (a.scope === b.scope ? 0 : a.scope === "workspace" ? -1 : 1) ||
+      a.name.localeCompare(b.name),
+  );
   return ranked.slice(0, limit);
 }
 
