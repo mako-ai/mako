@@ -85,6 +85,7 @@ const SERVER_VERSION = "0.1.0";
  * saves far more by avoiding failed exploratory round-trips.
  */
 const SERVER_INSTRUCTIONS = `Mako builds data apps (git-backed React projects + data bindings) inside one workspace.
+This connection is bound to one workspace: call get_mcp_capabilities before the first write to confirm its name and id (every write result echoes them too).
 
 Typical loop:
 1. Discover data: list_connections (every configured credential — kind "database" for warehouses, kind "source" for Stripe/Close/… keys), then list_databases / list_tables / inspect_table on a database connection (they dispatch on engine — SQL or MongoDB). A source connection is not queryable: probe_connection reads one live page of an entity from its platform; list_connectors is the catalog of connector code.
@@ -106,6 +107,7 @@ Optional: web_search / fetch_url for public docs.`;
 
 /** ACP Desktop Chat — no headless preview tokens; the user already has a live tab. */
 const ACP_DESKTOP_SERVER_INSTRUCTIONS = `Mako builds data apps (React + data bindings) inside Mako Desktop Chat.
+This connection is bound to one workspace: call get_mcp_capabilities before the first write to confirm its name and id (every write result echoes them too).
 
 Typical loop:
 1. Discover data: list_connections (kind "database" for warehouses, kind "source" for Stripe/Close/… keys), then list_databases / list_tables / inspect_table on a database connection (they dispatch on engine — SQL or MongoDB). A source connection is not queryable: probe_connection reads one live page from its platform.
@@ -134,6 +136,12 @@ export const MCP_MAX_RUN_WAIT_MS = 45_000;
 
 export interface MakoMcpContext {
   workspaceId: string;
+  /**
+   * Bound workspace's display name. Echoed in get_mcp_capabilities and every
+   * write result so a client with several Mako servers connected can tell
+   * which workspace it is changing.
+   */
+  workspaceName?: string;
   /** Acting user (the API key's creator). */
   userId?: string;
   /** Live workspace role, resolved on every MCP request. */
@@ -383,11 +391,13 @@ export function buildMakoMcpToolset(
 
   exposed.get_mcp_capabilities = {
     description:
-      "Report this MCP connection's effective scopes, grants, available " +
+      "Report which workspace this MCP connection is bound to (name + id), " +
+      "its effective scopes, grants, available " +
       "tools, and grant-gated tools that are hidden. Call this when a tool " +
       "seems missing or before planning dbt warehouse execution.",
     inputSchema: z.object({}),
     execute: async () => ({
+      workspace: boundWorkspace(context),
       scopes,
       queryAccess,
       grants: [...grants].sort(),
@@ -403,6 +413,33 @@ export function buildMakoMcpToolset(
   };
 
   return exposed;
+}
+
+/** The workspace this MCP connection acts on, as echoed back to clients. */
+export function boundWorkspace(context: MakoMcpContext): {
+  id: string;
+  name: string | null;
+} {
+  return { id: context.workspaceId, name: context.workspaceName ?? null };
+}
+
+/**
+ * Stamp the bound workspace onto a write tool's result. Plain-object results
+ * get a leading `workspace` field (first, so result truncation cannot cut
+ * it; a tool's own `workspace` key wins); anything else gets a trailing text
+ * block, added by the caller.
+ */
+function withBoundWorkspace(result: unknown, context: MakoMcpContext): unknown {
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    Array.isArray(result) ||
+    "mcpContent" in result ||
+    "workspace" in result
+  ) {
+    return result;
+  }
+  return { workspace: boundWorkspace(context), ...result };
 }
 
 function capabilityScopeForGrant(
@@ -626,6 +663,13 @@ export function buildMakoMcpServer(
     }
 
     const execute = tool.execute;
+    // Writes echo the bound workspace so a client juggling several Mako
+    // servers sees where the change landed (reads stay lean).
+    const isWrite = !mcpReadOnlyHint(name, queryAccess);
+    const workspaceText = {
+      type: "text" as const,
+      text: JSON.stringify({ workspace: boundWorkspace(context) }),
+    };
     try {
       const result = await withQueryLabels(
         {
@@ -642,12 +686,18 @@ export function buildMakoMcpServer(
             context: undefined,
           }),
       );
-      const richContent = extractMcpContent(result);
+      const stamped = isWrite ? withBoundWorkspace(result, context) : result;
+      const workspaceBlock =
+        isWrite && stamped === result ? [workspaceText] : [];
+      const richContent = extractMcpContent(stamped);
       if (richContent) {
-        return { content: richContent };
+        return { content: [...richContent, ...workspaceBlock] };
       }
       return {
-        content: [{ type: "text" as const, text: serializeToolResult(result) }],
+        content: [
+          { type: "text" as const, text: serializeToolResult(stamped) },
+          ...workspaceBlock,
+        ],
       };
     } catch (error) {
       logger.error("MCP tool execution failed", {
@@ -663,6 +713,7 @@ export function buildMakoMcpServer(
               error instanceof Error ? error.message : "unknown error"
             }`,
           },
+          ...(isWrite ? [workspaceText] : []),
         ],
         isError: true,
       };

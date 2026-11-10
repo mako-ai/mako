@@ -146,6 +146,7 @@ mcpProtocolRoutes.post(
         : undefined;
     const mcpContext = {
       workspaceId,
+      workspaceName: c.get("workspace")?.name,
       userId: user ? String(user.id) : undefined,
       memberRole: c.get("memberRole"),
       scopes,

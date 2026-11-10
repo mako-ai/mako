@@ -23,7 +23,8 @@ import {
   DBT_CAPABILITY_NAMES,
   type CapabilityGrant,
 } from "@mako/agent-tools";
-import { buildMakoMcpServer } from "./mako-mcp-server";
+import { z } from "zod";
+import { buildMakoMcpServer, type BridgeableTool } from "./mako-mcp-server";
 import { createChatGptConnectorTools } from "./chatgpt-connector-tools";
 import { StatelessMcpTransport } from "./stateless-transport";
 import {
@@ -49,6 +50,7 @@ import {
 import { collectLiveAgentToolNames } from "./bridge-inventory";
 
 const WORKSPACE_ID = new Types.ObjectId().toString();
+const WORKSPACE_NAME = "Acme Analytics";
 
 /** One stateless HTTP exchange: fresh server + transport per call. */
 async function exchange(
@@ -60,6 +62,7 @@ async function exchange(
 ): Promise<Record<string, unknown>[]> {
   const server = buildMakoMcpServer({
     workspaceId: WORKSPACE_ID,
+    workspaceName: WORKSPACE_NAME,
     memberRole,
     scopes,
     acpDesktop,
@@ -515,12 +518,19 @@ async function main() {
       capabilityResponse.result as { content: { text: string }[] }
     ).content[0].text;
     const capabilityReport = JSON.parse(capabilityText) as {
+      workspace: { id: string; name: string | null };
       scopes: string[];
       unavailableTools: Array<{
         name: string;
         requiredScope?: string;
       }>;
     };
+    // A client with several Mako servers connected must be able to tell
+    // which workspace this one is bound to.
+    assert.deepEqual(capabilityReport.workspace, {
+      id: WORKSPACE_ID,
+      name: WORKSPACE_NAME,
+    });
     assert.deepEqual(capabilityReport.scopes, ["mcp", "query:read"]);
     assert.equal(
       capabilityReport.unavailableTools.find(
@@ -1096,6 +1106,114 @@ async function main() {
       false,
       "Desktop ACP must get list_open_consoles from mako-desktop, not the Mako bridge",
     );
+  }
+
+  // 3f-ws. Write results carry the bound workspace (one shared stamp in the
+  //        CallTool handler, not per tool); read results stay untouched.
+  {
+    const stubs: Record<string, BridgeableTool> = {
+      create_console: {
+        description: "stub write",
+        inputSchema: z.object({}),
+        execute: async () => ({ success: true, consoleId: "c1" }),
+      },
+      app_commit: {
+        description: "stub write returning text",
+        inputSchema: z.object({}),
+        execute: async () => "committed",
+      },
+      create_connection: {
+        description: "stub write with an oversized result",
+        inputSchema: z.object({}),
+        execute: async () => ({ rows: "x".repeat(250_000) }),
+      },
+      modify_console: {
+        description: "stub write that throws",
+        inputSchema: z.object({}),
+        execute: async () => {
+          throw new Error("boom");
+        },
+      },
+      list_connections: {
+        description: "stub read",
+        inputSchema: z.object({}),
+        execute: async () => ({ connections: [] }),
+      },
+    };
+    const server = buildMakoMcpServer(
+      {
+        workspaceId: WORKSPACE_ID,
+        workspaceName: WORKSPACE_NAME,
+        memberRole: "admin",
+        scopes: ["mcp", "query:read"],
+      },
+      stubs,
+    );
+    const transport = new StatelessMcpTransport();
+    await server.connect(transport);
+    const call = (name: string) => ({
+      jsonrpc: "2.0",
+      id: name,
+      method: "tools/call",
+      params: { name, arguments: {} },
+    });
+    const responses = (await transport.handle(
+      [
+        call("create_console"),
+        call("app_commit"),
+        call("create_connection"),
+        call("modify_console"),
+        call("list_connections"),
+      ] as unknown as JSONRPCMessage[],
+      5_000,
+    )) as unknown as Array<{
+      id: string;
+      result: { isError?: boolean; content: { text: string }[] };
+    }>;
+    await server.close().catch(() => undefined);
+    const byId = new Map(responses.map(r => [r.id, r.result]));
+    const expected = { id: WORKSPACE_ID, name: WORKSPACE_NAME };
+
+    const created = byId.get("create_console");
+    assert.notEqual(created?.isError, true);
+    assert.deepEqual(JSON.parse(created?.content[0].text ?? "{}"), {
+      success: true,
+      consoleId: "c1",
+      workspace: expected,
+    });
+
+    const committed = byId.get("app_commit");
+    assert.equal(committed?.content[0].text, "committed");
+    assert.deepEqual(JSON.parse(committed?.content[1]?.text ?? "{}"), {
+      workspace: expected,
+    });
+
+    // Truncation of a huge result must not cut the workspace: it leads.
+    const huge = byId.get("create_connection");
+    assert.match(huge?.content[0].text ?? "", /truncated/);
+    assert.ok(
+      huge?.content[0].text.startsWith(
+        `{"workspace":${JSON.stringify(expected)}`,
+      ),
+      "workspace must lead an oversized write result",
+    );
+
+    // A thrown write still says which workspace it ran against.
+    const failed = byId.get("modify_console");
+    assert.equal(failed?.isError, true);
+    assert.match(
+      failed?.content[0].text ?? "",
+      /Tool modify_console failed: boom/,
+    );
+    assert.deepEqual(JSON.parse(failed?.content[1]?.text ?? "{}"), {
+      workspace: expected,
+    });
+
+    const listed = byId.get("list_connections");
+    assert.equal(listed?.content.length, 1);
+    assert.deepEqual(JSON.parse(listed?.content[0].text ?? "{}"), {
+      connections: [],
+    });
   }
 
   // 3g. ChatGPT connector contract: the route layer registers search/fetch
