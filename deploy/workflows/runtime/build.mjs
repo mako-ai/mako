@@ -1,19 +1,26 @@
 // What it takes to run `workflows/`: the shared files the image supplies, the
 // runtime's packages, a typecheck, and a started worker. Used by
-// entrypoint.mjs (a commit, in the workspace's worker).
+// entrypoint.mjs (a commit, in the workspace's worker) and run.mjs (the
+// typecheck before a sandbox run).
 import { execFileSync, fork } from "node:child_process";
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const RUNTIME_DIR = dirname(fileURLToPath(import.meta.url));
 const START_TIMEOUT_MS = 60_000;
+const TYPECHECK_TIMEOUT_MS = 120_000;
 
 /**
  * Make `root` (a folder holding `workflows/`) loadable: the Hatchet client
@@ -35,7 +42,10 @@ export function prepare(root) {
   writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module" }));
 }
 
-/** Typecheck `workflows/` under a prepared `root`. Returns the errors, or null. */
+/**
+ * Typecheck `workflows/` under a prepared `root`. Returns the errors, or null;
+ * throws when tsc itself could not run.
+ */
 export function typecheck(root) {
   const tsconfig = join(root, "tsconfig.workflows.json");
   writeFileSync(
@@ -58,10 +68,38 @@ export function typecheck(root) {
     execFileSync(join(RUNTIME_DIR, "node_modules/.bin/tsc"), ["-p", tsconfig], {
       cwd: root,
       stdio: "pipe",
+      timeout: TYPECHECK_TIMEOUT_MS,
     });
     return null;
   } catch (err) {
-    return err.stdout?.toString() || err.message;
+    const errors = err.stdout?.toString();
+    // tsc exits 2 with its errors on stdout. Anything else (no tsc, a
+    // timeout, a crash) is not the code's fault: thrown, not reported as
+    // type errors.
+    if (err.status === 2 && errors) return errors;
+    throw new Error(
+      `The typecheck could not run: ${err.code ?? err.signal ?? `exit ${err.status}`}${err.stderr?.length ? `\n${err.stderr}` : ""}`,
+    );
+  }
+}
+
+/**
+ * Typecheck the `workflows/` of a checkout as the worker's build does, on a
+ * copy: preparing writes files a person's checkout must not get. Returns the
+ * errors, paths relative to the checkout, or null.
+ */
+export function typecheckCheckout(checkout) {
+  // Real path: tsc prints paths relative to it, and macOS's tmpdir is a link.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mako-typecheck-")));
+  try {
+    cpSync(join(checkout, "workflows"), join(root, "workflows"), {
+      recursive: true,
+      filter: path => basename(path) !== "node_modules",
+    });
+    prepare(root);
+    return typecheck(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 }
 

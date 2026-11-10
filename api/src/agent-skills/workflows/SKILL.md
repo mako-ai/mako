@@ -52,7 +52,8 @@ Three things, each one verb. **Test**: `mako workflow run <name>` runs the
 workflow as it is in a checkout, uncommitted edits included, once, with real
 data, your own rights and no schedule. On a laptop it is that command; in
 your sandbox `workflows_run` with `sandbox: true` runs the same command
-there. **Main**: a commit on main is the deploy. **Active**: a deployed
+there. **Main**: main is the deploy; your commits wait on the workflow's
+preview branch until the user has reviewed them. **Active**: a deployed
 workflow starts inactive (schedule and webhook off, Run works); an admin
 switches it on. Like n8n: test, then activate.
 
@@ -67,19 +68,28 @@ switches it on. Like n8n: test, then activate.
    line whole (an eval report, a long output), as far as one answer holds;
    past that it says `cut`, and the whole run is `resultFile` in your
    sandbox: read it with `workflow_bash` (`node -e` or `jq`).
+   A test run typechecks `workflows/` first, as the deploy's build does:
+   with a type error it does not run, ends `FAILED` with no steps, and
+   answers the `tsc` output in `typeErrors`. Fix those first.
 4. Fix and repeat from 1 until the run is `COMPLETED`.
-5. Go-live: `workflow_commit`. On main that is the deploy;
-   `workflows_status({ wait: 90, sha })`, with the `commitOid` the commit or
-   merge answered, waits until `deployment.liveSha` is that commit; call it
-   again while it answers `deploying: true` (`deployment.buildError` says
-   why not, type errors included: a test run does not typecheck, the build
-   does; the previous version keeps running meanwhile). A member commits to
-   a branch and asks an admin to merge: only admins put workflows on main.
-6. Run it once by hand on the workers (`workflows_run` without `sandbox`)
+5. Review: `workflow_commit`. From main it puts main plus the workflow's
+   folder, as it is in your checkout, on your preview branch for it
+   (`workflow/<you>/<name>`, answered as `branch`), and deploys nothing.
+   Your checkout stays on main. Each commit replaces the branch. Show the
+   user what changed and ask them to review it.
+6. Deploy, only on the user's go-ahead: `workflow_merge_to_main` (from
+   main it merges your preview branch). Then
+   `workflows_status({ wait: 90, sha })`, with the `commitOid` the merge
+   answered, waits until `deployment.liveSha` is that commit; call it again
+   while it answers `deploying: true` (`deployment.buildError` says why
+   not; the previous version keeps running meanwhile). Only admins put
+   workflows on main: for a member, the merge is refused; ask an admin to
+   merge the branch.
+7. Run it once by hand on the workers (`workflows_run` without `sandbox`)
    and read it with `workflows_status({ runId, wait: 90 })`. This is the
    first run with the workflow's own rights: a write a test could do as
    you fails here if the connection does not list the workflow.
-7. Ask the user, then `workflows_triggers` with `active: true`: from then on
+8. Ask the user, then `workflows_triggers` with `active: true`: from then on
    its schedule and webhook start runs by themselves.
 
 A test run is real: `query` reads real data, and `call`, `model` and `agent`
@@ -91,12 +101,17 @@ outputs. Only what workflows here use is supported (`ctx.logger`,
 list: keep its `runId`.
 
 Changing an active workflow: the same loop; test in the sandbox, and say
-before committing that the new commit is live as soon as it builds.
+before merging that the merge is live as soon as it builds.
 
 Nothing is committed until `workflow_commit`, at the end of a turn either: an
 attempt you give up on is deleted from the checkout (`rm -rf` its folder with
 `workflow_bash` on another workflow) and was never deployed. A workflow
-already on main is removed by deleting its folder and committing that.
+already on main is removed by deleting its folder, committing that and
+merging it.
+
+Main changes only through `workflow_merge_to_main` after the user said to
+deploy. Never `git commit` or `git push` on main with `workflow_bash`: for
+an admin, nothing stops that push, and it deploys unreviewed code.
 
 ## A workflow file
 
@@ -355,6 +370,7 @@ markdown (`https://docs.hatchet.run/llms/<section>/<page>.md`).
 
 | You see                                                          | It means                                                                        |
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `typeErrors` on a test run                                       | The code does not typecheck, so it did not run. Fix the errors and run again.   |
 | `buildError` with `error TS…`                                    | The commit does not typecheck. The previous code keeps running. Fix and commit. |
 | `buildError` with `must default-export the workflow named …`     | Folder name and `name` differ, or the export is not the default.                |
 | `liveSha` is not `targetSha` after a minute, and no `buildError` | The worker is not running. Tell the user.                                       |

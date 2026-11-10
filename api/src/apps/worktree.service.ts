@@ -37,6 +37,7 @@ import { loggers } from "../logging";
 import {
   boxCheckout,
   boxCommitAll,
+  boxCommitPathToBranch,
   boxDiscard,
   boxGlob,
   boxGrep,
@@ -2629,6 +2630,35 @@ export async function commitWorktree(
     branch: handle.doc.branch,
     commitOid: result.commitOid,
   });
+  return result;
+}
+
+/**
+ * Commit one folder of the working copy onto `branch`, built on main, without
+ * moving the checkout (boxCommitPathToBranch). For a workflow's preview
+ * branch: the working copy is shared by the UI and every chat of this user,
+ * so switching it would carry their work onto that branch.
+ */
+export async function commitPathToBranch(
+  handle: WorktreeHandle,
+  relPath: string,
+  branch: string,
+  { base, message }: { base: string; message: string },
+): Promise<CommitResult> {
+  const ctx = await ensureBox(handle);
+  const result = await boxCommitPathToBranch({
+    ctx,
+    path: relPath,
+    branch,
+    base,
+    message,
+  });
+  if (result.committed) {
+    logger.info("Apps path committed to a branch", {
+      branch,
+      commitOid: result.commitOid,
+    });
+  }
   return result;
 }
 

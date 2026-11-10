@@ -97,7 +97,7 @@ export function createWorkflowTools({
 
     workflows_run: tool({
       description:
-        "Start a run of a workflow; answers its runId at once. Follow it with workflows_status({ runId, wait: 90 }), again while it answers `running: true`. With `sandbox: true` it runs `mako workflow run` in your sandbox (the same command as on a laptop) on your checkout as it is, uncommitted edits included, with real data, your own rights and no schedule: that is how a change is tested. Without `sandbox`, the deployed code on main is started on the workers, active or not, with the workflow's rights.",
+        "Start a run of a workflow; answers its runId at once. Follow it with workflows_status({ runId, wait: 90 }), again while it answers `running: true`. With `sandbox: true` it runs `mako workflow run` in your sandbox (the same command as on a laptop) on your checkout as it is, uncommitted edits included, with real data, your own rights and no schedule: that is how a change is tested. It typechecks workflows/ first, as the deploy does: with type errors it does not run and answers them in `typeErrors`. Without `sandbox`, the deployed code on main is started on the workers, active or not, with the workflow's rights.",
       inputSchema: z.object({
         workflowId: z
           .string()

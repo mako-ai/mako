@@ -14,6 +14,7 @@ import path from "node:path";
 const FILES = [
   "package.json",
   "run.mjs",
+  "build.mjs",
   "defaults/hatchet.ts",
   "defaults/lib/mako.ts",
 ];
