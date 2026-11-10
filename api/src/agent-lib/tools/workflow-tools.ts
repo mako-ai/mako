@@ -12,7 +12,7 @@ import { requireTenant, startRun } from "../../workflows/hatchet";
 import { readWorkflowsOverview } from "../../workflows/runs";
 import { WORKFLOWS_ADMIN_ONLY } from "../../workflows/policy";
 import { startSandboxRun } from "../../workflows/sandbox";
-import { waitForRun } from "../../workflows/status";
+import { waitForDeploy, waitForRun } from "../../workflows/status";
 import { MAX_WAIT_SECONDS } from "../../workflows/wait";
 import { setTriggers } from "../../workflows/webhook";
 
@@ -39,7 +39,7 @@ export function createWorkflowTools({
 
   return {
     workflows_status: tool({
-      description: `Look at this workspace's workflows. Without runId: what is deployed (\`deployment\`: the code on main), the build error if a commit did not start (\`buildError\` — the old code keeps running), the workflows (each with \`active\`, and \`webhookUrl\` when one has a webhook) and schedules, and the last deployed runs. With runId (sandbox or deployed): that run's steps, each with status, output, error and its last log lines (what the step wrote with ctx.logger). \`wait\` waits on the server up to that many seconds (at most ${MAX_WAIT_SECONDS}) for the run to end; \`running: true\` means it had not, call again the same way. Texts are cut at 2000 characters and logs to a step's last 20 lines; \`full: true\` gives a sandbox run whole. While \`liveSha\` is not yet \`targetSha\` the worker has not switched to the new commit; call again in a few seconds.`,
+      description: `Look at this workspace's workflows. Without runId: what is deployed (\`deployment\`: the code on main), the build error if a commit did not start (\`buildError\` — the old code keeps running), the workflows (each with \`active\`, and \`webhookUrl\` when one has a webhook) and schedules, and the last deployed runs. With runId (sandbox or deployed): that run's steps, each with status, output, error and its last log lines (what the step wrote with ctx.logger). \`wait\` waits on the server up to that many seconds (at most ${MAX_WAIT_SECONDS}): with runId for the run to end (\`running: true\` means it had not), without for the deploy under way, or of \`sha\`, to go live or fail to build (\`deploying: true\` means it had not); call again the same way. Texts are cut at 2000 characters and logs to a step's last 20 lines; \`full: true\` gives a sandbox run whole. While \`liveSha\` is not yet \`targetSha\` the worker has not switched to the new commit; after a commit on main, call workflows_status({ wait: 90, sha: <its commitOid> }) rather than polling.`,
       inputSchema: z.object({
         runId: z
           .string()
@@ -50,18 +50,32 @@ export function createWorkflowTools({
           .min(0)
           .optional()
           .describe(
-            `With runId: seconds to wait for the run to end, at most ${MAX_WAIT_SECONDS}`,
+            `Seconds to wait, at most ${MAX_WAIT_SECONDS}: with runId for the run to end, without for the deploy to go live or fail`,
+          ),
+        sha: z
+          .string()
+          .optional()
+          .describe(
+            "Without runId: the commit whose deploy to wait for (commitOid from workflow_commit or workflow_merge_to_main)",
           ),
         full: z
           .boolean()
           .optional()
           .describe("With a sandbox runId: the whole run, not a summary"),
       }),
-      execute: async ({ runId, wait, full }) => {
+      execute: async ({ runId, wait, sha, full }, { abortSignal }) => {
         try {
           if (!runId) {
+            const deploy = wait
+              ? await waitForDeploy(workspaceId, {
+                  wait,
+                  sha,
+                  signal: abortSignal,
+                })
+              : { done: true };
             return {
               success: true,
+              ...(deploy.done ? {} : { deploying: true }),
               ...(await readWorkflowsOverview(
                 workspaceId,
                 RECENT_RUNS,
@@ -72,6 +86,7 @@ export function createWorkflowTools({
           const { run, done } = await waitForRun(workspaceId, userId, runId, {
             wait,
             full,
+            signal: abortSignal,
           });
           return { success: true, run, ...(done ? {} : { running: true }) };
         } catch (error) {

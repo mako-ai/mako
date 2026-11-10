@@ -24,6 +24,7 @@ import {
   MAX_WORKSPACE_SKILLS,
 } from "../apps/skill-files";
 import { authorForUser } from "../apps/workspace-consoles.service";
+import { STOPWORDS } from "../agent-lib/entity-extraction";
 import { loggers } from "../logging";
 import {
   getSystemSkill,
@@ -298,7 +299,7 @@ function queryTerms(query: string): string[] {
       query
         .toLowerCase()
         .split(/[^a-z0-9_]+/)
-        .filter(term => term.length >= 3),
+        .filter(term => term.length >= 3 && !STOPWORDS.has(term)),
     ),
   ];
 }
@@ -311,6 +312,8 @@ function queryTerms(query: string): string[] {
 function keywordScore(
   terms: string[],
   skill: { name: string; loadWhen: string; entities: string[]; body: string },
+  /** Without, only the name, description and entities count. */
+  { body: searchBody = true }: { body?: boolean } = {},
 ): number {
   if (terms.length === 0) return 0;
   const name = skill.name.toLowerCase();
@@ -321,7 +324,7 @@ function keywordScore(
   for (const term of terms) {
     if (name.includes(term)) score += 3;
     else if (loadWhen.includes(term) || entities.includes(term)) score += 2;
-    else if (body.includes(term)) score += 1;
+    else if (searchBody && body.includes(term)) score += 1;
   }
   return score / (terms.length * 3);
 }
@@ -334,7 +337,7 @@ export async function searchSkills(
   const terms = queryTerms(query);
   if (terms.length === 0) return [];
   const catalog = await loadSkillCatalog(workspaceId);
-  const ranked: SkillRetrievalHit[] = catalog.skills
+  const workspace: SkillRetrievalHit[] = catalog.skills
     .filter(skill => !skill.suppressed)
     .map(skill => ({
       id: skill.id,
@@ -343,9 +346,41 @@ export async function searchSkills(
       body: skill.body,
       score: keywordScore(terms, skill),
       scope: "workspace" as const,
-    }))
-    .filter(hit => hit.score > 0);
-  ranked.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+    }));
+  // System skills too: they are in the same index, and an agent outside the
+  // product (MCP) finds them only by asking. A workspace skill of the same
+  // name is the one load_skill serves, so it shadows the system one. Their
+  // bodies are long and mention most things: only what they say they are
+  // for counts, so an unrelated question brings none of them.
+  const taken = new Set(catalog.skills.map(skill => skill.name));
+  const system: SkillRetrievalHit[] = getSystemSkillIndex()
+    .filter(entry => !taken.has(entry.name))
+    .flatMap(entry => {
+      const skill = getSystemSkill(entry.name);
+      if (!skill) return [];
+      return [
+        {
+          id: skill.id,
+          name: skill.name,
+          loadWhen: skill.description,
+          body: skill.body,
+          score: keywordScore(
+            terms,
+            { ...skill, loadWhen: skill.description },
+            { body: false },
+          ),
+          scope: "system" as const,
+        },
+      ];
+    });
+  const ranked = [...workspace, ...system].filter(hit => hit.score > 0);
+  // On a tie the workspace's own skill comes first.
+  ranked.sort(
+    (a, b) =>
+      b.score - a.score ||
+      (a.scope === b.scope ? 0 : a.scope === "workspace" ? -1 : 1) ||
+      a.name.localeCompare(b.name),
+  );
   return ranked.slice(0, limit);
 }
 

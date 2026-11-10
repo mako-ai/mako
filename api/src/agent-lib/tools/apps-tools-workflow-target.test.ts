@@ -287,4 +287,81 @@ describe("workflowId as the tools' target", () => {
     expect(neither.parsed.error?.message).toContain("oldString is required");
     expect(neither.parsed.error?.message).toContain("newString is required");
   });
+
+  it("overwrites a file after a partial read, or with the hash it read", async () => {
+    const target = { workflowId: "overwrite-guard" };
+    const contents = Array.from({ length: 50 }, (_, i) => `// ${i}`).join("\n");
+    const first = await call(await toolsFor(ADMIN), "workflow_write_file", {
+      ...target,
+      path: "workflow.ts",
+      contents,
+    });
+    expect(first.success, first.error).toBe(true);
+
+    // A fresh tool set is a fresh exchange (each MCP call is one): nothing
+    // was read in it, so a blind rewrite is refused with what to do instead.
+    const blind = await call(await toolsFor(ADMIN), "workflow_write_file", {
+      ...target,
+      path: "workflow.ts",
+      contents: WORKFLOW,
+    });
+    expect(blind.success).toBe(false);
+    expect(blind.error).toMatch(
+      /^workflow\.ts already exists.*Read it first with workflow_read_file/,
+    );
+    expect(blind.error).not.toContain("app_");
+    // `overwrite` is only for a file read_file cannot read.
+    const forced = await call(await toolsFor(ADMIN), "workflow_write_file", {
+      ...target,
+      path: "workflow.ts",
+      contents: WORKFLOW,
+      overwrite: true,
+    });
+    expect(forced.success).toBe(false);
+
+    // In one exchange, a read of any part unlocks the write.
+    const tools = await toolsFor(ADMIN);
+    const part = await call(tools, "workflow_read_file", {
+      ...target,
+      path: "workflow.ts",
+      limit: 5,
+    });
+    expect(part.nextOffset).toBe(6);
+    expect(part.hash).toBe(first.hash);
+    const afterPart = await call(tools, "workflow_write_file", {
+      ...target,
+      path: "workflow.ts",
+      contents: WORKFLOW,
+    });
+    expect(afterPart.success, afterPart.error).toBe(true);
+
+    // Across exchanges, the hash read carries it; a change since is refused.
+    const read = await call(await toolsFor(ADMIN), "workflow_read_file", {
+      ...target,
+      path: "workflow.ts",
+      limit: 1,
+    });
+    const teammate = await call(await toolsFor(ADMIN), "workflow_edit_file", {
+      ...target,
+      path: "workflow.ts",
+      oldString: "score-leads",
+      newString: "score-leads-v2",
+    });
+    expect(teammate.success, teammate.error).toBe(true);
+    const stale = await call(await toolsFor(ADMIN), "workflow_write_file", {
+      ...target,
+      path: "workflow.ts",
+      contents: `${WORKFLOW}// mine\n`,
+      expectedHash: read.hash,
+    });
+    expect(stale.success).toBe(false);
+    expect(stale.error).toContain("changed since you read it");
+    const fresh = await call(await toolsFor(ADMIN), "workflow_write_file", {
+      ...target,
+      path: "workflow.ts",
+      contents: `${WORKFLOW}// mine\n`,
+      expectedHash: teammate.hash,
+    });
+    expect(fresh.success, fresh.error).toBe(true);
+  });
 });

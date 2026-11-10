@@ -96,6 +96,24 @@ function deployment(slot?: IWorkflowSlot) {
   };
 }
 
+/**
+ * Whether a deploy is over: the worker runs the wanted commit, or that commit
+ * failed to build (the old code keeps running), or nothing was ever pushed.
+ */
+export function deploySettled({
+  liveSha,
+  targetSha,
+  buildError,
+}: ReturnType<typeof deployment>): boolean {
+  return !targetSha || liveSha === targetSha || buildError !== null;
+}
+
+/** Just the deploy state, cheap to read again and again while waiting. */
+export async function readDeployment(workspaceId: string) {
+  const { state } = await loadState(workspaceId);
+  return { deployment: deployment(state?.live), tree: state?.live?.tree };
+}
+
 function statusOf(state: IWorkspaceWorkflows | undefined, repoLinked: boolean) {
   return {
     // Workflows are files in the workspace's repository; without one linked

@@ -21,6 +21,7 @@
  * separate snapshot step and nothing to reconcile.
  *
  */
+import { createHash } from "node:crypto";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
@@ -149,6 +150,13 @@ export interface AppsToolsOptions {
 type LoadResult = { project: IAppProject } | { error: string };
 
 /**
+ * A file's version, as read_file answers it and write_file checks it: over
+ * MCP no call remembers another, so the agent carries what it read.
+ */
+const contentHash = (contents: string) =>
+  createHash("sha256").update(contents).digest("hex").slice(0, 16);
+
+/**
  * What the shell, file and git tools work on. An `app_*` tool names an app
  * (`appId`), a `workflow_*` tool a workflow folder (`workflowId`); each
  * tool's schema holds the one its kind takes, and requires it.
@@ -185,7 +193,7 @@ const WORKFLOW_TOOLS: Record<string, string> = {
   glob: "Find files of a workflow by glob pattern (e.g. `**/*.ts`).",
   grep: "Search a workflow's files with a regex. Returns path:line:text matches.",
   write_file:
-    "Create or fully overwrite a file of a workflow in your checkout. Nothing is committed, at the end of the turn either, until workflow_commit. For small edits prefer workflow_edit_file.",
+    "Create or fully overwrite a file of a workflow in your checkout. Nothing is committed, at the end of the turn either, until workflow_commit. To replace an existing file, read it first (any part counts) and pass the `hash` workflow_read_file answered as `expectedHash`: the write is refused if the file changed since. For small edits prefer workflow_edit_file.",
   edit_file:
     "Anchored string-replacement edit of a workflow's file. oldString must match exactly once unless replaceAll is set.",
   status:
@@ -756,6 +764,8 @@ function buildTools(
           return {
             success: true,
             path: file.path,
+            // Of the whole file, whatever part was shown.
+            hash: contentHash(file.contents),
             contents,
             lineNumbered: numbered,
             ...(partial
@@ -852,33 +862,64 @@ function buildTools(
 
     app_write_file: tool({
       description:
-        "Create or fully overwrite a file in an Apps project's working copy. Uncommitted until you commit, like any checkout. For surgical edits prefer app_edit_file.",
+        "Create or fully overwrite a file in an Apps project's working copy. Uncommitted until you commit, like any checkout. To replace an existing file, read it first (any part counts) and pass the `hash` app_read_file answered as `expectedHash`: the write is refused if the file changed since. For surgical edits prefer app_edit_file.",
       inputSchema: z.object({
         ...targetInput,
         path: z.string().min(1),
         contents: z.string(),
+        expectedHash: z
+          .string()
+          .optional()
+          .describe(
+            "The `hash` from your read of this file (or from your last write or edit of it)",
+          ),
+        overwrite: z
+          .boolean()
+          .optional()
+          .describe(
+            "Replace an existing binary file, which read_file cannot read",
+          ),
       }),
-      execute: async ({ appId, workflowId, path: givenPath, contents }) => {
+      execute: async ({
+        appId,
+        workflowId,
+        path: givenPath,
+        contents,
+        expectedHash,
+        overwrite,
+      }) => {
         const loaded = await loadTarget({ appId, workflowId }, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         const relPath = toRelPath(loaded.project, givenPath);
         try {
           // Read-before-overwrite guard (Claude Code hallmark): a full rewrite
-          // of an EXISTING file it hasn't read this turn risks clobbering
-          // content blindly. Creating a new file is fine. Anchored edits are
-          // exempt (they fail safely on a bad anchor).
-          if (!wasRead(loaded.project, relPath)) {
-            let exists = false;
+          // of an EXISTING file it hasn't read risks clobbering content
+          // blindly, a teammate's edit included. Creating a new file is fine.
+          // Anchored edits are exempt (they fail safely on a bad anchor). A
+          // read of any part counts. Over MCP each call is its own exchange,
+          // so nothing read earlier is remembered: the agent passes the
+          // `hash` it read instead, which also catches a change since.
+          if (expectedHash !== undefined || !wasRead(loaded.project, relPath)) {
+            let existing: Awaited<ReturnType<typeof readFile>> | null = null;
             try {
-              await readFile(loaded.project, relPath, actorId);
-              exists = true;
+              existing = await readFile(loaded.project, relPath, actorId);
             } catch {
-              exists = false;
+              existing = null;
             }
-            if (exists) {
+            const current = existing && contentHash(existing.contents);
+            if (existing && expectedHash !== undefined) {
+              if (expectedHash !== current) {
+                return {
+                  success: false,
+                  error: `${relPath} changed since you read it. Read it again with ${kind}_read_file and redo your change on what is there now.`,
+                };
+              }
+            } else if (existing && !(overwrite && existing.isBinary)) {
               return {
                 success: false,
-                error: `${relPath} already exists and was not read this turn. Read it first (app_read_file) so you don't overwrite content blindly, or use app_edit_file for a targeted change.`,
+                error: existing.isBinary
+                  ? `${relPath} already exists and is binary. Pass overwrite: true to replace it.`
+                  : `${relPath} already exists and was not read in this call. Read it first with ${kind}_read_file (any part counts) and pass the hash it answers as expectedHash, so a change made since is not lost; for a targeted change use ${kind}_edit_file. Do not delete it through ${kind}_bash.`,
               };
             }
           }
@@ -886,7 +927,7 @@ function buildTools(
           markTouched(loaded.project);
           await writeFile(handle, relPath, contents);
           markRead(loaded.project, relPath);
-          return { success: true, path: relPath };
+          return { success: true, path: relPath, hash: contentHash(contents) };
         } catch (error) {
           logger.error("app_write_file failed", { error, appId });
           return { success: false, error: errorMessage(error) };
@@ -960,6 +1001,7 @@ function buildTools(
           return {
             success: true,
             path: relPath,
+            hash: contentHash(result.contents),
             replacements: result.replacements,
             diff: buildStrReplaceDiff(
               current,

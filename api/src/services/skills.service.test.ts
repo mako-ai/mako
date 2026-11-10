@@ -198,6 +198,55 @@ describe("search is a keyword match over the catalog", () => {
     expect(hits[0]!.body).toBe("How MRR is computed.");
     expect(await searchSkills(WS, "")).toEqual([]);
   });
+
+  it("finds system skills too, with the workspace's own first on a tie", async () => {
+    const hits = await searchSkills(WS, "workflow cron webhook slack", 3);
+    expect(hits[0]).toMatchObject({ name: "workflows", scope: "system" });
+    expect(hits[0]!.body).toContain("# Workflows");
+
+    // A workspace skill of the same name is the one load_skill serves.
+    await saveSkill(
+      WS,
+      {
+        name: "workflows",
+        loadWhen: "our workflow cron webhook slack rules",
+        body: "Ours.",
+      },
+      "u1",
+    );
+    const shadowed = await searchSkills(WS, "workflow cron webhook slack", 3);
+    expect(shadowed.filter(h => h.name === "workflows")).toEqual([
+      expect.objectContaining({ scope: "workspace", body: "Ours." }),
+    ]);
+  });
+
+  it("a system skill matches only on what it says it is for, never on stopwords", async () => {
+    // Long system bodies mention "the", "for" and most business words.
+    expect(await searchSkills(WS, "the")).toEqual([]);
+    const unrelated = await searchSkills(
+      WS,
+      "churn definition for our customers",
+    );
+    expect(unrelated.filter(h => h.scope === "system")).toEqual([]);
+
+    // A workspace skill matching in its description still makes the top 3.
+    await saveSkill(
+      WS,
+      {
+        name: "revenue_watch",
+        loadWhen: "when revenue numbers move",
+        body: "Look at the finance mart first.",
+      },
+      "u1",
+    );
+    const hits = await searchSkills(
+      WS,
+      "send slack alert when revenue drops",
+      3,
+    );
+    expect(hits.map(h => h.name)).toContain("revenue_watch");
+    expect(hits[0]).toMatchObject({ name: "workflows", scope: "system" });
+  });
 });
 
 describe("admin surface", () => {

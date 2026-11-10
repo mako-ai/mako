@@ -19,6 +19,8 @@ export type WaitOptions = {
   seconds: number;
   /** Time between reads. */
   intervalMs?: number;
+  /** Ends the wait early, answering the last read as not done. */
+  signal?: AbortSignal;
   /** For tests. */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -37,6 +39,7 @@ export async function waitFor<T>(
   {
     seconds,
     intervalMs = 1000,
+    signal,
     now = Date.now,
     sleep = defaultSleep,
   }: WaitOptions,
@@ -46,7 +49,22 @@ export async function waitFor<T>(
     const value = await read();
     if (done(value)) return { value, done: true };
     const left = deadline - now();
-    if (left <= 0) return { value, done: false };
-    await sleep(Math.min(intervalMs, left));
+    if (left <= 0 || signal?.aborted) return { value, done: false };
+    await (signal ? abortable(sleep, signal) : sleep)(
+      Math.min(intervalMs, left),
+    );
+    if (signal?.aborted) return { value, done: false };
   }
 }
+
+/** A sleep that ends as soon as `signal` aborts. */
+const abortable =
+  (sleep: (ms: number) => Promise<void>, signal: AbortSignal) => (ms: number) =>
+    new Promise<void>(resolve => {
+      const stop = () => resolve();
+      signal.addEventListener("abort", stop, { once: true });
+      void sleep(ms).then(() => {
+        signal.removeEventListener("abort", stop);
+        resolve();
+      });
+    });

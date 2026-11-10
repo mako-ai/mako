@@ -586,7 +586,7 @@ export function buildMakoMcpServer(
     })),
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async request => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
     const tool = tools[name];
     if (!tool?.execute) {
@@ -685,6 +685,8 @@ export function buildMakoMcpServer(
             toolCallId: nanoid(),
             messages: [],
             context: undefined,
+            // A cancelled call stops its server-side waits.
+            abortSignal: extra.signal,
           }),
       );
       const stamped = isWrite ? withBoundWorkspace(result, context) : result;
