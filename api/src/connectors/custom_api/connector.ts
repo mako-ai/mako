@@ -6,6 +6,81 @@ import {
 import { customApi } from "../../connections/callable";
 import { forward } from "../../connections/forward";
 
+/** A JSON field Test needs in the answer, and the value it needs there. */
+interface TestExpectation {
+  path: string;
+  raw: string;
+}
+
+/**
+ * APIs that answer 200 with an error in the body, and the field that says so.
+ * Used when the connection sets no `test_expect` of its own.
+ */
+const DEFAULT_EXPECTATIONS: { host: RegExp; expect: string }[] = [
+  { host: /(^|\.)slack\.com$/i, expect: "ok=true" },
+];
+
+/** `path=value` (or `path==value`), or null when it has no `=`. */
+export function parseTestExpectation(text: string): TestExpectation | null {
+  const match = /^\s*([^=\s]+)\s*==?\s*(.*?)\s*$/.exec(text);
+  return match ? { path: match[1], raw: match[2] } : null;
+}
+
+function testExpectation(
+  config: Record<string, unknown>,
+): TestExpectation | null {
+  if (typeof config.test_expect === "string" && config.test_expect.trim()) {
+    return parseTestExpectation(config.test_expect);
+  }
+  if (config.graphql === true || typeof config.base_url !== "string") {
+    return null;
+  }
+  let host: string;
+  try {
+    host = new URL(config.base_url).hostname;
+  } catch {
+    return null;
+  }
+  const known = DEFAULT_EXPECTATIONS.find(d => d.host.test(host));
+  return known ? parseTestExpectation(known.expect) : null;
+}
+
+/**
+ * Why the answer does not meet the expectation, or null when it does. The
+ * value is compared as JSON (true, 1, null, "x") and, failing that, as text.
+ */
+export function unmetExpectation(
+  body: unknown,
+  expectation: TestExpectation,
+): string | null {
+  let actual: unknown = body;
+  for (const key of expectation.path.split(".")) {
+    actual =
+      actual !== null && typeof actual === "object"
+        ? (actual as Record<string, unknown>)[key]
+        : undefined;
+  }
+  let expected: unknown = expectation.raw;
+  try {
+    expected = JSON.parse(expectation.raw);
+  } catch {
+    // A bare word such as `active`: compared as text.
+  }
+  const same =
+    actual === expected ||
+    (typeof actual !== "object" && String(actual) === expectation.raw);
+  if (same) return null;
+  const shown =
+    actual === undefined ? "missing" : JSON.stringify(actual).slice(0, 200);
+  const error =
+    body !== null && typeof body === "object"
+      ? (body as Record<string, unknown>).error
+      : undefined;
+  return `The service answered, but ${expectation.path} is ${shown}, not ${expectation.raw}${
+    typeof error === "string" ? ` (error: ${error.slice(0, 200)})` : ""
+  }.`;
+}
+
 /**
  * A Custom API connection: an address, a credential type and its key, and an
  * optional GraphQL mode.
@@ -185,6 +260,15 @@ export class CustomApiConnector extends BaseConnector {
           helperText:
             "Optional. A GET under the address that needs the credential, used by Test. With GraphQL on, Test sends { __typename } instead.",
         },
+        {
+          name: "test_expect",
+          label: "Test expects",
+          type: "string",
+          required: false,
+          placeholder: "ok=true",
+          helperText:
+            "Optional. A JSON field and the value Test needs in the answer, as path=value (e.g. ok=true, data.status=active). For APIs that report errors in a 200 body. Slack is checked for ok=true by default.",
+        },
       ],
     };
   }
@@ -228,6 +312,9 @@ export class CustomApiConnector extends BaseConnector {
           message: `The service answered HTTP ${answer.status}. Set a test path that exists.`,
         };
       }
+      const expectation = testExpectation(config);
+      const problem = expectation && unmetExpectation(answer.body, expectation);
+      if (problem) return { success: false, message: problem };
       return {
         success: true,
         message: `Connected (HTTP ${answer.status}).`,

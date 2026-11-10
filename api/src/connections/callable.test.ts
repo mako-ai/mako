@@ -922,6 +922,70 @@ describe("the Custom API connection", () => {
     });
   });
 
+  it("checks a JSON field when test_expect is set", async () => {
+    answering(200, { data: { status: "active", count: 2 } });
+    let result = await conn({
+      base_url: "https://x.example.com",
+      token: KEY,
+      test_expect: "data.status=active",
+    }).testConnection();
+    expect(result.success).toBe(true);
+
+    answering(200, { data: { status: "active", count: 2 } });
+    result = await conn({
+      base_url: "https://x.example.com",
+      token: KEY,
+      test_expect: "data.count == 2",
+    }).testConnection();
+    expect(result.success).toBe(true);
+
+    answering(200, { data: { status: "suspended" } });
+    result = await conn({
+      base_url: "https://x.example.com",
+      token: KEY,
+      test_expect: "data.status=active",
+    }).testConnection();
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('data.status is "suspended"');
+
+    answering(200, {});
+    result = await conn({
+      base_url: "https://x.example.com",
+      token: KEY,
+      test_expect: "ok=true",
+    }).testConnection();
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("ok is missing");
+  });
+
+  it("checks ok=true on Slack by default, which says 200 to a bad token", async () => {
+    answering(200, { ok: false, error: "invalid_auth" });
+    let result = await conn({
+      base_url: "https://slack.com/api",
+      token: "bad",
+      test_path: "/auth.test",
+    }).testConnection();
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("ok is false, not true");
+    expect(result.message).toContain("invalid_auth");
+
+    answering(200, { ok: true, team: "T1" });
+    result = await conn({
+      base_url: "https://slack.com/api",
+      token: KEY,
+      test_path: "/auth.test",
+    }).testConnection();
+    expect(result.success).toBe(true);
+
+    // Another API's 200 is not read for `ok`.
+    answering(200, { ok: false });
+    result = await conn({
+      base_url: "https://x.example.com",
+      token: KEY,
+    }).testConnection();
+    expect(result.success).toBe(true);
+  });
+
   it("reports a refused credential and a bad base URL", async () => {
     answering(401, { error: "no" });
     expect(
