@@ -1807,18 +1807,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/connections/sources/key-requests/{token}": {
+    "/api/workspaces/{workspaceId}/connections/sources/key-requests/lookup": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** What a key link asks for: the connection and its secret fields */
-        get: operations["get_api_workspaces_workspaceId_connections_sources_key_requests_token"];
+        get?: never;
+        put?: never;
+        /** What a key link asks for: the connection, where its key is sent, and its secret fields */
+        post: operations["post_api_workspaces_workspaceId_connections_sources_key_requests_lookup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/connections/sources/key-requests/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
         put?: never;
         /** Set a waiting connection's key through its one-time key link (checked, then stored encrypted) */
-        post: operations["post_api_workspaces_workspaceId_connections_sources_key_requests_token"];
+        post: operations["post_api_workspaces_workspaceId_connections_sources_key_requests_submit"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1982,18 +1998,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/connectors/key-requests/{token}": {
+    "/api/workspaces/{workspaceId}/connectors/key-requests/lookup": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** What a key link asks for: the connection and its secret fields */
-        get: operations["get_api_workspaces_workspaceId_connectors_key_requests_token"];
+        get?: never;
+        put?: never;
+        /** What a key link asks for: the connection, where its key is sent, and its secret fields */
+        post: operations["post_api_workspaces_workspaceId_connectors_key_requests_lookup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/connectors/key-requests/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
         put?: never;
         /** Set a waiting connection's key through its one-time key link (checked, then stored encrypted) */
-        post: operations["post_api_workspaces_workspaceId_connectors_key_requests_token"];
+        post: operations["post_api_workspaces_workspaceId_connectors_key_requests_submit"];
         delete?: never;
         options?: never;
         head?: never;
@@ -12288,17 +12320,23 @@ export interface operations {
             };
         };
     };
-    get_api_workspaces_workspaceId_connections_sources_key_requests_token: {
+    post_api_workspaces_workspaceId_connections_sources_key_requests_lookup: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 workspaceId: string;
-                token: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description The token from the key link's fragment. */
+                    token: string;
+                };
+            };
+        };
         responses: {
             /** @description Successful response */
             "2XX": {
@@ -12329,23 +12367,26 @@ export interface operations {
             };
         };
     };
-    post_api_workspaces_workspaceId_connections_sources_key_requests_token: {
+    post_api_workspaces_workspaceId_connections_sources_key_requests_submit: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 workspaceId: string;
-                token: string;
             };
             cookie?: never;
         };
         requestBody?: {
             content: {
                 "application/json": {
+                    /** @description The token from the key link's fragment. */
+                    token: string;
                     /** @description Values for the fields the link asks for, keyed by field name. */
                     config: {
                         [key: string]: string;
                     };
+                    /** @description The person confirmed the address and settings the page showed. */
+                    confirmedDestination: boolean;
                 };
             };
         };
@@ -12964,17 +13005,23 @@ export interface operations {
             };
         };
     };
-    get_api_workspaces_workspaceId_connectors_key_requests_token: {
+    post_api_workspaces_workspaceId_connectors_key_requests_lookup: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 workspaceId: string;
-                token: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description The token from the key link's fragment. */
+                    token: string;
+                };
+            };
+        };
         responses: {
             /** @description Successful response */
             "2XX": {
@@ -13005,23 +13052,26 @@ export interface operations {
             };
         };
     };
-    post_api_workspaces_workspaceId_connectors_key_requests_token: {
+    post_api_workspaces_workspaceId_connectors_key_requests_submit: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 workspaceId: string;
-                token: string;
             };
             cookie?: never;
         };
         requestBody?: {
             content: {
                 "application/json": {
+                    /** @description The token from the key link's fragment. */
+                    token: string;
                     /** @description Values for the fields the link asks for, keyed by field name. */
                     config: {
                         [key: string]: string;
                     };
+                    /** @description The person confirmed the address and settings the page showed. */
+                    confirmedDestination: boolean;
                 };
             };
         };

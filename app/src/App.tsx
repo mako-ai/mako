@@ -1081,9 +1081,10 @@ function App() {
         />
 
         {/* A key link: paste the API key of a connection an agent created.
-            Signs the visitor in first (the page redirects to /login). */}
+            The token is in the fragment, never the path (analytics records
+            paths). Signs the visitor in first (the page redirects to /login). */}
         <Route
-          path="/connection-key/:workspaceId/:token"
+          path="/connection-key/:workspaceId"
           element={
             <Suspense fallback={<LoadingScreen />}>
               <ConnectionKeyPage />

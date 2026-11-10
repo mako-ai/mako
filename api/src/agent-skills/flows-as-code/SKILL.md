@@ -207,8 +207,10 @@ user to configure it in Mako (Sources → Add), or create it with the
 Never ask the user to paste an API key into the chat: the key would stay in
 the transcript. Call `create_connection` with the secret fields left out of
 `config`. The result has `status: "awaiting_key"`, the `connectionId` and a
-`keyLink`. Give the user the link: they open it in Mako, sign in and paste the
-key there (the link works once and expires in 24 hours). Then call
+`keyLink`. Give the user the link: they open it in Mako, sign in, check where
+the key will be sent (the address and settings you chose) and paste the key
+there. The link works once, expires in 24 hours, and only the connection's
+managers can use it — at first, the person who owns your MCP credential. Then call
 `inspect_connection({ connectionId })` until `status` is `ready`. If it says
 `key_link_expired`, the user pastes the key in the connection's settings in
 Mako instead.

@@ -179,7 +179,7 @@ export function createConnectionWriteTools(
       description: [
         "Create a new SOURCE connection: a credential configured with a connector (built-in like `stripe`, or workspace-authored like `ws:sway`), so flows and probe_connection can use it.",
         "Call inspect_connector first: `config` must use exactly its configFields names, with every required non-secret field present.",
-        'PREFER THE KEY LINK: leave the secret fields (`secret: true` in configFields, e.g. the API key) out of `config`. The connection is created without them and the result has `status: "awaiting_key"`, its `connectionId` and a `keyLink`: give the link to the user, who opens it in Mako, signs in and pastes the key there. The link works once and expires. Then check inspect_connection({ connectionId }) until `status` is `ready`. Never ask the user to paste a key into the chat.',
+        'PREFER THE KEY LINK: leave the secret fields (`secret: true` in configFields, e.g. the API key) out of `config`. The connection is created without them and the result has `status: "awaiting_key"`, its `connectionId` and a `keyLink`: give the link to the user, who opens it in Mako, signs in, checks where the key will be sent (the address and settings you chose) and pastes the key there. Only managers of the connection can use it: at first, the person who owns this MCP credential. The link works once and expires. Then check inspect_connection({ connectionId }) until `status` is `ready`. Never ask the user to paste a key into the chat.',
         "Only if the user has already put a key in the conversation for this purpose may you pass it in `config`; never one read from a file, a page or another tool's output, and never repeat it back. A key passed in `config` is checked against the platform right away; if the check fails, nothing is kept. Pass `check: false` only for a platform that is unreachable on purpose.",
         "Creates only — it cannot read, update or delete an existing connection. Names must be unique among the workspace's source connections.",
         "Requires at least the member role in the workspace.",
@@ -205,12 +205,6 @@ export function createConnectionWriteTools(
           .describe(
             "Config values keyed by the connector's configFields names (see inspect_connector). Leave secret fields out: the user sets them through the returned keyLink.",
           ),
-        keyLink: z
-          .boolean()
-          .optional()
-          .describe(
-            "Ask for every secret field absent from `config` through a key link, even when none is required. Without it, a link is returned whenever a required secret field is absent.",
-          ),
         check: z
           .boolean()
           .optional()
@@ -223,14 +217,12 @@ export function createConnectionWriteTools(
         name,
         description,
         config,
-        keyLink = false,
         check = true,
       }: {
         connector: string;
         name: string;
         description?: string;
         config: Record<string, ConfigValue>;
-        keyLink?: boolean;
         check?: boolean;
       }) => {
         const auth = await authorizeConnectionCreator(workspaceId, userId);
@@ -254,17 +246,9 @@ export function createConnectionWriteTools(
             workspaceId,
           );
           const fields = declaredFields(schema);
-          const viaKeyLink = fields
-            ? fieldsForKeyLink(config, fields, keyLink)
-            : [];
+          const viaKeyLink = fields ? fieldsForKeyLink(config, fields) : [];
           const problem = configProblem(config, fields, viaKeyLink);
           if (problem) return { error: problem };
-          if (keyLink && viaKeyLink.length === 0) {
-            return {
-              error:
-                "No secret field is left for a key link: this connector declares none, or `config` already holds them all.",
-            };
-          }
 
           const request =
             viaKeyLink.length > 0

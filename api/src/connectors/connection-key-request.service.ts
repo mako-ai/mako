@@ -75,14 +75,18 @@ export function newKeyRequest(input: {
   };
 }
 
-/** The app's page for a key link. */
+/**
+ * The app's page for a key link. The token rides in the fragment: a browser
+ * never sends it to a server, so it stays out of access logs, analytics page
+ * paths and Referer headers. The page sends it in a request body.
+ */
 export function keyLinkUrl(workspaceId: string, token: string): string {
   const base = (
     process.env.CLIENT_URL ||
     process.env.PUBLIC_URL ||
     "http://localhost:5173"
   ).replace(/\/+$/, "");
-  return `${base}/connection-key/${encodeURIComponent(workspaceId)}/${encodeURIComponent(token)}`;
+  return `${base}/connection-key/${encodeURIComponent(workspaceId)}#${encodeURIComponent(token)}`;
 }
 
 export function keyRequestStatus(
@@ -122,7 +126,7 @@ export function describeKeyStatus(
 export class KeyRequestError extends Error {
   constructor(
     public readonly code:
-      "not_found" | "expired" | "invalid_input" | "check_failed",
+      "not_found" | "expired" | "forbidden" | "invalid_input" | "check_failed",
     message: string,
   ) {
     super(message);
@@ -149,23 +153,38 @@ interface PendingRow {
   name: string;
   type: string;
   config?: Record<string, unknown>;
+  createdBy?: string;
+  managers?: string[];
   keyRequest?: ISourceConnectionKeyRequest;
 }
+
+/**
+ * Who may use a link: answers a refusal to show, or null. The route passes
+ * the connection's manager check — a key is set by the people who configure
+ * the connection, the same bar as its edit form, since they can read it back.
+ */
+export type KeyLinkAuthorizer = (connection: {
+  createdBy?: string;
+  managers?: string[];
+}) => Promise<string | null>;
 
 async function findPending(
   workspaceId: string,
   token: string,
+  authorize?: KeyLinkAuthorizer,
 ): Promise<PendingRow> {
   if (!token) throw new KeyRequestError("not_found", KEY_LINK_NOT_FOUND);
   const row = (await SourceConnection.findOne({
     workspaceId: new Types.ObjectId(workspaceId),
     "keyRequest.tokenHash": hashKeyToken(token),
   })
-    .select("_id name type config keyRequest")
+    .select("_id name type config createdBy managers keyRequest")
     .lean()) as PendingRow | null;
   if (!row?.keyRequest) {
     throw new KeyRequestError("not_found", KEY_LINK_NOT_FOUND);
   }
+  const refusal = authorize ? await authorize(row) : null;
+  if (refusal) throw new KeyRequestError("forbidden", refusal);
   if (keyRequestStatus(row.keyRequest) === "key_link_expired") {
     throw new KeyRequestError("expired", KEY_LINK_EXPIRED);
   }
@@ -190,9 +209,72 @@ type RawField = ConnectorFieldSchema & {
   placeholder?: string;
 };
 
+export interface KeyDestination {
+  /** Where requests carrying the key go, when the connector says so. */
+  address: string | null;
+  /** The settings the agent chose, secrets left out: how the key is sent. */
+  settings: Array<{ name: string; label: string; value: string }>;
+}
+
+/** One stored non-secret value as text; an item list shows its names only. */
+function settingText(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value
+      .map(item =>
+        item && typeof item === "object"
+          ? String((item as { name?: unknown }).name ?? "")
+          : String(item),
+      )
+      .filter(Boolean)
+      .join(", ");
+  }
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  return String(value);
+}
+
+/**
+ * Where a pasted key would go. The agent chose this config, and where a key
+ * is sent is a person's choice (the edit route refuses address changes from
+ * an API key), so the page shows it and the person confirms it.
+ */
+export function describeDestination(
+  type: string,
+  config: Record<string, unknown>,
+  fields: RawField[],
+): KeyDestination {
+  let address: string | null;
+  try {
+    address = callableFor(type)?.baseUrl(config) || null;
+  } catch {
+    address = null;
+  }
+  const settings = fields
+    .filter(field => !isSecretField(field))
+    .filter(field => {
+      const value = config[field.name];
+      return (
+        value !== undefined &&
+        value !== null &&
+        value !== "" &&
+        !(Array.isArray(value) && value.length === 0)
+      );
+    })
+    .map(field => ({
+      name: field.name,
+      label: field.label || field.name,
+      value: settingText(config[field.name]),
+    }))
+    .filter(setting => setting.value !== "");
+  return { address, settings };
+}
+
 /** The form the link's page shows: the requested fields only. */
-export async function loadKeyRequest(workspaceId: string, token: string) {
-  const row = await findPending(workspaceId, token);
+export async function loadKeyRequest(
+  workspaceId: string,
+  token: string,
+  authorize?: KeyLinkAuthorizer,
+) {
+  const row = await findPending(workspaceId, token, authorize);
   const schema = await schemaFor(row.type, workspaceId);
   const byName = new Map(
     ((schema?.fields ?? []) as RawField[]).map(field => [field.name, field]),
@@ -216,6 +298,11 @@ export async function loadKeyRequest(workspaceId: string, token: string) {
     connectionId: String(row._id),
     name: row.name,
     connector: row.type,
+    destination: describeDestination(
+      row.type,
+      row.config ?? {},
+      (schema?.fields ?? []) as RawField[],
+    ),
     fields,
     expiresAt: new Date(
       (row.keyRequest as ISourceConnectionKeyRequest).expiresAt,
@@ -232,6 +319,9 @@ export async function submitKey(input: {
   token: string;
   userId: string;
   values: Record<string, unknown>;
+  /** The person confirmed the destination the page showed. */
+  confirmedDestination: boolean;
+  authorize?: KeyLinkAuthorizer;
   check?: boolean;
 }): Promise<{
   connectionId: string;
@@ -240,9 +330,15 @@ export async function submitKey(input: {
   check: { success: boolean; message?: string } | { skipped: true };
 }> {
   const { workspaceId, token, userId, check = true } = input;
-  const row = await findPending(workspaceId, token);
+  const row = await findPending(workspaceId, token, input.authorize);
   const request = row.keyRequest as ISourceConnectionKeyRequest;
   const requested = new Set(request.fields);
+  if (input.confirmedDestination !== true) {
+    throw new KeyRequestError(
+      "invalid_input",
+      "Confirm where the key is sent before saving it.",
+    );
+  }
 
   const unknown = Object.keys(input.values).filter(key => !requested.has(key));
   if (unknown.length > 0) {
@@ -344,12 +440,14 @@ export async function submitKey(input: {
   if (result.success) return { ...identity, check: result };
 
   // A wrong key: take it back out and put the request back, so the same link
-  // works for the corrected one. Only if nothing else claimed the row since.
+  // works for the corrected one. Only if the row still holds exactly what
+  // this call wrote: a key a manager saved in the form meanwhile is theirs.
   await SourceConnection.updateOne(
     {
       _id: row._id,
       workspaceId: new Types.ObjectId(workspaceId),
       keyRequest: { $exists: false },
+      ...sets,
     },
     {
       $unset: Object.fromEntries(Object.keys(sets).map(key => [key, ""])),
@@ -369,9 +467,9 @@ export async function submitKey(input: {
 
 /**
  * The fields a create_connection call leaves for the link: the connector's
- * secret fields it did not pass, among those the form would show for this
- * config (a Custom API with a bearer token is not asked for a password).
- * `force` asks for them even when none is required.
+ * secret fields the form would show for this config (a Custom API with a
+ * bearer token is not asked for a password), when the call passed none of
+ * them. A call that passes a key inline gets no link.
  */
 export function fieldsForKeyLink(
   config: Record<string, unknown>,
@@ -381,18 +479,15 @@ export function fieldsForKeyLink(
     secret: boolean;
     showIf?: { field: string; equals: string[] };
   }>,
-  force: boolean,
 ): string[] {
-  const absent = fields.filter(
+  const shown = fields.filter(
     field =>
       field.secret &&
       (!field.showIf ||
-        field.showIf.equals.includes(String(config[field.showIf.field]))) &&
-      (config[field.name] === undefined || config[field.name] === ""),
+        field.showIf.equals.includes(String(config[field.showIf.field]))),
   );
-  if (absent.length === 0) return [];
-  if (force || absent.some(field => field.required)) {
-    return absent.map(field => field.name);
-  }
-  return [];
+  const given = (name: string) =>
+    config[name] !== undefined && config[name] !== "";
+  if (shown.some(field => given(field.name))) return [];
+  return shown.map(field => field.name);
 }

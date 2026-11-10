@@ -1,9 +1,11 @@
 /**
- * The page a key link opens: `/connection-key/:workspaceId/:token`.
+ * The page a key link opens: `/connection-key/:workspaceId#<token>`.
  *
  * An agent created a source connection over MCP without its API key and gave
  * the user this link, so the key is pasted here instead of into the chat.
- * Signs the visitor in first; the link works once and expires.
+ * Signs the visitor in first; the link works once and expires. The agent
+ * chose where the key is sent, so the page shows that and the person
+ * confirms it before the key is saved.
  */
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Navigate, useLocation, useParams } from "react-router";
@@ -11,7 +13,9 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   CircularProgress,
+  FormControlLabel,
   Paper,
   Stack,
   TextField,
@@ -20,6 +24,7 @@ import {
 import { CheckCircle2, KeyRound } from "lucide-react";
 import { useAuth } from "../contexts/auth-context";
 import { useConnectionKeyStore } from "../store/connectionKeyStore";
+import { forgetKeyLinkToken, takeKeyLinkToken } from "../utils/key-link-token";
 
 function Frame({ children }: { children: ReactNode }) {
   return (
@@ -44,18 +49,25 @@ function Frame({ children }: { children: ReactNode }) {
 }
 
 export default function ConnectionKeyPage() {
-  const { workspaceId = "", token = "" } = useParams();
+  const { workspaceId = "" } = useParams();
   const location = useLocation();
   const { user, loading: authLoading } = useAuth();
+  // Read once, before anything renders: the fragment leaves the address bar.
+  const [token] = useState(() => takeKeyLinkToken(workspaceId));
   const entry = useConnectionKeyStore(s => s.byToken[token]);
   const load = useConnectionKeyStore(s => s.load);
   const submit = useConnectionKeyStore(s => s.submit);
   const [values, setValues] = useState<Record<string, string>>({});
+  const [confirmed, setConfirmed] = useState(false);
 
   useEffect(() => {
     if (!user || !workspaceId || !token) return;
     void load(workspaceId, token);
   }, [user, workspaceId, token, load]);
+
+  useEffect(() => {
+    if (entry?.status === "saved") forgetKeyLinkToken(workspaceId);
+  }, [entry?.status, workspaceId]);
 
   if (authLoading) {
     return (
@@ -73,6 +85,19 @@ export default function ConnectionKeyPage() {
         to={`/login?returnTo=${encodeURIComponent(returnTo)}`}
         replace
       />
+    );
+  }
+
+  if (!token) {
+    return (
+      <Frame>
+        <Stack spacing={2}>
+          <Typography variant="h6">Key link unavailable</Typography>
+          <Alert severity="warning">
+            This link is incomplete. Open the full link your agent gave you.
+          </Alert>
+        </Stack>
+      </Frame>
     );
   }
 
@@ -126,11 +151,12 @@ export default function ConnectionKeyPage() {
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
-    void submit(workspaceId, token, values);
+    void submit(workspaceId, token, values, confirmed);
   };
   const missing =
     request.fields.some(field => field.required && !values[field.name]) ||
     request.fields.every(field => !values[field.name]);
+  const { destination } = request;
 
   return (
     <Frame>
@@ -147,6 +173,46 @@ export default function ConnectionKeyPage() {
             <strong>{request.name}</strong>. Paste its key here: it is checked,
             stored encrypted, and never shown to the agent.
           </Typography>
+          <Box
+            sx={{
+              border: 1,
+              borderColor: "divider",
+              borderRadius: 1,
+              p: 1.5,
+              bgcolor: "action.hover",
+            }}
+          >
+            <Typography variant="subtitle2" gutterBottom>
+              Where the key is sent
+            </Typography>
+            {destination.address ? (
+              <Typography
+                variant="body2"
+                sx={{ fontFamily: "monospace", wordBreak: "break-all" }}
+              >
+                {destination.address}
+              </Typography>
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                The {request.connector} service.
+              </Typography>
+            )}
+            {destination.settings.length > 0 && (
+              <Box component="dl" sx={{ m: 0, mt: 1 }}>
+                {destination.settings.map(setting => (
+                  <Typography
+                    key={setting.name}
+                    variant="caption"
+                    component="div"
+                    color="text.secondary"
+                    sx={{ wordBreak: "break-all" }}
+                  >
+                    {setting.label}: {setting.value}
+                  </Typography>
+                ))}
+              </Box>
+            )}
+          </Box>
           {request.fields.map((field, index) => (
             <TextField
               key={field.name}
@@ -171,13 +237,26 @@ export default function ConnectionKeyPage() {
               fullWidth
             />
           ))}
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={confirmed}
+                onChange={event => setConfirmed(event.target.checked)}
+              />
+            }
+            label={
+              <Typography variant="body2">
+                I checked where this key is sent, and I trust it.
+              </Typography>
+            }
+          />
           {entry.submitError && (
             <Alert severity="error">{entry.submitError}</Alert>
           )}
           <Button
             type="submit"
             variant="contained"
-            disabled={missing || entry.saving}
+            disabled={missing || !confirmed || entry.saving}
             startIcon={
               entry.saving ? <CircularProgress size={16} /> : undefined
             }

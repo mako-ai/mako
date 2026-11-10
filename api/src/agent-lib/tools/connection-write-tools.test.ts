@@ -75,7 +75,7 @@ assert.ok(configProblem({ apiKey: "" }, fields), "an empty secret is missing");
 // --- the key link: secrets left out of `config` go to a one-time link ------
 
 // A required secret left out is asked for through the link, not refused.
-assert.deepEqual(fieldsForKeyLink({ workspaceId: "ws_1" }, fields!, false), [
+assert.deepEqual(fieldsForKeyLink({ workspaceId: "ws_1" }, fields!), [
   "apiKey",
 ]);
 assert.equal(
@@ -83,26 +83,19 @@ assert.equal(
   null,
   "a field the link asks for is not missing",
 );
-// A secret passed in config is not asked for again.
-assert.deepEqual(
-  fieldsForKeyLink({ apiKey: "sway_secret" }, fields!, true),
-  [],
-);
-// An optional secret is asked for only on request.
+// A key passed inline means no link.
+assert.deepEqual(fieldsForKeyLink({ apiKey: "sway_secret" }, fields!), []);
+// An optional secret left out is asked for too: leaving the key out is how
+// an agent asks for the link (a Custom API's token is optional).
 const optionalSecret = declaredFields({
   fields: [
     { name: "baseUrl", type: "string", required: true },
     { name: "token", type: "string", encrypted: true },
   ],
 })!;
-assert.deepEqual(
-  fieldsForKeyLink({ baseUrl: "https://x" }, optionalSecret, false),
-  [],
-);
-assert.deepEqual(
-  fieldsForKeyLink({ baseUrl: "https://x" }, optionalSecret, true),
-  ["token"],
-);
+assert.deepEqual(fieldsForKeyLink({ baseUrl: "https://x" }, optionalSecret), [
+  "token",
+]);
 // Only the secret fields the form shows for this config are asked for.
 const custom = declaredFields({
   fields: [
@@ -119,12 +112,12 @@ const custom = declaredFields({
     },
   ],
 })!;
-assert.deepEqual(fieldsForKeyLink({ auth_type: "bearer" }, custom, true), [
-  "token",
-]);
-assert.deepEqual(fieldsForKeyLink({ auth_type: "basic" }, custom, true), [
+assert.deepEqual(fieldsForKeyLink({ auth_type: "bearer" }, custom), ["token"]);
+assert.deepEqual(fieldsForKeyLink({ auth_type: "basic" }, custom), [
   "password",
 ]);
+// No credential shown (auth "none"): nothing to ask for.
+assert.deepEqual(fieldsForKeyLink({ auth_type: "none" }, custom), []);
 // A non-secret required field is still the agent's to pass.
 assert.match(
   configProblem({}, optionalSecret, ["token"]) ?? "",
@@ -157,10 +150,15 @@ assert.match(
   assert.deepEqual(described.awaitingFields, ["apiKey"]);
   assert.ok(!JSON.stringify(described).includes(keyRequest.tokenHash));
   process.env.CLIENT_URL = "https://mako.example/";
+  // The token rides in the fragment: no server, log or analytics page path
+  // ever sees it.
+  const link = new URL(keyLinkUrl("ws1", token));
   assert.equal(
-    keyLinkUrl("ws1", token),
-    `https://mako.example/connection-key/ws1/${token}`,
+    link.origin + link.pathname,
+    "https://mako.example/connection-key/ws1",
   );
+  assert.ok(!link.pathname.includes(token) && !link.search.includes(token));
+  assert.equal(decodeURIComponent(link.hash.slice(1)), token);
 }
 
 // --- no opt-in: every MCP session holds the grant; the role gates it ------

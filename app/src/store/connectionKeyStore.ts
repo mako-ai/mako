@@ -1,8 +1,9 @@
 /**
- * The key-link page (`/connection-key/:workspaceId/:token`): an agent created
+ * The key-link page (`/connection-key/:workspaceId#<token>`): an agent created
  * a source connection without its key, and the user pastes the key here so
- * it never travels through the chat. The page asks for the fields the link
- * names, and the key is checked against the service before it is kept.
+ * it never travels through the chat. The page shows where the key is sent,
+ * asks for the fields the link names, and the key is checked against the
+ * service before it is kept. The token goes in request bodies only.
  */
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
@@ -17,10 +18,18 @@ export interface ConnectionKeyField {
   placeholder?: string;
 }
 
+export interface ConnectionKeyDestination {
+  /** Where requests carrying the key go, when the connector says so. */
+  address: string | null;
+  /** The settings the agent chose (no secrets): how the key is sent. */
+  settings: Array<{ name: string; label: string; value: string }>;
+}
+
 export interface ConnectionKeyRequest {
   connectionId: string;
   name: string;
   connector: string;
+  destination: ConnectionKeyDestination;
   fields: ConnectionKeyField[];
   expiresAt: string;
 }
@@ -44,6 +53,7 @@ interface ConnectionKeyStoreState {
     workspaceId: string,
     token: string,
     values: Record<string, string>,
+    confirmedDestination: boolean,
   ) => Promise<void>;
 }
 
@@ -61,9 +71,9 @@ export const useConnectionKeyStore = create<ConnectionKeyStoreState>()(
         s.byToken[token] = { status: "loading" };
       });
       try {
-        const { data, error, response } = await api.GET(
-          "/api/workspaces/{workspaceId}/connections/sources/key-requests/{token}",
-          { params: { path: { workspaceId, token } } },
+        const { data, error, response } = await api.POST(
+          "/api/workspaces/{workspaceId}/connections/sources/key-requests/lookup",
+          { params: { path: { workspaceId } }, body: { token } },
         );
         if (!response.ok) {
           set(s => {
@@ -91,7 +101,7 @@ export const useConnectionKeyStore = create<ConnectionKeyStoreState>()(
       }
     },
 
-    submit: async (workspaceId, token, values) => {
+    submit: async (workspaceId, token, values, confirmedDestination) => {
       set(s => {
         const entry = s.byToken[token];
         if (entry) {
@@ -101,10 +111,10 @@ export const useConnectionKeyStore = create<ConnectionKeyStoreState>()(
       });
       try {
         const { data, error, response } = await api.POST(
-          "/api/workspaces/{workspaceId}/connections/sources/key-requests/{token}",
+          "/api/workspaces/{workspaceId}/connections/sources/key-requests/submit",
           {
-            params: { path: { workspaceId, token } },
-            body: { config: values },
+            params: { path: { workspaceId } },
+            body: { token, config: values, confirmedDestination },
           },
         );
         set(s => {
@@ -119,8 +129,9 @@ export const useConnectionKeyStore = create<ConnectionKeyStoreState>()(
             return;
           }
           const message = errorOf(error, "The key could not be saved.");
-          // An invalid or expired link cannot be retried; a refused key can.
-          if (response.status === 404 || response.status === 410) {
+          // An invalid, expired or forbidden link cannot be retried; a
+          // refused key can.
+          if ([403, 404, 410].includes(response.status)) {
             entry.status = "error";
             entry.error = message;
           } else {

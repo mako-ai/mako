@@ -30,7 +30,10 @@ import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
 const ctx = vi.hoisted(() => ({
+  userId: "u1",
   role: "member" as string | null,
+  /** Runs inside the probe: a write that lands during the check window. */
+  duringProbe: null as null | (() => Promise<void>),
   authType: "session" as string,
   probe: { success: true, message: "ok" } as {
     success: boolean;
@@ -43,7 +46,7 @@ vi.mock("../auth/unified-auth.middleware", () => ({
     c: { set: (k: string, v: unknown) => void },
     next: () => Promise<void>,
   ) => {
-    c.set("user", { id: "u1" });
+    c.set("user", { id: ctx.userId });
     c.set("authType", ctx.authType);
     await next();
   },
@@ -60,17 +63,38 @@ vi.mock("../services/workspace.service", () => ({
 
 vi.mock("../sync/connector-registry", () => ({
   syncConnectorRegistry: {
-    getConfigSchemaForType: vi.fn(async () => ({
-      fields: [
-        {
-          name: "api_key",
-          label: "API key",
-          type: "password",
-          required: true,
-        },
-        { name: "account", type: "string" },
-      ],
-    })),
+    getConfigSchemaForType: vi.fn(async (type: string) =>
+      type === "custom_api"
+        ? {
+            fields: [
+              {
+                name: "base_url",
+                label: "Address",
+                type: "string",
+                required: true,
+              },
+              { name: "auth_type", label: "Credential type", type: "select" },
+              {
+                name: "token",
+                label: "Key",
+                type: "password",
+                required: false,
+                showIf: { field: "auth_type", equals: ["bearer"] },
+              },
+            ],
+          }
+        : {
+            fields: [
+              {
+                name: "api_key",
+                label: "API key",
+                type: "password",
+                required: true,
+              },
+              { name: "account", label: "Account", type: "string" },
+            ],
+          },
+    ),
     getConnectorFor: vi.fn(async () => null),
   },
 }));
@@ -84,7 +108,10 @@ vi.mock("../connectors/registry", () => ({
 
 vi.mock("../connectors/probe.service", async importOriginal => ({
   ...(await importOriginal<typeof import("../connectors/probe.service")>()),
-  probeConnection: vi.fn(async () => ({ check: ctx.probe })),
+  probeConnection: vi.fn(async () => {
+    await ctx.duringProbe?.();
+    return { check: ctx.probe };
+  }),
 }));
 
 import { sourceConnectionRoutes } from "./source-connections";
@@ -92,7 +119,7 @@ import { Connector } from "../database/workspace-schema";
 import { createConnectionWriteTools } from "../agent-lib/tools/connection-write-tools";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { hashKeyToken } from "../connectors/connection-key-request.service";
-import { decryptString } from "../services/crypto.service";
+import { decryptString, encryptString } from "../services/crypto.service";
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
@@ -104,27 +131,43 @@ app.route(
   sourceConnectionRoutes,
 );
 
+function post(
+  workspaceId: string,
+  path: string,
+  body: unknown,
+): Promise<Response> {
+  return Promise.resolve(
+    app.request(`/api/workspaces/${workspaceId}/connections/sources${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** The page's two calls: look the link up, or submit a key through it. */
 function call(
   method: "GET" | "POST",
   token: string,
-  body?: unknown,
+  body?: Record<string, unknown>,
   workspaceId = WS,
 ): Promise<Response> {
-  return Promise.resolve(
-    app.request(
-      `/api/workspaces/${workspaceId}/connections/sources/key-requests/${token}`,
-      {
-        method,
-        headers: { "Content-Type": "application/json" },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      },
-    ),
-  );
+  return method === "GET"
+    ? post(workspaceId, "/key-requests/lookup", { token })
+    : post(workspaceId, "/key-requests/submit", {
+        token,
+        confirmedDestination: true,
+        ...body,
+      });
 }
 
 type ToolResult = Record<string, unknown>;
 
-async function createWithoutKey(name = "stripe_main"): Promise<{
+async function createWithoutKey(
+  name = "stripe_main",
+  connector = "stripe",
+  config: Record<string, unknown> = { account: "acct_1" },
+): Promise<{
   connectionId: string;
   token: string;
   result: ToolResult;
@@ -133,15 +176,11 @@ async function createWithoutKey(name = "stripe_main"): Promise<{
   const execute = tools.create_connection.execute as unknown as (
     input: unknown,
   ) => Promise<ToolResult>;
-  const result = await execute({
-    connector: "stripe",
-    name,
-    config: { account: "acct_1" },
-  });
+  const result = await execute({ connector, name, config });
   const link = String(result.keyLink ?? "");
   return {
     connectionId: String(result.connectionId),
-    token: decodeURIComponent(link.split("/").pop() ?? ""),
+    token: decodeURIComponent(link.split("#")[1] ?? ""),
     result,
   };
 }
@@ -167,8 +206,10 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  ctx.userId = "u1";
   ctx.role = "member";
   ctx.authType = "session";
+  ctx.duringProbe = null;
   ctx.probe = { success: true, message: "ok" };
   await Connector.deleteMany({});
 });
@@ -178,9 +219,12 @@ describe("create_connection without the key", () => {
     const { connectionId, token, result } = await createWithoutKey();
     expect(result.status).toBe("awaiting_key");
     expect(result.awaitingFields).toEqual(["api_key"]);
-    expect(String(result.keyLink)).toMatch(
-      new RegExp(`^https://mako\\.test/connection-key/${WS}/`),
+    // The token is in the fragment only: no server path carries it.
+    const link = new URL(String(result.keyLink));
+    expect(link.origin + link.pathname).toBe(
+      `https://mako.test/connection-key/${WS}`,
     );
+    expect(link.hash.slice(1)).toBe(token);
 
     const row = (await Connector.findById(connectionId).lean()) as Record<
       string,
@@ -225,6 +269,19 @@ describe("the key link", () => {
     expect(form.data.fields).toEqual([
       { name: "api_key", label: "API key", type: "password", required: true },
     ]);
+    // What the agent chose is shown, so the person confirms where the key goes.
+    expect(form.data.destination.settings).toEqual([
+      { name: "account", label: "Account", value: "acct_1" },
+    ]);
+
+    const unconfirmed = await call("POST", token, {
+      config: { api_key: SECRET },
+      confirmedDestination: false,
+    });
+    expect(unconfirmed.status).toBe(400);
+    expect(
+      ((await Connector.findById(connectionId).lean()) as any).keyRequest,
+    ).toBeDefined();
 
     const saved = await call("POST", token, { config: { api_key: SECRET } });
     expect(saved.status).toBe(200);
@@ -306,5 +363,82 @@ describe("the key link", () => {
     const fixed = await call("POST", token, { config: { api_key: SECRET } });
     expect(fixed.status).toBe(200);
     expect((await inspect(connectionId)).status).toBe("ready");
+  });
+
+  it("is for the connection's managers, not any member", async () => {
+    const { token } = await createWithoutKey();
+    ctx.userId = "u2";
+    ctx.role = "member";
+    expect((await call("GET", token)).status).toBe(403);
+    expect(
+      (await call("POST", token, { config: { api_key: SECRET } })).status,
+    ).toBe(403);
+  });
+
+  it("keeps a key a manager saved in the form while the link's key was checked", async () => {
+    const { connectionId, token } = await createWithoutKey();
+    const theirs = encryptString("sk_live_saved_in_the_form");
+    ctx.probe = { success: false, message: "Invalid API key" };
+    ctx.duringProbe = async () => {
+      await Connector.updateOne(
+        { _id: connectionId },
+        { $set: { "config.api_key": theirs } },
+      );
+    };
+    const res = await call("POST", token, { config: { api_key: "typo" } });
+    expect(res.status).toBe(422);
+    const row = (await Connector.findById(connectionId).lean()) as any;
+    expect(row.config.api_key).toBe(theirs);
+  });
+});
+
+describe("a Custom API connection", () => {
+  it("gets a link when its key is left out, showing the address it goes to", async () => {
+    const { connectionId, token, result } = await createWithoutKey(
+      "probo",
+      "custom_api",
+      { base_url: "https://api.example.com/v1", auth_type: "bearer" },
+    );
+    expect(result.status).toBe("awaiting_key");
+    expect(result.awaitingFields).toEqual(["token"]);
+    const form = (await (await call("GET", token)).json()) as {
+      data: Record<string, any>;
+    };
+    expect(form.data.destination.address).toBe("https://api.example.com/v1");
+    expect(form.data.destination.settings).toEqual([
+      {
+        name: "base_url",
+        label: "Address",
+        value: "https://api.example.com/v1",
+      },
+      { name: "auth_type", label: "Credential type", value: "bearer" },
+    ]);
+    expect(
+      ((await Connector.findById(connectionId).lean()) as any).isActive,
+    ).toBe(false);
+  });
+});
+
+describe("enabling a connection that waits for its key", () => {
+  it("is refused until the key is set", async () => {
+    const { connectionId, token } = await createWithoutKey();
+    const refused = await Promise.resolve(
+      app.request(
+        `/api/workspaces/${WS}/connections/sources/${connectionId}/enable`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: true }),
+        },
+      ),
+    );
+    expect(refused.status).toBe(409);
+    expect(
+      ((await Connector.findById(connectionId).lean()) as any).isActive,
+    ).toBe(false);
+
+    expect(
+      (await call("POST", token, { config: { api_key: SECRET } })).status,
+    ).toBe(200);
   });
 });
