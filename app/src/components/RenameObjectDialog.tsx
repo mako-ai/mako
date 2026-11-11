@@ -6,8 +6,10 @@
  * the file, keeps the old file name as an alias, and the object keeps its
  * id. What the server would refuse about the name itself is refused here
  * as it is typed, in the server's words (lib/object-name-rules.ts), with
- * the Rename button disabled. Whether the name is free only the server
- * can say; its answer is shown as it is.
+ * the Rename button disabled. So is a file name another object in the
+ * list already has (`others`), in the server's words too. The server stays
+ * the authority (an old name another object still answers to is only known
+ * there); its refusal is shown as it is, until the fields are edited.
  */
 import { useEffect, useState } from "react";
 import {
@@ -35,6 +37,8 @@ export interface RenameObjectDialogTarget {
   title: string;
   /** Current file name, without the folder or `.yml`. */
   slug?: string;
+  /** The other objects of this kind the list holds: their file names are taken. */
+  others?: ReadonlyArray<{ slug?: string | null; title: string }>;
 }
 
 interface RenameObjectDialogProps {
@@ -47,6 +51,11 @@ interface RenameObjectDialogProps {
 const FOLDER: Record<SlugNamedKind, string> = {
   flow: "flows/",
   dbt_job: "dbt/jobs/",
+};
+/** As the server says it (api/src/rename/slug-files.ts `noun`). */
+const NOUN: Record<SlugNamedKind, string> = {
+  flow: "flow",
+  dbt_job: "dbt job",
 };
 
 export function RenameObjectDialog({
@@ -76,8 +85,15 @@ export function RenameObjectDialog({
     target && (titleChanged || !title.trim())
       ? objectNameError(title, OBJECT_NAME_MAX_LENGTH[target.kind])
       : null;
+  const holder =
+    slugChanged && target?.others?.find(other => other.slug === slug.trim());
   const slugError =
-    target && slugChanged ? objectSlugError(target.kind, slug) : null;
+    target && slugChanged
+      ? (objectSlugError(target.kind, slug) ??
+        (holder
+          ? `"${slug.trim()}" is already the file name of ${NOUN[target.kind]} "${holder.title}".`
+          : null))
+      : null;
   const canSubmit =
     !!target &&
     !busy &&
@@ -102,6 +118,11 @@ export function RenameObjectDialog({
       setBusy(false);
     }
   };
+  // A refusal answered what was typed then: it goes once that changes.
+  const edit = (set: (value: string) => void, value: string) => {
+    set(value);
+    setError(null);
+  };
   const submitOnEnter = (event: React.KeyboardEvent) => {
     if (event.key === "Enter") void submit();
   };
@@ -124,7 +145,7 @@ export function RenameObjectDialog({
           size="small"
           label="Name"
           value={title}
-          onChange={e => setTitle(e.target.value)}
+          onChange={e => edit(setTitle, e.target.value)}
           onKeyDown={submitOnEnter}
           error={!!titleError}
           helperText={titleError ?? undefined}
@@ -136,7 +157,7 @@ export function RenameObjectDialog({
             size="small"
             label="File name"
             value={slug}
-            onChange={e => setSlug(e.target.value)}
+            onChange={e => edit(setSlug, e.target.value)}
             onKeyDown={submitOnEnter}
             error={!!slugError}
             helperText={

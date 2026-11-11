@@ -30,7 +30,13 @@ function open(kind: RenameObjectDialogTarget["kind"] = "flow") {
   render(
     <RenameObjectDialog
       workspaceId="ws1"
-      target={{ kind, ref: "id1", title: "Nightly", slug: "nightly" }}
+      target={{
+        kind,
+        ref: "id1",
+        title: "Nightly",
+        slug: "nightly",
+        others: [{ slug: "hourly", title: "Hourly sync" }],
+      }}
       onClose={onClose}
       onRenamed={onRenamed}
     />,
@@ -91,7 +97,26 @@ describe("RenameObjectDialog", () => {
     expectRefused(file, /looks like an object id/);
   });
 
-  it("sends only what changed, the name NFC-normalised; the server's refusal is shown as it is", async () => {
+  it("a file name another flow or job in the list has: refused in the server's words", () => {
+    const flow = open("flow");
+    flow.type(flow.file, "hourly");
+    flow.expectRefused(
+      flow.file,
+      '"hourly" is already the file name of flow "Hourly sync".',
+    );
+    expect(screen.queryByText(/moves to/)).toBeNull();
+    flow.type(flow.file, "hourly-2");
+    expect(flow.button.disabled).toBe(false);
+    cleanup();
+    const job = open("dbt_job");
+    job.type(job.file, " hourly ");
+    job.expectRefused(
+      job.file,
+      '"hourly" is already the file name of dbt job "Hourly sync".',
+    );
+  });
+
+  it("sends only what changed, the name NFC-normalised; the server's refusal is shown as it is, until a field is edited", async () => {
     const { name, file, button, type } = open();
     type(name, "  Café nightly ");
     type(file, "cafe-nightly");
@@ -113,7 +138,9 @@ describe("RenameObjectDialog", () => {
     });
     expect(onRenamed).not.toHaveBeenCalled();
 
+    // The refusal was about what was typed then: editing clears it.
     type(file, "nightly");
+    expect(screen.queryByText(/is already the file name/)).toBeNull();
     const result = { id: "id1", after: { title: "Café nightly" } };
     renameObject.mockResolvedValueOnce(result);
     fireEvent.keyDown(name, { key: "Enter" });

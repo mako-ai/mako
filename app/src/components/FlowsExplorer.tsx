@@ -277,6 +277,12 @@ export function FlowsExplorer() {
               ref: flow._id,
               title: getFlowTitle(flow),
               slug: flow.slug ?? undefined,
+              others: flows
+                .filter(other => other._id !== flow._id)
+                .map(other => ({
+                  slug: other.slug,
+                  title: getFlowTitle(other),
+                })),
             });
           }}
         >

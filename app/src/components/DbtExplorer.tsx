@@ -599,9 +599,8 @@ export function DbtExplorer() {
       }
 
       if (parsed.kind === "job") {
-        const job = (jobsByProject[parsed.projectId] ?? []).find(
-          j => j._id === parsed.path,
-        );
+        const jobs = jobsByProject[parsed.projectId] ?? [];
+        const job = jobs.find(j => j._id === parsed.path);
         items.push(
           <MenuItem
             key="rename-job"
@@ -613,6 +612,9 @@ export function DbtExplorer() {
                 ref: parsed.path,
                 title: job?.name ?? node.name,
                 slug: job?.slug,
+                others: jobs
+                  .filter(other => other._id !== parsed.path)
+                  .map(other => ({ slug: other.slug, title: other.name })),
               });
               helpers.closeMenu();
             }}
