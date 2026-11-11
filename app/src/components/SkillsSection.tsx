@@ -20,12 +20,14 @@ import {
 } from "@mui/material";
 import {
   Delete as DeleteIcon,
+  DriveFileRenameOutline as RenameIcon,
   EditOutlined as EditIcon,
   PushPinOutlined as PinIcon,
   Refresh as RefreshIcon,
   Save as SaveIcon,
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
+import { renameObject } from "../lib/object-links";
 import { useConfirm } from "./ConfirmDialog";
 
 interface SkillSummary {
@@ -37,6 +39,8 @@ interface SkillSummary {
   entities: string[];
   suppressed: boolean;
   pinned: boolean;
+  /** Previous names (a rename records them); `load_skill` still answers to them. */
+  aliases?: string[];
   definitionInvalid: { reason: string; path: string } | null;
 }
 
@@ -61,6 +65,13 @@ export function SkillsSection() {
   const [editPinned, setEditPinned] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // Rename: the folder moves and the old name is kept as an alias, one
+  // commit (api/src/rename), so the agent's load_skill("old") keeps working.
+  const [renaming, setRenaming] = useState<SkillSummary | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
 
   const fetchSkills = useCallback(async () => {
     if (!workspaceId) return;
@@ -89,6 +100,30 @@ export function SkillsSection() {
   useEffect(() => {
     void fetchSkills();
   }, [fetchSkills]);
+
+  const handleRename = async () => {
+    if (!workspaceId || !renaming || renameBusy) return;
+    const next = renameValue.trim();
+    if (!next || next === renaming.name) return;
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      // By id: a pending proposal can carry a name a live skill was renamed
+      // away from, and that name alone would rename the live one.
+      await renameObject(workspaceId, "skill", {
+        ref: renaming.id,
+        slug: next,
+      });
+      setRenaming(null);
+      await fetchSkills();
+    } catch (err) {
+      setRenameError(
+        err instanceof Error ? err.message : "The skill could not be renamed.",
+      );
+    } finally {
+      setRenameBusy(false);
+    }
+  };
 
   useEffect(() => {
     const onIndexChanged = (event: Event) => {
@@ -390,6 +425,19 @@ export function SkillsSection() {
                   >
                     <strong>loadWhen:</strong> {skill.loadWhen}
                   </Typography>
+                  {skill.aliases && skill.aliases.length > 0 && (
+                    <Typography
+                      variant="caption"
+                      title="Previous names. They still open this skill."
+                      sx={{
+                        color: "text.secondary",
+                        display: "block",
+                        mb: 0.5,
+                      }}
+                    >
+                      Previously: <code>{skill.aliases.join(", ")}</code>
+                    </Typography>
+                  )}
                   <Typography
                     variant="body2"
                     sx={{
@@ -485,6 +533,22 @@ export function SkillsSection() {
                       <EditIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
+                  <Tooltip title="Rename (the old name keeps working)">
+                    <span>
+                      <IconButton
+                        size="small"
+                        onClick={() => {
+                          setRenaming(skill);
+                          setRenameValue(skill.name);
+                          setRenameError(null);
+                        }}
+                        aria-label="rename skill"
+                        disabled={!!skill.definitionInvalid}
+                      >
+                        <RenameIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
                   <Tooltip title="Delete current skill file">
                     <IconButton
                       size="small"
@@ -500,6 +564,59 @@ export function SkillsSection() {
           ))}
         </Stack>
       )}
+
+      <Dialog
+        open={renaming !== null}
+        onClose={() => !renameBusy && setRenaming(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Rename skill</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ color: "text.secondary", mb: 1 }}>
+            The folder <code>skills/{renaming?.name}/</code> moves, and the old
+            name is kept, so{" "}
+            <code>load_skill(&quot;{renaming?.name}&quot;)</code> keeps working.
+          </Typography>
+          <TextField
+            autoFocus
+            fullWidth
+            size="small"
+            label="New name"
+            value={renameValue}
+            onChange={e => {
+              setRenameValue(e.target.value);
+              setRenameError(null);
+            }}
+            onKeyDown={e => {
+              if (e.key === "Enter") void handleRename();
+            }}
+            error={!!renameError}
+            helperText={
+              renameError ??
+              "Lowercase letters, digits, '-' and '_', starting with a letter or digit."
+            }
+            slotProps={{ htmlInput: { spellCheck: false } }}
+            sx={{ mt: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRenaming(null)} disabled={renameBusy}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => void handleRename()}
+            disabled={
+              renameBusy ||
+              !renameValue.trim() ||
+              renameValue.trim() === renaming?.name
+            }
+          >
+            Rename
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog
         open={editing !== null || editLoading}
