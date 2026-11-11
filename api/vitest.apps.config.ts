@@ -162,7 +162,10 @@ export default defineConfig({
       "src/connectors/workspace/sync-box.test.ts",
       "src/apps/repository.service.test.ts",
       "src/services/workspace-repos.service.test.ts",
-      // Graceful rename (api/src/rename): the name rules' two entry points.
+      // Graceful rename (api/src/rename): the contract every kind shares, the
+      // connection handler (real Mongo), and the name rules' two entry points.
+      "src/rename/registry.test.ts",
+      "src/rename/handlers/connection.test.ts",
       "src/rename/scenarios/name-rules-parity.test.ts",
     ],
     exclude: ["**/node_modules/**"],
