@@ -48,10 +48,13 @@ export {
 } from "./sync-mode-matrix";
 
 export {
+  CONNECTOR_SLUG_MAX_LENGTH,
   RENAME_SLUG_MAX_LENGTH,
+  connectorSlugError,
   displayNameError,
   displayNameProblem,
   displayNameTooLong,
+  isConnectorSlug,
   isRenameSlug,
   isWindowsReservedName,
   looksLikeObjectId,

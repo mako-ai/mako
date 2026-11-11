@@ -143,3 +143,28 @@ export function renameSlugError(
   }
   return unsafeSlugReason(slug);
 }
+
+export const CONNECTOR_SLUG_MAX_LENGTH = 64;
+
+const CONNECTOR_SLUG = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * Whether `slug` can name a workspace connector's folder
+ * (`connectors/<slug>/`): lowercase letters, digits and dashes, starting
+ * with a letter, up to 64 characters. The rule the index applies to a
+ * pushed folder, so a rename hands out no name a push could not.
+ */
+export function isConnectorSlug(slug: string): boolean {
+  return CONNECTOR_SLUG.test(slug) && slug.length <= CONNECTOR_SLUG_MAX_LENGTH;
+}
+
+/**
+ * Why `slug` (trimmed) cannot be a workspace connector's new folder name,
+ * or null when it can. Whether the name is free is the server's question.
+ */
+export function connectorSlugError(slug: string): string | null {
+  if (!isConnectorSlug(slug)) {
+    return `"${slug}" is not a valid connector slug: lowercase letters, digits and dashes, starting with a letter, up to ${CONNECTOR_SLUG_MAX_LENGTH} characters (it becomes connectors/${slug}/).`;
+  }
+  return unsafeSlugReason(slug);
+}
