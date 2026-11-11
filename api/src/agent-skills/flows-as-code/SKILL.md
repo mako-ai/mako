@@ -193,8 +193,16 @@ destination via `execute_query`.
   reactor **refuses and retries next push** if it cannot verify the tree
   against the GitHub mirror, so a deletion that "did nothing" may be a
   deferred one (API log: "Flow teardown deferred"). It never guesses.
-- Renaming the slug = teardown + fresh create. To rename only what users see,
-  edit `name:`.
+- To rename what users see, edit `name:`. To rename the file (the slug), move
+  it AND list the old slug in the new file: `aliases: [old-slug]`. The flow is
+  then re-keyed in place: same id, checkpoints, run history and webhook URL,
+  no backfill. `rename_object` does both in one commit. A move git recognises
+  as a rename (90% similar or more, same source and destination) or a file
+  with the same definition is re-keyed too.
+- Without one of those, deleting `flows/a.yml` and adding `flows/b.yml` is a
+  teardown plus a new flow that backfills from scratch, even for the same
+  source and destination. `check_flow_files` (old path in `deletedPaths`)
+  says which it will be before you push.
 - An empty or missing `flows/` directory means "this workspace has not
   adopted flows as code" and touches nothing. It is not "delete everything".
 
