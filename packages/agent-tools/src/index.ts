@@ -261,6 +261,13 @@ export {
 } from "./capabilities/sync-capabilities";
 
 export {
+  RENAME_CAPABILITIES,
+  renameKindAllowedOn,
+  type RenameCapabilityDefinition,
+  type RenameCapabilityPack,
+} from "./capabilities/rename-capabilities";
+
+export {
   AGENT_CAPABILITIES,
   AGENT_CAPABILITY_BY_NAME,
   agentCapabilitiesForSurface,

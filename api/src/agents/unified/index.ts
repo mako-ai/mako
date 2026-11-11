@@ -17,6 +17,7 @@ import { createWorkflowTools } from "../../agent-lib/tools/workflow-tools";
 import { createConnectorTools } from "../../agent-lib/tools/connector-tools";
 import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
 import { createWebTools } from "../../agent-lib/tools/web-tools";
+import { createRenameTools } from "../../agent-lib/tools/rename-tools";
 import { UNIFIED_SYSTEM_PROMPT, buildCurrentScreenContext } from "./prompt";
 
 export const unifiedAgentMeta: AgentMeta = {
@@ -53,6 +54,10 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     chatId: context.chatId,
   });
   const webTools = createWebTools(context.toolExecutionContext);
+  // rename_object, for the kinds the in-product chat may rename (deferred).
+  const renameTools = createRenameTools(workspaceId, userId, {
+    surface: "in-chat",
+  });
   const serverNotebookTools = createNotebookServerTools({
     workspaceId,
     userId,
@@ -92,6 +97,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     ...consoleSearchTools,
     ...versionHistoryTools,
     ...webTools,
+    ...renameTools,
     // MCP tools (Close CRM etc.) resolved per request in agent.routes.ts.
     ...(context.mcpTools ?? {}),
   };

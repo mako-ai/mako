@@ -879,6 +879,84 @@ async function main() {
     );
   }
 
+  // 3a1c. rename_object: listed for every key and flagged destructive; a
+  //       connection is renamed only with connections:manage (the grant
+  //       update_connection takes) and never by the desktop agent.
+  {
+    type Listed = {
+      name: string;
+      annotations?: { destructiveHint?: boolean };
+      inputSchema?: { properties?: { kind?: { enum?: string[] } } };
+    };
+    const renameToolFor = async (
+      scopes: WorkspaceApiKeyScope[],
+      acp = false,
+    ) => {
+      const [res] = await exchange(
+        [{ jsonrpc: "2.0", id: "rename-list", method: "tools/list" }],
+        scopes,
+        acp,
+      );
+      const { tools } = res.result as { tools: Listed[] };
+      return tools.find(tool => tool.name === "rename_object");
+    };
+    const callWith = async (
+      scopes: WorkspaceApiKeyScope[],
+      args: Record<string, unknown>,
+    ) => {
+      const [res] = await exchange(
+        [
+          {
+            jsonrpc: "2.0",
+            id: "rename-call",
+            method: "tools/call",
+            params: { name: "rename_object", arguments: args },
+          },
+        ],
+        scopes,
+      );
+      return res.result as { content: { text: string }[]; isError?: boolean };
+    };
+
+    const listed = await renameToolFor(["mcp", "query:read"]);
+    assert.ok(listed, "a default key sees rename_object");
+    assert.equal(listed.annotations?.destructiveHint, true);
+    assert.ok(
+      listed.inputSchema?.properties?.kind?.enum?.includes("connection"),
+    );
+
+    const refused = await callWith(["mcp", "query:read"], {
+      kind: "connection",
+      ref: "stripe",
+      title: "Stripe EU",
+    });
+    assert.equal(refused.isError, true);
+    assert.match(
+      refused.content[0].text,
+      /renaming a connection requires the "connections-manage" grant/,
+      "a default key must not rename a connection",
+    );
+    const reached = await callWith(
+      ["mcp", "query:read", "connections:manage"],
+      {
+        kind: "connection",
+      },
+    );
+    assert.match(
+      reached.content[0].text,
+      /Invalid arguments/,
+      "a connections:manage key reaches rename_object for a connection",
+    );
+
+    const onDesktop = await renameToolFor(["mcp", "query:read"], true);
+    assert.equal(
+      onDesktop?.inputSchema?.properties?.kind?.enum?.includes("connection") ??
+        false,
+      false,
+      "the desktop agent holds every grant, so the kind itself is withheld",
+    );
+  }
+
   // 3a2. git:write is a legacy scope (dbt git tools died with apps.md §20):
   //      it must surface NOTHING dbt-git-shaped, and imply no other scope.
   {

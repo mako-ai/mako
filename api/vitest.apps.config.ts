@@ -167,6 +167,8 @@ export default defineConfig({
       "src/rename/registry.test.ts",
       "src/rename/handlers/connection.test.ts",
       "src/rename/scenarios/name-rules-parity.test.ts",
+      // rename_object: kinds per surface, per-kind grants, call results.
+      "src/agent-lib/tools/rename-tools.test.ts",
       // /objects/resolve and /objects/{kind}/rename: who may call them.
       "src/routes/objects.test.ts",
     ],
