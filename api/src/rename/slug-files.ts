@@ -90,7 +90,11 @@ export interface SlugKind {
 export const FLOW_FILES: SlugKind = {
   kind: "flow",
   noun: "flow",
-  model: Flow,
+  // Read on use, not at load: tests that mock the schema module without
+  // this model must still be able to import the modules that import this one.
+  get model() {
+    return Flow;
+  },
   nameMaxLength: 200,
   filePath: flowFilePath,
   slugOf: slugFromFlowFilePath,
@@ -105,7 +109,9 @@ export const FLOW_FILES: SlugKind = {
 export const DBT_JOB_FILES: SlugKind = {
   kind: "dbt_job",
   noun: "dbt job",
-  model: DbtJob,
+  get model() {
+    return DbtJob;
+  },
   nameMaxLength: 128,
   filePath: jobFilePath,
   slugOf: slugFromJobFilePath,
