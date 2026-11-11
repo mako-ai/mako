@@ -924,6 +924,14 @@ async function main() {
     assert.ok(
       listed.inputSchema?.properties?.kind?.enum?.includes("connection"),
     );
+    // Consoles and notebooks need no extra grant: what modify_console and
+    // the notebook tools already hold.
+    for (const kind of ["console", "notebook"]) {
+      assert.ok(
+        listed.inputSchema?.properties?.kind?.enum?.includes(kind),
+        `a default key may rename a ${kind}`,
+      );
+    }
 
     const refused = await callWith(["mcp", "query:read"], {
       kind: "connection",
