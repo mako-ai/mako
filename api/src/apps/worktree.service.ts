@@ -1491,7 +1491,13 @@ export async function renameProject(
   const slug =
     change.slug === undefined ? location.slug : normalizeAppName(change.slug);
   const slugProblem =
-    slug === location.slug ? null : appNameProblem(slug, "link");
+    slug === location.slug
+      ? null
+      : slug.toLowerCase() === location.slug.toLowerCase()
+        ? // The same folder to a checkout on macOS or Windows: git there
+          // cannot follow the rename, and would keep the old spelling.
+          `"${slug}" differs from the current link only in upper and lower case, which macOS and Windows can't tell apart. Pick a different link.`
+        : appNameProblem(slug, "link");
   if (slugProblem) throw new AppFolderError(slugProblem);
   const to = appRepoPath({ ...location, slug });
   const author =

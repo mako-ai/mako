@@ -433,6 +433,11 @@ describe("renaming an app", () => {
       "409 The link /apps/other is already taken. Pick another.",
     );
     expect(await refusal("Other")).toMatch(/^409 .*upper and lower case/);
+    // Its own link in another case: the same folder to a checkout on macOS
+    // or Windows, so it is refused rather than half-applied there.
+    expect(await refusal("Report")).toBe(
+      '400 "Report" differs from the current link only in upper and lower case, which macOS and Windows can\'t tell apart. Pick a different link.',
+    );
     // A folder holds the name just as an app would.
     expect(await refusal("Team")).toBe(
       "409 The link /apps/Team is already taken. Pick another.",
