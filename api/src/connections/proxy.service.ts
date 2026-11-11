@@ -13,15 +13,16 @@
  * one writes nothing, nor does a viewer. Deployed workflows share one
  * identity today (the worker's key; the name a request sends cannot be
  * trusted), so a source connection lists them as one, `workflow:*` ("All
- * deployed workflows"): a deployed workflow writes iff it is listed. Agents
- * only read, also through a run they started: a sandbox run (its key says
- * so) or a deployed run (the run Mako started records it, and the worker
- * names its run with each request, X-Mako-Run; a deployed workflow's write
- * from a run Mako cannot tell, or from a run that is not of that workflow
- * or no longer running, is refused). A write from a run the agent's
- * tool or an MCP login started is recorded instead (`record`): not sent, answered 202, and kept
- * whole under the run, credential redacted (workflows/recorded-writes.ts),
- * so the agent can check what it would have sent. A listed writer writes
+ * deployed workflows"): a deployed workflow writes iff it is listed. An
+ * agent (an MCP login) only reads when it calls a connection itself. A run
+ * it starts writes like any run, as the person (sandbox) or the workflow
+ * (deployed), except a run started with an API key (CI, a script), whose
+ * writes are refused. A dry run records its writes instead (`record`): not
+ * sent, answered 202, and kept whole under the run, credential redacted
+ * (workflows/recorded-writes.ts), so the agent can check what it would have
+ * sent. Mako knows a deployed run by the run the worker names with each
+ * request (X-Mako-Run, workflows/runs.ts `runStartedBy`); a deployed
+ * workflow's write from a run Mako cannot tell is refused. A listed writer writes
  * anywhere through the connection: a `where` stored on a source writer (the
  * list's schema is shared with database connections, where it limits a
  * schema or table) is ignored. Every write, allowed or not, is in the write
@@ -77,17 +78,17 @@ export interface ConnectionRequestParams {
   /** Who is acting, when not the request's own person or workflow. */
   actor?: string;
   /**
-   * Who started the deployed workflow run the request comes from
-   * (workflows/runs.ts `runStartedBy`), asked only for a write by a deployed
-   * workflow. A run an agent started only reads; a write from a run Mako
-   * cannot tell (null, or not given) is refused.
+   * Who started the deployed workflow run the request comes from and what
+   * its writes do (workflows/runs.ts `runStartedBy`), asked only for a write
+   * by a deployed workflow. A write from a run Mako cannot tell (null, or
+   * not given) is refused.
    */
   runStarter?: () => Promise<RunOrigin | null>;
   /**
-   * The run an agent started that the request comes from: a sandbox run on
-   * an agent's key (with `readOnly`), or a deployed run (used only when
-   * `runStarter` says it records writes). Its writes are recorded there
-   * instead of refused, never sent. Without it an agent's write is refused.
+   * The dry run the request comes from: a sandbox one (with `readOnly`), or
+   * a deployed one (used only when `runStarter` says it records writes). Its
+   * writes are recorded there, never sent. Without it a refused write stays
+   * refused.
    */
   record?: RecordRun;
   signal?: AbortSignal;
@@ -96,7 +97,7 @@ export interface ConnectionRequestParams {
 export interface ConnectionRequestResult extends ForwardResult {
   /** Whether Mako counted the request as a read. */
   read: boolean;
-  /** A write an agent's run made: recorded, not sent. */
+  /** A dry run's write: recorded, not sent. */
   recorded?: boolean;
 }
 
@@ -183,9 +184,11 @@ async function recordOutcome(
 }
 
 /**
- * A write from a run an agent started: in the write log as the agent's
- * refused attempt (no list can name it), kept whole under the run, and
- * answered 202 without reaching the service.
+ * A dry run's write: in the write log as a dry run's attempt (`dry-run:`,
+ * which no list can name), kept whole under the run, and answered 202
+ * without reaching the service. The answer says whether the run's writer
+ * (the person or the deployed workflow) is on the connection's writers
+ * list, so a dry run that passes does not hide a real run's refusal.
  */
 async function recordInstead(
   row: ISourceConnection,
@@ -198,12 +201,17 @@ async function recordInstead(
   where: Record<string, unknown>,
 ): Promise<ConnectionRequestResult> {
   const target = `${request.method} ${request.path}`;
-  await recordProxyWrite(row, `agent:${principal}`, target, false);
+  await recordProxyWrite(row, `dry-run:${principal}`, target, false);
+  const viewer =
+    (await viewerPrincipals(workspaceId, [principal]).catch(() => [])).length >
+    0;
+  const wouldSend = !viewer && mayWrite(row.writers, principal);
   const kept = await keepRecordedWrite(
     workspaceId,
     run,
     row,
     describeRequest({ config }, callable, request),
+    { wouldSend },
   );
   if (kept === "full") {
     throw new ConnectionRequestError(
@@ -217,14 +225,20 @@ async function recordInstead(
       503,
     );
   }
-  logger.info("Recorded a write by a run an agent started", where);
+  logger.info("Recorded a dry run's write", where);
+  const shown = principal.startsWith("workflow:")
+    ? "All deployed workflows"
+    : principal;
   return {
     status: 202,
     headers: { "content-type": "application/json", "x-mako-recorded": "true" },
     body: {
       recorded: true,
       sent: false,
-      message: `Recorded, not sent: a run an agent starts does not write through connections. ${target} on ${row.name} is in this run's recordedWrites (workflows_status).`,
+      wouldSend,
+      message: wouldSend
+        ? `Recorded, not sent (a dry run). ${target} on ${row.name} is in this run's recordedWrites (workflows_status).`
+        : `Recorded, not sent (a dry run). ${target} on ${row.name} is in this run's recordedWrites (workflows_status). A real run would be refused: ${shown} is not on ${row.name}'s writers list (its Access tab).`,
     },
     read: false,
     recorded: true,
@@ -308,7 +322,7 @@ export async function connectionRequest(
     logger.info("Connection read", where);
   } else {
     if (params.readOnly) {
-      // A sandbox run an agent started: recorded under the run, not sent.
+      // A sandbox dry run: recorded under the run, not sent.
       if (params.record && principal) {
         return recordInstead(
           row,
@@ -327,7 +341,7 @@ export async function connectionRequest(
       }
       logger.warn("Refused an agent write through a connection", where);
       throw new ConnectionRequestError(
-        `Agents only read through connections; ${target} on ${row.name} is a write. Write from a workflow on the connection's writers list.`,
+        `Agents and runs started with an API key only read through connections; ${target} on ${row.name} is a write. Start a run (workflows_run) to write, or pass dryRun: true to record the write instead.`,
         403,
       );
     }
@@ -342,8 +356,7 @@ export async function connectionRequest(
       const origin = params.runStarter
         ? await params.runStarter().catch(() => null)
         : null;
-      const starter = origin?.starter ?? null;
-      if (starter === "agent" && origin?.recordsWrites && params.record) {
+      if (origin?.writes === "record" && params.record) {
         return recordInstead(
           row,
           config,
@@ -355,20 +368,22 @@ export async function connectionRequest(
           where,
         );
       }
-      if (starter === "agent") {
+      if (origin && origin.writes !== "send") {
         // Recorded as the agent's, as an agent's own attempt is.
         await recordProxyWrite(row, `agent:${principal}`, target, false);
-        logger.warn("Refused a write by a run an agent started", where);
+        logger.warn("Refused a write by a run that does not write", where);
         throw new ConnectionRequestError(
-          `This run was started by an agent, and a run an agent starts only reads through connections; ${target} on ${row.name} is a write. Start the workflow from the app, a schedule or a webhook to write.`,
+          origin.writes === "record"
+            ? `This run is a dry run, and the worker did not name its run (X-Mako-Run), so ${target} on ${row.name} was neither sent nor recorded.`
+            : `This run was started with an API key, and such a run only reads through connections; ${target} on ${row.name} is a write. Start it from the app, the agent's workflows_run, a schedule or a webhook to write.`,
           403,
         );
       }
-      if (!starter) {
+      if (!origin) {
         await recordProxyWrite(row, principal, target, false);
         logger.warn("Refused a write by a run Mako could not tell", where);
         throw new ConnectionRequestError(
-          `Mako could not tell which run of ${principal.slice("workflow:".length)} this write comes from, so it was not sent. A write must come from a run of this workflow that is running now: the worker sends its run with each request (X-Mako-Run). Update the workflows runtime, or try again if Hatchet was unreachable.`,
+          `Mako could not tell which run of ${principal.slice("workflow:".length)} this write comes from, so it was not sent. The worker sends its run with each request (X-Mako-Run); update the workflows runtime, or try again if Hatchet was unreachable.`,
           403,
         );
       }

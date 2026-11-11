@@ -88,9 +88,9 @@ switches it on. Like n8n: test, then activate.
 7. Run it once by hand on the workers (`workflows_run` without `sandbox`)
    and read it with `workflows_status({ runId, wait: 90 })`. This is the
    first run with the workflow's own rights: a SQL write a test could do
-   as you fails here if the connection does not list the workflow. Its
-   connection calls that write are recorded, not sent, as in a test you
-   started.
+   as you fails here if the connection does not list the workflow. It
+   really writes: pass `dryRun: true` first if the user has not agreed to
+   its side effects.
 8. Ask the user, then `workflows_triggers` with `active: true`: from then on
    its schedule and webhook start runs by themselves.
 
@@ -200,7 +200,8 @@ one place must say where it writes, in one statement. Run a write
 with `execute(connection, sql)`, which returns `{ rowCount }`, the rows it
 changed; `query` also runs a write and returns its `RETURNING` rows. SQL
 in a test run (laptop or sandbox) runs as the person running it, under
-their own access, also when you started the run. A dbt
+their own access, also when you started the run; in a dry run it only
+reads (`execute` fails). A dbt
 job (`call("dbt_run_job", { ... })`) remains the way to rebuild models.
 
 ## Calling a service through a connection
@@ -231,13 +232,22 @@ identity today, so they are allowed together; a listed writer writes
 anywhere through the connection), and a refused one throws and shows there
 with Allow. Tell the user which connection to allow first.
 
-In a run you start (`workflows_run`, sandbox or not), a connection call
-that writes (`post`, `put`, `patch`, `delete`) is recorded instead of
-sent. Nothing reaches the service; the call answers status 202 with body
-`{ recorded: true, sent: false }`, so `post` and the other methods return
-that body. Code that checks the service's own answer (Slack's `ok`) sees
-no such field, so read the answer with a fallback. SQL is not recorded:
-`execute` and a writing `query` run with the run's rights.
+A run you start (`workflows_run`, sandbox or not) really writes, as a run
+from the app does: a Slack step posts to Slack, an email step sends. In the
+sandbox it writes as the person you act for, on the deployed workers as the
+workflow. Say what it will send before you start it.
+
+### Dry runs
+
+`workflows_run({ ..., dryRun: true })` records each connection call that
+writes (`post`, `put`, `patch`, `delete`) instead of sending it. Nothing
+reaches the service; the call answers status 202 with body `{ recorded:
+true, sent: false, wouldSend, message }`, so `post` and the other methods
+return that body. Code that checks the service's own answer (Slack's `ok`)
+sees no such field, so read the answer with a fallback. `wouldSend: false`
+means a real run would be refused: the writer is not on the connection's
+writers list. In a dry run SQL only reads: `execute` and a writing `query`
+fail. Use a dry run to check a payload before the user agrees to send it.
 
 `workflows_status({ runId })` answers `recordedWriteCount` and a page of
 `recordedWrites`: each with its connection, `method`, full `url`,
@@ -245,10 +255,8 @@ no such field, so read the answer with a fallback. SQL is not recorded:
 4000 characters is cut; `full: true` shows it whole). Past one page,
 `recordedWritesNext` is the `recordedFrom` to ask for next. Each step's
 logs end with how many of its writes were recorded. Check a Slack or email
-payload there. To really send, the user starts the run from the app, or a
-schedule or webhook does. A person's own test run writes as that person. A
-run started over the REST API with an API key (CI) has its writes refused,
-not recorded.
+payload there, then run again without `dryRun` to send. A run started over
+the REST API with an API key (CI) has its connection writes refused.
 
 A step can be retried: look for the record before
 creating it, or send the service's idempotency header, the same on every
@@ -398,7 +406,7 @@ markdown (`https://docs.hatchet.run/llms/<section>/<page>.md`).
 | `liveSha` is not `targetSha` after a minute, and no `buildError` | The worker is not running. Tell the user.                                       |
 | A run stays `QUEUED`                                             | No worker has that workflow: its build failed. Check `workflows_status`.        |
 | A test run passed, the run on the workers fails on a write       | The test ran with your rights; the workflow is not on the connection's writers. |
-| A connection call answers 202 with `recorded: true`              | You started the run: the write was recorded, not sent. See `recordedWrites`.    |
+| A connection call answers 202 with `recorded: true`              | A dry run: the write was recorded, not sent. See `recordedWrites`.              |
 | `running: true` after a wait                                     | The run goes on. Call `workflows_status({ runId, wait: 90 })` again.            |
 | The schedule did not fire                                        | The workflow is not active. `workflows_status` shows `active` per workflow.     |
 | Step `FAILED`                                                    | Read that step's `error` and `logs` in `workflows_status({ runId })`.           |

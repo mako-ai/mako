@@ -39,7 +39,7 @@ export function createWorkflowTools({
 
   return {
     workflows_status: tool({
-      description: `Look at this workspace's workflows. Without runId: what is deployed (\`deployment\`: the code on main), the build error if a commit did not start (\`buildError\` — the old code keeps running), the workflows (each with \`active\`, and \`webhookUrl\` when one has a webhook) and schedules, and the last deployed runs. With runId (sandbox or deployed): that run's steps, each with status, output, error and its last log lines (what the step wrote with ctx.logger), and, for a run you started, the connection calls that write it recorded instead of sending: \`recordedWriteCount\` and a page of \`recordedWrites\`, each whole (method, url, headers, body; credentials redacted); \`recordedWritesNext\` is the \`recordedFrom\` of the next page. \`wait\` waits on the server up to that many seconds (at most ${MAX_WAIT_SECONDS}): with runId for the run to end (\`running: true\` means it had not), without for the deploy under way, or of \`sha\`, to go live or fail to build (\`deploying: true\` means it had not); call again the same way. Texts are cut at 2000 characters and logs to a step's last 20 lines; \`full: true\` gives a sandbox run whole. While \`liveSha\` is not yet \`targetSha\` the worker has not switched to the new commit; after a commit on main, call workflows_status({ wait: 90, sha: <its commitOid> }) rather than polling.`,
+      description: `Look at this workspace's workflows. Without runId: what is deployed (\`deployment\`: the code on main), the build error if a commit did not start (\`buildError\` — the old code keeps running), the workflows (each with \`active\`, and \`webhookUrl\` when one has a webhook) and schedules, and the last deployed runs. With runId (sandbox or deployed): that run's steps, each with status, output, error and its last log lines (what the step wrote with ctx.logger), and, for a dry run, the connection calls that write it recorded instead of sending: \`recordedWriteCount\` and a page of \`recordedWrites\`, each whole (method, url, headers, body; credentials redacted; \`wouldSend: false\` when a real run would be refused); \`recordedWritesNext\` is the \`recordedFrom\` of the next page. \`wait\` waits on the server up to that many seconds (at most ${MAX_WAIT_SECONDS}): with runId for the run to end (\`running: true\` means it had not), without for the deploy under way, or of \`sha\`, to go live or fail to build (\`deploying: true\` means it had not); call again the same way. Texts are cut at 2000 characters and logs to a step's last 20 lines; \`full: true\` gives a sandbox run whole. While \`liveSha\` is not yet \`targetSha\` the worker has not switched to the new commit; after a commit on main, call workflows_status({ wait: 90, sha: <its commitOid> }) rather than polling.`,
       inputSchema: z.object({
         runId: z
           .string()
@@ -111,7 +111,7 @@ export function createWorkflowTools({
 
     workflows_run: tool({
       description:
-        "Start a run of a workflow; answers its runId at once. Follow it with workflows_status({ runId, wait: 90 }), again while it answers `running: true`. With `sandbox: true` it runs `mako workflow run` in your sandbox (the same command as on a laptop) on your checkout as it is, uncommitted edits included, with real data, your own rights and no schedule: that is how a change is tested. It typechecks workflows/ first, as the deploy does: with type errors it does not run and answers them in `typeErrors`. Without `sandbox`, the deployed code on main is started on the workers, active or not, with the workflow's rights. Either way, in a run you start a connection call that writes (`post`/`put`/`patch`/`delete` through `connection(id)`) is recorded, not sent (answered 202, `recorded: true`), and listed in workflows_status as `recordedWrites`. SQL is not recorded: `execute` and a writing `query` run with the run's rights (yours in the sandbox).",
+        "Start a run of a workflow; answers its runId at once. Follow it with workflows_status({ runId, wait: 90 }), again while it answers `running: true`. With `sandbox: true` it runs `mako workflow run` in your sandbox (the same command as on a laptop) on your checkout as it is, uncommitted edits included, with real data, your own rights and no schedule: that is how a change is tested. It typechecks workflows/ first, as the deploy does: with type errors it does not run and answers them in `typeErrors`. Without `sandbox`, the deployed code on main is started on the workers, active or not, with the workflow's rights. Either way the run really writes: a connection call that writes (`post`/`put`/`patch`/`delete` through `connection(id)`) is sent, and SQL runs, with the run's rights (yours in the sandbox), so a Slack step posts to Slack. With `dryRun: true` a connection write is recorded instead, not sent (answered 202, `recorded: true`), and listed in workflows_status as `recordedWrites`; its SQL only reads (`execute` fails). Use a dry run to check a payload before sending it, or when the user has not agreed to the run's side effects.",
       inputSchema: z.object({
         workflowId: z
           .string()
@@ -125,8 +125,14 @@ export function createWorkflowTools({
           .boolean()
           .optional()
           .describe("Run your checkout's version instead of the deployed one"),
+        dryRun: z
+          .boolean()
+          .optional()
+          .describe(
+            "Record connection writes instead of sending them; SQL only reads",
+          ),
       }),
-      execute: async ({ workflowId, input, sandbox }) => {
+      execute: async ({ workflowId, input, sandbox, dryRun }) => {
         try {
           if (!(await mayRun())) {
             return { success: false, error: "Viewers cannot start runs." };
@@ -135,23 +141,23 @@ export function createWorkflowTools({
             if (!userId) {
               return { success: false, error: "A sandbox needs a person." };
             }
-            // An agent's run only reads through connections; it records
-            // its writes.
+            // Writes as the person, as their own run does; a dry run
+            // records its writes.
             const { runId } = await startSandboxRun(
               workspaceId,
               userId,
               workflowId,
               input,
-              { byAgent: true },
+              { writes: dryRun ? "record" : "send" },
             );
             return { success: true, sandbox: true, runId, workflowId };
           }
           const runId = await startRun(
             await requireTenant(workspaceId),
             workflowId,
-            // Its deployed code only reads through connections; it records
-            // its writes.
-            { input, trigger: "agent", startedBy: "agent" },
+            // Writes as the workflow, as a run from the app does; a dry
+            // run records its writes.
+            { input, trigger: "agent", startedBy: "agent", dryRun },
           );
           return { success: true, runId, workflowId };
         } catch (error) {

@@ -1,9 +1,10 @@
 /**
- * Who a run is started by, as the run and its key record it: a run started
- * from the app is the person's; one started with an API key or an MCP login,
- * or by the agent's own tool, is an agent's, and only reads through
- * connections (a sandbox run's key says `agentRun`; a deployed run's Hatchet
- * metadata says `startedBy: "agent"`).
+ * Who a run is started by, and what its writes do, as the run and its key
+ * record it: a run from the app, an MCP login or the agent's own tool
+ * writes; one started with an API key only reads through connections (a
+ * sandbox run's key says `agentRun`; a deployed run's Hatchet metadata says
+ * trigger "api"). A dry run records its writes (`recordWrites` on the key,
+ * `dryRun` in the metadata).
  *
  * Real routes and the real sandbox start (its key in in-memory Mongo); the
  * box, Hatchet and auth are stand-ins.
@@ -143,21 +144,8 @@ beforeEach(async () => {
 });
 
 describe("POST /{name}/run", () => {
-  it("a sandbox run from the app gets a key without agentRun", async () => {
-    who.authType = "session";
-    expect((await run({ sandbox: true })).status).toBe(200);
-    const keys = await runKeys();
-    expect(keys).toHaveLength(1);
-    expect(keys[0].agentRun).toBeUndefined();
-  });
-
-  it("a sandbox run with an API key or an MCP login gets agentRun", async () => {
-    // Only an MCP login's run records its writes; a key's (CI) has them
-    // refused, so it fails loudly.
-    for (const [authType, recordWrites] of [
-      ["apiKey", undefined],
-      ["mcpOAuth", true],
-    ] as const) {
+  it("a sandbox run from the app or an MCP login gets a key that writes", async () => {
+    for (const authType of ["session", "mcpOAuth"] as const) {
       who.authType = authType;
       await Workspace.updateOne({ _id: WS }, { $set: { apiKeys: [] } });
       expect((await run({ sandbox: true })).status).toBe(200);
@@ -165,21 +153,45 @@ describe("POST /{name}/run", () => {
       expect(
         keys.map(k => [k.agentRun, k.recordWrites]),
         authType,
-      ).toEqual([[true, recordWrites]]);
+      ).toEqual([[undefined, undefined]]);
     }
   });
 
-  it("a deployed run records who started it", async () => {
+  it("a sandbox run with an API key gets agentRun: its writes are refused", async () => {
+    who.authType = "apiKey";
+    expect((await run({ sandbox: true })).status).toBe(200);
+    expect((await runKeys()).map(k => [k.agentRun, k.recordWrites])).toEqual([
+      [true, undefined],
+    ]);
+  });
+
+  it("a sandbox dry run gets recordWrites, whoever starts it", async () => {
+    for (const authType of ["session", "apiKey", "mcpOAuth"] as const) {
+      who.authType = authType;
+      await Workspace.updateOne({ _id: WS }, { $set: { apiKeys: [] } });
+      expect((await run({ sandbox: true, dryRun: true })).status).toBe(200);
+      expect(
+        (await runKeys()).map(k => [k.agentRun, k.recordWrites]),
+        authType,
+      ).toEqual([[undefined, true]]);
+    }
+  });
+
+  it("a deployed run records who started it, and a dry run", async () => {
     who.authType = "session";
     await run({ input: { a: 1 } });
     who.authType = "apiKey";
     await run({});
     who.authType = "mcpOAuth";
     await run({});
-    expect(started.map(s => [s.run.trigger, s.run.startedBy])).toEqual([
-      ["ui", "person"],
-      ["api", "agent"],
-      ["mcp", "agent"],
+    await run({ dryRun: true });
+    expect(
+      started.map(s => [s.run.trigger, s.run.startedBy, s.run.dryRun]),
+    ).toEqual([
+      ["ui", "person", undefined],
+      ["api", "agent", undefined],
+      ["mcp", "agent", undefined],
+      ["mcp", "agent", true],
     ]);
   });
 });
@@ -195,16 +207,27 @@ describe("the agent's workflows_run tool", () => {
       }
     ).execute(input, { toolCallId: "t", messages: [] });
 
-  it("starts a sandbox run whose key says agentRun", async () => {
+  it("starts a sandbox run whose key writes as the person", async () => {
     const result = await execute({ workflowId: "daily-digest", sandbox: true });
     expect(result.success).toBe(true);
     expect((await runKeys()).map(k => [k.agentRun, k.recordWrites])).toEqual([
-      [true, true],
+      [undefined, undefined],
     ]);
   });
 
-  it("starts a deployed run as the agent's", async () => {
+  it("starts a sandbox dry run whose key records writes", async () => {
+    await execute({ workflowId: "daily-digest", sandbox: true, dryRun: true });
+    expect((await runKeys()).map(k => [k.agentRun, k.recordWrites])).toEqual([
+      [undefined, true],
+    ]);
+  });
+
+  it("starts a deployed run as the agent's, a dry run when asked", async () => {
     await execute({ workflowId: "daily-digest" });
-    expect(started.map(s => s.run.startedBy)).toEqual(["agent"]);
+    await execute({ workflowId: "daily-digest", dryRun: true });
+    expect(started.map(s => [s.run.startedBy, s.run.dryRun])).toEqual([
+      ["agent", undefined],
+      ["agent", true],
+    ]);
   });
 });

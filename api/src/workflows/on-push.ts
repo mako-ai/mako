@@ -127,7 +127,7 @@ export async function setKey(
           createdAt: new Date(),
           createdBy: userId,
           ...(agentRun ? { agentRun: true } : {}),
-          ...(agentRun && recordWrites ? { recordWrites: true } : {}),
+          ...(recordWrites ? { recordWrites: true } : {}),
         },
       },
     },

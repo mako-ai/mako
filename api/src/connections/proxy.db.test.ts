@@ -71,29 +71,21 @@ const SCHEDULED_RUN = "3f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 const UNKNOWN_RUN = "4f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 const MCP_RUN = "5a6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 const KEY_RUN = "6a6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
-/** A scheduled run that has ended: its id must not lend a run its rights. */
-const OLD_SCHEDULED_RUN = "7a6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
-/** A scheduled run of another workflow, running now. */
-const OTHER_FLOW_RUN = "8a6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
-const OTHER_PERSON_RUN = "9a6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
-const RUN_METADATA: Record<string, Record<string, string>> = {
+const DRY_RUN = "7a6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+const DRY_PERSON_RUN = "8a6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+const RUN_METADATA: Record<string, Record<string, unknown>> = {
   [PERSON_RUN]: { trigger: "ui", startedBy: "person" },
+  // The agent's tool's and an MCP login's runs write; a key's (CI) has its
+  // writes refused.
   [AGENT_RUN]: { trigger: "agent", startedBy: "agent" },
-  // An MCP login's run records its writes; a key's (CI) has them refused.
   [MCP_RUN]: { trigger: "mcp", startedBy: "agent" },
   [KEY_RUN]: { trigger: "api", startedBy: "agent" },
   // Started before Mako kept startedBy: an API call is an agent's.
   [OLD_API_RUN]: { trigger: "api" },
   [SCHEDULED_RUN]: {},
-  [OLD_SCHEDULED_RUN]: {},
-  [OTHER_FLOW_RUN]: {},
-  [OTHER_PERSON_RUN]: { trigger: "ui", startedBy: "person" },
-};
-/** Each run's workflow and status, as Hatchet answers them. */
-const RUN_STATE: Record<string, { workflow: string; status: string }> = {
-  [OLD_SCHEDULED_RUN]: { workflow: "fr-offer-to-cash", status: "COMPLETED" },
-  [OTHER_FLOW_RUN]: { workflow: "other-flow", status: "RUNNING" },
-  [OTHER_PERSON_RUN]: { workflow: "other-flow", status: "RUNNING" },
+  // A dry run records its writes, whoever started it.
+  [DRY_RUN]: { trigger: "agent", startedBy: "agent", dryRun: true },
+  [DRY_PERSON_RUN]: { trigger: "ui", startedBy: "person", dryRun: true },
 };
 
 type Connection = {
@@ -175,18 +167,9 @@ async function main() {
     const id = href.match(/workflow-runs\/([0-9a-f-]{36})/)?.[1] ?? "";
     hatchetAsked.push(id);
     const metadata = RUN_METADATA[id];
-    const state = RUN_STATE[id] ?? {
-      workflow: "fr-offer-to-cash",
-      status: "RUNNING",
-    };
     return metadata
       ? Response.json({
-          run: {
-            metadata: { id },
-            status: state.status,
-            additionalMetadata: metadata,
-          },
-          tasks: [{ actionId: `${state.workflow}:send` }],
+          run: { metadata: { id }, additionalMetadata: metadata },
         })
       : Response.json({ message: "not found" }, { status: 404 });
   }) as typeof fetch;
@@ -262,15 +245,7 @@ async function main() {
     // a test says otherwise.
     const runStep = new AsyncLocalStorage<{ runId?: string }>();
     (globalThis as { makoRun?: unknown }).makoRun = runStep;
-    // Each workflow's person run is its own: a run lends its rights to its
-    // own workflow only.
-    runStep.enterWith({
-      get runId() {
-        return running.getStore() === "other-flow"
-          ? OTHER_PERSON_RUN
-          : PERSON_RUN;
-      },
-    });
+    runStep.enterWith({ runId: PERSON_RUN });
     const load = async (apiKey: string): Promise<Mako> => {
       process.env.MAKO_URL = `http://127.0.0.1:${port}`;
       process.env.MAKO_API_KEY = apiKey;
@@ -417,13 +392,36 @@ async function main() {
     }
     assert.equal(sent.length, sentBeforeLogDown);
 
-    // A deployed run the agent's tool or an MCP login started only reads:
-    // its writes are recorded under the run, not sent (202, `recorded`), and
-    // in the write log as the agent's; its reads pass. One started with a
-    // key (CI) has its writes refused, so it fails loudly. A run Mako cannot
-    // tell writes nothing.
+    // A deployed run the agent's tool or an MCP login started writes as the
+    // workflow, as a person's run does. One started with a key (CI) has its
+    // writes refused, so it fails loudly. A dry run records its writes under
+    // the run, not sent (202, `recorded`, `wouldSend`), and in the write log
+    // as a dry run's; its reads pass. A run Mako cannot tell writes nothing.
     const sentBeforeAgentRun = sent.length;
     for (const run of [AGENT_RUN, MCP_RUN]) {
+      assert.equal(
+        await runStep.run({ runId: run }, () =>
+          running.run("fr-offer-to-cash", () =>
+            attempt(() => worker.connection("ch_close").post("/task/", {})),
+          ),
+        ),
+        "ok",
+        run,
+      );
+    }
+    assert.equal(sent.length, sentBeforeAgentRun + 2, "an agent's run sends");
+    for (const run of [KEY_RUN, OLD_API_RUN]) {
+      assert.match(
+        await runStep.run({ runId: run }, () =>
+          running.run("fr-offer-to-cash", () =>
+            attempt(() => worker.connection("ch_close").post("/task/", {})),
+          ),
+        ),
+        /^This run was started with an API key/,
+        run,
+      );
+    }
+    for (const run of [DRY_RUN, DRY_PERSON_RUN]) {
       const answer = await runStep.run({ runId: run }, () =>
         running.run("fr-offer-to-cash", () =>
           worker
@@ -433,34 +431,28 @@ async function main() {
       );
       assert.equal(answer.status, 202, run);
       assert.equal(answer.headers["x-mako-recorded"], "true");
-      assert.equal((answer.body as { recorded?: boolean }).recorded, true);
-      assert.equal((answer.body as { sent?: boolean }).sent, false);
+      const said = answer.body as {
+        recorded?: boolean;
+        sent?: boolean;
+        wouldSend?: boolean;
+      };
+      assert.equal(said.recorded, true);
+      assert.equal(said.sent, false);
+      assert.equal(said.wouldSend, true, "the workflow is a listed writer");
     }
     // `post` returns the recorded answer's body: a 202 is no failure.
     assert.equal(
-      await runStep.run({ runId: AGENT_RUN }, () =>
+      await runStep.run({ runId: DRY_RUN }, () =>
         running.run("fr-offer-to-cash", () =>
           attempt(() => worker.connection("ch_close").post("/task/", {})),
         ),
       ),
       "ok",
     );
-    for (const run of [KEY_RUN, OLD_API_RUN]) {
-      assert.match(
-        await runStep.run({ runId: run }, () =>
-          running.run("fr-offer-to-cash", () =>
-            attempt(() => worker.connection("ch_close").post("/task/", {})),
-          ),
-        ),
-        /^This run was started by an agent/,
-        run,
-      );
-    }
-    const agentRecorded = (await recordedWritesOf(String(ws), AGENT_RUN))
-      .writes;
-    assert.equal(agentRecorded.length, 2);
+    const dryRecorded = (await recordedWritesOf(String(ws), DRY_RUN)).writes;
+    assert.equal(dryRecorded.length, 2);
     assert.deepEqual(
-      { ...agentRecorded[0], at: undefined },
+      { ...dryRecorded[0], at: undefined },
       {
         connection: "ch_close",
         at: undefined,
@@ -471,33 +463,27 @@ async function main() {
           authorization: "Basic [redacted]",
         },
         body: { lead_id: "lead_9", text: "Call" },
+        wouldSend: true,
       },
     );
-    assert.ok(!JSON.stringify(agentRecorded).includes(CLOSE_KEY));
-    assert.equal((await recordedWritesOf(String(ws), MCP_RUN)).total, 1);
+    assert.ok(!JSON.stringify(dryRecorded).includes(CLOSE_KEY));
+    assert.equal((await recordedWritesOf(String(ws), DRY_PERSON_RUN)).total, 1);
+    assert.equal((await recordedWritesOf(String(ws), AGENT_RUN)).total, 0);
     assert.equal((await recordedWritesOf(String(ws), KEY_RUN)).total, 0);
     // Another workspace does not see them.
     assert.equal(
-      (await recordedWritesOf(String(new Types.ObjectId()), AGENT_RUN)).total,
+      (await recordedWritesOf(String(new Types.ObjectId()), DRY_RUN)).total,
       0,
     );
     assert.equal(
-      await runStep.run({ runId: AGENT_RUN }, () =>
+      await runStep.run({ runId: DRY_RUN }, () =>
         running.run("fr-offer-to-cash", () =>
           attempt(() => worker.connection("ch_close").get("/lead/")),
         ),
       ),
       "ok",
     );
-    // Workflow code holds the worker's key and could name any run: an
-    // ended scheduled run's id, or a running run of another workflow, lends
-    // it nothing.
-    for (const store of [
-      { runId: UNKNOWN_RUN },
-      {},
-      { runId: OLD_SCHEDULED_RUN },
-      { runId: OTHER_FLOW_RUN },
-    ]) {
+    for (const store of [{ runId: UNKNOWN_RUN }, {}]) {
       assert.match(
         await runStep.run(store, () =>
           running.run("fr-offer-to-cash", () =>
@@ -507,14 +493,19 @@ async function main() {
         /^Mako could not tell which run of fr-offer-to-cash/,
       );
     }
-    assert.equal(sent.length, sentBeforeAgentRun + 1, "only the read was sent");
-    const agentRunRows = await ConnectionWriteEvent.find({ allowed: false })
+    assert.equal(
+      sent.length,
+      sentBeforeAgentRun + 3,
+      "only the agent runs' writes and the read were sent",
+    );
+    const refusedRows = await ConnectionWriteEvent.find({ allowed: false })
       .sort({ at: -1 })
-      .limit(9)
+      .limit(7)
       .lean();
-    assert.deepEqual(agentRunRows.map(r => r.principal).reverse(), [
-      ...Array(5).fill("agent:workflow:fr-offer-to-cash"),
-      ...Array(4).fill("workflow:fr-offer-to-cash"),
+    assert.deepEqual(refusedRows.map(r => r.principal).reverse(), [
+      ...Array(2).fill("agent:workflow:fr-offer-to-cash"),
+      ...Array(3).fill("dry-run:workflow:fr-offer-to-cash"),
+      ...Array(2).fill("workflow:fr-offer-to-cash"),
     ]);
     // A scheduled run writes; who started a run is asked once.
     const askedBefore = hatchetAsked.length;
@@ -639,7 +630,10 @@ async function main() {
       () => "ok",
       (error: Error) => error.message,
     );
-    assert.match(agentWrite, /^Agents only read/);
+    assert.match(
+      agentWrite,
+      /^Agents and runs started with an API key only read/,
+    );
     // Recorded as the agent's attempt, which no writers list can name.
     recorded = await events(3);
     assert.equal(recorded.at(-1)?.principal, "agent:workflow:fr-offer-to-cash");
@@ -746,10 +740,10 @@ async function main() {
       ],
     );
 
-    // A sandbox run an agent started: its key (made by Mako, marked
-    // agentRun) names the run. Its writes are recorded there, for its
-    // person only, and never sent; a write recorded past the cap is
-    // refused. An agent's key that names no run only reads.
+    // A sandbox dry run: its key (made by Mako, marked recordWrites) names
+    // the run. Its writes are recorded there, for its person only, and never
+    // sent; a write recorded past the cap is refused. A dry run's key that
+    // names no run only reads.
     const SANDBOX_RUN = "sandbox-5f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
     const AGENT_SANDBOX_KEY = "revops_agent_sandbox_key_tests_only";
     await setKey(
@@ -757,7 +751,7 @@ async function main() {
       "deployer",
       `Workflows sandbox deployer ${SANDBOX_RUN}`,
       AGENT_SANDBOX_KEY,
-      { agentRun: true, recordWrites: true },
+      { recordWrites: true },
     );
     const agentSandbox = await load(AGENT_SANDBOX_KEY);
     const sentBeforeSandbox = sent.length;
@@ -765,6 +759,12 @@ async function main() {
       .connection("ch_close")
       .request("POST", "/task/", { text: "Weekly digest" });
     assert.equal(slack.status, 202);
+    // The person is no listed writer: the answer says a real run would fail.
+    assert.equal((slack.body as { wouldSend?: boolean }).wouldSend, false);
+    assert.match(
+      String((slack.body as { message?: string }).message),
+      /A real run would be refused: user:deployer is not on ch_close's writers list/,
+    );
     assert.equal(
       sent.length,
       sentBeforeSandbox,
@@ -818,7 +818,7 @@ async function main() {
       await WorkflowRecordedWrite.countDocuments({ runId: SANDBOX_RUN }),
       2,
     );
-    // A sandbox run started with a key (CI): an agent's, its writes refused.
+    // A sandbox run started with a key (CI): its writes refused.
     const CI_SANDBOX_KEY = "revops_ci_sandbox_key_tests_only";
     await setKey(
       String(ws),
@@ -830,17 +830,16 @@ async function main() {
     const ciSandbox = await load(CI_SANDBOX_KEY);
     assert.match(
       await attempt(() => ciSandbox.connection("ch_close").post("/task/", {})),
-      /^Agents only read through connections/,
+      /^Agents and runs started with an API key only read through connections/,
     );
     const NAMELESS_KEY = "revops_agent_nameless_key_tests_only";
     await setKey(String(ws), "deployer", "Something else", NAMELESS_KEY, {
-      agentRun: true,
       recordWrites: true,
     });
     const nameless = await load(NAMELESS_KEY);
     assert.match(
       await attempt(() => nameless.connection("ch_close").post("/task/", {})),
-      /^Agents only read through connections/,
+      /^Agents and runs started with an API key only read through connections/,
     );
     assert.equal(sent.length, sentBeforeSandbox);
 

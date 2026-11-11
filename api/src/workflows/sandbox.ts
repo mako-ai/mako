@@ -9,11 +9,13 @@
  * The steps call Mako with a key made for the run that acts as the person
  * (routes/workflows.ts), so a test can do what they can do. A run an agent
  * started (the in-chat agent, an MCP client) is marked on its key: through
- * connections it only reads, as the agent itself does, and its writes are
- * recorded under the run instead of sent (workflows/recorded-writes.ts).
+ * connections it writes as the person, as their own run does; a dry run
+ * records its writes under the run instead (workflows/recorded-writes.ts),
+ * and a run started with an API key (CI, a script) has them refused.
  */
 import { randomUUID } from "node:crypto";
 import { Types } from "mongoose";
+import type { RunWrites } from "./runs";
 
 import { appsGitOriginBase } from "../apps/config";
 import { getSandboxProvider } from "../apps/sandbox/provider";
@@ -52,7 +54,7 @@ const keyNameOf = (userId: string, runId: string) =>
 
 /**
  * The sandbox run a run's key was made for (`keyNameOf`), or null for any
- * other key. Trust it only from a key Mako made (`agentRun` on it).
+ * other key. Trust it only from a key Mako made (`recordWrites` on it).
  */
 export function sandboxRunOfKey(
   key: { name?: string; createdBy?: unknown } | undefined,
@@ -88,14 +90,10 @@ export async function startSandboxRun(
   workflowId: string,
   input: object = {},
   /**
-   * Started by an agent, not by the person themselves; and whether its
-   * connection writes are recorded (the agent's tool, an MCP login) or
-   * refused (a key: CI, a script).
+   * What its connection writes do (runs.ts `RunWrites`): sent as the
+   * person, recorded (a dry run), or refused (started with an API key).
    */
-  {
-    byAgent,
-    recordWrites = byAgent,
-  }: { byAgent: boolean; recordWrites?: boolean } = { byAgent: true },
+  { writes }: { writes: RunWrites },
 ) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(workflowId)) {
     throw new HatchetError(`Invalid workflow: ${workflowId}`, 400);
@@ -107,8 +105,8 @@ export async function startSandboxRun(
   await pruneRunKeys(workspaceId, userId);
   const { key } = generateApiKey();
   await setKey(workspaceId, userId, keyNameOf(userId, runId), key, {
-    agentRun: byAgent,
-    recordWrites: byAgent && recordWrites,
+    agentRun: writes === "refuse",
+    recordWrites: writes === "record",
   });
 
   const dir = runsDir(provider.scratch(ctx));

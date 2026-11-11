@@ -117,8 +117,8 @@ async function main() {
     assert.deepEqual(
       counted.steps.map(step => step.logs.at(-1)),
       [
-        "warn: 1 connection write recorded, not sent (an agent started this run): see recordedWrites",
-        "warn: 2 connection writes recorded, not sent (an agent started this run): see recordedWrites",
+        "warn: 1 connection write recorded, not sent (a dry run): see recordedWrites",
+        "warn: 2 connection writes recorded, not sent (a dry run): see recordedWrites",
       ],
     );
     assert.equal(counted.steps[0].logs[0], "info: start");

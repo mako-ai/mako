@@ -1,12 +1,11 @@
 /**
- * Writes an agent's test run recorded instead of sending. A run an agent
- * started (a sandbox run on its key, a deployed run Mako started for an
- * agent) never writes through a connection; its write is answered as
- * recorded, and the whole request (URL, headers and body, every credential
- * value redacted: connections/forward.ts `describeRequest`) is kept here so
- * the agent can check a Slack or email payload in `workflows_status` without
- * sending it. Kept 7 days, by workspace and run; a sandbox run's only for
- * its person.
+ * Writes a dry run (`dryRun: true`) recorded instead of sending. A dry run
+ * never writes through a connection; its write is answered as recorded, and
+ * the whole request (URL, headers and body, every credential value
+ * redacted: connections/forward.ts `describeRequest`) is kept here so the
+ * agent can check a Slack or email payload in `workflows_status` without
+ * sending it, with whether a real run would be allowed to send it. Kept 7
+ * days, by workspace and run; a sandbox run's only for its person.
  */
 import mongoose, { Schema, Types } from "mongoose";
 
@@ -39,6 +38,8 @@ export interface IWorkflowRecordedWrite {
   seq: number;
   /** The body was longer than kept. */
   bodyCut?: boolean;
+  /** A real run's writer is on the connection's writers list. */
+  wouldSend?: boolean;
   at: Date;
 }
 
@@ -53,6 +54,7 @@ const WorkflowRecordedWriteSchema = new Schema<IWorkflowRecordedWrite>(
     request: { type: Schema.Types.Mixed, required: true },
     seq: { type: Number, required: true },
     bodyCut: { type: Boolean },
+    wouldSend: { type: Boolean },
     at: { type: Date, default: () => new Date() },
   },
   { collection: "workflow_recorded_writes", versionKey: false },
@@ -165,6 +167,7 @@ export async function keepRecordedWrite(
   run: RecordRun,
   connection: { _id: unknown; name: string },
   request: RecordedRequest,
+  { wouldSend }: { wouldSend?: boolean } = {},
 ): Promise<"kept" | "full" | "failed"> {
   try {
     const workspace = new Types.ObjectId(workspaceId);
@@ -184,6 +187,7 @@ export async function keepRecordedWrite(
         : request,
       seq,
       ...(cut ? { bodyCut: true } : {}),
+      ...(wouldSend !== undefined ? { wouldSend } : {}),
     });
     return "kept";
   } catch (error) {
@@ -201,6 +205,8 @@ export type RecordedWrite = {
   headers: Record<string, string>;
   body?: unknown;
   bodyCut?: boolean;
+  /** False: a real run would be refused (not on the writers list). */
+  wouldSend?: boolean;
 };
 
 export type RecordedWritesPage = {
@@ -263,6 +269,7 @@ export async function recordedWritesOf(
               : body,
           }),
       ...(row.bodyCut ? { bodyCut: true } : {}),
+      ...(row.wouldSend !== undefined ? { wouldSend: row.wouldSend } : {}),
     };
     chars += JSON.stringify(write).length;
     if (writes.length > 0 && chars > RECORDED_PAGE_CHARS) break;
@@ -313,7 +320,7 @@ export async function withRecordedWrites<Run extends { steps?: StepLike[] }>(
       ...step,
       logs: [
         ...step.logs,
-        `warn: ${count} connection ${count === 1 ? "write" : "writes"} recorded, not sent (an agent started this run): see recordedWrites`,
+        `warn: ${count} connection ${count === 1 ? "write" : "writes"} recorded, not sent (a dry run): see recordedWrites`,
       ],
     };
   });

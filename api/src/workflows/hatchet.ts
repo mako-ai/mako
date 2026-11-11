@@ -293,8 +293,8 @@ export function isHatchetId(value: string): boolean {
  * Who started a run, kept on it (Hatchet's additional metadata) when it is
  * started: an agent (the agent's tool, an MCP login, an API key), a person
  * in the app, or a trigger (a webhook). A run Hatchet starts on a schedule
- * has none. A run an agent started only reads through connections: its
- * writes are recorded, not sent (connections/proxy.service.ts).
+ * has none. What its connection writes do follows from it and from
+ * `dryRun` (runs.ts `runWritesOf`, connections/proxy.service.ts).
  */
 export type RunStarter = "agent" | "person" | "trigger";
 
@@ -302,7 +302,13 @@ export type RunStarter = "agent" | "person" | "trigger";
 export async function startRun(
   tenant: WorkspaceTenant,
   workflowName: string,
-  run: { input?: object; trigger: string; startedBy: RunStarter },
+  run: {
+    input?: object;
+    trigger: string;
+    startedBy: RunStarter;
+    /** Record its connection writes instead of sending them. */
+    dryRun?: boolean;
+  },
 ): Promise<string | undefined> {
   const started = await tenantJson<{ run?: { metadata?: { id?: string } } }>(
     tenant,
@@ -312,7 +318,11 @@ export async function startRun(
       body: {
         workflowName,
         input: run.input ?? {},
-        additionalMetadata: { trigger: run.trigger, startedBy: run.startedBy },
+        additionalMetadata: {
+          trigger: run.trigger,
+          startedBy: run.startedBy,
+          ...(run.dryRun ? { dryRun: true } : {}),
+        },
       },
     },
   ).catch(error => {

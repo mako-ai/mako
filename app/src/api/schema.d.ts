@@ -5383,7 +5383,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start a run of the deployed workflow (answers its runId), or with `sandbox` the caller's checkout in their sandbox. Answers the runId at once; follow it with GET /runs/{id}?wait= */
+        /** Start a run of the deployed workflow (answers its runId), or with `sandbox` the caller's checkout in their sandbox. Answers the runId at once; follow it with GET /runs/{id}?wait=. Its connection writes are sent (a run started with an API key has them refused); with `dryRun` they are recorded instead, not sent, and its SQL only reads */
         post: operations["post_api_workspaces_workspaceId_workflows_name_run"];
         delete?: never;
         options?: never;
@@ -22723,6 +22723,7 @@ export interface operations {
                         [key: string]: unknown;
                     };
                     sandbox?: boolean;
+                    dryRun?: boolean;
                 };
             };
         };

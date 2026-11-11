@@ -51,7 +51,7 @@ export interface WorkflowRun extends WorkflowRunSummary {
   output?: string;
   steps: WorkflowRunStep[];
   /**
-   * A run an agent started: its connection writes were recorded, not sent.
+   * A dry run: its connection writes were recorded, not sent.
    * How many (the API also answers a page of them, `recordedWrites`).
    */
   recordedWriteCount?: number;

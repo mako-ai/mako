@@ -73,7 +73,7 @@ function FailureCard({ steps }: { steps: WorkflowRunStep[] }) {
   );
 }
 
-/** A run an agent started: its connection writes were recorded, not sent. */
+/** A dry run: its connection writes were recorded, not sent. */
 function RecordedCard({ count }: { count?: number }) {
   if (!count) return null;
   return (
@@ -91,8 +91,8 @@ function RecordedCard({ count }: { count?: number }) {
         {count} connection {count === 1 ? "write" : "writes"} recorded, not sent
       </Typography>
       <Dim>
-        An agent started this run, so nothing it wrote through a connection
-        reached the service. Start the workflow from here to send.
+        This was a dry run, so nothing it wrote through a connection reached the
+        service. Run it again without a dry run to send.
       </Dim>
     </Box>
   );
