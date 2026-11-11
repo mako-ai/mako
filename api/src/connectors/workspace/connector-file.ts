@@ -6,6 +6,8 @@
  * `discover`, because a manifest that restates them is a manifest that drifts
  * from them.
  */
+import { isConnectorSlug } from "@mako/schemas";
+import { setTopLevelAliases, yamlScalar } from "../../rename/yaml-name-aliases";
 import { loadYaml } from "../../utils/yaml";
 
 /** The runtimes that exist. Only `node` runs today; the rest are named so a
@@ -26,15 +28,20 @@ export interface ConnectorFile {
   /** Entry file for the `node` runtime, relative to the folder. */
   entry: string;
   page?: { vendor?: string; category?: string; docs?: string };
+  /**
+   * Previous folder slugs. A rename writes the old slug here, so the record
+   * travels with the folder: a clone or a laptop `git mv` that keeps the
+   * file behaves like a rename made in Mako.
+   */
+  aliases: string[];
 }
 
 export type ParseResult =
   { ok: true; value: ConnectorFile } | { ok: false; reason: string };
 
-const SLUG = /^[a-z][a-z0-9-]*$/;
-
+/** The shared rule (`@mako/schemas`), so a rename and a push agree. */
 export function isValidSlug(slug: string): boolean {
-  return SLUG.test(slug) && slug.length <= 64;
+  return isConnectorSlug(slug);
 }
 
 /**
@@ -115,14 +122,104 @@ export function parseConnectorFile(contents: string): ParseResult {
     };
   }
 
+  const aliases = raw.aliases ?? [];
+  if (
+    !Array.isArray(aliases) ||
+    aliases.some(alias => typeof alias !== "string" || !isValidSlug(alias))
+  ) {
+    return {
+      ok: false,
+      reason:
+        "`aliases` must be a list of previous folder slugs, e.g. `aliases: [acme]`.",
+    };
+  }
+
   return {
     ok: true,
     value: {
       runtime: runtime as ConnectorRuntime,
       entry,
       page: page as ConnectorFile["page"],
+      aliases: [...new Set(aliases as string[])],
     },
   };
+}
+
+const HAS_ALIASES = /^aliases\s*:/m;
+
+/** Everything a connector file says, `aliases` aside, as one comparable string. */
+function restOf(file: ConnectorFile): string {
+  return JSON.stringify({ ...file, aliases: undefined });
+}
+
+/** `edited`, when it still reads as `original` with exactly `aliases`. */
+function checkedEdit(
+  original: string,
+  edited: string | null,
+  aliases: string[],
+): string | null {
+  if (edited === null) return null;
+  const before = parseConnectorFile(original);
+  const after = parseConnectorFile(edited);
+  if (!before.ok || !after.ok) return null;
+  if (after.value.aliases.join("\0") !== aliases.join("\0")) return null;
+  return restOf(before.value) === restOf(after.value) ? edited : null;
+}
+
+/**
+ * `connector.yaml` with `alias` added to its `aliases`, as a line edit: the
+ * author's other bytes, comments included, stay. A missing key is appended
+ * (the file keeps its own ending); an existing list is extended in its own
+ * shape. Null when the file does not parse or its `aliases` is written in a
+ * way the edit cannot extend: the result is re-parsed before it is used, so
+ * a rename never commits a file it could not read back.
+ */
+export function withConnectorAlias(
+  contents: string,
+  alias: string,
+): string | null {
+  const parsed = parseConnectorFile(contents);
+  if (!parsed.ok) return null;
+  if (parsed.value.aliases.includes(alias)) return contents;
+  const next = [...parsed.value.aliases, alias];
+  if (HAS_ALIASES.test(contents)) {
+    const edited = setTopLevelAliases(contents, next);
+    // The editor ends a file with a line break; a file that had none keeps
+    // its ending, so removing the aliases gives back the original bytes.
+    return checkedEdit(
+      contents,
+      edited !== null && !/\n$/.test(contents)
+        ? edited.replace(/\r?\n$/, "")
+        : edited,
+      next,
+    );
+  }
+  const scalar = yamlScalar(alias);
+  if (scalar === null) return null;
+  const nl = contents.includes("\r\n") ? "\r\n" : "\n";
+  const block = `aliases:${nl}  - ${scalar}`;
+  return checkedEdit(
+    contents,
+    contents.endsWith(nl)
+      ? `${contents}${block}${nl}`
+      : `${contents}${nl}${block}`,
+    next,
+  );
+}
+
+/**
+ * `connector.yaml` as the content hash sees it: without `aliases`. A rename
+ * writes an alias and nothing else, so hashing it would make every rename
+ * look like new code (spec re-run, `verified` lost). A file with no
+ * `aliases` is its own bytes, so introducing this re-indexes nothing.
+ */
+export function connectorFileIdentity(contents: string): string {
+  if (!HAS_ALIASES.test(contents)) return contents;
+  const stripped = checkedEdit(contents, setTopLevelAliases(contents, []), []);
+  // A shape the edit cannot follow is hashed as it is: at worst one spec
+  // re-run, never a hash of something that is not the file.
+  if (stripped === null) return contents;
+  return /\n$/.test(contents) ? stripped : stripped.replace(/\r?\n$/, "");
 }
 
 /**
