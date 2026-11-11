@@ -27,6 +27,13 @@ vi.mock("../contexts/auth-context", () => ({
   useAuth: () => ({ user: { id: "u1" } }),
 }));
 vi.mock("../dbt-runtime/shell", () => ({ focusDbtFileTab: vi.fn() }));
+const tabs = vi.hoisted(() => ({
+  followMovedDbtFile: vi.fn(async () => null as string | null),
+}));
+vi.mock("../lib/dbt-file-tabs", () => ({
+  ...tabs,
+  retargetDbtFileTabs: vi.fn(),
+}));
 // Streamdown pulls heavy ESM (shiki) that jsdom can't load — render children raw.
 vi.mock("./StreamingMarkdown", () => ({
   default: ({ children }: { children: string }) => (
@@ -301,6 +308,28 @@ describe("DbtFileEditor", () => {
 
     await waitFor(() =>
       expect(screen.queryByTestId("markdown-preview")).toBeNull(),
+    );
+  });
+
+  it("asks where the file went when its path does not load, and only then", async () => {
+    render(<DbtFileEditor tabId="t1" projectId="p1" path="models/foo.sql" />);
+    await waitFor(() => expect(compileModelMock).toHaveBeenCalled());
+    expect(tabs.followMovedDbtFile).not.toHaveBeenCalled();
+    cleanup();
+
+    // A tab restored on a path the file has left: the read fails.
+    useDbtStore.setState({
+      loadErrors: {
+        "file:p1:models/old.sql": { status: 404, message: "File not found" },
+      },
+    } as never);
+    render(<DbtFileEditor tabId="t2" projectId="p1" path="models/old.sql" />);
+    await waitFor(() =>
+      expect(tabs.followMovedDbtFile).toHaveBeenCalledWith(
+        "ws1",
+        "p1",
+        "models/old.sql",
+      ),
     );
   });
 });
