@@ -1212,6 +1212,11 @@ function ResourceTreeInner(
                 data-tree-caret
                 onClick={event => {
                   event.stopPropagation();
+                  // The folder is the row the person is on now: a shortcut
+                  // pressed next is about it, not about whatever row was
+                  // clicked before (the caret used to leave that one as
+                  // the tree's focused row).
+                  setFocusedNodeId(node.id);
                   const willExpand = !isExpanded;
                   onToggleFolder(getExpansionKey(node));
                   if (willExpand) maybeLoadChildren(node);
