@@ -967,6 +967,143 @@ export async function log(
     });
 }
 
+/** One commit of a file's history, with where the file was in it. */
+export interface FollowedCommit extends CommitInfo {
+  /** The file's path in this commit (after it, for a rename). */
+  path: string;
+  /** For the commit that renamed or moved the file: where it came from. */
+  previousPath?: string;
+}
+
+/**
+ * Parse `git log --follow --format=%x01%H%x00%an%x00%at%x00%s --name-status
+ * -z`: each commit is `\x01<sha>\0<author>\0<at>\0<subject>\0`, then
+ * `\n<status>\0<path>\0` (`R<score>\0<from>\0<to>\0` for a rename). Newest
+ * first; `path` is the file's name at the ref, carried back through each
+ * rename.
+ *
+ * Only the file's own rename chain is kept. `--follow` also lists whatever
+ * else lived at a path, so the walk ends at the commit that created the
+ * file (an add, or a copy of another file — which is not its history) and
+ * before a delete once the file has been seen (an earlier occupant of the
+ * path leaving).
+ */
+export function parseFollowLog(stdout: string, path: string): FollowedCommit[] {
+  const commits: FollowedCommit[] = [];
+  let current = path;
+  for (const chunk of stdout.split("\x01")) {
+    if (!chunk) continue;
+    const fields = chunk.split("\0");
+    const [oid, author, at, subject] = fields;
+    if (!oid) continue;
+    const status = (fields[4] ?? "").trim();
+    const commit: FollowedCommit = {
+      oid,
+      author: author ?? "",
+      timestamp: Number(at) * 1000,
+      subject: subject ?? "",
+      path: current,
+    };
+    if (status.startsWith("D") && commits.length > 0) break;
+    if (status.startsWith("R") && fields[5]) {
+      commit.previousPath = fields[5];
+      current = fields[5];
+    }
+    commits.push(commit);
+    if (status.startsWith("A") || status.startsWith("C")) break;
+  }
+  return commits;
+}
+
+/**
+ * A file's history across renames and moves: a console renamed in the
+ * explorer is the same file under a new name, and its history did not
+ * start at the rename. See `parseFollowLog` for what is left out.
+ */
+export async function logFollow(
+  repoDir: string,
+  refOrOid: string,
+  limit: number,
+  path: string,
+): Promise<FollowedCommit[]> {
+  const { stdout } = await runGit(
+    [
+      "-C",
+      repoDir,
+      "log",
+      "--follow",
+      "-M",
+      "--format=%x01%H%x00%an%x00%at%x00%s",
+      "--name-status",
+      "-z",
+      "-n",
+      String(Math.max(1, Math.min(limit, 200))),
+      refOrOid,
+      "--",
+      path,
+    ],
+    // A file name is not a pattern: "report [draft].sql" is one file.
+    { env: { GIT_LITERAL_PATHSPECS: "1" } },
+  );
+  return parseFollowLog(stdout, path);
+}
+
+/**
+ * The newest commit at or before `refOrOid` that changed `path` — for a
+ * path that is gone, the commit that removed it. Null when none did.
+ */
+export async function lastCommitTouching(
+  repoDir: string,
+  refOrOid: string,
+  path: string,
+): Promise<string | null> {
+  const { stdout } = await runGit(
+    ["-C", repoDir, "log", "-1", "--format=%H", refOrOid, "--", path],
+    { env: { GIT_LITERAL_PATHSPECS: "1" } },
+  );
+  return stdout.trim() || null;
+}
+
+/**
+ * `old path → new path` for every rename git detects in ONE commit (against
+ * its first parent) under `roots`: a file moved and lightly edited in the
+ * same commit still pairs with where it came from. Empty when the commit
+ * has no parent or git fails — the caller then treats the path as deleted.
+ */
+export async function renamesInCommit(
+  repoDir: string,
+  commit: string,
+  roots: readonly string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  try {
+    const { stdout } = await runGit(
+      [
+        "-C",
+        repoDir,
+        "diff",
+        "--name-status",
+        "-M",
+        "-z",
+        "--diff-filter=R",
+        `${commit}^`,
+        commit,
+        "--",
+        ...roots,
+      ],
+      { timeoutMs: 60_000 },
+    );
+    // R<score>\0<old>\0<new>\0 per rename.
+    const fields = stdout.split("\0");
+    for (let i = 0; i + 2 < fields.length; i += 3) {
+      if (fields[i].startsWith("R")) out.set(fields[i + 1], fields[i + 2]);
+    }
+  } catch {
+    // No parent, or an unknown commit: no rename to report.
+  }
+  return out;
+}
+
 export interface ChangedFile {
   path: string;
   status: "added" | "modified" | "deleted" | "renamed";
