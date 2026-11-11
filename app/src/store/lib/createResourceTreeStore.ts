@@ -60,12 +60,18 @@ export interface ResourceTreeEndpoints<T extends ResourceTreeEntry> {
     parentId: string | null,
     access?: TreeAccessLevel,
   ) => Promise<unknown>;
+  /**
+   * `name` in the answer of a create or a rename is the name AS SAVED, for
+   * a resource whose server may store another than was typed (a console's
+   * name is a file name: "Q1: plans" is saved as "Q1 - plans"). The tree
+   * then shows that name.
+   */
   createFolder: (
     workspaceId: string,
     name: string,
     parentId: string | null | undefined,
     access: TreeAccessLevel,
-  ) => Promise<{ id: string } | null | undefined>;
+  ) => Promise<{ id: string; name?: string } | null | undefined>;
   renameItem: (
     workspaceId: string,
     id: string,
@@ -170,6 +176,23 @@ export function createResourceTreeStore<
   /** Used in the fetch-error fallback message, e.g. "notebook". */
   resourceName: string;
   endpoints: ResourceTreeEndpoints<T>;
+  /**
+   * An action the server refused, before the tree is refetched: the place
+   * to keep its reason (the tree itself only snaps back, which says
+   * nothing).
+   */
+  onActionError?: (
+    set: ResourceTreeSet<ResourceTreeState<T> & Extra>,
+    workspaceId: string,
+    error: unknown,
+  ) => void;
+  /** A rename or a new folder the server saved under another name. */
+  onSavedAs?: (
+    set: ResourceTreeSet<ResourceTreeState<T> & Extra>,
+    workspaceId: string,
+    typed: string,
+    saved: string,
+  ) => void;
   /** Resource-specific state and actions layered on the shared slice. */
   extend?: (
     set: ResourceTreeSet<ResourceTreeState<T> & Extra>,
@@ -177,7 +200,12 @@ export function createResourceTreeStore<
     helpers: ResourceTreeHelpers<T>,
   ) => Extra;
 }) {
-  const { resourceName, endpoints, extend } = config;
+  const { resourceName, endpoints, extend, onActionError, onSavedAs } = config;
+  /** The name the server says it saved, when an answer carries one. */
+  const savedName = (answer: unknown): string | undefined => {
+    const name = (answer as { name?: unknown } | null | undefined)?.name;
+    return typeof name === "string" && name ? name : undefined;
+  };
   type State = ResourceTreeState<T> & Extra;
   type Sections = ResourceTreeSections<T>;
 
@@ -352,7 +380,8 @@ export function createResourceTreeStore<
         try {
           await endpoints.moveItem(workspaceId, itemId, targetFolderId, access);
           return true;
-        } catch {
+        } catch (error) {
+          onActionError?.(set, workspaceId, error);
           await get().refresh(workspaceId);
           return false;
         }
@@ -378,7 +407,8 @@ export function createResourceTreeStore<
         try {
           await endpoints.moveFolder(workspaceId, folderId, parentId, access);
           return true;
-        } catch {
+        } catch (error) {
+          onActionError?.(set, workspaceId, error);
           await get().refresh(workspaceId);
           return false;
         }
@@ -422,16 +452,21 @@ export function createResourceTreeStore<
           );
           const realId = created?.id;
           if (!realId) throw new Error("Folder was not created");
+          const saved = savedName(created) ?? name;
           set(state => {
             const node = findInAnySection(
               state as Sections,
               workspaceId,
               tempId,
             );
-            if (node) node.id = realId;
+            if (!node) return;
+            node.id = realId;
+            node.name = saved;
           });
+          if (saved !== name) onSavedAs?.(set, workspaceId, name, saved);
           return realId;
-        } catch {
+        } catch (error) {
+          onActionError?.(set, workspaceId, error);
           await get().refresh(workspaceId);
           return null;
         }
@@ -445,11 +480,26 @@ export function createResourceTreeStore<
           resortIn(state as Sections, workspaceId, itemId);
         });
         try {
-          await (isDirectory
+          const answer = await (isDirectory
             ? endpoints.renameFolder(workspaceId, itemId, name)
             : endpoints.renameItem(workspaceId, itemId, name));
+          const saved = savedName(answer);
+          if (saved && saved !== name) {
+            set(state => {
+              const node = findInAnySection(
+                state as Sections,
+                workspaceId,
+                itemId,
+              );
+              if (!node) return;
+              node.name = saved;
+              resortIn(state as Sections, workspaceId, itemId);
+            });
+            onSavedAs?.(set, workspaceId, name, saved);
+          }
           return true;
-        } catch {
+        } catch (error) {
+          onActionError?.(set, workspaceId, error);
           await get().refresh(workspaceId);
           return false;
         }
@@ -464,7 +514,8 @@ export function createResourceTreeStore<
             ? endpoints.deleteFolder(workspaceId, itemId)
             : endpoints.deleteItem(workspaceId, itemId));
           return true;
-        } catch {
+        } catch (error) {
+          onActionError?.(set, workspaceId, error);
           await get().refresh(workspaceId);
           return false;
         }
