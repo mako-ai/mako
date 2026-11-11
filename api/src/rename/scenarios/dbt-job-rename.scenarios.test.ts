@@ -88,6 +88,7 @@ import {
   listJobDefinitionsAtMain,
   loadLiveJobs,
   removeDbtJobRow,
+  reserveJobSlug,
   syncDbtConfigFromRepo,
 } from "../../dbt/dbt-config.service";
 import { renameObject, resolveObjectRef } from "../registry";
@@ -338,6 +339,8 @@ describe("renaming through the service", () => {
       ).toBe(status);
     }
     expect(await commitCountOf(WS)).toBe(commits);
+    // Creation never mints such a file name either.
+    expect(await reserveJobSlug(project._id, "AUX")).toBe("aux-2");
     // Names YAML would read as a number or a boolean stay strings.
     for (const slug of ["2026", "true", "012"]) {
       await rename({ ref: String(row._id), slug, title: slug });

@@ -106,6 +106,7 @@ import {
   WebhookEvent,
 } from "../../database/workspace-schema";
 import { checkFlowFiles } from "../../agent-lib/tools/flow-file-tools";
+import { createFlowSyncTools } from "../../agent-lib/tools/flow-sync-tools";
 import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
 import { mirrorPushNow } from "../../apps/cloud-repo.service";
 import {
@@ -115,6 +116,7 @@ import {
   repoDirFor,
 } from "../../apps/repository.service";
 import { flowRoutes } from "../../routes/flows";
+import { reserveFlowSlug } from "../../services/flow-identity.service";
 import { commitFlowFile } from "../../services/flow-config.service";
 import {
   ensureFlowDerivedCache,
@@ -426,6 +428,16 @@ describe("renaming through the service", () => {
       expect(await resolves(ref)).toBe(before.id);
     }
     expect((await resolveObjectRef(ctx(), "flow", "close"))?.via).toBe("alias");
+    // The sync tools take the old slug as well.
+    const { flow_read } = createFlowSyncTools({
+      workspaceId: WS,
+    }) as unknown as {
+      flow_read: { execute: (input: { flow: string }) => Promise<unknown> };
+    };
+    expect(await flow_read.execute({ flow: "close" })).toMatchObject({
+      success: true,
+      id: before.id,
+    });
     // The same request again: nothing to do, and no commit.
     const again = await rename({ ref: before.id, slug: "close-crm" });
     expect(again.commit).toBeUndefined();
@@ -517,6 +529,8 @@ describe("renaming through the service", () => {
     }
     expect(await commitCountOf(WS)).toBe(commits);
     expect(await slugOf(row._id)).toBe("a");
+    // Creation never mints such a file name either.
+    expect(await reserveFlowSlug(WS, "CON")).toBe("con-2");
     // The editor's own name field: refused, never cut short.
     const res = await flowsApi(row._id, "PUT", { name: "x".repeat(201) });
     expect(res.status).toBe(400);
