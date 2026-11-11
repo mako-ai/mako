@@ -33,6 +33,9 @@ import {
   dryRunDbSync,
 } from "../services/destination-writer.service";
 import { teardownFlow } from "../sync-cdc/flow-reconcile";
+import { SlugFileConflictError } from "../rename/slug-file-rename";
+import { FLOW_FILES } from "../rename/slug-files";
+import { displayNameError, normalizeDisplayName } from "../rename/title-rules";
 import { RepoRequiredError, appsRequireConnectedRepo } from "../apps/config";
 import { requireWorkspaceRepo } from "../apps/workspace-repo-required";
 import {
@@ -126,6 +129,13 @@ async function commitFlowFileOrFail(
       { $unset: { definitionInvalid: 1 } },
     );
     return null;
+  }
+  if (result.conflict) {
+    // A rename (or another edit) landed first: not a failure of the repo.
+    return c.json(
+      { success: false, code: "definition_conflict", error: result.error },
+      409,
+    );
   }
   logger.error("Flow definition did not reach the workspace repo", {
     workspaceId: flow.workspaceId.toString(),
@@ -1182,10 +1192,18 @@ flowRoutes.openapi(
       // field existed Mongoose silently dropped it. Persist it, fall back to
       // the shared derivation, and mint the slug that names the flow's file
       // (RFC #904) — once, here; a later rename never moves it.
+      // A name is refused, never cut short: the same rules as a rename.
+      const givenName =
+        typeof body.name === "string" ? normalizeDisplayName(body.name) : "";
+      const nameProblem = givenName
+        ? displayNameError(givenName, FLOW_FILES.nameMaxLength)
+        : null;
+      if (nameProblem) {
+        return c.json({ success: false, error: nameProblem }, 400);
+      }
       const requestedName =
-        typeof body.name === "string" && body.name.trim()
-          ? body.name.trim().slice(0, 200)
-          : await deriveFlowDisplayName(flowData as unknown as IFlow);
+        givenName ||
+        (await deriveFlowDisplayName(flowData as unknown as IFlow));
       flowData.name = requestedName;
       // Files at main without a row yet are part of the identity space too.
       flowData.slug = await reserveFlowSlug(
@@ -1405,10 +1423,16 @@ flowRoutes.openapi(
             : flow.schedule?.timezone,
         };
       }
-      // Rename changes the DISPLAY name only: `slug` is the filename identity
-      // and never moves (RFC #904 / apps.md §23).
+      // The DISPLAY name only: the file name (`slug`) moves through the
+      // rename service (api/src/rename). Refused, never cut short: the same
+      // rules as a rename.
       if (typeof body.name === "string" && body.name.trim()) {
-        flow.name = body.name.trim().slice(0, 200);
+        const name = normalizeDisplayName(body.name);
+        const nameProblem = displayNameError(name, FLOW_FILES.nameMaxLength);
+        if (nameProblem) {
+          return c.json({ success: false, error: nameProblem }, 400);
+        }
+        flow.name = name;
       }
       if (body.destinationDatabaseName !== undefined) {
         flow.destinationDatabaseName =
@@ -1814,6 +1838,9 @@ flowRoutes.openapi(
       // The repo gate is a precondition, not a failure: 412 with an
       // actionable message rather than a 500 the user cannot act on.
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof SlugFileConflictError) {
+        return c.json({ success: false, error: error.message }, 409);
+      }
       logger.error("Error deleting flow", { error });
       return c.json(
         {

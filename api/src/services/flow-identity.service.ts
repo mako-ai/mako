@@ -24,6 +24,7 @@ import {
   type IFlow,
 } from "../database/workspace-schema";
 import { reserveSlug, slugifyName } from "../utils/slugify";
+import { unsafeSlugReason } from "@mako/schemas";
 
 /** The `source → destination` label flows have always shown. */
 export async function deriveFlowDisplayName(
@@ -105,7 +106,7 @@ export function slugifyFlowName(name: string): string {
 
 /**
  * Reserve a slug unique within the workspace. Called once per flow, at
- * creation (or by the backfill); never on rename.
+ * creation (or by the backfill); a rename names its own.
  */
 export async function reserveFlowSlug(
   workspaceId: Types.ObjectId | string,
@@ -124,6 +125,9 @@ export async function reserveFlowSlug(
   return reserveSlug(
     slugifyFlowName(name),
     async candidate =>
+      // Never a name a Windows checkout cannot create, or one that reads as
+      // an id (ids resolve before names).
+      unsafeSlugReason(candidate) !== null ||
       takenAtMain.has(candidate) ||
       Boolean(await Flow.exists({ workspaceId: wsId, slug: candidate })),
     { label: `flow "${name}"` },

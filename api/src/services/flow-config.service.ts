@@ -23,12 +23,19 @@ import {
   queueMirrorPush,
 } from "../apps/cloud-repo.service";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
   blobOid,
   commitBlobsOnBranch,
   resolveCommit,
   type GitAuthor,
 } from "../apps/repository.service";
+import {
+  SlugFileConflictError,
+  currentFileOf,
+  deleteSlugFile,
+} from "../rename/slug-file-rename";
+import { FLOW_FILES } from "../rename/slug-files";
 import { Flow, type IFlow } from "../database/workspace-schema";
 import {
   flowFilePath,
@@ -50,12 +57,18 @@ export async function commitConfigToMain(
   mutation: { writes?: Record<string, string>; deletes?: string[] },
   message: string,
   author?: GitAuthor,
+  /**
+   * What the commit expects at main, decided after the freshen (see
+   * `expectBlobs` on commitBlobsOnBranch): path → blob, `null` = absent.
+   */
+  expect?: (repoDir: string) => Promise<Record<string, string | null>>,
 ): Promise<void> {
   const repoDir = await requireWorkspaceRepo(workspaceId);
   await freshenBeforeMainWrite(workspaceId);
   const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
     message,
     author,
+    expectBlobs: expect ? await expect(repoDir) : undefined,
   });
   if (!result.unchanged) queueMirrorPush(workspaceId);
 }
@@ -68,6 +81,8 @@ export interface FlowFileWriteResult {
   /** Blob sha of the committed (or unchanged) definition. */
   sourceBlobSha?: string;
   error?: string;
+  /** The file moved or changed under this save (a rename landed first). */
+  conflict?: boolean;
 }
 
 /**
@@ -99,16 +114,50 @@ export async function commitFlowFile(
   ) {
     return { ok: true, changed: false, sourceBlobSha: flow.sourceBlobSha };
   }
+  const workspaceId = flow.workspaceId.toString();
+  const slug = flow.slug;
   try {
     await commitConfigToMain(
-      flow.workspaceId.toString(),
-      { writes: { [flowFilePath(flow.slug)]: contents } },
-      messageOverride ?? `flow: "${flow.name ?? flow.slug}" (${flow.slug})`,
+      workspaceId,
+      { writes: { [flowFilePath(slug)]: contents } },
+      messageOverride ?? `flow: "${flow.name ?? slug}" (${slug})`,
       actorUserId ? await authorForUser(actorUserId) : undefined,
+      // An existing flow's file is replaced only where it still is. The row
+      // in this request's hand may predate a rename: writing its old path
+      // would bring back the file the rename moved, and the next sync would
+      // start a second stream from it.
+      flow.isNew
+        ? undefined
+        : async repoDir => {
+            const at = await currentFileOf(FLOW_FILES, {
+              workspaceId,
+              scope: { workspaceId: flow.workspaceId },
+              repoDir,
+              id: flow._id,
+              slug,
+            });
+            if (at.slug !== slug) {
+              throw new SlugFileConflictError(
+                `This flow was renamed (its file is now ${at.path}) while it was being edited.`,
+              );
+            }
+            return { [at.path]: at.oid };
+          },
     );
     return { ok: true, changed: true, sourceBlobSha: sha };
   } catch (error) {
     if (error instanceof RepoRequiredError) throw error;
+    if (
+      error instanceof SlugFileConflictError ||
+      error instanceof BlobPreconditionError
+    ) {
+      return {
+        ok: false,
+        changed: false,
+        conflict: true,
+        error: `${error.message} Nothing was saved: reload the flow and make the change again.`,
+      };
+    }
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("Flow config write-through failed", {
       workspaceId: flow.workspaceId.toString(),
@@ -146,18 +195,25 @@ async function fileAtMainSaysTheSame(
   }
 }
 
-/** Remove a deleted flow's file. Throws {@link RepoRequiredError} without a repo. */
+/**
+ * Remove a deleted flow's file: the one its row has NOW (a rename may have
+ * moved it since the request read the row). Throws {@link RepoRequiredError}
+ * without a repo, `SlugFileConflictError` (409) when a rename or an edit
+ * lands in between.
+ */
 export async function deleteFlowFile(
-  flow: Pick<IFlow, "workspaceId" | "slug" | "name">,
+  flow: Pick<IFlow, "_id" | "workspaceId" | "slug" | "name">,
   actorUserId?: string,
 ): Promise<void> {
   if (!flow.slug) return;
-  await commitConfigToMain(
-    flow.workspaceId.toString(),
-    { deletes: [flowFilePath(flow.slug)] },
-    `flow: delete "${flow.name ?? flow.slug}" (${flow.slug})`,
-    actorUserId ? await authorForUser(actorUserId) : undefined,
-  );
+  await deleteSlugFile(FLOW_FILES, {
+    workspaceId: flow.workspaceId.toString(),
+    scope: { workspaceId: flow.workspaceId },
+    id: flow._id,
+    slug: flow.slug,
+    message: slug => `flow: delete "${flow.name ?? slug}" (${slug})`,
+    actorUserId,
+  });
 }
 
 /**

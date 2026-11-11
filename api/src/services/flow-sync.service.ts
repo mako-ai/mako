@@ -48,6 +48,7 @@ import {
 import {
   ensureLocalRepo,
   freshenBeforeMainWrite,
+  freshenForServe,
 } from "../apps/cloud-repo.service";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import { getWorkspaceRepo } from "./workspace-repos.service";
@@ -55,11 +56,19 @@ import { Flow, type IFlow } from "../database/workspace-schema";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import { hasWebhookTrigger, isWebhookFlow } from "./flow-triggers.service";
 import {
+  flowRenameTarget,
   flowToFile,
   parseFlowFile,
   slugFromFlowFilePath,
   type FlowFile,
 } from "./flow-config-files";
+import {
+  FLOW_FILES,
+  freeDerivedId,
+  mergedAliases,
+  settleRenames,
+  type SlugRow,
+} from "../rename/slug-files";
 import {
   reconcileFlowsFromRepo,
   type DesiredFlow,
@@ -92,11 +101,10 @@ const logger = loggers.api("flow-sync");
  * the user, or from the Stripe-managed path that stores `signingSecret`
  * returned by Stripe's own API.
  *
- * On renames: a renamed FILE is a different flow by construction — the slug is
- * identity and this module matches on it, so a new slug finds no row and mints
- * its own endpoint. Changing a flow's `name:` does not move the file, so that
- * row and its endpoint are untouched. Preserving an inbound URL across a file
- * rename would need identity inside the file, and is a separate change.
+ * On renames: a file that MOVED is the same flow. The row is re-keyed in
+ * place before this module matches rows to files by slug (`settleFlowRenames`),
+ * so the moved file is an update of its row: the endpoint, the secret and the
+ * provider subscription stay exactly where they are.
  */
 export function mintedWebhookEndpoint(args: {
   isNew: boolean;
@@ -182,11 +190,67 @@ async function markFlowInvalid(
 export function derivedFlowId(
   workspaceId: string,
   slug: string,
+  /** Above 1 only when the first id is another flow's, or a deleted one's. */
+  generation = 1,
 ): Types.ObjectId {
   const digest = createHash("sha1")
-    .update(`flows:${workspaceId}:${slug}`)
+    .update(
+      `flows:${workspaceId}:${slug}${generation > 1 ? `#${generation}` : ""}`,
+    )
     .digest("hex");
   return new Types.ObjectId(digest.slice(0, 24));
+}
+
+/** The id of a flow file that has no row (see `freeDerivedId`). */
+function flowIdForFile(
+  workspaceId: string,
+  slug: string,
+  rows: ReadonlyArray<{ _id: Types.ObjectId; slug?: string }>,
+): Promise<Types.ObjectId> {
+  return freeDerivedId(
+    "flow",
+    workspaceId,
+    slug,
+    generation => derivedFlowId(workspaceId, slug, generation),
+    rows,
+  );
+}
+
+/**
+ * Re-key the rows whose file moved (api/src/rename/slug-files.ts) before
+ * anything matches rows to files by slug. Costs nothing unless a row's own
+ * file is missing from the tree.
+ */
+async function settleFlowRenames(
+  workspaceId: string,
+  defs: FlowDefinitionAtMain[],
+  rows: IFlow[],
+  mode: "sync" | "read",
+  /** The commit `defs` were read at (default: main as it is now). */
+  at?: string,
+): Promise<Awaited<ReturnType<typeof settleRenames>>> {
+  const none = { renamed: [], ahead: new Map<string, SlugRow>() };
+  const slugs = new Set(defs.map(def => def.slug));
+  if (!rows.some(row => row.slug && !slugs.has(row.slug))) return none;
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  const head =
+    at ??
+    (repoDir && (await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`)));
+  if (!repoDir || !head) return none;
+  return settleRenames(FLOW_FILES, {
+    workspaceId,
+    repoDir,
+    head,
+    mode,
+    rows,
+    files: defs.map(def => ({
+      slug: def.slug,
+      oid: def.oid,
+      contents: def.contents,
+      aliases: def.parsed?.aliases ?? [],
+      target: def.parsed ? flowRenameTarget(def.parsed) : null,
+    })),
+  });
 }
 
 export interface FlowDefinitionAtMain {
@@ -275,23 +339,31 @@ export async function ensureFlowsDerivedCache(
   return "resynced";
 }
 
-function joinLiveFlows(
+async function joinLiveFlows(
   workspaceId: string,
   defs: FlowDefinitionAtMain[],
   rows: IFlow[],
-): LiveFlow[] {
+  /** Rows renamed ahead of this tree, by the old slug it still shows. */
+  ahead: ReadonlyMap<string, SlugRow>,
+): Promise<LiveFlow[]> {
   const bySlug = new Map<string, IFlow>();
   for (const row of rows) {
     if (row.slug) bySlug.set(row.slug, row);
   }
-  return defs.map(def => {
-    const row = bySlug.get(def.slug) ?? null;
-    return {
+  const live: LiveFlow[] = [];
+  for (const def of defs) {
+    const aheadId = ahead.get(def.slug)?._id;
+    const row =
+      bySlug.get(def.slug) ??
+      (aheadId && rows.find(candidate => candidate._id.equals(aheadId))) ??
+      null;
+    live.push({
       def,
       row,
-      id: row?._id ?? derivedFlowId(workspaceId, def.slug),
-    };
-  });
+      id: row?._id ?? (await flowIdForFile(workspaceId, def.slug, rows)),
+    });
+  }
+  return live;
 }
 
 /**
@@ -304,8 +376,19 @@ export async function loadLiveFlows(workspaceId: string): Promise<LiveFlow[]> {
   const status = await ensureFlowsDerivedCache(workspaceId);
   if (status === "unbound") return [];
   const defs = await listFlowDefinitionsAtMain(workspaceId);
-  const rows = await Flow.find({ workspaceId });
-  return joinLiveFlows(workspaceId, defs, rows);
+  let rows = await Flow.find({ workspaceId });
+  const settled = await settleFlowRenames(workspaceId, defs, rows, "read");
+  if (settled.renamed.length > 0) {
+    // A rename committed whose row had not followed yet: the row is at the
+    // file's slug now; bring its definition level like any other.
+    rows = await Flow.find({ workspaceId });
+    for (const { to } of settled.renamed) {
+      const row = rows.find(candidate => candidate.slug === to);
+      if (row) await ensureFlowDerivedCache(row);
+    }
+    rows = await Flow.find({ workspaceId });
+  }
+  return joinLiveFlows(workspaceId, defs, rows, settled.ahead);
 }
 
 /**
@@ -327,11 +410,16 @@ export async function loadLiveFlowById(
   if (row?.slug) {
     const defs = await listFlowDefinitionsAtMain(workspaceId);
     const def = defs.find(item => item.slug === row.slug);
-    if (!def) return null;
-    if (row.sourceBlobSha !== def.oid || isFlowMarkedInvalid(row)) {
-      await ensureFlowDerivedCache(row);
+    if (def) {
+      if (row.sourceBlobSha !== def.oid || isFlowMarkedInvalid(row)) {
+        await ensureFlowDerivedCache(row);
+      }
+      return { def, row, id: row._id };
     }
-    return { def, row, id: row._id };
+    // Its file is not at this instance's main: deleted, or MOVED by a
+    // rename this clone has not fetched (or whose row has not followed).
+    // The list settles both; a deleted file is still a 404.
+    await freshenForServe(workspaceId);
   }
 
   const live = await loadLiveFlows(workspaceId);
@@ -445,13 +533,17 @@ function overlayFlow(
  * Leftover local git without a GitHub binding is ignored — runtime keeps
  * the SHA-checked Mongo cache (issue #956).
  */
-export async function ensureFlowDerivedCache(flow: {
-  _id: { toString(): string };
-  workspaceId: { toString(): string };
-  slug?: string;
-  sourceBlobSha?: string;
-  definitionInvalid?: { reason: string } | null;
-}): Promise<"ok" | "invalid" | "missing" | "resynced"> {
+export async function ensureFlowDerivedCache(
+  flow: {
+    _id: { toString(): string };
+    workspaceId: { toString(): string };
+    slug?: string;
+    sourceBlobSha?: string;
+    definitionInvalid?: { reason: string } | null;
+  },
+  /** Internal: the one retry after a missing file was looked for. */
+  settled = false,
+): Promise<"ok" | "invalid" | "missing" | "resynced"> {
   if (!flow.slug) return "ok";
   const workspaceId = flow.workspaceId.toString();
   const repoDir = await boundRepoDirIfExists(workspaceId);
@@ -471,6 +563,33 @@ export async function ensureFlowDerivedCache(flow: {
     }
     contents = blob.contents;
   } catch {
+    // Not at THIS instance's main. Before calling the flow broken: another
+    // instance may have just created or moved the file (fetch, throttled),
+    // and a rename may have moved it ahead of the row or of this clone.
+    if (!settled) {
+      await freshenForServe(workspaceId);
+      const defs = await listFlowDefinitionsAtMain(workspaceId);
+      const rows = await Flow.find({ workspaceId });
+      const { ahead } = await settleFlowRenames(
+        workspaceId,
+        defs,
+        rows,
+        "read",
+      );
+      const current = await Flow.findById(flow._id);
+      if (current?.slug && defs.some(def => def.slug === current.slug)) {
+        const status = await ensureFlowDerivedCache(current, true);
+        // The caller's copy of the row predates the re-key: have it re-read.
+        return status === "ok" && current.slug !== flow.slug
+          ? "resynced"
+          : status;
+      }
+      // Renamed by a commit this tree does not hold yet: the row carries
+      // the last definition that applied, which is what runs meanwhile.
+      if ([...ahead.values()].some(row => row._id.equals(current?._id))) {
+        return isFlowMarkedInvalid(flow) ? "invalid" : "ok";
+      }
+    }
     const row = await Flow.findById(flow._id);
     if (row) await markFlowInvalid(row, "flow file missing at main", path);
     return "missing";
@@ -555,6 +674,12 @@ export interface FlowSyncResult {
  */
 function applyDefinition(doc: IFlow, file: FlowFile): string | null {
   doc.name = file.name;
+  // The file's old names, then what only the row knows (a pushed `git mv`
+  // the sync re-keyed is recorded on the row alone); never the current slug.
+  const aliases = mergedAliases(file.aliases, doc.aliases, doc.slug);
+  if (aliases.length > 0 || doc.aliases?.length) {
+    doc.aliases = aliases.length > 0 ? aliases : undefined;
+  }
   // `type` is retired: never written (a file's `type: webhook` arrives here
   // as webhookEnabled, see parseFlowFile).
 
@@ -855,10 +980,45 @@ export async function syncFlowsFromRepo(
   const webhookResyncs: IFlow[] = [];
   const seen = new Set<string>();
 
+  // A file that MOVED is a rename: its row is re-keyed in place here, before
+  // the loop below would read the new slug as a new flow and the reconciler
+  // the old one as a removal (teardown, checkpoints gone, a re-backfill).
+  const settled = await settleFlowRenames(
+    workspaceId,
+    files.flatMap(({ path, contents }) => {
+      const slug = slugFromFlowFilePath(path);
+      const parsed = parseFlowFile(contents);
+      return slug
+        ? [{ path, slug, oid: blobOid(contents), contents, parsed }]
+        : [];
+    }),
+    await Flow.find({ workspaceId, slug: { $exists: true } }),
+    "sync",
+    head,
+  );
+  /** Every row's id and slug: what a new row's id must not collide with. */
+  const holders: Array<{ _id: Types.ObjectId; slug?: string }> =
+    await Flow.find({ workspaceId }).select("_id slug").lean();
+
   for (const { path, contents } of files) {
     const slug = slugFromFlowFilePath(path);
     if (!slug) continue;
     seen.add(slug);
+
+    // This tree is older than a rename of this flow (made on another
+    // instance; its mirror push has not landed): the file is the flow's own,
+    // as it was. Nothing is created from it, and the renamed row stays in
+    // the desired set so the reconciler does not read it as removed.
+    const renamedAhead = settled.ahead.get(slug);
+    if (renamedAhead) {
+      desired.push({
+        slug,
+        file: flowToFile(renamedAhead as unknown as IFlow),
+        flowId: String(renamedAhead._id),
+      });
+      result.unchanged++;
+      continue;
+    }
 
     const sha = blobOid(contents);
     const parsedForDesired = parseFlowFile(contents);
@@ -926,7 +1086,10 @@ export async function syncFlowsFromRepo(
     const doc =
       row ??
       new Flow({
-        _id: derivedFlowId(workspaceId, slug),
+        // The id GET/list handed out for this file. Not always the first
+        // derivation: a renamed flow keeps its id, and a deleted one's is
+        // never given to the file that takes its name.
+        _id: await flowIdForFile(workspaceId, slug, holders),
         workspaceId,
         slug,
         createdBy: actorUserId ?? "sync",
@@ -992,6 +1155,7 @@ export async function syncFlowsFromRepo(
     }
     if (wasInvalid) await clearFlowInvalid((doc as IFlow)._id);
     if (isNew) {
+      holders.push({ _id: (doc as IFlow)._id, slug });
       result.created++;
       // A row created in this pass has no id until now, so its desired entry
       // is added here rather than above.
