@@ -60,3 +60,14 @@ export {
   unsafeSlugReason,
   type SlugNamedKind,
 } from "./object-names";
+
+export {
+  MAX_CONSOLE_NAME_LENGTH,
+  cleanedConsoleName,
+  consoleNameProblem,
+  foldConsoleName,
+  previewConsoleName,
+  suffixedConsoleName,
+  type ConsoleNameKind,
+  type ConsoleNamePreview,
+} from "./console-names";

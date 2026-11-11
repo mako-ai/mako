@@ -31,6 +31,12 @@
  * workspace-consoles.service.ts.
  */
 
+import {
+  cleanedConsoleName,
+  consoleNameProblem,
+  foldConsoleName,
+  type ConsoleNameKind,
+} from "@mako/schemas";
 import { isHandle } from "./user-handles";
 
 export const CONSOLES_DIR = "consoles";
@@ -145,6 +151,44 @@ export function safeSegment(name: string): string {
   if (!cleaned || cleaned === ".git") return "untitled";
   return cleaned;
 }
+
+/**
+ * A name a console or folder cannot take: a 400 with the reason on every
+ * route, nothing changed.
+ */
+export class ConsoleNameError extends Error {
+  readonly status = 400 as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "ConsoleNameError";
+  }
+}
+
+/**
+ * A NEW console or folder name as it will be stored and filed: the shared
+ * rules of `@mako/schemas` (console-names.ts) — characters a file name
+ * cannot carry get their stand-in, what is still no name is refused — plus
+ * the one check only this module can make: the name is, as it is, the
+ * path segment `safeSegment` writes, so a sync reading the name back from
+ * the file never renames the console.
+ */
+export function cleanConsoleName(
+  raw: string,
+  kind: ConsoleNameKind,
+  language?: ConsoleLanguage,
+): string {
+  const name = cleanedConsoleName(raw);
+  const problem =
+    consoleNameProblem(name, kind, language) ??
+    (safeSegment(name) === name
+      ? null
+      : `“${name}” cannot be used as a ${kind === "console" ? "file" : "folder"} name.`);
+  if (problem) throw new ConsoleNameError(problem);
+  return name;
+}
+
+/** A repo path as a case-insensitive, Unicode-normalizing file system sees it. */
+export const foldConsolePath = foldConsoleName;
 
 const CHART_SUFFIX = ".chart.json";
 
