@@ -10,6 +10,7 @@
  * points to the same answers.
  */
 import {
+  connectorSlugError,
   displayNameError,
   normalizeDisplayName,
   renameSlugError,
@@ -35,4 +36,12 @@ export function objectSlugError(
   raw: string,
 ): string | null {
   return renameSlugError(kind, raw.trim());
+}
+
+/**
+ * Why a workspace connector's new folder slug, as typed, would be refused —
+ * or null. Whether the name is free is the server's question.
+ */
+export function connectorSlugProblem(raw: string): string | null {
+  return connectorSlugError(raw.trim());
 }

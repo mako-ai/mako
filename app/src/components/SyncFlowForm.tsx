@@ -60,6 +60,7 @@ import { useFlowStore } from "../store/flowStore";
 import { SyncStatusLine } from "./SyncStatusLine";
 import { useSchemaStore, type TreeNode } from "../store/schemaStore";
 import {
+  cachedConnectorSchema,
   useConnectorCatalogStore,
   type WebhookCapabilities,
 } from "../store/connectorCatalogStore";
@@ -633,8 +634,10 @@ export function SyncFlowForm({
       setTransferQueriesSchema(null);
       return;
     }
-    const cachedSchema =
-      useConnectorCatalogStore.getState().schemas[selectedConnectorType];
+    const cachedSchema = cachedConnectorSchema(
+      useConnectorCatalogStore.getState().schemas,
+      selectedConnectorType,
+    );
     if (cachedSchema) {
       setTransferQueriesSchema(cachedSchema.transferQueries ?? null);
     }

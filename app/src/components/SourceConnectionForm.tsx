@@ -34,8 +34,12 @@ import {
 
 // Zustand stores
 import { useSourceConnectionStore } from "../store/sourceConnectionStore";
-import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
+import {
+  cachedConnectorSchema,
+  useConnectorCatalogStore,
+} from "../store/connectorCatalogStore";
 import { connectorIconUrl } from "../lib/connector-icon";
+import { ConnectorRenameButton } from "./ConnectorRenameButton";
 import { EntityHistoryButton } from "./EntityHistoryButton";
 import ConnectionManagersPanel from "./ConnectionManagersPanel";
 import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
@@ -263,6 +267,19 @@ function SourceConnectionForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connector?._id]);
 
+  // A connector renamed elsewhere moves this connection's type under an
+  // open form (ws:<old> to ws:<new>): follow it, unless the person picked
+  // another type themselves.
+  useEffect(() => {
+    if (
+      connector?.type &&
+      form.getValues("type") !== connector.type &&
+      !form.getFieldState("type").isDirty
+    ) {
+      form.resetField("type", { defaultValue: connector.type });
+    }
+  }, [connector?.type, form]);
+
   const { schemas, fetchSchema } = useConnectorCatalogStore();
 
   useEffect(() => {
@@ -270,23 +287,32 @@ function SourceConnectionForm({
       setSchema(null);
       return;
     }
-    if (schemas[selectedType]) {
-      setSchema(schemas[selectedType]);
-      // A second fetch that raced the first answered null; the schema is here.
+    const cached = cachedConnectorSchema(schemas, selectedType);
+    if (cached) {
+      // The schema is here (cached, or a request that answered meanwhile):
+      // whatever an earlier attempt said, nothing is failing or loading now.
+      setSchema(cached);
       setSchemaError(null);
+      setSchemaLoading(false);
       const currentValues = form.getValues();
-      schemas[selectedType].fields.forEach((field: ConnectorFieldSchema) => {
+      cached.fields.forEach((field: ConnectorFieldSchema) => {
         if (field.type === "object_array" && !currentValues[field.name]) {
           form.setValue(field.name, []);
         }
       });
+      // The store checks a cached form against the server once.
+      void fetchSchema(selectedType);
       return;
     }
     setSchemaLoading(true);
     setSchemaError(null);
+    let current = true;
     fetchSchema(selectedType).then(res => {
+      // A newer selection owns the form now.
+      if (form.getValues("type") !== selectedType) return;
       if (res) {
         setSchema(res);
+        setSchemaError(null);
         const defaults = generateDefaultValues(res);
         Object.entries(defaults).forEach(([key, value]) => {
           if (form.getValues(key) === undefined) {
@@ -294,11 +320,16 @@ function SourceConnectionForm({
             form.setValue(key, mutableValue);
           }
         });
-      } else {
+      } else if (current) {
+        // Only the request still in charge reports a failure: a superseded
+        // one says nothing about the schema that may have arrived since.
         setSchemaError("Failed to load connector schema");
       }
       setSchemaLoading(false);
     });
+    return () => {
+      current = false;
+    };
   }, [selectedType, schemas, fetchSchema, form]);
 
   // Reveal a stored secret: the SERVER reads the ciphertext from its own
@@ -1263,7 +1294,27 @@ function SourceConnectionForm({
               </Typography>
             </Box>
             {selectedType.startsWith(WORKSPACE_TYPE_PREFIX) && (
-              <Box sx={{ ml: "auto", flexShrink: 0 }}>
+              <Box
+                sx={{ ml: "auto", flexShrink: 0, display: "flex", gap: 0.5 }}
+              >
+                {/* Like History below: the connector's folder, not this
+                    connection. */}
+                <ConnectorRenameButton
+                  slug={selectedType.slice(WORKSPACE_TYPE_PREFIX.length)}
+                  onRenamed={slug => {
+                    // The connector kept its id; its type is ws:<new> now:
+                    // here, in the catalog (already reloaded) and on its
+                    // other connections.
+                    form.resetField("type", {
+                      defaultValue: `${WORKSPACE_TYPE_PREFIX}${slug}`,
+                    });
+                    if (currentWorkspace) {
+                      void useSourceConnectionEntitiesStore
+                        .getState()
+                        .refresh(currentWorkspace.id);
+                    }
+                  }}
+                />
                 {/* The definition's folder in the workspace repo, not this
                     connection: connections are credentials, not files. */}
                 <EntityHistoryButton
