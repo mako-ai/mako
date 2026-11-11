@@ -1045,6 +1045,17 @@ jobs:
             --format="value(status.url)" 2>/dev/null || true)
           echo "url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
 
+      # Sizing (November 2026 billing): many requests stay open for minutes
+      # (chat streams, SSE, websockets), and request-based billing charges an
+      # instance for every second one is open. With 1 vCPU, one busy Node
+      # thread pushed an instance past the 60% CPU scale-out target, new
+      # instances were added, and open streams then kept each of them billed:
+      # about 16 instances at ~3% CPU, around CHF 1,060/month.
+      # - --cpu=2: one busy thread is 50% of an instance, under the target.
+      # - --max-instances=10: requests pack onto fewer instances (80 each).
+      # - --no-cpu-throttling: instance-based billing, cheaper per second for
+      #   instances that are up all the time anyway.
+      # - --cpu-boost: faster cold starts.
       - name: Deploy to Cloud Run
         env:
           INNGEST_SERVE_ORIGIN: ${{ steps.cloud-run-before.outputs.url || env.BASE_URL }}
@@ -1056,9 +1067,12 @@ jobs:
             --service-account ${GCP_RUNTIME_SERVICE_ACCOUNT} \
             --timeout=3600 \
             --memory=4Gi \
+            --cpu=2 \
+            --no-cpu-throttling \
+            --cpu-boost \
             --concurrency=80 \
             --min-instances=3 \
-            --max-instances=30 \
+            --max-instances=10 \
             --allow-unauthenticated \
             --network=mako-vpc \
             --subnet=mako-subnet \
