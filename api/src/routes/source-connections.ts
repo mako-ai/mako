@@ -322,7 +322,7 @@ function connectorBindingConflict(error: unknown) {
 async function rebindTarget(
   workspaceId: string,
   connection: { type: string; connectorDefinitionId?: Types.ObjectId },
-): Promise<Types.ObjectId | null> {
+): Promise<{ id: Types.ObjectId; wasClosed: boolean } | null> {
   const current = await resolveConnectionBinding(workspaceId, connection);
   if (
     current.ok ? current.via === "binding" : current.problem === "name-moved"
@@ -337,7 +337,8 @@ async function rebindTarget(
   const id = named.row._id as Types.ObjectId;
   return String(connection.connectorDefinitionId ?? "") === String(id)
     ? null
-    : id;
+    : // Not closed: it already resolved to this definition, by its slug.
+      { id, wasClosed: !current.ok };
 }
 
 sourceConnectionRoutes.openapi(
@@ -635,7 +636,7 @@ sourceConnectionRoutes.openapi(
           }
         } else if (isWorkspaceConnectorType(body.type)) {
           const target = await rebindTarget(workspaceId, sourceConnection);
-          if (target && c.get("authType") !== "session") {
+          if (target?.wasClosed && c.get("authType") !== "session") {
             // Which connector a stored key goes to is a person's choice.
             return c.json(
               {
@@ -651,9 +652,9 @@ sourceConnectionRoutes.openapi(
               workspaceId,
               connectionId: id,
               type: body.type,
-              to: String(target),
+              to: String(target.id),
             });
-            sourceConnection.connectorDefinitionId = target;
+            sourceConnection.connectorDefinitionId = target.id;
             hasChanges = true;
           }
         }

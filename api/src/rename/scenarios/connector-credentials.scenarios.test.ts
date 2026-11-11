@@ -1257,6 +1257,14 @@ describe("re-pointing and re-binding are a person's acts", () => {
     const stamp = async (id: string) =>
       String((await SourceConnection.findById(id))?.connectorDefinitionId);
 
+    // Saved before bindings existed and still resolving by its slug:
+    // naming its type binds it to what it already runs on, from any client.
+    const legacy = await legacyConnection("ws:acme", A);
+    auth.authType = "apiKey";
+    const bind = await sources("PUT", `/${legacy}`, { type: "ws:acme" });
+    expect([bind.status, await stamp(legacy)]).toEqual([200, A]);
+    auth.authType = "session";
+
     // Bound to a live definition: naming the same type moves nothing, even
     // when that type has come to name another connector.
     await SourceConnection.updateOne({ _id: live }, { type: "ws:other" });
