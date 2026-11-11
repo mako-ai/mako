@@ -68,4 +68,20 @@ describe("decideRemoteApply", () => {
       ),
     ).toBe("skip");
   });
+
+  it("does not warn when only the name or the place changed: the server copy is what the local edits started from", () => {
+    // A rename bumps the revision; the tab has unsaved edits, so its
+    // content differs from the server's — which is still its saved state.
+    expect(
+      decideRemoteApply(
+        input({ unsavedLocalEdits: true, remoteIsLocalBase: true }),
+      ),
+    ).toBe("fast-forward");
+    // Someone really changed the content: still a banner.
+    expect(
+      decideRemoteApply(
+        input({ unsavedLocalEdits: true, remoteIsLocalBase: false }),
+      ),
+    ).toBe("banner");
+  });
 });

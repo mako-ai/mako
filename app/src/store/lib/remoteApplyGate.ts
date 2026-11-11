@@ -5,7 +5,9 @@
  *
  * Decisions:
  *  - "skip"          — tab missing or already at/past the entry's revision;
- *  - "fast-forward"  — local content already matches the server copy:
+ *  - "fast-forward"  — local content already matches the server copy, or
+ *                      the server copy is the very state the local edits
+ *                      started from (only a name or a place changed):
  *                      advance revision/metadata but DO NOT touch the Monaco
  *                      buffer (it may be ahead by in-flight keystrokes);
  *  - "banner"        — contents diverge while the tab holds unsaved local
@@ -23,6 +25,13 @@ export interface RemoteApplyDecisionInput {
   /** Store content equals the entry content (connection metadata aside). */
   contentMatches: boolean;
   /**
+   * The server copy is exactly what this tab's unsaved edits are based on
+   * (its content is the tab's last-saved state): the revision moved for
+   * something that is not content — a rename, a move, a restore — so there
+   * is nothing to reconcile and nothing to warn about.
+   */
+  remoteIsLocalBase?: boolean;
+  /**
    * The tab holds local edits that are not yet persisted (recent keystrokes,
    * queued/blocked autosave, or an unsaved explicit-save delta). NOTE: this
    * is NOT the `isDirty` pinned-tab flag.
@@ -38,6 +47,7 @@ export function decideRemoteApply(
   if (!input.tabExists) return "skip";
   if ((input.tabRevision ?? 0) >= input.entryRevision) return "skip";
   if (input.contentMatches) return "fast-forward";
+  if (input.remoteIsLocalBase) return "fast-forward";
   if (input.unsavedLocalEdits) return "banner";
   return "apply";
 }

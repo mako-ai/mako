@@ -24,7 +24,7 @@ export default function ConsoleRemoteUpdateBanner({
   onCloseTab,
 }: ConsoleRemoteUpdateBannerProps) {
   const isDeleted = remoteUpdate.kind === "deleted";
-  const who = remoteUpdate.updatedBy ? "another collaborator" : "elsewhere";
+  const who = remoteUpdate.updatedBy ? "by another collaborator" : "elsewhere";
 
   return (
     <Alert
@@ -61,7 +61,7 @@ export default function ConsoleRemoteUpdateBanner({
       }
     >
       {isDeleted
-        ? "This console was deleted by another user."
+        ? "This console was deleted."
         : `This console was updated ${who} — your unsaved changes are based on an older copy.`}
     </Alert>
   );

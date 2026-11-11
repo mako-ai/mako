@@ -26,6 +26,11 @@ import {
 import { useNotebookStore } from "./notebookStore";
 import { focusNotebookTab } from "../notebook-runtime/shell";
 import { decideRemoteApply } from "./lib/remoteApplyGate";
+import {
+  consoleLocationsInTree,
+  retargetConsoleTabs,
+} from "../lib/console-tab-location";
+import { computeConsoleStateHash } from "../utils/stateHash";
 import { useConsoleTreeStore } from "./consoleTreeStore";
 import type { ConsoleRevisionsSyncResponse } from "../lib/api-types";
 import {
@@ -135,6 +140,38 @@ function isConsoleTabKind(kind: string | undefined): boolean {
   return kind === undefined || kind === "console";
 }
 
+/**
+ * An open tab says where its console is — title and breadcrumb path — and
+ * the tree is what knows: after any change to the tree (a rename or a drag
+ * in it, here or elsewhere, a refetch) the open tabs follow it. Location
+ * only; unsaved content is not touched (lib/console-tab-location.ts).
+ */
+export function followConsoleTree(): () => void {
+  return useConsoleTreeStore.subscribe((state, previous) => {
+    if (
+      state.myItems === previous.myItems &&
+      state.workspaceItems === previous.workspaceItems
+    ) {
+      return;
+    }
+    const consoles = useConsoleStore.getState();
+    for (const workspaceId of new Set([
+      ...Object.keys(state.myItems),
+      ...Object.keys(state.workspaceItems),
+    ])) {
+      retargetConsoleTabs(
+        consoles.tabs,
+        consoleLocationsInTree(
+          state.myItems[workspaceId] ?? [],
+          state.workspaceItems[workspaceId] ?? [],
+        ),
+        consoles,
+      );
+    }
+  });
+}
+followConsoleTree();
+
 function isObjectIdLike(id: string): boolean {
   return /^[0-9a-fA-F]{24}$/.test(id);
 }
@@ -179,6 +216,16 @@ export const useRealtimeStore = create<RealtimeStore>()(
       }, DEFERRED_RESYNC_MS);
     };
 
+    /**
+     * Who last changed a console, when that was someone else: the banner
+     * says "by another collaborator" only then. A change of one's own
+     * (another window) is "elsewhere".
+     */
+    const otherUpdater = (consoleId: string): string | undefined => {
+      const by = lastUpdatedByConsole.get(consoleId);
+      return by && by !== get().currentUserId ? by : undefined;
+    };
+
     const handleConsoleUpdated = (
       event: Extract<RealtimeEvent, { type: "console.updated" }>,
     ) => {
@@ -206,6 +253,13 @@ export const useRealtimeStore = create<RealtimeStore>()(
 
       const tab = useConsoleStore.getState().tabs[event.consoleId];
       if (!tab) return; // not open yet — openConsoleFromServer reconciles
+
+      // A tab that says its console was deleted hears from it again (an
+      // Undo): pull, whatever the revisions say, so the banner goes.
+      if (tab.remoteUpdate?.kind === "deleted") {
+        scheduleSync();
+        return;
+      }
 
       // A tab that never synced (no draftRevision) counts as revision 0 so
       // even the server's first revision is pulled.
@@ -610,6 +664,17 @@ export const useRealtimeStore = create<RealtimeStore>()(
               tabRevision: tab?.draftRevision,
               entryRevision: entry.draftRevision,
               contentMatches: tab?.content === entry.content,
+              // A rename or a move bumps the revision and changes no
+              // content: the server copy is still the saved state this
+              // tab's edits started from. That is not a conflict.
+              remoteIsLocalBase:
+                Boolean(tab?.isSaved && tab.savedStateHash) &&
+                computeConsoleStateHash(
+                  entry.content,
+                  entry.connectionId,
+                  entry.databaseId,
+                  entry.databaseName,
+                ) === tab?.savedStateHash,
               unsavedLocalEdits: hasUnsavedLocalEdits(entry.id),
             });
             switch (decision) {
@@ -629,7 +694,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
                 // affordance; revision-checked writes backstop the rest.
                 store.setRemoteUpdate(entry.id, {
                   draftRevision: entry.draftRevision,
-                  updatedBy: lastUpdatedByConsole.get(entry.id),
+                  updatedBy: otherUpdater(entry.id),
                   kind: "updated",
                 });
                 // Transient deferral (typing recency / autosave in flight)
@@ -648,6 +713,14 @@ export const useRealtimeStore = create<RealtimeStore>()(
               case "apply":
                 store.applyRemoteConsoleEntry(entry);
                 break;
+            }
+          }
+          // A console that is back (an Undo of its delete, here or in
+          // another window) is no longer "deleted": the banner goes.
+          const gone = new Set(res.deleted);
+          for (const tab of Object.values(store.tabs)) {
+            if (tab.remoteUpdate?.kind === "deleted" && !gone.has(tab.id)) {
+              store.setRemoteUpdate(tab.id, null);
             }
           }
           for (const deletedId of res.deleted) {
