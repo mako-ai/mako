@@ -182,6 +182,11 @@ export interface IWorkspaceWorkflows {
   active?: string[];
   /** Workflows with a webhook turned on: name → its URL's secret, encrypted. */
   webhooks?: Record<string, string>;
+  /**
+   * When the worker was last needed: a run, a deploy, a trigger change, or
+   * Hatchet holding work for it. It sleeps once this is old (workflows/idle.ts).
+   */
+  lastNeededAt?: Date;
 }
 
 export interface IWorkspaceRepoBinding {
@@ -1501,6 +1506,7 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         live: { type: WorkflowSlotFields, _id: false },
         active: { type: [String], default: undefined },
         webhooks: { type: Schema.Types.Mixed },
+        lastNeededAt: { type: Date },
       },
       default: undefined,
       _id: false,

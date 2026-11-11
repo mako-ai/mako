@@ -99,7 +99,13 @@ export async function writeWorkerSecret(
   }
 }
 
-function deploymentBody(workspaceId: string): V1Deployment {
+/** The pod count while the workspace's worker is awake (idle.ts). */
+export const AWAKE_REPLICAS = 1;
+
+function deploymentBody(
+  workspaceId: string,
+  replicas = AWAKE_REPLICAS,
+): V1Deployment {
   const name = workerName(workspaceId);
   const labels = {
     "app.kubernetes.io/name": POD_NAME_LABEL,
@@ -109,7 +115,8 @@ function deploymentBody(workspaceId: string): V1Deployment {
   return {
     metadata: { name, labels },
     spec: {
-      replicas: 1,
+      // 0 while the worker sleeps (idle.ts); a replace keeps what it was.
+      replicas,
       // A new pod (a new runtime image) is ready only once it runs a commit,
       // and the old pod is stopped only then.
       strategy: {
@@ -196,7 +203,12 @@ async function replaceWorker(
   existing: V1Deployment,
   reason: string,
 ): Promise<void> {
-  const body = deploymentBody(workspaceId);
+  // A sleeping worker stays asleep: it gets the new pod template, and the
+  // next wake starts it on the new image.
+  const body = deploymentBody(
+    workspaceId,
+    existing.spec?.replicas ?? AWAKE_REPLICAS,
+  );
   body.metadata = {
     ...body.metadata,
     resourceVersion: existing.metadata?.resourceVersion,
@@ -296,4 +308,52 @@ export async function rollWorkersToRuntimeImage(
     }
   }
   return moved;
+}
+
+/** This environment's workers, by workspace, with their pod count. */
+export async function listWorkers(
+  apps?: AppsClient,
+): Promise<Array<{ workspaceId: string; replicas: number }>> {
+  const client = apps ?? (await gkeClients()).apps;
+  const { items } = await client.listNamespacedDeployment({
+    namespace: NAMESPACE,
+    labelSelector: workerSelector(),
+  });
+  return items.flatMap(deployment => {
+    const workspaceId = deployment.metadata?.labels?.[WORKSPACE_LABEL];
+    return workspaceId
+      ? [{ workspaceId, replicas: deployment.spec?.replicas ?? AWAKE_REPLICAS }]
+      : [];
+  });
+}
+
+/**
+ * Set the pod count of a workspace's worker: 0 puts it to sleep,
+ * AWAKE_REPLICAS wakes it. True when it changed; false when it already had
+ * that count or the workspace has no worker.
+ */
+export async function setWorkerReplicas(
+  workspaceId: string,
+  replicas: number,
+  apps?: AppsClient,
+): Promise<boolean> {
+  const client = apps ?? (await gkeClients()).apps;
+  const name = workerName(workspaceId);
+  let scale;
+  try {
+    scale = await client.readNamespacedDeploymentScale({
+      name,
+      namespace: NAMESPACE,
+    });
+  } catch (error) {
+    if (isNotFound(error)) return false;
+    throw error;
+  }
+  if ((scale.spec?.replicas ?? 0) === replicas) return false;
+  await client.replaceNamespacedDeploymentScale({
+    name,
+    namespace: NAMESPACE,
+    body: { ...scale, spec: { ...scale.spec, replicas } },
+  });
+  return true;
 }
