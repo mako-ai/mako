@@ -24,15 +24,17 @@ import {
   saveSkill,
   searchSkills,
 } from "../../services/skills.service";
+import { SKILL_NAME_RE, SKILL_NAME_RULE } from "../../apps/skill-files";
+import { loadSkillCatalog } from "../../apps/workspace-skills.service";
 
 const saveSkillSchema = z.object({
   name: z
     .string()
     .min(1)
     .max(80)
-    .regex(/^[a-z0-9_]+$/, "name must be lowercase snake_case")
+    .regex(SKILL_NAME_RE, `name must be ${SKILL_NAME_RULE}`)
     .describe(
-      "Unique skill name. Lowercase snake_case. Stable identifier — reuse the same name to overwrite an existing skill; previous versions remain recoverable from git history.",
+      "Unique skill name: lowercase letters, digits, '-' or '_' (e.g. `revenue-walkthrough`). Stable identifier — reuse the same name to overwrite an existing skill; previous versions remain recoverable from git history.",
     ),
   loadWhen: z
     .string()
@@ -148,7 +150,7 @@ export function createSkillTools(workspaceId: string, userId?: string) {
         "Skills panel or flips `suppressed: false` in its SKILL.md. Tell the",
         "user you proposed it. Updates to an existing skill apply directly.",
         "",
-        "Choose `name` as a stable snake_case identifier; write `loadWhen`",
+        "Choose `name` as a stable lowercase identifier (`-` or `_`); write `loadWhen`",
         "as ONE trigger line (it is in every prompt); keep `body` compact",
         "and structured.",
       ].join("\n"),
@@ -189,6 +191,9 @@ export function createSkillTools(workspaceId: string, userId?: string) {
       execute: async () => {
         // Index only; pinned bodies are omitted from this tool response.
         const result = await retrieveRelevantSkills(workspaceId);
+        // Files under skills/ that never reach the index, with why: without
+        // this a bad folder name or frontmatter fails silently for agents.
+        const invalid = (await loadSkillCatalog(workspaceId)).invalid;
         return {
           success: true as const,
           skills: result.index.map(s => ({
@@ -200,6 +205,17 @@ export function createSkillTools(workspaceId: string, userId?: string) {
               ? { references: s.references }
               : {}),
           })),
+          ...(invalid.length > 0
+            ? {
+                invalid: invalid.map(i => ({
+                  name: i.name,
+                  path: i.path,
+                  reason: i.reason,
+                })),
+                invalidNote:
+                  "These workspace skill files are NOT in the index. Tell the user and name the fix.",
+              }
+            : {}),
         };
       },
     }),

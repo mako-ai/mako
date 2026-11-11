@@ -20,6 +20,7 @@ import {
 import { serializeSkillFile, skillFilePath } from "../apps/skill-files";
 import { invalidateSkillCatalog } from "../apps/workspace-skills.service";
 import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
+import { createSkillTools } from "../agent-lib/tools/skill-tools";
 import {
   INDEX_DESCRIPTION_CHARS,
   deleteSkill,
@@ -102,6 +103,34 @@ describe("saves", () => {
     expect(file).toContain("pinned: true");
     expect(file).toContain("v2");
     expect(file).not.toContain("suppressed");
+  });
+
+  it("accepts hyphenated names; refuses a second spelling of an existing one; load_skill finds either", async () => {
+    const saved = await saveSkill(WS, input("app-ui-conventions"), "u1");
+    expect(saved).toMatchObject({ success: true, skill: { created: true } });
+    expect(await fileAt(skillFilePath("app-ui-conventions"))).toContain(
+      "name: app-ui-conventions",
+    );
+
+    const twin = await saveSkill(WS, input("app_ui_conventions"), "u1");
+    expect(twin).toMatchObject({ success: false });
+    expect((twin as { error: string }).error).toMatch(
+      /"app-ui-conventions" already exists/,
+    );
+
+    for (const spelling of ["app-ui-conventions", "app_ui_conventions"]) {
+      const loaded = await loadSkill(WS, spelling);
+      expect(loaded).toMatchObject({
+        success: true,
+        skill: { name: "app-ui-conventions" },
+      });
+    }
+
+    for (const bad of ["-lead", "Upper", "a.b", "../x", "a/b", "a b"]) {
+      const result = await saveSkill(WS, input(bad), "u1");
+      expect(result, bad).toMatchObject({ success: false });
+      expect((result as { error: string }).error).toMatch(/name must be/);
+    }
   });
 
   it("rejects a description that would not fit the index", async () => {
@@ -282,5 +311,31 @@ describe("admin surface", () => {
     });
     expect(await getSkillForAdmin(WS, fine.id)).toBeNull();
     expect(await getSkillForAdmin(WS, list[1]!.id)).toBeNull();
+  });
+
+  it("list_skills names the files that never reach the index, with why", async () => {
+    await saveSkill(WS, input("fine"), "u1");
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "skills/Bad_Name/SKILL.md": "x\n" } },
+      { message: "laptop" },
+    );
+    const tools = createSkillTools(WS, "u1");
+    const result = (await tools.list_skills.execute!({}, {
+      toolCallId: "t",
+      messages: [],
+    } as never)) as {
+      skills: { name: string }[];
+      invalid?: { name: string; reason: string }[];
+    };
+    expect(result.skills.some(s => s.name === "fine")).toBe(true);
+    expect(result.invalid).toEqual([
+      {
+        name: "Bad_Name",
+        path: "skills/Bad_Name/SKILL.md",
+        reason: expect.stringMatching(/folder name must be lowercase/),
+      },
+    ]);
   });
 });

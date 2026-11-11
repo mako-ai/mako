@@ -50,8 +50,29 @@ budgeted body excerpt is in every prompt, for skills every turn needs),
 then the playbook body. The folder name is the identity.
 `;
 
-/** Same contract as skills.service validation: lowercase snake_case. */
-export const SKILL_NAME_RE = /^[a-z0-9_]+$/;
+/**
+ * A skill name is its folder: lowercase letters, digits, `-` and `_`, starting
+ * with a letter or digit. That keeps it one safe path segment (no `/`, no `.`,
+ * so no `..`; no leading `-` that a shell could read as a flag) and accepts the
+ * hyphenated names Claude Code skills and Mako's system skills use
+ * (`app-ui-conventions`, `dialect-postgresql`). Until 2026-11 only snake_case
+ * passed, and hyphenated folders committed from a clone never reached the
+ * agent.
+ */
+export const SKILL_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
+
+/** The rule above in words, for error messages. */
+export const SKILL_NAME_RULE =
+  "lowercase a-z, 0-9, '-' and '_', starting with a letter or digit";
+
+/**
+ * `app-ui-conventions` and `app_ui_conventions` are one name to a person.
+ * Lookups by a spelling that matches no folder exactly fall back to this form,
+ * and a save refuses a new folder that collides with an existing one in it.
+ */
+export function canonicalSkillName(name: string): string {
+  return name.trim().toLowerCase().replace(/-/g, "_");
+}
 
 export interface WorkspaceSkillFile {
   name: string;

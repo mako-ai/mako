@@ -14,6 +14,8 @@ import {
   commitSkillSave,
   findSkill,
   findSkillById,
+  findSkillTwins,
+  resolveSkill,
   loadSkillCatalog,
   skillId,
   type WorkspaceSkill,
@@ -22,6 +24,8 @@ import { type GitAuthor } from "../apps/repository.service";
 import {
   MAX_SKILL_BODY_CHARS,
   MAX_WORKSPACE_SKILLS,
+  SKILL_NAME_RE,
+  SKILL_NAME_RULE,
 } from "../apps/skill-files";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import { STOPWORDS } from "../agent-lib/entity-extraction";
@@ -82,8 +86,8 @@ function validateInput(input: SkillInput): string | null {
   if (input.name.length > MAX_NAME_LENGTH) {
     return `name exceeds ${MAX_NAME_LENGTH} characters`;
   }
-  if (!/^[a-z0-9_]+$/.test(input.name)) {
-    return "name must be lowercase snake_case (a-z, 0-9, underscore)";
+  if (!SKILL_NAME_RE.test(input.name)) {
+    return `name must be ${SKILL_NAME_RULE}`;
   }
   if (!input.loadWhen || input.loadWhen.trim().length === 0) {
     return "loadWhen is required";
@@ -148,6 +152,15 @@ export async function saveSkill(
   if (validation) return { success: false, error: validation };
   const name = input.name.trim();
   const existing = await findSkill(workspaceId, name);
+  if (!existing) {
+    const twin = (await findSkillTwins(workspaceId, name))[0];
+    if (twin) {
+      return {
+        success: false,
+        error: `Skill "${twin.name}" already exists. Save under that name to update it; "${name}" differs only in '-' vs '_'.`,
+      };
+    }
+  }
   const pendingApproval = options.origin === "agent" && !existing;
   if (!existing) {
     const catalog = await loadSkillCatalog(workspaceId);
@@ -193,7 +206,8 @@ export async function skillExists(
   workspaceId: string,
   name: string,
 ): Promise<boolean> {
-  return (await findSkill(workspaceId, name)) !== null;
+  // A twin spelling (`foo-bar` for `foo_bar`) counts: a save would refuse it.
+  return (await findSkillTwins(workspaceId, name)).length > 0;
 }
 
 export async function deleteSkill(
@@ -243,7 +257,7 @@ export async function loadSkill(
   if (!name || name.trim().length === 0) {
     return { success: false, error: "name is required" };
   }
-  const skill = await findSkill(workspaceId, name);
+  const skill = await resolveSkill(workspaceId, name);
   if (skill) {
     return {
       success: true,

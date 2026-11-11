@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { saveSkill, skillExists } from "../../services/skills.service";
+import { SKILL_NAME_RE, SKILL_NAME_RULE } from "../../apps/skill-files";
 import {
   commitWorkspaceSelfDirective,
   readWorkspaceSelfDirectiveFile,
@@ -121,8 +122,7 @@ export interface SelfDirectiveOperationInput {
 }
 
 export type SelfDirectiveOperationResult =
-  | { ok: true; value: string }
-  | { ok: false; error: string };
+  { ok: true; value: string } | { ok: false; error: string };
 
 /**
  * Pure application of an update operation to the current directive text.
@@ -263,10 +263,10 @@ const updateSelfDirectiveSchema = z
     skill_name: z
       .string()
       .max(80)
-      .regex(/^[a-z0-9_]+$/, "skill_name must be lowercase snake_case")
+      .regex(SKILL_NAME_RE, `skill_name must be ${SKILL_NAME_RULE}`)
       .optional()
       .describe(
-        "Name for the new workspace skill. Required for archive_section. Lowercase snake_case; must not already exist (archiving never overwrites a skill).",
+        "Name for the new workspace skill. Required for archive_section. Lowercase letters, digits, '-' or '_'; must not already exist (archiving never overwrites a skill).",
       ),
     load_when: z
       .string()
@@ -395,7 +395,7 @@ export function createSelfDirectiveTools(workspaceId: string, userId?: string) {
         "- find_and_replace: Replace a specific section. Provide 'find' (exact text to match) and 'replace' (new text).",
         "- insert_after: Insert content after a specific line/section. Provide 'after' (anchor text) and 'content'.",
         "- delete_section: Remove a specific section. Provide 'find' (exact text to remove).",
-        "- archive_section: Move a section into a workspace skill and leave a one-line pointer. Provide 'find' (exact section text), 'skill_name' (snake_case), 'load_when' (retrieval trigger), optionally 'entities'. The skill is retrieved on demand in future sessions, so nothing is lost.",
+        "- archive_section: Move a section into a workspace skill and leave a one-line pointer. Provide 'find' (exact section text), 'skill_name' (lowercase, '-' or '_'), 'load_when' (retrieval trigger), optionally 'entities'. The skill is retrieved on demand in future sessions, so nothing is lost.",
         "",
         "Always read_self_directive first to see what exists before modifying.",
         "The directive is ALWAYS loaded into your prompt — keep it a terse index of durable rules. Detailed or situational knowledge (long playbooks, per-table quirks, worked examples) belongs in skills: archive_section moves it there. When the result reports the directive is nearly full, archive detail first, then compact what remains with 'set'.",
