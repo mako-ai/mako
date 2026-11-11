@@ -8,8 +8,20 @@
  * A credential with no person behind it: neither.
  *
  * SECRETS: only `name` is written; the stored document is compared raw.
+ *
+ * END TO END: the REST routes and the `rename_object` tool, down to Mongo,
+ * with only the session lookup stood in for.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { Hono } from "hono";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
@@ -19,6 +31,22 @@ import {
 } from "../../database/workspace-schema";
 import { encryptString } from "../../services/crypto.service";
 import { renameObject, resolveObjectRef } from "../registry";
+
+const session = vi.hoisted(() => ({ userId: "manager1" }));
+vi.mock("../../auth/unified-auth.middleware", () => ({
+  unifiedAuthMiddleware: async (
+    c: { set: (k: string, v: unknown) => void },
+    next: () => Promise<void>,
+  ) => {
+    c.set("authType", "session");
+    c.set("user", { id: session.userId });
+    await next();
+  },
+  isSessionAuth: () => true,
+}));
+
+import { createRenameTools } from "../../agent-lib/tools/rename-tools";
+import { objectRoutes } from "../../routes/objects";
 
 let mongo: MongoMemoryServer;
 let WS: string;
@@ -265,5 +293,72 @@ describe("what a connection rename refuses or leaves alone", () => {
     const again = await rename(as("viewer1", "viewer"), id, "Caf\u{E9} DB");
     expect(again.warnings[0]).toMatch(/Nothing to change/);
     expect(again.before).toEqual(again.after);
+  });
+});
+
+describe("end to end", () => {
+  const app = new Hono();
+  app.route("/api/workspaces/:workspaceId/objects", objectRoutes);
+  const post = (ref: string, title: string) =>
+    app.request(`/api/workspaces/${WS}/objects/connection/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref, title }),
+    });
+  const resolved = (kind: string, ref: string) =>
+    app.request(
+      `/api/workspaces/${WS}/objects/resolve?kind=${kind}&ref=${encodeURIComponent(ref)}`,
+    );
+
+  it("POST /objects/connection/rename renames for a manager, refuses another member, and /resolve finds the new name", async () => {
+    const id = await seedSource("ch_close");
+    session.userId = "member2";
+    expect((await post(id, "Close CH")).status).toBe(403);
+    session.userId = "manager1";
+    const res = await post("ch_close", "Close CH");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      success: true,
+      result: {
+        id,
+        before: { title: "ch_close" },
+        after: { title: "Close CH" },
+      },
+    });
+    expect(
+      await (await resolved("connection", "Close CH")).json(),
+    ).toMatchObject({
+      resolved: { id, via: "current", current: { url: `/cx/${id}` } },
+    });
+    expect((await resolved("connection", "ch_close")).status).toBe(404);
+    // A kind with no handler yet says so, rather than "not found".
+    expect((await resolved("flow", "x")).status).toBe(501);
+  });
+
+  it("rename_object renames as the key's owner, with that person's live role", async () => {
+    const id = await seedDatabase("BQ");
+    type Tool = {
+      execute: (input: unknown) => Promise<Record<string, unknown>>;
+    };
+    const call = (userId: string) =>
+      (
+        createRenameTools(WS, userId) as unknown as { rename_object: Tool }
+      ).rename_object.execute({
+        kind: "connection",
+        ref: id,
+        title: "BigQuery",
+      });
+    expect(await call("viewer1")).toEqual({
+      success: false,
+      error: "Insufficient permissions in workspace",
+    });
+    expect(await call("member2")).toMatchObject({
+      success: true,
+      id,
+      after: { title: "BigQuery" },
+    });
+    expect((await DatabaseConnection.findById(id).lean())?.name).toBe(
+      "BigQuery",
+    );
   });
 });
