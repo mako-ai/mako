@@ -68,3 +68,10 @@ export {
   resolveDbtProjectPath,
   type DbtPathResult,
 } from "./dbt-paths";
+
+export {
+  SKILL_NAME_MAX_LENGTH,
+  SKILL_NAME_RE,
+  SKILL_NAME_RULE,
+  skillNameError,
+} from "./skill-names";

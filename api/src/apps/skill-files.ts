@@ -23,6 +23,7 @@
  * repo lives in workspace-skills.service.ts.
  */
 import * as yaml from "js-yaml";
+import { SKILL_NAME_RE, SKILL_NAME_RULE } from "@mako/schemas";
 import { setTopLevelScalar, yamlScalar } from "../rename/yaml-name-aliases";
 import { loadYaml } from "../utils/yaml";
 
@@ -52,20 +53,9 @@ budgeted body excerpt is in every prompt, for skills every turn needs),
 then the playbook body. The folder name is the identity.
 `;
 
-/**
- * A skill name is its folder: lowercase letters, digits, `-` and `_`, starting
- * with a letter or digit. That keeps it one safe path segment (no `/`, no `.`,
- * so no `..`; no leading `-` that a shell could read as a flag) and accepts the
- * hyphenated names Claude Code skills and Mako's system skills use
- * (`app-ui-conventions`, `dialect-postgresql`). Until 2026-11 only snake_case
- * passed, and hyphenated folders committed from a clone never reached the
- * agent.
- */
-export const SKILL_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
-
-/** The rule above in words, for error messages. */
-export const SKILL_NAME_RULE =
-  "lowercase a-z, 0-9, '-' and '_', starting with a letter or digit";
+// The skill-name rule lives in `@mako/schemas` (skill-names.ts), where the
+// Skills panel reads it too.
+export { SKILL_NAME_RE, SKILL_NAME_RULE };
 
 /**
  * `app-ui-conventions` and `app_ui_conventions` are one name to a person.
