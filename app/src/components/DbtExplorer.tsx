@@ -69,6 +69,10 @@ import {
 } from "../lib/explorer-reveal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
+import {
+  RenameObjectDialog,
+  type RenameObjectDialogTarget,
+} from "./RenameObjectDialog";
 import ExplorerShell from "./ExplorerShell";
 import { dirname } from "../utils/path";
 
@@ -304,6 +308,9 @@ export function DbtExplorer() {
     dir: string;
   } | null>(null);
   const [newFileName, setNewFileName] = useState("");
+  const [renameJob, setRenameJob] = useState<RenameObjectDialogTarget | null>(
+    null,
+  );
   const [renameTarget, setRenameTarget] = useState<{
     parsed: ParsedNode;
     name: string;
@@ -591,6 +598,33 @@ export function DbtExplorer() {
         );
       }
 
+      if (parsed.kind === "job") {
+        const job = (jobsByProject[parsed.projectId] ?? []).find(
+          j => j._id === parsed.path,
+        );
+        items.push(
+          <MenuItem
+            key="rename-job"
+            onClick={() => {
+              // Through the rename service: the job keeps its id (its URL),
+              // schedule and run history; the old file name keeps resolving.
+              setRenameJob({
+                kind: "dbt_job",
+                ref: parsed.path,
+                title: job?.name ?? node.name,
+                slug: job?.slug,
+              });
+              helpers.closeMenu();
+            }}
+          >
+            <ListItemIcon>
+              <RenameIcon size={16} strokeWidth={1.5} />
+            </ListItemIcon>
+            Rename…
+          </MenuItem>,
+        );
+      }
+
       if (
         parsed.kind === "file" ||
         parsed.kind === "job" ||
@@ -613,7 +647,13 @@ export function DbtExplorer() {
       }
       return items;
     },
-    [handleItemClick, openProjectSettingsFromMenu, projects, handleNewJob],
+    [
+      handleItemClick,
+      openProjectSettingsFromMenu,
+      projects,
+      handleNewJob,
+      jobsByProject,
+    ],
   );
 
   // Hover kebab: same actions as the right-click menu, but discoverable.
@@ -1234,6 +1274,25 @@ export function DbtExplorer() {
           <Button onClick={handleNewFileConfirm}>Create</Button>
         </DialogActions>
       </Dialog>
+
+      {/* Rename a job: same id, schedule and run history */}
+      <RenameObjectDialog
+        workspaceId={workspaceId}
+        target={renameJob}
+        onClose={() => setRenameJob(null)}
+        onRenamed={result => {
+          const title = result.after.title;
+          const store = useConsoleStore.getState();
+          for (const [tabId, tab] of Object.entries(store.tabs)) {
+            if (title && tab.metadata?.jobId === result.id) {
+              store.updateTitle(tabId, title);
+            }
+          }
+          if (workspaceId && activeProjectId) {
+            void fetchJobs(workspaceId, activeProjectId);
+          }
+        }}
+      />
 
       {/* Rename dialog */}
       <Dialog
