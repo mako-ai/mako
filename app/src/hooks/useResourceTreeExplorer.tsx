@@ -98,14 +98,16 @@ export function useResourceTreeExplorer<T extends ResourceTreeEntry>(
     [],
   );
   const cancelDelete = useCallback(() => setDeleteTarget(null), []);
-  const confirmDelete = useCallback(async () => {
-    if (!deleteTarget || !workspaceId) return;
-    await deleteItem(
+  /** Resolves whether the delete went through. */
+  const confirmDelete = useCallback(async (): Promise<boolean> => {
+    if (!deleteTarget || !workspaceId) return false;
+    const deleted = await deleteItem(
       workspaceId,
       deleteTarget.id,
       isFolder(deleteTarget.id, deleteTarget.isDirectory),
     );
     setDeleteTarget(null);
+    return deleted;
   }, [deleteTarget, workspaceId, deleteItem, isFolder]);
 
   const access = (a?: string) => (a as TreeAccessLevel) || undefined;

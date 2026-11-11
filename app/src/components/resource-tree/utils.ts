@@ -186,3 +186,34 @@ export function resolveTreeDropTarget<TNode extends ResourceTreeLikeNode>(
 
   return null;
 }
+
+/**
+ * Is a key event aimed at something that takes text? The tree's shortcuts
+ * listen on the window, so a key typed into a field — or into the code
+ * editor, which is not an <input> — must not be read as a tree command
+ * (Backspace is "delete the focused row", Ctrl+Z is "undo the delete").
+ */
+export function isTextEntryTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.tagName !== "string") return false;
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)) return true;
+  if (el.isContentEditable || el.getAttribute?.("contenteditable") === "true") {
+    return true;
+  }
+  return Boolean(el.closest?.(".monaco-editor, [role='textbox']"));
+}
+
+/**
+ * May the tree take Ctrl+Z as "undo the last delete"? Only while the tree
+ * itself has the focus, or nothing has (the page body, right after a row
+ * was deleted): undo in the editor, a chat box or a dialog stays theirs.
+ */
+export function treeOwnsUndo(
+  target: EventTarget | null,
+  treeRoot: HTMLElement | null,
+): boolean {
+  if (isTextEntryTarget(target)) return false;
+  const el = target as HTMLElement | null;
+  if (!el || el === el.ownerDocument?.body) return true;
+  return Boolean(treeRoot?.contains(el));
+}

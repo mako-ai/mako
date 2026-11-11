@@ -36,8 +36,10 @@ import {
 import { useConsoleStore } from "../store/consoleStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
 import { filterTree } from "../store/lib/tree-helpers";
+import { closeTabsOf } from "../lib/console-tab-location";
 import {
   consoleRestoredNotice,
+  deniedActionNotice,
   folderDeleteConfirmText,
   folderRestoredNotice,
   trashedNotice,
@@ -50,6 +52,9 @@ import FolderInfoModal from "./FolderInfoModal";
 import ConsoleTree from "./ConsoleTree";
 import ExplorerShell from "./ExplorerShell";
 import { ConfirmDialog } from "./ConfirmDialog";
+
+/** How long "Moved to trash — Undo" stays (also after the pointer leaves it). */
+const UNDO_TOAST_MS = 10_000;
 
 interface ConsoleExplorerProps {
   onConsoleSelect: (
@@ -421,7 +426,11 @@ function ConsoleExplorer(
   const handleSoftDelete = async (item: ConsoleEntry) => {
     if (!currentWorkspace || !item.id || item.isDirectory) return;
     const success = await deleteItem(currentWorkspace.id, item.id, false);
-    if (success) remember({ id: item.id, name: item.name });
+    if (!success) return;
+    // Their own delete: the tab closes (the toast offers the way back)
+    // rather than staying open to say the console "was deleted".
+    closeTabsOf(useConsoleStore.getState(), { consoleId: item.id });
+    remember({ id: item.id, name: item.name });
   };
 
   // The folder confirm's "Delete": its consoles go to the trash, and what
@@ -437,6 +446,9 @@ function ConsoleExplorer(
       .getState()
       .trashFolder(currentWorkspace.id, target.id);
     if (folder) {
+      for (const trashed of folder.consoles) {
+        closeTabsOf(useConsoleStore.getState(), { consoleId: trashed.id });
+      }
       remember({ id: target.id, name: target.name, folder, parentId, section });
     }
   };
@@ -452,6 +464,13 @@ function ConsoleExplorer(
       );
       // A refusal is in `actionError`; the entry stays for another try.
       if (!restored) return;
+      // A tab still open on it (another pane) no longer says "deleted".
+      if (
+        useConsoleStore.getState().tabs[entry.id]?.remoteUpdate?.kind ===
+        "deleted"
+      ) {
+        useConsoleStore.getState().setRemoteUpdate(entry.id, null);
+      }
       setUndoStack(prev => prev.filter(e => e !== entry));
       setNotice(consoleRestoredNotice(entry.name, restored.name));
       return;
@@ -574,6 +593,9 @@ function ConsoleExplorer(
                 onSoftDelete={handleSoftDelete}
                 onDuplicate={handleDuplicate}
                 onUndo={handleUndo}
+                onDeniedAction={(item, action) =>
+                  setNotice(deniedActionNotice(item.isDirectory, action))
+                }
                 searchQuery={searchQuery}
               />
 
@@ -716,7 +738,9 @@ function ConsoleExplorer(
       />
       <Snackbar
         open={trashToast !== null && actionError === null}
-        autoHideDuration={8000}
+        // Long enough to read and reach: this Undo is the way back.
+        autoHideDuration={UNDO_TOAST_MS}
+        resumeHideDuration={UNDO_TOAST_MS}
         onClose={(_event, reason) => {
           if (reason !== "clickaway") setTrashToast(null);
         }}

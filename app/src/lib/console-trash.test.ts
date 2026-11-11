@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   consoleRestoredNotice,
+  deniedActionNotice,
   folderDeleteConfirmText,
   folderRestoredNotice,
   restoreTrashedFolder,
@@ -117,6 +118,18 @@ describe("what the explorer says", () => {
     expect(consoleRestoredNotice("a", "a")).toBe("Restored “a”");
     expect(consoleRestoredNotice("a", "a (2)")).toBe(
       "Restored as “a (2)”: the name “a” was taken meanwhile",
+    );
+  });
+
+  it("says why a shortcut did nothing on a row that is not theirs", () => {
+    expect(deniedActionNotice(true, "delete")).toBe(
+      "Only the folder's owner or a workspace admin can delete this folder.",
+    );
+    expect(deniedActionNotice(false, "delete")).toBe(
+      "Only the console's owner or a workspace admin can delete it.",
+    );
+    expect(deniedActionNotice(false, "rename")).toMatch(
+      /owner or a workspace admin/,
     );
   });
 });

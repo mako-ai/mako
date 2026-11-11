@@ -144,3 +144,20 @@ export function folderRestoredNotice(
   }
   return `${parts.join(". ")}.`;
 }
+
+/**
+ * A Delete or F2 pressed on a row this person does not manage: said, not
+ * swallowed. The rule is the server's (a console is deleted by its owner
+ * or a workspace admin; a folder is its owner's or an admin's to change).
+ */
+export function deniedActionNotice(
+  isFolder: boolean,
+  action: "delete" | "rename",
+): string {
+  if (isFolder) {
+    return `Only the folder's owner or a workspace admin can ${action} this folder.`;
+  }
+  return action === "delete"
+    ? "Only the console's owner or a workspace admin can delete it."
+    : "Only the console's owner or a workspace admin can rename it in the tree.";
+}

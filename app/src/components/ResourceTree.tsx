@@ -66,7 +66,9 @@ import {
   findNodeInSections,
   getFolderDropTargetId,
   isSidebarRowActive,
+  isTextEntryTarget,
   resolveTreeDropTarget,
+  treeOwnsUndo,
 } from "./resource-tree/utils";
 import {
   onRenderDebug,
@@ -242,6 +244,20 @@ export interface ResourceTreeProps {
   getFolderExpansionKey?: (node: ResourceTreeNode) => string;
 
   canManageItem?: (node: ResourceTreeNode) => boolean;
+  /**
+   * Which rows can be dragged (default: the ones the user manages). A
+   * resource whose server decides who may move what — and says why not —
+   * lets every row be dragged and shows the server's answer.
+   */
+  canDragItem?: (node: ResourceTreeNode) => boolean;
+  /**
+   * A shortcut was pressed on a row the user does not manage. Nothing is
+   * done; this is the place to say why, instead of silence.
+   */
+  onDeniedAction?: (
+    node: ResourceTreeNode,
+    action: "delete" | "rename",
+  ) => void;
 }
 
 const collisionDetectionStrategy: CollisionDetection = args => {
@@ -298,6 +314,8 @@ function ResourceTreeInner(
     onExpandFolder,
     getFolderExpansionKey,
     canManageItem,
+    canDragItem,
+    onDeniedAction,
   }: ResourceTreeProps,
   ref: React.Ref<ResourceTreeRef>,
 ) {
@@ -312,6 +330,7 @@ function ResourceTreeInner(
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const treeRootRef = useRef<HTMLElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   // Scopes the reveal `querySelector` to this tree so we don't accidentally
   // scroll an identically-id'd row in another tree (e.g. a picker dialog).
@@ -812,8 +831,7 @@ function ResourceTreeInner(
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+      if (isTextEntryTarget(event.target)) return;
 
       const focusId =
         focusedNodeId ||
@@ -824,9 +842,10 @@ function ResourceTreeInner(
       const canManageFocused = focusItem ? resolveCanManage(focusItem) : false;
       const meta = event.metaKey || event.ctrlKey;
 
-      if (event.key === "F2" && focusItem && enableRename && canManageFocused) {
+      if (event.key === "F2" && focusItem && enableRename) {
         event.preventDefault();
-        startInlineRename(focusItem);
+        if (canManageFocused) startInlineRename(focusItem);
+        else onDeniedAction?.(focusItem, "rename");
         return;
       }
 
@@ -834,11 +853,14 @@ function ResourceTreeInner(
         (event.key === "Delete" || event.key === "Backspace") &&
         focusItem &&
         enableDelete &&
-        canManageFocused &&
-        !meta
+        !meta &&
+        // A key pressed with the focus elsewhere on the page is not about
+        // the tree's row.
+        treeOwnsUndo(event.target, treeRootRef.current)
       ) {
         event.preventDefault();
-        onDeleteItem?.(focusItem);
+        if (canManageFocused) onDeleteItem?.(focusItem);
+        else onDeniedAction?.(focusItem, "delete");
         return;
       }
 
@@ -868,7 +890,9 @@ function ResourceTreeInner(
         meta &&
         event.key.toLowerCase() === "z" &&
         !event.shiftKey &&
-        onUndo
+        onUndo &&
+        // Undo in the editor, a field or a dialog stays theirs.
+        treeOwnsUndo(event.target, treeRootRef.current)
       ) {
         event.preventDefault();
         onUndo();
@@ -948,6 +972,7 @@ function ResourceTreeInner(
     onExpandFolder,
     onLoadChildren,
     onUndo,
+    onDeniedAction,
     resolveCanManage,
     startInlineRename,
     updateLocationSelection,
@@ -1326,7 +1351,7 @@ function ResourceTreeInner(
           <DraggableFolderScope
             key={`folder-scope-${node.id}`}
             id={node.id}
-            disabled={!canManage}
+            disabled={!(canDragItem ? canDragItem(node) : canManage)}
             header={folderRow}
           >
             {childrenContent}
@@ -1418,7 +1443,7 @@ function ResourceTreeInner(
           <DraggableTreeItem
             key={`drag-file-${node.id}`}
             id={node.id}
-            disabled={!canManage}
+            disabled={!(canDragItem ? canDragItem(node) : canManage)}
           >
             {fileRow}
           </DraggableTreeItem>
@@ -1533,7 +1558,7 @@ function ResourceTreeInner(
   };
 
   const treeContent = (
-    <List component="nav" dense disablePadding>
+    <List component="nav" dense disablePadding ref={treeRootRef}>
       {filteredSections.map(section => {
         const sectionVisible =
           section.hideSectionHeader || sectionExpanded[section.key] !== false;
