@@ -78,6 +78,12 @@ export type SlugNamedKind = "flow" | "dbt_job";
 
 export const RENAME_SLUG_MAX_LENGTH = 64;
 
+/** How long a display name may be, per kind (the server refuses longer). */
+export const SLUG_NAMED_KIND_NAME_MAX_LENGTH: Record<SlugNamedKind, number> = {
+  flow: 200,
+  dbt_job: 128,
+};
+
 const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 /**
