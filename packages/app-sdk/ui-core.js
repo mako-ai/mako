@@ -322,3 +322,79 @@ export function csvToTsv(text) {
     .map(r => r.map(v => v.replace(/[\t\r\n]+/g, " ")).join("\t"))
     .join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// MultiSelect: the All rule and the trigger text
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a MultiSelect stands. Nothing is filtered when the value is empty or
+ * holds every option: `all` is true and `selected` is empty, so the All row
+ * is ticked and every option row unticked. Otherwise `selected` is the value
+ * in option order (values the options don't list yet are kept at the end).
+ */
+export function multiSelectState(value, optionValues) {
+  const picked = [...new Set(value ?? [])];
+  const covers = optionValues.length > 0 && optionValues.every(v => picked.includes(v));
+  if (picked.length === 0 || covers) return { all: true, selected: [] };
+  const known = optionValues.filter(v => picked.includes(v));
+  return { all: false, selected: [...known, ...picked.filter(v => !optionValues.includes(v))] };
+}
+
+/** The value that means "All": [] by default, every option when `emptyMeansAll` is false. */
+export function multiSelectAll(optionValues, emptyMeansAll = true) {
+  return emptyMeansAll ? [] : [...optionValues];
+}
+
+/**
+ * The next value after a click on option `v`. Under All, the click selects
+ * only `v`. Otherwise it toggles `v`; unticking the last option or ticking
+ * the last missing one returns to All.
+ */
+export function multiSelectToggle(value, optionValues, v, emptyMeansAll = true) {
+  const { all, selected } = multiSelectState(value, optionValues);
+  if (all) return optionValues.length === 1 ? multiSelectAll(optionValues, emptyMeansAll) : [v];
+  const next = selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v];
+  return multiSelectState(next, optionValues).all ? multiSelectAll(optionValues, emptyMeansAll) : next;
+}
+
+/**
+ * The trigger text: the All label, the one selected option's label, or
+ * "N selected" (or `many(n)`).
+ */
+export function multiSelectText(value, options, allLabel = "All", many = n => `${n} selected`) {
+  const { all, selected } = multiSelectState(value, options.map(o => o.value));
+  if (all) return allLabel;
+  if (selected.length === 1) return options.find(o => o.value === selected[0])?.label ?? selected[0];
+  return many(selected.length);
+}
+
+// ---------------------------------------------------------------------------
+// One open popover at a time
+// ---------------------------------------------------------------------------
+let openPopoverClose = null;
+
+/**
+ * Register the popover that just opened: `close` is how to close it. Any other
+ * kit popover that is open closes first.
+ */
+export function claimPopover(close) {
+  const prev = openPopoverClose;
+  openPopoverClose = close;
+  if (prev && prev !== close) prev();
+}
+
+/** Forget `close` if it is still the open popover (on close or unmount). */
+export function releasePopover(close) {
+  if (openPopoverClose === close) openPopoverClose = null;
+}
+
+/**
+ * Close whichever kit popover is open. Call it when a popover the kit doesn't
+ * own opens (a Radix menu's onOpenChange), so one dropdown is open at a time.
+ */
+export function closePopovers() {
+  const close = openPopoverClose;
+  openPopoverClose = null;
+  if (close) close();
+}

@@ -424,3 +424,112 @@ test("serializeResetKey: same filters compare equal, new row objects never matte
   assert.equal(k({ n: 5n }), k({ n: 5n }));
   assert.equal(k(undefined), k(undefined));
 });
+
+test("multiSelectState: an empty value and a value with every option are both All, every option unticked", async () => {
+  const { multiSelectState } = await import("./ui-core.js");
+  const opts = ["CH", "ES", "IT"];
+  assert.deepEqual(multiSelectState([], opts), { all: true, selected: [] });
+  assert.deepEqual(multiSelectState(["IT", "CH", "ES"], opts), { all: true, selected: [] });
+  assert.deepEqual(multiSelectState(["IT", "CH"], opts), { all: false, selected: ["CH", "IT"] });
+  // A value the options don't list yet (still loading) is kept, not All.
+  assert.deepEqual(multiSelectState(["PT"], []), { all: false, selected: ["PT"] });
+});
+
+test("multiSelectToggle: under All a click selects only that option; the last untick or tick returns to All", async () => {
+  const { multiSelectToggle } = await import("./ui-core.js");
+  const opts = ["CH", "ES", "IT"];
+  // Under All, whichever way the app spells it.
+  assert.deepEqual(multiSelectToggle([], opts, "ES"), ["ES"]);
+  assert.deepEqual(multiSelectToggle(["CH", "ES", "IT"], opts, "ES"), ["ES"]);
+  assert.deepEqual(multiSelectToggle(["CH", "ES", "IT"], opts, "ES", false), ["ES"]);
+  // Plain toggles.
+  assert.deepEqual(multiSelectToggle(["ES"], opts, "CH"), ["ES", "CH"]);
+  assert.deepEqual(multiSelectToggle(["ES", "CH"], opts, "ES"), ["CH"]);
+  // Back to All: [] by default, every value with emptyMeansAll false.
+  assert.deepEqual(multiSelectToggle(["ES"], opts, "ES"), []);
+  assert.deepEqual(multiSelectToggle(["ES"], opts, "ES", false), ["CH", "ES", "IT"]);
+  assert.deepEqual(multiSelectToggle(["ES", "CH"], opts, "IT"), []);
+  assert.deepEqual(multiSelectToggle(["ES", "CH"], opts, "IT", false), ["CH", "ES", "IT"]);
+});
+
+test("multiSelectText: the All label, the one label, or N selected", async () => {
+  const { multiSelectText } = await import("./ui-core.js");
+  const opts = [
+    { value: "ch", label: "Switzerland" },
+    { value: "es", label: "Spain" },
+    { value: "it", label: "Italy" },
+  ];
+  assert.equal(multiSelectText([], opts, "All markets"), "All markets");
+  assert.equal(multiSelectText(["ch", "es", "it"], opts, "All markets"), "All markets");
+  assert.equal(multiSelectText(["es"], opts, "All markets"), "Spain");
+  assert.equal(multiSelectText(["es", "it"], opts, "All markets"), "2 selected");
+  assert.equal(multiSelectText(["es", "it"], opts, "All", n => `${n} markets`), "2 markets");
+});
+
+test("popover registry: opening one closes the other; closePopovers closes the open one", async () => {
+  const { claimPopover, releasePopover, closePopovers } = await import("./ui-core.js");
+  const closed = [];
+  const country = () => closed.push("country");
+  const route = () => closed.push("route");
+  claimPopover(country);
+  claimPopover(route); // Route opens while Country is open.
+  assert.deepEqual(closed, ["country"]);
+  claimPopover(route); // Re-claiming itself closes nothing.
+  assert.deepEqual(closed, ["country"]);
+  closePopovers(); // A Radix menu opens.
+  assert.deepEqual(closed, ["country", "route"]);
+  closePopovers(); // Nothing open: no-op.
+  assert.deepEqual(closed, ["country", "route"]);
+  claimPopover(country);
+  releasePopover(route); // A stale release leaves Country registered.
+  closePopovers();
+  assert.deepEqual(closed, ["country", "route", "country"]);
+  claimPopover(country);
+  releasePopover(country);
+  closePopovers();
+  assert.equal(closed.length, 3);
+});
+
+test("usePopover closes on a capture-phase pointerdown and on focus outside, not on mousedown or click", () => {
+  const js = readFileSync(new URL("./ui.js", import.meta.url), "utf8");
+  const body = js.slice(js.indexOf("function usePopover"), js.indexOf("React.useLayoutEffect", js.indexOf("function usePopover")));
+  assert.match(body, /addEventListener\("pointerdown", outside, true\)/);
+  assert.match(body, /addEventListener\("focusin", outside, true\)/);
+  assert.match(body, /claimPopover\(close\)/);
+  assert.match(body, /releasePopover\(close\)/);
+  assert.doesNotMatch(body, /"mousedown"|"click"/);
+});
+
+test("MultiSelect trigger: All for an empty or full value, the one label, N selected; Checkbox states", async t => {
+  let React, server, ui;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    ui = await import("./ui.js");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const h = React.createElement;
+  const options = [
+    { value: "ch", label: "Switzerland", color: "#f00" },
+    { value: "es", label: "Spain" },
+    { value: "it", label: "Italy" },
+  ];
+  const text = value => {
+    const html = server.renderToStaticMarkup(
+      h(ui.MultiSelect, { options, value, onChange() {}, allLabel: "All markets" }),
+    );
+    return html.match(/<span class="mk-ms-text">([^<]*)<\/span>/)[1];
+  };
+  assert.equal(text([]), "All markets");
+  assert.equal(text(["ch", "es", "it"]), "All markets");
+  assert.equal(text(["es"]), "Spain");
+  assert.equal(text(["es", "it"]), "2 selected");
+  assert.equal(typeof ui.closePopovers, "function");
+
+  const box = checked => server.renderToStaticMarkup(h(ui.Checkbox, { checked }));
+  assert.match(box(true), /class="mk-ms-box on"[^>]*><svg[^>]*><polyline/);
+  assert.match(box("mixed"), /class="mk-ms-box on"[^>]*><svg[^>]*><line/);
+  assert.match(box(false), /class="mk-ms-box"[^>]*><\/span>/);
+});
