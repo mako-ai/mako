@@ -162,6 +162,8 @@ export default defineConfig({
       "src/connectors/workspace/sync-box.test.ts",
       "src/apps/repository.service.test.ts",
       "src/services/workspace-repos.service.test.ts",
+      // Graceful rename (api/src/rename): the name rules' two entry points.
+      "src/rename/scenarios/name-rules-parity.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.

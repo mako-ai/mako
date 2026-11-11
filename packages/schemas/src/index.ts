@@ -46,3 +46,17 @@ export {
   type ValidateSyncConfigInput,
   type ValidateSyncConfigResult,
 } from "./sync-mode-matrix";
+
+export {
+  RENAME_SLUG_MAX_LENGTH,
+  displayNameError,
+  displayNameProblem,
+  displayNameTooLong,
+  isRenameSlug,
+  isWindowsReservedName,
+  looksLikeObjectId,
+  normalizeDisplayName,
+  renameSlugError,
+  unsafeSlugReason,
+  type SlugNamedKind,
+} from "./object-names";
