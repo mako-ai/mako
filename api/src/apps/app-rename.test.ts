@@ -200,6 +200,42 @@ const commitsSince = async (base: string) =>
 
 const app = async (ref: string) => (await resolveProjectRef(WS, ref))!;
 
+/** The report's state row (sharing, deployment), as a published app has. */
+const reportRow = () =>
+  AppProject.create({
+    _id: new Types.ObjectId(REPORT_ID),
+    workspaceId: new Types.ObjectId(WS),
+    title: "Report",
+    slug: "report",
+    path: "apps/report",
+    access: "workspace",
+    owner_id: ANA,
+    createdBy: ANA,
+  });
+
+/**
+ * The report is GONE: no folder on main declares its id, at any path; its
+ * row is gone; and nothing — id, current name or old link — finds it.
+ */
+async function expectReportGone() {
+  const manifests = (await git("ls-tree", "-r", "-z", "--name-only", MAIN))
+    .split("\0")
+    .filter(file => file.endsWith("/mako.json"));
+  for (const file of manifests) {
+    const dir = file.slice(0, -"/mako.json".length);
+    expect([dir, (await manifestAt(dir)).id]).not.toEqual([dir, REPORT_ID]);
+  }
+  expect(await filesAt("apps/report/src")).toEqual({});
+  expect(await filesAt("apps/revenue")).toEqual({});
+  expect(await AppProject.findById(REPORT_ID).lean()).toBeNull();
+  invalidateAppsIndexCache();
+  const apps = (await loadAppsIndex(WS)).apps;
+  expect(apps.some(a => a.appId === REPORT_ID)).toBe(false);
+  for (const ref of [REPORT_ID, "revenue", "apps/revenue"]) {
+    expect([ref, await resolveProjectRef(WS, ref)]).toEqual([ref, null]);
+  }
+}
+
 describe("renaming an app", () => {
   it("a new name is one commit by the person renaming, touching only mako.json", async () => {
     const base = await head();
@@ -462,20 +498,64 @@ describe("a rename racing another change", () => {
     ["a new name", { title: "Revenue" }],
     ["a new link", { slug: "revenue" }],
   ])(
-    "a delete landing first wins: %s does not bring the app back",
+    "a delete landing after the rename's read wins: %s answers 404 and brings nothing back",
     async (_what, change) => {
+      await reportRow();
       const report = await app(REPORT_ID);
-      race.beforeCommit = () => deleteProject(report);
-      const base = await head();
+      let deleted = false;
+      race.beforeCommit = async () => {
+        await deleteProject(await app(REPORT_ID));
+        deleted = true;
+      };
       await expect(renameProject(report, change)).rejects.toMatchObject({
         status: 404,
       });
-      expect(await filesAt("apps/report")).toEqual({});
-      expect(await filesAt("apps/revenue")).toEqual({});
-      expect(await commitsSince(base)).toHaveLength(1);
-      expect(await resolveProjectRef(WS, REPORT_ID)).toBeNull();
+      expect(deleted).toBe(true);
+      await expectReportGone();
     },
   );
+
+  it.each([
+    ["a new link", { slug: "revenue" }],
+    ["a new name", { title: "Revenue" }],
+    ["both", { title: "Revenue", slug: "revenue" }],
+  ])(
+    "a rename landing after the delete's read: %s lands, and the delete still removes the app where it now is",
+    async (_what, change) => {
+      await reportRow();
+      // What DELETE /apps/{id} holds: the app as it was when the route read it.
+      const read = await app(REPORT_ID);
+      let renamedTo: string | undefined;
+      race.beforeCommit = async () => {
+        renamedTo = (await renameProject(await app(REPORT_ID), change)).to;
+      };
+      await deleteProject(read);
+      // Both said "done" — so the app must be gone, wherever the rename put it.
+      expect(renamedTo).toBe("slug" in change ? "apps/revenue" : "apps/report");
+      await expectReportGone();
+    },
+  );
+
+  it("a delete holding a path from BEFORE a rename removes the renamed app, never a newcomer at the old folder", async () => {
+    await reportRow();
+    const read = await app(REPORT_ID);
+    await renameProject(await app(REPORT_ID), { slug: "revenue" });
+    await push({ "apps/report/mako.json": manifest({ title: "Newcomer" }) });
+    await deleteProject(read);
+    await expectReportGone();
+    expect((await manifestAt("apps/report")).title).toBe("Newcomer");
+    // Deleting it again is a no-op, not an error and not the newcomer's end.
+    await deleteProject(read);
+    expect((await manifestAt("apps/report")).title).toBe("Newcomer");
+  });
+
+  it("a save landing after the delete's read does not keep the app alive", async () => {
+    await reportRow();
+    race.beforeCommit = () =>
+      push({ "apps/report/src/main.tsx": "export const v = 3;\n" });
+    await deleteProject(await app(REPORT_ID));
+    await expectReportGone();
+  });
 
   it("of two renames, the second is told where the app went", async () => {
     const report = await app(REPORT_ID);

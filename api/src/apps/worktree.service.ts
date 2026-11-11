@@ -80,6 +80,7 @@ import { assertSafeRelPath, EMPTY_TREE, runGit, ZERO_OID } from "./git";
 import {
   BlobPreconditionError,
   DEFAULT_BRANCH,
+  blobOidAt,
   commitBlobsOnBranch,
   commitTree,
   globTree,
@@ -1071,26 +1072,72 @@ export async function createProject(input: {
   return project;
 }
 
+/**
+ * Delete an app: a COMMIT removing its folder (§10 monorepo — the workspace
+ * repo, other apps, worktrees and history are untouched), then its row.
+ *
+ * The folder removed is the one the app is in WHEN THE COMMIT LANDS, found
+ * by id — not the path the caller read a moment ago. The commit is a
+ * compare-and-swap on that folder's tree, looked up again when main moved:
+ * a rename (or a move) that lands between the caller's read and this commit
+ * is followed, so a delete that answers "done" never leaves the app alive
+ * under its new name, and never takes out another app that has since
+ * arrived at the old folder.
+ */
 export async function deleteProject(project: IAppProject): Promise<void> {
-  // §10 monorepo: deleting an app is a COMMIT removing its folder — the
-  // workspace repo (and other apps, worktrees, history) are untouched.
-  const repoDir = await repoForWorkspace(project.workspaceId.toString());
+  const workspaceId = project.workspaceId.toString();
+  const appId = project._id.toString();
+  const repoDir = await repoForWorkspace(workspaceId);
   if (await repoExists(repoDir)) {
-    await commitFilesOnBranch(
-      repoDir,
-      project.defaultBranch || DEFAULT_BRANCH,
-      { deletePrefixes: [appRootFor(project)] },
-      { message: `Delete app "${project.title}" (${appRootFor(project)})` },
-    );
-    queueMirrorPush(project.workspaceId.toString());
+    const branch = project.defaultBranch || DEFAULT_BRANCH;
+    let settled = false;
+    for (let attempt = 0; attempt < 5 && !settled; attempt++) {
+      const snapshot = await loadAppsIndex(workspaceId);
+      const sha =
+        snapshot.sha || (await resolveCommit(repoDir, `refs/heads/${branch}`));
+      // An app main no longer lists (its manifest went, or no repo is
+      // bound) leaves at most what sits at its row's path — unless another
+      // app holds that path now.
+      const last = appRootFor(project);
+      const path =
+        snapshot.apps.find(a => a.appId === appId)?.path ??
+        (snapshot.apps.some(
+          a => isWithin(a.path, last) || isWithin(last, a.path),
+        )
+          ? null
+          : last);
+      const treeOid = sha && path ? await blobOidAt(repoDir, sha, path) : null;
+      if (!sha || !path || !treeOid) break; // nothing of it on main
+      const files = await appFilesAt(repoDir, sha, path);
+      try {
+        await commitBlobsOnBranch(
+          repoDir,
+          branch,
+          { deletes: files.map(f => `${path}/${f.rel}`) },
+          {
+            message: `Delete app "${project.title}" (${path})`,
+            expectBlobs: { [path]: treeOid },
+          },
+        );
+        settled = true;
+      } catch (error) {
+        // Main moved under the read (a rename, a save): look again.
+        if (!(error instanceof BlobPreconditionError)) throw error;
+        if (attempt === 4) {
+          throw new AppFolderError(
+            "This app kept changing while it was being deleted. Try again.",
+            409,
+          );
+        }
+      }
+    }
+    queueMirrorPush(workspaceId);
   }
   await AppProject.deleteOne({
     _id: project._id,
     workspaceId: project.workspaceId,
   });
-  await syncAppsIndexFromRepo(project.workspaceId.toString()).catch(
-    () => undefined,
-  );
+  await syncAppsIndexFromRepo(workspaceId).catch(() => undefined);
   pokeApp(project.workspaceId, project._id, "lifecycle");
 }
 
@@ -1376,12 +1423,18 @@ export interface AppRenameResult {
   aliasesAdded: string[];
 }
 
-/** Every file of the app folder at `sha`, with the mode git stores. */
+/**
+ * Every entry of the app folder at `sha`, with the mode git stores. `blob`
+ * is false for a nested git repository (a gitlink), which can be deleted
+ * but not moved.
+ */
 async function appFilesAt(
   repoDir: string,
   sha: string,
   appPath: string,
-): Promise<Array<{ rel: string; oid: string; mode: IndexMode }>> {
+): Promise<
+  Array<{ rel: string; oid: string; mode: IndexMode; blob: boolean }>
+> {
   const { stdout } = await runGit(
     ["-C", repoDir, "ls-tree", "-r", "-z", `${sha}:${appPath}`],
     { timeoutMs: 60_000 },
@@ -1392,14 +1445,12 @@ async function appFilesAt(
     .map(record => {
       const tab = record.indexOf("\t");
       const [mode, type, oid] = record.slice(0, tab).split(/\s+/);
-      const rel = record.slice(tab + 1);
-      if (type !== "blob") {
-        throw new AppFolderError(
-          `This app holds a nested git repository (${rel}), which can't be moved here. Rename the app from a checkout instead.`,
-          409,
-        );
-      }
-      return { rel, oid, mode: mode as IndexMode };
+      return {
+        rel: record.slice(tab + 1),
+        oid,
+        mode: mode as IndexMode,
+        blob: type === "blob",
+      };
     });
 }
 
@@ -1474,6 +1525,13 @@ export async function renameProject(
     if (to === from && newTitle === oldTitle) return null;
     let manifest = current;
     if (to !== from) {
+      const nested = files.find(f => !f.blob);
+      if (nested) {
+        throw new AppFolderError(
+          `This app holds a nested git repository (${nested.rel}), which can't be moved here. Rename the app from a checkout instead.`,
+          409,
+        );
+      }
       const taken = await occupiedPaths(workspaceId);
       const twin = [...taken].find(
         p => p !== from && p.toLowerCase() === to.toLowerCase(),
