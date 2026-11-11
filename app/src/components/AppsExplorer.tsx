@@ -929,8 +929,9 @@ export default function AppsExplorer() {
 
   /**
    * Inline rename (F2 / double-click): a git folder, a Starred folder, or an
-   * app row — which renames the app's FOLDER (its slug) in place, the one
-   * name the row can honestly change; the title lives in mako.json.
+   * app row — which renames the app's LINK (its folder name) in place, as
+   * the Rename dialog would: the old link keeps working. The name (the
+   * title in mako.json) is the dialog's to change.
    */
   const handleRename = useCallback(
     (id: string, name: string) => {
@@ -954,7 +955,14 @@ export default function AppsExplorer() {
         const folder = folderOfApp(parsed.appId);
         if (!app || !folder || isSharedWithMe(parsed.appId)) return;
         if (name !== app.slug && mayWriteTo(folder)) {
-          void moveApp(workspaceId, parsed.appId, folder, name);
+          void renameObject(workspaceId, "app", {
+            ref: parsed.appId,
+            slug: name,
+          })
+            .then(() => fetchApps(workspaceId, { fresh: true }))
+            .catch((e: unknown) =>
+              setError(toErrorMessage(e, "The app could not be renamed.")),
+            );
         }
       }
     },
@@ -963,7 +971,8 @@ export default function AppsExplorer() {
       renameFavourite,
       mayWriteTo,
       moveAppFolder,
-      moveApp,
+      fetchApps,
+      setError,
       appById,
       folderOfApp,
       isSharedWithMe,
