@@ -171,6 +171,12 @@ export default defineConfig({
       "src/agent-lib/tools/rename-tools.test.ts",
       // /objects/resolve and /objects/{kind}/rename: who may call them.
       "src/routes/objects.test.ts",
+      // Consoles: rename and delete interleaved on purpose (real git + Mongo),
+      // then the relocation service, the trash and the laptop-rename sync.
+      "src/apps/console-rename-delete-race.test.ts",
+      "src/apps/console-relocation.test.ts",
+      // The same over HTTP: what each console route answers when refused.
+      "src/routes/consoles-rename-trash.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.
