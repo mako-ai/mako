@@ -69,6 +69,7 @@ import {
 } from "../lib/explorer-reveal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DbtFileRenameDialog, DbtRenameWarnings } from "./DbtFileRenameDialog";
+import { filesReferringTo } from "../lib/dbt-rename-path";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
 import { dirname } from "../utils/path";
@@ -663,6 +664,21 @@ export function DbtExplorer() {
     if (ok) focusDbtFileTab(newFileTarget.projectId, path);
     setNewFileTarget(null);
   }, [workspaceId, newFileTarget, newFileName, createFile]);
+
+  // The files open here that ref() the model being renamed: the dialog
+  // names them when the new path would stop the file being a model.
+  const renameReferencedBy = useMemo(
+    () =>
+      renameTarget?.parsed.kind === "file"
+        ? filesReferringTo(
+            renameTarget.parsed.path,
+            useDbtStore.getState().filesByProject[
+              renameTarget.parsed.projectId
+            ] ?? {},
+          )
+        : NO_PATHS,
+    [renameTarget],
+  );
 
   // The dialog sends the full project path it checked. A refusal comes
   // back as text and stays in the dialog; warnings open after it closes.
@@ -1264,6 +1280,7 @@ export function DbtExplorer() {
           (renameTarget && filePathsByProject[renameTarget.parsed.projectId]) ||
           NO_PATHS
         }
+        referencedBy={renameReferencedBy}
         onClose={() => setRenameTarget(null)}
         onConfirm={handleRenameConfirm}
       />

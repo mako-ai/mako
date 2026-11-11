@@ -16,12 +16,14 @@ const FILES = [FROM, "models/marts/fct_orders.sql"];
 function renderDialog(
   onConfirm = vi.fn(async () => null as string | null),
   fromPath = FROM,
+  referencedBy?: string[],
 ) {
   render(
     <DbtFileRenameDialog
       open
       fromPath={fromPath}
       existingPaths={FILES}
+      referencedBy={referencedBy}
       onClose={() => undefined}
       onConfirm={onConfirm}
     />,
@@ -92,6 +94,50 @@ describe("DbtFileRenameDialog", () => {
     cleanup();
     renderDialog(undefined, "models/schema.yml");
     expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+});
+
+describe("a model renamed to a path that names no model", () => {
+  it("is warned of under the field before it is done, and stays allowed", async () => {
+    const { input, button, onConfirm } = renderDialog(undefined, FROM, [
+      "models/marts/fct_orders.sql",
+    ]);
+    expect(screen.queryByRole("alert")).toBeNull();
+    type(input, "models/marts/report");
+    const warning = screen.getByRole("alert").textContent ?? "";
+    expect(warning).toContain(
+      "models/marts/report is not a model path, so the file stops being the model 'order_counts'.",
+    );
+    expect(warning).toContain("ref('order_counts') calls");
+    // What is known here to refer to it is named.
+    expect(warning).toContain(
+      "Among the files open here, models/marts/fct_orders.sql refers to it.",
+    );
+    // Nothing would be rewritten, so that is not offered; the rename is.
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    await vi.waitFor(() =>
+      expect(onConfirm).toHaveBeenCalledWith("models/marts/report", true),
+    );
+  });
+
+  it("says nothing while the file stays a model, for a file that is none, or over a refusal", () => {
+    const { input } = renderDialog();
+    for (const typed of [
+      "models/marts/counts.sql",
+      "models/staging/order_counts.py",
+      "models/marts/fct_orders.sql", // taken: the refusal is what shows
+      "../report",
+    ]) {
+      type(input, typed);
+      expect([typed, screen.queryByRole("alert")]).toEqual([typed, null]);
+    }
+    expect(screen.getByRole("checkbox")).toBeTruthy();
+    cleanup();
+    const other = renderDialog(undefined, "models/schema.yml");
+    type(other.input, "models/props");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
 

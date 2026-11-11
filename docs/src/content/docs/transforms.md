@@ -50,7 +50,7 @@ Reads come from the workspace repo at your session branch (git `listTree`/`readB
 
 Renaming a file (**Rename** in the explorer, or the agent's `rename_object` with `kind: "dbt_file"`) and moving it to another folder are the same edit: the file gets a new project path. It is one commit on your branch, and it needs the admin or owner role like every other dbt file change. Modes, symlinks and binary files move as they are.
 
-In the explorer the Rename dialog holds the file's full project path, prefilled, and says while you type why a path cannot be used. It will not start while a file you have not saved mentions the model: save or discard those edits first. Tabs open on the file follow it, in every window.
+In the explorer the Rename dialog holds the file's full project path, prefilled, and says while you type why a path cannot be used. It will not start while a file you have not saved mentions the model: save or discard those edits first. A new path that would stop the file being a model (`models/report`, with no `.sql`) is allowed, and the dialog warns first that `ref()` calls to it will no longer resolve. Tabs open on the file follow it, in every window.
 
 A model's file name is its name. When you rename a model or a seed, the same commit rewrites what names it (untick **Also update `ref()` calls, job selectors and YAML entries** to move the file only):
 

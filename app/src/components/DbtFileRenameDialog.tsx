@@ -27,6 +27,7 @@ import {
 } from "@mui/material";
 import {
   dbtNodeNameOf,
+  leavesNodeWarning,
   resolveDbtRenameTarget,
   splitRenameWarning,
 } from "../lib/dbt-rename-path";
@@ -37,6 +38,8 @@ export interface DbtFileRenameDialogProps {
   fromPath: string;
   /** Every file path in the project, for "already exists" as it is typed. */
   existingPaths: readonly string[];
+  /** Files open in this window that `ref()` the model this file is. */
+  referencedBy?: readonly string[];
   onClose: () => void;
   /**
    * Do the rename. Resolves to the refusal to show (the dialog stays
@@ -49,6 +52,7 @@ export function DbtFileRenameDialog({
   open,
   fromPath,
   existingPaths,
+  referencedBy,
   onClose,
   onConfirm,
 }: DbtFileRenameDialogProps) {
@@ -71,6 +75,12 @@ export function DbtFileRenameDialog({
   );
   const error = target.ok ? refusal : target.error;
   const ready = target.ok && !target.unchanged && !busy;
+  // Allowed, but worth knowing before it is done: the new path names no
+  // model, so the file stops being one and nothing that names it follows.
+  const leavesNode =
+    target.ok && !target.unchanged
+      ? leavesNodeWarning(fromPath, target.path, referencedBy)
+      : null;
 
   const submit = async () => {
     if (!target.ok || target.unchanged || busy) return;
@@ -107,7 +117,12 @@ export function DbtFileRenameDialog({
           slotProps={{ htmlInput: { spellCheck: false } }}
           sx={{ mt: 1 }}
         />
-        {dbtNodeNameOf(fromPath) !== null && (
+        {leavesNode && (
+          <Alert severity="warning" sx={{ mt: 1 }}>
+            {leavesNode}
+          </Alert>
+        )}
+        {dbtNodeNameOf(fromPath) !== null && !leavesNode && (
           <FormControlLabel
             sx={{ mt: 1 }}
             control={

@@ -5,6 +5,8 @@
 import { describe, expect, it } from "vitest";
 import {
   dbtNodeNameOf,
+  filesReferringTo,
+  leavesNodeWarning,
   resolveDbtRenameTarget,
   splitRenameWarning,
 } from "./dbt-rename-path";
@@ -80,6 +82,49 @@ describe("what a rename is, and what it warns of", () => {
     expect(dbtNodeNameOf("seeds/countries.csv")).toBe("countries");
     expect(dbtNodeNameOf("snapshots/orders.sql")).toBeNull();
     expect(dbtNodeNameOf("models/schema.yml")).toBeNull();
+  });
+
+  it("warns before a model or a seed is renamed to a path that names no node", () => {
+    expect(leavesNodeWarning("models/orders.sql", "models/report")).toBe(
+      "models/report is not a model path, so the file stops being the model 'orders'. ref('orders') calls, job selectors and its schema entry are left as they are and will not resolve.",
+    );
+    expect(
+      leavesNodeWarning("models/orders.sql", "docs/orders.sql", [
+        "models/mart.sql",
+      ]),
+    ).toMatch(/ Among the files open here, models\/mart\.sql refers to it\.$/);
+    expect(
+      leavesNodeWarning("seeds/countries.csv", "seeds/countries.txt", [
+        "a.sql",
+        "b.sql",
+      ]),
+    ).toMatch(
+      /stops being the seed 'countries'.*a\.sql, b\.sql refer to it\.$/,
+    );
+    // Still a node afterwards, or never one: nothing to say.
+    for (const [from, to] of [
+      ["models/orders.sql", "models/marts/fct_orders.sql"],
+      ["models/orders.sql", "models/orders.py"],
+      ["models/schema.yml", "models/props"],
+      ["snapshots/orders.sql", "snapshots/orders"],
+    ]) {
+      expect([from, to, leavesNodeWarning(from, to)]).toEqual([from, to, null]);
+    }
+  });
+
+  it("knows which files loaded here ref() a model, and claims nothing about the rest", () => {
+    const files = {
+      "models/orders.sql": { content: "-- ref('orders')", loaded: true },
+      "models/mart.sql": { content: "from {{ ref('orders') }}", loaded: true },
+      "models/pkg.sql": { content: 'from {{ ref("a", "orders") }}' },
+      "models/other.sql": { content: "from {{ ref('orders_v2') }} orders" },
+      "models/unloaded.sql": { content: "", loaded: false },
+    };
+    expect(filesReferringTo("models/orders.sql", files)).toEqual([
+      "models/mart.sql",
+      "models/pkg.sql",
+    ]);
+    expect(filesReferringTo("models/schema.yml", files)).toEqual([]);
   });
 
   it("a warning is one sentence, then its detail", () => {
