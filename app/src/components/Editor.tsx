@@ -1870,6 +1870,9 @@ function Editor({
           setSnackbarOpen(true);
         } else {
           // "new" — first-time save of a draft; update the originating tab.
+          // A console's first save is its version 1: the tab knows which
+          // saved content its later edits start from.
+          updateVersion(targetId, 1);
           updateFilePath(targetId, savePath);
           updateTitle(targetId, consoleLeafName(savePath));
           updateAccess(

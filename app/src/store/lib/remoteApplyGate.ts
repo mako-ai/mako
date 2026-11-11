@@ -5,11 +5,14 @@
  *
  * Decisions:
  *  - "skip"          — tab missing or already at/past the entry's revision;
- *  - "fast-forward"  — local content already matches the server copy, or
- *                      the server copy is the very state the local edits
- *                      started from (only a name or a place changed):
+ *  - "fast-forward"  — local content already matches the server copy:
  *                      advance revision/metadata but DO NOT touch the Monaco
  *                      buffer (it may be ahead by in-flight keystrokes);
+ *  - "keep-local"    — the tab holds unsaved edits and the server's SAVED
+ *                      CONTENT is the one they started from: the revision
+ *                      moved for a rename, a move or a restore. Nothing to
+ *                      reconcile and nothing to warn about — take the name
+ *                      and the revision, leave content and saved state;
  *  - "banner"        — contents diverge while the tab holds unsaved local
  *                      edits: never merge silently, surface the affordance;
  *  - "apply"         — clean tab, divergent content: replace store + buffer.
@@ -25,10 +28,10 @@ export interface RemoteApplyDecisionInput {
   /** Store content equals the entry content (connection metadata aside). */
   contentMatches: boolean;
   /**
-   * The server copy is exactly what this tab's unsaved edits are based on
-   * (its content is the tab's last-saved state): the revision moved for
-   * something that is not content — a rename, a move, a restore — so there
-   * is nothing to reconcile and nothing to warn about.
+   * The server's saved content is what this tab's unsaved edits are based
+   * on: the same saved version the tab was loaded from or last saved. The
+   * revision moved for something that is not content — a rename, a move, a
+   * restore.
    */
   remoteIsLocalBase?: boolean;
   /**
@@ -39,7 +42,8 @@ export interface RemoteApplyDecisionInput {
   unsavedLocalEdits: boolean;
 }
 
-export type RemoteApplyDecision = "skip" | "fast-forward" | "banner" | "apply";
+export type RemoteApplyDecision =
+  "skip" | "fast-forward" | "keep-local" | "banner" | "apply";
 
 export function decideRemoteApply(
   input: RemoteApplyDecisionInput,
@@ -47,7 +51,8 @@ export function decideRemoteApply(
   if (!input.tabExists) return "skip";
   if ((input.tabRevision ?? 0) >= input.entryRevision) return "skip";
   if (input.contentMatches) return "fast-forward";
-  if (input.remoteIsLocalBase) return "fast-forward";
-  if (input.unsavedLocalEdits) return "banner";
+  if (input.unsavedLocalEdits) {
+    return input.remoteIsLocalBase ? "keep-local" : "banner";
+  }
   return "apply";
 }

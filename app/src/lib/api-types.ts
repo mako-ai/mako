@@ -118,6 +118,12 @@ export interface ConsoleRevisionSyncEntry {
   databaseId?: string;
   databaseName?: string;
   version?: number;
+  /**
+   * The server's working copy is the saved content (the file on main): no
+   * draft has been written over it. With an unchanged `version` it means
+   * the content is the one a tab loaded or last saved.
+   */
+  contentIsSaved?: boolean;
   /** Server truth for draft-vs-saved (drives autosave eligibility). */
   isSaved?: boolean;
   /** Hash of the latest explicit-save snapshot, not the mutable draft. */

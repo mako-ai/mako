@@ -174,6 +174,14 @@ interface ConsoleActions {
    */
   fastForwardRemoteConsoleEntry: (entry: ConsoleRevisionSyncEntry) => void;
   /**
+   * Take a revisions-sync entry that changed NO saved content (a rename, a
+   * move, a restore) into a tab that holds unsaved edits: the name and the
+   * revision follow the server; the content, the saved-state baseline and
+   * the connection the user may have changed stay exactly as they are, and
+   * a conflict banner raised for it goes.
+   */
+  keepLocalOverRemoteEntry: (entry: ConsoleRevisionSyncEntry) => void;
+  /**
    * Start (or update) a Monaco diff review for an agent (modify_console)
    * edit. The change is already persisted to the server draft; this surfaces
    * it for Accept/Reject review instead of applying it silently. The editor
@@ -906,6 +914,17 @@ export const useConsoleStore = create<ConsoleStore>()(
         blockedDraftSaves.delete(entry.id);
         lastSavedContentHash.set(entry.id, newStateHash);
       },
+
+      keepLocalOverRemoteEntry: entry =>
+        set(state => {
+          const t = state.tabs[entry.id];
+          if (!t) return;
+          if (entry.name) t.title = entry.name;
+          t.draftRevision = entry.draftRevision;
+          if (typeof entry.version === "number") t.version = entry.version;
+          if (t.remoteUpdate?.kind === "updated") t.remoteUpdate = null;
+          t.lastRun = entry.lastRun ?? t.lastRun;
+        }),
 
       beginAgentReview: entry => {
         const tab = get().tabs[entry.id];

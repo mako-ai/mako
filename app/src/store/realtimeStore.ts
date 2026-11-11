@@ -32,7 +32,11 @@ import {
 } from "../lib/console-tab-location";
 import { computeConsoleStateHash } from "../utils/stateHash";
 import { useConsoleTreeStore } from "./consoleTreeStore";
-import type { ConsoleRevisionsSyncResponse } from "../lib/api-types";
+import type {
+  ConsoleRevisionSyncEntry,
+  ConsoleRevisionsSyncResponse,
+} from "../lib/api-types";
+import type { ConsoleTab } from "./lib/types";
 import {
   dispatchRealtimeEvent,
   onRealtimeEvent,
@@ -171,6 +175,61 @@ export function followConsoleTree(): () => void {
   });
 }
 followConsoleTree();
+
+/**
+ * Is the server's SAVED CONTENT still what this tab's unsaved edits started
+ * from? A rename, a move and a restore bump the console's revision — which
+ * is all a poke says — and change nothing a person typed, so they must not
+ * read as "updated elsewhere".
+ *
+ * Two facts from the server answer it. The saved `version` moves on every
+ * explicit save, on a push that changes the file and on a restore from
+ * history, and on nothing else: the same version is the same saved
+ * content. And `contentIsSaved` says the server's working copy IS that
+ * saved content — no draft written over it by another window since. Both
+ * true: what the server holds is what this tab's edits started from.
+ *
+ * Comparing content hashes is NOT reliable here, and is why a rename of
+ * one's own console raised the banner: the tab's saved-state hash and the
+ * server's are taken from different places (the tab's fields at its last
+ * save; the committed file, where the server may have filled in a
+ * connection), so they can differ for one and the same content. They only
+ * add the cases where they do agree. An agent's draft is never
+ * "unchanged": it goes through the diff review before this is asked.
+ */
+export function savedContentUnchanged(
+  tab: Pick<ConsoleTab, "isSaved" | "version" | "savedStateHash">,
+  entry: Pick<
+    ConsoleRevisionSyncEntry,
+    | "version"
+    | "contentIsSaved"
+    | "savedStateHash"
+    | "lastDraftOrigin"
+    | "content"
+    | "connectionId"
+    | "databaseId"
+    | "databaseName"
+  >,
+): boolean {
+  if (!tab.isSaved || entry.lastDraftOrigin === "agent") return false;
+  if (
+    entry.contentIsSaved === true &&
+    typeof tab.version === "number" &&
+    tab.version === entry.version
+  ) {
+    return true;
+  }
+  if (!tab.savedStateHash) return false;
+  return (
+    entry.savedStateHash === tab.savedStateHash ||
+    computeConsoleStateHash(
+      entry.content,
+      entry.connectionId,
+      entry.databaseId,
+      entry.databaseName,
+    ) === tab.savedStateHash
+  );
+}
 
 function isObjectIdLike(id: string): boolean {
   return /^[0-9a-fA-F]{24}$/.test(id);
@@ -664,17 +723,9 @@ export const useRealtimeStore = create<RealtimeStore>()(
               tabRevision: tab?.draftRevision,
               entryRevision: entry.draftRevision,
               contentMatches: tab?.content === entry.content,
-              // A rename or a move bumps the revision and changes no
-              // content: the server copy is still the saved state this
-              // tab's edits started from. That is not a conflict.
-              remoteIsLocalBase:
-                Boolean(tab?.isSaved && tab.savedStateHash) &&
-                computeConsoleStateHash(
-                  entry.content,
-                  entry.connectionId,
-                  entry.databaseId,
-                  entry.databaseName,
-                ) === tab?.savedStateHash,
+              remoteIsLocalBase: tab
+                ? savedContentUnchanged(tab, entry)
+                : false,
               unsavedLocalEdits: hasUnsavedLocalEdits(entry.id),
             });
             switch (decision) {
@@ -686,6 +737,11 @@ export const useRealtimeStore = create<RealtimeStore>()(
                 // revision/metadata WITHOUT touching the Monaco buffer — it
                 // may be ahead by keystrokes that haven't autosaved yet.
                 store.fastForwardRemoteConsoleEntry(entry);
+                break;
+              case "keep-local":
+                // A rename, a move or a restore of a console this tab has
+                // unsaved edits on: no content changed, so no banner.
+                store.keepLocalOverRemoteEntry(entry);
                 break;
               case "banner":
                 // Remote update while this tab holds unsaved local edits
