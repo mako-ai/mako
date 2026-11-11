@@ -13,6 +13,7 @@ import { Types } from "mongoose";
 import { Workspace } from "../database/workspace-schema";
 import { decryptString, encryptString } from "../services/crypto.service";
 import { HatchetError } from "./hatchet";
+import { wakeWorker } from "./idle";
 
 type Webhooks = Record<string, string> | undefined;
 
@@ -54,6 +55,11 @@ export async function setTriggers(
   };
   if (Object.keys(update).length > 0) {
     await Workspace.updateOne({ _id: new Types.ObjectId(workspaceId) }, update);
+  }
+  // The worker registers a workflow's schedule again when it is switched:
+  // a sleeping one must wake to do it.
+  if (change.active !== undefined) {
+    await wakeWorker(workspaceId, "triggers");
   }
   return change.webhook === undefined
     ? {}

@@ -28,6 +28,7 @@ import {
   workerSecretExists,
   writeWorkerSecret,
 } from "./kube";
+import { wakeWorker } from "./idle";
 import { WORKER_KEY_SCOPES, workerKeyName } from "./worker-key";
 
 const logger = loggers.api("workflows-on-push");
@@ -295,6 +296,8 @@ async function deployWorkflowsNow(
       },
     );
     logger.info("Set workflows target", { workspaceId, sha: main.sha });
+    // A sleeping worker wakes to build the new commit.
+    await wakeWorker(workspaceId, "deploy");
   } else if (!main && state.live) {
     await Workspace.updateOne(
       { _id: workspace._id },

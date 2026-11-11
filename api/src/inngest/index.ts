@@ -30,6 +30,7 @@ import {
   workflowsDeployFunction,
   workflowsDeployReconcileFunction,
 } from "./functions/workflows-deploy";
+import { workflowsIdleFunction } from "./functions/workflows-idle";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
 import { cdcRepartitionFunction } from "./functions/cdc-repartition";
 import { usageReportingFunction } from "./functions/usage-reporting";
@@ -116,6 +117,7 @@ export function getFunctions() {
         appsLifecycleFunction,
         appsDeployReconcileFunction,
         workflowsDeployReconcileFunction,
+        workflowsIdleFunction,
         scheduledQuerySchedulerFunction,
         dbtSchedulerFunction,
       ];

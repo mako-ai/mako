@@ -116,7 +116,17 @@ for (const entry of readdirSync(dir, { withFileTypes: true })) {
     );
     process.exit(1);
   }
-  if (!sandbox) runAs(name, workflow.definition);
+  if (!sandbox) {
+    runAs(name, workflow.definition);
+    // A sleeping worker takes a cold start to pick a run up (api
+    // src/workflows/idle.ts): wait for it longer than Hatchet's 5m default,
+    // unless the workflow sets its own.
+    workflow.definition.taskDefaults = {
+      ...workflow.definition.taskDefaults,
+      scheduleTimeout:
+        workflow.definition.taskDefaults?.scheduleTimeout ?? "30m",
+    };
+  }
   if (sandbox || !active.has(name)) {
     for (const trigger of ["on", "onCrons", "onEvents"]) {
       delete workflow.definition[trigger];

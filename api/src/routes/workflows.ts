@@ -59,6 +59,7 @@ import {
 } from "../workflows/runs";
 import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
 import { readWorkflowCost } from "../workflows/costs";
+import { wakeWorker } from "../workflows/idle";
 import {
   isSandboxRunId,
   sandboxRunOfKey,
@@ -268,6 +269,7 @@ workflowRoutes.openapi(
     const body = await c.req.json().catch(() => ({}));
     const step = typeof body?.step === "string" ? body.step : undefined;
     const retried = await retryRun(await requireTenant(workspaceId), id, step);
+    await wakeWorker(workspaceId, "retry");
     return c.json({ success: true as const, ...retried }, 200);
   },
 );
@@ -382,6 +384,7 @@ workflowRoutes.openapi(
       startedBy: session ? "person" : "agent",
       ...(dryRun ? { dryRun } : {}),
     });
+    await wakeWorker(workspaceId, "run");
     return c.json({ success: true as const, runId }, 200);
   },
 );
@@ -471,6 +474,7 @@ workflowHookRoutes.post(
       trigger: "webhook",
       startedBy: "trigger",
     });
+    await wakeWorker(workspaceId, "webhook");
     return c.json({ runId }, 202);
   },
 );

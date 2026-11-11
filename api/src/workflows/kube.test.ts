@@ -83,6 +83,55 @@ async function main() {
     "the pod template changes, so new pods start",
   );
 
+  // A sleeping worker gets the new image but stays asleep.
+  asked.replaced = [];
+  const asleep = worker("asleep", OLD);
+  asleep.spec = { ...asleep.spec, replicas: 0 } as V1Deployment["spec"];
+  await rollWorkersToRuntimeImage({
+    ...apps,
+    listNamespacedDeployment: async () => ({ items: [asleep] }),
+  } as never);
+  assert.equal(asked.replaced[0]?.spec?.replicas, 0);
+
+  // Scaling: a change is written, the same count or no worker is not.
+  const { setWorkerReplicas, listWorkers } = await import("./kube");
+  const scales: Record<string, number> = { "wf-a": 1 };
+  const written: Array<{ name: string; replicas?: number }> = [];
+  const scaler = {
+    readNamespacedDeploymentScale: async (req: { name: string }) => {
+      if (!(req.name in scales)) {
+        throw Object.assign(new Error(), { code: 404 });
+      }
+      return {
+        metadata: { name: req.name },
+        spec: { replicas: scales[req.name] },
+      };
+    },
+    replaceNamespacedDeploymentScale: async (req: {
+      name: string;
+      body: { spec?: { replicas?: number } };
+    }) => {
+      written.push({ name: req.name, replicas: req.body.spec?.replicas });
+      return req.body;
+    },
+  };
+  assert.equal(await setWorkerReplicas("a", 1, scaler as never), false);
+  assert.equal(await setWorkerReplicas("a", 0, scaler as never), true);
+  assert.equal(await setWorkerReplicas("none", 1, scaler as never), false);
+  assert.deepEqual(written, [{ name: "wf-a", replicas: 0 }]);
+
+  assert.deepEqual(
+    await listWorkers({
+      listNamespacedDeployment: async () => ({
+        items: [asleep, worker("up", NEW)],
+      }),
+    } as never),
+    [
+      { workspaceId: "asleep", replicas: 0 },
+      { workspaceId: "up", replicas: 1 },
+    ],
+  );
+
   // Without an image there is nothing to move to.
   delete process.env.WORKFLOWS_RUNTIME_IMAGE;
   assert.deepEqual(await rollWorkersToRuntimeImage(apps as never), []);

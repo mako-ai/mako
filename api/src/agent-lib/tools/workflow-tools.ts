@@ -14,6 +14,7 @@ import { WORKFLOWS_ADMIN_ONLY } from "../../workflows/policy";
 import { startSandboxRun } from "../../workflows/sandbox";
 import { waitForDeploy, waitForRun } from "../../workflows/status";
 import { MAX_WAIT_SECONDS } from "../../workflows/wait";
+import { wakeWorker } from "../../workflows/idle";
 import { setTriggers } from "../../workflows/webhook";
 
 /** How many recent runs an agent is shown. */
@@ -159,6 +160,7 @@ export function createWorkflowTools({
             // run records its writes.
             { input, trigger: "agent", startedBy: "agent", dryRun },
           );
+          await wakeWorker(workspaceId, "run");
           return { success: true, runId, workflowId };
         } catch (error) {
           return failure(error);

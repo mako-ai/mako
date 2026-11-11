@@ -45,6 +45,24 @@ on the direct endpoint, so the tables are created in `public`, the engine logs
   every worker to it when it starts. A `:latest` name would never change, so
   workers would keep the image they first pulled.
 
+## Idle workers sleep
+
+A worker Deployment is scaled to 0 pods once it has been idle for 10
+minutes, and back to 1 when there is work (`api/src/workflows/idle.ts`).
+Idle means no run queued or running, no deploy still building, and no
+schedule or scheduled run due in the next 5 minutes.
+
+- Mako wakes it at once when it starts a run (UI, API, agent, webhook,
+  retry), deploys a new commit, or switches a workflow's triggers.
+- The `workflows-idle` Inngest function runs every minute. It wakes workers
+  that Hatchet has work for, ahead of their schedules, and puts idle ones to
+  sleep. If it cannot read Hatchet, it leaves the worker as it is.
+- A run started while the worker sleeps waits `QUEUED` until the pod is up.
+  `worker.mjs` gives tasks a 30m `scheduleTimeout` by default (Hatchet's own
+  default is 5m), so a cold start does not cancel them.
+- A new runtime image does not wake a sleeping worker. It starts on the new
+  image when it next wakes.
+
 ## Sandbox runs
 
 Testing a workflow needs nothing here. A sandbox run is `mako workflow run`
