@@ -170,6 +170,9 @@ export default defineConfig({
       // and the handler (who may rename, what resolves, reserved links).
       "src/apps/app-rename.test.ts",
       "src/rename/handlers/app.test.ts",
+      // A member's unsaved sandbox work when someone else renames the app:
+      // real sandbox, real git endpoint, the box's own pull.
+      "src/apps/scenarios/app-rename-sandbox.scenarios.test.ts",
       "src/rename/scenarios/name-rules-parity.test.ts",
       // rename_object: kinds per surface, per-kind grants, call results.
       "src/agent-lib/tools/rename-tools.test.ts",
