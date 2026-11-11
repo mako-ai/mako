@@ -105,8 +105,8 @@ describe("rename_object agent grants", () => {
     missingInputConditionalGrant("rename_object", { kind }, none);
 
   it("keeps each kind's own gate", () => {
-    // flow_update and dbt_update_job: a key with only `mcp query:read` is
-    // refused, with the grant named.
+    // As flow_update and dbt_update_job: an agent that was not given the
+    // grant is refused, with the grant named.
     for (const kind of ["flow", "dbt_job"]) {
       expect(missing(kind)).toMatchObject({
         grant: "warehouse-write",

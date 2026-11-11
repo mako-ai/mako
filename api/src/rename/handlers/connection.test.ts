@@ -332,7 +332,7 @@ describe("end to end", () => {
     });
     expect((await resolved("connection", "ch_close")).status).toBe(404);
     // A kind with no handler yet says so, rather than "not found".
-    expect((await resolved("flow", "x")).status).toBe(501);
+    expect((await resolved("skill", "x")).status).toBe(501);
   });
 
   it("rename_object renames as the key's owner, with that person's live role", async () => {

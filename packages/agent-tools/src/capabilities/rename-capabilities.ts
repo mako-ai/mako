@@ -9,7 +9,9 @@
  *     configuration that runs against the warehouse;
  *   - flows: what flow_update takes, which also rewrites `flows/<slug>.yml`:
  *     `warehouse-write`, an owner or admin, and the external MCP surface only
- *     (the in-product chat has no flow tool; it has the flow editor);
+ *     (the in-product chat has no flow tool; it has the flow editor). An
+ *     external MCP session holds `warehouse-write` for what its owner's role
+ *     allows, so there the role is the gate;
  *   - skills and workspace connectors: `git-write`. MCP is read-only for
  *     skills (save_skill is excluded there), and a connector rename moves
  *     code AND re-points every connection of that connector;
