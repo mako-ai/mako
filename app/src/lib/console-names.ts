@@ -40,19 +40,44 @@ export function consolePathPreview(raw: string): ConsoleNamePreview {
 }
 
 /**
+ * A saved path in words: “B test” in the folder “A”. In the Save dialog a
+ * slash is path syntax — `A/B test` files the console "B test" in a folder
+ * "A", created if it is not there — and that is said, never done silently.
+ * With a folder picked in the dialog's tree, that folder is where it goes
+ * and the typed folders are not used; that is said too.
+ */
+export function savedPathWords(path: string, inSelectedFolder = false): string {
+  const segments = path.split("/");
+  const name = segments.pop() ?? "";
+  if (segments.length === 0) return `“${name}”`;
+  const typed = segments.join("/");
+  return inSelectedFolder
+    ? `“${name}” in the selected folder (“${typed}/” is not used)`
+    : `“${name}” in the folder “${typed}”`;
+}
+
+/**
  * The line under a name field: the reason it is refused, or the name it
  * will be saved under when that is not what was typed. Null when the name
  * is saved as typed (or nothing was typed yet). `"path"` is the Save
- * dialog's field (`consolePathPreview`).
+ * dialog's field (`consolePathPreview`): a slash there names a folder, and
+ * the line says which.
  */
 export function nameFieldHint(
   raw: string,
   kind: ConsoleNameKind | "path",
+  options: { inSelectedFolder?: boolean } = {},
 ): { text: string; error: boolean } | null {
   if (!raw.trim()) return null;
   const preview =
     kind === "path" ? consolePathPreview(raw) : previewConsoleName(raw, kind);
   if (preview.error) return { text: preview.error, error: true };
+  if (kind === "path" && preview.name.includes("/")) {
+    return {
+      text: `Will be saved as ${savedPathWords(preview.name, options.inSelectedFolder)}`,
+      error: false,
+    };
+  }
   if (preview.changed) {
     return { text: `Will be saved as “${preview.name}”`, error: false };
   }

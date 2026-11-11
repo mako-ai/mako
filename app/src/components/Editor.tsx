@@ -117,6 +117,7 @@ import { getApiBasePath } from "../lib/api-base-path";
 import { separatorDragRef } from "../lib/iframe-drag-guard";
 import { consoleLeafName } from "../lib/console-name";
 import { parentFolderIdOf } from "../store/lib/tree-helpers";
+import { savedPathWords } from "../lib/console-names";
 import { generateObjectId } from "../utils/objectId";
 import { isTabMounted, useMountedTabs } from "../lib/tab-mount-policy";
 import { computeConsoleStateHash } from "../utils/stateHash";
@@ -1863,7 +1864,9 @@ function Editor({
             source_console_id: saveDialogTabId,
             new_console_id: targetId,
           });
-          setSnackbarMessage(`Saved a copy as '${savePath}.js'`);
+          setSnackbarMessage(
+            `Saved a copy as ${savedPathWords(savePath, Boolean(folderId))}`,
+          );
           setSnackbarOpen(true);
         } else {
           // "new" — first-time save of a draft; update the originating tab.
@@ -1888,7 +1891,9 @@ function Editor({
             is_new: true,
           });
 
-          setSnackbarMessage(`Console saved as '${savePath}'`);
+          setSnackbarMessage(
+            `Saved as ${savedPathWords(savePath, Boolean(folderId))}`,
+          );
           setSnackbarOpen(true);
         }
 

@@ -4,6 +4,7 @@ import {
   consolePathPreview,
   nameFieldHint,
   savedAsNotice,
+  savedPathWords,
 } from "./console-names";
 
 describe("what a console name will be saved as", () => {
@@ -62,7 +63,10 @@ describe("what a console name will be saved as", () => {
       changed: true,
       error: null,
     });
-    expect(nameFieldHint("Team/report", "path")).toBeNull();
+    expect(nameFieldHint("Team/report", "path")?.text).toBe(
+      "Will be saved as “report” in the folder “Team”",
+    );
+    expect(nameFieldHint("report", "path")).toBeNull();
     expect(nameFieldHint("Team/../report", "path")).toMatchObject({
       error: true,
     });
@@ -70,6 +74,24 @@ describe("what a console name will be saved as", () => {
     expect(nameFieldHint("Team/report", "console")?.text).toBe(
       "Will be saved as “Team-report”",
     );
+  });
+
+  it("says where a slash in the Save dialog files the console, never silently", () => {
+    expect(nameFieldHint("A/B test", "path")).toEqual({
+      text: "Will be saved as “B test” in the folder “A”",
+      error: false,
+    });
+    expect(nameFieldHint("A/Q1: x/B test", "path")?.text).toBe(
+      "Will be saved as “B test” in the folder “A/Q1 - x”",
+    );
+    // With a folder picked in the dialog, that is where it goes.
+    expect(
+      nameFieldHint("A/B test", "path", { inSelectedFolder: true })?.text,
+    ).toBe(
+      "Will be saved as “B test” in the selected folder (“A/” is not used)",
+    );
+    expect(savedPathWords("B test")).toBe("“B test”");
+    expect(savedPathWords("A/B test")).toBe("“B test” in the folder “A”");
   });
 
   it("after the fact, says the name only when it is not what was typed", () => {

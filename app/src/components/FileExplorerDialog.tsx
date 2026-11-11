@@ -161,7 +161,9 @@ export default function FileExplorerDialog({
   // name is one name.
   const consoleHint = nameUnchanged
     ? null
-    : nameFieldHint(consoleName, mode === "save" ? "path" : "console");
+    : nameFieldHint(consoleName, mode === "save" ? "path" : "console", {
+        inSelectedFolder: selectedFolderId !== null,
+      });
   const folderHint = nameFieldHint(folderName, "folder");
 
   const handleConfirm = () => {
