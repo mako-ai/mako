@@ -483,6 +483,18 @@ describe("renaming through the service", () => {
     // An old name two flows claim is nobody's.
     await Flow.updateOne({ slug: "keeper" }, { $set: { aliases: ["n11"] } });
     expect(await resolves("n11")).toBeNull();
+
+    // The renamed flow was born from flows/a.yml and keeps the id derived
+    // from that name; a new flows/a.yml is another flow with its own id.
+    await push({ "flows/a.yml": flowYaml("Another a", "another") });
+    expect(await syncFlowsFromRepo(WS, "owner1")).toMatchObject({
+      created: 1,
+      invalid: [],
+    });
+    const another = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    expect(another).not.toBeNull();
+    expect(String(another?._id)).not.toBe(String(row._id));
+    expect(await slugOf(row._id)).toBe("n26");
   });
 
   it("names YAML would read as a number, a date or a boolean stay strings", async () => {
