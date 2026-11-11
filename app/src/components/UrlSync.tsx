@@ -20,6 +20,7 @@ import {
   focusDbtRunsTab,
 } from "../dbt-runtime/shell";
 import { useDbtStore } from "../store/dbtStore";
+import { followMovedDbtFile } from "../lib/dbt-file-tabs";
 import { useMcpStore } from "../store/mcpStore";
 import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
 import { closeSourceConnectionTabsFor } from "../lib/source-connection-tabs";
@@ -293,6 +294,18 @@ export function UrlSync() {
       setLeftPane("dbt");
       // Helper dedupes against an existing tab and sets the active project.
       focusDbtFileTab(projectId, filePath);
+      // A dbt file is addressed by its path, so a link can outlive a rename:
+      // when the file has moved since (here, or with `git mv` on a laptop),
+      // the tab follows it and the address bar shows where it is now.
+      void followMovedDbtFile(currentWorkspace.id, projectId, filePath).then(
+        moved => {
+          if (moved) {
+            setDeadLinkNotice(
+              `That file was moved to ${moved}. The address bar now shows its new link.`,
+            );
+          }
+        },
+      );
     } else if (dbtJobMatch) {
       // /x/:projectId/job/:jobId
       const projectId = dbtJobMatch[1];

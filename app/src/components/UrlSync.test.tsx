@@ -11,7 +11,7 @@
  * hydration actually opens the notebook tab for a /n/:id deep link.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 
 const h = vi.hoisted(() => {
   const consoleState = {
@@ -24,6 +24,8 @@ const h = vi.hoisted(() => {
   };
   return {
     focusNotebookTab: vi.fn(),
+    focusDbtFileTab: vi.fn(),
+    followMovedDbtFile: vi.fn(),
     setLeftPane: vi.fn(),
     captureOAuthReturn: vi.fn(),
     fetchOneSourceConnection: vi.fn(),
@@ -85,9 +87,13 @@ vi.mock("../lib/source-connection-tabs", () => ({
 vi.mock("../store/dbtStore", () => ({ useDbtStore: { getState: () => ({}) } }));
 vi.mock("../dbt-runtime/shell", () => ({
   focusDbtConsoleTab: vi.fn(),
-  focusDbtFileTab: vi.fn(),
+  focusDbtFileTab: (...args: unknown[]) => h.focusDbtFileTab(...args),
   focusDbtJobTab: vi.fn(),
   focusDbtRunsTab: vi.fn(),
+}));
+
+vi.mock("../lib/dbt-file-tabs", () => ({
+  followMovedDbtFile: (...args: unknown[]) => h.followMovedDbtFile(...args),
 }));
 
 vi.mock("../apps-runtime/shell", () => ({
@@ -293,5 +299,41 @@ describe("UrlSync hydration", () => {
     );
     expect(h.consoleState.focusOrOpenTab).not.toHaveBeenCalled();
     expect(window.location.pathname).toBe("/");
+  });
+
+  it("opens a dbt file link as linked, then follows a file that was renamed and says where it is", async () => {
+    const project = "507f1f77bcf86cd799439013";
+    h.followMovedDbtFile.mockResolvedValue("models/fct_orders.sql");
+    window.history.replaceState({}, "", `/x/${project}/file/models/orders.sql`);
+
+    render(<UrlSync />);
+
+    expect(h.focusDbtFileTab).toHaveBeenCalledWith(
+      project,
+      "models/orders.sql",
+    );
+    expect(h.followMovedDbtFile).toHaveBeenCalledWith(
+      "ws1",
+      project,
+      "models/orders.sql",
+    );
+    expect(
+      await screen.findByText(/That file was moved to models\/fct_orders\.sql/),
+    ).toBeTruthy();
+  });
+
+  it("says nothing for a dbt file link that is current", async () => {
+    cleanup(); // the notice of the test above
+    h.followMovedDbtFile.mockResolvedValue(null);
+    window.history.replaceState(
+      {},
+      "",
+      "/x/507f1f77bcf86cd799439013/file/models/orders.sql",
+    );
+
+    render(<UrlSync />);
+
+    await waitFor(() => expect(h.followMovedDbtFile).toHaveBeenCalled());
+    expect(screen.queryByText(/was moved/)).toBeNull();
   });
 });
