@@ -17,6 +17,7 @@ import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
   initRepo,
+  listTree,
   log as repoLog,
   readBlob,
   repoDirFor,
@@ -30,10 +31,14 @@ import {
 import {
   adoptWorkspaceNotebooks,
   checkpointNotebook,
+  notebookCommitChanges,
+  notebookFileVersions,
   notebookHistory,
   removeNotebookFile,
+  restoreNotebookTo,
   syncNotebooksFromRepo,
 } from "./notebook-git.service";
+import { NotEntityPathError } from "../apps/entity-git-history";
 import {
   bindTestWorkspaceRepo,
   unbindTestWorkspaceRepo,
@@ -254,5 +259,148 @@ describe("adoption", () => {
     ).toBeTruthy();
     const again = await adoptWorkspaceNotebooks(WS);
     expect(again.written).toBe(0);
+  });
+});
+
+/** A rename as the store and the index see it, then its checkpoint. */
+async function renameAndCheckpoint(id: string, name: string) {
+  await getNotebookStore().update(WS, id, { name });
+  await NotebookIndex.updateOne({ notebookId: id }, { $set: { name } });
+  return checkpointNotebook(WS, id, "u1");
+}
+
+async function notebookFiles(): Promise<string[]> {
+  return (await listTree(repoDirFor(WS), MAIN))
+    .map(e => e.path)
+    .filter(p => p.endsWith(".deepnote"))
+    .sort();
+}
+
+describe("renames", () => {
+  it("a rename moves the file in one commit and never onto a file the index does not know", async () => {
+    const id = await seedNotebook("Draft", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    // A notebook made on a laptop already has the name this one wants.
+    const stranger = serializeNotebookFile({
+      ...(await getNotebookStore().get(WS, id))!,
+      id: "someone-elses",
+      name: "Final",
+    });
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "notebooks/final.deepnote": stranger } },
+      { message: "laptop" },
+    );
+
+    const result = await renameAndCheckpoint(id, "Final");
+
+    expect(result.committed).toBe(true);
+    expect(await notebookFiles()).toEqual([
+      "notebooks/final-2.deepnote",
+      "notebooks/final.deepnote",
+    ]);
+    expect(await fileAt("notebooks/final.deepnote")).toBe(stranger);
+    const [head] = await repoLog(repoDirFor(WS), MAIN, 1);
+    expect(head.oid).toBe(result.commitOid);
+  });
+
+  it("two checkpoints of one renamed notebook at once leave one file", async () => {
+    const id = await seedNotebook("One", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    await getNotebookStore().update(WS, id, { name: "Two" });
+    await NotebookIndex.updateOne(
+      { notebookId: id },
+      { $set: { name: "Two" } },
+    );
+    await Promise.all([
+      checkpointNotebook(WS, id, "u1"),
+      checkpointNotebook(WS, id, "u1"),
+    ]);
+    expect(await notebookFiles()).toEqual(["notebooks/two.deepnote"]);
+  });
+
+  it("a file renamed on a laptop keeps its notebook: matched by the id it carries, and left where it was put", async () => {
+    const id = await seedNotebook("Mine", "workspace");
+    const other = await seedNotebook("Other", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    await checkpointNotebook(WS, other, "u1");
+    const mine = (await fileAt("notebooks/mine.deepnote"))!;
+    const theirs = (await fileAt("notebooks/other.deepnote"))!;
+    // `git mv` of one; the other is deleted and its content re-added
+    // under another id — similar is not the same notebook.
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          "notebooks/renamed.deepnote": mine,
+          "notebooks/lookalike.deepnote": theirs.replaceAll(
+            other,
+            "another-id",
+          ),
+        },
+        deletes: ["notebooks/mine.deepnote", "notebooks/other.deepnote"],
+      },
+      { message: "laptop moves" },
+    );
+    await syncNotebooksFromRepo(WS);
+
+    expect((await NotebookIndex.findOne({ notebookId: id }))?.path).toBe(
+      "notebooks/renamed.deepnote",
+    );
+    expect((await NotebookIndex.findOne({ notebookId: other }))?.path).toBe(
+      "notebooks/other.deepnote",
+    );
+    // The next checkpoint does not move it back to the name's own path.
+    await getNotebookStore().update(WS, id, {
+      blocks: [{ id: "b1", type: "markdown", source: "# edited" }],
+    });
+    await checkpointNotebook(WS, id, "u1");
+    expect(await fileAt("notebooks/mine.deepnote")).toBeNull();
+    expect(await fileAt("notebooks/renamed.deepnote")).toContain("# edited");
+  });
+
+  it("history follows the notebook across renames and is only its own", async () => {
+    const id = await seedNotebook("First", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    await renameAndCheckpoint(id, "Second");
+    // A new notebook takes the old name.
+    const newcomer = await seedNotebook("First", "workspace");
+    await checkpointNotebook(WS, newcomer, "u1");
+
+    const index = (await NotebookIndex.findOne({ notebookId: id }))!;
+    const history = await notebookHistory(index);
+    expect(history.map(c => c.path)).toEqual([
+      "notebooks/second.deepnote",
+      "notebooks/first.deepnote",
+    ]);
+    const created = history[1].oid;
+    expect(
+      (await notebookFileVersions(index, created, "notebooks/second.deepnote"))
+        .after,
+    ).toContain("name: First");
+    expect(
+      (await notebookCommitChanges(index, history[0].oid)).files.map(
+        f => f.path,
+      ),
+    ).toEqual(["notebooks/second.deepnote"]);
+
+    // The newcomer's commit is not this notebook's: not listed, not read,
+    // not restored from.
+    const theirs = (await NotebookIndex.findOne({ notebookId: newcomer }))!;
+    const [foreign] = await notebookHistory(theirs);
+    expect(await notebookHistory(theirs)).toHaveLength(1);
+    expect((await notebookCommitChanges(index, foreign.oid)).files).toEqual([]);
+    await expect(
+      notebookFileVersions(index, foreign.oid, "notebooks/first.deepnote"),
+    ).rejects.toBeInstanceOf(NotEntityPathError);
+    await expect(
+      restoreNotebookTo(WS, id, foreign.oid, "u1"),
+    ).rejects.toBeInstanceOf(NotEntityPathError);
+
+    // Its own first commit restores, under the name it had then.
+    await restoreNotebookTo(WS, id, created, "u1");
+    expect((await getNotebookStore().get(WS, id))?.name).toBe("First");
   });
 });
