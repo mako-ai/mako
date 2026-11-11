@@ -23,7 +23,7 @@ import {
   skillId,
   type WorkspaceSkill,
 } from "../apps/workspace-skills.service";
-import { unsafeSlugReason } from "../rename/title-rules";
+import { SKILL_NAME_MAX_LENGTH, skillNameError } from "@mako/schemas";
 import { RepoRequiredError } from "../apps/config";
 import { type GitAuthor } from "../apps/repository.service";
 import {
@@ -43,7 +43,7 @@ import {
 
 const logger = loggers.app();
 
-const MAX_NAME_LENGTH = 80;
+const MAX_NAME_LENGTH = SKILL_NAME_MAX_LENGTH;
 /** The description is in every prompt: keep it a trigger line, not a summary. */
 export const MAX_LOAD_WHEN_LENGTH = 300;
 /** Past this the index alone stops working (selection degrades around 30–50 items). */
@@ -252,12 +252,8 @@ export async function renameSkill(
   const refuse = (status: 400 | 404 | 409, error: string) =>
     ({ success: false, status, error }) as const;
   const name = to.trim();
-  const problem =
-    name.length > MAX_NAME_LENGTH
-      ? `The name is longer than ${MAX_NAME_LENGTH} characters.`
-      : !SKILL_NAME_RE.test(name)
-        ? `"${name}" is not a valid skill name: ${SKILL_NAME_RULE} (it becomes the folder skills/${name}/).`
-        : unsafeSlugReason(name);
+  // The rule the Skills panel applies as the name is typed.
+  const problem = skillNameError(name);
   if (problem) return refuse(400, problem);
   const existing = await resolveSkillForRename(workspaceId, ref.trim());
   if (!existing) return refuse(404, `skill "${ref}" not found`);

@@ -27,6 +27,7 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
+import { skillNameError } from "@mako/schemas";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
@@ -418,24 +419,28 @@ describe("operations and names", () => {
   it("names follow the skill-name rule: a dash is allowed, what a folder cannot safely be is a 400", async () => {
     await seed("report");
     const n = await commits();
-    for (const bad of [
-      "Report",
-      "my report",
-      "../up",
-      "a/b",
-      "-flag",
-      "_private",
-      "a.b",
-      "é",
-      "x".repeat(81),
-      "con",
-      "507f1f77bcf86cd799439011",
+    const shape =
+      "A skill name is lowercase a-z, 0-9, '-' and '_', starting with a letter or digit (it is the skill's folder name).";
+    for (const [bad, said] of [
+      ["Report", shape],
+      ["my report", shape],
+      ["../up", shape],
+      ["a/b", shape],
+      ["-flag", shape],
+      ["_private", shape],
+      ["a.b", shape],
+      ["é", shape],
+      ["x".repeat(81), "The name is longer than 80 characters."],
+      ["con", "a device name Windows reserves"],
+      ["507f1f77bcf86cd799439011", "looks like an object id"],
     ]) {
       const outcome = await rename("report", bad).then(
         () => "renamed",
-        (e: { status?: number }) => e.status,
+        (e: { status?: number; message: string }) => [e.status, e.message],
       );
-      expect([bad, outcome]).toEqual([bad, 400]);
+      // The sentence is the shared rule's, the one the Rename dialog shows.
+      expect([bad, outcome]).toEqual([bad, [400, skillNameError(bad)]]);
+      expect(skillNameError(bad)).toContain(said);
     }
     expect(await commits()).toBe(n);
     await rename("report", "weekly-report_v2");
