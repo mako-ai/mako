@@ -5,6 +5,7 @@
  * one line here. Until then it answers "not supported yet" (501) on every
  * surface, instead of a 404 that reads as "your object is gone".
  */
+import { appRenameHandler } from "./handlers/app";
 import { connectionRenameHandler } from "./handlers/connection";
 import { normalizeDisplayName } from "./title-rules";
 import {
@@ -20,6 +21,7 @@ import {
 } from "./types";
 
 export const RENAME_HANDLERS: Partial<Record<RenameKind, RenameHandler>> = {
+  app: appRenameHandler,
   connection: connectionRenameHandler,
 };
 

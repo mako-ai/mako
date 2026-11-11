@@ -187,6 +187,20 @@ Sharing is a deliberate move. **Share with workspace** (in the app's context men
 
 Workspace admins can mark a workspace app **verified** (context-menu toggle, `PUT /api/workspaces/:wid/apps/:id/verified`). Verified apps are never marked stale by the lifecycle job below.
 
+## Renaming an app
+
+An app has a **name** (the `title` in its `mako.json`, shown in every list and tab) and a **link** (its folder name: `/apps/<link>` for an app at the top of the workspace tree; a nested or personal app's link uses its id). **Rename…** in the app's context menu changes either or both, as does `POST /api/workspaces/:wid/objects/app/rename` and the agent's `rename_object` (`kind: "app"`). A rename is one commit on main, authored by whoever renamed, and the app keeps its id, so its deployment, sharing, env vars and favourites follow it.
+
+**The old link keeps working.** A new link moves the folder and records the old one in `mako.json`:
+
+```json
+{ "id": "…", "title": "Revenue", "aliases": ["report"] }
+```
+
+An old link opens the app (the address bar then shows the new one), and an old name is accepted wherever an app is named: routes, `app_*` tools, `GET /api/workspaces/:wid/objects/resolve?kind=app&ref=<name>`. A name an app has **today** always wins over an alias; an alias two apps claim opens neither; an app keeps its 24 most recent old links. A folder moved from a checkout (`git mv`, pushed) is remembered too, without touching the manifest. A copied folder does not inherit the original's old links.
+
+Who may rename: the **name** is an edit of the app, so anyone who may edit it. The **link** is the folder's name: an editing role in the workspace tree, the owner in a personal folder. A link must start with a letter or a number, use only letters, numbers, spaces, dots, dashes and underscores, be at most 100 characters, and not be a name Windows reserves (`con`, `nul`, …), something that reads as an app id, or a word Mako's own routes use (`search`, `folders`, …).
+
 ## Usage and popularity
 
 Every view of a published app is recorded: the in-Mako app tab and the `/view/` page report an `open` plus a heartbeat every 60 seconds while the app is visible (the dev preview never reports), and share links, raw `/live/` links and embeds are counted server-side: a share link when its page opens the app, the others when their HTML entry is served. Viewers on share links and embeds are keyed by a first-party random cookie (`mako_viewer`), not their IP address; crawlers and link unfurlers are logged as bots and counted nowhere.
