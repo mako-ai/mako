@@ -1,0 +1,35 @@
+# Lets the dev CI service account (GCP_DEV_SERVICE_ACCOUNT, used by
+# .github/workflows/cleanup-preview.yml) delete a closed PR's workflow
+# workers, and nothing else: list and delete Deployments and Secrets in
+# mako-workflows only. Dev cluster only; production has no previews.
+#
+# Also needed, outside the cluster, so get-gke-credentials can read the
+# cluster: roles/container.clusterViewer on mako-ai-dev for the same account.
+#
+# Apply with the account's email:
+#   sed "s/CI_SERVICE_ACCOUNT_EMAIL/<email>/" ci-cleanup-rbac.yaml | kubectl apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: preview-cleanup
+  namespace: mako-workflows
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "delete", "deletecollection"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: preview-cleanup
+  namespace: mako-workflows
+subjects:
+  - kind: User
+    name: CI_SERVICE_ACCOUNT_EMAIL
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: preview-cleanup
