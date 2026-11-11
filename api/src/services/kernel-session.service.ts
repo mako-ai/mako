@@ -328,7 +328,7 @@ class KernelSessionService {
     return true;
   }
 
-  /** Sessions idle past the TTL — used by the reaper (future Inngest sweep). */
+  /** Sessions idle past the TTL — stopped by the kernel-pool-reaper sweep. */
   async idleSessions(
     nowMs = Date.now(),
   ): Promise<Array<{ workspaceId: string; notebookId: string }>> {
