@@ -126,6 +126,57 @@ describe("delete and rename of one console", () => {
   });
 });
 
+describe("a delete against the index sync and a folder delete", () => {
+  it("a sync that read the row before the delete does not take it out of the trash", async () => {
+    const id = (await save("a", "SELECT 1"))._id.toString();
+    // A push edits the file, so the sync has something to write to the row.
+    await push({ "consoles/a.sql": "SELECT 2\n" });
+    const hold = holdAt("afterSyncRead");
+    const syncing = sync();
+    await hold.reached;
+
+    // The console is deleted, and a new file is pushed at its old path,
+    // while the sync still holds the row as it read it: live, at that path.
+    expect(await remove(id)).toBe(true);
+    await push({ "consoles/a.sql": "SELECT 'someone else'\n" });
+
+    hold.release();
+    await syncing;
+    for (let pass = 0; pass < 3; pass++) {
+      const now = await row(id);
+      expect(now?.is_deleted).toBe(true);
+      expect(now?.deletedVia).toBe("app");
+      expect(await listedIds()).not.toContain(id);
+      await sync();
+    }
+    // The file is a new console's, under its own id.
+    expect(await listedIds()).toHaveLength(1);
+    expect(await rename(id, "b")).toBeNull();
+  });
+
+  it("a folder delete held after its read, a console in it renamed meanwhile: the renamed file goes too", async () => {
+    const team = await manager.createFolder(
+      "Team",
+      WS,
+      ALICE,
+      undefined,
+      false,
+      "workspace",
+    );
+    const id = (await save("a"))._id.toString();
+    await manager.moveConsole(id, WS, team._id.toString(), undefined, ALICE);
+    const hold = holdAt("afterRead");
+    const deleting = manager.deleteFolder(team._id.toString(), WS, ALICE);
+    await hold.reached;
+
+    expect((await rename(id, "b"))?.row.path).toBe("consoles/Team/b.sql");
+
+    hold.release();
+    expect((await deleting)?.consoles.map(c => c.id)).toEqual([id]);
+    await expectDeletedForGood(id);
+  });
+});
+
 describe("two renames", () => {
   it("racing for one free name: one wins, the other is refused, nothing is overwritten", async () => {
     const a = (await save("a", "SELECT 'a'"))._id.toString();

@@ -65,6 +65,7 @@ export async function stopRig(): Promise<void> {
 export async function resetRig(): Promise<void> {
   consoleCommitHooks.afterRead = undefined;
   consoleCommitHooks.afterCommit = undefined;
+  consoleCommitHooks.afterSyncRead = undefined;
   await SavedConsole.deleteMany({});
   await ConsoleFolder.deleteMany({});
   await WorkspaceUserHandle.deleteMany({});
@@ -150,7 +151,7 @@ export async function listedIds(): Promise<string[]> {
  * Hold the next operation that reaches `point` until `release()`:
  * `reached` resolves when it is there. One use; later operations pass.
  */
-export function holdAt(point: "afterRead" | "afterCommit"): {
+export function holdAt(point: "afterRead" | "afterCommit" | "afterSyncRead"): {
   reached: Promise<void>;
   release: () => void;
 } {
