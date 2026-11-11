@@ -753,6 +753,15 @@ export const useDbtStore = create<DbtStore>()(
       // Don't clobber a dirty buffer the user is editing.
       const entry = get().filesByProject[projectId]?.[path];
       if (entry?.dirty) return;
+      // A listed file nobody has open here has nothing to refresh: its
+      // editor reads it when it opens. (A rename that rewrites a model's
+      // references pokes every file it touched, which can be hundreds.)
+      if (
+        !entry?.loaded &&
+        get().filePathsByProject[projectId]?.includes(path)
+      ) {
+        return;
+      }
       try {
         const response = await apiClient.get<{
           success: boolean;
