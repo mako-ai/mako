@@ -50,13 +50,15 @@ Reads come from the workspace repo at your session branch (git `listTree`/`readB
 
 Renaming a file (**Rename** in the explorer, or the agent's `rename_object` with `kind: "dbt_file"`) and moving it to another folder are the same edit: the file gets a new project path. It is one commit on your branch, and it needs the admin or owner role like every other dbt file change. Modes, symlinks and binary files move as they are.
 
-A model's file name is its name. When you rename a model or a seed, the same commit rewrites what names it:
+In the explorer the Rename dialog holds the file's full project path, prefilled, and says while you type why a path cannot be used. It will not start while a file you have not saved mentions the model: save or discard those edits first. Tabs open on the file follow it, in every window.
+
+A model's file name is its name. When you rename a model or a seed, the same commit rewrites what names it (untick **Also update `ref()` calls, job selectors and YAML entries** to move the file only):
 
 - `ref('old')` and `ref("old")` in other models, Python models, docs and YAML strings;
 - selectors in the commands of `dbt/jobs/*.yml` (`--select old+ other`, `-s`, `--exclude`);
 - the model's `- name:` entry in properties files, `model:` in `unit_tests`, and its key in `dbt_project.yml`.
 
-Seed CSV data is never rewritten, and a snapshot keeps the name in its `{% snapshot %}` block. The rename then tells you what it could not fix: the old relation still in the warehouse (dbt builds the new one beside it), `selectors.yml`, shared consoles and app bindings whose SQL still names the old relation, and folder-level `dbt_project.yml` config that stops applying once the file is in another folder.
+Seed CSV data is never rewritten, and a snapshot keeps the name in its `{% snapshot %}` block. The rename then tells you what it could not fix, in a dialog that stays until you dismiss it: the old relation still in the warehouse (dbt builds the new one beside it), `selectors.yml`, shared consoles and app bindings whose SQL still names the old relation, and folder-level `dbt_project.yml` config that stops applying once the file is in another folder.
 
 A new name that YAML would read as something other than text (`true`, `null`, `123`, `2026-10-06`, `yes`) is written quoted. If the project changes while the rename is being prepared (someone saves a file), the rename is refused and nothing is committed: reload and try again. Old links to the file (`/x/<project>/file/<old path>`) keep opening it, including after a `git mv` pushed from a laptop.
 
