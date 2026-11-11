@@ -219,6 +219,8 @@ interface SourceRow {
   _id: Types.ObjectId;
   name?: string;
   type?: string;
+  /** The definition a `ws:` connection is bound to (resolver.ts). */
+  connectorDefinitionId?: Types.ObjectId;
   description?: string;
   isActive?: boolean;
   config?: unknown;
@@ -240,7 +242,7 @@ async function findSourceConnection(
     workspaceId: new Types.ObjectId(workspaceId),
   })
     .select(
-      "_id name type description isActive config liveReads writers keyRequest",
+      "_id name type connectorDefinitionId description isActive config liveReads writers keyRequest",
     )
     .lean()) as SourceRow | null;
 }
@@ -254,6 +256,8 @@ async function connectorCapabilities(
   workspaceId: string,
   type: string,
   identity: { id: string; name: string },
+  /** A connection's binding: its `ws:` connector is the one it is bound to. */
+  connectorDefinitionId?: Types.ObjectId,
 ): Promise<{ entities: string[]; incremental: Record<string, unknown> }> {
   try {
     const connector = await syncConnectorRegistry.getConnectorFor({
@@ -261,6 +265,9 @@ async function connectorCapabilities(
       name: identity.name,
       type,
       workspaceId,
+      connectorDefinitionId: connectorDefinitionId
+        ? String(connectorDefinitionId)
+        : undefined,
       active: true,
       connection: {},
       settings: {},
@@ -291,11 +298,13 @@ async function connectorCapabilities(
 async function configFieldsFor(
   workspaceId: string,
   type: string,
+  /** A stored connection: its fields come through its binding. */
+  connection?: { connectorDefinitionId?: unknown },
 ): Promise<ConnectorConfigField[]> {
   // The workspace is part of the question for a `ws:` connector: its spec —
   // and so which of its fields are secrets — belongs to this workspace.
   const schema = await syncConnectorRegistry
-    .getConfigSchemaForType(type, workspaceId)
+    .getConfigSchemaForType(type, workspaceId, connection)
     .catch(() => null);
   return describeFields((schema as { fields?: unknown } | null)?.fields);
 }
@@ -311,8 +320,13 @@ async function describeSourceConnection(
   const type = row.type ?? "";
   const identity = { id: String(row._id), name: row.name ?? "" };
   const [capabilities, configFields] = await Promise.all([
-    connectorCapabilities(workspaceId, type, identity),
-    configFieldsFor(workspaceId, type),
+    connectorCapabilities(
+      workspaceId,
+      type,
+      identity,
+      row.connectorDefinitionId,
+    ),
+    configFieldsFor(workspaceId, type, row),
   ]);
   return {
     id: identity.id,

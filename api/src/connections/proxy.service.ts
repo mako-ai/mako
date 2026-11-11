@@ -37,6 +37,11 @@ import {
   principalsOutsideWorkspace,
   viewerPrincipals,
 } from "../access/connection-writes";
+import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
+import {
+  ConnectorBindingError,
+  resolveConnectionBinding,
+} from "../connectors/workspace/resolver";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers } from "../logging";
 import { getRequestContext } from "../logging/context";
@@ -172,6 +177,13 @@ export async function connectionRequest(
       404,
     );
   }
+  // A workspace connector's connection resolves through the definition it
+  // was saved under (connectors/workspace/resolver.ts). One whose binding
+  // does not resolve is closed here too, with the way to re-bind it.
+  if (isWorkspaceConnectorType(row.type)) {
+    const binding = await resolveConnectionBinding(params.workspaceId, row);
+    if (!binding.ok) throw new ConnectionRequestError(binding.message, 409);
+  }
   const callable = callableFor(row.type);
   if (!callable) {
     throw new ConnectionRequestError(
@@ -182,9 +194,15 @@ export async function connectionRequest(
     throw new ConnectionRequestError(`${row.name} is disabled.`, 403);
   }
   // The stored credential, decrypted by the connector's own schema.
-  const loaded = await sourceConnectionManager.getSourceConnection(
-    String(row._id),
-  );
+  const loaded = await sourceConnectionManager
+    .getSourceConnection(String(row._id))
+    .catch(error => {
+      // The config is decrypted through the binding as well (the manager).
+      if (error instanceof ConnectorBindingError) {
+        throw new ConnectionRequestError(error.message, 409);
+      }
+      throw error;
+    });
   if (!loaded) {
     throw new ConnectionRequestError(
       `No connection ${params.connection}.`,

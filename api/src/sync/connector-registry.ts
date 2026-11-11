@@ -9,7 +9,11 @@ import {
   SandboxedConnector,
   slugFromType,
 } from "../connectors/workspace/SandboxedConnector";
-import { loadConnectorDefinition } from "../connectors/workspace/resolver";
+import {
+  loadConnectorDefinition,
+  loadConnectorDefinitionFor,
+  type ConnectionBinding,
+} from "../connectors/workspace/resolver";
 import { connectionSpecificationToForm } from "../connectors/workspace/spec-translation";
 
 const logger = loggers.sync("connector-registry");
@@ -44,6 +48,7 @@ function asSourceConnection(
     config: connection.connection,
     settings: connection.settings,
     workspaceId: connection.workspaceId,
+    connectorDefinitionId: connection.connectorDefinitionId,
   } as unknown as ISourceConnection;
 }
 
@@ -76,6 +81,13 @@ class SyncConnectorRegistry {
   async getConfigSchemaForType(
     type: string,
     workspaceId?: string,
+    /**
+     * The connection the schema is for. Given, a workspace connector is
+     * resolved THROUGH the connection's binding (resolver.ts), never by
+     * name: this schema decides which of its values are secrets. Omitted
+     * only where there is no connection yet (the catalog's form).
+     */
+    connection?: Pick<ConnectionBinding, "connectorDefinitionId">,
   ): Promise<any | null> {
     if (isWorkspaceConnectorType(type)) {
       if (!workspaceId) {
@@ -84,10 +96,12 @@ class SyncConnectorRegistry {
             `Without one, secret fields cannot be identified and the credential would be stored in plaintext.`,
         );
       }
-      const definition = await loadConnectorDefinition(
-        workspaceId,
-        slugFromType(type),
-      );
+      const definition = connection
+        ? await loadConnectorDefinitionFor(workspaceId, {
+            type,
+            connectorDefinitionId: connection.connectorDefinitionId,
+          })
+        : await loadConnectorDefinition(workspaceId, slugFromType(type));
       return connectionSpecificationToForm(
         (definition.spec as any)?.connectionSpecification,
       );

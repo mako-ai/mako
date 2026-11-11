@@ -40,6 +40,7 @@ import {
   slugFromType,
 } from "./workspace/SandboxedConnector";
 import { recordConnectionCheck } from "./workspace/reconcile.service";
+import { ConnectorBindingError } from "./workspace/resolver";
 import { SourceConnection } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { redactSecrets, secretValuesOf } from "../connections/redact";
@@ -154,6 +155,10 @@ export async function runConnectionCheck(input: {
     connector instanceof SandboxedConnector
       ? await connector.sourceShaForConnectionCheck()
       : undefined;
+  const definitionId =
+    connector instanceof SandboxedConnector
+      ? await connector.definitionId()
+      : undefined;
 
   const result = await connector.testConnection();
 
@@ -166,6 +171,7 @@ export async function runConnectionCheck(input: {
     await recordConnectionCheck({
       workspaceId,
       slug: slugFromType(sourceConnection.type),
+      definitionId,
       sourceSha: workspaceSourceSha,
       success: result.success === true,
       message: result.message,
@@ -391,7 +397,8 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
     const result = await withDeadline(run(), timeoutMs, "The probe");
     return redactValue(result, secrets);
   } catch (error) {
-    if (error instanceof ProbeError) {
+    if (error instanceof ProbeError || error instanceof ConnectorBindingError) {
+      // A binding refusal keeps its type: callers answer it as a conflict.
       error.message = redactSecrets(error.message, secrets);
       throw error;
     }
