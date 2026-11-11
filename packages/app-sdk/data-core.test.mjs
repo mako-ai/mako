@@ -11,6 +11,8 @@ import {
   readsCatalog,
   toPlainRows,
   isReadOnlySql,
+  LARGE_QUERY_ROWS,
+  largeQueryWarning,
 } from "./data-core.js";
 
 // apache-arrow is a devDependency (the version duckdb-wasm 1.29 bundles).
@@ -368,4 +370,15 @@ test("isReadOnlySql: reads pass, and anything else keeps the engine", () => {
   ]) {
     assert.equal(isReadOnlySql(sql), false, sql);
   }
+});
+
+test("largeQueryWarning: silent up to the limit, names the binding and useDuckDB past it", () => {
+  assert.equal(LARGE_QUERY_ROWS, 20000);
+  assert.equal(largeQueryWarning("orders", 0), null);
+  assert.equal(largeQueryWarning("orders", 20000), null);
+  assert.equal(largeQueryWarning("orders", undefined), null);
+  const msg = largeQueryWarning("orders", 193412);
+  assert.match(msg, /useQuery\("orders"\) returned 193,412 rows/);
+  assert.match(msg, /useDuckDB\("select … from "orders" where …"\)/);
+  assert.equal(largeQueryWarning("orders", 600, 500)?.includes("600 rows"), true);
 });

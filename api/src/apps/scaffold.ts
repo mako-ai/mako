@@ -189,11 +189,11 @@ export default function App() {
         actions={<RefreshAllButton bindings={__APP_BINDING_NAMES__} />}
       />
       <KpiRow>
-        <KpiTile label="Your first KPI" value="—" hint="Add a binding, then useQuery()" />
+        <KpiTile label="Your first KPI" value="—" hint="Add a binding, then useDuckDB()" />
       </KpiRow>
       <Card
         title="Getting started"
-        description="Data comes from bindings/<name>.sql; read it with useQuery('<name>')."
+        description="Data comes from bindings/<name>.sql. Query it with useDuckDB('select … from <name> where …'): filters and totals run in SQL, one query per panel."
       >
         <p className="muted">
           The theme tokens (--background, --brand, --chart-1…) and the kit
@@ -241,6 +241,11 @@ Built with Mako Apps: a real Vite + React project stored in a Mako-managed
 git repository. Run \`pnpm install\` and \`pnpm dev\` locally (this app uses pnpm — do
 not run \`npm install\`, it would write a competing \`package-lock.json\`),
 or edit it from Mako chat.
+
+Performance: filter and aggregate in SQL with \`useDuckDB(sql)\`, one query
+per panel, so only the rows a panel draws reach JS. Keep \`useQuery(name)\`
+for bindings under ~10k rows. Each panel shows a same-size skeleton while it
+loads. The full rules: the workspace \`AGENTS.md\`, "App performance".
 
 The card picture on the Apps home (and the link preview of a public share)
 is \`thumbnail.png\` (or \`.svg\`, \`.webp\`,

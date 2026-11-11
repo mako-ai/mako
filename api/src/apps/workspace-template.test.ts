@@ -13,7 +13,7 @@ import {
 
 // When this fails you changed a managed file: bump WORKSPACE_TEMPLATE_VERSION
 // and paste the new fingerprint. The bump is what moves existing repos.
-const PINNED = { version: 24, fingerprint: "65c2c5da0bc03d19" };
+const PINNED = { version: 25, fingerprint: "802a8a40cc7a8ce2" };
 assert.equal(WORKSPACE_TEMPLATE_VERSION, PINNED.version);
 assert.equal(
   templateFingerprint(),

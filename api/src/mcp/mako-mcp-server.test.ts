@@ -288,6 +288,11 @@ async function main() {
       /Verify with app_open_app/,
       "initialize should ship the workflow instructions",
     );
+    assert.match(
+      result.instructions ?? "",
+      /useDuckDB\(sql\)/,
+      "initialize should ship the app performance rule",
+    );
   }
 
   // 2b. ACP Desktop Chat: no headless preview workflow in instructions.
@@ -317,6 +322,7 @@ async function main() {
       )) as Record<string, unknown>[];
       const result = res.result as { instructions?: string };
       assert.match(result.instructions ?? "", /mako-desktop|Desktop Chat/i);
+      assert.match(result.instructions ?? "", /useDuckDB\(sql\)/);
       assert.doesNotMatch(
         result.instructions ?? "",
         /Verify with run_app|Verify with render_app/,

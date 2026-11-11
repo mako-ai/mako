@@ -38,7 +38,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 24;
+export const WORKSPACE_TEMPLATE_VERSION = 25;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -214,6 +214,30 @@ SELECT …
 \`app_materialize\` tool (safe from a checkout: it builds from the committed
 binding, keyed by content) or let the dev server do it on first load.
 
+## App performance
+
+An app that loads a whole binding into JS and filters it there freezes the
+tab: one 193k-row app blocked ~10 s on every filter click. Every app follows
+these rules (code and the trace recipe: the \`apps\` skill, "Performance"):
+
+1. Filters, joins and aggregation run in SQL through \`useDuckDB(sql)\`
+   (\`withConnection\` for a result several panels share), filters in the
+   \`WHERE\` clause. Only the rows a panel draws reach JS. \`useQuery(name)\`
+   is for bindings under ~10k rows or already aggregated to what the page
+   shows.
+2. One query per panel. Each panel shows a skeleton of its final size while
+   it loads, never a "0" or an empty chart. Filter controls and tabs repaint
+   on the click frame and never wait on a query (\`useDeferredValue\` /
+   \`startTransition\`).
+3. Measure before calling a UI done: the clicked control updates in under
+   50 ms, no main-thread task runs over 200 ms during a filter change or tab
+   switch, and the first load is reported. Use a headless-browser trace.
+4. Keep bindings small: aggregate in the binding when the page shows only
+   aggregates, drop unused columns, split a binding when one view needs far
+   more rows than the others, keep a build well under ~90 s, and add
+   \`-- schedule:\` when the app needs fresh data.
+5. Never ship a private parquet reader or a second DuckDB. Use the SDK's.
+
 ## Who is looking
 
 \`useViewer()\` gives the signed-in person: \`{ id, email, workspace: { id,
@@ -234,6 +258,7 @@ Uncommitted work exists only on this machine.
 
 - commit \`.env\`, \`node_modules/\`, \`dist/\`, or parquet files;
 - put a query in a binding that you did not run with \`sql_execute_query\`;
+- load a large binding with \`useQuery\` and filter or aggregate it in JS;
 - vendor or copy \`@makoai/app-sdk\` (or a kit component) into the repo —
   depend on it from npm;
 - edit \`.mako/\`, \`.mcp.json\` or this file — they are overwritten on
