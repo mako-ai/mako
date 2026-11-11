@@ -108,6 +108,9 @@ function consoleRefusal(c: Context, error: unknown): Response | undefined {
   return undefined;
 }
 
+/** The caller can open the console and cannot change it. */
+const READ_ONLY_CONSOLE = "You have read-only access to this console.";
+
 function emptyConsoleTree() {
   return {
     success: true as const,
@@ -1235,6 +1238,18 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         _id: new Types.ObjectId(pathOrId),
         workspaceId: new Types.ObjectId(workspaceId),
       });
+      // In the trash: a save (from a tab still open on it) must not put a
+      // file back on main for a row that stays deleted. It returns through
+      // a restore.
+      if (existingById?.is_deleted && existingById.deletedVia === "app") {
+        return c.json(
+          {
+            success: false,
+            error: "This console is in the trash. Restore it to save to it.",
+          },
+          404,
+        );
+      }
       // A console that exists only in git (no row yet) is addressed by its
       // derived id. It still has an owner (its path scope) and a language
       // (its extension): the ACL check must run against the file, and the
@@ -1802,7 +1817,7 @@ consoleRoutes.openapi(
           return c.json(
             {
               success: false,
-              error: "Cannot rename a read-only console",
+              error: READ_ONLY_CONSOLE,
             },
             403,
           );
@@ -3403,6 +3418,7 @@ consoleRoutes.openapi(
 async function consoleFolderWriteDenied(
   ctx: { workspaceId: string; userId: string; role: string | undefined },
   folderId: string,
+  verb: "rename" | "delete" | "move",
 ): Promise<{ ok: false; status: 403 | 404; error: string } | null> {
   const folder = await ConsoleFolder.findOne({
     _id: new Types.ObjectId(folderId),
@@ -3416,7 +3432,13 @@ async function consoleFolderWriteDenied(
     ctx.role,
     { effectiveAccess: access },
   );
-  return allowed ? null : { ok: false, status: 403, error: "Access denied" };
+  return allowed
+    ? null
+    : {
+        ok: false,
+        status: 403,
+        error: `Only the folder's owner or a workspace admin can ${verb} this folder.`,
+      };
 }
 
 const isAdminRole = (role: string | undefined) =>
@@ -3445,7 +3467,7 @@ const consoleFolderBackend: FolderBackend = {
   },
 
   renameFolder: async (ctx, { folderId, name }) => {
-    const denied = await consoleFolderWriteDenied(ctx, folderId);
+    const denied = await consoleFolderWriteDenied(ctx, folderId, "rename");
     if (denied) return denied;
     const success = await consoleManager.renameFolder(
       folderId,
@@ -3459,7 +3481,7 @@ const consoleFolderBackend: FolderBackend = {
   },
 
   deleteFolder: async (ctx, { folderId }) => {
-    const denied = await consoleFolderWriteDenied(ctx, folderId);
+    const denied = await consoleFolderWriteDenied(ctx, folderId, "delete");
     if (denied) return denied;
     // Into the trash, never erased; the answer is what an Undo puts back.
     const trashed = await consoleManager.deleteFolder(
@@ -3473,7 +3495,7 @@ const consoleFolderBackend: FolderBackend = {
   },
 
   moveFolder: async (ctx, { folderId, parentId, access }) => {
-    const denied = await consoleFolderWriteDenied(ctx, folderId);
+    const denied = await consoleFolderWriteDenied(ctx, folderId, "move");
     if (denied) return denied;
     if (
       parentId &&
@@ -3516,7 +3538,7 @@ const consoleFolderBackend: FolderBackend = {
         return {
           ok: false,
           status: 403,
-          error: "Cannot move a read-only console",
+          error: READ_ONLY_CONSOLE,
         };
       }
     }
