@@ -4,8 +4,10 @@
  *  - the schema request asked twice while on its way (StrictMode runs
  *    effects twice) shows no failure, and a real failure is still said;
  *  - a connection whose connector binding does not resolve shows the
- *    server's message and sends `type` with the save, which re-binds it;
- *  - renaming the connector moves the form to `ws:<new>`.
+ *    server's message as its only state, keeps its own type visible, and
+ *    offers the step that works ("Bind to this connector", or another type);
+ *  - renaming the connector moves the form to `ws:<new>` and says what
+ *    was renamed.
  */
 import { StrictMode } from "react";
 import {
@@ -51,6 +53,7 @@ import {
   useConnectorCatalogStore,
 } from "../store/connectorCatalogStore";
 import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
+import { connectorRenamedMessage } from "../lib/connector-rename";
 
 const LOAD_ERROR = "Failed to load connector schema";
 const schema = {
@@ -146,40 +149,105 @@ describe("a workspace connector's schema", () => {
 });
 
 describe("a connection whose connector binding does not resolve", () => {
+  const HINT = "Select a connector type to load configuration fields.";
   const message =
     'This connection was saved under the connector "acme", whose folder is no longer on main.';
-  const save = async (connector: Record<string, unknown>) => {
+  const closed = (rebindable: boolean, catalog = types("zed")) => {
+    const onSubmit = vi.fn();
+    render(
+      <SourceConnectionForm
+        onSubmit={onSubmit}
+        connector={connection({
+          connectorBinding: {
+            ok: false,
+            problem: "definition-gone",
+            message,
+            rebindable,
+          },
+        })}
+        connectorTypes={catalog}
+      />,
+    );
+    return onSubmit;
+  };
+  const update = () =>
+    act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Update" }));
+    });
+
+  it("folder gone: the server's message is the form's only state, the connection's own type stays visible as removed, and nothing is offered that cannot work", async () => {
+    http.GET.mockResolvedValue({
+      data: undefined,
+      error: { error: "Connector not found" },
+      response: { ok: false, status: 404 },
+    });
+    const onSubmit = closed(false);
+    await act(async () => {});
+    expect(screen.getByText(message)).toBeTruthy();
+    // No second, contradicting state: no schema asked for, none missing.
+    expect(screen.queryByText(LOAD_ERROR)).toBeNull();
+    expect(screen.queryByText(HINT)).toBeNull();
+    expect(schemaRequests()).toEqual([]);
+    // The picker is not empty and the title is not a raw type id.
+    expect(screen.getByRole("combobox").textContent).toBe("acme (removed)");
+    expect(screen.getAllByText("acme (removed)").length).toBe(2);
+    expect(screen.queryByText("ws:acme")).toBeNull();
+    // Nothing holds the slug: there is nothing to bind to, and no rename.
+    expect(screen.queryByRole("button", { name: /Bind to/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rename…" })).toBeNull();
+    await update();
+    await act(async () => {});
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('a connector holds the slug now: "Bind to this connector" saves with the type; a plain save does not bind', async () => {
+    const onSubmit = closed(true, types("acme"));
+    await act(async () => {});
+    expect(screen.getByText(message)).toBeTruthy();
+    expect(screen.queryByText(HINT)).toBeNull();
+    // The other connector's fields are not shown before the bind.
+    expect(schemaRequests()).toEqual([]);
+    await update();
+    await act(async () => {});
+    expect(onSubmit).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Bind to this connector" }),
+      );
+    });
+    expect(onSubmit).toHaveBeenCalledWith({ type: "ws:acme" });
+  });
+
+  it("another type can be picked: its fields load, and the save sends the new type", async () => {
+    const onSubmit = closed(false);
+    await act(async () => {});
+    fireEvent.mouseDown(screen.getByRole("combobox"));
+    fireEvent.click(
+      await screen.findByRole("option", { name: /Connector zed/ }),
+    );
+    expect((await screen.findAllByText("API key")).length).toBeGreaterThan(0);
+    expect(schemaRequests()).toEqual(["ws:zed"]);
+    await update();
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "ws:zed" }),
+      ),
+    );
+  });
+
+  it("a connection that resolves shows no message and saves nothing when nothing changed", async () => {
     const onSubmit = vi.fn();
     cacheSchema("ws:acme");
     render(
       <SourceConnectionForm
         onSubmit={onSubmit}
-        connector={connector}
+        connector={connection()}
         connectorTypes={types("acme")}
       />,
     );
     await screen.findAllByText("API key");
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Update" }));
-    });
-    return onSubmit;
-  };
-
-  it("shows the server's message and sends the type with the save, changed or not", async () => {
-    const onSubmit = await save(
-      connection({
-        connectorBinding: { ok: false, problem: "definition-gone", message },
-      }),
-    );
-    expect(screen.getByText(message)).toBeTruthy();
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith({ type: "ws:acme" }),
-    );
-  });
-
-  it("a connection that resolves shows no message and saves nothing when nothing changed", async () => {
-    const onSubmit = await save(connection());
     expect(screen.queryByText(message)).toBeNull();
+    await update();
     await act(async () => {});
     expect(onSubmit).not.toHaveBeenCalled();
   });
@@ -200,7 +268,10 @@ describe("renaming the connector", () => {
       rename: useConnectorCatalogStore.getState().renameWorkspaceConnector,
     };
     useSourceConnectionEntitiesStore.setState({ refresh });
-    useConnectorCatalogStore.setState({ renameWorkspaceConnector });
+    useConnectorCatalogStore.setState({
+      renameWorkspaceConnector,
+      types: types("acme-crm") as never,
+    });
     cacheSchema("ws:acme");
     const onSubmit = vi.fn();
     render(
@@ -212,7 +283,7 @@ describe("renaming the connector", () => {
     );
     await shows("acme");
     fireEvent.click(screen.getByRole("button", { name: "Rename…" }));
-    fireEvent.change(screen.getByLabelText("Connector slug"), {
+    fireEvent.change(screen.getByLabelText("Folder slug"), {
       target: { value: "acme-crm" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Rename" }));
@@ -225,9 +296,17 @@ describe("renaming the connector", () => {
       "acme-crm",
     );
     expect(refresh).toHaveBeenCalledWith("wsA");
+    // The header shows the type id that moved; the toast says what did
+    // and what did not (the display name is the code's).
+    expect(screen.getAllByText("ws:acme-crm").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(
+        connectorRenamedMessage("acme-crm", "Connector acme-crm"),
+      ),
+    ).toBeTruthy();
     await waitFor(() => expect(schemaRequests()).toContain("ws:acme-crm"));
     await waitFor(() =>
-      expect(screen.queryByLabelText("Connector slug")).toBeNull(),
+      expect(screen.queryByLabelText("Folder slug")).toBeNull(),
     );
     // The move is the server's, not an edit of this connection: nothing to save.
     await act(async () => {
