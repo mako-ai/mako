@@ -7,6 +7,9 @@
  *
  *   - dbt jobs: `warehouse-write`, like dbt_update_job — a job is scheduler
  *     configuration that runs against the warehouse;
+ *   - flows: what flow_update takes, which also rewrites `flows/<slug>.yml`:
+ *     `warehouse-write`, an owner or admin, and the external MCP surface only
+ *     (the in-product chat has no flow tool; it has the flow editor);
  *   - skills and workspace connectors: `git-write`. MCP is read-only for
  *     skills (save_skill is excluded there), and a connector rename moves
  *     code AND re-points every connection of that connector;
@@ -15,7 +18,7 @@
  *     It is kept out of the in-product chat and the desktop agent so a
  *     prompt-injected page cannot change a credential the workspace syncs
  *     from, and a rename is one of the changes that tool makes;
- *   - apps, consoles, notebooks, flows, dbt files: no extra grant — the same
+ *   - apps, consoles, notebooks, dbt files: no extra grant — the same
  *     authority app_move_app, modify_console and edit_dbt_file already have.
  *
  * The rename services re-check the caller's live role and per-object access
@@ -25,6 +28,7 @@ import {
   ALL_AGENT_SURFACES,
   type AgentCapabilityDefinition,
   type AgentSurface,
+  type MinimumWorkspaceRole,
 } from "./types";
 
 export type RenameCapabilityPack = "rename";
@@ -52,7 +56,17 @@ const kindIs =
 const RENAME_KIND_SURFACES: Readonly<Record<string, readonly AgentSurface[]>> =
   {
     connection: ["external-mcp"],
+    flow: ["external-mcp"],
   };
+
+/**
+ * Kinds whose own write tools take a workspace role, which `rename_object`
+ * then takes for that kind too (a credential with no person behind it is
+ * exempt, as it is there).
+ */
+export const RENAME_KIND_MINIMUM_ROLE: Readonly<
+  Record<string, MinimumWorkspaceRole>
+> = { flow: "admin" };
 
 /** Whether `rename_object` may rename this kind on this surface. */
 export function renameKindAllowedOn(
@@ -70,8 +84,8 @@ export const RENAME_CAPABILITIES = [
     inputConditionalGrants: [
       {
         grant: "warehouse-write",
-        behavior: "renaming a dbt job",
-        appliesTo: kindIs("dbt_job"),
+        behavior: "renaming a flow or a dbt job",
+        appliesTo: kindIs("flow", "dbt_job"),
       },
       {
         grant: "git-write",
