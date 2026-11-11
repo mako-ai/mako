@@ -18,7 +18,7 @@
  * silently rewritten is not. The result is verified by the caller's own
  * parser before it is committed.
  */
-import yaml from "js-yaml";
+import * as yaml from "js-yaml";
 
 const NEWLINE = /\r?\n/;
 
