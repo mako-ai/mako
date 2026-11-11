@@ -47,10 +47,13 @@ import { z } from "zod";
 import { loggers } from "../../logging";
 import { Flow } from "../../database/workspace-schema";
 import {
+  flowFilePath,
+  flowRenameTarget,
   flowToFile,
   parseFlowFile,
   slugFromFlowFilePath,
 } from "../../services/flow-config-files";
+import { pairRenamedSlugs } from "../../rename/slug-files";
 import {
   hydrateFlowRow,
   readFlowFilesAtMain,
@@ -315,12 +318,59 @@ export async function checkFlowFiles(input: {
   // by any push, with or without this change, and saying otherwise is the
   // exact false alarm this tool must never raise. An unparseable file is
   // neither: the push keeps that row as it is.
-  const wouldTeardown = proposedPlan.wouldTeardown.filter(slug =>
-    deletedSlugs.has(slug),
-  );
   const teardownPreExisting = proposedPlan.wouldTeardown.filter(
     slug => !deletedSlugs.has(slug),
   );
+
+  // A deleted file whose flow carries on under an added one is a RENAME:
+  // the push sync re-keys the row in place before anything is torn down
+  // (rename/slug-files.ts). Predicted here with the rules that need no
+  // pushed commit (the file's `aliases:`, an identical definition); git's
+  // own rename detection runs on the push. Anything else that deletes one
+  // flow and adds another for the same source and destination is a
+  // teardown plus a create, and worth saying before it happens.
+  const removed = (
+    deletedSlugs.size > 0
+      ? await Flow.find({ workspaceId, slug: { $in: [...deletedSlugs] } })
+      : []
+  ).map(row => {
+    const contents = baselineByPath.get(flowFilePath(row.slug as string));
+    const parsed = contents ? parseFlowFile(contents) : null;
+    return {
+      slug: row.slug as string,
+      aliases: row.aliases ?? [],
+      contents,
+      target: flowRenameTarget(parsed ?? flowToFile(row)),
+    };
+  });
+  const added = overlay.added.flatMap(path => {
+    const contents = proposedByPath.get(path)?.contents ?? "";
+    const parsed = parseFlowFile(contents);
+    const slug = slugFromFlowFilePath(path);
+    if (!parsed || !slug) return [];
+    const target = flowRenameTarget(parsed);
+    return [{ slug, contents, aliases: parsed.aliases ?? [], target }];
+  });
+  const { pairs } = pairRenamedSlugs({ removed, added });
+  const renamedFrom = new Set(pairs.map(pair => pair.from));
+  const renamedTo = new Set(pairs.map(pair => pair.to));
+  const wouldTeardown = proposedPlan.wouldTeardown.filter(
+    slug => deletedSlugs.has(slug) && !renamedFrom.has(slug),
+  );
+  const wouldCreate = created.caused.filter(slug => !renamedTo.has(slug));
+  for (const pair of pairs) {
+    notes.push(
+      `\`${pair.from}\` would be renamed to \`${pair.to}\` in place (${pair.via === "alias" ? "`aliases:` says so" : "the definition is the same"}): the same flow, with its id, checkpoints, run history and webhook. Nothing is torn down or backfilled again.`,
+    );
+  }
+  for (const gone of removed.filter(r => !renamedFrom.has(r.slug))) {
+    for (const born of added.filter(a => !renamedTo.has(a.slug))) {
+      if (gone.target === null || gone.target !== born.target) continue;
+      notes.push(
+        `\`${gone.slug}\` would be torn down and \`${born.slug}\` created with the same source and destination: a NEW flow (new id, new webhook URL) that backfills from scratch, while the checkpoints and run history of \`${gone.slug}\` are disposed. If \`${born.slug}\` is \`${gone.slug}\` renamed, say so: add \`aliases: [${gone.slug}]\` to it, or move the file and edit it in separate commits (a pushed move git recognises as a rename, 90% similar or more, is one too).`,
+      );
+    }
+  }
 
   for (const slug of unparseableSlugs) {
     notes.push(
@@ -353,7 +403,7 @@ export async function checkFlowFiles(input: {
   const summary = [
     ok ? "files load" : "NOT loadable",
     `${blocking.length} problem(s)`,
-    `create ${created.caused.length}`,
+    `create ${wouldCreate.length}`,
     `reconfigure ${reconfigureCaused.length}`,
     `teardown ${wouldTeardown.length}`,
   ].join("; ");
@@ -368,7 +418,7 @@ export async function checkFlowFiles(input: {
       note: "Read from the workspace repo's main branch and merged under your files, so a flow you did not mention is never read as deleted.",
     },
     overlay,
-    wouldCreate: created.caused,
+    wouldCreate,
     wouldReconfigure: reconfigureCaused,
     wouldTeardown,
     guard: proposedPlan.guard,
@@ -388,6 +438,7 @@ export function createFlowFileTools(workspaceId: string) {
         "Check proposed `flows/<slug>.yml` files BEFORE committing them: whether each parses, whether the connection ids it names (source and destination) exist in this workspace, whether the flow row it describes would actually save, and what the resulting push would do to running syncs (create, reconfigure, tear down).",
         "Pass ONLY the files you added or changed. The rest of `flows/` is read from the workspace repo's main branch and merged underneath yours, so a flow you do not mention is never read as deleted.",
         "To check a DELETION, name its path in `deletedPaths`. That is the only way a teardown is attributed to you — and a teardown deletes the flow and disposes its CDC checkpoints, which re-adding the file does not recover.",
+        "To check a RENAME (the file moved), name the old path in `deletedPaths` and pass the new file: the result says whether the push would re-key the flow in place or tear it down and create another, and how to make it a rename (`aliases: [<old slug>]` in the new file).",
         "Read-only: nothing is created, changed, deleted, or committed, and this never pushes.",
       ].join("\n"),
       inputSchema: z.object({
