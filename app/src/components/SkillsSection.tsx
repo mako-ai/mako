@@ -26,6 +26,7 @@ import {
   Refresh as RefreshIcon,
   Save as SaveIcon,
 } from "@mui/icons-material";
+import { skillNameError } from "@mako/schemas";
 import { useWorkspace } from "../contexts/workspace-context";
 import { renameObject } from "../lib/object-links";
 import { useConfirm } from "./ConfirmDialog";
@@ -101,10 +102,17 @@ export function SkillsSection() {
     void fetchSkills();
   }, [fetchSkills]);
 
+  // Checked as it is typed, with the server's rule and words
+  // (`@mako/schemas`): a name that would be refused cannot be sent. Whether
+  // the name is free is the server's answer, shown after a try.
+  const renameTo = renameValue.trim();
+  const renameUnchanged = renameTo === renaming?.name;
+  const renameProblem = renameUnchanged ? null : skillNameError(renameTo);
+
   const handleRename = async () => {
     if (!workspaceId || !renaming || renameBusy) return;
-    const next = renameValue.trim();
-    if (!next || next === renaming.name) return;
+    const next = renameTo;
+    if (renameUnchanged || renameProblem) return;
     setRenameBusy(true);
     setRenameError(null);
     try {
@@ -382,11 +390,15 @@ export function SkillsSection() {
                       mb: 0.5,
                     }}
                   >
+                    {/* A long name wraps inside its column: it never runs
+                        under the action buttons. */}
                     <Typography
                       variant="body2"
                       sx={{
                         fontFamily: "monospace",
                         fontWeight: 600,
+                        minWidth: 0,
+                        overflowWrap: "anywhere",
                       }}
                     >
                       {skill.name}
@@ -433,6 +445,7 @@ export function SkillsSection() {
                         color: "text.secondary",
                         display: "block",
                         mb: 0.5,
+                        overflowWrap: "anywhere",
                       }}
                     >
                       Previously: <code>{skill.aliases.join(", ")}</code>
@@ -480,6 +493,7 @@ export function SkillsSection() {
                     sx={{
                       color: "text.secondary",
                       fontFamily: "monospace",
+                      overflowWrap: "anywhere",
                     }}
                   >
                     {skill.definitionInvalid
@@ -492,6 +506,8 @@ export function SkillsSection() {
                   spacing={0.5}
                   sx={{
                     alignItems: "center",
+                    // The buttons keep their room; the text column yields.
+                    flexShrink: 0,
                   }}
                 >
                   <Tooltip
@@ -573,7 +589,10 @@ export function SkillsSection() {
       >
         <DialogTitle>Rename skill</DialogTitle>
         <DialogContent>
-          <Typography variant="body2" sx={{ color: "text.secondary", mb: 1 }}>
+          <Typography
+            variant="body2"
+            sx={{ color: "text.secondary", mb: 1, overflowWrap: "anywhere" }}
+          >
             The folder <code>skills/{renaming?.name}/</code> moves, and the old
             name is kept, so{" "}
             <code>load_skill(&quot;{renaming?.name}&quot;)</code> keeps working.
@@ -591,8 +610,9 @@ export function SkillsSection() {
             onKeyDown={e => {
               if (e.key === "Enter") void handleRename();
             }}
-            error={!!renameError}
+            error={Boolean(renameProblem ?? renameError)}
             helperText={
+              renameProblem ??
               renameError ??
               "Lowercase letters, digits, '-' and '_', starting with a letter or digit."
             }
@@ -607,11 +627,7 @@ export function SkillsSection() {
           <Button
             variant="contained"
             onClick={() => void handleRename()}
-            disabled={
-              renameBusy ||
-              !renameValue.trim() ||
-              renameValue.trim() === renaming?.name
-            }
+            disabled={renameBusy || renameUnchanged || renameProblem !== null}
           >
             Rename
           </Button>
