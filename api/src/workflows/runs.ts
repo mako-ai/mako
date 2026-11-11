@@ -69,7 +69,11 @@ function inputOf(value: unknown): unknown {
 }
 
 const metadataOf = (run: Row) =>
-  (run.additionalMetadata ?? {}) as { trigger?: string; startedBy?: string };
+  (run.additionalMetadata ?? {}) as {
+    trigger?: string;
+    startedBy?: string;
+    dryRun?: unknown;
+  };
 
 const runSummary = (run: Row, workflowName: unknown = run.workflowName) => ({
   runId: idOf(run),
@@ -307,30 +311,57 @@ const readDetail = (tenant: WorkspaceTenant, runId: string) => {
   return tenantJson<RunDetail>(tenant, `/api/v1/stable/workflow-runs/${runId}`);
 };
 
+/**
+ * What a run's connection writes do (connections/proxy.service.ts):
+ * - "send": through the connection, if the writers list allows it. A run a
+ *   person, a trigger, a schedule, the agent's tool or an MCP login started.
+ * - "record": kept under the run and not sent, a dry run (`dryRun: true`).
+ * - "refuse": a run started with an API key (CI, a script: Mako cannot tell
+ *   who holds the key), or an agent's run from before Mako kept its
+ *   trigger. It fails loudly instead of passing with nothing sent.
+ */
+export type RunWrites = "send" | "record" | "refuse";
+
+export type RunOrigin = { starter: RunStarter; writes: RunWrites };
+
 /** Who started each run looked up, by tenant and run: it never changes. */
-const starters = new Map<string, RunStarter>();
-const MAX_STARTERS = 5000;
+const origins = new Map<string, RunOrigin>();
+const MAX_ORIGINS = 5000;
+
+/** What a run's writes do, from what Mako put on it when it started it. */
+export function runWritesOf(
+  starter: RunStarter,
+  metadata: { trigger?: string; dryRun?: unknown },
+): RunWrites {
+  if (metadata.dryRun === true || metadata.dryRun === "true") return "record";
+  if (starter !== "agent") return "send";
+  return metadata.trigger === "agent" || metadata.trigger === "mcp"
+    ? "send"
+    : "refuse";
+}
 
 /**
- * Who started the workspace's run `runId` (hatchet.ts `RunStarter`), or null
- * when Mako cannot tell: no run id, no tenant, a run the tenant does not
- * have, or Hatchet not answering. A run started before Mako kept
- * `startedBy` is an agent's when its trigger was an agent's tool or an API
- * call, as those are now; a run with neither (a schedule) is a trigger's.
+ * Who started the workspace's run `runId` (hatchet.ts `RunStarter`) and what
+ * its writes do, or null when Mako cannot tell: no run id, no tenant, a run
+ * the tenant does not have, or Hatchet not answering. A run started before
+ * Mako kept `startedBy` is an agent's when its trigger was an agent's tool
+ * or an API call, as those are now; a run with neither (a schedule) is a
+ * trigger's.
  */
 export async function runStartedBy(
   workspaceId: string,
   runId: string | undefined,
-): Promise<RunStarter | null> {
+): Promise<RunOrigin | null> {
   if (!runId || !isHatchetId(runId)) return null;
   const tenant = await readWorkspaceTenant(workspaceId).catch(() => null);
   if (!tenant) return null;
   const key = `${tenant.tenantId}:${runId}`;
-  const known = starters.get(key);
+  const known = origins.get(key);
   if (known) return known;
   const detail = await readDetail(tenant, runId).catch(() => null);
   if (!detail?.run || idOf(detail.run) !== runId) return null;
-  const { startedBy, trigger } = metadataOf(detail.run);
+  const metadata = metadataOf(detail.run);
+  const { startedBy, trigger } = metadata;
   const starter: RunStarter =
     startedBy === "agent" || startedBy === "person" || startedBy === "trigger"
       ? startedBy
@@ -339,11 +370,12 @@ export async function runStartedBy(
         : trigger === "ui"
           ? "person"
           : "trigger";
-  if (starters.size >= MAX_STARTERS) {
-    starters.delete(starters.keys().next().value as string);
+  const origin: RunOrigin = { starter, writes: runWritesOf(starter, metadata) };
+  if (origins.size >= MAX_ORIGINS) {
+    origins.delete(origins.keys().next().value as string);
   }
-  starters.set(key, starter);
-  return starter;
+  origins.set(key, origin);
+  return origin;
 }
 
 /** One run of the workspace's Hatchet; `full` keeps every log line. */
