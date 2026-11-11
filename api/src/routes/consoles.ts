@@ -181,6 +181,12 @@ function computeConsoleStateHash(
   );
 }
 
+/** The same query text, line endings and trailing blank lines aside. */
+function sameConsoleCode(a: string | undefined, b: string): boolean {
+  const plain = (code: string) => code.replace(/\r\n/g, "\n").trimEnd();
+  return plain(a ?? "") === plain(b);
+}
+
 /**
  * Hash of the last explicitly saved state — read from the console's file at
  * HEAD (git is the history; snapshot rows are no longer written).
@@ -563,8 +569,14 @@ consoleRoutes.openapi(
         const serverRevision = doc.draftRevision ?? 1;
         if (serverRevision === clientRevision) continue;
         const isSaved = doc.isSaved ?? true;
-        const savedStateHash = isSaved
-          ? await getLatestConsoleSavedStateHash(doc)
+        const saved = isSaved ? await savedConsoleStateFromRepo(doc) : null;
+        const savedStateHash = saved
+          ? computeConsoleStateHash(
+              saved.code,
+              saved.connectionId,
+              saved.databaseId,
+              saved.databaseName,
+            )
           : undefined;
         changed.push({
           id,
@@ -580,6 +592,14 @@ consoleRoutes.openapi(
           // consoles don't). Missing on legacy docs ⇒ treated as saved.
           isSaved,
           savedStateHash,
+          // Whether the working copy IS the saved content (the file on
+          // main). A revision also moves for a rename, a move or a restore,
+          // which change no content: with an unchanged `version` this lets
+          // a tab holding unsaved edits tell those from a real change,
+          // instead of warning about "an older copy" on every rename.
+          contentIsSaved: saved
+            ? sameConsoleCode(doc.code, saved.code)
+            : undefined,
           // Lets the client route an agent edit into the diff-review flow even
           // when the live poke was missed (reconnect/reload). Undefined ⇒ user.
           lastDraftOrigin: doc.lastDraftOrigin,
