@@ -86,10 +86,10 @@ describe("object links", () => {
     );
     h.POST.mockResolvedValue({
       status: 409,
-      body: { error: "Another app already uses the link /apps/revenue." },
+      body: { error: "The link /apps/revenue is already taken." },
     });
     await expect(
       renameObject("ws1", "app", { ref: "a1", slug: "revenue" }),
-    ).rejects.toThrow("Another app already uses the link /apps/revenue.");
+    ).rejects.toThrow("The link /apps/revenue is already taken.");
   });
 });

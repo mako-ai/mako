@@ -394,10 +394,13 @@ describe("renaming an app", () => {
             : String(error),
       );
     expect(await refusal("other")).toBe(
-      "409 Another app already uses the link /apps/other. Pick another.",
+      "409 The link /apps/other is already taken. Pick another.",
     );
     expect(await refusal("Other")).toMatch(/^409 .*upper and lower case/);
-    expect(await refusal("Team")).toMatch(/^409 /);
+    // A folder holds the name just as an app would.
+    expect(await refusal("Team")).toBe(
+      "409 The link /apps/Team is already taken. Pick another.",
+    );
     expect(await refusal("a/b")).toMatch(/^400 Use only letters/);
     expect(await refusal("con")).toMatch(/^400 .*Windows/);
     expect(await refusal("search")).toMatch(/^400 .*reserved/);

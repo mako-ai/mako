@@ -1249,6 +1249,15 @@ describe("createProject", () => {
       )?.hasManifestId,
     ).toBe(true);
 
+    // A title whose slug the apps routes keep for themselves (or that a
+    // rename would refuse) gets a suffix rather than an unreachable link.
+    const reserved = await createProject({
+      workspaceId: WS,
+      title: "Search",
+      userId: USER,
+    });
+    expect(reserved.path).toBe("apps/search-2");
+
     // A second "Hello" in the same folder gets -2; in another folder, not.
     const second = await createProject({
       workspaceId: WS,

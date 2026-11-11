@@ -857,11 +857,15 @@ async function uniqueSlug(
 ): Promise<string> {
   const base = slugify(title);
   const taken = await occupiedPaths(workspaceId);
-  const pathFor = (slug: string) => appRepoPath({ ...target, slug });
-  if (!taken.has(pathFor(base))) return base;
+  // Free, and a name a rename would accept: an app titled "Search" must
+  // not land on `/apps/search`, which the apps routes keep for themselves.
+  const free = (slug: string) =>
+    !taken.has(appRepoPath({ ...target, slug })) &&
+    appNameProblem(slug, "link") === null;
+  if (free(base)) return base;
   for (let i = 2; ; i++) {
     const candidate = `${base}-${i}`;
-    if (!taken.has(pathFor(candidate))) return candidate;
+    if (free(candidate)) return candidate;
   }
 }
 
@@ -1477,7 +1481,7 @@ export async function renameProject(
       if (twin === to) {
         throw new AppFolderError(
           to === `${APPS_DIR}/${slug}`
-            ? `Another app already uses the link /apps/${slug}. Pick another.`
+            ? `The link /apps/${slug} is already taken. Pick another.`
             : `"${slug}" is already taken in this folder. Pick another link.`,
           409,
         );

@@ -132,10 +132,10 @@ describe("AppRenameDialog", () => {
     // An app pushed from a laptop as `search` may still be given a new name.
     const { onConfirm, name, button } = renderDialog({
       currentSlug: "search",
-      error: "Another app already uses the link /apps/revenue. Pick another.",
+      error: "The link /apps/revenue is already taken. Pick another.",
     });
     expect(screen.getByRole("alert").textContent).toBe(
-      "Another app already uses the link /apps/revenue. Pick another.",
+      "The link /apps/revenue is already taken. Pick another.",
     );
     fireEvent.change(name, { target: { value: "Search report" } });
     fireEvent.click(button());
