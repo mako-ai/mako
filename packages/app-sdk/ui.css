@@ -271,14 +271,9 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
 .mk-ms-trigger:hover { background: var(--accent); }
 .mk-ms-trigger:focus-visible { outline: none; }
 .mk-ms-trigger.open, .mk-ms-trigger:focus-visible { border-color: var(--ring); box-shadow: var(--mk-ring-focus); }
-.mk-ms-value { display: flex; align-items: center; min-width: 0; overflow: hidden; }
-.mk-ms-chips { display: inline-flex; align-items: center; gap: 4px; }
-.mk-ms-chip {
-  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px;
-  font-size: 12px; font-weight: 500; border-radius: 999px; white-space: nowrap;
-  background: var(--secondary); color: var(--secondary-foreground);
-}
-.mk-ms-more { color: var(--muted-foreground); }
+.mk-ms-value { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+/* The trigger reads "All", the one selected label, or "N selected". */
+.mk-ms-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mk-ms-caret { color: var(--muted-foreground); flex-shrink: 0; transition: transform .15s ease; }
 .mk-ms-trigger.open .mk-ms-caret { transform: rotate(180deg); }
 .mk-ms-menu {
@@ -295,6 +290,7 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
 .mk-ms-opt:hover, .mk-ms-opt:focus-visible { background: var(--accent); outline: none; }
 .mk-ms-opt.active { font-weight: 500; }
 .mk-ms-label { flex: 1; }
+/* The kit's one checkbox (Checkbox, MultiSelect rows): theme tokens only. */
 .mk-ms-box {
   display: inline-flex; align-items: center; justify-content: center;
   width: 16px; height: 16px; flex-shrink: 0; border-radius: var(--mk-radius-sm);

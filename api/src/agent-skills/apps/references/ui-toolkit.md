@@ -182,6 +182,20 @@ Use the kit's `MultiSelect` (`@makoai/app-sdk/ui`) — it is this pattern,
 already built. The shadcn recipe below is for an app that has its own
 shadcn setup and needs a variant the kit does not offer.
 
+From SDK 2.17 the kit owns the All rule. Don't wrap `MultiSelect` with your
+own All logic, and don't override `.mk-ms-*` classes to change its trigger.
+
+- Pass `[]` or every value for "All". Both tick the All row and untick every
+  option. A click under All selects only that option.
+- The trigger reads the All label, the one label, or "N selected"
+  (`formatMany` changes the last).
+- One dropdown open at a time. Kit popovers close each other. A Radix menu
+  calls `closePopovers()` from `@makoai/app-sdk/ui` in
+  `onOpenChange={o => o && closePopovers()}`, with `modal={false}`.
+- An app-side menu draws its ticks with the kit `Checkbox`
+  (`checked` true / false / "mixed") and follows the same rule with
+  `multiSelectState` / `multiSelectToggle` / `multiSelectText`.
+
 Multi-select filters (countries, teams, …) are a `DropdownMenu`, not a chip
 row: trigger shows the selection summary (`All countries` / `FR, CH`), the
 menu has an **All** row, then one row per value — `Checkbox` on the left,
@@ -192,7 +206,7 @@ the value. Keep the menu open across toggles with
 ```tsx
 <DropdownMenuItem className="group/row gap-2 text-xs"
     onSelect={(e) => { e.preventDefault(); toggle(value); }}>
-  <Checkbox checked={selected.includes(value)} className="pointer-events-none size-3.5" />
+  <Checkbox checked={selected.includes(value)} /> {/* the kit Checkbox */}
   <span className="flex-1">{label}</span>
   <button type="button"
       className="invisible rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:bg-background hover:text-foreground group-hover/row:visible"
@@ -202,9 +216,9 @@ the value. Keep the menu open across toggles with
 </DropdownMenuItem>
 ```
 
-Semantics that make it feel right: unchecking the last value re-selects all
-(an empty filter means "everything", never "nothing"), and "only" on the sole
-selected value restores all. Persist selections in URL params so views are
+Semantics that make it feel right: under All every row is unticked and a
+click picks only that row; unchecking the last value re-selects all (an empty
+filter means "everything", never "nothing"). Persist selections in URL params so views are
 shareable.
 
 ## Migrating a v1 (CDN-runtime) app

@@ -388,10 +388,9 @@ import {
 <MultiSelect options={["CH", "ES", "IT"]} value={countries} onChange={setCountries} allLabel="All countries" />
 ```
 
-- `MultiSelect` — controlled (`value` / `onChange`). An empty selection means
-  "all" unless `emptyMeansAll={false}` (then "all" = every value selected).
-  Options are strings or `{ value, label, color }`; `showOnly` adds an "Only"
-  button per row. On phones the menu is a bottom sheet.
+- `MultiSelect` — controlled (`value` / `onChange`). Options are strings or
+  `{ value, label, color }`; `showOnly` adds an "Only" button per row. On
+  phones the menu is a bottom sheet. See "MultiSelect: the All rule" below.
 - `FreshnessBadge` — presentational: the app decides what fresh means and
   passes `tone` (`ok` / `warn` / `bad`, or `green` / `amber` / `red`), a
   `headline`, and per-source rows; `action` is a callout slot (e.g. a "Load
@@ -420,6 +419,37 @@ import {
 
   and declare it once (`src/vite-env.d.ts`):
   `declare const __APP_BINDING_NAMES__: string[];`
+
+### MultiSelect: the All rule and one open popover (2.17+)
+
+**All.** Nothing is filtered when `value` is empty or holds every option. The
+All row is then ticked and every option row unticked, whichever of the two the
+app passes. A click on an option under All selects only that option.
+Unticking the last option, or ticking the last missing one, returns to All.
+`emptyMeansAll` (default `true`) only sets what All emits: `[]`, or every
+option's value when `false`.
+
+**Trigger.** It reads the All label, the one selected label, or "3 selected".
+`formatMany={n => `${n} markets`}` changes the last one. The trigger's `title`
+lists the selected labels. Chips and `maxChips` are gone.
+
+**Checkbox.** `Checkbox` (`checked`: `true` / `false` / `"mixed"`) is the
+kit's one checkbox, coloured from `--primary` and `--input`. Draw the rows of
+an app's own Radix menu with it, so every menu on the page ticks alike.
+
+**One open at a time.** Opening a kit popover (`MultiSelect`,
+`FreshnessBadge`) closes any other. Escape, a pointerdown outside and focus
+leaving it close it too. The kit listens for pointerdown in the capture phase,
+because Radix triggers cancel the mouse events of their pointerdown. When an
+app's own menu opens, call `closePopovers()`:
+
+```tsx
+<DropdownMenu modal={false} onOpenChange={o => o && closePopovers()}>
+```
+
+Pure helpers for app-side menus: `multiSelectState(value, optionValues)`,
+`multiSelectToggle(value, optionValues, v, emptyMeansAll)`,
+`multiSelectText(value, options, allLabel, formatMany)`.
 
 ### Chart tooltips: `TableTooltip` (2.10+, every series from 2.15)
 

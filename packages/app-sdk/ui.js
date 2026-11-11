@@ -12,6 +12,8 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import { bindingPhaseLabel, refreshBinding, useBindingProgress } from "./index.js";
 import {
+  claimPopover,
+  closePopovers,
   COLUMN_WIDTHS,
   columnLayout,
   compareValues,
@@ -20,11 +22,16 @@ import {
   csvToTsv,
   defaultColumnWidth,
   formatSeconds as fmtSecs,
+  multiSelectAll,
+  multiSelectState,
+  multiSelectText,
+  multiSelectToggle,
   nextSort,
   normalizeTone,
   pageSlice,
   pageToSync,
   refreshOrder,
+  releasePopover,
   serializeResetKey,
   sortRows,
   toCsv,
@@ -34,6 +41,7 @@ import {
 } from "./ui-core.js";
 
 export {
+  closePopovers,
   COLUMN_WIDTHS,
   columnLayout,
   compareValues,
@@ -41,6 +49,9 @@ export {
   csvDate,
   csvToTsv,
   defaultColumnWidth,
+  multiSelectState,
+  multiSelectText,
+  multiSelectToggle,
   nextSort,
   normalizeTone,
   pageSlice,
@@ -84,6 +95,8 @@ function svg(size, strokeWidth, children, className) {
 }
 const IconCheck = ({ size = 11 }) =>
   svg(size, 3.2, [h("polyline", { key: "p", points: "20 6 9 17 4 12" })]);
+const IconMinus = ({ size = 11 }) =>
+  svg(size, 3.2, [h("line", { key: "l", x1: 6, y1: 12, x2: 18, y2: 12 })]);
 const IconChevron = ({ className }) =>
   svg(12, 2.2, [h("polyline", { key: "p", points: "6 9 12 15 18 9" })], className);
 const IconX = ({ size = 16 }) =>
@@ -102,25 +115,36 @@ const IconRefresh = () =>
 const PHONE = "(max-width: 640px)";
 
 /**
- * Close on outside click and Escape, and keep the `.mk-pop` inside `wrapRef`
- * within the viewport: it opens under its trigger aligned to `align`, flips
- * to the other edge when that would overflow, and as a last resort is pinned
- * to the viewport margin. On phones the popover is a bottom sheet (CSS) and
- * is left alone.
+ * One kit popover is open at a time: opening this one closes any other (a
+ * module-level registry, see claimPopover). It closes on Escape, on a
+ * pointerdown outside it, and when focus moves outside it. Pointerdown, in
+ * the capture phase, because Radix menu triggers cancel the mouse events of
+ * their pointerdown, so an outside mousedown/click listener never hears them.
+ *
+ * It also keeps the `.mk-pop` inside `wrapRef` within the viewport: it opens
+ * under its trigger aligned to `align`, flips to the other edge when that
+ * would overflow, and as a last resort is pinned to the viewport margin. On
+ * phones the popover is a bottom sheet (CSS) and is left alone.
  */
 function usePopover(open, setOpen, wrapRef, align) {
   React.useEffect(() => {
     if (!open) return undefined;
-    const onDoc = e => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    const close = () => setOpen(false);
+    claimPopover(close);
+    const outside = e => {
+      const wrap = wrapRef.current;
+      if (wrap && e.target instanceof Node && !wrap.contains(e.target)) close();
     };
     const onKey = e => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") close();
     };
-    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("pointerdown", outside, true);
+    document.addEventListener("focusin", outside, true);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onDoc);
+      releasePopover(close);
+      document.removeEventListener("pointerdown", outside, true);
+      document.removeEventListener("focusin", outside, true);
       document.removeEventListener("keydown", onKey);
     };
   }, [open, setOpen, wrapRef]);
@@ -621,19 +645,39 @@ export function DataTable({
 }
 
 // ---------------------------------------------------------------------------
-// MultiSelect
+// Checkbox + MultiSelect
 // ---------------------------------------------------------------------------
 function toOption(o) {
   return typeof o === "string" ? { value: o, label: o } : o;
 }
 
 /**
+ * The kit's one checkbox, drawn only (the row around it takes the click).
+ * `checked`: true, false or "mixed". Colours come from the theme tokens
+ * (--primary when ticked, --input border when not), so every menu on a page,
+ * the kit's or the app's own Radix menus, ticks the same way.
+ */
+export function Checkbox({ checked = false, className }) {
+  const on = checked === true || checked === "mixed";
+  return h(
+    "span",
+    { className: cx("mk-ms-box", on && "on", className), "aria-hidden": "true" },
+    checked === "mixed" ? h(IconMinus) : on ? h(IconCheck) : null,
+  );
+}
+
+/**
  * Multi-select filter (shadcn combobox look). Controlled: `value` is the
  * selected values, `onChange` gets the next array.
  *
- * `emptyMeansAll` (default true): an empty selection is "all" — the common
- * filter shape. Set it to false when "all" is every value selected; the
- * "All" row then selects every option instead of clearing.
+ * The All rule: nothing is filtered when `value` is empty or holds every
+ * option. The All row is then ticked and every option row unticked. A click
+ * on an option under All selects only that option. Unticking the last
+ * option, or ticking the last missing one, returns to All. The trigger reads
+ * the All label, the one selected label, or "N selected".
+ *
+ * `emptyMeansAll` (default true) only picks what All emits: [] by default,
+ * every option's value when false.
  */
 export function MultiSelect({
   options,
@@ -642,7 +686,7 @@ export function MultiSelect({
   allLabel = "All",
   emptyMeansAll = true,
   showOnly = false,
-  maxChips = 2,
+  formatMany,
   align = "start",
   className,
   "aria-label": ariaLabel,
@@ -651,16 +695,15 @@ export function MultiSelect({
   const ref = React.useRef(null);
   usePopover(open, setOpen, ref, align);
   const opts = options.map(toOption);
-  const allOn = emptyMeansAll ? value.length === 0 : value.length === opts.length;
-  const chosen = opts.filter(o => value.includes(o.value));
+  const values = opts.map(o => o.value);
+  const { all: allOn, selected } = multiSelectState(value, values);
+  const text = multiSelectText(value, opts, allLabel, formatMany);
+  const single = selected.length === 1 ? opts.find(o => o.value === selected[0]) : null;
 
-  const toggle = v =>
-    onChange(value.includes(v) ? value.filter(x => x !== v) : [...value, v]);
-  const all = () => onChange(emptyMeansAll ? [] : opts.map(o => o.value));
-
-  const box = on => h("span", { className: cx("mk-ms-box", on && "on") }, on && h(IconCheck));
+  const toggle = v => onChange(multiSelectToggle(value, values, v, emptyMeansAll));
+  const all = () => onChange(multiSelectAll(values, emptyMeansAll));
   const dot = o =>
-    o.color ? h("span", { className: "mk-ms-swatch", style: { background: o.color } }) : null;
+    o?.color ? h("span", { className: "mk-ms-swatch", style: { background: o.color } }) : null;
 
   return h(
     "div",
@@ -673,23 +716,12 @@ export function MultiSelect({
         "aria-haspopup": "listbox",
         "aria-expanded": open,
         "aria-label": ariaLabel,
+        title: selected.length > 1
+          ? selected.map(v => opts.find(o => o.value === v)?.label ?? v).join(", ")
+          : undefined,
         onClick: () => setOpen(o => !o),
       },
-      h(
-        "span",
-        { className: "mk-ms-value" },
-        allOn || chosen.length === 0
-          ? h("span", null, allLabel)
-          : h(
-              "span",
-              { className: "mk-ms-chips" },
-              ...chosen.slice(0, maxChips).map(o =>
-                h("span", { key: o.value, className: "mk-ms-chip" }, dot(o), o.label),
-              ),
-              chosen.length > maxChips &&
-                h("span", { key: "+", className: "mk-ms-chip mk-ms-more" }, `+${chosen.length - maxChips}`),
-            ),
-      ),
+      h("span", { className: "mk-ms-value" }, dot(single), h("span", { className: "mk-ms-text" }, text)),
       h(IconChevron, { className: "mk-ms-caret" }),
     ),
     open &&
@@ -698,13 +730,13 @@ export function MultiSelect({
         { className: "mk-pop mk-ms-menu", role: "listbox", "aria-multiselectable": true },
         h(
           "button",
-          { type: "button", className: cx("mk-ms-opt", allOn && "active"), onClick: all },
-          box(allOn),
+          { type: "button", className: cx("mk-ms-opt", allOn && "active"), "aria-pressed": allOn, onClick: all },
+          h(Checkbox, { checked: allOn }),
           h("span", { className: "mk-ms-label" }, allLabel),
         ),
         h("div", { className: "mk-ms-sep" }),
         ...opts.map(o => {
-          const on = value.includes(o.value);
+          const on = selected.includes(o.value);
           return h(
             "div",
             {
@@ -721,7 +753,7 @@ export function MultiSelect({
                 }
               },
             },
-            box(on),
+            h(Checkbox, { checked: on }),
             dot(o),
             h("span", { className: "mk-ms-label" }, o.label),
             showOnly &&
@@ -732,7 +764,7 @@ export function MultiSelect({
                   className: "mk-ms-only",
                   onClick: e => {
                     e.stopPropagation();
-                    onChange([o.value]);
+                    onChange(multiSelectToggle([], values, o.value, emptyMeansAll));
                   },
                 },
                 "Only",

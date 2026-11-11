@@ -73,17 +73,25 @@ export interface MultiSelectOption<V extends string = string> {
 
 export interface MultiSelectProps<V extends string = string> {
   options: ReadonlyArray<V | MultiSelectOption<V>>;
+  /**
+   * The selected values. Empty, or every option, means "All": the All row is
+   * ticked and every option row unticked. Under All a click on an option
+   * selects only that option; unticking the last option, or ticking the last
+   * missing one, returns to All.
+   */
   value: readonly V[];
   onChange: (next: V[]) => void;
   allLabel?: string;
   /**
-   * true (default): an empty selection means "all".
-   * false: "all" is every value selected; the All row selects every option.
+   * What All emits. true (default): []. false: every option's value.
+   * Both spellings display as All either way.
    */
   emptyMeansAll?: boolean;
   /** An "Only" button on each row that selects just that value. */
   showOnly?: boolean;
-  /** Chips shown in the trigger before "+n". Default 2. */
+  /** Trigger text for several values. Default `${n} selected`. */
+  formatMany?: (n: number) => string;
+  /** @deprecated 2.17: the trigger reads "All", the one label, or "N selected". Ignored. */
   maxChips?: number;
   /** Which edge the menu aligns to before flipping. Default "start". */
   align?: "start" | "end";
@@ -91,6 +99,37 @@ export interface MultiSelectProps<V extends string = string> {
   "aria-label"?: string;
 }
 export function MultiSelect<V extends string = string>(props: MultiSelectProps<V>): React.ReactElement;
+
+/**
+ * The kit's one checkbox, drawn only (the row around it takes the click),
+ * coloured from theme tokens. Use it for the rows of an app's own menus.
+ */
+export function Checkbox(props: { checked?: boolean | "mixed"; className?: string }): React.ReactElement;
+
+/** Where a MultiSelect stands: `all` when the value is empty or holds every option (then `selected` is empty). */
+export function multiSelectState<V extends string>(
+  value: readonly V[] | null | undefined,
+  optionValues: readonly V[],
+): { all: boolean; selected: V[] };
+/** The next value after a click on `v`, by the All rule. */
+export function multiSelectToggle<V extends string>(
+  value: readonly V[],
+  optionValues: readonly V[],
+  v: V,
+  emptyMeansAll?: boolean,
+): V[];
+/** The trigger text: the All label, the one label, or "N selected" (`many(n)`). */
+export function multiSelectText<V extends string>(
+  value: readonly V[],
+  options: ReadonlyArray<{ value: V; label: string }>,
+  allLabel?: string,
+  many?: (n: number) => string,
+): string;
+/**
+ * Close whichever kit popover (MultiSelect, FreshnessBadge) is open. Call it
+ * when an app's own menu opens: `onOpenChange={o => o && closePopovers()}`.
+ */
+export function closePopovers(): void;
 
 export interface FreshnessSource {
   key?: string;
