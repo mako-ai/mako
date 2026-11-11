@@ -46,6 +46,20 @@ tests/                 # singular SQL tests
 
 Reads come from the workspace repo at your session branch (git `listTree`/`readBlob`); writes are commits on that branch, and every write is also captured in the shared [version history](/version-history/). There's one dbt project per workspace, scaffolded into `dbt/` on first use — or imported by pointing at an existing `dbt/dbt_project.yml` in the repo.
 
+### Renaming and moving files
+
+Renaming a file (**Rename** in the explorer, or the agent's `rename_object` with `kind: "dbt_file"`) and moving it to another folder are the same edit: the file gets a new project path. It is one commit on your branch, and it needs the admin or owner role like every other dbt file change. Modes, symlinks and binary files move as they are.
+
+A model's file name is its name. When you rename a model or a seed, the same commit rewrites what names it:
+
+- `ref('old')` and `ref("old")` in other models, Python models, docs and YAML strings;
+- selectors in the commands of `dbt/jobs/*.yml` (`--select old+ other`, `-s`, `--exclude`);
+- the model's `- name:` entry in properties files, `model:` in `unit_tests`, and its key in `dbt_project.yml`.
+
+Seed CSV data is never rewritten, and a snapshot keeps the name in its `{% snapshot %}` block. The rename then tells you what it could not fix: the old relation still in the warehouse (dbt builds the new one beside it), `selectors.yml`, shared consoles and app bindings whose SQL still names the old relation, and folder-level `dbt_project.yml` config that stops applying once the file is in another folder.
+
+A new name that YAML would read as something other than text (`true`, `null`, `123`, `2026-10-06`, `yes`) is written quoted. If the project changes while the rename is being prepared (someone saves a file), the rename is refused and nothing is committed: reload and try again. Old links to the file (`/x/<project>/file/<old path>`) keep opening it, including after a `git mv` pushed from a laptop.
+
 ## Studio-style editor
 
 Beyond the file IDE, the editor mirrors **dbt Studio**:
@@ -142,7 +156,7 @@ dbt routes are mounted under `/api/workspaces/:workspaceId/dbt`. Highlights (ful
 | `GET` / `PATCH` / `DELETE` | `/projects/:projectId` | Get / update / delete a project |
 | `GET` | `/projects/:projectId/files` | List project files |
 | `GET` / `PUT` / `DELETE` | `/projects/:projectId/files/:path` | Read / write / delete a file |
-| `POST` | `/projects/:projectId/files/rename` | Rename / move a file |
+| `POST` | `/projects/:projectId/files/rename` | Rename / move a file (`from`, `to`; `updateRefs: false` leaves references alone). Answers with the rename's `warnings` |
 | `POST` | `/projects/:projectId/environments/personal` | Idempotently provision the caller's personal environment |
 | `PUT` | `/projects/:projectId/my-environment` | Save the caller's default dev environment (`""` = Auto) |
 | `GET` / `POST` | `/projects/:projectId/jobs` | List / create jobs |

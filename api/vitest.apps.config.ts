@@ -173,6 +173,10 @@ export default defineConfig({
       "src/routes/objects.test.ts",
       // Where an old path went: git's own rename history.
       "src/rename/git-renames.test.ts",
+      // dbt file rename: every entry point, what a model rename rewrites,
+      // what refuses it; and a 1,200-file project.
+      "src/rename/scenarios/dbt-file.scenarios.test.ts",
+      "src/rename/scenarios/dbt-file-scale.scenarios.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.

@@ -266,7 +266,8 @@ export async function resolveDbtWriteBase(
 
 /**
  * Commit a mutation to the dbt tree on the actor's session branch and push it
- * to the mirror. The one write path for saves, deletes and renames.
+ * to the mirror. The one write path for saves, deletes and renames (a
+ * rename is rename/dbt-file.ts, through `commitDbtChanges`).
  *
  * The branch is freshened from the mirror first: a commit onto a tip this
  * instance had not caught up with cannot be pushed (non-fast-forward), and
@@ -437,30 +438,6 @@ export async function deleteWorkingFile(
     `dbt: delete ${path}`,
   );
   return true;
-}
-
-/** Rename: one commit carrying the delete and the add. */
-export async function renameWorkingFile(
-  project: IDbtProject,
-  userId: string,
-  from: string,
-  to: string,
-): Promise<string | null> {
-  assertSafeDbtPath(from);
-  assertSafeDbtPath(to);
-  const [source, target] = await Promise.all([
-    readWorkingFile(project, userId, from),
-    readWorkingFile(project, userId, to),
-  ]);
-  if (!source) return "File not found";
-  if (target) return `"${to}" already exists`;
-  await commitDbtMutation(
-    project,
-    userId,
-    { writes: { [to]: source.content }, deletes: [from] },
-    `dbt: rename ${from} -> ${to}`,
-  );
-  return null;
 }
 
 /**
