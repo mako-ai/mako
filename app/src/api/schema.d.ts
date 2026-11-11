@@ -1865,9 +1865,9 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Who may write through this source connection */
+        /** Who may read live and write through this source connection */
         get: operations["get_api_workspaces_workspaceId_connections_sources_id_writers"];
-        /** Change who may write through this source connection */
+        /** Change who may read live and write through this source connection */
         put: operations["put_api_workspaces_workspaceId_connections_sources_id_writers"];
         post?: never;
         delete?: never;
@@ -2056,9 +2056,9 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Who may write through this source connection */
+        /** Who may read live and write through this source connection */
         get: operations["get_api_workspaces_workspaceId_connectors_id_writers"];
-        /** Change who may write through this source connection */
+        /** Change who may read live and write through this source connection */
         put: operations["put_api_workspaces_workspaceId_connectors_id_writers"];
         post?: never;
         delete?: never;
@@ -12526,6 +12526,10 @@ export interface operations {
                         principal: string;
                     }[];
                     liveReads?: boolean;
+                    liveReaders?: {
+                        /** @example workflow:* */
+                        principal: string;
+                    }[] | null;
                 };
             };
         };
@@ -13211,6 +13215,10 @@ export interface operations {
                         principal: string;
                     }[];
                     liveReads?: boolean;
+                    liveReaders?: {
+                        /** @example workflow:* */
+                        principal: string;
+                    }[] | null;
                 };
             };
         };

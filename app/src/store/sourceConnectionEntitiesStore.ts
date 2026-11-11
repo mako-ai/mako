@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { api, unwrapBody } from "../api";
-import type { ConnectionWriters } from "./schemaStore";
+import type { ConnectionWriter, ConnectionWriters } from "./schemaStore";
 import { reconcileSourceConnectionTabs } from "../lib/source-connection-tabs";
 
 interface SourceConnectionEntity {
@@ -38,6 +38,11 @@ interface ApiResponse<T> {
 export interface SourceConnectionWriters extends ConnectionWriters {
   /** Off: the proxy refuses reads too. */
   liveReads: boolean;
+  /**
+   * Null: everyone in the workspace reads live (when on). A list: only these
+   * principals, and the writers.
+   */
+  liveReaders: ConnectionWriter[] | null;
   /** Whether Mako can call this connection's service yet. */
   callable: boolean;
 }
@@ -83,6 +88,8 @@ interface EntitiesState {
     connectorId: string,
     writers: { principal: string; where?: string }[],
     liveReads?: boolean,
+    /** Null: everyone reads live. Omitted: unchanged. */
+    liveReaders?: { principal: string }[] | null,
   ) => Promise<void>;
   /** Test the saved connection with its stored credential. */
   test: (
@@ -332,7 +339,13 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
       }
       return res.data;
     },
-    setWriters: async (workspaceId, connectorId, writers, liveReads) => {
+    setWriters: async (
+      workspaceId,
+      connectorId,
+      writers,
+      liveReads,
+      liveReaders,
+    ) => {
       const res = unwrapBody(
         await api.PUT(
           "/api/workspaces/{workspaceId}/connections/sources/{id}/writers",
@@ -341,6 +354,7 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
             body: {
               writers,
               ...(liveReads === undefined ? {} : { liveReads }),
+              ...(liveReaders === undefined ? {} : { liveReaders }),
             },
           },
         ),

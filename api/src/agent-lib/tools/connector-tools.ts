@@ -191,13 +191,15 @@ export function connectionUiUrl(connectionId: string): string {
 
 /**
  * Who may use a source connection through its proxy, as the Access tab
- * shows it: live reads on or off, and the writers list (any
+ * shows it: live reads on or off, who reads live (everyone, or the live
+ * readers listed and the writers), and the writers list (any
  * `workflow:<name>` stands for every workflow). Read-only for an agent.
  */
 export function sourceConnectionAccess(row: {
   _id: Types.ObjectId | string;
   type?: string;
   liveReads?: boolean;
+  liveReaders?: IConnectionWriter[];
   writers?: IConnectionWriter[];
 }) {
   const writers = [
@@ -208,10 +210,18 @@ export function sourceConnectionAccess(row: {
   return {
     // Absent (every connection older than the proxy) means off.
     liveReads: row.liveReads === true,
+    // "everyone", or the principals listed (writers read live too).
+    liveReaders: row.liveReaders
+      ? [
+          ...new Set(
+            row.liveReaders.map(w => sourceWriterPrincipal(w.principal)),
+          ),
+        ]
+      : "everyone",
     writers,
     // Whether the proxy can call this connector at all yet.
     callable: callableFor(row.type ?? "") !== null,
-    changeIn: `Live reads and writers are set by one of the connection's managers in the app: ${connectionUiUrl(String(row._id))}, Access tab. They cannot be changed over MCP.`,
+    changeIn: `Live reads, live readers and writers are set by one of the connection's managers in the app: ${connectionUiUrl(String(row._id))}, Access tab. They cannot be changed over MCP.`,
   };
 }
 
@@ -223,6 +233,7 @@ interface SourceRow {
   isActive?: boolean;
   config?: unknown;
   liveReads?: boolean;
+  liveReaders?: IConnectionWriter[];
   writers?: IConnectionWriter[];
   keyRequest?: ISourceConnectionKeyRequest;
 }
@@ -240,7 +251,7 @@ async function findSourceConnection(
     workspaceId: new Types.ObjectId(workspaceId),
   })
     .select(
-      "_id name type description isActive config liveReads writers keyRequest",
+      "_id name type description isActive config liveReads liveReaders writers keyRequest",
     )
     .lean()) as SourceRow | null;
 }
@@ -566,6 +577,7 @@ export function createConnectorTools(workspaceId: string) {
         "Get `connectionId` from list_connections (kind `source`) and the entity names from inspect_connection. A connection whose connector is workspace-authored (`ws:`) runs in a sandbox, so its first probe can take tens of seconds.",
         "Returns the check result, then `entity.records`, `entity.schema` (declared field types), `entity.hasMore` (further pages exist on the platform) and `entity.truncated` (the page held more than `limit`). `fields` keeps only the named top-level fields of each record. `since` (ISO 8601) asks for records changed since then, where the connector can.",
         "Credential values never appear in the result; if a vendor message would echo one, it is scrubbed.",
+        "Reading an entity is a live read: it needs live reads on in the connection's Access tab and you on its live readers list when it has one, unless you manage the connection or own the workspace. A credential-only check (no `entity`) is always allowed.",
       ].join("\n"),
       inputSchema: z.object({
         connectionId: z

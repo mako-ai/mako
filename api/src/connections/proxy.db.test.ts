@@ -1116,6 +1116,92 @@ async function main() {
     });
     assert.equal(byId.status, 200);
 
+    // Live readers listed: only they, and the writers, read live.
+    const limited = await SourceConnection.create({
+      ...twin,
+      name: "ch_limited",
+      liveReaders: [{ principal: "user:deployer" }],
+    });
+    const readAs = (actor?: string, readOnly?: boolean) =>
+      attempt(() =>
+        connectionRequest({
+          workspaceId: String(ws),
+          connection: "ch_limited",
+          request: { method: "GET", path: "/lead/" },
+          ...(actor ? { actor } : {}),
+          ...(readOnly ? { readOnly } : {}),
+        }),
+      );
+    const sentBeforeLimited = sent.length;
+    assert.equal(await readAs("user:deployer"), "ok");
+    // An agent reads as the person it acts for.
+    assert.equal(await readAs("user:deployer", true), "ok");
+    assert.equal(sent.length, sentBeforeLimited + 2);
+    // A deployed workflow on no list is refused, through the worker too.
+    assert.match(
+      await running.run("other-flow", () =>
+        attempt(() => worker.connection("ch_limited").get("/lead/")),
+      ),
+      /^workflow:other-flow is not allowed to read ch_limited live\. .*allow All deployed workflows/,
+    );
+    // The worker naming no deployed workflow is no one a list can hold.
+    assert.match(
+      await readAs("worker:workflows"),
+      /^worker:workflows is not allowed to read ch_limited live/,
+    );
+    // No one identified reads nothing on a limited connection.
+    assert.match(await readAs(), /Mako could not tell who is reading/);
+    assert.equal(
+      sent.length,
+      sentBeforeLimited + 2,
+      "a refused read is never sent",
+    );
+    assert.equal(
+      await ConnectionWriteEvent.countDocuments({
+        connectionId: limited._id,
+      }),
+      0,
+      "reads are not in the write log",
+    );
+    // A writer reads what it writes to: deployed workflows as one.
+    await SourceConnection.updateOne(
+      { _id: limited._id },
+      { $set: { writers: [{ principal: "workflow:*" }] } },
+    );
+    assert.equal(
+      await running.run("other-flow", () =>
+        attempt(() => worker.connection("ch_limited").get("/lead/")),
+      ),
+      "ok",
+    );
+    // An empty list: only the writers.
+    await SourceConnection.updateOne(
+      { _id: limited._id },
+      { $set: { liveReaders: [] } },
+    );
+    assert.match(
+      await readAs("user:deployer"),
+      /^user:deployer is not allowed to read ch_limited live/,
+    );
+    assert.equal(await readAs("workflow:other-flow"), "ok");
+    // No list: everyone again, the unidentified included (as before lists).
+    await SourceConnection.updateOne(
+      { _id: limited._id },
+      { $unset: { liveReaders: 1 } },
+    );
+    assert.equal(await readAs(), "ok");
+    // Live reads off wins over any list.
+    await SourceConnection.updateOne(
+      { _id: limited._id },
+      {
+        $set: {
+          liveReads: false,
+          liveReaders: [{ principal: "user:deployer" }],
+        },
+      },
+    );
+    assert.match(await readAs("user:deployer"), /^Live reads are off/);
+
     // Live reads turned off again: reads are refused.
     await SourceConnection.updateOne(
       { _id: close._id },
