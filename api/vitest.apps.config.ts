@@ -171,6 +171,8 @@ export default defineConfig({
       "src/agent-lib/tools/rename-tools.test.ts",
       // /objects/resolve and /objects/{kind}/rename: who may call them.
       "src/routes/objects.test.ts",
+      // Where an old path went: git's own rename history.
+      "src/rename/git-renames.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.
