@@ -1052,6 +1052,14 @@ export function DbtExplorer() {
                           onClick={() =>
                             focusDbtJobTab(activeProject._id, job._id, job.name)
                           }
+                          // Right-click: the same menu as the hover kebab.
+                          onContextMenu={e => {
+                            e.preventDefault();
+                            setKebabMenu({
+                              anchorEl: e.currentTarget,
+                              node: jobNode,
+                            });
+                          }}
                           onKeyDown={e => {
                             if (e.key === "Enter" || e.key === " ") {
                               e.preventDefault();
