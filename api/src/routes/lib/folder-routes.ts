@@ -76,6 +76,8 @@ export interface FolderBackend {
       itemId: string;
       folderId: string | null | undefined;
       access: FolderAccessLevel | undefined;
+      /** Rename the item in the same step (kinds that support it). */
+      name?: string;
     },
   ): Promise<FolderOpResult>;
 }
@@ -307,6 +309,7 @@ export function registerFolderRoutes(
             .object({
               folderId: z.string().nullable().optional(),
               access: ACCESS.optional(),
+              name: z.string().optional(),
             })
             .openapi(`Move${schemaPrefix}Request`),
           true,
@@ -322,7 +325,16 @@ export function registerFolderRoutes(
         if (typeof folderId === "string" && !Types.ObjectId.isValid(folderId)) {
           return { ok: false, status: 400, error: "Invalid folderId" };
         }
-        return backend.moveItem(ctx, { itemId, folderId, access });
+        const name =
+          typeof body.name === "string" && body.name.trim()
+            ? body.name
+            : undefined;
+        return backend.moveItem(ctx, {
+          itemId,
+          folderId,
+          access,
+          ...(name ? { name } : {}),
+        });
       });
     },
   );
