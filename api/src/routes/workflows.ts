@@ -840,8 +840,8 @@ workflowRuntimeRoutes.post(
     const dryRun =
       key?.recordWrites === true ||
       (run !== undefined &&
-        (await runStartedBy(worker.workspaceId, run.runId))?.writes ===
-          "record");
+        (await runStartedBy(worker.workspaceId, run.runId, run.workflowId))
+          ?.writes === "record");
     const access = queryAccessFromScopes(resolveWorkspaceApiKeyScopes(scopes));
     try {
       return c.json(
@@ -942,8 +942,11 @@ workflowRuntimeRoutes.post(
           // deployed worker keep their rights: Mako cannot tell who uses a
           // key, so a key given to an agent writes as its person.
           readOnly: mcpLogin || refuseRun || dryRunKey,
-          // A deployed run: asked on a write, of the run the worker names.
-          runStarter: () => runStartedBy(worker.workspaceId, run?.runId),
+          // A deployed run: asked on a write, of the run the worker names,
+          // which must be a run of the workflow the request is for and still
+          // executing (runs.ts `runStartedBy`).
+          runStarter: () =>
+            runStartedBy(worker.workspaceId, run?.runId, run?.workflowId),
           // Where a dry run's writes are recorded: a sandbox run by its
           // key's name, a deployed one by the run the worker names (used
           // only when Hatchet says it is a dry run).

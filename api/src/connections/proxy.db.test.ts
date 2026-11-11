@@ -55,6 +55,25 @@ import {
   WorkflowRecordedWrite,
   recordedWritesOf,
 } from "../workflows/recorded-writes";
+import {
+  type RunDetail,
+  isRunExecuting,
+  setFirstReadRetryForTests,
+  workflowOfRunDetail,
+} from "../workflows/runs";
+import capturedRun from "./fixtures/hatchet-workflow-run.json";
+import capturedOnFailure from "./fixtures/hatchet-workflow-run-on-failure.json";
+
+/**
+ * Real `GET /api/v1/stable/workflow-runs/{id}` answers, captured on the
+ * preview stack (fixtures/README.md): a scheduled run while its first step
+ * runs, and the same run while its onFailure task runs. And the workflow
+ * they are runs of.
+ */
+const CAPTURED_RUN = capturedRun as unknown as {
+  run: { metadata: { id: string } };
+};
+const CAPTURED_WORKFLOW = "RunBindingProof";
 
 const WORKER_KEY = "revops_worker_proxy_key_tests_only";
 const PERSON_KEY = "revops_person_proxy_key_tests_only";
@@ -73,19 +92,108 @@ const MCP_RUN = "5a6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 const KEY_RUN = "6a6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 const DRY_RUN = "7a6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 const DRY_PERSON_RUN = "8a6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
-const RUN_METADATA: Record<string, Record<string, unknown>> = {
-  [PERSON_RUN]: { trigger: "ui", startedBy: "person" },
+/** A run Hatchet does not answer at first, as right after it starts. */
+const LATE_RUN = "af6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+/** A run of other-flow, by a person (the app). */
+const OTHER_RUN = "5f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+/** A scheduled run that ended long ago: its id must lend no write. */
+const OLD_SCHEDULED_RUN = "6f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+/** A scheduled run still waiting for a slot: it writes in its first second. */
+const QUEUED_RUN = "7f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+/** A failed run whose onFailure task is running. */
+const ON_FAILURE_RUN = "8f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+/** A run whose status changes in the test, and Hatchet stops answering for. */
+const LONG_RUN = "9f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+
+type FakeRun = {
+  metadata: Record<string, unknown>;
+  /** The workflow as declared; Hatchet keeps its step ids lowercase. */
+  workflow: string;
+  status: string;
+  tasks?: Array<{ step: string; status: string }>;
+};
+/** Runs Hatchet knows: who Mako recorded as starting them, of which workflow. */
+const RUNS: Record<string, FakeRun> = {
+  [PERSON_RUN]: {
+    metadata: { trigger: "ui", startedBy: "person" },
+    workflow: "fr-offer-to-cash",
+    status: "RUNNING",
+  },
+  [OTHER_RUN]: {
+    metadata: { trigger: "ui", startedBy: "person" },
+    workflow: "other-flow",
+    status: "RUNNING",
+  },
+  [AGENT_RUN]: {
+    metadata: { trigger: "agent", startedBy: "agent" },
+    workflow: "fr-offer-to-cash",
+    status: "RUNNING",
+  },
   // The agent's tool's and an MCP login's runs write; a key's (CI) has its
   // writes refused.
-  [AGENT_RUN]: { trigger: "agent", startedBy: "agent" },
-  [MCP_RUN]: { trigger: "mcp", startedBy: "agent" },
-  [KEY_RUN]: { trigger: "api", startedBy: "agent" },
-  // Started before Mako kept startedBy: an API call is an agent's.
-  [OLD_API_RUN]: { trigger: "api" },
-  [SCHEDULED_RUN]: {},
+  [MCP_RUN]: {
+    metadata: { trigger: "mcp", startedBy: "agent" },
+    workflow: "fr-offer-to-cash",
+    status: "RUNNING",
+  },
+  [KEY_RUN]: {
+    metadata: { trigger: "api", startedBy: "agent" },
+    workflow: "fr-offer-to-cash",
+    status: "RUNNING",
+  },
   // A dry run records its writes, whoever started it.
-  [DRY_RUN]: { trigger: "agent", startedBy: "agent", dryRun: true },
-  [DRY_PERSON_RUN]: { trigger: "ui", startedBy: "person", dryRun: true },
+  [DRY_RUN]: {
+    metadata: { trigger: "agent", startedBy: "agent", dryRun: true },
+    workflow: "fr-offer-to-cash",
+    status: "RUNNING",
+  },
+  [DRY_PERSON_RUN]: {
+    metadata: { trigger: "ui", startedBy: "person", dryRun: true },
+    workflow: "fr-offer-to-cash",
+    status: "RUNNING",
+  },
+  // Started before Mako kept startedBy: an API call is an agent's.
+  [OLD_API_RUN]: {
+    metadata: { trigger: "api" },
+    workflow: "fr-offer-to-cash",
+    status: "RUNNING",
+  },
+  [SCHEDULED_RUN]: {
+    metadata: {},
+    workflow: "fr-offer-to-cash",
+    status: "RUNNING",
+  },
+  [OLD_SCHEDULED_RUN]: {
+    metadata: { trigger: "schedule", startedBy: "trigger" },
+    workflow: "fr-offer-to-cash",
+    status: "COMPLETED",
+    tasks: [{ step: "send", status: "COMPLETED" }],
+  },
+  [QUEUED_RUN]: {
+    metadata: { trigger: "schedule", startedBy: "trigger" },
+    workflow: "fr-offer-to-cash",
+    status: "QUEUED",
+    tasks: [{ step: "send", status: "QUEUED" }],
+  },
+  [ON_FAILURE_RUN]: {
+    metadata: { trigger: "schedule", startedBy: "trigger" },
+    workflow: "fr-offer-to-cash",
+    status: "FAILED",
+    tasks: [
+      { step: "send", status: "FAILED" },
+      { step: "fr-offer-to-cash-on-failure", status: "RUNNING" },
+    ],
+  },
+  [LONG_RUN]: {
+    metadata: { trigger: "schedule", startedBy: "trigger" },
+    workflow: "fr-offer-to-cash",
+    status: "RUNNING",
+  },
+  [LATE_RUN]: {
+    metadata: { trigger: "schedule", startedBy: "trigger" },
+    workflow: "fr-offer-to-cash",
+    status: "RUNNING",
+  },
 };
 
 type Connection = {
@@ -151,6 +259,11 @@ async function main() {
   // Hatchet answers the runs above; everything else is the real network.
   const realFetch = globalThis.fetch;
   const hatchetAsked: string[] = [];
+  /** Hatchet answers every read with a 503 while set. */
+  let hatchetDown = false;
+  /** How many reads of LATE_RUN Hatchet answers 404 before it knows it. */
+  let lateReads = 0;
+  setFirstReadRetryForTests([0, 0, 0]);
   globalThis.fetch = (async (
     input: string | URL | Request,
     init?: RequestInit,
@@ -166,10 +279,28 @@ async function main() {
     }
     const id = href.match(/workflow-runs\/([0-9a-f-]{36})/)?.[1] ?? "";
     hatchetAsked.push(id);
-    const metadata = RUN_METADATA[id];
-    return metadata
+    if (hatchetDown) {
+      return Response.json({ message: "unavailable" }, { status: 503 });
+    }
+    if (id === LATE_RUN && lateReads-- > 0) {
+      return Response.json({ message: "not found" }, { status: 404 });
+    }
+    if (id === CAPTURED_RUN.run.metadata.id) return Response.json(CAPTURED_RUN);
+    const run = RUNS[id];
+    // Shaped as Hatchet's v1 run detail (CAPTURED_RUN is a real one).
+    return run
       ? Response.json({
-          run: { metadata: { id }, additionalMetadata: metadata },
+          run: {
+            metadata: { id },
+            status: run.status,
+            additionalMetadata: run.metadata,
+          },
+          tasks: (run.tasks ?? [{ step: "send", status: run.status }]).map(
+            task => ({
+              actionId: `${run.workflow.toLowerCase()}:${task.step}`,
+              status: task.status,
+            }),
+          ),
         })
       : Response.json({ message: "not found" }, { status: 404 });
   }) as typeof fetch;
@@ -218,7 +349,7 @@ async function main() {
         live: {
           sha: "a".repeat(40),
           tree: "t",
-          names: ["fr-offer-to-cash", "other-flow"],
+          names: ["fr-offer-to-cash", "other-flow", CAPTURED_WORKFLOW],
         },
       },
     });
@@ -296,9 +427,11 @@ async function main() {
 
     // An unlisted workflow's write is refused and recorded; nothing is sent.
     const before = sent.length;
-    const refused = await running.run("other-flow", () =>
-      attempt(() =>
-        worker.connection("ch_close").post("/task/", { text: "x" }),
+    const refused = await runStep.run({ runId: OTHER_RUN }, () =>
+      running.run("other-flow", () =>
+        attempt(() =>
+          worker.connection("ch_close").post("/task/", { text: "x" }),
+        ),
       ),
     );
     assert.equal(
@@ -340,8 +473,10 @@ async function main() {
     assert.equal(loggedAtSend.at(-1)?.[0].status, undefined);
     assert.equal(recorded[1].status, 200);
     assert.equal(
-      await running.run("other-flow", () =>
-        attempt(() => worker.connection("ch_close").post("/task/", {})),
+      await runStep.run({ runId: OTHER_RUN }, () =>
+        running.run("other-flow", () =>
+          attempt(() => worker.connection("ch_close").post("/task/", {})),
+        ),
       ),
       "ok",
     );
@@ -520,6 +655,97 @@ async function main() {
       );
     }
     assert.deepEqual(hatchetAsked.slice(askedBefore), [SCHEDULED_RUN]);
+
+    // The run named must be one executing this workflow: deployed code holds
+    // the worker key and could name any run, an old scheduled one's above all.
+    const write = (runId: string, workflow = "fr-offer-to-cash") =>
+      runStep.run({ runId }, () =>
+        running.run(workflow, () =>
+          attempt(() => worker.connection("ch_close").post("/task/", {})),
+        ),
+      );
+    const notTold = /^Mako could not tell which run of /;
+    const sentBeforeBinding = sent.length;
+    // A run that ended long ago lends nothing, nor does a run of another
+    // workflow, even one that runs now.
+    assert.match(await write(OLD_SCHEDULED_RUN), notTold);
+    assert.match(await write(OTHER_RUN, "fr-offer-to-cash"), notTold);
+    assert.match(await write(PERSON_RUN, "other-flow"), notTold);
+    assert.equal(sent.length, sentBeforeBinding, "no borrowed write is sent");
+    // A scheduled run that writes in its first second may still be QUEUED;
+    // an onFailure task writes while its run already shows FAILED.
+    assert.equal(await write(QUEUED_RUN), "ok");
+    assert.equal(await write(ON_FAILURE_RUN), "ok");
+    // The real run detail Hatchet answers (captured on the preview stack):
+    // its steps' actionId are lowercase, the workflow is not.
+    assert.equal(
+      await write(CAPTURED_RUN.run.metadata.id, CAPTURED_WORKFLOW),
+      "ok",
+    );
+    assert.equal(
+      workflowOfRunDetail(CAPTURED_RUN as RunDetail),
+      CAPTURED_WORKFLOW.toLowerCase(),
+    );
+    // While the onFailure task runs, Hatchet still shows the run RUNNING and
+    // the failed step FAILED; the run is executing either way.
+    const onFailure = capturedOnFailure as unknown as RunDetail;
+    assert.equal(workflowOfRunDetail(onFailure), "runbindingproof");
+    assert.equal(isRunExecuting(onFailure), true);
+
+    // A run's first write is not refused because Hatchet does not know the
+    // run yet (it can lag a run it just started): it is read again.
+    lateReads = 2;
+    const askedBeforeLate = hatchetAsked.length;
+    assert.equal(await write(LATE_RUN), "ok");
+    assert.deepEqual(hatchetAsked.slice(askedBeforeLate), [
+      LATE_RUN,
+      LATE_RUN,
+      LATE_RUN,
+    ]);
+    // ...but not for ever: a run Hatchet never answers lends nothing.
+    const askedBeforeUnknown = hatchetAsked.length;
+    assert.match(await write(UNKNOWN_RUN), notTold);
+    assert.equal(hatchetAsked.length - askedBeforeUnknown, 4, "read 4 times");
+
+    // Who started a run and its workflow are kept; whether it still executes
+    // is asked again after a while, and a Hatchet that does not answer then
+    // does not refuse a run seen executing.
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => now;
+    try {
+      const askedAt = hatchetAsked.length;
+      assert.equal(await write(LONG_RUN), "ok");
+      assert.equal(await write(LONG_RUN), "ok");
+      assert.deepEqual(hatchetAsked.slice(askedAt), [LONG_RUN], "asked once");
+      now += 20_000;
+      hatchetDown = true;
+      assert.equal(
+        await write(LONG_RUN),
+        "ok",
+        "Hatchet down: still executing",
+      );
+      // ...but not a run Mako never saw, nor one of another workflow.
+      assert.match(await write(UNKNOWN_RUN), notTold);
+      assert.match(await write(LONG_RUN, "other-flow"), notTold);
+      // ...nor for ever.
+      now += 31 * 60_000;
+      assert.match(await write(LONG_RUN), notTold);
+      hatchetDown = false;
+      // Hatchet answers again: the run ended, so its id lends nothing now.
+      RUNS[LONG_RUN].status = "COMPLETED";
+      assert.match(await write(LONG_RUN), notTold);
+      // A run whose onFailure task starts after the refusal writes again.
+      RUNS[LONG_RUN].status = "FAILED";
+      RUNS[LONG_RUN].tasks = [
+        { step: "send", status: "FAILED" },
+        { step: "fr-offer-to-cash-on-failure", status: "QUEUED" },
+      ];
+      assert.equal(await write(LONG_RUN), "ok");
+    } finally {
+      Date.now = realNow;
+      hatchetDown = false;
+    }
 
     // Idempotency-Key comes as a header; the old body field is not read.
     const raw = (body: object) =>

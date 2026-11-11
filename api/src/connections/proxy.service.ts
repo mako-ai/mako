@@ -22,7 +22,9 @@
  * (workflows/recorded-writes.ts), so the agent can check what it would have
  * sent. Mako knows a deployed run by the run the worker names with each
  * request (X-Mako-Run, workflows/runs.ts `runStartedBy`); a deployed
- * workflow's write from a run Mako cannot tell is refused. A listed writer writes
+ * workflow's write from a run Mako cannot tell is refused, as is one
+ * naming a run of another workflow or a run no longer executing. A listed
+ * writer writes
  * anywhere through the connection: a `where` stored on a source writer (the
  * list's schema is shared with database connections, where it limits a
  * schema or table) is ignored. Every write, allowed or not, is in the write
@@ -81,7 +83,8 @@ export interface ConnectionRequestParams {
    * Who started the deployed workflow run the request comes from and what
    * its writes do (workflows/runs.ts `runStartedBy`), asked only for a write
    * by a deployed workflow. A write from a run Mako cannot tell (null, or
-   * not given) is refused.
+   * not given) is refused: also a run of another workflow, or one no
+   * longer executing.
    */
   runStarter?: () => Promise<RunOrigin | null>;
   /**
@@ -383,7 +386,7 @@ export async function connectionRequest(
         await recordProxyWrite(row, principal, target, false);
         logger.warn("Refused a write by a run Mako could not tell", where);
         throw new ConnectionRequestError(
-          `Mako could not tell which run of ${principal.slice("workflow:".length)} this write comes from, so it was not sent. The worker sends its run with each request (X-Mako-Run); update the workflows runtime, or try again if Hatchet was unreachable.`,
+          `Mako could not tell which run of ${principal.slice("workflow:".length)} this write comes from, so it was not sent. A write must come from a run of this workflow that is still executing, named with each request (X-Mako-Run); update the workflows runtime, or try again if Hatchet was unreachable.`,
           403,
         );
       }

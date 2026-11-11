@@ -324,10 +324,6 @@ export type RunWrites = "send" | "record" | "refuse";
 
 export type RunOrigin = { starter: RunStarter; writes: RunWrites };
 
-/** Who started each run looked up, by tenant and run: it never changes. */
-const origins = new Map<string, RunOrigin>();
-const MAX_ORIGINS = 5000;
-
 /** What a run's writes do, from what Mako put on it when it started it. */
 export function runWritesOf(
   starter: RunStarter,
@@ -341,26 +337,64 @@ export function runWritesOf(
 }
 
 /**
- * Who started the workspace's run `runId` (hatchet.ts `RunStarter`) and what
- * its writes do, or null when Mako cannot tell: no run id, no tenant, a run
- * the tenant does not have, or Hatchet not answering. A run started before
- * Mako kept `startedBy` is an agent's when its trigger was an agent's tool
- * or an API call, as those are now; a run with neither (a schedule) is a
- * trigger's.
+ * What never changes about a run, once read: who started it, what its
+ * writes do, and which workflow it is a run of (lowercase, as Hatchet keeps
+ * step ids). With the last time Hatchet said one of its tasks was waiting
+ * or executing.
  */
-export async function runStartedBy(
-  workspaceId: string,
-  runId: string | undefined,
-): Promise<RunOrigin | null> {
-  if (!runId || !isHatchetId(runId)) return null;
-  const tenant = await readWorkspaceTenant(workspaceId).catch(() => null);
-  if (!tenant) return null;
-  const key = `${tenant.tenantId}:${runId}`;
-  const known = origins.get(key);
-  if (known) return known;
-  const detail = await readDetail(tenant, runId).catch(() => null);
-  if (!detail?.run || idOf(detail.run) !== runId) return null;
-  const metadata = metadataOf(detail.run);
+type KnownRun = { origin: RunOrigin; workflow: string; activeAt?: number };
+
+/** Runs looked up, by tenant and run. */
+const knownRuns = new Map<string, KnownRun>();
+const MAX_KNOWN_RUNS = 5000;
+/** How long a run seen executing is taken as still executing. */
+const ACTIVE_FOR_MS = 15_000;
+/**
+ * How long a run last seen executing is taken as still executing when
+ * Hatchet does not answer: a short Hatchet outage does not refuse the writes
+ * of a run in flight.
+ */
+const ACTIVE_WHEN_UNREADABLE_MS = 30 * 60_000;
+/**
+ * Waits between reads of a run Mako has not seen yet, when Hatchet does not
+ * answer it. Hatchet can take a moment to answer a run it just started (seen
+ * on the preview stack: a write in a run's first 200ms refused, the same
+ * run's write 250ms later sent), so a run's first write is not refused for
+ * asking too early. A run that never answers is refused after them.
+ */
+let firstReadRetryMs = [250, 500, 1000];
+
+/** A run or a task status that is waiting for, or doing, work. */
+const ACTIVE_STATUSES = new Set(["QUEUED", "PENDING", "RUNNING"]);
+
+/**
+ * The workflow a run detail is of, lowercase: Hatchet keeps each step's id
+ * as `<workflow>:<step>` lowercased; the run's `workflowName` as declared.
+ */
+export function workflowOfRunDetail(detail: RunDetail): string {
+  for (const task of detail.tasks ?? []) {
+    const name =
+      String(task.actionId ?? "").split(":")[0] ||
+      String(task.workflowName ?? "");
+    if (name) return name.toLowerCase();
+  }
+  return String(detail.run?.workflowName ?? "").toLowerCase();
+}
+
+/**
+ * Whether the run is executing now: the run waits or runs, or one of its
+ * tasks does. An `onFailure` task runs while the run already shows FAILED.
+ */
+export function isRunExecuting(detail: RunDetail): boolean {
+  if (ACTIVE_STATUSES.has(String(detail.run?.status ?? ""))) return true;
+  return (detail.tasks ?? []).some(task =>
+    ACTIVE_STATUSES.has(String(task.status ?? "")),
+  );
+}
+
+/** Who started a run and what its writes do, from Mako's metadata on it. */
+function originOf(run: Row): RunOrigin {
+  const metadata = metadataOf(run);
   const { startedBy, trigger } = metadata;
   const starter: RunStarter =
     startedBy === "agent" || startedBy === "person" || startedBy === "trigger"
@@ -370,12 +404,98 @@ export async function runStartedBy(
         : trigger === "ui"
           ? "person"
           : "trigger";
-  const origin: RunOrigin = { starter, writes: runWritesOf(starter, metadata) };
-  if (origins.size >= MAX_ORIGINS) {
-    origins.delete(origins.keys().next().value as string);
+  return { starter, writes: runWritesOf(starter, metadata) };
+}
+
+function remember(key: string, run: KnownRun) {
+  if (!knownRuns.has(key) && knownRuns.size >= MAX_KNOWN_RUNS) {
+    knownRuns.delete(knownRuns.keys().next().value as string);
   }
-  origins.set(key, origin);
-  return origin;
+  knownRuns.set(key, run);
+}
+
+/** Forget every run looked up (tests). */
+export function forgetKnownRunsForTests() {
+  knownRuns.clear();
+}
+
+/** Set the waits before reading a run not seen yet again (tests). */
+export function setFirstReadRetryForTests(waits: number[]) {
+  firstReadRetryMs = waits;
+}
+
+/** The run's detail, read again a few times when the run is new to Mako. */
+async function readNewRunDetail(
+  tenant: WorkspaceTenant,
+  runId: string,
+): Promise<RunDetail | null> {
+  for (let attempt = 0; ; attempt++) {
+    const detail = await readDetail(tenant, runId).catch(() => null);
+    if (detail?.run && idOf(detail.run) === runId) return detail;
+    const wait = firstReadRetryMs[attempt];
+    if (wait === undefined) return null;
+    await new Promise(resolve => setTimeout(resolve, wait));
+  }
+}
+
+/**
+ * Who started the workspace's run `runId` (hatchet.ts `RunStarter`) and
+ * what its writes do, when that run is a run of `workflow` and is executing
+ * now; else null, as when
+ * Mako cannot tell (no run id, no tenant, a run the tenant does not have).
+ *
+ * The run is the one the worker names (X-Mako-Run), and deployed workflow
+ * code holds the worker's key, so it could name another run: an old
+ * scheduled run's, to write with that run's rights. So the run must be of
+ * the workflow the request is for (X-Mako-Workflow, compared ignoring case)
+ * and still executing: the run QUEUED, PENDING or RUNNING, or one of its
+ * tasks so (an `onFailure` task runs while the run shows FAILED).
+ *
+ * Who started a run and its workflow never change: they are kept. Whether
+ * it executes is asked again after ACTIVE_FOR_MS. When Hatchet does not
+ * answer, a run seen executing within ACTIVE_WHEN_UNREADABLE_MS still is,
+ * and a run not seen yet is read again a few times (firstReadRetryMs).
+ * A run started before Mako kept `startedBy` is an agent's when its trigger
+ * was an agent's tool or an API call, as those are now; a run with neither
+ * (a schedule) is a trigger's.
+ */
+export async function runStartedBy(
+  workspaceId: string,
+  runId: string | undefined,
+  workflow: string | undefined,
+): Promise<RunOrigin | null> {
+  if (!runId || !isHatchetId(runId) || !workflow) return null;
+  const tenant = await readWorkspaceTenant(workspaceId).catch(() => null);
+  if (!tenant) return null;
+  const key = `${tenant.tenantId}:${runId}`;
+  const wanted = workflow.toLowerCase();
+  const known = knownRuns.get(key);
+  if (known && known.workflow !== wanted) return null;
+  const now = Date.now();
+  if (known?.activeAt !== undefined && now - known.activeAt < ACTIVE_FOR_MS) {
+    return known.origin;
+  }
+  const detail = known
+    ? await readDetail(tenant, runId).catch(() => null)
+    : await readNewRunDetail(tenant, runId);
+  if (!detail?.run || idOf(detail.run) !== runId) {
+    // Hatchet did not answer: a run seen executing a short while ago is
+    // taken as still executing.
+    return known?.activeAt !== undefined &&
+      now - known.activeAt < ACTIVE_WHEN_UNREADABLE_MS
+      ? known.origin
+      : null;
+  }
+  const run: KnownRun = known ?? {
+    origin: originOf(detail.run),
+    workflow: workflowOfRunDetail(detail),
+  };
+  if (isRunExecuting(detail)) run.activeAt = now;
+  else delete run.activeAt;
+  remember(key, run);
+  return run.workflow === wanted && run.activeAt !== undefined
+    ? run.origin
+    : null;
 }
 
 /** One run of the workspace's Hatchet; `full` keeps every log line. */
