@@ -93,6 +93,14 @@ class MyConnector extends BaseConnector {
 }
 ```
 
+### Renaming or removing a workspace connector
+
+A connection made with a workspace connector (`connectors/<slug>/` in the workspace repo, type `ws:<slug>`) is bound to that connector by id, not by name. Its key is only ever decrypted for, and run by, the connector it was saved under.
+
+- **Rename** the folder with `rename_object` (`kind: "connector"`) or with `git mv`: the connector keeps its id and its connections. Mako records the old slug under `aliases:` in `connector.yaml`; a bare `git mv` is recognised when the entry file is at least 75% the same. `ws:<old>` keeps naming the connector, and a new connection made through it is stored as `ws:<new>`.
+- **Delete** the folder and its connections stop: testing, probing, syncing or calling one answers 409 and says how to fix it. Restore the folder at the same slug and they work again, with nothing to re-save.
+- If another connector takes that slug first, the connections stay closed. To use one again, open it in Mako, keep the connector selected and save: that re-binds it on purpose.
+
 ## Configuration
 
 Source connections are configured per-workspace through the UI or API. Credentials are encrypted at rest using the `ENCRYPTION_KEY` environment variable.
