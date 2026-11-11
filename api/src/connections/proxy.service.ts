@@ -17,7 +17,8 @@
  * only read, also through a run they started: a sandbox run (its key says
  * so) or a deployed run (the run Mako started records it, and the worker
  * names its run with each request, X-Mako-Run; a deployed workflow's write
- * from a run Mako cannot tell is refused). A listed writer writes
+ * from a run Mako cannot tell is refused, as is one naming a run of another
+ * workflow or a run no longer executing). A listed writer writes
  * anywhere through the connection: a `where` stored on a source writer (the
  * list's schema is shared with database connections, where it limits a
  * schema or table) is ignored. Every write, allowed or not, is in the write
@@ -65,7 +66,8 @@ export interface ConnectionRequestParams {
    * Who started the deployed workflow run the request comes from
    * (workflows/runs.ts `runStartedBy`), asked only for a write by a deployed
    * workflow. A run an agent started only reads; a write from a run Mako
-   * cannot tell (null, or not given) is refused.
+   * cannot tell (null, or not given) is refused: also a run of another
+   * workflow, or one no longer executing.
    */
   runStarter?: () => Promise<RunStarter | null>;
   signal?: AbortSignal;
@@ -269,7 +271,7 @@ export async function connectionRequest(
         await recordProxyWrite(row, principal, target, false);
         logger.warn("Refused a write by a run Mako could not tell", where);
         throw new ConnectionRequestError(
-          `Mako could not tell which run of ${principal.slice("workflow:".length)} this write comes from, so it was not sent. The worker sends its run with each request (X-Mako-Run); update the workflows runtime, or try again if Hatchet was unreachable.`,
+          `Mako could not tell which run of ${principal.slice("workflow:".length)} this write comes from, so it was not sent. A write must come from a run of this workflow that is still executing, named with each request (X-Mako-Run); update the workflows runtime, or try again if Hatchet was unreachable.`,
           403,
         );
       }

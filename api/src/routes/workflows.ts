@@ -890,9 +890,17 @@ workflowRuntimeRoutes.post(
             c.get("authType") === "mcpOAuth" ||
             (c.get("apiKey") as { agentRun?: boolean } | undefined)
               ?.agentRun === true,
-          // A deployed run an agent started reads only too: asked on a write.
-          runStarter: () =>
-            runStartedBy(worker.workspaceId, workflowRunOf(c)?.runId),
+          // A deployed run an agent started reads only too: asked on a write,
+          // of the run the worker names, which must be a run of the workflow
+          // the request is for and still executing (runs.ts `runStartedBy`).
+          runStarter: () => {
+            const run = workflowRunOf(c);
+            return runStartedBy(
+              worker.workspaceId,
+              run?.runId,
+              run?.workflowId,
+            );
+          },
           signal: c.req.raw.signal,
         }),
       );
