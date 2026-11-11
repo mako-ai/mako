@@ -21,8 +21,9 @@
  *
  * The display name (`defineConnector({ name })`) lives in the connector's
  * code, not in a file Mako edits, so `title` is read-only here. Who may
- * rename: a workspace member (not a viewer), as for a push to main; on
- * agent surfaces `rename_object` also needs the `git-write` grant.
+ * rename: a workspace editor (owner, admin or member), the rule of the
+ * route that restores a connector's folder; a viewer is refused. On agent
+ * surfaces `rename_object` also needs the `git-write` grant.
  */
 import { connectorSlugError, looksLikeObjectId } from "@mako/schemas";
 import { Types } from "mongoose";
@@ -41,6 +42,7 @@ import {
   type IndexEntry,
   type IndexMode,
 } from "../../apps/repository.service";
+import { canOrganizeWorkspaceTree } from "../../apps/app-authorization";
 import { authorForUser } from "../../apps/workspace-consoles.service";
 import { requireWorkspaceRepo } from "../../apps/workspace-repo-required";
 import { withConnectorAlias } from "../../connectors/workspace/connector-file";
@@ -77,7 +79,9 @@ import {
 
 const logger = loggers.connector();
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
-const RENAME_ROLES: ReadonlySet<string> = new Set(["owner", "admin", "member"]);
+
+export const CONNECTOR_RENAME_REFUSAL =
+  "Only workspace editors (owner, admin or member) can rename a connector.";
 
 /** `ws:acme` or `acme` → `acme`. */
 function slugOfRef(ref: string): string {
@@ -127,11 +131,11 @@ async function renameConnector(
   ref: string,
   rawSlug: string,
 ): Promise<RenameResult> {
-  if (!ctx.userId || !RENAME_ROLES.has(ctx.role ?? "")) {
-    throw new RenameError(
-      "Renaming a workspace connector takes a workspace member (not a viewer).",
-      403,
-    );
+  // The rule of the one Mako route that writes connectors/<slug>/ (restore,
+  // routes/connector-definitions.ts): a workspace editor, on every surface.
+  // An API key acts with the role of the person who created it.
+  if (!ctx.userId || !canOrganizeWorkspaceTree(ctx.role)) {
+    throw new RenameError(CONNECTOR_RENAME_REFUSAL, 403);
   }
   const to = slugOfRef(rawSlug);
   const problem = connectorSlugError(to);

@@ -259,9 +259,14 @@ async function publicSourceConnection(
   const record = asSourceRecord(doc);
   let schema: { fields: ConnectorFieldSchema[] } | null = null;
   // Set when the connection's connector binding does not resolve: the form
-  // shows the message, and its save (which sends `type`) re-binds it.
+  // shows the message, and offers the bind when `rebindable`.
   let connectorBinding:
-    | { ok: false; problem: ConnectorBindingError["problem"]; message: string }
+    | {
+        ok: false;
+        problem: ConnectorBindingError["problem"];
+        message: string;
+        rebindable: boolean;
+      }
     | undefined;
   try {
     schema = await syncConnectorRegistry.getConfigSchemaForType(
@@ -271,8 +276,8 @@ async function publicSourceConnection(
     );
   } catch (error) {
     if (error instanceof ConnectorBindingError) {
-      const { problem, message } = error;
-      connectorBinding = { ok: false, problem, message };
+      const { problem, message, rebindable } = error;
+      connectorBinding = { ok: false, problem, message, rebindable };
     } else {
       logger.warn("Could not load connector schema while redacting config", {
         type: record.type,
@@ -307,6 +312,7 @@ function connectorBindingConflict(error: unknown) {
         error: error.message,
         code: "connector_binding" as const,
         problem: error.problem,
+        rebindable: error.rebindable,
       }
     : null;
 }

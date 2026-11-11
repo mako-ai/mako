@@ -119,6 +119,8 @@ export class ConnectorBindingError extends Error {
   constructor(
     public readonly problem: ConnectionBindingProblem,
     message: string,
+    /** See {@link ConnectionBindingRefusal.rebindable}. */
+    public readonly rebindable = false,
   ) {
     super(message);
     this.name = "ConnectorBindingError";
@@ -134,9 +136,22 @@ export class ConnectorBindingError extends Error {
  */
 export const UNBOUND_CONNECTOR_DEFINITION_ID = "000000000000000000000000";
 
+export interface ConnectionBindingRefusal {
+  ok: false;
+  problem: ConnectionBindingProblem;
+  /** What is wrong and what to do, for a person. Never a config value. */
+  message: string;
+  /**
+   * A usable connector holds the connection's slug today, so saving the
+   * connection with its own type binds it to that connector ("Bind to
+   * this connector" in the app). False when nothing is there to bind to.
+   */
+  rebindable: boolean;
+}
+
 export type ConnectionBindingResolution =
   | { ok: true; row: IConnectorDefinition; via: "binding" | "current" }
-  | { ok: false; problem: ConnectionBindingProblem; message: string };
+  | ConnectionBindingRefusal;
 
 function slugOfType(type: string): string {
   return type.startsWith(WORKSPACE_PREFIX)
@@ -144,13 +159,17 @@ function slugOfType(type: string): string {
     : type;
 }
 
-/** How a person re-binds a connection, for every refusal below. */
-function rebindHint(slug: string): string {
-  return (
-    `If ${CONNECTORS_DIR}/${slug}/ on main is the connector this connection is for, re-bind it on purpose: ` +
-    `open the connection in Mako, keep "${slug}" selected and save ` +
-    `(PUT the connection with {"type": "${WORKSPACE_PREFIX}${slug}"}). Otherwise delete the connection.`
-  );
+/**
+ * What a person can do about a closed connection. The app offers exactly
+ * these: "Bind to this connector" when a connector holds the slug now,
+ * and picking another connector type otherwise.
+ */
+function nextStep(slug: string, rebindable: boolean): string {
+  return rebindable
+    ? `A connector called "${slug}" exists now. If it is the one this connection is for, bind the connection to it on purpose: ` +
+        `open the connection in Mako and choose "Bind to this connector" (PUT the connection with {"type": "${WORKSPACE_PREFIX}${slug}"}). ` +
+        `Otherwise pick another connector type, or delete the connection.`
+    : `To use this connection with another connector, open it in Mako, pick that connector as its type and save. Otherwise delete the connection.`;
 }
 
 /**
@@ -171,29 +190,35 @@ export async function resolveConnectionBinding(
     binding.connectorDefinitionId == null
       ? null
       : String(binding.connectorDefinitionId);
+  const named = await ConnectorDefinition.findOne({
+    workspaceId,
+    slug,
+    ...LIVE_DEFINITION,
+  });
   if (id === null) {
-    const row = await ConnectorDefinition.findOne({
-      workspaceId,
-      slug,
-      ...LIVE_DEFINITION,
-    });
-    if (row) return { ok: true, row, via: "current" };
+    if (named) return { ok: true, row: named, via: "current" };
     return {
       ok: false,
       problem: "not-found",
+      rebindable: false,
       message:
         `No connector "${slug}" in this workspace, and this connection is not bound to a connector by id. ` +
-        `Push a folder at ${CONNECTORS_DIR}/${slug}/ to main. ${rebindHint(slug)}`,
+        nextStep(slug, false),
     };
   }
+  // Binding it by naming its own type needs a connector that can run.
+  const rebindable = named != null && named.status !== "blocked";
+  const gone = (what: string): ConnectionBindingRefusal => ({
+    ok: false,
+    problem: "definition-gone",
+    rebindable,
+    message: `${what} ${nextStep(slug, rebindable)}`,
+  });
   if (id === UNBOUND_CONNECTOR_DEFINITION_ID) {
-    return {
-      ok: false,
-      problem: "definition-gone",
-      message:
-        `This connection was saved before connections were bound to their connector by id, and a different connector has since taken the name "${slug}", ` +
-        `so the connection is not given to it automatically. ${rebindHint(slug)}`,
-    };
+    return gone(
+      `This connection was saved before connections were bound to their connector by id, and a different connector has since taken the name "${slug}", ` +
+        `so the connection is not given to it automatically.`,
+    );
   }
   const row = /^[0-9a-f]{24}$/i.test(id)
     ? await ConnectorDefinition.findOne({ workspaceId, _id: id })
@@ -204,22 +229,14 @@ export async function resolveConnectionBinding(
       type: binding.type,
       connectorDefinitionId: id,
     });
-    return {
-      ok: false,
-      problem: "definition-gone",
-      message: row
+    return gone(
+      row
         ? `This connection was saved under the connector "${row.slug}", whose folder is no longer on main. ` +
-          `Restoring ${CONNECTORS_DIR}/${row.slug}/ brings the connector back as it was and this connection works again; ` +
-          `it stays closed if another connector takes that name first. ${rebindHint(slug)}`
-        : `This connection was saved under a connector that no longer exists (definition ${id}); ` +
-          `a connection is only ever used by the connector it was saved under. ${rebindHint(slug)}`,
-    };
+            `Restoring ${CONNECTORS_DIR}/${row.slug}/ brings the connector back as it was, and this connection works again with nothing to save; ` +
+            `it stays closed if another connector takes that name first.`
+        : `This connection was saved under a connector that no longer exists, and a connection is only ever used by the connector it was saved under.`,
+    );
   }
-  const named = await ConnectorDefinition.findOne({
-    workspaceId,
-    slug,
-    ...LIVE_DEFINITION,
-  });
   if (named && String(named._id) !== id) {
     logger.warn(
       "A source connection's type names another connector than the one it is bound to",
@@ -228,10 +245,11 @@ export async function resolveConnectionBinding(
     return {
       ok: false,
       problem: "name-moved",
+      rebindable: false,
       message:
         `This connection is bound to the connector "${row.slug}", but its type "${binding.type}" now names a different connector, ` +
         `and a connection is only ever used by the connector it was saved under. ` +
-        `To keep it on its own connector, PUT the connection with {"type": "${WORKSPACE_PREFIX}${row.slug}"}. ` +
+        `To keep it on its own connector, open it in Mako, pick "${row.slug}" as its type and save (PUT the connection with {"type": "${WORKSPACE_PREFIX}${row.slug}"}). ` +
         `To use the connector now at ${CONNECTORS_DIR}/${slug}/, create a connection for it and enter the key there.`,
     };
   }
@@ -272,7 +290,11 @@ export async function loadConnectorDefinitionFor(
 ): Promise<LoadedConnector> {
   const resolved = await resolveConnectionBinding(workspaceId, binding);
   if (!resolved.ok) {
-    throw new ConnectorBindingError(resolved.problem, resolved.message);
+    throw new ConnectorBindingError(
+      resolved.problem,
+      resolved.message,
+      resolved.rebindable,
+    );
   }
   return loaded(resolved.row);
 }
