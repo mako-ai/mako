@@ -26,6 +26,7 @@ import {
   requireWorkspaceRepo,
 } from "../apps/workspace-repo-required";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
+import { unsafeSlugReason } from "@mako/schemas";
 import {
   ensureLocalRepo,
   freshenBeforeMainWrite,
@@ -33,11 +34,11 @@ import {
   queueMirrorPush,
 } from "../apps/cloud-repo.service";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
   repoDirFor,
   blobOid,
   commitBlobsOnBranch,
-  globTree,
   listTree,
   readBlobsBatch,
   readBlob,
@@ -49,6 +50,7 @@ import {
   DBT_ENVIRONMENTS_PATH,
   type DbtEnvironmentsFile,
   jobFilePath,
+  jobRenameTarget,
   parseEnvironmentsFile,
   parseJobFile,
   serializeEnvironmentsFile,
@@ -59,6 +61,20 @@ import {
 } from "./dbt-config-files";
 import { parseDbtCommands } from "./commands";
 import { applyJobScheduleChange } from "./dbt-run.service";
+import {
+  SlugFileConflictError,
+  currentFileOf,
+  deleteSlugFile,
+} from "../rename/slug-file-rename";
+import {
+  DBT_JOB_FILES,
+  freeDerivedId,
+  mergedAliases,
+  retireObjectId,
+  settleRenames,
+  type SlugRow,
+} from "../rename/slug-files";
+import { publishRealtimeEvent } from "../services/realtime.service";
 
 const logger = loggers.api("dbt-config");
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
@@ -79,11 +95,38 @@ export interface LiveJob {
 export function derivedJobId(
   workspaceId: string,
   slug: string,
+  /** Above 1 only when the first id is another job's, or a deleted one's. */
+  generation = 1,
 ): Types.ObjectId {
   const digest = createHash("sha1")
-    .update(`dbt-job:${workspaceId}:${slug}`)
+    .update(
+      `dbt-job:${workspaceId}:${slug}${generation > 1 ? `#${generation}` : ""}`,
+    )
     .digest("hex");
   return new Types.ObjectId(digest.slice(0, 24));
+}
+
+/** The id of a job file that has no row (see `freeDerivedId`). */
+function jobIdForFile(
+  workspaceId: string,
+  slug: string,
+  rows: ReadonlyArray<{ _id: Types.ObjectId; slug?: string }>,
+): Promise<Types.ObjectId> {
+  return freeDerivedId(
+    "dbt_job",
+    workspaceId,
+    slug,
+    generation => derivedJobId(workspaceId, slug, generation),
+    rows,
+  );
+}
+
+/** Drop a job's row; its id is never given to another job file. */
+export async function removeDbtJobRow(
+  job: Pick<IDbtJob, "_id" | "workspaceId">,
+): Promise<void> {
+  await DbtJob.deleteOne({ _id: job._id });
+  await retireObjectId(job.workspaceId, "dbt_job", job._id);
 }
 
 /** Authored job files at main; unbound workspaces deliberately read empty. */
@@ -96,32 +139,31 @@ export async function listJobDefinitionsAtMain(
   // A job file another instance committed is invisible to a clone that has
   // not fetched it: listing it, then "Job not found" on run, by instance.
   await freshenForServe(workspaceId);
-  if (!(await resolveCommit(repoDir, MAIN))) return [];
-  const paths = await globTree(repoDir, MAIN, "dbt/jobs/*.yml", 1000);
-  const definitions: JobDefinitionAtMain[] = [];
-  for (const path of paths.sort()) {
-    const slug = slugFromJobFilePath(path);
-    if (!slug) continue;
-    try {
-      const blob = await readBlob(repoDir, MAIN, path);
-      definitions.push({
-        path,
-        slug,
-        oid: blob.isBinary
-          ? blobOid(Buffer.from(blob.contents, "base64"))
-          : blobOid(blob.contents),
-        parsed: blob.isBinary ? null : parseJobFile(blob.contents),
-      });
-    } catch (error) {
-      logger.warn("Unreadable dbt job file at main", {
-        workspaceId,
-        path,
-        error,
-      });
-      definitions.push({ path, slug, oid: "unreadable", parsed: null });
+  const head = await resolveCommit(repoDir, MAIN);
+  if (!head) return [];
+  // EVERY job file, read by one git process: the push sync reads them all,
+  // so the cap of 1,000 that was here listed some jobs and answered "Job
+  // not found" for the rest.
+  const paths = (await listTree(repoDir, head))
+    .map(entry => entry.path)
+    .filter(path => slugFromJobFilePath(path) !== null)
+    .sort();
+  const blobs = await readBlobsBatch(repoDir, head, paths);
+  return paths.map(path => {
+    const slug = slugFromJobFilePath(path) as string;
+    const blob = blobs.get(path);
+    if (!blob) {
+      logger.warn("Unreadable dbt job file at main", { workspaceId, path });
+      return { path, slug, oid: "unreadable", parsed: null };
     }
-  }
-  return definitions;
+    return {
+      path,
+      slug,
+      oid: blobOid(blob),
+      // A NUL byte: not a text file, so not a job definition.
+      parsed: blob.includes(0) ? null : parseJobFile(blob.toString("utf8")),
+    };
+  });
 }
 
 const JOB_NAME_MAX_LENGTH = 128;
@@ -242,11 +284,14 @@ export async function ensureJobDerivedCache(
   const reschedule = scheduleDiffers(row, file);
   const unset: Record<string, 1> = { definitionInvalid: 1 };
   if (!file.schedule) unset.schedule = 1;
+  // The file's old names, then what only the row knows (a pushed `git mv`).
+  const aliases = mergedAliases(file.aliases, row.aliases, row.slug);
   await DbtJob.updateOne(
     { _id: row._id },
     {
       $set: {
         name: file.name,
+        ...(aliases.length > 0 ? { aliases } : {}),
         environment: file.environment,
         commands: file.commands,
         ...(file.schedule ? { schedule: file.schedule } : {}),
@@ -259,6 +304,7 @@ export async function ensureJobDerivedCache(
   );
   Object.assign(row, {
     name: file.name,
+    ...(aliases.length > 0 ? { aliases } : {}),
     environment: file.environment,
     commands: file.commands,
     schedule: file.schedule ?? undefined,
@@ -270,19 +316,71 @@ export async function ensureJobDerivedCache(
   if (reschedule) await applyJobScheduleChange(row);
 }
 
-function joinLiveJobs(
+async function joinLiveJobs(
   project: IDbtProject,
   defs: JobDefinitionAtMain[],
   rows: IDbtJob[],
-): LiveJob[] {
+  /** Rows renamed ahead of this tree, by the old slug it still shows. */
+  ahead: ReadonlyMap<string, SlugRow>,
+): Promise<LiveJob[]> {
+  const workspaceId = project.workspaceId.toString();
   const bySlug = new Map(rows.map(row => [row.slug, row]));
-  return defs.map(def => ({
-    def,
-    row: bySlug.get(def.slug) ?? null,
-    id:
-      bySlug.get(def.slug)?._id ??
-      derivedJobId(project.workspaceId.toString(), def.slug),
-  }));
+  const live: LiveJob[] = [];
+  for (const def of defs) {
+    const aheadId = ahead.get(def.slug)?._id;
+    const row =
+      bySlug.get(def.slug) ??
+      (aheadId && rows.find(candidate => candidate._id.equals(aheadId))) ??
+      null;
+    live.push({
+      def,
+      row,
+      id: row?._id ?? (await jobIdForFile(workspaceId, def.slug, rows)),
+    });
+  }
+  return live;
+}
+
+/**
+ * Re-key the job rows whose file moved (api/src/rename/slug-files.ts)
+ * before rows are matched to files by slug. Costs nothing unless a row's
+ * own file is missing from the tree.
+ */
+async function settleJobRenames(
+  project: IDbtProject,
+  files: Array<JobDefinitionAtMain & { contents?: string }>,
+  rows: IDbtJob[],
+  mode: "sync" | "read",
+  at?: string,
+): Promise<Awaited<ReturnType<typeof settleRenames>>> {
+  const none = { renamed: [], ahead: new Map<string, SlugRow>() };
+  const workspaceId = project.workspaceId.toString();
+  const slugs = new Set(files.map(file => file.slug));
+  if (!rows.some(row => row.slug && !slugs.has(row.slug))) return none;
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  const head = at ?? (repoDir && (await resolveCommit(repoDir, MAIN)));
+  if (!repoDir || !head) return none;
+  const settled = await settleRenames(DBT_JOB_FILES, {
+    workspaceId,
+    repoDir,
+    head,
+    mode,
+    rows,
+    files: files.map(file => ({
+      slug: file.slug,
+      oid: file.oid,
+      contents: file.contents,
+      aliases: file.parsed?.aliases ?? [],
+      target: file.parsed ? jobRenameTarget(file.parsed) : null,
+    })),
+  });
+  if (settled.renamed.length > 0) {
+    publishRealtimeEvent(workspaceId, {
+      type: "dbt.job.updated",
+      projectId: project._id.toString(),
+    });
+  }
+  return settled;
 }
 
 export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
@@ -300,7 +398,11 @@ export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
     });
   }
   const defs = await listJobDefinitionsAtMain(workspaceId);
-  const rows = await DbtJob.find({ projectId: project._id });
+  let rows = await DbtJob.find({ projectId: project._id });
+  const settled = await settleJobRenames(project, defs, rows, "read");
+  if (settled.renamed.length > 0) {
+    rows = await DbtJob.find({ projectId: project._id });
+  }
   const bySlug = new Map(rows.map(row => [row.slug, row]));
   for (const def of defs) {
     const row = bySlug.get(def.slug);
@@ -315,7 +417,7 @@ export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
       });
     }
   }
-  return joinLiveJobs(project, defs, rows);
+  return joinLiveJobs(project, defs, rows, settled.ahead);
 }
 
 export async function loadLiveJobById(
@@ -427,6 +529,8 @@ export function liveJobToPlain(
 function jobToFile(job: IDbtJob): DbtJobFile {
   return {
     name: job.name,
+    // The row's old names ride along: a save writes the whole file.
+    ...(job.aliases?.length ? { aliases: [...job.aliases] } : {}),
     environment: job.environment,
     commands: [...job.commands],
     schedule: job.schedule?.cron
@@ -568,12 +672,15 @@ async function commitConfig(
   mutation: { writes?: Record<string, string>; deletes?: string[] },
   message: string,
   author?: GitAuthor,
+  /** What the commit expects at main, decided after the freshen. */
+  expect?: (repoDir: string) => Promise<Record<string, string | null>>,
 ): Promise<boolean> {
   const repoDir = await requireWorkspaceRepo(workspaceId);
   await freshenBeforeMainWrite(workspaceId);
   const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
     message,
     author,
+    expectBlobs: expect ? await expect(repoDir) : undefined,
   });
   if (!result.unchanged) queueMirrorPush(workspaceId);
   return true;
@@ -587,7 +694,11 @@ export async function reserveJobSlug(
   const base = slugifyJobName(name);
   let slug = base;
   for (let i = 2; i < 100; i++) {
-    const taken = await DbtJob.exists({ projectId, slug });
+    // Never a name a Windows checkout cannot create, or one that reads as
+    // an id (ids resolve before names).
+    const taken =
+      unsafeSlugReason(slug) !== null ||
+      (await DbtJob.exists({ projectId, slug }));
     if (!taken) return slug;
     slug = `${base}-${i}`;
   }
@@ -604,12 +715,42 @@ export async function commitDbtJobFile(
   if (!job.slug) return; // pre-adoption row; the migration stamps slugs
   const contents = serializeJobFile(jobToFile(job));
   const sha = blobOid(contents);
-  const written = await commitConfig(
-    project.workspaceId.toString(),
-    { writes: { [jobFilePath(job.slug)]: contents } },
-    messageOverride ?? `dbt: job "${job.name}" (${job.slug})`,
-    actorUserId ? await authorForUser(actorUserId) : undefined,
-  );
+  const workspaceId = project.workspaceId.toString();
+  const slug = job.slug;
+  let written: boolean;
+  try {
+    written = await commitConfig(
+      workspaceId,
+      { writes: { [jobFilePath(slug)]: contents } },
+      messageOverride ?? `dbt: job "${job.name}" (${slug})`,
+      actorUserId ? await authorForUser(actorUserId) : undefined,
+      // An existing job's file is replaced only where it still is: the row
+      // in this request's hand may predate a rename, and writing its old
+      // path would bring back the file the rename moved.
+      job.isNew
+        ? undefined
+        : async repoDir => {
+            const at = await currentFileOf(DBT_JOB_FILES, {
+              workspaceId,
+              scope: { projectId: job.projectId },
+              repoDir,
+              id: job._id,
+              slug,
+            });
+            if (at.slug !== slug) {
+              throw new SlugFileConflictError(
+                `This job was renamed (its file is now ${at.path}) while it was being edited. Nothing was saved: reload the job and make the change again.`,
+              );
+            }
+            return { [at.path]: at.oid };
+          },
+    );
+  } catch (error) {
+    if (!(error instanceof BlobPreconditionError)) throw error;
+    throw new SlugFileConflictError(
+      `${error.path} changed while the job was being saved (a rename or another edit landed first). Nothing was saved: reload the job and make the change again.`,
+    );
+  }
   // Stamp AFTER the file exists. Stamping first meant a failed commit left
   // the row claiming a sha for a file that was never written, and the
   // push-sync short-circuits on a matching sha. For a not-yet-persisted
@@ -625,18 +766,25 @@ export async function commitDbtJobFile(
   }
 }
 
+/**
+ * Remove a deleted job's file: the one its row has NOW (a rename may have
+ * moved it since the request read the row). `SlugFileConflictError` (409)
+ * when a rename or an edit lands in between.
+ */
 export async function deleteDbtJobFile(
   project: Pick<IDbtProject, "workspaceId">,
-  slug: string | undefined,
+  job: Pick<IDbtJob, "_id" | "projectId" | "slug">,
   actorUserId?: string,
 ): Promise<void> {
-  if (!slug) return;
-  await commitConfig(
-    project.workspaceId.toString(),
-    { deletes: [jobFilePath(slug)] },
-    `dbt: delete job ${slug}`,
-    actorUserId ? await authorForUser(actorUserId) : undefined,
-  );
+  if (!job.slug) return;
+  await deleteSlugFile(DBT_JOB_FILES, {
+    workspaceId: project.workspaceId.toString(),
+    scope: { projectId: job.projectId },
+    id: job._id,
+    slug: job.slug,
+    message: slug => `dbt: delete job ${slug}`,
+    actorUserId,
+  });
 }
 
 export async function commitDbtEnvironmentsFile(
@@ -722,11 +870,33 @@ async function syncDbtConfigNow(
 
   // ---- jobs/*.yml → job rows ----
   const blobs = await readBlobsBatch(repoDir, head, jobPaths);
+  // A file that MOVED is a rename: its row is re-keyed in place here, before
+  // the loop reads the new slug as a new job and the old one as removed
+  // (a new id: the URL, the run history and the scheduler claim orphaned).
+  const settled = await settleJobRenames(
+    project,
+    [...blobs].flatMap(([path, buf]) => {
+      const slug = slugFromJobFilePath(path);
+      const contents = buf.toString("utf8");
+      const parsed = parseJobFile(contents);
+      return slug
+        ? [{ path, slug, oid: blobOid(contents), contents, parsed }]
+        : [];
+    }),
+    await DbtJob.find({ projectId: project._id, slug: { $exists: true } }),
+    "sync",
+    head,
+  );
+  const holders: Array<{ _id: Types.ObjectId; slug?: string }> =
+    await DbtJob.find({ projectId: project._id }).select("_id slug").lean();
   const seenSlugs = new Set<string>();
   for (const [path, buf] of blobs) {
     const slug = slugFromJobFilePath(path);
     if (!slug) continue;
     seenSlugs.add(slug);
+    // This tree is older than a rename of this job (see `settleRenames`):
+    // the file is the job's own, as it was. Nothing is created from it.
+    if (settled.ahead.has(slug)) continue;
     const contents = buf.toString("utf8");
     const sha = blobOid(contents);
     const row = await DbtJob.findOne({ projectId: project._id, slug });
@@ -770,13 +940,17 @@ async function syncDbtConfigNow(
       new DbtJob({
         // The id GET/list already handed out for this git-only file: a tab
         // opened before the push landed keeps resolving after it.
-        _id: derivedJobId(workspaceId, slug),
+        _id: await jobIdForFile(workspaceId, slug, holders),
         workspaceId: project.workspaceId,
         projectId: project._id,
         slug,
         createdBy: "sync",
       });
     doc.name = parsed.name;
+    const aliases = mergedAliases(parsed.aliases, doc.aliases, slug);
+    if (aliases.length > 0 || doc.aliases?.length) {
+      doc.aliases = aliases.length > 0 ? aliases : undefined;
+    }
     doc.environment = parsed.environment;
     doc.commands = parsed.commands;
     doc.schedule = parsed.schedule
@@ -795,6 +969,7 @@ async function syncDbtConfigNow(
       );
     }
     if (scheduleChanged) await applyJobScheduleChange(doc);
+    if (!row) holders.push({ _id: doc._id, slug });
     logger.info("dbt job synced from repo", { workspaceId, slug });
   }
 
@@ -802,9 +977,14 @@ async function syncDbtConfigNow(
   const stale = await DbtJob.find({
     projectId: project._id,
     slug: { $exists: true, $nin: [...seenSlugs] },
-  }).select("slug name");
+  }).select("slug name workspaceId");
+  const renamedAhead = new Set(
+    [...settled.ahead.values()].map(row => String(row._id)),
+  );
   for (const doc of stale) {
-    await DbtJob.deleteOne({ _id: doc._id });
+    // Renamed by a commit this tree does not hold yet: not a removal.
+    if (renamedAhead.has(String(doc._id))) continue;
+    await removeDbtJobRow(doc);
     logger.info("dbt job removed (file deleted on main)", {
       workspaceId,
       slug: doc.slug,

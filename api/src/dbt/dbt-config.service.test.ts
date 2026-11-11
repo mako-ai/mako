@@ -146,7 +146,7 @@ describe("write-through", () => {
     const fresh = await DbtJob.findById(job._id);
     expect(fresh?.sourceBlobSha).toBeTruthy();
 
-    await deleteDbtJobFile(project, job.slug);
+    await deleteDbtJobFile(project, job);
     expect(await fileAt(jobFilePath(job.slug!))).toBeNull();
   });
 

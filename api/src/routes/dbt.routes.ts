@@ -13,6 +13,9 @@ import { Readable } from "stream";
 import { Types } from "mongoose";
 import { z } from "zod";
 import { RepoRequiredError } from "../apps/config";
+import { SlugFileConflictError } from "../rename/slug-file-rename";
+import { DBT_JOB_FILES } from "../rename/slug-files";
+import { displayNameError, normalizeDisplayName } from "../rename/title-rules";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import {
   isMcpOAuthAuth,
@@ -62,6 +65,7 @@ import {
   commitDbtEnvironmentsFile,
   commitDbtJobFile,
   deleteDbtJobFile,
+  removeDbtJobRow,
   ensureEnvironmentsDerivedCache,
   jobScheduleFailure,
   loadLiveJobById,
@@ -196,6 +200,10 @@ function serverError(
   }
   if (error instanceof DbtProtectedEnvironmentError) {
     return c.json({ success: false, error: error.message }, 400);
+  }
+  if (error instanceof SlugFileConflictError) {
+    // A rename (or another edit) of the job landed first.
+    return c.json({ success: false, error: error.message }, 409);
   }
   logger.error(fallback, { error });
   return c.json(
@@ -863,7 +871,16 @@ dbtRoutes.post(
 // ---------------------------------------------------------------------------
 
 const jobSchema = z.object({
-  name: z.string().min(1).max(128),
+  // The rename rules decide what a job may be called, in their own words
+  // (`DBT_JOB_FILES.nameMaxLength`, no control characters): one answer here,
+  // in the rename dialog and in the job form.
+  name: z
+    .string()
+    .transform(normalizeDisplayName)
+    .superRefine((name, ctx) => {
+      const problem = displayNameError(name, DBT_JOB_FILES.nameMaxLength);
+      if (problem) ctx.addIssue({ code: "custom", message: problem });
+    }),
   environment: z.string().min(1),
   commands: z.array(z.string().min(1)).min(1).max(10),
   schedule: z
@@ -1061,8 +1078,8 @@ dbtRoutes.delete(
         );
       }
       const doomed = resolved.row;
-      await deleteDbtJobFile(project, doomed.slug, getUserId(c));
-      await DbtJob.deleteOne({ _id: doomed._id });
+      await deleteDbtJobFile(project, doomed, getUserId(c));
+      await removeDbtJobRow(doomed);
       publishDbtEvent(c, {
         type: "dbt.job.updated",
         projectId: project._id.toString(),
