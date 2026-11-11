@@ -424,3 +424,57 @@ describe("what a member is told", () => {
     expect(await consoleFiles()).toEqual(["consoles/alices.sql"]);
   });
 });
+
+describe("POST /revisions-sync tells a rename from a change of content", () => {
+  const pull = async (id: string) =>
+    (
+      (await call("POST", "/revisions-sync", { revisions: { [id]: 0 } })).json
+        .changed as Array<Record<string, unknown>>
+    )[0];
+
+  it("a rename, a move and a restore move the revision, not the version, and the content is still the saved one", async () => {
+    const id = (await save("a", "SELECT 1"))._id.toString();
+    const before = await pull(id);
+    expect(before).toMatchObject({ content: "SELECT 1", contentIsSaved: true });
+
+    await call("PATCH", `/${id}/rename`, { name: "b" });
+    const folderId = (
+      await call("POST", "/folders", { name: "Team", access: "workspace" })
+    ).json.data.id as string;
+    await call("PATCH", `/${id}/move`, { folderId });
+    await call("DELETE", `/${id}`);
+    await call("PATCH", `/${id}/restore`);
+
+    const after = await pull(id);
+    expect(after).toMatchObject({
+      name: "b",
+      content: "SELECT 1",
+      version: before.version,
+      contentIsSaved: true,
+      savedStateHash: before.savedStateHash,
+    });
+    expect(after.draftRevision).toBeGreaterThan(before.draftRevision as number);
+  });
+
+  it("a draft written over the saved content says so; a save moves the version", async () => {
+    const id = (await save("a", "SELECT 1"))._id.toString();
+    const before = await pull(id);
+
+    const draft = await call("PUT", `/${id}`, { content: "SELECT 1 -- draft" });
+    expect(draft.status).toBe(200);
+    expect(await pull(id)).toMatchObject({
+      content: "SELECT 1 -- draft",
+      version: before.version,
+      contentIsSaved: false,
+    });
+
+    const saved = await call("PUT", `/${id}`, {
+      content: "SELECT 2",
+      isSaved: true,
+    });
+    expect(saved.status).toBe(200);
+    const after = await pull(id);
+    expect(after).toMatchObject({ content: "SELECT 2", contentIsSaved: true });
+    expect(after.version).toBeGreaterThan(before.version as number);
+  });
+});
