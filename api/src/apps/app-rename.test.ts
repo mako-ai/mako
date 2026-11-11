@@ -526,7 +526,7 @@ describe("MEASURED: a member's sandbox with unsaved work, after someone else ren
     return { handle, run };
   }
 
-  it("an unsaved EDIT: the sandbox cannot catch up, so she sees main's files without her edit; the edit stays in the old folder", async () => {
+  it("an unsaved EDIT: the sandbox cannot catch up, so she sees main's files without her edit — and after her next save, only that one file", async () => {
     const report = await app(REPORT_ID);
     const { handle, run } = await box(report);
     await writeFile(handle, "src/main.tsx", "export const v = 'ana';\n");
@@ -565,6 +565,22 @@ describe("MEASURED: a member's sandbox with unsaved work, after someone else ren
     );
     // Nothing was lost, and nothing reached main.
     expect(await filesAt("apps/report")).toEqual({});
+
+    // Then she saves a file through the app. It lands in a NEW folder of
+    // her sandbox that holds nothing else — and from then on the app shows
+    // her only that file: every other file of the app reads as missing.
+    await writeFile(
+      await ensureWorktree(renamed, ANA),
+      "src/after.ts",
+      "export {};\n",
+    );
+    expect((await listFiles(renamed, ANA)).entries.map(e => e.path)).toEqual([
+      "src/after.ts",
+    ]);
+    await expect(readFile(renamed, "src/main.tsx", ANA)).rejects.toThrow();
+    expect((await run("git status --porcelain")).out).toBe(
+      "M apps/report/src/main.tsx\n?? apps/revenue/",
+    );
     await getSandboxProvider().destroySession?.(boxCtx(handle).sessionKey);
   });
 
