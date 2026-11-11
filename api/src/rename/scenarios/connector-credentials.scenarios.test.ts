@@ -247,6 +247,9 @@ import { sourceConnectionManager } from "../../sync/database-data-source-manager
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { encryptString } from "../../services/crypto.service";
 import { renameObject, resolveObjectRef } from "../registry";
+import { CONNECTOR_RENAME_REFUSAL } from "../handlers/connector";
+import { missingInputConditionalGrant } from "../../agent-lib/capabilities/runtime";
+import { capabilityGrantsFromScopes } from "../../auth/api-key-scopes";
 import { createRenameTools } from "../../agent-lib/tools/rename-tools";
 import { createConnectionWriteTools } from "../../agent-lib/tools/connection-write-tools";
 import { createConnectorTools } from "../../agent-lib/tools/connector-tools";
@@ -728,19 +731,58 @@ describe("renames made in Mako keep every connection on its definition", () => {
     await assertCredentials("after refusals");
   });
 
-  it("POST /objects/connector/rename: signed-in members rename, an API key is refused, old names resolve", async () => {
+  it("who may rename: workspace editors, on every surface; a refusal is a plain 403 and resolve still answers", async () => {
     await pushAndSync({ writes: folder("acme", "A") });
     const A = await defId("acme");
     await createConnection("ws:acme", A);
     const post = (slug: string) =>
       req("POST", "/objects/connector/rename", { ref: A, slug });
+    const resolve = (ref: string) =>
+      req(
+        "GET",
+        `/objects/resolve?${new URLSearchParams({ kind: "connector", ref })}`,
+      );
+    const tool = (slug: string) =>
+      (
+        createRenameTools(WS, "u1").rename_object.execute as (
+          input: unknown,
+          opts: unknown,
+        ) => Promise<{ success: boolean; error?: string }>
+      )({ kind: "connector", ref: "acme", slug }, {});
+    const refusal = { success: false, error: CONNECTOR_RENAME_REFUSAL };
 
+    // The REST route is for signed-in people: an API key renames through
+    // rename_object, where its grants apply.
     auth.authType = "apiKey";
     expect((await post("acme-crm")).status).toBe(403);
     auth.authType = "session";
-    auth.role = "viewer";
-    expect((await post("acme-crm")).status).toBe(403);
+    // A viewer, and a person who is no longer a member: refused in words,
+    // by the route, the tool and the service. Resolve still answers.
+    for (const role of ["viewer", undefined]) {
+      auth.role = role;
+      if (role) {
+        const res = await post("acme-crm");
+        expect([res.status, await res.json()]).toEqual([403, refusal]);
+        expect((await resolve("acme")).status).toBe(200);
+      }
+      expect(await tool("acme-crm")).toEqual(refusal);
+      await expect(
+        renameObject({ workspaceId: WS, userId: "u1", role }, "connector", {
+          ref: "acme",
+          slug: "acme-crm",
+        }),
+      ).rejects.toMatchObject({ status: 403 });
+    }
+    // A credential with no person behind it has no role to act with.
+    await expect(
+      renameObject({ workspaceId: WS, role: "admin" }, "connector", {
+        ref: "acme",
+        slug: "acme-crm",
+      }),
+    ).rejects.toMatchObject({ status: 403, message: CONNECTOR_RENAME_REFUSAL });
     expect((await def(A))?.slug).toBe("acme");
+
+    // The editors: the role that may restore a connector's folder.
     for (const role of ["member", "admin", "owner"]) {
       auth.role = role;
       const res = await post(`acme-${role}`);
@@ -748,11 +790,19 @@ describe("renames made in Mako keep every connection on its definition", () => {
       expect((await def(A))?.slug).toBe(`acme-${role}`);
       await assertCredentials(`renamed by ${role}`);
     }
-    const resolve = (ref: string) =>
-      req(
-        "GET",
-        `/objects/resolve?${new URLSearchParams({ kind: "connector", ref })}`,
+    // An API key (or an agent) acts with its person's role, and on agent
+    // surfaces the kind also needs the git-write grant.
+    auth.role = "member";
+    expect(await tool("acme-key")).toMatchObject({ success: true, id: A });
+    const grants = (scopes: Parameters<typeof capabilityGrantsFromScopes>[0]) =>
+      missingInputConditionalGrant(
+        "rename_object",
+        { kind: "connector" },
+        new Set(capabilityGrantsFromScopes(scopes)) as never,
       );
+    expect(grants(["query:read"])).toMatchObject({ grant: "git-write" });
+    expect(grants(["query:read", "git:write"])).toBeNull();
+
     const old = await resolve("acme");
     expect(await old.json()).toMatchObject({
       resolved: { id: A, via: "alias" },
@@ -961,7 +1011,10 @@ describe("laptop pushes (the index sync)", () => {
     };
     expect(shown.data.connectorBinding).toMatchObject({
       problem: "definition-gone",
-      message: expect.stringMatching(/a different connector has since taken/),
+      rebindable: true,
+      message: expect.stringMatching(
+        /a different connector has since taken .* choose "Bind to this connector"/,
+      ),
     });
     const rebind = await sources("PUT", `/${legacy}`, { type: "ws:acme" });
     expect(rebind.status).toBe(200);
@@ -1032,7 +1085,8 @@ describe("a deleted folder: closed, and the same definition when it comes back",
       expect([url, res.status]).toEqual([url, 409]);
       expect(JSON.parse(text)).toMatchObject({
         code: "connector_binding",
-        error: expect.stringMatching(/re-bind/),
+        rebindable: false,
+        error: expect.stringMatching(/Restoring connectors\/acme\/ brings/),
       });
       expect(text).not.toContain(secret);
     }
@@ -1045,7 +1099,7 @@ describe("a deleted folder: closed, and the same definition when it comes back",
     )({ connectionId: id, config: { region: "us" } }, {})) as {
       error?: string;
     };
-    expect(update.error).toMatch(/re-bind/);
+    expect(update.error).toMatch(/Restoring connectors\/acme\/ brings/);
     const inspected = JSON.stringify(
       await (
         createConnectorTools(WS).inspect_connection.execute as (
