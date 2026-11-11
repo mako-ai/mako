@@ -213,7 +213,10 @@ describe("a connector pushed to the workspace repo", () => {
       usable: true,
     });
 
-    expect(await connectorTypeExists("ws:acme", WS)).toEqual({ ok: true });
+    expect(await connectorTypeExists("ws:acme", WS)).toMatchObject({
+      ok: true,
+      type: "ws:acme",
+    });
     const missing = await connectorTypeExists("ws:nope", WS);
     expect(missing.ok).toBe(false);
   }, 120_000);
@@ -703,34 +706,46 @@ await new Promise(resolve => setTimeout(resolve, 1000));`,
     expect((row?.spec as any)?.mako?.version).toBe("2.0.0");
   }, 120_000);
 
-  it("drops the index row when the folder is deleted", async () => {
-    await push({
+  it("keeps a deleted folder's definition as a tombstone, and revives the same id when the folder is back", async () => {
+    const folder = {
       "connectors/acme/connector.yaml": "runtime: node\n",
       "connectors/acme/connector.ts": CONNECTOR_TS,
-    });
+    };
+    await push(folder);
     await syncConnectorsFromRepo(WS);
+    const id = String(
+      (await ConnectorDefinition.findOne({ workspaceId: WS, slug: "acme" }))
+        ?._id,
+    );
 
-    const repoDir = repoDirFor(WS);
     await commitBlobsOnBranch(
-      repoDir,
+      repoDirFor(WS),
       DEFAULT_BRANCH,
-      {
-        deletes: [
-          "connectors/acme/connector.yaml",
-          "connectors/acme/connector.ts",
-        ],
-      },
+      { deletes: Object.keys(folder) },
       {
         message: "remove connector",
         author: { name: "T", email: "t@example.com" },
       },
     );
+    const removed = await syncConnectorsFromRepo(WS);
+    expect(removed.removed).toBe(1);
+    // Kept, but nothing resolves to it: not the catalog, not a new connection.
+    const tombstone = await ConnectorDefinition.findById(id);
+    expect(tombstone?.removedAt).toBeInstanceOf(Date);
+    expect(await listWorkspaceConnectors(WS)).toEqual([]);
+    expect((await connectorTypeExists("ws:acme", WS)).ok).toBe(false);
+    // A later push that does not bring it back counts nothing twice.
+    expect((await syncConnectorsFromRepo(WS)).removed).toBe(0);
 
-    const result = await syncConnectorsFromRepo(WS);
-    expect(result.removed).toBe(1);
-    expect(
-      await ConnectorDefinition.findOne({ workspaceId: WS, slug: "acme" }),
-    ).toBeNull();
+    await push(folder, "restore connector");
+    const back = await syncConnectorsFromRepo(WS);
+    expect([back.revived, back.created]).toEqual([1, 0]);
+    const row = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme",
+    });
+    expect([String(row?._id), row?.removedAt]).toEqual([id, undefined]);
+    expect(await listWorkspaceConnectors(WS)).toHaveLength(1);
   }, 120_000);
 
   it("does not delete the index when no repository can be resolved", async () => {

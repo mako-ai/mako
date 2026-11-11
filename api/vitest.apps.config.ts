@@ -158,6 +158,9 @@ export default defineConfig({
       // Workspace connectors: real git, real Mongo, and a real child process
       // per protocol command via the local sandbox provider.
       "src/connectors/workspace/workspace-connectors.test.ts",
+      // connector.yaml `aliases`: parsed, written by a rename, left out of
+      // the content hash.
+      "src/connectors/workspace/connector-file.test.ts",
       "src/connectors/workspace/resolver.test.ts",
       "src/connectors/workspace/sync-box.test.ts",
       "src/apps/repository.service.test.ts",

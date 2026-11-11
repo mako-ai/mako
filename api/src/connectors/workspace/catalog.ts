@@ -6,11 +6,17 @@
  * never boot a sandbox, and they must be honest about a connector that is not
  * usable yet rather than hiding it.
  */
-import { listConnectorDefinitions, loadConnectorDefinition } from "./resolver";
+import {
+  LIVE_DEFINITION,
+  findConnectorDefinitionRow,
+  listConnectorDefinitions,
+  loadConnectorDefinition,
+} from "./resolver";
 import {
   connectionSpecificationToForm,
   type FormSchema,
 } from "./spec-translation";
+import type { Types } from "mongoose";
 import { ConnectorDefinition } from "../../database/workspace-schema";
 import {
   WORKSPACE_TYPE_PREFIX,
@@ -31,6 +37,8 @@ export interface WorkspaceConnectorSummary {
   /** Why the last connection test failed. A bad key, not a broken connector. */
   lastCheckError?: string;
   hasIcon: boolean;
+  /** Previous slugs; `ws:<alias>` still names this connector. */
+  aliases: string[];
   source: "workspace";
 }
 
@@ -38,7 +46,10 @@ export interface WorkspaceConnectorSummary {
 export async function listWorkspaceConnectors(
   workspaceId: string,
 ): Promise<WorkspaceConnectorSummary[]> {
-  const rows = await ConnectorDefinition.find({ workspaceId })
+  const rows = await ConnectorDefinition.find({
+    workspaceId,
+    ...LIVE_DEFINITION,
+  })
     .sort({ slug: 1 })
     .lean();
   return rows.map(row => {
@@ -57,6 +68,7 @@ export async function listWorkspaceConnectors(
       blockedReason: row.blockedReason,
       lastCheckError: row.lastCheckError,
       hasIcon: row.hasIcon === true,
+      aliases: row.aliases ?? [],
       source: "workspace" as const,
     };
   });
@@ -83,6 +95,17 @@ export async function workspaceConnectorForm(
 }
 
 /**
+ * A usable connector type as a connection STORES it, or why it is not one.
+ * For a workspace connector that is `ws:<current slug>` even when an old
+ * name was given (a connection must not be keyed on a name another
+ * connector could take later), with the id of the definition the
+ * connection is bound to.
+ */
+export type ConnectorTypeAnswer =
+  | { ok: true; type: string; connectorDefinitionId?: Types.ObjectId }
+  | { ok: false; reason: string };
+
+/**
  * May a data source be created with this type?
  *
  * The global registry deliberately cannot answer for `ws:` types, because the
@@ -93,23 +116,28 @@ export async function workspaceConnectorForm(
 export async function connectorTypeExists(
   type: string,
   workspaceId: string,
-): Promise<{ ok: true } | { ok: false; reason: string }> {
-  if (!isWorkspaceConnectorType(type)) return { ok: true };
+): Promise<ConnectorTypeAnswer> {
+  if (!isWorkspaceConnectorType(type)) return { ok: true, type };
   const slug = slugFromType(type);
-  const row = await ConnectorDefinition.findOne({ workspaceId, slug }).lean();
-  if (!row) {
+  const found = await findConnectorDefinitionRow(workspaceId, slug);
+  if (!found) {
     return {
       ok: false,
       reason: `This workspace has no connector "${slug}". Push a folder at connectors/${slug}/ to main.`,
     };
   }
+  const { row } = found;
   if (row.status === "blocked") {
     return {
       ok: false,
-      reason: `The connector "${slug}" is blocked: ${row.blockedReason ?? "it failed its last check"}`,
+      reason: `The connector "${row.slug}" is blocked: ${row.blockedReason ?? "it failed its last check"}`,
     };
   }
-  return { ok: true };
+  return {
+    ok: true,
+    type: `${WORKSPACE_TYPE_PREFIX}${row.slug}`,
+    connectorDefinitionId: row._id as Types.ObjectId,
+  };
 }
 
 export { listConnectorDefinitions };
