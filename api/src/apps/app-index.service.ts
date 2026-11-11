@@ -40,6 +40,7 @@ import { scheduleThumbnailWarm } from "./thumbnail-variants.service";
 import { scheduleAppEmbeddings } from "./app-embeddings.service";
 import type { OwnerDirectory } from "./user-handles";
 import { loadOwnerDirectory } from "./user-handles.service";
+import { capAliases } from "../rename/alias-cap";
 import {
   APPS_DIR,
   APP_MANIFEST,
@@ -60,7 +61,8 @@ const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 // thumbnail (discovery).
 // 3: rows carry `bindings` (the names on main), so freshness ignores state
 // rows left behind by deleted or renamed bindings.
-const INDEX_SCHEMA_VERSION = 3;
+// 4: rows carry `aliases` (an app's old links); a v3 index is rebuilt once.
+const INDEX_SCHEMA_VERSION = 4;
 
 export interface AppSchedule {
   binding: string;
@@ -85,6 +87,13 @@ export interface AppIndexRow {
   description?: string;
   hasManifestId: boolean;
   duplicateOf?: string;
+  /**
+   * The app's old links that still open it: its manifest's `aliases` plus
+   * what the index learned on its own (a folder moved without the manifest
+   * saying so), less the ones a newer holder took over. Oldest first, at
+   * most MAX_ALIASES. See {@link findAppInSnapshotVia}.
+   */
+  aliases: string[];
   schedules: AppSchedule[];
   /** Binding names on main (`bindings/<name>.sql`). */
   bindings: string[];
@@ -576,6 +585,142 @@ export async function renamedAppFolders(
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Old links (aliases)
+// ---------------------------------------------------------------------------
+
+/**
+ * Does `alias` name the (already cleaned) ref? Equal, or equal with or
+ * without the leading `apps/`: a slug alias `x` (an old top-level name)
+ * answers `x` and `apps/x`; a path alias `apps/S/x` answers `apps/S/x` and
+ * `S/x` — and never the bare `x`.
+ */
+export function aliasMatchesRef(alias: string, clean: string): boolean {
+  return (
+    alias === clean ||
+    alias === `${APPS_DIR}/${clean}` ||
+    `${APPS_DIR}/${alias}` === clean
+  );
+}
+
+/**
+ * How a folder an app has left is recorded. A top-level app by its slug:
+ * its `/apps/<slug>` link was made of it. Anything nested or personal by
+ * its path: its link was the id, and a bare name must never claim another
+ * app's link. A folder that moved under the SAME name is recorded by path
+ * too (the bare name is still its own).
+ */
+export function aliasForOldPath(oldPath: string, newPath: string): string {
+  const slug = oldPath.split("/").pop() ?? oldPath;
+  const sameName = slug === newPath.split("/").pop();
+  return oldPath === `${APPS_DIR}/${slug}` && !sameName ? slug : oldPath;
+}
+
+/**
+ * The old links that open an app, from what its row stores: the manifest's
+ * list, then the index's own, each name once, never the app's current slug
+ * or path, never one a newer holder took over (`superseded`), newest
+ * MAX_ALIASES kept.
+ */
+export function effectiveAliases(row: {
+  path: string;
+  slug: string;
+  aliases?: readonly string[] | null;
+  indexAliases?: readonly string[] | null;
+  supersededAliases?: readonly string[] | null;
+}): string[] {
+  const out: string[] = [];
+  for (const alias of [...(row.aliases ?? []), ...(row.indexAliases ?? [])]) {
+    if (alias === row.slug || aliasMatchesRef(alias, row.path)) continue;
+    if ((row.supersededAliases ?? []).some(s => aliasMatchesRef(s, alias))) {
+      continue;
+    }
+    if (!out.some(seen => aliasMatchesRef(seen, alias))) out.push(alias);
+  }
+  return capAliases(out);
+}
+
+/** What one row brings to {@link settleAliases}. */
+export interface AliasInput {
+  appId: string;
+  path: string;
+  slug: string;
+  /** The manifest's `aliases` (none for a copy: see `duplicateOf`). */
+  manifest: readonly string[];
+  /** What the index knew on its own before this sync. */
+  indexed: readonly string[];
+  /** Names parked as superseded by the previous sync. */
+  superseded: readonly string[];
+  /** Where the index last saw the app, when that is not `path`. */
+  movedFrom?: string;
+}
+
+/**
+ * What each row stores about its old links after a sync (by appId). Pure.
+ *
+ *  - `indexAliases`: what the index keeps on its own — the folder an app
+ *    left since the last sync when its manifest does not say so (a laptop
+ *    `git mv`, a move that kept the name), on top of what it already knew.
+ *  - `supersededAliases`: names the app claims but a NEWER holder took: an
+ *    app that just left a name keeps its link, and an older claim to the
+ *    same name is parked instead of making the link dead (a link two apps
+ *    claim opens neither). A parked name is re-checked on every sync and
+ *    returns once no other app holds it.
+ */
+export function settleAliases(
+  rows: readonly AliasInput[],
+): Map<string, { indexAliases: string[]; supersededAliases: string[] }> {
+  const learned = new Map<string, string[]>();
+  const vacated = new Map<string, string>();
+  for (const row of rows) {
+    const left = row.movedFrom
+      ? aliasForOldPath(row.movedFrom, row.path)
+      : undefined;
+    if (left) vacated.set(row.appId, left);
+    learned.set(
+      row.appId,
+      effectiveAliases({
+        path: row.path,
+        slug: row.slug,
+        indexAliases: [...row.indexed, ...(left ? [left] : [])],
+        // What the manifest says is not the index's to repeat.
+        supersededAliases: row.manifest,
+      }),
+    );
+  }
+  const claimsOf = (row: AliasInput) => [
+    ...row.manifest,
+    ...(learned.get(row.appId) ?? []),
+  ];
+  const holds = (row: AliasInput, name: string) =>
+    aliasMatchesRef(name, row.path) ||
+    claimsOf(row).some(
+      claim =>
+        aliasMatchesRef(claim, name) &&
+        !row.superseded.some(lost => aliasMatchesRef(lost, claim)),
+    );
+  const out = new Map<
+    string,
+    { indexAliases: string[]; supersededAliases: string[] }
+  >();
+  for (const row of rows) {
+    const contested = [
+      ...row.superseded,
+      ...[...vacated].flatMap(([id, name]) => (id === row.appId ? [] : [name])),
+    ];
+    const supersededAliases = claimsOf(row).filter(
+      claim =>
+        contested.some(name => aliasMatchesRef(name, claim)) &&
+        rows.some(other => other.appId !== row.appId && holds(other, claim)),
+    );
+    out.set(row.appId, {
+      indexAliases: learned.get(row.appId) ?? [],
+      supersededAliases,
+    });
+  }
+  return out;
+}
+
 /** Is the commit in this repo's object store? */
 async function commitExists(repoDir: string, sha: string): Promise<boolean> {
   return runGit(["-C", repoDir, "cat-file", "-e", `${sha}^{commit}`])
@@ -611,7 +756,12 @@ const serialized = createSerializer();
 /** Per-process memo: the rows cannot change while main's sha does not. */
 const snapshotCache = new Map<string, AppsIndexSnapshot>();
 
-function rowToIndex(row: Pick<IAppIndexEntry, keyof AppIndexRow>): AppIndexRow {
+function rowToIndex(
+  row: Pick<
+    IAppIndexEntry,
+    keyof AppIndexRow | "indexAliases" | "supersededAliases"
+  >,
+): AppIndexRow {
   return {
     appId: row.appId,
     path: row.path,
@@ -623,6 +773,7 @@ function rowToIndex(row: Pick<IAppIndexEntry, keyof AppIndexRow>): AppIndexRow {
     description: row.description ?? undefined,
     hasManifestId: row.hasManifestId,
     duplicateOf: row.duplicateOf ?? undefined,
+    aliases: effectiveAliases(row),
     schedules: (row.schedules ?? []).map(s => ({
       binding: s.binding,
       cron: s.cron,
@@ -907,6 +1058,9 @@ async function syncNow(
       description: manifest.description,
       hasManifestId: identity.hasManifestId,
       duplicateOf: identity.duplicateOf,
+      // A copy's manifest still lists its SOURCE's old links: it claims
+      // none, or every one of them would have two claimants and open nothing.
+      aliases: identity.duplicateOf ? [] : manifest.aliases,
       schedules: read.schedules.get(app.path) ?? [],
       tables: read.tables.get(app.path) ?? [],
       bindings: [...app.bindingBlobs.keys()].sort(),
@@ -915,6 +1069,32 @@ async function syncNow(
       thumbnail: app.thumbnail,
     };
   });
+
+  // Old links. `row.aliases` holds the manifest's list so far; add what the
+  // index knows on its own and park what a newer holder took (settleAliases).
+  const existingById = new Map(existing.map(row => [row.appId, row]));
+  const projectById = new Map(projectRows.map(p => [p._id.toString(), p]));
+  const stored = new Map(rows.map(row => [row.appId, row.aliases]));
+  const settled = settleAliases(
+    rows.map(row => {
+      const before = existingById.get(row.appId);
+      const lastPath = before?.path ?? projectById.get(row.appId)?.path;
+      return {
+        appId: row.appId,
+        path: row.path,
+        slug: row.slug,
+        manifest: row.aliases,
+        indexed: row.duplicateOf ? [] : (before?.indexAliases ?? []),
+        superseded: before?.supersededAliases ?? [],
+        ...(lastPath && lastPath !== row.path && !row.duplicateOf
+          ? { movedFrom: lastPath }
+          : {}),
+      };
+    }),
+  );
+  for (const row of rows) {
+    row.aliases = effectiveAliases({ ...row, ...settled.get(row.appId) });
+  }
 
   // Rows whose id or path no longer exists go first, so the unique indexes
   // never see a path or id claimed twice mid-write.
@@ -944,6 +1124,10 @@ async function syncNow(
               description: row.description ?? null,
               hasManifestId: row.hasManifestId,
               duplicateOf: row.duplicateOf ?? null,
+              aliases: stored.get(row.appId) ?? [],
+              indexAliases: settled.get(row.appId)?.indexAliases ?? [],
+              supersededAliases:
+                settled.get(row.appId)?.supersededAliases ?? [],
               schedules: row.schedules,
               tables: row.tables,
               bindings: row.bindings,
@@ -983,7 +1167,6 @@ async function syncNow(
 
   // Project rows follow the folder: a move in git relocates the app's state
   // row too, so appRootFor() keeps pointing at the right directory.
-  const projectById = new Map(projectRows.map(p => [p._id.toString(), p]));
   const moves = rows.filter(row => {
     const p = projectById.get(row.appId);
     return (
@@ -1125,30 +1308,69 @@ export function invalidateAppsIndexCache(workspaceId?: string): void {
 
 /**
  * Find an app by whatever a caller has: its id, its repo path (`apps/x/y`,
- * with or without a leading `apps/`), or its slug. A slug that several apps
- * share resolves to the top-level `apps/<slug>` if there is one, otherwise
- * to nothing — an ambiguous name must not silently pick a folder.
+ * with or without a leading `apps/`), its slug, or an old link. The order,
+ * for every reader (routes, tools, the live route):
+ *
+ *  1. the id;
+ *  2. what the app is called TODAY — its path, or its slug (a slug several
+ *     apps share is the top-level `apps/<slug>` if there is one, otherwise
+ *     nothing: an ambiguous name never picks a folder, and never falls
+ *     through to an alias);
+ *  3. an alias, when exactly ONE app claims it. Two apps that both once
+ *     used a name get neither.
+ *
+ * So an alias never shadows a live app, and every ref that resolved before
+ * aliases existed resolves to the same app now.
  */
 export function findAppInSnapshot(
   snapshot: AppsIndexSnapshot,
   ref: string,
 ): AppIndexRow | null {
-  const clean = ref.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+  return findAppInSnapshotVia(snapshot, ref)?.app ?? null;
+}
+
+/**
+ * {@link findAppInSnapshot}, saying HOW the ref matched: `current` (the id,
+ * path or slug the app has today) or `alias` (an old link) — what a link
+ * resolver needs to know to rewrite the link.
+ */
+export function findAppInSnapshotVia(
+  snapshot: AppsIndexSnapshot,
+  ref: string,
+): { app: AppIndexRow; via: "current" | "alias" } | null {
+  // NFC, as every app name is stored: `é` typed as e + U+0301 is `é`.
+  const clean = ref
+    .trim()
+    .normalize("NFC")
+    .replace(/^\/+|\/+$/g, "");
   if (!clean) return null;
+  const apps = snapshot.apps;
+  const current = (app: AppIndexRow | undefined) =>
+    app ? { app, via: "current" as const } : null;
+  const byAlias = () => {
+    const claimants = apps.filter(a =>
+      a.aliases.some(alias => aliasMatchesRef(alias, clean)),
+    );
+    return claimants.length === 1
+      ? { app: claimants[0], via: "alias" as const }
+      : null;
+  };
   if (isAppId(clean)) {
-    const byId = snapshot.apps.find(a => a.appId === clean.toLowerCase());
+    const byId = current(apps.find(a => a.appId === clean.toLowerCase()));
     if (byId) return byId;
   }
   if (clean.includes("/")) {
     return (
-      snapshot.apps.find(a => a.path === clean) ??
-      snapshot.apps.find(a => a.path === `${APPS_DIR}/${clean}`) ??
-      null
+      current(apps.find(a => a.path === clean)) ??
+      current(apps.find(a => a.path === `${APPS_DIR}/${clean}`)) ??
+      byAlias()
     );
   }
-  const matches = snapshot.apps.filter(a => a.slug === clean);
-  if (matches.length === 1) return matches[0];
-  return matches.find(a => a.path === `${APPS_DIR}/${clean}`) ?? null;
+  const matches = apps.filter(a => a.slug === clean);
+  if (matches.length === 1) return current(matches[0]);
+  const topLevel = matches.find(a => a.path === `${APPS_DIR}/${clean}`);
+  if (topLevel) return current(topLevel);
+  return matches.length > 1 ? null : byAlias();
 }
 
 /**
@@ -1161,10 +1383,19 @@ export async function resolveAppRef(
   ref: string,
   options: { fetchOnMiss?: boolean } = {},
 ): Promise<AppIndexRow | null> {
-  let found = findAppInSnapshot(await loadAppsIndex(workspaceId), ref);
+  return (await resolveAppRefVia(workspaceId, ref, options))?.app ?? null;
+}
+
+/** {@link resolveAppRef}, saying whether a current name or an alias matched. */
+export async function resolveAppRefVia(
+  workspaceId: string,
+  ref: string,
+  options: { fetchOnMiss?: boolean } = {},
+): Promise<{ app: AppIndexRow; via: "current" | "alias" } | null> {
+  let found = findAppInSnapshotVia(await loadAppsIndex(workspaceId), ref);
   if (!found && options.fetchOnMiss) {
     await freshenForServe(workspaceId, 0);
-    found = findAppInSnapshot(
+    found = findAppInSnapshotVia(
       await loadAppsIndex(workspaceId, { freshen: false }),
       ref,
     );

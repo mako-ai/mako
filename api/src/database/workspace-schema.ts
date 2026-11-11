@@ -5400,6 +5400,12 @@ export interface IAppIndexEntry extends Document {
    * id instead and the UI offers to stamp a fresh one.
    */
   duplicateOf?: string;
+  /** The manifest's `aliases`: the app's old links, oldest first. */
+  aliases?: string[];
+  /** Old links the index learned itself (a folder moved by `git mv`). */
+  indexAliases?: string[];
+  /** Claimed names another app holds more recently; re-checked per sync. */
+  supersededAliases?: string[];
   /** Scheduled bindings, so the scheduler never opens the repo. */
   schedules: Array<{ binding: string; cron: string; timezone?: string }>;
   /** Tables the app's bindings read (`FROM`/`JOIN`) — search input. */
@@ -5442,6 +5448,9 @@ const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
     description: { type: String },
     hasManifestId: { type: Boolean, required: true, default: false },
     duplicateOf: { type: String },
+    aliases: { type: [String], default: undefined },
+    indexAliases: { type: [String], default: undefined },
+    supersededAliases: { type: [String], default: undefined },
     schedules: {
       type: [
         new Schema(
