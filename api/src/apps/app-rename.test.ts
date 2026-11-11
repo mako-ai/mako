@@ -10,9 +10,10 @@
  *  - the commit is a compare-and-swap on what was read: a save landing in
  *    between is kept, a deleted app is never brought back, and of two
  *    renames racing one is told where the app went;
- *  - what a member with unsaved work in their sandbox sees after someone
- *    else renames the app — MEASURED here, not fixed: carrying drafts across
- *    a rename is the follow-up, and it starts from these facts.
+ *  - a member with unsaved work in their sandbox keeps it when someone
+ *    else renames the app: it follows the app to its new folder
+ *    (box-catch-up.ts; every case is in
+ *    scenarios/app-rename-sandbox.scenarios.test.ts).
  *
  * The race tests run the competing change in the one window that matters:
  * after the rename has read main and decided, before its commit lands.
@@ -600,7 +601,7 @@ describe("a rename racing another change", () => {
   });
 });
 
-describe("MEASURED: a member's sandbox with unsaved work, after someone else renames the app", () => {
+describe("a member's sandbox with unsaved work, after someone else renames the app", () => {
   /** Ana's sandbox: the box's own git, where her unsaved work lives. */
   async function box(report: Awaited<ReturnType<typeof app>>) {
     const handle = await ensureWorktree(report, ANA);
@@ -611,65 +612,54 @@ describe("MEASURED: a member's sandbox with unsaved work, after someone else ren
     return { handle, run };
   }
 
-  it("an unsaved EDIT: the sandbox cannot catch up, so she sees main's files without her edit — and after her next save, only that one file", async () => {
+  it("an unsaved EDIT follows the app: she sees her edit under the new link, and her next save lands beside every other file", async () => {
     const report = await app(REPORT_ID);
     const { handle, run } = await box(report);
     await writeFile(handle, "src/main.tsx", "export const v = 'ana';\n");
-    expect((await readFile(report, "src/main.tsx", ANA)).contents).toContain(
-      "ana",
-    );
 
     await renameProject(
       await app(REPORT_ID),
       { slug: "revenue" },
-      {
-        userId: BEN,
-      },
+      { userId: BEN },
     );
     const renamed = await app(REPORT_ID);
 
-    // What the app shows her now: main's version. Her edit is not in it.
+    // What the app shows her now: her own edit, in the renamed app. (Before
+    // the catch-up carried drafts, git refused the merge over her edit: the
+    // sandbox kept the old folder and she was shown main's file instead.)
     expect((await readFile(renamed, "src/main.tsx", ANA)).contents).toBe(
+      "export const v = 'ana';\n",
+    );
+    // Her sandbox caught up: the app is in its new folder, the edit is
+    // still hers alone (uncommitted), and no old folder is left.
+    expect((await run("git rev-parse HEAD")).out).toBe(await head());
+    expect((await run("test -e report && echo yes || echo no")).out).toBe("no");
+    expect((await run("git status --porcelain")).out).toBe(
+      "M apps/revenue/src/main.tsx",
+    );
+    // Nothing of hers reached main.
+    expect(await git("show", `${MAIN}:apps/revenue/src/main.tsx`)).toBe(
       "export const v = 1;\n",
     );
-    expect((await listFiles(renamed, ANA)).entries.map(e => e.path)).toEqual(
-      expect.arrayContaining(["mako.json", "src/main.tsx"]),
-    );
-    // Why: git refuses the merge over her edit, so the sandbox still holds
-    // the app under its OLD folder, with the edit, and no new folder.
-    await run("git fetch -q origin");
-    expect((await run("git merge --no-edit @{u}")).code).not.toBe(0);
-    expect((await run("cat report/src/main.tsx")).out).toBe(
-      "export const v = 'ana';",
-    );
-    expect((await run("test -e revenue && echo yes || echo no")).out).toBe(
-      "no",
-    );
-    expect((await run("git status --porcelain")).out).toBe(
-      "M apps/report/src/main.tsx",
-    );
-    // Nothing was lost, and nothing reached main.
-    expect(await filesAt("apps/report")).toEqual({});
 
-    // Then she saves a file through the app. It lands in a NEW folder of
-    // her sandbox that holds nothing else — and from then on the app shows
-    // her only that file: every other file of the app reads as missing.
+    // Then she saves a file through the app. It lands in the app's folder,
+    // beside every other file. (Before, it landed in a new folder holding
+    // nothing else, and the app listed only that one file.)
     await writeFile(
       await ensureWorktree(renamed, ANA),
       "src/after.ts",
       "export {};\n",
     );
-    expect((await listFiles(renamed, ANA)).entries.map(e => e.path)).toEqual([
-      "src/after.ts",
-    ]);
-    await expect(readFile(renamed, "src/main.tsx", ANA)).rejects.toThrow();
+    expect(
+      (await listFiles(renamed, ANA)).entries.map(e => e.path).sort(),
+    ).toEqual(["mako.json", "src/after.ts", "src/main.tsx"]);
     expect((await run("git status --porcelain")).out).toBe(
-      "M apps/report/src/main.tsx\n?? apps/revenue/",
+      "M apps/revenue/src/main.tsx\n?? apps/revenue/src/after.ts",
     );
     await getSandboxProvider().destroySession?.(boxCtx(handle).sessionKey);
   });
 
-  it("an unsaved NEW file: the sandbox catches up, and the file is left behind in the old folder", async () => {
+  it("an unsaved NEW file follows the app: it is listed under the new link, and nothing is left in the old folder", async () => {
     const report = await app(REPORT_ID);
     const { handle, run } = await box(report);
     await writeFile(handle, "src/notes.ts", "export const n = 1;\n");
@@ -677,25 +667,22 @@ describe("MEASURED: a member's sandbox with unsaved work, after someone else ren
     await renameProject(
       await app(REPORT_ID),
       { slug: "revenue" },
-      {
-        userId: BEN,
-      },
+      { userId: BEN },
     );
     const renamed = await app(REPORT_ID);
 
-    // The app's file list no longer has her new file…
-    const listed = (await listFiles(renamed, ANA)).entries.map(e => e.path);
-    expect(listed).toContain("src/main.tsx");
-    expect(listed).not.toContain("src/notes.ts");
-    // …because the merge went through and moved the tracked files, while
-    // the untracked one stayed where it was: a stray folder holding it.
-    expect((await run("test -e revenue/src/main.tsx && echo yes")).out).toBe(
-      "yes",
+    // The app's file list has her new file. (Before, the merge moved the
+    // tracked files and left this one behind in a stray old folder.)
+    expect(
+      (await listFiles(renamed, ANA)).entries.map(e => e.path).sort(),
+    ).toEqual(["mako.json", "src/main.tsx", "src/notes.ts"]);
+    expect((await readFile(renamed, "src/notes.ts", ANA)).contents).toBe(
+      "export const n = 1;\n",
     );
-    expect((await run("cat report/src/notes.ts")).out).toBe(
-      "export const n = 1;",
+    expect((await run("test -e report && echo yes || echo no")).out).toBe("no");
+    expect((await run("git status --porcelain")).out).toBe(
+      "?? apps/revenue/src/notes.ts",
     );
-    expect((await run("git status --porcelain")).out).toBe("?? apps/report/");
     await getSandboxProvider().destroySession?.(boxCtx(handle).sessionKey);
   });
 });

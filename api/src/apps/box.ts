@@ -25,9 +25,23 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { appsGitOriginBase, appsGitOriginUrl } from "./config";
-import type { ChangedFile, GrepMatch, TreeEntry } from "./repository.service";
+import {
+  DEFAULT_BRANCH,
+  type ChangedFile,
+  type GrepMatch,
+  type TreeEntry,
+} from "./repository.service";
 import { mintGitToken } from "./git-token.service";
 import { loggers } from "../logging";
+import {
+  PULL_BUSY,
+  PULL_DETACHED,
+  PULL_RENAMED,
+  catchUpAcrossRenames,
+  detachedOutcome,
+  mergeUnlessRenamed,
+  type CatchUpOutcome,
+} from "./box-catch-up";
 
 const logger = loggers.api("apps-box-clone");
 
@@ -1157,6 +1171,12 @@ export async function healBoxOrigin(ctx: SandboxExecContext): Promise<void> {
  * Fast-forwards a clean tree and merges a dirty one, which is git's own rule.
  * A conflict is left in the working copy rather than resolved on the user's
  * behalf: it is a real conflict in a real checkout, and it is fixable there.
+ *
+ * One case is not left to git: main renamed a folder (an app renamed or
+ * moved) that holds uncommitted work. git would refuse the merge over an
+ * edit and leave a new file behind in the old folder, so that work is
+ * carried across the rename (box-catch-up.ts) and its owner is told. The
+ * outcome is returned when that path ran, null otherwise.
  */
 /**
  * Drop uncommitted changes under `workflows/` that upstream now holds
@@ -1176,27 +1196,98 @@ const SETTLE_MERGED_WORKFLOWS = [
   `done`,
 ].join("\n");
 
-export async function boxPull(ctx: SandboxExecContext): Promise<void> {
+export async function boxPull(
+  ctx: SandboxExecContext,
+): Promise<CatchUpOutcome | null> {
   // The merge may legitimately refuse (uncommitted work in the way, or a
   // real conflict) — that is the user's to resolve in their checkout, not
   // ours to force. But refusing SILENTLY cost a debugging session when a
   // stale box kept lacking an app that main had for days: log what git said
   // so "the box is behind and won't catch up" has a trail.
+  const root = boxRoot(ctx);
   const pull = [
     boxGit(ctx, "fetch", "-q", "origin"),
     // Best effort: whatever it could not settle, the merge reports.
-    `{ (cd ${sh(boxRoot(ctx))} && ${SETTLE_MERGED_WORKFLOWS}); true; }`,
-    `${boxGit(ctx, "merge", "--no-edit", "@{u}")}`,
+    `{ (cd ${sh(root)} && ${SETTLE_MERGED_WORKFLOWS}); true; }`,
+    // The merge — unless main renamed files while the box was behind: then
+    // uncommitted work in a renamed folder is carried across (box-catch-up).
+    `(cd ${sh(root)} || exit 1\n${mergeUnlessRenamed(DEFAULT_BRANCH)}\n)`,
   ].join(" && ");
   let result = await boxExec(ctx, pull, { timeoutMs: 180_000 });
   if (result.exitCode !== 0 && isUnreachableOrigin(result.stderr)) {
     await healBoxOrigin(ctx);
     result = await boxExec(ctx, pull, { timeoutMs: 180_000 });
   }
-  if (result.exitCode !== 0) {
+  const notMerged = (said: string) =>
     logger.warn("Apps box pull did not merge", {
       sessionKey: ctx.sessionKey,
-      said: (result.stderr || result.stdout).slice(-400),
+      said: said.slice(-400),
+    });
+  // Another catch-up of this box is carrying drafts right now.
+  if (result.exitCode === PULL_BUSY) return null;
+  if (result.exitCode !== PULL_RENAMED && result.exitCode !== PULL_DETACHED) {
+    if (result.exitCode !== 0) notMerged(result.stderr || result.stdout);
+    return null;
+  }
+  let outcome: CatchUpOutcome | null;
+  try {
+    outcome =
+      result.exitCode === PULL_RENAMED
+        ? await catchUpAcrossRenames(ctx, root)
+        : await detachedOutcome(ctx, root, DEFAULT_BRANCH);
+  } catch (error) {
+    notMerged(error instanceof Error ? error.message : String(error));
+    return null;
+  }
+  if (outcome?.failed) notMerged(outcome.said ?? outcome.failed);
+  if (outcome?.message) await tellBoxOwner(ctx, outcome);
+  return outcome;
+}
+
+/**
+ * Say what a catch-up did with someone's uncommitted work, on the channel
+ * their open tabs already listen to: the box state, fanned out live.
+ */
+async function tellBoxOwner(
+  ctx: SandboxExecContext,
+  outcome: CatchUpOutcome,
+): Promise<void> {
+  const colon = ctx.sessionKey.indexOf(":");
+  if (colon < 0 || !outcome.message) return;
+  logger.info("Apps box catch-up carried uncommitted work", {
+    sessionKey: ctx.sessionKey,
+    moved: outcome.moved.length,
+    carried: outcome.carried.length,
+    conflicted: outcome.conflicted,
+    stranded: outcome.stranded,
+    draftsBranch: outcome.draftsBranch,
+    failed: outcome.failed,
+  });
+  try {
+    // Dynamic import: box-state imports worktree.service, which imports
+    // this module.
+    const { getBoxState, patchBoxState } = await import("./box-state.service");
+    // Said already (a detached box is looked at again on every pull): once.
+    const last = (await getBoxState(ctx.sessionKey))?.notice;
+    if (last?.message === outcome.message) return;
+    await patchBoxState({
+      workspaceId: ctx.sessionKey.slice(0, colon),
+      userId: ctx.sessionKey.slice(colon + 1),
+      patch: {
+        notice: {
+          at: Date.now(),
+          message: outcome.message,
+          ...(outcome.draftsBranch
+            ? { draftsBranch: outcome.draftsBranch }
+            : {}),
+        },
+      },
+      source: "catch-up",
+    });
+  } catch (error) {
+    logger.warn("Apps box catch-up notice not delivered", {
+      sessionKey: ctx.sessionKey,
+      error: error instanceof Error ? error.message : String(error),
     });
   }
 }
