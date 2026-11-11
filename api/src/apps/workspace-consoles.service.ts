@@ -790,6 +790,8 @@ export const consoleCommitHooks: {
   afterRead?: () => Promise<void>;
   /** A relocation has committed and is about to write its row. */
   afterCommit?: () => Promise<void>;
+  /** An index sync has read the tree and the rows and is about to write. */
+  afterSyncRead?: () => Promise<void>;
 } = {};
 
 interface FileAtMain {
@@ -902,6 +904,45 @@ export async function commitConsoleRemoval(input: {
     },
     alreadyFresh: true,
   });
+}
+
+/**
+ * Remove several consoles' files (a folder delete) in one commit, each only
+ * as it is at main when the commit lands — `commitConsoleRemoval`'s rule,
+ * for all of them or none. `absent` lists the paths that hold no file:
+ * nothing is committed then, and the caller decides again.
+ */
+export async function commitConsoleRemovals(input: {
+  workspaceId: string;
+  paths: string[];
+  actorUserId?: string | null;
+  message: string;
+}): Promise<ConsoleCommitResult & { absent: string[] }> {
+  const repoDir = await freshMain(input.workspaceId);
+  const head = await resolveCommit(repoDir, MAIN);
+  const expectBlobs: Record<string, string | null> = {};
+  const absent: string[] = [];
+  for (const path of input.paths) {
+    const file = head ? await consoleFileAt(repoDir, head, path) : null;
+    if (!file) absent.push(path);
+    else {
+      expectBlobs[path] = file.oid;
+      expectBlobs[chartSidecarPath(path)] = file.sidecar?.oid ?? null;
+    }
+  }
+  await consoleCommitHooks.afterRead?.();
+  if (absent.length > 0 || input.paths.length === 0) {
+    return { commitOid: head ?? "", unchanged: true, absent };
+  }
+  const result = await commitConsoleBatch({
+    workspaceId: input.workspaceId,
+    actorUserId: input.actorUserId,
+    mutation: { deletes: Object.keys(expectBlobs) },
+    message: input.message,
+    expectBlobs,
+    alreadyFresh: true,
+  });
+  return { ...result, absent };
 }
 
 /**
@@ -1273,6 +1314,7 @@ async function syncNow(
     if (!r.is_deleted) liveByPath.set(r.path, r);
     else if (r.deletedVia !== "app") deadByPath.set(r.path, r);
   }
+  await consoleCommitHooks.afterSyncRead?.();
   const takenIds = new Set(rows.map(r => r._id.toString()));
   const seenRows = new Set<string>();
   const touched: IndexRow[] = [];
@@ -1410,14 +1452,18 @@ async function syncNow(
       Object.assign(set, scheduleSet.set);
 
       if (row) {
-        await SavedConsole.updateOne(
-          { _id: row._id },
+        // Never onto a row that went to the trash since this sync read
+        // it: the row as read here was live, and writing it back whole
+        // would take the console out of the trash again.
+        const written = await SavedConsole.updateOne(
+          { _id: row._id, deletedVia: { $ne: "app" } },
           {
             $set: set,
             $inc: { version: 1, draftRevision: 1 },
             $unset: { deletedAt: "", deletedVia: "", ...scheduleSet.unset },
           },
         );
+        if (written.matchedCount === 0) continue;
         const fresh = await SavedConsole.findById(row._id);
         if (fresh) touched.push(fresh);
         continue;
