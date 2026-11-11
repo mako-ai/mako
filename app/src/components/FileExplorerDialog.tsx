@@ -18,6 +18,11 @@ import {
   type ConsoleEntry,
 } from "../store/consoleTreeStore";
 import { useWorkspace } from "../contexts/workspace-context";
+import {
+  consoleNamePreview,
+  consolePathPreview,
+  nameFieldHint,
+} from "../lib/console-names";
 
 type DialogMode = "save" | "move" | "new-folder";
 
@@ -146,21 +151,35 @@ export default function FileExplorerDialog({
     [currentWorkspace, myConsolesMap, sharedWithWorkspaceMap],
   );
 
+  // A name is a file name in the workspace repo: the field says what it
+  // will be saved as when that is not what was typed ("Q1: revenue" →
+  // "Q1 - revenue"), or why it cannot be saved — and what is handed on is
+  // the name as it will be saved, so the tab and the tree agree with it.
+  // The name a console already has is not judged again.
+  const nameUnchanged = mode === "move" && consoleName.trim() === itemName;
+  // Saving takes a path too (`Team/report` files it in Team); a move's
+  // name is one name.
+  const consoleHint = nameUnchanged
+    ? null
+    : nameFieldHint(consoleName, mode === "save" ? "path" : "console");
+  const folderHint = nameFieldHint(folderName, "folder");
+
   const handleConfirm = () => {
     if (mode === "save") {
-      if (!consoleName.trim()) return;
-      const existing = findExistingConsole(
-        consoleName.trim(),
-        selectedFolderId,
-      );
+      if (!consoleName.trim() || consoleHint?.error) return;
+      const name = consolePathPreview(consoleName).name;
+      const existing = findExistingConsole(name, selectedFolderId);
       if (existing && !overwriteConfirm) {
         setOverwriteConfirm(true);
         return;
       }
       setOverwriteConfirm(false);
-      onSave?.(consoleName.trim(), selectedFolderId, selectedSection);
+      onSave?.(name, selectedFolderId, selectedSection);
     } else if (mode === "move") {
-      const newName = consoleName.trim();
+      if (consoleHint?.error) return;
+      const newName = nameUnchanged
+        ? ""
+        : consoleNamePreview(consoleName, "console").name;
       const nameChanged = newName && newName !== itemName;
       onMove?.(
         selectedFolderId,
@@ -168,8 +187,11 @@ export default function FileExplorerDialog({
         selectedSection,
       );
     } else if (mode === "new-folder") {
-      if (!folderName.trim()) return;
-      onNewFolder?.(selectedFolderId, folderName.trim());
+      if (!folderName.trim() || folderHint?.error) return;
+      onNewFolder?.(
+        selectedFolderId,
+        consoleNamePreview(folderName, "folder").name,
+      );
     }
   };
 
@@ -215,10 +237,10 @@ export default function FileExplorerDialog({
 
   const confirmDisabled =
     mode === "save"
-      ? !consoleName.trim() || isSaving
+      ? !consoleName.trim() || isSaving || Boolean(consoleHint?.error)
       : mode === "new-folder"
-        ? !folderName.trim()
-        : false;
+        ? !folderName.trim() || Boolean(folderHint?.error)
+        : Boolean(showNameField && consoleHint?.error);
 
   return (
     <Dialog
@@ -265,6 +287,8 @@ export default function FileExplorerDialog({
             onKeyDown={e => {
               if (e.key === "Enter" && consoleName.trim()) handleConfirm();
             }}
+            error={Boolean(consoleHint?.error)}
+            helperText={consoleHint?.text}
             autoComplete="off"
             spellCheck={false}
           />
@@ -281,6 +305,8 @@ export default function FileExplorerDialog({
             onKeyDown={e => {
               if (e.key === "Enter" && folderName.trim()) handleConfirm();
             }}
+            error={Boolean(folderHint?.error)}
+            helperText={folderHint?.text}
             autoComplete="off"
             spellCheck={false}
           />

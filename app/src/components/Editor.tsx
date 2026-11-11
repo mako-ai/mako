@@ -116,6 +116,7 @@ import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
 import { separatorDragRef } from "../lib/iframe-drag-guard";
 import { consoleLeafName } from "../lib/console-name";
+import { parentFolderIdOf } from "../store/lib/tree-helpers";
 import { generateObjectId } from "../utils/objectId";
 import { isTabMounted, useMountedTabs } from "../lib/tab-mount-policy";
 import { computeConsoleStateHash } from "../utils/stateHash";
@@ -437,14 +438,19 @@ function Editor({
   //   "new"           — first-time save of a draft tab (POST with the tab's own id)
   //   "save-as-copy"  — create a brand-new console record (POST with a fresh id),
   //                     leaving the current tab untouched.
-  //   "rename-move"   — relocate an already-saved console (PUT via saveConsole)
-  //                     to a new path; current tab updates to the new path.
+  //   "rename-move"   — rename and/or move an already-saved console (the
+  //                     move service: its file as it is on main, no save);
+  //                     the tab follows the server's answer.
   const [saveDialogMode, setSaveDialogMode] = useState<
     "new" | "save-as-copy" | "rename-move"
   >("new");
   // Id that will be sent to the API. Same as saveDialogTabId for "new" and
   // "rename-move"; a freshly-generated id for "save-as-copy".
   const [saveDialogTargetId, setSaveDialogTargetId] = useState<string | null>(
+    null,
+  );
+  // "rename-move": the folder the console is in, preselected in the dialog.
+  const [renameMoveFolderId, setRenameMoveFolderId] = useState<string | null>(
     null,
   );
 
@@ -1806,74 +1812,6 @@ function Editor({
       const databaseId = sourceTab?.databaseId;
       const databaseName = sourceTab?.databaseName;
 
-      if (mode === "rename-move") {
-        // PUT /consoles/:id — updates the existing console's path.
-        const result = await saveConsole(
-          currentWorkspace.id,
-          targetId,
-          saveDialogContent,
-          savePath,
-          connectionId,
-          databaseName,
-          databaseId,
-          tabChartSpecs[saveDialogTabId] ?? undefined,
-          tabViewModes[saveDialogTabId],
-          undefined,
-          section === "workspace" ? "workspace" : "private",
-        );
-
-        if (result.error === "conflict" && result.conflict) {
-          setPendingSaveData({
-            tabId: targetId,
-            content: saveDialogContent,
-            path: savePath,
-            connectionId,
-            databaseId,
-            databaseName,
-            access: section === "workspace" ? "workspace" : "private",
-          });
-          setConflictData(result.conflict);
-          setConflictDialogOpen(true);
-          setIsSaving(false);
-          return;
-        }
-
-        if (result.success) {
-          updateFilePath(targetId, savePath);
-          updateTitle(targetId, consoleLeafName(savePath));
-          updateAccess(
-            targetId,
-            section === "workspace" ? "workspace" : "private",
-          );
-          updateDirty(targetId, true);
-
-          const newHash = computeConsoleStateHash(
-            saveDialogContent,
-            connectionId,
-            databaseId,
-            databaseName,
-          );
-          updateSavedState(targetId, true, newHash);
-
-          trackEvent("console_renamed", {
-            console_id: targetId,
-            new_path: savePath,
-          });
-
-          setSnackbarMessage(`Renamed to '${savePath}.js'`);
-          setSnackbarOpen(true);
-
-          const { useConsoleTreeStore } =
-            await import("../store/consoleTreeStore");
-          useConsoleTreeStore.getState().refresh(currentWorkspace.id);
-        } else {
-          setErrorMessage(JSON.stringify(result.error, null, 2));
-          setErrorModalOpen(true);
-        }
-
-        return;
-      }
-
       // Both "new" and "save-as-copy" use POST to create a new record.
       const response = await fetch(
         `/api/workspaces/${currentWorkspace.id}/consoles`,
@@ -1973,6 +1911,60 @@ function Editor({
     }
   };
 
+  // "Rename / Move..." confirmed: the service every rename and move goes
+  // through (the explorer's "Move to…" calls the same one). The console's
+  // file is moved as it is on main, in one commit — what is typed in the
+  // editor and not saved yet stays unsaved — and the tab follows the
+  // server's answer: the name as saved, the folder, who sees it.
+  const handleRenameMoveConfirm = async (
+    folderId: string | null,
+    newName?: string,
+    section: "my" | "workspace" = "my",
+  ) => {
+    const targetId = saveDialogTargetId ?? saveDialogTabId;
+    if (!targetId || !currentWorkspace) return;
+    setSaveDialogOpen(false);
+    setIsSaving(true);
+    try {
+      const { useConsoleTreeStore } = await import("../store/consoleTreeStore");
+      const tree = useConsoleTreeStore.getState();
+      const moved = await tree.moveConsole(
+        currentWorkspace.id,
+        targetId,
+        folderId,
+        section === "workspace" ? "workspace" : "private",
+        newName,
+      );
+      if (moved) {
+        updateFilePath(targetId, moved.path);
+        updateTitle(targetId, moved.name);
+        updateAccess(targetId, moved.access);
+        trackEvent("console_renamed", {
+          console_id: targetId,
+          new_path: moved.path,
+        });
+        setSnackbarMessage(`Now at '${moved.path}'`);
+        setSnackbarOpen(true);
+      } else {
+        // Why it was refused, in the server's words (a name already
+        // taken, a change of who sees it that is its owner's to make).
+        const state = useConsoleTreeStore.getState();
+        setErrorMessage(
+          state.actionError[currentWorkspace.id] ??
+            "The console could not be renamed or moved",
+        );
+        state.clearActionError(currentWorkspace.id);
+        setErrorModalOpen(true);
+      }
+    } finally {
+      setIsSaving(false);
+      setSaveDialogTabId(null);
+      setSaveDialogTargetId(null);
+      setSaveDialogMode("new");
+      setSaveDialogContent("");
+    }
+  };
+
   // "Save a Copy..." — POST a brand-new console record with a fresh id; the
   // currently open tab keeps pointing at the original file.
   const handleSaveAsCopy = (tabId: string, contentToSave: string) => {
@@ -2009,11 +2001,20 @@ function Editor({
       setSaveDialogOpen(true);
       return;
     }
-    setSaveDialogMode("rename-move");
-    setSaveDialogTabId(tabId);
-    setSaveDialogTargetId(tabId);
-    setSaveDialogContent(contentToSave);
-    setSaveDialogOpen(true);
+    const workspaceId = currentWorkspace.id;
+    void import("../store/consoleTreeStore").then(({ useConsoleTreeStore }) => {
+      const tree = useConsoleTreeStore.getState();
+      setRenameMoveFolderId(
+        parentFolderIdOf(tree.myItems[workspaceId] ?? [], tabId) ??
+          parentFolderIdOf(tree.workspaceItems[workspaceId] ?? [], tabId) ??
+          null,
+      );
+      setSaveDialogMode("rename-move");
+      setSaveDialogTabId(tabId);
+      setSaveDialogTargetId(tabId);
+      setSaveDialogContent(contentToSave);
+      setSaveDialogOpen(true);
+    });
   };
 
   const handleConflictSaveAsNew = () => {
@@ -3082,8 +3083,19 @@ function Editor({
           setSaveDialogMode("new");
           setSaveDialogContent("");
         }}
-        mode="save"
+        mode={saveDialogMode === "rename-move" ? "move" : "save"}
         onSave={handleSaveDialogConfirm}
+        onMove={handleRenameMoveConfirm}
+        itemName={
+          saveDialogMode === "rename-move" && saveDialogTabId
+            ? consoleLeafName(
+                tabs[saveDialogTabId]?.title || tabs[saveDialogTabId]?.filePath,
+              )
+            : ""
+        }
+        initialFolderId={
+          saveDialogMode === "rename-move" ? renameMoveFolderId : undefined
+        }
         defaultName={(() => {
           if (!saveDialogTabId) return "";
           const tab = tabs[saveDialogTabId];
@@ -3091,9 +3103,6 @@ function Editor({
           if (saveDialogMode === "save-as-copy") {
             const base = tab.filePath || tab.title || "";
             return base ? `${base} (copy)` : "";
-          }
-          if (saveDialogMode === "rename-move") {
-            return tab.filePath || tab.title || "";
           }
           return tab.title || "";
         })()}
