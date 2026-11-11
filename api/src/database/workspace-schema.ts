@@ -225,9 +225,15 @@ export interface IWorkspaceApiKey {
   createdBy: string;
   /**
    * A sandbox run an agent started: it acts as its person but only reads
-   * through connections (connections/proxy.service.ts).
+   * through connections; its writes are recorded under the run, which the
+   * key's name gives (connections/proxy.service.ts).
    */
   agentRun?: boolean;
+  /**
+   * With `agentRun`: the run's connection writes are recorded under the run
+   * instead of refused (started by the agent's tool or an MCP login).
+   */
+  recordWrites?: boolean;
 }
 
 /**
@@ -1550,6 +1556,7 @@ const WorkspaceSchema = new Schema<IWorkspace>(
           required: true,
         },
         agentRun: { type: Boolean },
+        recordWrites: { type: Boolean },
       },
     ],
   },

@@ -31,6 +31,8 @@ export default defineConfig({
       "src/agent-lib/tools/dbt-*.test.ts",
       // Connections: credential types, the proxy, writers on source connections.
       "src/connections/callable.test.ts",
+      // A write an agent's run records: the request whole, credential redacted.
+      "src/connections/describe-request.test.ts",
       "src/connections/google-service-account.test.ts",
       "src/connectors/rate-gate.test.ts",
       "src/routes/source-connection-writers.test.ts",

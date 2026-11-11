@@ -293,8 +293,8 @@ export function isHatchetId(value: string): boolean {
  * Who started a run, kept on it (Hatchet's additional metadata) when it is
  * started: an agent (the agent's tool, an MCP login, an API key), a person
  * in the app, or a trigger (a webhook). A run Hatchet starts on a schedule
- * has none. A run an agent started only reads through connections
- * (connections/proxy.service.ts).
+ * has none. A run an agent started only reads through connections: its
+ * writes are recorded, not sent (connections/proxy.service.ts).
  */
 export type RunStarter = "agent" | "person" | "trigger";
 

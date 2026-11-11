@@ -117,7 +117,7 @@ async function runKeys() {
   const workspace = await Workspace.findById(WS).lean();
   return (workspace?.apiKeys ?? []).filter(k =>
     k.name.startsWith("Workflows sandbox member1 sandbox-"),
-  ) as Array<{ name: string; agentRun?: boolean }>;
+  ) as Array<{ name: string; agentRun?: boolean; recordWrites?: boolean }>;
 }
 
 beforeAll(async () => {
@@ -152,15 +152,20 @@ describe("POST /{name}/run", () => {
   });
 
   it("a sandbox run with an API key or an MCP login gets agentRun", async () => {
-    for (const authType of ["apiKey", "mcpOAuth"]) {
+    // Only an MCP login's run records its writes; a key's (CI) has them
+    // refused, so it fails loudly.
+    for (const [authType, recordWrites] of [
+      ["apiKey", undefined],
+      ["mcpOAuth", true],
+    ] as const) {
       who.authType = authType;
       await Workspace.updateOne({ _id: WS }, { $set: { apiKeys: [] } });
       expect((await run({ sandbox: true })).status).toBe(200);
       const keys = await runKeys();
       expect(
-        keys.map(k => k.agentRun),
+        keys.map(k => [k.agentRun, k.recordWrites]),
         authType,
-      ).toEqual([true]);
+      ).toEqual([[true, recordWrites]]);
     }
   });
 
@@ -174,7 +179,7 @@ describe("POST /{name}/run", () => {
     expect(started.map(s => [s.run.trigger, s.run.startedBy])).toEqual([
       ["ui", "person"],
       ["api", "agent"],
-      ["api", "agent"],
+      ["mcp", "agent"],
     ]);
   });
 });
@@ -193,7 +198,9 @@ describe("the agent's workflows_run tool", () => {
   it("starts a sandbox run whose key says agentRun", async () => {
     const result = await execute({ workflowId: "daily-digest", sandbox: true });
     expect(result.success).toBe(true);
-    expect((await runKeys()).map(k => k.agentRun)).toEqual([true]);
+    expect((await runKeys()).map(k => [k.agentRun, k.recordWrites])).toEqual([
+      [true, true],
+    ]);
   });
 
   it("starts a deployed run as the agent's", async () => {

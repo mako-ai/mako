@@ -87,8 +87,10 @@ switches it on. Like n8n: test, then activate.
    merge the branch.
 7. Run it once by hand on the workers (`workflows_run` without `sandbox`)
    and read it with `workflows_status({ runId, wait: 90 })`. This is the
-   first run with the workflow's own rights: a write a test could do as
-   you fails here if the connection does not list the workflow.
+   first run with the workflow's own rights: a SQL write a test could do
+   as you fails here if the connection does not list the workflow. Its
+   connection calls that write are recorded, not sent, as in a test you
+   started.
 8. Ask the user, then `workflows_triggers` with `active: true`: from then on
    its schedule and webhook start runs by themselves.
 
@@ -196,9 +198,9 @@ connection and which `schema.table` to allow it on. Name the target fully in
 the statement (`INSERT INTO mako_out.labels ...`): a workflow allowed only
 one place must say where it writes, in one statement. Run a write
 with `execute(connection, sql)`, which returns `{ rowCount }`, the rows it
-changed; `query` also runs a write and returns its `RETURNING` rows. A
-test run (laptop or sandbox) writes as the person running it, under their
-own access. A dbt
+changed; `query` also runs a write and returns its `RETURNING` rows. SQL
+in a test run (laptop or sandbox) runs as the person running it, under
+their own access, also when you started the run. A dbt
 job (`call("dbt_run_job", { ... })`) remains the way to rebuild models.
 
 ## Calling a service through a connection
@@ -227,8 +229,28 @@ in a string or comment, is a write. Anything else is a write: it needs "All
 deployed workflows" on that tab's writers list (workflows share one deployed
 identity today, so they are allowed together; a listed writer writes
 anywhere through the connection), and a refused one throws and shows there
-with Allow. Tell the user which connection to allow first. A test run writes
-as the person running it; one an agent started only reads. A step can be retried: look for the record before
+with Allow. Tell the user which connection to allow first.
+
+In a run you start (`workflows_run`, sandbox or not), a connection call
+that writes (`post`, `put`, `patch`, `delete`) is recorded instead of
+sent. Nothing reaches the service; the call answers status 202 with body
+`{ recorded: true, sent: false }`, so `post` and the other methods return
+that body. Code that checks the service's own answer (Slack's `ok`) sees
+no such field, so read the answer with a fallback. SQL is not recorded:
+`execute` and a writing `query` run with the run's rights.
+
+`workflows_status({ runId })` answers `recordedWriteCount` and a page of
+`recordedWrites`: each with its connection, `method`, full `url`,
+`headers` and `body`, every credential value `[redacted]` (a body over
+4000 characters is cut; `full: true` shows it whole). Past one page,
+`recordedWritesNext` is the `recordedFrom` to ask for next. Each step's
+logs end with how many of its writes were recorded. Check a Slack or email
+payload there. To really send, the user starts the run from the app, or a
+schedule or webhook does. A person's own test run writes as that person. A
+run started over the REST API with an API key (CI) has its writes refused,
+not recorded.
+
+A step can be retried: look for the record before
 creating it, or send the service's idempotency header, the same on every
 retry: ``post(path, body, { headers: { "Idempotency-Key": `offer-${id}` } })``.
 
@@ -376,6 +398,7 @@ markdown (`https://docs.hatchet.run/llms/<section>/<page>.md`).
 | `liveSha` is not `targetSha` after a minute, and no `buildError` | The worker is not running. Tell the user.                                       |
 | A run stays `QUEUED`                                             | No worker has that workflow: its build failed. Check `workflows_status`.        |
 | A test run passed, the run on the workers fails on a write       | The test ran with your rights; the workflow is not on the connection's writers. |
+| A connection call answers 202 with `recorded: true`              | You started the run: the write was recorded, not sent. See `recordedWrites`.    |
 | `running: true` after a wait                                     | The run goes on. Call `workflows_status({ runId, wait: 90 })` again.            |
 | The schedule did not fire                                        | The workflow is not active. `workflows_status` shows `active` per workflow.     |
 | Step `FAILED`                                                    | Read that step's `error` and `logs` in `workflows_status({ runId })`.           |

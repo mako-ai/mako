@@ -264,6 +264,11 @@ export type ConnectionResponse<T = unknown> = {
   headers: Record<string, string>;
   /** Parsed JSON when the service answered JSON, else text. */
   body: T;
+  /**
+   * A write from a run an agent started: recorded by Mako, not sent (status
+   * 202). The whole request is in the run's `recordedWrites`.
+   */
+  recorded?: boolean;
 };
 
 /** A service's answer body as an error message shows it: at most 300 characters. */
@@ -296,7 +301,10 @@ export class ConnectionError extends Error {
  * the connection's base URL. GETs (and GraphQL queries, Close searches) are
  * reads, when live reads are on for the connection; anything else is a
  * write and needs "All deployed workflows" on the connection's writers list
- * (a person's own run: that person). A run an agent started only reads.
+ * (a person's own run: that person). A run an agent started does not
+ * write: started by the agent's tool or an MCP login, its writes are
+ * recorded, not sent, and answered 202 with `{ recorded: true, sent: false }`
+ * (the run's `recordedWrites`); started with an API key, they are refused.
  * get/post/put/patch/delete return the body and throw ConnectionError at a
  * status of 400 or more; `request` returns the whole answer whatever its
  * status.
@@ -318,7 +326,7 @@ export function connection(id: string) {
           Authorization: `Bearer ${key}`,
           "Content-Type": "application/json",
           ...(workflow ? { "X-Mako-Workflow": workflow } : {}),
-          // Which run writes: a run an agent started only reads.
+          // Which run writes: a run an agent started records its writes.
           ...(run ? { "X-Mako-Run": run } : {}),
         },
         body: JSON.stringify({ method, path, body, ...options }),
@@ -328,6 +336,7 @@ export function connection(id: string) {
       status?: number;
       headers?: Record<string, string>;
       body?: T;
+      recorded?: boolean;
       error?: string;
     };
     if (!res.ok) {
@@ -341,6 +350,7 @@ export function connection(id: string) {
       status: answer.status ?? 0,
       headers: answer.headers ?? {},
       body: answer.body as T,
+      ...(answer.recorded ? { recorded: true } : {}),
     };
   };
   const send =

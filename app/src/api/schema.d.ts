@@ -5296,7 +5296,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** One run, deployed or sandbox (the caller's own): its steps in order, with status, output, error and logs. `wait` (seconds, at most 90) waits for it to end (`running: true` when it had not); `full` gives a sandbox run whole */
+        /** One run, deployed or sandbox (the caller's own): its steps in order, with status, output, error and logs. `wait` (seconds, at most 90) waits for it to end (`running: true` when it had not); `full` gives a sandbox run whole. A run an agent started also answers the connection writes it recorded instead of sending: `recordedWriteCount` and one page of `recordedWrites` (the next from `recordedFrom`, given as `recordedWritesNext`) */
         get: operations["get_api_workspaces_workspaceId_workflows_runs_id"];
         put?: never;
         post?: never;
@@ -22493,6 +22493,7 @@ export interface operations {
             query?: {
                 wait?: number | null;
                 full?: "true" | "false";
+                recordedFrom?: number | null;
             };
             header?: never;
             path: {

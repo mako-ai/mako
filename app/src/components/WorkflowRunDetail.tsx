@@ -73,6 +73,31 @@ function FailureCard({ steps }: { steps: WorkflowRunStep[] }) {
   );
 }
 
+/** A run an agent started: its connection writes were recorded, not sent. */
+function RecordedCard({ count }: { count?: number }) {
+  if (!count) return null;
+  return (
+    <Box
+      sx={{
+        mx: 1.5,
+        my: 1.5,
+        p: 1.25,
+        border: "1px solid",
+        borderColor: "warning.main",
+        borderRadius: 1,
+      }}
+    >
+      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+        {count} connection {count === 1 ? "write" : "writes"} recorded, not sent
+      </Typography>
+      <Dim>
+        An agent started this run, so nothing it wrote through a connection
+        reached the service. Start the workflow from here to send.
+      </Dim>
+    </Box>
+  );
+}
+
 type ListRow =
   | { kind: "step"; step: WorkflowRunStep; parallel: boolean }
   | { kind: "label"; text: string; key: string }
@@ -442,6 +467,7 @@ export default function WorkflowRunDetail({
       sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
     >
       <FailureCard steps={steps} />
+      <RecordedCard count={run.recordedWriteCount} />
       <Box
         sx={{
           flex: 1,

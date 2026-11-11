@@ -307,29 +307,66 @@ const readDetail = (tenant: WorkspaceTenant, runId: string) => {
   return tenantJson<RunDetail>(tenant, `/api/v1/stable/workflow-runs/${runId}`);
 };
 
-/** Who started each run looked up, by tenant and run: it never changes. */
-const starters = new Map<string, RunStarter>();
-const MAX_STARTERS = 5000;
+/**
+ * Who started a run, and whether its writes are recorded: a run the agent's
+ * tool (trigger "agent") or an MCP login ("mcp") started records them; one
+ * started with an API key ("api": CI, a script) has them refused, so it
+ * fails loudly instead of passing with nothing sent.
+ */
+export type RunOrigin = { starter: RunStarter; recordsWrites: boolean };
+
+/** What a run's detail says that never changes: who, and of which workflow. */
+type KnownRun = RunOrigin & { workflow: string; runningAt: number };
+
+/** Runs looked up, by tenant and run. */
+const known = new Map<string, KnownRun>();
+const MAX_KNOWN = 5000;
+/** How long a run seen running is taken as still running. */
+const RUNNING_FOR_MS = 10_000;
+
+/** The workflow a run detail is of: its steps' `<workflow>:<step>`, else the run's. */
+function workflowOfDetail(detail: RunDetail): string {
+  for (const task of detail.tasks ?? []) {
+    const name =
+      String(task.actionId ?? "").split(":")[0] ||
+      String(task.workflowName ?? "");
+    if (name) return name;
+  }
+  return String(detail.run?.workflowName ?? "");
+}
 
 /**
  * Who started the workspace's run `runId` (hatchet.ts `RunStarter`), or null
  * when Mako cannot tell: no run id, no tenant, a run the tenant does not
- * have, or Hatchet not answering. A run started before Mako kept
- * `startedBy` is an agent's when its trigger was an agent's tool or an API
- * call, as those are now; a run with neither (a schedule) is a trigger's.
+ * have, Hatchet not answering, a run of another workflow than `workflow`,
+ * or a run no longer running. The run is the one the worker names
+ * (X-Mako-Run), and workflow code holds the worker's key: only the run that
+ * is executing this workflow now is taken, never an old scheduled run's id.
+ * A run started before Mako kept `startedBy` is an agent's when its trigger
+ * was an agent's tool or an API call, as those are now; a run with neither
+ * (a schedule) is a trigger's.
  */
 export async function runStartedBy(
   workspaceId: string,
   runId: string | undefined,
-): Promise<RunStarter | null> {
-  if (!runId || !isHatchetId(runId)) return null;
+  workflow: string | undefined,
+): Promise<RunOrigin | null> {
+  if (!runId || !isHatchetId(runId) || !workflow) return null;
   const tenant = await readWorkspaceTenant(workspaceId).catch(() => null);
   if (!tenant) return null;
   const key = `${tenant.tenantId}:${runId}`;
-  const known = starters.get(key);
-  if (known) return known;
+  const seen = known.get(key);
+  if (seen && Date.now() - seen.runningAt < RUNNING_FOR_MS) {
+    return seen.workflow === workflow
+      ? { starter: seen.starter, recordsWrites: seen.recordsWrites }
+      : null;
+  }
   const detail = await readDetail(tenant, runId).catch(() => null);
   if (!detail?.run || idOf(detail.run) !== runId) return null;
+  if (detail.run.status !== "RUNNING") {
+    known.delete(key);
+    return null;
+  }
   const { startedBy, trigger } = metadataOf(detail.run);
   const starter: RunStarter =
     startedBy === "agent" || startedBy === "person" || startedBy === "trigger"
@@ -339,11 +376,20 @@ export async function runStartedBy(
         : trigger === "ui"
           ? "person"
           : "trigger";
-  if (starters.size >= MAX_STARTERS) {
-    starters.delete(starters.keys().next().value as string);
+  const run: KnownRun = {
+    starter,
+    recordsWrites:
+      starter === "agent" && (trigger === "agent" || trigger === "mcp"),
+    workflow: workflowOfDetail(detail),
+    runningAt: Date.now(),
+  };
+  if (!known.has(key) && known.size >= MAX_KNOWN) {
+    known.delete(known.keys().next().value as string);
   }
-  starters.set(key, starter);
-  return starter;
+  known.set(key, run);
+  return run.workflow === workflow
+    ? { starter: run.starter, recordsWrites: run.recordsWrites }
+    : null;
 }
 
 /** One run of the workspace's Hatchet; `full` keeps every log line. */

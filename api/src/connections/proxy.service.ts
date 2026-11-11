@@ -17,7 +17,11 @@
  * only read, also through a run they started: a sandbox run (its key says
  * so) or a deployed run (the run Mako started records it, and the worker
  * names its run with each request, X-Mako-Run; a deployed workflow's write
- * from a run Mako cannot tell is refused). A listed writer writes
+ * from a run Mako cannot tell, or from a run that is not of that workflow
+ * or no longer running, is refused). A write from a run the agent's
+ * tool or an MCP login started is recorded instead (`record`): not sent, answered 202, and kept
+ * whole under the run, credential redacted (workflows/recorded-writes.ts),
+ * so the agent can check what it would have sent. A listed writer writes
  * anywhere through the connection: a `where` stored on a source writer (the
  * list's schema is shared with database connections, where it limits a
  * schema or table) is ignored. Every write, allowed or not, is in the write
@@ -40,14 +44,25 @@ import {
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers } from "../logging";
 import { getRequestContext } from "../logging/context";
-import type { RunStarter } from "../workflows/hatchet";
-import { callableFor, isReadRequest } from "./callable";
+import type { RunOrigin } from "../workflows/runs";
+import {
+  keepRecordedWrite,
+  MAX_RECORDED_PER_RUN,
+  type RecordRun,
+} from "../workflows/recorded-writes";
+import {
+  callableFor,
+  isReadRequest,
+  type CallableConnection,
+} from "./callable";
 import {
   ConnectionRequestError,
+  describeRequest,
   resolveRequest,
   send,
   type ForwardInput,
   type ForwardResult,
+  type ResolvedRequest,
 } from "./forward";
 
 const logger = loggers.connector("proxy");
@@ -67,13 +82,22 @@ export interface ConnectionRequestParams {
    * workflow. A run an agent started only reads; a write from a run Mako
    * cannot tell (null, or not given) is refused.
    */
-  runStarter?: () => Promise<RunStarter | null>;
+  runStarter?: () => Promise<RunOrigin | null>;
+  /**
+   * The run an agent started that the request comes from: a sandbox run on
+   * an agent's key (with `readOnly`), or a deployed run (used only when
+   * `runStarter` says it records writes). Its writes are recorded there
+   * instead of refused, never sent. Without it an agent's write is refused.
+   */
+  record?: RecordRun;
   signal?: AbortSignal;
 }
 
 export interface ConnectionRequestResult extends ForwardResult {
   /** Whether Mako counted the request as a read. */
   read: boolean;
+  /** A write an agent's run made: recorded, not sent. */
+  recorded?: boolean;
 }
 
 /**
@@ -159,6 +183,55 @@ async function recordOutcome(
 }
 
 /**
+ * A write from a run an agent started: in the write log as the agent's
+ * refused attempt (no list can name it), kept whole under the run, and
+ * answered 202 without reaching the service.
+ */
+async function recordInstead(
+  row: ISourceConnection,
+  config: ISourceConnection["config"],
+  callable: CallableConnection,
+  request: ResolvedRequest,
+  workspaceId: string,
+  run: RecordRun,
+  principal: string,
+  where: Record<string, unknown>,
+): Promise<ConnectionRequestResult> {
+  const target = `${request.method} ${request.path}`;
+  await recordProxyWrite(row, `agent:${principal}`, target, false);
+  const kept = await keepRecordedWrite(
+    workspaceId,
+    run,
+    row,
+    describeRequest({ config }, callable, request),
+  );
+  if (kept === "full") {
+    throw new ConnectionRequestError(
+      `This run recorded ${MAX_RECORDED_PER_RUN} writes already; ${target} on ${row.name} was neither sent nor recorded.`,
+      409,
+    );
+  }
+  if (kept === "failed") {
+    throw new ConnectionRequestError(
+      `Mako could not record ${target} on ${row.name}, so it was neither sent nor recorded.`,
+      503,
+    );
+  }
+  logger.info("Recorded a write by a run an agent started", where);
+  return {
+    status: 202,
+    headers: { "content-type": "application/json", "x-mako-recorded": "true" },
+    body: {
+      recorded: true,
+      sent: false,
+      message: `Recorded, not sent: a run an agent starts does not write through connections. ${target} on ${row.name} is in this run's recordedWrites (workflows_status).`,
+    },
+    read: false,
+    recorded: true,
+  };
+}
+
+/**
  * Send one request through a source connection, after the read/write check.
  * Throws ConnectionRequestError for a refusal or a caller mistake.
  */
@@ -235,6 +308,19 @@ export async function connectionRequest(
     logger.info("Connection read", where);
   } else {
     if (params.readOnly) {
+      // A sandbox run an agent started: recorded under the run, not sent.
+      if (params.record && principal) {
+        return recordInstead(
+          row,
+          config,
+          callable,
+          request,
+          params.workspaceId,
+          params.record,
+          principal,
+          where,
+        );
+      }
       // Recorded as the agent's, which no list can name: never offered to allow.
       if (principal) {
         await recordProxyWrite(row, `agent:${principal}`, target, false);
@@ -253,9 +339,22 @@ export async function connectionRequest(
       );
     }
     if (principal.startsWith("workflow:")) {
-      const starter = params.runStarter
+      const origin = params.runStarter
         ? await params.runStarter().catch(() => null)
         : null;
+      const starter = origin?.starter ?? null;
+      if (starter === "agent" && origin?.recordsWrites && params.record) {
+        return recordInstead(
+          row,
+          config,
+          callable,
+          request,
+          params.workspaceId,
+          params.record,
+          principal,
+          where,
+        );
+      }
       if (starter === "agent") {
         // Recorded as the agent's, as an agent's own attempt is.
         await recordProxyWrite(row, `agent:${principal}`, target, false);
@@ -269,7 +368,7 @@ export async function connectionRequest(
         await recordProxyWrite(row, principal, target, false);
         logger.warn("Refused a write by a run Mako could not tell", where);
         throw new ConnectionRequestError(
-          `Mako could not tell which run of ${principal.slice("workflow:".length)} this write comes from, so it was not sent. The worker sends its run with each request (X-Mako-Run); update the workflows runtime, or try again if Hatchet was unreachable.`,
+          `Mako could not tell which run of ${principal.slice("workflow:".length)} this write comes from, so it was not sent. A write must come from a run of this workflow that is running now: the worker sends its run with each request (X-Mako-Run). Update the workflows runtime, or try again if Hatchet was unreachable.`,
           403,
         );
       }

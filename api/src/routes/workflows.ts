@@ -59,7 +59,11 @@ import {
 } from "../workflows/runs";
 import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
 import { readWorkflowCost } from "../workflows/costs";
-import { isSandboxRunId, startSandboxRun } from "../workflows/sandbox";
+import {
+  isSandboxRunId,
+  sandboxRunOfKey,
+  startSandboxRun,
+} from "../workflows/sandbox";
 import { waitForRun } from "../workflows/status";
 import { isWebhookSecret, setTriggers } from "../workflows/webhook";
 
@@ -156,7 +160,7 @@ workflowRoutes.openapi(
     path: "/runs/{id}",
     tags: ["Workflows"],
     summary:
-      "One run, deployed or sandbox (the caller's own): its steps in order, with status, output, error and logs. `wait` (seconds, at most 90) waits for it to end (`running: true` when it had not); `full` gives a sandbox run whole",
+      "One run, deployed or sandbox (the caller's own): its steps in order, with status, output, error and logs. `wait` (seconds, at most 90) waits for it to end (`running: true` when it had not); `full` gives a sandbox run whole. A run an agent started also answers the connection writes it recorded instead of sending: `recordedWriteCount` and one page of `recordedWrites` (the next from `recordedFrom`, given as `recordedWritesNext`)",
     security: AUTH_SECURITY,
     request: {
       params: WorkspaceParam.extend({
@@ -168,16 +172,18 @@ workflowRoutes.openapi(
           .enum(["true", "false"])
           .optional()
           .transform(value => value === "true"),
+        recordedFrom: z.coerce.number().int().min(0).optional(),
       }),
     },
     responses: OPEN_RESPONSES,
   }),
   async c => {
     const { workspaceId, id } = c.req.valid("param");
-    const { wait, full } = c.req.valid("query");
+    const { wait, full, recordedFrom } = c.req.valid("query");
     const { run, done } = await waitForRun(workspaceId, c.get("user")?.id, id, {
       wait,
       full,
+      recordedFrom,
     });
     return c.json(
       { success: true as const, run, ...(done ? {} : { running: true }) },
@@ -346,22 +352,29 @@ workflowRoutes.openapi(
       }
       // The person's own run from the app writes as them; one started with
       // a key or an MCP login may be an agent's, so it only reads through
-      // connections.
+      // connections. An MCP login's run records its writes; a key's (CI, a
+      // script) has them refused, so the run fails loudly.
       const { runId } = await startSandboxRun(
         workspaceId,
         userId,
         name,
         body.input,
-        { byAgent: c.get("authType") !== "session" },
+        {
+          byAgent: c.get("authType") !== "session",
+          recordWrites: c.get("authType") === "mcpOAuth",
+        },
       );
       return c.json({ success: true as const, runId, sandbox: true }, 200);
     }
     // As for a sandbox run: started with a key or an MCP login, it may be
-    // an agent's, so its deployed code only reads through connections.
-    const session = c.get("authType") === "session";
+    // an agent's, so its deployed code only reads through connections. Its
+    // trigger says which: an MCP login's run ("mcp") records its writes, a
+    // key's ("api") has them refused.
+    const auth = c.get("authType");
+    const session = auth === "session";
     const runId = await startRun(await requireTenant(workspaceId), name, {
       input: body?.input,
-      trigger: session ? "ui" : "api",
+      trigger: session ? "ui" : auth === "mcpOAuth" ? "mcp" : "api",
       startedBy: session ? "person" : "agent",
     });
     return c.json({ success: true as const, runId }, 200);
@@ -847,8 +860,9 @@ workflowRuntimeRoutes.post(
 // `connection(id)`): Mako adds the stored credential, which workflow code
 // never sees. A read needs live reads on for the connection; a write needs
 // this workflow ("All deployed workflows") or, on a person's own run, this
-// person on the connection's writers list (connections/proxy.service.ts).
-// The service's status comes back as is.
+// person on the connection's writers list (connections/proxy.service.ts); a
+// run an agent started records its writes instead of sending them (202,
+// `recorded: true`). The service's status comes back as is.
 workflowRuntimeRoutes.post(
   "/connections/:connection/request",
   asWorkerOrPerson(async (c, worker) => {
@@ -868,6 +882,21 @@ workflowRuntimeRoutes.post(
         : undefined;
     // Idempotency-Key, like every caller header, comes in `headers`.
     const headers: Record<string, string> = { ...record(body.headers) };
+    const key = c.get("apiKey") as
+      | {
+          agentRun?: boolean;
+          recordWrites?: boolean;
+          name?: string;
+          createdBy?: unknown;
+        }
+      | undefined;
+    const agentRun = key?.agentRun === true;
+    const sandboxRun =
+      agentRun && key?.recordWrites === true ? sandboxRunOfKey(key) : null;
+    const run = workflowRunOf(c);
+    const deployedRun = run
+      ? { runId: run.runId, ...(run.step ? { step: run.step } : {}) }
+      : undefined;
     try {
       return c.json(
         await connectionRequest({
@@ -886,13 +915,28 @@ workflowRuntimeRoutes.post(
           // their rights. A person's API key keeps the person's write rights
           // whoever holds it, an agent included: Mako cannot tell who uses a
           // key, so a key given to an agent writes as its person.
-          readOnly:
-            c.get("authType") === "mcpOAuth" ||
-            (c.get("apiKey") as { agentRun?: boolean } | undefined)
-              ?.agentRun === true,
-          // A deployed run an agent started reads only too: asked on a write.
+          readOnly: c.get("authType") === "mcpOAuth" || agentRun,
+          // A deployed run an agent started reads only too: asked on a write,
+          // of the run the worker names, which must be running and be a run
+          // of the workflow the request is for.
           runStarter: () =>
-            runStartedBy(worker.workspaceId, workflowRunOf(c)?.runId),
+            runStartedBy(
+              worker.workspaceId,
+              workflowRunOf(c)?.runId,
+              getRequestContext()?.workflow,
+            ),
+          // A run the agent's tool or an MCP login started records its
+          // writes instead: a sandbox run by its key's name, a deployed one
+          // by the run the worker names (only once Hatchet says so). An MCP
+          // login is no run, and a run started with a key (CI) records
+          // nothing: their writes are refused.
+          record: agentRun
+            ? sandboxRun
+              ? { runId: sandboxRun, userId: worker.userId }
+              : undefined
+            : c.get("authType") === "mcpOAuth"
+              ? undefined
+              : deployedRun,
           signal: c.req.raw.signal,
         }),
       );

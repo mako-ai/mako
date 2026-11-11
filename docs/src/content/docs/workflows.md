@@ -101,7 +101,7 @@ await connection("ch_close").post("/task/", { lead_id: "lead_1", text: "Call bac
 - `get`, `post`, `put`, `patch` and `delete` return the body and throw `ConnectionError` at a status of 400 or more (its message includes the start of the service's answer). `request(method, path, body, options)` returns `{ status, headers, body }` whatever the status. Options: `query`, and `headers` such as `Idempotency-Key`.
 - Reads need live reads on in the connection's Access tab.
 - A write needs **All deployed workflows** on the connection's writers list. A person's own run (`mako workflow run`, a sandbox run started from the app) writes as that person instead.
-- A run started by an agent (the in-product agent's tool, an MCP client, or an API key) only reads: its writes are refused and logged as the agent's. Start the workflow from the app, a schedule or a webhook to write.
+- A run started by an agent (the in-product agent's tool, an MCP client, or an API key) does not write through connections. When the agent's tool or an MCP login started it, each connection call that writes is recorded instead, never sent, and logged as the agent's: the call answers `202` with `{ recorded: true, sent: false }`, and the run's status gives `recordedWriteCount` and a page of `recordedWrites` (method, full URL, headers and body, credentials redacted), so an agent can check a Slack or email payload end to end. The run's page in the app says how many writes were recorded. Recorded writes are kept 7 days, at most 200 per run. A run started with an API key (CI, a script) has its connection writes refused, so it fails. SQL writes are not recorded. Start the workflow from the app, a schedule or a webhook to write.
 
 ### Query results
 
