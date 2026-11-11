@@ -24,7 +24,7 @@ A **personal environment** is a per-developer build target so iteration never la
 - **Auto-provisioned** — `POST .../environments/personal` (also triggered from the editor) idempotently creates yours: same connection as the prod-like environment, private schema `dbt_<slug>` (slug = your email local-part, lowercased, `[a-z0-9_]`; name/schema collisions get a numeric suffix).
 - **Claim / release from settings** — each environment row in the project settings drawer has an **Ownership** dropdown (`Shared`, `Personal — only me`, or shows `Personal — another user`), so an existing environment can be claimed as personal or released back to shared.
 - **Rules** (validated on create, update, and GitHub import): at most **one personal environment per user**, and neither the `defaultEnvironment` nor the production (`prodEnvironment`) environment can be personal — both are resolved for other users too, so a private schema there would leak one developer's scratch data into everyone's builds.
-- **Member+, not admin-only** — provisioning your own personal environment only affects your own iteration target. It requires a user session (not an API key). Shared environment config stays admin-gated as usual.
+- **Admin+** — provisioning your personal environment (`POST .../environments/personal`, `dbt_ensure_dev_environment`) needs an admin or owner role since 2026-10-30 (#1184), because builds write to the warehouse. It requires a user session (not an API key). Any member can still save their own default development environment with `PUT .../my-environment`.
 - **Per-user dev preference** — `PUT .../projects/:projectId/my-environment` saves *your* default development environment for the project (the editor/console env pickers persist here; `""` clears back to Auto). Project reads carry it back as `myDevEnvironment`.
 
 ## File IDE
@@ -90,7 +90,7 @@ select a shared development environment. The production environment is refused
 (`403`) even with `--env` — it is only built from `main` by a job — and so is
 another person's personal environment. `--no-defer` disables deferral to
 production; `--full-refresh` applies to `run` and `build` (not `test`). Local runs
-need a `mako login` and at least the member role, because the uploaded project
+need a `mako login` with an admin or owner role, because the uploaded project
 executes with the selected environment's warehouse credentials. See also
 [Working from a local checkout](/mcp-server/#working-from-a-local-checkout).
 
@@ -120,9 +120,10 @@ Every execution produces a **run** record with per-node status, timing, and logs
 
 Transforms access is enforced by a pure policy (`api/src/dbt/rbac.ts`):
 
-- **Reads (GET)** — open to any member, including viewers.
-- **File/run mutations** (edit files, trigger runs, ad-hoc compile/run) — require **member** or above (viewers excluded).
-- **Deployment-config changes** (job create/edit/delete, project create/delete, PR merges) — require **admin** or **owner**. Connecting the workspace's GitHub repo is workspace-level infrastructure now (`/workspaces/:workspaceId/github/*`), not a dbt-specific route.
+- **Reads (GET)** — open to any member, including viewers (GitHub repo/branch discovery needs at least member).
+- **Validation by members** — compile, preview (`dbt show` of an existing model), read-only `/command` runs and `PUT .../my-environment`. For a member these build the project's **tracked branch as committed** — never drafts or another ref. Owners and admins keep building their working tree (checkout + drafts).
+- **Everything else that writes** — editing dbt files, running models/builds, triggering/cancelling/retrying job runs, provisioning environments, local (CLI) runs, and warehouse-writing `/command`s (`run`, `build`, `seed`, `snapshot`, `retry`, `test --store-failures`, refused for members) — requires **admin** or **owner**. The same split applies to the MCP and in-product agent tools: `dbt_parse` / `dbt_compile_model` / `dbt_show` / `dbt_get_run` are member-level; `create_dbt_file` / `edit_dbt_file` / `modify_dbt_file` / `delete_dbt_file`, `dbt_run_model`, `dbt_run_job`, `dbt_cancel_run` and `dbt_ensure_dev_environment` need admin.
+- **Deployment-config changes** (job create/edit/delete, project create/delete, PR merges/edits/closes) — require **admin** or **owner**. Connecting the workspace's GitHub repo is workspace-level infrastructure now (`/workspaces/:workspaceId/github/*`), not a dbt-specific route.
 
 ## Runner security
 
