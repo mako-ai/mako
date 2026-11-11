@@ -124,7 +124,8 @@ export async function slugFilesAt(
  * and the next sync starts a second stream from one of them); deleting it
  * is a no-op that leaves the moved file to come back as a new object. So
  * the slug is read again, and a file that is not there is looked for under
- * the name a rename gave it.
+ * the name a rename gave it. `SlugFileConflictError` when that rename has
+ * not reached this instance's clone yet.
  */
 export async function currentFileOf(
   kind: SlugKind,
@@ -148,7 +149,7 @@ export async function currentFileOf(
       filePath,
     );
     if (blob) return { slug, path: filePath, oid: blobOid(blob) };
-    await settleRenames(kind, {
+    const { ahead } = await settleRenames(kind, {
       workspaceId,
       repoDir,
       head,
@@ -156,6 +157,14 @@ export async function currentFileOf(
       rows: (await kind.model.find(scope).lean()) as SlugRow[],
       mode: "read",
     });
+    if ([...ahead.values()].some(row => String(row._id) === String(id))) {
+      // Renamed on another instance, and this clone does not have the
+      // commit yet. Writing here would put a second file on main; deleting
+      // would leave the moved one to come back as a new object.
+      throw new SlugFileConflictError(
+        `This ${kind.noun} was renamed a moment ago and this server has not received the change yet. Nothing was changed: retry in a few seconds.`,
+      );
+    }
     if ((await slugNow()) === slug) break;
   }
   const slug = await slugNow();

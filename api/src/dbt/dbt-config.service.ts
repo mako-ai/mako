@@ -355,8 +355,15 @@ async function settleJobRenames(
 ): Promise<Awaited<ReturnType<typeof settleRenames>>> {
   const none = { renamed: [], ahead: new Map<string, SlugRow>() };
   const workspaceId = project.workspaceId.toString();
+  // Only a row without its file AND a file without a row can be a move.
   const slugs = new Set(files.map(file => file.slug));
-  if (!rows.some(row => row.slug && !slugs.has(row.slug))) return none;
+  const owned = new Set(rows.map(row => row.slug));
+  if (
+    !rows.some(row => row.slug && !slugs.has(row.slug)) ||
+    !files.some(file => !owned.has(file.slug))
+  ) {
+    return none;
+  }
   const repoDir = await boundRepoDirIfExists(workspaceId);
   const head = at ?? (repoDir && (await resolveCommit(repoDir, MAIN)));
   if (!repoDir || !head) return none;

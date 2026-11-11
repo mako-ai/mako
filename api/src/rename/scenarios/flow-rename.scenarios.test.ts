@@ -748,6 +748,18 @@ describe("another instance, before the mirror has the rename", () => {
     const current = (await Flow.findById(row._id))!;
     expect(await ensureFlowDerivedCache(current)).toBe("ok");
     expect(isFlowMarkedInvalid((await Flow.findById(row._id))!)).toBe(false);
+    // A save or a delete here would write or strand a file: both wait.
+    current.batchSize = 250;
+    expect(await commitFlowFile(current, "owner1")).toMatchObject({
+      ok: false,
+      conflict: true,
+    });
+    expect((await flowsApi(row._id, "DELETE")).status).toBe(409);
+    expect(await pathsAtMain(WS, "flows")).toEqual([
+      "flows/a.yml",
+      "flows/keeper.yml",
+    ]);
+    await expectUntouched(before);
 
     // The push lands; B fetches it on its next sync and is level.
     onInstanceA();

@@ -136,6 +136,18 @@ export function isFlowMarkedInvalid(row: {
   return typeof row.definitionInvalid?.reason === "string";
 }
 
+const FILE_MISSING = "flow file missing at main";
+
+/**
+ * Already looked for and not found: a flow whose file is gone is asked
+ * about on every run, and must not cost a fetch each time.
+ */
+function knownMissing(row: {
+  definitionInvalid?: { reason?: string } | null;
+}): boolean {
+  return row.definitionInvalid?.reason === FILE_MISSING;
+}
+
 /** The row's marker when it is a real one (see isFlowMarkedInvalid). */
 function rowInvalidMarker(
   row: IFlow | null,
@@ -230,8 +242,15 @@ async function settleFlowRenames(
   at?: string,
 ): Promise<Awaited<ReturnType<typeof settleRenames>>> {
   const none = { renamed: [], ahead: new Map<string, SlugRow>() };
+  // Only a row without its file AND a file without a row can be a move.
   const slugs = new Set(defs.map(def => def.slug));
-  if (!rows.some(row => row.slug && !slugs.has(row.slug))) return none;
+  const owned = new Set(rows.map(row => row.slug));
+  if (
+    !rows.some(row => row.slug && !slugs.has(row.slug)) ||
+    !defs.some(def => !owned.has(def.slug))
+  ) {
+    return none;
+  }
   const repoDir = await boundRepoDirIfExists(workspaceId);
   const head =
     at ??
@@ -419,7 +438,7 @@ export async function loadLiveFlowById(
     // Its file is not at this instance's main: deleted, or MOVED by a
     // rename this clone has not fetched (or whose row has not followed).
     // The list settles both; a deleted file is still a 404.
-    await freshenForServe(workspaceId);
+    if (!knownMissing(row)) await freshenForServe(workspaceId);
   }
 
   const live = await loadLiveFlows(workspaceId);
@@ -566,7 +585,7 @@ export async function ensureFlowDerivedCache(
     // Not at THIS instance's main. Before calling the flow broken: another
     // instance may have just created or moved the file (fetch, throttled),
     // and a rename may have moved it ahead of the row or of this clone.
-    if (!settled) {
+    if (!settled && !knownMissing(flow)) {
       await freshenForServe(workspaceId);
       const defs = await listFlowDefinitionsAtMain(workspaceId);
       const rows = await Flow.find({ workspaceId });
@@ -591,7 +610,7 @@ export async function ensureFlowDerivedCache(
       }
     }
     const row = await Flow.findById(flow._id);
-    if (row) await markFlowInvalid(row, "flow file missing at main", path);
+    if (row) await markFlowInvalid(row, FILE_MISSING, path);
     return "missing";
   }
   const sha = blobOid(contents);
