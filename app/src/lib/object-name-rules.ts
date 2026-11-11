@@ -10,7 +10,10 @@
  * points to the same answers.
  */
 import {
+  MAX_APP_TITLE_LENGTH,
+  appNameProblem,
   displayNameError,
+  normalizeAppName,
   normalizeDisplayName,
   renameSlugError,
   type SlugNamedKind,
@@ -36,3 +39,15 @@ export function objectSlugError(
 ): string | null {
   return renameSlugError(kind, raw.trim());
 }
+
+/** Why an app's name (its title), as typed, would be refused — or null. */
+export function appTitleError(raw: string): string | null {
+  return objectNameError(raw, MAX_APP_TITLE_LENGTH);
+}
+
+/** Why an app's link (its folder name), as typed, would be refused — or null. */
+export function appLinkError(raw: string): string | null {
+  return appNameProblem(normalizeAppName(raw), "link");
+}
+
+export { normalizeAppName };

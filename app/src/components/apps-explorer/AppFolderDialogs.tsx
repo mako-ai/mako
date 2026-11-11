@@ -16,23 +16,16 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { isSafeAppSegment } from "@mako/schemas";
 
 /**
- * A name git and a URL are both happy with — the server's `isSafeSegment`
- * rule (app-paths.ts), Unicode letters and digits included, so "Café" is a
- * folder here as it is on main.
+ * A name git and a URL are both happy with — the server's own rule
+ * (`isSafeAppSegment` in @mako/schemas, which app-paths.ts runs too),
+ * Unicode letters and digits included, so "Café" is a folder here as it is
+ * on main.
  */
 export function isValidFolderName(name: string): boolean {
-  const n = name.trim();
-  return (
-    n.length > 0 &&
-    n.length <= 100 &&
-    /^[\p{L}\p{N}][\p{L}\p{N}._ -]*$/u.test(n) &&
-    n !== "." &&
-    n !== ".." &&
-    !n.endsWith(".") &&
-    !n.endsWith(" ")
-  );
+  return isSafeAppSegment(name.trim());
 }
 
 interface FolderNameDialogProps {

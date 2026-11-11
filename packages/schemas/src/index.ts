@@ -60,3 +60,16 @@ export {
   unsafeSlugReason,
   type SlugNamedKind,
 } from "./object-names";
+
+export {
+  APP_LINK_EDITORS_ONLY,
+  APP_LINK_OWNER_ONLY,
+  MAX_APP_SEGMENT_LENGTH,
+  MAX_APP_TITLE_LENGTH,
+  RESERVED_APP_LINKS,
+  appNameProblem,
+  isSafeAppSegment,
+  isWindowsDeviceName,
+  normalizeAppName,
+  type AppNameKind,
+} from "./app-names";

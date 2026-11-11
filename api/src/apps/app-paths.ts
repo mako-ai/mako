@@ -16,6 +16,12 @@
  */
 import { createHash } from "node:crypto";
 import { Types } from "mongoose";
+import {
+  appNameProblem,
+  isSafeAppSegment as isSafeSegment,
+  looksLikeObjectId,
+} from "@mako/schemas";
+import { capAliases } from "../rename/alias-cap";
 import { isHandle } from "./user-handles";
 
 export const APPS_DIR = "apps";
@@ -41,22 +47,16 @@ export interface AppRepoLocation {
   slug: string;
 }
 
-// Unicode letters and digits: `apps/café` is a folder people already have,
-// and dropping it from discovery left it published but unlisted. Slashes,
-// control characters and leading dots stay out.
-const SEGMENT_RE = /^[\p{L}\p{N}][\p{L}\p{N}._ -]*$/u;
-
-/** A folder or app name git and every URL are happy with. */
-export function isSafeSegment(segment: string): boolean {
-  return (
-    SEGMENT_RE.test(segment) &&
-    segment !== "." &&
-    segment !== ".." &&
-    !segment.endsWith(".") &&
-    !segment.endsWith(" ") &&
-    segment.length <= 100
-  );
-}
+// The naming rules live in @mako/schemas (app-names.ts), shared with the
+// app's rename dialog so both refuse the same names in the same words.
+// `isSafeSegment` is what DISCOVERY accepts (a folder pushed from a laptop
+// keeps working); `appNameProblem` is the stricter rule for a name someone
+// is choosing now.
+export {
+  appNameProblem,
+  isSafeAppSegment as isSafeSegment,
+  normalizeAppName,
+} from "@mako/schemas";
 
 /** Root folder of a tree: `apps` or `users/<handle>/apps`. */
 export function appTreeRoot(scope: AppScope, ownerHandle?: string): string {
@@ -101,7 +101,9 @@ export function parseAppRepoPath(path: string): AppRepoLocation | null {
 export function appRepoPath(location: AppRepoLocation): string {
   for (const seg of [...location.folderSegments, location.slug]) {
     if (!isSafeSegment(seg)) {
-      throw new Error(`Invalid folder name: ${JSON.stringify(seg)}`);
+      throw new Error(
+        appNameProblem(seg, "folder") ?? `"${seg}" can't be a folder name.`,
+      );
     }
   }
   return [
@@ -164,7 +166,7 @@ export function derivedAppId(workspaceId: string, key: string): Types.ObjectId {
 
 /** Ids are 24 hex chars so they can be Mongo `_id`s and stay URL-safe. */
 export function isAppId(value: string): boolean {
-  return /^[0-9a-f]{24}$/i.test(value);
+  return looksLikeObjectId(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -176,8 +178,38 @@ export interface AppManifest {
   id?: string;
   title: string;
   description?: string;
+  /**
+   * Previous links of this app — old slugs (`report`) or repo paths
+   * (`apps/Sales/report`) — oldest first: an old link opens the app when
+   * nothing current claims it. A rename appends to it.
+   */
+  aliases: string[];
   /** Raw parse, for callers that need the rest (entry, bindings, …). */
   raw: Record<string, unknown>;
+}
+
+/**
+ * A manifest's `aliases`, cleaned: trimmed strings in NFC with no slash at
+ * either end and no empty, `.` or `..` segment, each once. Anything else is
+ * dropped — a bad alias must never hide the app.
+ */
+export function parseAppAliases(value: unknown): string[] {
+  const aliases: string[] = [];
+  for (const entry of Array.isArray(value) ? value : []) {
+    if (typeof entry !== "string") continue;
+    const clean = entry
+      .trim()
+      .normalize("NFC")
+      .replace(/^\/+|\/+$/g, "");
+    const ok =
+      clean.length > 0 &&
+      clean.length <= 500 &&
+      // eslint-disable-next-line no-control-regex
+      !/[\u0000-\u001f\u007f]/.test(clean) &&
+      clean.split("/").every(seg => seg !== "" && seg !== "." && seg !== "..");
+    if (ok && !aliases.includes(clean)) aliases.push(clean);
+  }
+  return aliases;
 }
 
 /**
@@ -208,7 +240,7 @@ export function parseAppManifest(
     typeof raw.id === "string" && isAppId(raw.id)
       ? raw.id.toLowerCase()
       : undefined;
-  return { id, title, description, raw };
+  return { id, title, description, aliases: parseAppAliases(raw.aliases), raw };
 }
 
 /**
@@ -234,4 +266,72 @@ export function stampManifestId(
   const { id: _old, ...rest } = raw;
   void _old;
   return `${JSON.stringify({ id, ...rest }, null, 2)}\n`;
+}
+
+/** The manifest as an object, or null when it cannot be parsed. */
+function manifestObject(
+  contents: string | null | undefined,
+): Record<string, unknown> | null {
+  try {
+    const parsed = contents ? (JSON.parse(contents) as unknown) : {};
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A manifest after a rename: `title` set (when given) and `addAliases`
+ * appended to its `aliases`, every other key where it was. `currentNames`
+ * (the app's slug and path after the rename) are never listed — an app's
+ * current name is not one of its old ones — and only the newest
+ * `MAX_ALIASES` are kept. Null when the manifest cannot be parsed: a rename
+ * must never write over a file it could not read.
+ */
+export function renameManifest(
+  contents: string | null | undefined,
+  change: {
+    title?: string;
+    addAliases?: readonly string[];
+    currentNames?: readonly string[];
+  },
+): string | null {
+  const raw = manifestObject(contents);
+  if (!raw) return null;
+  const { id, ...rest } = raw;
+  // A manifest that never had a title gets it right after the id, where the
+  // scaffold puts it; one that had it keeps its place.
+  const next: Record<string, unknown> =
+    change.title === undefined || "title" in raw
+      ? { ...raw }
+      : { ...(id === undefined ? {} : { id }), title: change.title, ...rest };
+  if (change.title !== undefined) next.title = change.title;
+  const aliases = capAliases(
+    parseAppAliases([
+      ...parseAppAliases(raw.aliases),
+      ...(change.addAliases ?? []),
+    ]).filter(alias => !(change.currentNames ?? []).includes(alias)),
+  );
+  if (aliases.length > 0) next.aliases = aliases;
+  else delete next.aliases;
+  return `${JSON.stringify(next, null, 2)}\n`;
+}
+
+/**
+ * A manifest without `aliases`: a COPY of an app that is given an id of its
+ * own must not keep claiming the original's old links (a link two apps
+ * claim opens neither). Unchanged when there are none; null when the
+ * manifest cannot be parsed.
+ */
+export function stripManifestAliases(
+  contents: string | null | undefined,
+): string | null {
+  const raw = manifestObject(contents);
+  if (!raw) return null;
+  if (!("aliases" in raw)) return contents ?? null;
+  const { aliases: _gone, ...rest } = raw;
+  void _gone;
+  return `${JSON.stringify(rest, null, 2)}\n`;
 }
