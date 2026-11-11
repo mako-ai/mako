@@ -15,6 +15,7 @@
 import * as yaml from "js-yaml";
 import { loadYaml } from "../utils/yaml";
 
+import { parseAliases } from "../services/flow-config-files";
 import { slugifyName } from "../utils/slugify";
 
 export const DBT_JOBS_DIR = "dbt/jobs";
@@ -22,6 +23,8 @@ export const DBT_ENVIRONMENTS_PATH = "dbt/environments.yml";
 
 export interface DbtJobFile {
   name: string;
+  /** Previous slugs of this job, oldest first (see FlowFile.aliases). */
+  aliases?: string[];
   environment: string;
   commands: string[];
   schedule?: { cron: string; timezone: string } | null;
@@ -52,17 +55,24 @@ export function slugFromJobFilePath(repoRelative: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * What a job runs, as one comparable string (its environment and commands):
+ * the dbt-job counterpart of `flowRenameTarget`.
+ */
+export function jobRenameTarget(job: DbtJobFile): string {
+  return JSON.stringify([job.environment, job.commands]);
+}
+
 /** Stable filename identity for a job, derived once from its display name. */
 export function slugifyJobName(name: string): string {
   return slugifyName(name, { fallback: "job" });
 }
 
 export function serializeJobFile(job: DbtJobFile): string {
-  const doc: Record<string, unknown> = {
-    name: job.name,
-    environment: job.environment,
-    commands: job.commands,
-  };
+  const doc: Record<string, unknown> = { name: job.name };
+  if (job.aliases?.length) doc.aliases = [...job.aliases];
+  doc.environment = job.environment;
+  doc.commands = job.commands;
   if (job.schedule) {
     doc.schedule = {
       cron: job.schedule.cron,
@@ -90,6 +100,8 @@ export function parseJobFile(contents: string): DbtJobFile | null {
     ? doc.commands.filter((c): c is string => typeof c === "string" && !!c)
     : [];
   if (!name || !environment || commands.length === 0) return null;
+  const aliases = parseAliases(doc.aliases);
+  if (aliases === null) return null;
   let schedule: DbtJobFile["schedule"] = null;
   const s = doc.schedule as Record<string, unknown> | undefined;
   if (s && typeof s === "object") {
@@ -101,6 +113,7 @@ export function parseJobFile(contents: string): DbtJobFile | null {
   }
   return {
     name,
+    ...(aliases.length > 0 ? { aliases } : {}),
     environment,
     commands: commands.slice(0, 10),
     schedule,

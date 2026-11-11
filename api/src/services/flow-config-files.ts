@@ -3,8 +3,9 @@
  *
  * - `flows/<slug>.yml` — ONE file per flow. A central registry would be a
  *   merge-conflict magnet; per-file is the recorded doctrine (apps.md §23).
- * - The filename slug is the flow's identity and never moves; `name:`
- *   inside is the editable display name.
+ * - The filename slug is the flow's identity; `name:` inside is the
+ *   editable display name. A rename (api/src/rename) moves the file and
+ *   lists the slug it left under `aliases:`.
  *
  * **What must never appear here** — the Flow schema interleaves runtime
  * state inside definition objects, so the split is per-field, not
@@ -34,6 +35,7 @@ import { loadYaml } from "../utils/yaml";
 // Type-only: the format layer must stay free of runtime imports so it can
 // be exercised without booting the git/mongo stack.
 import type { IFlow } from "../database/workspace-schema";
+import { capAliases } from "../rename/alias-cap";
 import { slugifyName } from "../utils/slugify";
 import { isWebhookFlow } from "./flow-triggers.service";
 
@@ -65,6 +67,12 @@ export interface FlowFileBackfillSchedule extends FlowFileSchedule {
 
 export interface FlowFile {
   name: string;
+  /**
+   * Previous slugs of this flow, oldest first: a rename moves the file and
+   * lists the name it left here, so the old name keeps resolving (and a
+   * pushed move is recognised as a rename rather than a delete + create).
+   */
+  aliases?: string[];
   /**
    * Retired: read from older files (`type: webhook` with no `webhook:`
    * stanza means webhooks on) and written back only for a row that still
@@ -264,6 +272,7 @@ export function serializeFlowFileV1(flow: FlowFile): string {
 
 function renderFlowFile(flow: FlowFile, format: 1 | 2): string {
   const doc: Record<string, unknown> = { name: flow.name };
+  if (flow.aliases?.length) doc.aliases = [...flow.aliases];
   if (format === 1 && flow.type) doc.type = flow.type;
 
   doc.source =
@@ -443,6 +452,47 @@ function backfillScheduleFrom(v: unknown): FlowFileBackfillSchedule | null {
 }
 
 /**
+ * A file's `aliases:` (flows and dbt jobs): absent is none, otherwise a
+ * list of slugs, deduplicated, at most the newest `MAX_ALIASES`. `null` for anything
+ * else: an alias that is not a file name could never resolve, and saying so
+ * beats dropping it.
+ */
+export function parseAliases(raw: unknown): string[] | null {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) return null;
+  if (
+    !raw.every(a => typeof a === "string" && /^[a-z0-9][a-z0-9-]*$/.test(a))
+  ) {
+    return null;
+  }
+  return capAliases([...new Set(raw as string[])]);
+}
+
+/**
+ * What a flow reads from and writes to, as one comparable string: the
+ * source connection and the destination table. Two files with one target
+ * are the same stream or a replacement of it; null when it is unknown.
+ */
+export function flowRenameTarget(file: FlowFile): string | null {
+  const source =
+    file.source.type === "database"
+      ? [file.source.connectionId, file.source.database, file.source.query]
+      : [file.source.connectionId];
+  const table = file.destination.table;
+  if (!source[0] || !file.destination.connectionId) return null;
+  return JSON.stringify([
+    file.source.type,
+    ...source,
+    file.destination.connectionId,
+    file.destination.databaseName,
+    table?.connectionId,
+    table?.database,
+    table?.schema,
+    table?.tableName,
+  ]);
+}
+
+/**
  * Why a file was rejected, for callers that must tell a human (or an agent)
  * what to fix.
  *
@@ -484,6 +534,15 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
     return {
       ok: false,
       reason: `\`type:\` is retired (triggers are \`schedule\`, \`webhook\` and \`backfill_schedule\`); when present it must be "scheduled" or "webhook", not "${type}"`,
+    };
+  }
+
+  const aliases = parseAliases(doc.aliases);
+  if (aliases === null) {
+    return {
+      ok: false,
+      reason:
+        "`aliases:` must be a list of previous file names (lowercase letters, digits and dashes; quote one that reads as a number or a boolean)",
     };
   }
 
@@ -540,6 +599,7 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
 
   const file: FlowFile = {
     name,
+    ...(aliases.length > 0 ? { aliases } : {}),
     type: type === "scheduled" || type === "webhook" ? type : undefined,
     source,
     destination,
@@ -633,8 +693,12 @@ export function flowToFile(flow: IFlow): FlowFile {
         };
 
   const t = flow.tableDestination;
+  const aliases = plain<string[]>(flow.aliases);
   return {
     name: flow.name ?? "",
+    // The row's old names ride along, so a save (which writes the whole
+    // file from the row) keeps the `aliases:` a rename wrote.
+    ...(aliases?.length ? { aliases } : {}),
     type: flow.type,
     source,
     destination: {

@@ -1032,10 +1032,31 @@ export interface IFlow extends Document {
   name?: string;
   /**
    * Filename identity for `flows/<slug>.yml` (RFC #904): minted once from
-   * the name, unique per workspace, NEVER changed by a rename. Absent until
-   * the backfill stamps pre-existing rows.
+   * the name, unique per workspace. Moved only by a rename (api/src/rename),
+   * which re-keys this row in place. Absent until the backfill stamps
+   * pre-existing rows.
    */
   slug?: string;
+  /**
+   * Previous slugs, oldest first (at most 24). An old name resolves to this
+   * row while no row holds it as its current slug. Mirrored in the file's
+   * `aliases:`; recorded here alone for a pushed `git mv` the sync re-keyed.
+   */
+  aliases?: string[];
+  /**
+   * The commit that last moved this flow's file, and when. For ten minutes
+   * (`RENAME_GUARD_MS`) a tree that does not contain the commit is read as
+   * older than the rename: the sync neither tears the row down nor creates
+   * a flow from the old file it still shows.
+   */
+  lastRenameCommit?: string;
+  lastRenameAt?: Date;
+  /**
+   * Blob of the file before that rename. It was on the mirror, so every
+   * instance has it: a pushed `git mv` that won the mirror is paired
+   * against it while `lastRenameCommit` is not in the tree.
+   */
+  renameFromBlobSha?: string;
   /**
    * Blob sha of the definition last mirrored to `flows/<slug>.yml`, so an
    * unchanged definition makes no commit. Runtime bookkeeping, never in the
@@ -2486,6 +2507,11 @@ const FlowSchema = new Schema<IFlow>(
       trim: true,
       match: /^[a-z0-9][a-z0-9-]*$/,
     },
+    // `default: undefined`: a flow never renamed carries no empty array.
+    aliases: { type: [String], default: undefined },
+    lastRenameCommit: { type: String },
+    lastRenameAt: { type: Date },
+    renameFromBlobSha: { type: String },
     // Change detection for the git write-through (RFC #904).
     sourceBlobSha: {
       type: String,
@@ -2820,6 +2846,8 @@ FlowSchema.index({ workspaceId: 1, "schedule.enabled": 1 });
 // One file per slug per workspace. Sparse so rows awaiting the backfill
 // (no slug yet) do not collide with each other on null.
 FlowSchema.index({ workspaceId: 1, slug: 1 }, { unique: true, sparse: true });
+// Old-name lookups. Not unique: an alias two rows claim resolves to neither.
+FlowSchema.index({ workspaceId: 1, aliases: 1 }, { sparse: true });
 FlowSchema.index({ workspaceId: 1, sourceType: 1 });
 FlowSchema.index({ dataSourceId: 1 }, { sparse: true }); // Sparse since not required for database sources
 FlowSchema.index({ "databaseSource.connectionId": 1 }, { sparse: true });
@@ -4142,6 +4170,11 @@ export interface IDbtJob extends Document {
   name: string;
   /** Filename identity in dbt/jobs/<slug>.yml (apps.md §23). */
   slug?: string;
+  /** Previous slugs and the rename guard: see the same fields on IFlow. */
+  aliases?: string[];
+  lastRenameCommit?: string;
+  lastRenameAt?: Date;
+  renameFromBlobSha?: string;
   sourceBlobSha?: string;
   /** Set when `dbt/jobs/<slug>.yml` is invalid; schedule is disabled. */
   definitionInvalid?: {
@@ -4189,6 +4222,10 @@ const DbtJobSchema = new Schema<IDbtJob>(
     },
     name: { type: String, required: true, trim: true },
     slug: { type: String },
+    aliases: { type: [String], default: undefined },
+    lastRenameCommit: { type: String },
+    lastRenameAt: { type: Date },
+    renameFromBlobSha: { type: String },
     sourceBlobSha: { type: String },
     definitionInvalid: {
       reason: { type: String },
@@ -4223,6 +4260,7 @@ DbtJobSchema.index(
   { unique: true, partialFilterExpression: { slug: { $type: "string" } } },
 );
 DbtJobSchema.index({ "scheduledRun.nextAt": 1, enabled: 1 }, { sparse: true });
+DbtJobSchema.index({ projectId: 1, aliases: 1 }, { sparse: true });
 
 export const DbtJob = mongoose.model<IDbtJob>("DbtJob", DbtJobSchema);
 
@@ -5817,4 +5855,37 @@ WorkspaceUserHandleSchema.index(
 export const WorkspaceUserHandle = mongoose.model<IWorkspaceUserHandle>(
   "WorkspaceUserHandle",
   WorkspaceUserHandleSchema,
+);
+
+/**
+ * The id of a deleted flow or dbt job. A row created from a file takes an
+ * id derived from the file name, so a file pushed at a deleted object's
+ * name would be given the deleted id; ids listed here are skipped
+ * (api/src/rename/slug-files.ts `freeDerivedId`).
+ */
+export interface IRetiredObjectId extends Document {
+  workspaceId: Types.ObjectId;
+  kind: "flow" | "dbt_job";
+  objectId: Types.ObjectId;
+  retiredAt: Date;
+}
+
+const RetiredObjectIdSchema = new Schema<IRetiredObjectId>(
+  {
+    workspaceId: { type: Schema.Types.ObjectId, required: true },
+    kind: { type: String, enum: ["flow", "dbt_job"], required: true },
+    objectId: { type: Schema.Types.ObjectId, required: true },
+    retiredAt: { type: Date, required: true },
+  },
+  { collection: "retired_object_ids" },
+);
+
+RetiredObjectIdSchema.index(
+  { workspaceId: 1, kind: 1, objectId: 1 },
+  { unique: true },
+);
+
+export const RetiredObjectId = mongoose.model<IRetiredObjectId>(
+  "RetiredObjectId",
+  RetiredObjectIdSchema,
 );
