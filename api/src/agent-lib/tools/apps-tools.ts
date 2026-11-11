@@ -1455,7 +1455,7 @@ function buildTools(
 
     app_move_app: tool({
       description:
-        "File an app in another folder of the workspace repo, or rename its folder — one commit on main moving the directory (`git mv`). The app keeps its id, so its deployment, sharing, env vars and everyone's favourites follow it and nothing is rebuilt. Workspace folders need an editing role; `users/<handle>/apps/…` is that person's own tree. Moving a personal app into apps/… shares it with the whole workspace: do it only when the user asks to share.",
+        "File an app in another folder of the workspace repo, or rename its folder — one commit on main moving the directory (`git mv`). The app keeps its id, so its deployment, sharing, env vars and everyone's favourites follow it and nothing is rebuilt. Workspace folders need an editing role; `users/<handle>/apps/…` is that person's own tree. Moving a personal app into apps/… shares it with the whole workspace: do it only when the user asks to share. An old path or folder name keeps resolving to the app. To change the display name (title), use rename_object.",
       inputSchema: z.object({
         appId: z.string(),
         folder: z
@@ -1480,6 +1480,7 @@ function buildTools(
             userId,
             await memberRole(),
             await loadOwnerDirectory(workspaceId, { forUserId: userId }),
+            loaded.project,
           );
           if (denied) return { success: false, error: denied };
           const moved = await moveProject(
