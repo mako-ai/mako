@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-11-03T13:30:46.552Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap button \"Open Console\"",
+        "target": {
+          "role": "button",
+          "name": "Open Console"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap combobox \"Select connection\"",
+        "target": {
+          "role": "combobox",
+          "name": "Select connection",
+          "placeholder": "Select connection"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap option \"postgresql Chinook Music Store\"",
+        "target": {
+          "role": "option",
+          "name": "postgresql Chinook Music Store"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::08%20execute%20SQL%20and%20inspect%20results",
+      "targetId": "chromium",
+      "instructionDigest": "430f834dbc93275cd59d1f842bf0050c5684582d480a1b6314814195bc66435b"
+    },
+    "summary": "Opened a new SQL Console and selected the Chinook Music Store connection. The console now shows “Chinook Music Store” as its selected connection.",
+    "startPath": "/settings",
+    "endPath": "/c/6ae9e1fdd5f5e38d95f5e95b",
+    "endAnchors": [
+      {
+        "role": "image",
+        "name": "db icon"
+      },
+      {
+        "name": "New Console"
+      },
+      {
+        "role": "button",
+        "name": "Close New Console"
+      },
+      {
+        "role": "button",
+        "name": "Unsaved console"
+      },
+      {
+        "role": "button",
+        "name": "​ Run (⌘/Ctrl+Enter)",
+        "text": "Run (⌘/Ctrl+Enter)"
+      },
+      {
+        "role": "button",
+        "name": "​ Schedule",
+        "text": "Schedule"
+      },
+      {
+        "role": "image",
+        "name": "postgresql"
+      },
+      {
+        "role": "combobox",
+        "name": "Select connection",
+        "placeholder": "Select connection"
+      }
+    ],
+    "endWaitMs": 11777
+  }
+}

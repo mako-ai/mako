@@ -10,6 +10,16 @@
  * unset and rely on unauthenticated access to public repos.
  */
 
+/**
+ * Overridable for local development / testing against a GitHub API emulator
+ * (see api/src/dbt/test-support/fake-github-server.mjs and
+ * tests/e2e/fake-services.ts). Real deployments leave this unset. Read lazily
+ * so dotenv (loaded in index.ts) has run before the first request.
+ */
+export function getGitHubApiBaseUrl(): string {
+  return process.env.GITHUB_API_BASE_URL ?? "https://api.github.com";
+}
+
 export function isGitHubAppConfigured(): boolean {
   return Boolean(
     process.env.GITHUB_APP_ID && process.env.GITHUB_APP_PRIVATE_KEY,
