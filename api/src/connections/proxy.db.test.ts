@@ -47,12 +47,20 @@ import { connectorRegistry } from "../connectors/registry";
 import { createSourceConnection } from "../connectors/source-connection-create.service";
 import { connectionRequest } from "./proxy.service";
 import { setKey } from "../workflows/on-push";
-import { type RunDetail, workflowOfRunDetail } from "../workflows/runs";
+import {
+  type RunDetail,
+  isRunExecuting,
+  setFirstReadRetryForTests,
+  workflowOfRunDetail,
+} from "../workflows/runs";
 import capturedRun from "./fixtures/hatchet-workflow-run.json";
+import capturedOnFailure from "./fixtures/hatchet-workflow-run-on-failure.json";
 
 /**
- * A real `GET /api/v1/stable/workflow-runs/{id}` answer, captured on the
- * preview stack (see the fixture's README), and the workflow it is a run of.
+ * Real `GET /api/v1/stable/workflow-runs/{id}` answers, captured on the
+ * preview stack (fixtures/README.md): a scheduled run while its first step
+ * runs, and the same run while its onFailure task runs. And the workflow
+ * they are runs of.
  */
 const CAPTURED_RUN = capturedRun as unknown as {
   run: { metadata: { id: string } };
@@ -72,6 +80,8 @@ const AGENT_RUN = "1f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 const OLD_API_RUN = "2f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 const SCHEDULED_RUN = "3f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 const UNKNOWN_RUN = "4f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+/** A run Hatchet does not answer at first, as right after it starts. */
+const LATE_RUN = "af6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 /** A run of other-flow, by a person (the app). */
 const OTHER_RUN = "5f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 /** A scheduled run that ended long ago: its id must lend no write. */
@@ -144,6 +154,11 @@ const RUNS: Record<string, FakeRun> = {
     workflow: "fr-offer-to-cash",
     status: "RUNNING",
   },
+  [LATE_RUN]: {
+    metadata: { trigger: "schedule", startedBy: "trigger" },
+    workflow: "fr-offer-to-cash",
+    status: "RUNNING",
+  },
 };
 
 type Connection = {
@@ -211,6 +226,9 @@ async function main() {
   const hatchetAsked: string[] = [];
   /** Hatchet answers every read with a 503 while set. */
   let hatchetDown = false;
+  /** How many reads of LATE_RUN Hatchet answers 404 before it knows it. */
+  let lateReads = 0;
+  setFirstReadRetryForTests([0, 0, 0]);
   globalThis.fetch = (async (
     input: string | URL | Request,
     init?: RequestInit,
@@ -228,6 +246,9 @@ async function main() {
     hatchetAsked.push(id);
     if (hatchetDown) {
       return Response.json({ message: "unavailable" }, { status: 503 });
+    }
+    if (id === LATE_RUN && lateReads-- > 0) {
+      return Response.json({ message: "not found" }, { status: 404 });
     }
     if (id === CAPTURED_RUN.run.metadata.id) return Response.json(CAPTURED_RUN);
     const run = RUNS[id];
@@ -558,6 +579,26 @@ async function main() {
       workflowOfRunDetail(CAPTURED_RUN as RunDetail),
       CAPTURED_WORKFLOW.toLowerCase(),
     );
+    // While the onFailure task runs, Hatchet still shows the run RUNNING and
+    // the failed step FAILED; the run is executing either way.
+    const onFailure = capturedOnFailure as unknown as RunDetail;
+    assert.equal(workflowOfRunDetail(onFailure), "runbindingproof");
+    assert.equal(isRunExecuting(onFailure), true);
+
+    // A run's first write is not refused because Hatchet does not know the
+    // run yet (it can lag a run it just started): it is read again.
+    lateReads = 2;
+    const askedBeforeLate = hatchetAsked.length;
+    assert.equal(await write(LATE_RUN), "ok");
+    assert.deepEqual(hatchetAsked.slice(askedBeforeLate), [
+      LATE_RUN,
+      LATE_RUN,
+      LATE_RUN,
+    ]);
+    // ...but not for ever: a run Hatchet never answers lends nothing.
+    const askedBeforeUnknown = hatchetAsked.length;
+    assert.match(await write(UNKNOWN_RUN), notTold);
+    assert.equal(hatchetAsked.length - askedBeforeUnknown, 4, "read 4 times");
 
     // Who started a run and its workflow are kept; whether it still executes
     // is asked again after a while, and a Hatchet that does not answer then

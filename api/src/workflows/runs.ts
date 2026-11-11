@@ -325,6 +325,14 @@ const ACTIVE_FOR_MS = 15_000;
  * of a run in flight.
  */
 const ACTIVE_WHEN_UNREADABLE_MS = 30 * 60_000;
+/**
+ * Waits between reads of a run Mako has not seen yet, when Hatchet does not
+ * answer it. Hatchet can take a moment to answer a run it just started (seen
+ * on the preview stack: a write in a run's first 200ms refused, the same
+ * run's write 250ms later sent), so a run's first write is not refused for
+ * asking too early. A run that never answers is refused after them.
+ */
+let firstReadRetryMs = [250, 500, 1000];
 
 /** A run or a task status that is waiting for, or doing, work. */
 const ACTIVE_STATUSES = new Set(["QUEUED", "PENDING", "RUNNING"]);
@@ -379,6 +387,25 @@ export function forgetKnownRunsForTests() {
   knownRuns.clear();
 }
 
+/** Set the waits before reading a run not seen yet again (tests). */
+export function setFirstReadRetryForTests(waits: number[]) {
+  firstReadRetryMs = waits;
+}
+
+/** The run's detail, read again a few times when the run is new to Mako. */
+async function readNewRunDetail(
+  tenant: WorkspaceTenant,
+  runId: string,
+): Promise<RunDetail | null> {
+  for (let attempt = 0; ; attempt++) {
+    const detail = await readDetail(tenant, runId).catch(() => null);
+    if (detail?.run && idOf(detail.run) === runId) return detail;
+    const wait = firstReadRetryMs[attempt];
+    if (wait === undefined) return null;
+    await new Promise(resolve => setTimeout(resolve, wait));
+  }
+}
+
 /**
  * Who started the workspace's run `runId` (hatchet.ts `RunStarter`), when
  * that run is a run of `workflow` and is executing now; else null, as when
@@ -393,7 +420,8 @@ export function forgetKnownRunsForTests() {
  *
  * Who started a run and its workflow never change: they are kept. Whether
  * it executes is asked again after ACTIVE_FOR_MS. When Hatchet does not
- * answer, a run seen executing within ACTIVE_WHEN_UNREADABLE_MS still is.
+ * answer, a run seen executing within ACTIVE_WHEN_UNREADABLE_MS still is,
+ * and a run not seen yet is read again a few times (firstReadRetryMs).
  * A run started before Mako kept `startedBy` is an agent's when its trigger
  * was an agent's tool or an API call, as those are now; a run with neither
  * (a schedule) is a trigger's.
@@ -414,7 +442,9 @@ export async function runStartedBy(
   if (known?.activeAt !== undefined && now - known.activeAt < ACTIVE_FOR_MS) {
     return known.starter;
   }
-  const detail = await readDetail(tenant, runId).catch(() => null);
+  const detail = known
+    ? await readDetail(tenant, runId).catch(() => null)
+    : await readNewRunDetail(tenant, runId);
   if (!detail?.run || idOf(detail.run) !== runId) {
     // Hatchet did not answer: a run seen executing a short while ago is
     // taken as still executing.
