@@ -6,6 +6,7 @@
  * surface, instead of a 404 that reads as "your object is gone".
  */
 import { connectionRenameHandler } from "./handlers/connection";
+import { connectorRenameHandler } from "./handlers/connector";
 import { normalizeDisplayName } from "./title-rules";
 import {
   RENAME_KINDS,
@@ -20,6 +21,7 @@ import {
 } from "./types";
 
 export const RENAME_HANDLERS: Partial<Record<RenameKind, RenameHandler>> = {
+  connector: connectorRenameHandler,
   connection: connectionRenameHandler,
 };
 

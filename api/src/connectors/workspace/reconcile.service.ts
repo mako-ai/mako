@@ -94,14 +94,18 @@ export function syncConnectorsFromRepo(
     return existing;
   }
   const work = (async () => {
-    for (;;) {
+    for (let staleRows = 0; ;) {
       try {
         const result = await reconcile(workspaceId, actorUserId);
         if (!rerunRequested.delete(workspaceId)) return result;
       } catch (error) {
         // A failed old pass must not consume a newer push. Retry when one is
         // pending; otherwise preserve the original failure for the caller.
-        if (!rerunRequested.delete(workspaceId)) throw error;
+        // A definition another writer saved during the pass (a rename made
+        // in Mako) is not a failure: read the rows again.
+        const stale =
+          (error as Error | null)?.name === "VersionError" && staleRows++ < 2;
+        if (!rerunRequested.delete(workspaceId) && !stale) throw error;
       }
     }
   })();
