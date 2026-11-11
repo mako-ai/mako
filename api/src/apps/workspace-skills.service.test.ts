@@ -33,6 +33,7 @@ import {
   findSkill,
   findSkillById,
   invalidateSkillCatalog,
+  resolveSkill,
   loadSkillCatalog,
   skillId,
 } from "./workspace-skills.service";
@@ -187,6 +188,44 @@ describe("the catalog is the files at main", () => {
       ["broken", skillFilePath("broken")],
     ]);
     expect(catalog.invalid.every(i => i.reason.length > 0)).toBe(true);
+  });
+
+  it("hyphenated folders are skills; `-` and `_` twins both load by exact name, never by a guess", async () => {
+    await laptopCommit({
+      "skills/app-ui-conventions/SKILL.md": serializeSkillFile(
+        skill("app-ui-conventions"),
+      ),
+      "skills/foo-bar/SKILL.md": serializeSkillFile(skill("foo-bar", "hyphen")),
+      "skills/foo_bar/SKILL.md": serializeSkillFile(
+        skill("foo_bar", "underscore"),
+      ),
+      "skills/-lead/SKILL.md": serializeSkillFile(skill("lead")),
+    });
+    const catalog = await loadSkillCatalog(WS);
+    expect(catalog.skills.map(s => s.name)).toEqual([
+      "app-ui-conventions",
+      "foo-bar",
+      "foo_bar",
+    ]);
+    expect(catalog.invalid.map(i => i.name)).toEqual(["-lead"]);
+
+    expect((await resolveSkill(WS, "app_ui_conventions"))?.name).toBe(
+      "app-ui-conventions",
+    );
+    expect((await resolveSkill(WS, "foo-bar"))?.body).toBe("hyphen");
+    expect((await resolveSkill(WS, "foo_bar"))?.body).toBe("underscore");
+    // Two candidates and no exact match: nothing, rather than a coin flip.
+    expect(await resolveSkill(WS, "FOO-BAR")).toBeNull();
+    expect(await findSkill(WS, "app_ui_conventions")).toBeNull();
+  });
+
+  it("skill paths stay one safe segment", () => {
+    expect(skillFilePath("app-ui-conventions")).toBe(
+      "skills/app-ui-conventions/SKILL.md",
+    );
+    for (const bad of ["../x", "a/b", "a.b", "-x", "", "Upper"]) {
+      expect(() => skillFilePath(bad), bad).toThrow(/Invalid skill name/);
+    }
   });
 
   it("rejects oversized files and bodies before retaining them in the catalog", async () => {

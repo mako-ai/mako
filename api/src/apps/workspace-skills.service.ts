@@ -39,6 +39,8 @@ import {
   SKILLS_README_PATH,
   SKILL_FILE_GLOB,
   SKILL_NAME_RE,
+  SKILL_NAME_RULE,
+  canonicalSkillName,
   MAX_SKILL_BODY_CHARS,
   MAX_SKILL_FILE_BYTES,
   MAX_WORKSPACE_SKILLS,
@@ -142,7 +144,7 @@ export async function loadSkillCatalog(
       invalid.push({
         name: path.split("/")[1] ?? path,
         path,
-        reason: "folder name must be lowercase snake_case (a-z, 0-9, _)",
+        reason: `folder name must be ${SKILL_NAME_RULE}`,
       });
       continue;
     }
@@ -205,6 +207,7 @@ export function invalidateSkillCatalog(workspaceId: string): void {
   catalogCache.delete(workspaceId);
 }
 
+/** The skill whose folder is exactly `name`. Writes key on this. */
 export async function findSkill(
   workspaceId: string,
   name: string,
@@ -212,6 +215,36 @@ export async function findSkill(
   const trimmed = name.trim();
   const catalog = await loadSkillCatalog(workspaceId);
   return catalog.skills.find(skill => skill.name === trimmed) ?? null;
+}
+
+/**
+ * The skills whose name equals `name` once `-` and `_` are folded together
+ * (see canonicalSkillName), exact spelling included.
+ */
+export async function findSkillTwins(
+  workspaceId: string,
+  name: string,
+): Promise<WorkspaceSkill[]> {
+  const canonical = canonicalSkillName(name);
+  const catalog = await loadSkillCatalog(workspaceId);
+  return catalog.skills.filter(
+    skill => canonicalSkillName(skill.name) === canonical,
+  );
+}
+
+/**
+ * Reads: the exact folder first; else the one skill that matches with `-` and
+ * `_` folded together. Two such skills (`foo-bar` and `foo_bar`) and no exact
+ * match resolve to nothing: never a guess between two playbooks.
+ */
+export async function resolveSkill(
+  workspaceId: string,
+  name: string,
+): Promise<WorkspaceSkill | null> {
+  const exact = await findSkill(workspaceId, name);
+  if (exact) return exact;
+  const twins = await findSkillTwins(workspaceId, name);
+  return twins.length === 1 ? twins[0] : null;
 }
 
 export async function findSkillById(

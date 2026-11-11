@@ -31,13 +31,15 @@ Skills survive across sessions and are shared across all members of the workspac
 
 `save_skill` accepts:
 
-- `name` (required) -- lowercase `snake_case`, max 80 chars, unique within the workspace
+- `name` (required) -- the folder name: lowercase letters, digits, `-` and `_`, starting with a letter or digit (`revenue-walkthrough`, `mrr_fr`), max 80 chars, unique within the workspace. `foo-bar` and `foo_bar` count as the same name: a save refuses the second spelling, and `load_skill` finds a skill by either one
 - `loadWhen` (required) -- one trigger line, max 300 chars
 - `body` (required) -- the playbook content, max 20,000 chars
 - `entities` (optional) -- author-declared search keywords such as table names, concepts, or country codes
 - `pinned` (optional) -- include a budgeted body excerpt in every prompt; reserve this for a few always-needed skills
 
 New skills proposed by the agent are committed with `suppressed: true`. Activate them from Settings → Skills or by editing the file in git.
+
+A file under `skills/` that does not load (a bad folder name, missing frontmatter `description`, an oversized body) stays out of the index. Settings → Skills lists it as "invalid file" with the reason, and `list_skills` returns it under `invalid`.
 
 ## What Good Skills Look Like
 
