@@ -111,6 +111,10 @@ import {
   FolderNameDialog,
   isValidFolderName,
 } from "./apps-explorer/AppFolderDialogs";
+import { AppRenameDialog } from "./apps-explorer/AppRenameDialog";
+import { APP_LINK_EDITORS_ONLY, APP_LINK_OWNER_ONLY } from "@mako/schemas";
+import { renameObject } from "../lib/object-links";
+import { toErrorMessage } from "../api";
 import {
   buildShortcutSection,
   parseShortcutRow,
@@ -378,6 +382,10 @@ export default function AppsExplorer() {
     null,
   );
   const [folderBusy, setFolderBusy] = useState(false);
+  // The app whose Rename dialog is open, and how its last attempt went.
+  const [renameAppId, setRenameAppId] = useState<string | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
@@ -962,6 +970,29 @@ export default function AppsExplorer() {
     ],
   );
 
+  /**
+   * The Rename dialog's submit: the one rename service every path uses
+   * (`POST /objects/app/rename`) — one commit on main, the old link kept.
+   * The list refetch moves the row and heals every open tab's name and link.
+   */
+  const submitRename = useCallback(
+    async (change: { title?: string; slug?: string }) => {
+      if (!workspaceId || !renameAppId) return;
+      setRenameBusy(true);
+      setRenameError(null);
+      try {
+        await renameObject(workspaceId, "app", { ref: renameAppId, ...change });
+        setRenameAppId(null);
+        await fetchApps(workspaceId, { fresh: true });
+      } catch (e) {
+        setRenameError(toErrorMessage(e, "The app could not be renamed."));
+      } finally {
+        setRenameBusy(false);
+      }
+    },
+    [workspaceId, renameAppId, fetchApps],
+  );
+
   const submitFolderDialog = useCallback(
     async (name: string) => {
       if (!workspaceId || !folderDialog) return;
@@ -1101,6 +1132,21 @@ export default function AppsExplorer() {
           </MenuItem>,
         );
       }
+      items.push(
+        <MenuItem
+          key="rename"
+          onClick={() => {
+            helpers.closeMenu();
+            setRenameError(null);
+            setRenameAppId(appId);
+          }}
+        >
+          <ListItemIcon>
+            <RenameIcon size={16} />
+          </ListItemIcon>
+          Rename…
+        </MenuItem>,
+      );
       if (app?.duplicateOf) {
         items.push(
           <MenuItem
@@ -1704,6 +1750,31 @@ export default function AppsExplorer() {
         onClose={() => !folderBusy && setFolderDialog(null)}
         onConfirm={submitFolderDialog}
       />
+
+      {(() => {
+        const app = renameAppId ? appById.get(renameAppId) : undefined;
+        return (
+          <AppRenameDialog
+            open={!!app}
+            currentTitle={app?.title ?? ""}
+            currentSlug={app?.slug ?? ""}
+            slugIsLink={!!app && appUrlRef(app) !== app.id}
+            // The server's rule (appRenameRights): the link is the folder's
+            // name — its owner's in a personal folder, an editor's elsewhere.
+            linkLockedReason={
+              app && isSharedWithMe(app.id)
+                ? APP_LINK_OWNER_ONLY
+                : app?.scope === "workspace" && !canOrganize
+                  ? APP_LINK_EDITORS_ONLY
+                  : undefined
+            }
+            busy={renameBusy}
+            error={renameError}
+            onClose={() => !renameBusy && setRenameAppId(null)}
+            onConfirm={submitRename}
+          />
+        );
+      })()}
 
       {shareWsApp && workspaceId && (
         <ShareWithWorkspaceDialog

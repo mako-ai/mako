@@ -187,5 +187,13 @@ describe("healAppsTabs keeps every Apps tab's URL handle current", () => {
     expect(slugOf("app")).toBe("report");
     expect(slugOf("file")).toBe("report");
     expect(slugOf("diff")).toBe("report");
+    // A rename: the app tab takes the new name; a file tab keeps its file's.
+    healAppsTabs(
+      new Map([["app1", "revenue"]]),
+      new Map([["app1", "Revenue"]]),
+    );
+    const titleOf = (id: string) => useConsoleStore.getState().tabs[id]?.title;
+    expect([slugOf("app"), titleOf("app")]).toEqual(["revenue", "Revenue"]);
+    expect([slugOf("file"), titleOf("file")]).toEqual(["revenue", "file"]);
   });
 });

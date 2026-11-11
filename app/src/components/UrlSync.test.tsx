@@ -10,8 +10,8 @@
  * then rewrote the address bar to the persisted active tab's URL. This asserts
  * hydration actually opens the notebook tab for a /n/:id deep link.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 
 const h = vi.hoisted(() => {
   const consoleState = {
@@ -23,13 +23,16 @@ const h = vi.hoisted(() => {
     tabs: {} as Record<string, unknown>,
   };
   return {
+    user: { id: "u1" },
     focusNotebookTab: vi.fn(),
     setLeftPane: vi.fn(),
     captureOAuthReturn: vi.fn(),
     fetchOneSourceConnection: vi.fn(),
     closeSourceConnectionTabsFor: vi.fn(),
     focusAppsTab: vi.fn(),
+    focusAppsFileTab: vi.fn(),
     closeAppsTabsFor: vi.fn(),
+    resolveObjectRef: vi.fn(),
     fetchApps: vi.fn().mockResolvedValue(undefined),
     fetchViewUrl: vi.fn().mockResolvedValue(undefined),
     apps: [{ id: "app1", slug: "seller-media", title: "Seller Media" }],
@@ -52,7 +55,9 @@ vi.mock("../contexts/workspace-context", () => ({
   useWorkspace: () => ({ currentWorkspace: { id: "ws1" } }),
 }));
 vi.mock("../contexts/auth-context", () => ({
-  useAuth: () => ({ user: { id: "u1" } }),
+  // One user object, as the real context gives: a new one per render would
+  // re-run the outgoing sync on every render and rewrite the address bar.
+  useAuth: () => ({ user: h.user }),
 }));
 vi.mock("../store/consoleStore", () => ({
   useConsoleStore: h.useConsoleStore,
@@ -92,8 +97,11 @@ vi.mock("../dbt-runtime/shell", () => ({
 
 vi.mock("../apps-runtime/shell", () => ({
   closeAppsTabsFor: (...args: unknown[]) => h.closeAppsTabsFor(...args),
-  focusAppsFileTab: vi.fn(),
+  focusAppsFileTab: (...args: unknown[]) => h.focusAppsFileTab(...args),
   focusAppsTab: (...args: unknown[]) => h.focusAppsTab(...args),
+}));
+vi.mock("../lib/object-links", () => ({
+  resolveObjectRef: (...args: unknown[]) => h.resolveObjectRef(...args),
 }));
 vi.mock("../store/appsStore", () => {
   const state = Object.assign(h.appsState, {
@@ -117,6 +125,7 @@ vi.mock("../store/appsStore", () => {
 import { UrlSync } from "./UrlSync";
 
 describe("UrlSync hydration", () => {
+  afterEach(cleanup);
   beforeEach(() => {
     vi.clearAllMocks();
     h.consoleState.activeTabId = null;
@@ -127,6 +136,8 @@ describe("UrlSync hydration", () => {
     h.fetchApps.mockImplementation(async () => {
       h.appsState.apps = h.apps;
     });
+    // The server knows no other name for anything, unless a test says so.
+    h.resolveObjectRef.mockResolvedValue(null);
   });
 
   it("asks for the view token in parallel with GET /apps, by the link's ref", async () => {
@@ -215,6 +226,116 @@ describe("UrlSync hydration", () => {
     );
     expect(h.focusAppsTab).not.toHaveBeenCalled();
     expect(window.location.pathname).toBe("/");
+    expect(h.resolveObjectRef).toHaveBeenCalledWith("ws1", "app", "gone-app");
+    expect(await screen.findByText(/doesn't resolve anymore/)).toBeTruthy();
+  });
+
+  /**
+   * A renamed app keeps its old link (api/src/rename): the list does not
+   * know the old name, the server does.
+   */
+  describe("an old link to a renamed app", () => {
+    const renamed = {
+      kind: "app",
+      id: "app1",
+      via: "alias",
+      current: {
+        title: "Seller Media",
+        slug: "seller-media",
+        path: "apps/seller-media",
+        url: "/apps/seller-media",
+      },
+    };
+
+    it("opens the app, shows its new address and says it was renamed", async () => {
+      h.resolveObjectRef.mockResolvedValue(renamed);
+      window.history.replaceState({}, "", "/apps/media-buying?country=PL");
+
+      render(<UrlSync />);
+
+      await waitFor(() =>
+        expect(h.focusAppsTab).toHaveBeenCalledWith(
+          "app1",
+          "Seller Media",
+          "seller-media",
+          "?country=PL",
+        ),
+      );
+      expect(h.resolveObjectRef).toHaveBeenCalledWith(
+        "ws1",
+        "app",
+        "media-buying",
+      );
+      expect(window.location.pathname + window.location.search).toBe(
+        "/apps/seller-media?country=PL",
+      );
+      expect(await screen.findByText(/That app was renamed/)).toBeTruthy();
+      expect(h.closeAppsTabsFor).not.toHaveBeenCalled();
+    });
+
+    it("opens a file of it under the new address too", async () => {
+      h.resolveObjectRef.mockResolvedValue(renamed);
+      window.history.replaceState(
+        {},
+        "",
+        "/apps/media-buying/file/src/App.tsx",
+      );
+
+      render(<UrlSync />);
+
+      await waitFor(() =>
+        expect(h.focusAppsFileTab).toHaveBeenCalledWith(
+          "app1",
+          "src/App.tsx",
+          "seller-media",
+        ),
+      );
+      expect(window.location.pathname).toBe(
+        "/apps/seller-media/file/src/App.tsx",
+      );
+      expect(await screen.findByText(/That app was renamed/)).toBeTruthy();
+    });
+
+    it("uses the id in the address of a nested app, and says nothing for a name that is current", async () => {
+      // The server knows an app the list has not caught up with yet.
+      h.resolveObjectRef.mockResolvedValue({
+        kind: "app",
+        id: "0123456789abcdef01234567",
+        via: "current",
+        current: { title: "Nested", url: "/apps/0123456789abcdef01234567" },
+      });
+      window.history.replaceState({}, "", "/apps/Team%2Fnested");
+
+      render(<UrlSync />);
+
+      await waitFor(() =>
+        expect(h.focusAppsTab).toHaveBeenCalledWith(
+          "0123456789abcdef01234567",
+          "Nested",
+          undefined,
+          "",
+        ),
+      );
+      expect(screen.queryByText(/renamed/)).toBeNull();
+    });
+
+    it.each(["/apps/media-buying", "/apps/media-buying/file/src/App.tsx"])(
+      "does not call %s dead when the server cannot answer: unknown is not gone",
+      async url => {
+        h.resolveObjectRef.mockRejectedValue(new Error("502"));
+        window.history.replaceState({}, "", url);
+
+        render(<UrlSync />);
+
+        await waitFor(() => expect(h.resolveObjectRef).toHaveBeenCalled());
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(h.closeAppsTabsFor).not.toHaveBeenCalled();
+        expect(h.focusAppsTab).not.toHaveBeenCalled();
+        expect(h.focusAppsFileTab).not.toHaveBeenCalled();
+        expect(screen.queryByText(/doesn't resolve anymore/)).toBeNull();
+        expect(screen.queryByText(/renamed/)).toBeNull();
+      },
+    );
   });
 
   /**
