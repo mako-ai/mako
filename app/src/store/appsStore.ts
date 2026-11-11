@@ -191,7 +191,31 @@ export interface AppsBoxState {
   status?: "online" | "offline";
   /** Open terminal session ids. */
   terminals?: string[] | null;
+  /**
+   * What a catch-up did with this person's uncommitted work: it followed a
+   * rename on main, or was saved on a `mako-drafts/…` branch. Sent to the
+   * box's owner only, with every snapshot until replaced; shown once.
+   */
+  notice?: BoxNotice | null;
   updatedAt: number;
+}
+
+export interface BoxNotice {
+  /** When it was raised (ms). */
+  at: number;
+  message: string;
+  /** The branch holding work that was not carried over, if any. */
+  draftsBranch?: string;
+}
+
+/** The newest box notice this browser has dismissed (each is shown once). */
+const NOTICE_SEEN_KEY = "apps-box-notice-seen";
+function noticeSeenAt(): number {
+  try {
+    return Number(localStorage.getItem(NOTICE_SEEN_KEY)) || 0;
+  } catch {
+    return 0;
+  }
 }
 
 export interface AppStatus {
@@ -662,6 +686,14 @@ interface AppsStore {
   boxStatus?: "online" | "offline";
   boxSandboxId?: string | null;
   boxTerminals: string[];
+  /**
+   * The sandbox's notice to show. Its own state, not `error`: every list
+   * refresh clears `error`, and a rename is exactly when the list refreshes.
+   */
+  boxNotice: BoxNotice | null;
+  /** Shown until dismissed, then never again (also across reloads). */
+  dismissBoxNotice: () => void;
+  boxNoticeSeenAt: number;
   fetchRunningDevApps: (workspaceId: string) => Promise<void>;
   /** Deep sandbox stats (a live exec with a 1s CPU sample); null if no box. */
   fetchSandboxStats: (
@@ -777,6 +809,8 @@ export const useAppsStore = create<AppsStore>()(
       boxStatus: undefined,
       boxSandboxId: null,
       boxTerminals: [],
+      boxNotice: null,
+      boxNoticeSeenAt: 0,
       currentUserId: null,
       branchesByApp: {},
       terminalByApp: {},
@@ -2272,6 +2306,16 @@ export const useAppsStore = create<AppsStore>()(
           if (state.status) s.boxStatus = state.status;
           if (state.sandboxId !== undefined) s.boxSandboxId = state.sandboxId;
           if (state.terminals != null) s.boxTerminals = state.terminals;
+          // Every snapshot repeats the notice: show one this browser has
+          // not shown or dismissed yet.
+          const seen = Math.max(
+            s.boxNotice?.at ?? 0,
+            s.boxNoticeSeenAt,
+            noticeSeenAt(),
+          );
+          if (state.notice && state.notice.at > seen) {
+            s.boxNotice = state.notice;
+          }
         });
         if (state.status === "offline") {
           // The box is gone — every dev-server URL now points at a dead sandbox.
@@ -2493,6 +2537,20 @@ export const useAppsStore = create<AppsStore>()(
         set(s => {
           s.error = null;
         });
+      },
+
+      dismissBoxNotice: () => {
+        const at = get().boxNotice?.at;
+        if (!at) return;
+        set(s => {
+          s.boxNotice = null;
+          s.boxNoticeSeenAt = at;
+        });
+        try {
+          localStorage.setItem(NOTICE_SEEN_KEY, String(at));
+        } catch {
+          // Best effort: this tab still remembers.
+        }
       },
     })),
     {

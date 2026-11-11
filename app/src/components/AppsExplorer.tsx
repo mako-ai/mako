@@ -289,6 +289,9 @@ export default function AppsExplorer() {
   const loading = useAppsStore(s => s.appsLoading);
   const error = useAppsStore(s => s.error);
   const clearError = useAppsStore(s => s.clearError);
+  // What a sandbox catch-up did with this person's uncommitted work.
+  const boxNotice = useAppsStore(s => s.boxNotice);
+  const dismissBoxNotice = useAppsStore(s => s.dismissBoxNotice);
   const canCreate = useAppsStore(s => s.canCreate);
   const repos = useAppsStore(s => s.repos);
   const probeEnabled = useAppsStore(s => s.probeEnabled);
@@ -1433,6 +1436,14 @@ export default function AppsExplorer() {
           clearError();
           clearFavouritesError();
         }}
+        notice={
+          boxNotice && {
+            message: boxNotice.message,
+            // Work that was not carried over is waiting on a branch.
+            severity: boxNotice.draftsBranch ? "warning" : "info",
+          }
+        }
+        onNoticeClose={dismissBoxNotice}
         loading={loading && apps.length === 0}
       >
         {({ searchQuery }) => (
