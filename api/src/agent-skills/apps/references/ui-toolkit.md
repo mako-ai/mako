@@ -182,7 +182,7 @@ Use the kit's `MultiSelect` (`@makoai/app-sdk/ui`) — it is this pattern,
 already built. The shadcn recipe below is for an app that has its own
 shadcn setup and needs a variant the kit does not offer.
 
-From SDK 2.16 the kit owns the All rule. Don't wrap `MultiSelect` with your
+From SDK 2.17 the kit owns the All rule. Don't wrap `MultiSelect` with your
 own All logic, and don't override `.mk-ms-*` classes to change its trigger.
 
 - Pass `[]` or every value for "All". Both tick the All row and untick every

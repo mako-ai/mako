@@ -37,7 +37,7 @@ import {
  * in a page (or this export) says which SDK a deployed app actually runs.
  * Kept in step with package.json by snapshot.test.mjs.
  */
-export const SDK_VERSION = "2.16.0";
+export const SDK_VERSION = "2.17.0";
 if (typeof window !== "undefined") {
   try {
     window.__MAKO_APP_SDK__ = SDK_VERSION;

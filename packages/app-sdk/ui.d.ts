@@ -91,7 +91,7 @@ export interface MultiSelectProps<V extends string = string> {
   showOnly?: boolean;
   /** Trigger text for several values. Default `${n} selected`. */
   formatMany?: (n: number) => string;
-  /** @deprecated 2.16: the trigger reads "All", the one label, or "N selected". Ignored. */
+  /** @deprecated 2.17: the trigger reads "All", the one label, or "N selected". Ignored. */
   maxChips?: number;
   /** Which edge the menu aligns to before flipping. Default "start". */
   align?: "start" | "end";

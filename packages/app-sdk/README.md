@@ -420,7 +420,7 @@ import {
   and declare it once (`src/vite-env.d.ts`):
   `declare const __APP_BINDING_NAMES__: string[];`
 
-### MultiSelect: the All rule and one open popover (2.16+)
+### MultiSelect: the All rule and one open popover (2.17+)
 
 **All.** Nothing is filtered when `value` is empty or holds every option. The
 All row is then ticked and every option row unticked, whichever of the two the
