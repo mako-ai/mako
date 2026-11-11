@@ -87,6 +87,22 @@ describe("the job Edit form's name field", () => {
     expect(saveJob).not.toHaveBeenCalled();
   });
 
+  it("an empty name says what it will be saved as, and is saved as that", async () => {
+    const { save, type } = openEdit();
+    expect(screen.queryByText('Saved as "Untitled job".')).toBeNull();
+    type("   ");
+    expect(screen.getByText('Saved as "Untitled job".')).toBeTruthy();
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await vi.waitFor(() => expect(saveJob).toHaveBeenCalled());
+    expect(saveJob.mock.calls[0]).toMatchObject([
+      "ws1",
+      "p1",
+      { name: "Untitled job" },
+      "j1",
+    ]);
+  });
+
   it("a valid name is saved NFC-normalised", async () => {
     const { save, type } = openEdit();
     type("  Café build ");

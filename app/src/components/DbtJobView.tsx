@@ -498,7 +498,10 @@ export default function DbtJobView({
             value={formName}
             onChange={e => setFormName(e.target.value)}
             error={!!nameError}
-            helperText={nameError ?? undefined}
+            helperText={
+              nameError ??
+              (formName.trim() ? undefined : 'Saved as "Untitled job".')
+            }
             sx={{ mb: 2 }}
           />
           <FormControl fullWidth size="small" sx={{ mb: 2 }}>
