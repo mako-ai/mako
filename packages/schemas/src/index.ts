@@ -60,3 +60,11 @@ export {
   unsafeSlugReason,
   type SlugNamedKind,
 } from "./object-names";
+
+export {
+  dbtNewPathProblem,
+  dbtPathClash,
+  refNameForDbtPath,
+  resolveDbtProjectPath,
+  type DbtPathResult,
+} from "./dbt-paths";
