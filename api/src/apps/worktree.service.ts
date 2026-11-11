@@ -132,6 +132,7 @@ import {
 } from "./app-paths";
 import {
   MAX_APP_TITLE_LENGTH,
+  appLinkClash,
   displayNameError,
   normalizeDisplayName,
 } from "@mako/schemas";
@@ -1490,14 +1491,13 @@ export async function renameProject(
   if (titleProblem) throw new AppFolderError(titleProblem);
   const slug =
     change.slug === undefined ? location.slug : normalizeAppName(change.slug);
+  // The dialog's rules (@mako/schemas), in the same words: what a link may
+  // be, and — before main is even read — not its own name in another case.
   const slugProblem =
     slug === location.slug
       ? null
-      : slug.toLowerCase() === location.slug.toLowerCase()
-        ? // The same folder to a checkout on macOS or Windows: git there
-          // cannot follow the rename, and would keep the old spelling.
-          `"${slug}" differs from the current link only in upper and lower case, which macOS and Windows can't tell apart. Pick a different link.`
-        : appNameProblem(slug, "link");
+      : (appNameProblem(slug, "link") ??
+        appLinkClash(slug, location.slug, [], false));
   if (slugProblem) throw new AppFolderError(slugProblem);
   const to = appRepoPath({ ...location, slug });
   const author =
@@ -1538,24 +1538,18 @@ export async function renameProject(
           409,
         );
       }
-      const taken = await occupiedPaths(workspaceId);
-      const twin = [...taken].find(
-        p => p !== from && p.toLowerCase() === to.toLowerCase(),
+      const parent = from.slice(0, from.lastIndexOf("/"));
+      const siblings = [...(await occupiedPaths(workspaceId))]
+        .filter(p => p !== from && p.startsWith(`${parent}/`))
+        .map(p => p.slice(parent.length + 1))
+        .filter(name => !name.includes("/"));
+      const clash = appLinkClash(
+        slug,
+        location.slug,
+        siblings,
+        to === `${APPS_DIR}/${slug}`,
       );
-      if (twin === to) {
-        throw new AppFolderError(
-          to === `${APPS_DIR}/${slug}`
-            ? `The link /apps/${slug} is already taken. Pick another.`
-            : `"${slug}" is already taken in this folder. Pick another link.`,
-          409,
-        );
-      }
-      if (twin) {
-        throw new AppFolderError(
-          `"${slug}" differs from "${twin.split("/").pop()}" only in upper and lower case, which macOS and Windows can't tell apart. Pick another link.`,
-          409,
-        );
-      }
+      if (clash) throw new AppFolderError(clash, 409);
       // A move pins the identity (moveWritesUnder): an app that predates
       // manifest ids gets its id, and a copy that gets one of its own
       // gives up its source's old links.

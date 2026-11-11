@@ -35,8 +35,14 @@ export interface AppRenameDialogProps {
    * shows, disabled, with this reason, and only the name is sent.
    */
   linkLockedReason?: string;
+  /**
+   * The names of the other apps and folders beside this app, as far as
+   * this person can see them: a link one of them holds is refused as it is
+   * typed. The server decides for what they cannot see.
+   */
+  takenNames?: readonly string[];
   busy?: boolean;
-  /** The server's refusal, shown until the next attempt. */
+  /** The server's refusal, shown until either field is edited. */
   error?: string | null;
   onClose: () => void;
   /** Only what changed is passed; both undefined never happens. */
@@ -52,6 +58,7 @@ export function AppRenameDialog({
   currentSlug,
   slugIsLink,
   linkLockedReason,
+  takenNames = [],
   busy = false,
   error = null,
   onClose,
@@ -65,6 +72,9 @@ export function AppRenameDialog({
       setSlug(currentSlug);
     }
   }, [open, currentTitle, currentSlug]);
+  // A refusal is about what was sent: once a field is edited it is stale.
+  const [edited, setEdited] = useState(false);
+  useEffect(() => setEdited(false), [error, open]);
 
   // The server's rules, in its words (lib/object-name-rules.ts): what it
   // would refuse is refused here as it is typed, and Rename stays off.
@@ -73,7 +83,13 @@ export function AppRenameDialog({
   const titleChanged = nextTitle !== currentTitle;
   const slugChanged = !linkLockedReason && nextSlug !== currentSlug;
   const titleProblem = titleChanged ? appTitleError(title) : null;
-  const slugProblem = slugChanged ? appLinkError(slug) : null;
+  const slugProblem = slugChanged
+    ? appLinkError(slug, {
+        current: currentSlug,
+        taken: takenNames,
+        topLevel: slugIsLink,
+      })
+    : null;
   const canSubmit =
     !busy && !titleProblem && !slugProblem && (titleChanged || slugChanged);
 
@@ -103,7 +119,10 @@ export function AppRenameDialog({
           margin="dense"
           label="Name"
           value={title}
-          onChange={e => setTitle(e.target.value)}
+          onChange={e => {
+            setTitle(e.target.value);
+            setEdited(true);
+          }}
           onKeyDown={onEnter}
           error={!!titleProblem}
           helperText={titleProblem ?? " "}
@@ -114,7 +133,10 @@ export function AppRenameDialog({
           margin="dense"
           label="Link"
           value={slug}
-          onChange={e => setSlug(e.target.value)}
+          onChange={e => {
+            setSlug(e.target.value);
+            setEdited(true);
+          }}
           onKeyDown={onEnter}
           error={!!slugProblem}
           helperText={
@@ -134,7 +156,7 @@ export function AppRenameDialog({
               ? `If you change the link, the old one (/apps/${currentSlug}) keeps working: it will still open this app.`
               : "If you change the link, the old one keeps working: it will still open this app."}
         </Typography>
-        {error && (
+        {error && !edited && (
           <Typography
             role="alert"
             variant="caption"

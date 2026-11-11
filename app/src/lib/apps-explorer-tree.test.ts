@@ -6,6 +6,7 @@ import {
   folderPathFromNodeId,
   parentPathOf,
   resolveAppRef,
+  takenNamesBeside,
 } from "./apps-explorer-tree";
 
 const apps = [
@@ -128,5 +129,27 @@ describe("resolveAppRef", () => {
     ).toBeNull();
     expect(resolveAppRef(list, "")).toBeNull();
     expect(resolveAppRef(list, "nope")).toBeNull();
+  });
+});
+
+describe("takenNamesBeside (what a new link is checked against as it is typed)", () => {
+  const folders = ["apps/Sales", "apps/Sales/CH", "apps/Empty"];
+
+  it("names the other apps and folders in the app's own folder, nothing else", () => {
+    // Top level: its sibling app and the folders there — not itself, not
+    // anything nested, not a personal app.
+    expect(takenNamesBeside(apps[0], apps, folders).sort()).toEqual([
+      "Empty",
+      "Sales",
+      "alpha",
+    ]);
+    // Nested: the folder and app beside it in apps/Sales.
+    expect(takenNamesBeside(apps[4], apps, folders)).toEqual(["CH"]);
+    // A personal tree is its own folder.
+    expect(takenNamesBeside(apps[3], apps, folders)).toEqual([]);
+    // A legacy row without a path sits at apps/<slug>.
+    expect(
+      takenNamesBeside({ id: "x", slug: "legacy" }, apps, []).sort(),
+    ).toEqual(["alpha", "zeta"]);
   });
 });

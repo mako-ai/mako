@@ -93,6 +93,7 @@ import {
   folderNodeId,
   folderPathFromNodeId,
   parentPathOf,
+  takenNamesBeside,
 } from "../lib/apps-explorer-tree";
 import ExplorerShell from "./ExplorerShell";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
@@ -1753,6 +1754,7 @@ export default function AppsExplorer() {
                   ? APP_LINK_EDITORS_ONLY
                   : undefined
             }
+            takenNames={app ? takenNamesBeside(app, apps, folders) : []}
             busy={renameBusy}
             error={renameError}
             onClose={() => !renameBusy && setRenameAppId(null)}

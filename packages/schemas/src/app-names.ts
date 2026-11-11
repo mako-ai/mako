@@ -121,6 +121,40 @@ export function appNameProblem(
 }
 
 /**
+ * Why `link` cannot replace an app's `current` link beside what else is in
+ * its folder, or null when it can. `siblings` are the names of the other
+ * apps and folders there — all of them on the server, the ones this person
+ * can see in the dialog (the server stays the authority for the rest).
+ * `topLevel`: the app sits at the top of the workspace tree, where its
+ * folder name IS its `/apps/<link>`.
+ *
+ * A name that differs only in upper and lower case — from the app's own
+ * link or from a sibling — is refused: a checkout on macOS or Windows
+ * cannot hold both, nor follow a rename between them.
+ */
+export function appLinkClash(
+  link: string,
+  current: string,
+  siblings: readonly string[],
+  topLevel: boolean,
+): string | null {
+  if (link === current) return null;
+  const lower = link.toLowerCase();
+  if (lower === current.toLowerCase()) {
+    return `"${link}" differs from the current link only in upper and lower case, which macOS and Windows can't tell apart. Pick a different link.`;
+  }
+  if (siblings.includes(link)) {
+    return topLevel
+      ? `The link /apps/${link} is already taken. Pick another.`
+      : `"${link}" is already taken in this folder. Pick another link.`;
+  }
+  const twin = siblings.find(name => name.toLowerCase() === lower);
+  return twin
+    ? `"${link}" differs from "${twin}" only in upper and lower case, which macOS and Windows can't tell apart. Pick another link.`
+    : null;
+}
+
+/**
  * Why someone who may edit an app may still not change its LINK (the
  * server's refusal, and the reason the dialog shows beside a locked field).
  */

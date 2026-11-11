@@ -128,6 +128,72 @@ describe("AppRenameDialog", () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
+  it.each([
+    // Its own link in another case: the dialog knows the current link.
+    [
+      "Report",
+      '"Report" differs from the current link only in upper and lower case, which macOS and Windows can\'t tell apart. Pick a different link.',
+    ],
+    // A link another app or folder beside it holds, as far as the lists say.
+    ["revenue", "The link /apps/revenue is already taken. Pick another."],
+    [
+      "Sales",
+      '"Sales" differs from "sales" only in upper and lower case, which macOS and Windows can\'t tell apart. Pick another link.',
+    ],
+  ])(
+    "refuses the link %j without asking the server, in its words",
+    (typed, reason) => {
+      const { onConfirm, link, button } = renderDialog({
+        takenNames: ["revenue", "sales"],
+      });
+      fireEvent.change(link, { target: { value: typed } });
+      expect(screen.getByText(reason)).toBeTruthy();
+      expect(button().disabled).toBe(true);
+      fireEvent.keyDown(link, { key: "Enter" });
+      expect(onConfirm).not.toHaveBeenCalled();
+      // A free one is still fine.
+      fireEvent.change(link, { target: { value: "income" } });
+      expect(button().disabled).toBe(false);
+    },
+  );
+
+  it("words a taken link for a nested app by its folder, not by /apps/<link>", () => {
+    const { link } = renderDialog({ slugIsLink: false, takenNames: ["daily"] });
+    fireEvent.change(link, { target: { value: "daily" } });
+    expect(
+      screen.getByText(
+        '"daily" is already taken in this folder. Pick another link.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it("drops the server's refusal as soon as a field is edited, and shows the next one", () => {
+    const props = {
+      open: true,
+      currentTitle: "Report",
+      currentSlug: "report",
+      slugIsLink: true,
+      onClose: () => undefined,
+      onConfirm: () => undefined,
+    };
+    const { rerender } = render(
+      <AppRenameDialog {...props} error="The link /apps/x is already taken." />,
+    );
+    expect(screen.getByRole("alert")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Link"), {
+      target: { value: "y" },
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    // The next attempt's refusal shows again (the explorer clears, then sets).
+    rerender(<AppRenameDialog {...props} error={null} />);
+    rerender(<AppRenameDialog {...props} error="This app was deleted." />);
+    expect(screen.getByRole("alert").textContent).toBe("This app was deleted.");
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Z" },
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("does not hold an unchanged link against a name change, and shows the server's refusal", () => {
     // An app pushed from a laptop as `search` may still be given a new name.
     const { onConfirm, name, button } = renderDialog({

@@ -67,6 +67,7 @@ export {
   MAX_APP_SEGMENT_LENGTH,
   MAX_APP_TITLE_LENGTH,
   RESERVED_APP_LINKS,
+  appLinkClash,
   appNameProblem,
   isSafeAppSegment,
   isWindowsDeviceName,
