@@ -18,6 +18,7 @@ import { Types } from "mongoose";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import {
+  realtimeEventFor,
   subscribeToWorkspaceEvents,
   type RealtimeEvent,
 } from "../services/realtime.service";
@@ -117,7 +118,10 @@ realtimeRoutes.openapi(
           (event: RealtimeEvent) => {
             if (closed) return;
             void stream
-              .writeSSE({ event: "message", data: JSON.stringify(event) })
+              .writeSSE({
+                event: "message",
+                data: JSON.stringify(realtimeEventFor(event, user.id)),
+              })
               .catch(() => void cleanup());
           },
         );

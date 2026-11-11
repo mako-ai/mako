@@ -148,6 +148,21 @@ describe("box-state (memory store)", () => {
     expect(next.devServers?.[0].url).toBe("https://5173-box.example");
   });
 
+  it("keeps a notice through the box's own reports, until another replaces it", async () => {
+    const notice = { at: 1, message: "Your 2 uncommitted changes followed." };
+    const report = (patch: Parameters<typeof patchBoxState>[0]["patch"]) =>
+      patchBoxState({ workspaceId: ws, userId: user, patch, source: "t" });
+    await report({ notice });
+    // A heartbeat from the box says nothing about it, and does not drop it.
+    expect((await report({ branch: "main" })).notice).toEqual(notice);
+    expect(publishRealtimeEvent).toHaveBeenLastCalledWith(
+      ws,
+      expect.objectContaining({ state: expect.objectContaining({ notice }) }),
+    );
+    const newer = { at: 2, message: "Not carried over: apps/a/x.ts" };
+    expect((await report({ notice: newer })).notice).toEqual(newer);
+  });
+
   it("publishes a realtime event naming the user", async () => {
     await patchBoxState({
       workspaceId: ws,
