@@ -94,6 +94,8 @@ Typical loop:
 4. Verify with app_open_app (starts the dev server, focuses the user's UI) + app_dev_log (vite + browser console) + app_browse (headless browser: click, navigate, screenshot the running app).
 5. app_commit → app_merge_to_main (main is what publishes buildable state).
 
+App performance (rules: mako://skills/apps, "Performance"): filter, join and aggregate in SQL with useDuckDB(sql), one query per panel, so only the rows a panel draws reach JS. useQuery(name) is for bindings under ~10k rows. Each panel shows a same-size skeleton while it loads, and filter clicks never wait on a query. Before calling a UI done, trace a filter change with app_browse: no main-thread task over 200 ms.
+
 dbt: create/read projects → create/read/edit/delete model files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run) → create/update/delete jobs. Edits commit straight to the user's session branch of the workspace repo (dbt/ folder). Warehouse-mutating runs (dbt_run_model, dbt_run_job, dbt_cancel_run) appear only with the explicit warehouse:write OAuth/API-key scope.
 
 Syncs (flows, what loads sources into the warehouse): flow_list → flow_read / flow_status (per entity: mode, backlog, failures, last materialised). flow_backfill starts a full backfill; flow_update changes only the triggers (poll cron, webhook on/off, resync cron). Both need warehouse:write and an owner/admin.
@@ -118,6 +120,8 @@ Typical loop:
 6. Interactive UX: mako-desktop ask_clarifying_questions / submit_plan (docked Chat cards) — never ask as plain text.
 7. Durable memory: read_self_directive / update_self_directive only. Do NOT write .claude/**/MEMORY.md or other local Claude memory files.
 8. app_commit → app_merge_to_main when the user asks to ship.
+
+App performance (rules: mako://skills/apps, "Performance"): filter, join and aggregate in SQL with useDuckDB(sql), one query per panel, so only the rows a panel draws reach JS. useQuery(name) is for bindings under ~10k rows. Each panel shows a same-size skeleton while it loads, and filter clicks never wait on a query. Before calling a UI done, trace a filter change with app_browse: no main-thread task over 200 ms.
 
 Skills (same knowledge as the in-product agent):
 - list_skills → compact index (workspace + system).

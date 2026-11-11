@@ -360,3 +360,22 @@ export function retryDelayMs(error, retries) {
   const wait = table[retries] ?? Infinity;
   return Math.max(wait, typeof error.retryAfterMs === "number" ? error.retryAfterMs : 0);
 }
+
+/** Rows past which `useQuery` warns in dev: a page that filters this many in JS janks. */
+export const LARGE_QUERY_ROWS = 20000;
+
+/**
+ * The dev-console warning for a `useQuery` that handed JS `rows` rows, or null
+ * at or under `limit`. The fix is SQL: `useDuckDB` filters and aggregates in
+ * DuckDB and returns only what a panel draws.
+ */
+export function largeQueryWarning(name, rows, limit = LARGE_QUERY_ROWS) {
+  if (!(rows > limit)) return null;
+  return (
+    "[@makoai/app-sdk] useQuery(" + JSON.stringify(String(name)) + ") returned " +
+    rows.toLocaleString("en-US") + " rows to JS. Filtering or aggregating them in a component " +
+    "blocks the main thread on every filter change. Run filters, joins and aggregation in SQL " +
+    "with useDuckDB(\"select … from " + quoteIdent(name) + " where …\"), one query per panel, " +
+    "so only the rows a panel draws come back. (Dev-only warning, shown once per binding.)"
+  );
+}

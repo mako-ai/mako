@@ -16,6 +16,61 @@ entities:
 An app is a git-backed Vite + React project; for an `app` or `app-file` tab,
 use the `app_*` tools described here.
 
+## Performance (read before writing app code)
+
+One 193k-row app froze the tab ~10 s on every filter click: it loaded the
+whole binding with `useQuery` and filtered it in JS. 18 of 134 apps in one
+workspace did the same. Every app follows these five rules.
+
+1. **SQL does the work.** Filters, joins and aggregation run in DuckDB
+   through `useDuckDB(sql)`, with filters in the `WHERE` clause. Only the
+   rows a panel draws come back to JS. Use `withConnection` for a result
+   several panels share. `useQuery(name)` is for bindings under ~10k rows,
+   or bindings already aggregated to what the page shows. Never `.filter()`,
+   `.reduce()` or group a large `data` array in a component. In dev the SDK
+   warns in the console when `useQuery` returns more than 20,000 rows
+   (SDK ≥ 2.16).
+2. **One query per panel, one loading state per panel.** Each panel calls
+   its own hook. While `loading`, it returns a skeleton of its final size.
+   It never shows "0", an empty chart or a blank table before data arrives.
+   Filter controls and tabs never wait on a query: they repaint on the
+   click frame. Read filters through `useDeferredValue` (or wrap the update
+   in `startTransition`) so the panels follow.
+3. **Measure before calling a UI done.** The clicked control updates in
+   under 50 ms. No main-thread task runs over 200 ms during a filter change
+   or tab switch. Report the first-load time. Trace it with `app_browse`
+   steps: `eval` `window.__lt=[];new PerformanceObserver(l=>l.getEntries().forEach(e=>__lt.push(Math.round(e.duration)))).observe({type:"longtask"})`,
+   `click` the filter, `wait` 3000, `eval` `Math.max(0,...__lt)`.
+4. **Keep bindings small and fast.** Aggregate in the binding when the page
+   only shows aggregates. Select only the columns the app reads. Split a
+   binding when one view needs far more rows than the others. Keep a build
+   well under ~90 s. Add `-- schedule:` when the app needs fresh data.
+5. **One engine.** Never ship a private parquet reader or a second DuckDB.
+   Use the SDK's (see Data bindings below).
+
+```tsx
+import { useDeferredValue } from "react";
+import { useDuckDB } from "@makoai/app-sdk";
+import { Card } from "@makoai/app-sdk/ui";
+
+const lit = (v: string) => `'${v.replace(/'/g, "''")}'`;
+
+// One panel: its own query, its own skeleton. The filter bar repaints on the
+// click; this panel follows through the deferred values.
+export function RevenueByCountry({ from, country }: { from: string; country: string }) {
+  const f = useDeferredValue(from);
+  const c = useDeferredValue(country);
+  const q = useDuckDB<{ country: string; revenue: number }>(`
+    select country, sum(revenue) as revenue
+    from orders
+    where order_date >= ${lit(f)} ${c ? `and country = ${lit(c)}` : ""}
+    group by 1 order by 2 desc limit 20`);
+  if (q.loading) return <div className="skeleton" style={{ height: 320 }} />;
+  if (q.error) return <Card title="Revenue by country">{q.error}</Card>;
+  return <Card title="Revenue by country"><Bars rows={q.data ?? []} height={320} /></Card>;
+}
+```
+
 ## Working model
 
 - Every app is a real Vite + React + TypeScript project in a Mako-managed git

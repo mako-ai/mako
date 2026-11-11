@@ -29,6 +29,7 @@ import {
   toPlainRows,
   parseBindingSnapshot,
   snapshotUrl,
+  largeQueryWarning,
 } from "./data-core.js";
 
 /**
@@ -36,7 +37,7 @@ import {
  * in a page (or this export) says which SDK a deployed app actually runs.
  * Kept in step with package.json by snapshot.test.mjs.
  */
-export const SDK_VERSION = "2.15.0";
+export const SDK_VERSION = "2.16.0";
 if (typeof window !== "undefined") {
   try {
     window.__MAKO_APP_SDK__ = SDK_VERSION;
@@ -1680,6 +1681,18 @@ function useSnapshotPreview(name, enabled, rowLimit) {
   return preview;
 }
 
+// Vite replaces import.meta.env with { DEV: false, … } in every build, so this
+// is false in production and outside Vite (import.meta.env undefined).
+const DEV_BUILD = Boolean(import.meta.env && import.meta.env.DEV);
+const warnedLarge = new Set();
+function warnIfLarge(name, rows) {
+  if (!DEV_BUILD || warnedLarge.has(name)) return;
+  const message = largeQueryWarning(name, rows);
+  if (!message) return;
+  warnedLarge.add(name);
+  console.warn(message);
+}
+
 export function useQuery(name, opts) {
   bootEngine();
   const rowLimit = opts ? opts.rowLimit : undefined;
@@ -1690,6 +1703,7 @@ export function useQuery(name, opts) {
       hold(name);
       await registerBinding(name);
       const r = await runSql("SELECT * FROM " + quoteIdent(name), rowLimit, undefined, new Set([name]));
+      warnIfLarge(name, r.rows.length);
       return { data: r.rows, fields: r.fields, truncated: r.truncated, rowCount: r.rowCount };
     },
     [name, rowLimit],

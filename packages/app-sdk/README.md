@@ -42,6 +42,36 @@ const { refresh, refreshing } = useQuery("latest_sales");
 </button>
 ```
 
+### Performance: SQL does the work
+
+One 193k-row app froze ~10 s on every filter click. It loaded the binding
+with `useQuery` and filtered it in a component. The rules:
+
+1. Filters, joins and aggregation run in SQL through `useDuckDB(sql)`, filters
+   in the `WHERE` clause. Only the rows a panel draws come back to JS.
+   `withConnection` serves a result several panels share. `useQuery(name)` is
+   for bindings under ~10k rows or already aggregated to what the page shows.
+2. One query per panel. Each panel returns a skeleton of its final size while
+   `loading`, never a "0" or an empty chart. Filter controls update on the
+   click frame; panels read filters through `useDeferredValue` or
+   `startTransition`.
+3. Measure before calling a UI done: the clicked control updates in under
+   50 ms, no main-thread task runs over 200 ms during a filter change.
+4. Keep bindings small: aggregate in the binding, drop unused columns, split
+   a binding when one view needs far more rows.
+5. One engine: never a private parquet reader or a second DuckDB.
+
+```tsx
+const f = useDeferredValue(country);
+const q = useDuckDB(`select day, sum(revenue) r from latest_sales
+  where country = '${f.replace(/'/g, "''")}' group by 1 order by 1`);
+if (q.loading) return <div className="skeleton" style={{ height: 280 }} />;
+```
+
+In dev (`import.meta.env.DEV`), `useQuery` logs one `console.warn` per
+binding that returns more than 20,000 rows, pointing to
+`useDuckDB` (2.16+). Production builds never warn.
+
 ### Which SDK is running: `SDK_VERSION` (2.9+)
 
 `import { SDK_VERSION } from "@makoai/app-sdk"` is this package's version.

@@ -118,7 +118,10 @@ You have real eyes: \`app_open_app\` puts the app on the user's screen with a
 live dev session (HMR), \`app_browse\` looks at it with a headless browser
 (screenshot you can see, clicks, console errors), and \`app_dev_log\` reads
 vite output + the browser console. After edits, VERIFY by looking — never
-claim a change rendered without evidence from one of these.`;
+claim a change rendered without evidence from one of these.
+
+Follow the skill's "Performance" rules: filters and aggregation run in SQL
+(\`useDuckDB\`, one query per panel), never over a whole binding in JS.`;
 
 export const WORKFLOW_MODE_SYSTEM_PROMPT = `## Workflow Mode
 
