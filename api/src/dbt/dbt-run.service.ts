@@ -21,7 +21,19 @@ import {
   resolveWorkingTreeCommit,
 } from "./dbt-working-tree.service";
 import { parseDbtCommands } from "./commands";
-import type { DbtRunOverrides } from "./dbt-run-overrides";
+import { readJobDefinitionAtCommit } from "./dbt-job-at-commit";
+import {
+  applyFullRefresh,
+  DbtRunOverridesError,
+  validateRunOverrides,
+  type DbtRunOverrides,
+} from "./dbt-run-overrides";
+import {
+  dbtProjectRunConcurrency,
+  dbtRunLane,
+  dbtRunLaneFilter,
+  dbtRunQueueKeys,
+} from "./dbt-run-queue";
 import { cancelLocalRun } from "./dbt-run-registry";
 import type { AdhocDbtResult } from "./dbt-project.service";
 import { loggers } from "../logging";
@@ -56,10 +68,10 @@ const logger = loggers.api("dbt-run");
 
 /**
  * How long an ad-hoc run may sit in "queued" before the read-side watchdog
- * declares it failed. With no sibling run executing for the project, the
- * executor claims a run within seconds, so anything still queued past this
- * window (and with nothing running ahead of it) means the event was never
- * delivered — worker down, or events not routed to this env (branch/preview).
+ * declares it failed. With a free slot in its lane, the executor claims a run
+ * within seconds, so anything still queued past this window (and with its
+ * lane not full) means the event was never delivered — worker down, or
+ * events not routed to this env (branch/preview).
  *
  * This is a fast, interactive complement to the cron `dbtRunSweeperFunction`,
  * which is the authoritative backstop (6h) and the only path that finalizes
@@ -73,6 +85,8 @@ type ReconcilableRun = {
   projectId?: Types.ObjectId;
   jobId?: Types.ObjectId;
   status: string;
+  /** Executor lane; unset on runs that predate lanes (= "job"). */
+  lane?: string;
   createdAt?: Date;
   startedAt?: Date;
   error?: string;
@@ -95,9 +109,10 @@ export function isStaleQueued(
  *
  *  - **Ad-hoc only.** Scheduled job runs (jobId set) are left to the cron
  *    sweeper, which mirrors job-health stats; failing them here would drift.
- *  - **No sibling executing.** The executor serializes per project
- *    (concurrency limit 1 / projectId), so a queued run with a peer already
- *    `running` is legitimately waiting its turn — never fail those.
+ *  - **Lane not full.** The executor runs up to
+ *    `DBT_PROJECT_RUN_CONCURRENCY` runs per project and lane, so a queued run
+ *    whose lane is full is legitimately waiting its turn — never fail those.
+ *    A run in the other lane does not hold it back and does not excuse it.
  *  - **Guarded write** on `status: "queued"`, mutually exclusive with the
  *    executor's `mark-running` claim, so a last-moment pickup is never clobbered.
  *
@@ -115,14 +130,15 @@ export async function reconcileStaleQueuedRun<T extends ReconcilableRun>(
   if (!isStaleQueued(run)) return run;
   // Scheduled job runs are the cron sweeper's responsibility (+ stat mirroring).
   if (run.jobId) return run;
-  // Still waiting behind the per-project concurrency lock? Not a lost event.
+  // Still waiting for a slot of its own lane? Not a lost event.
   if (run.projectId) {
-    const peerRunning = await DbtRun.exists({
+    const peersRunning = await DbtRun.countDocuments({
       projectId: run.projectId,
       status: "running",
       _id: { $ne: run._id },
+      ...dbtRunLaneFilter(run.lane === "interactive" ? "interactive" : "job"),
     });
-    if (peerRunning) return run;
+    if (peersRunning >= dbtProjectRunConcurrency()) return run;
   }
 
   const completedAt = new Date();
@@ -197,6 +213,58 @@ export interface DbtRunCiContext {
   installationId?: number;
 }
 
+/** A scheduled tick that started no run, and why. */
+type SkippedTickReason = "active_run" | "definition_missing";
+
+/**
+ * Count a scheduled tick that started no run. Without this the tick leaves
+ * no trace: an hourly job stuck behind a long build reads as "ran 87 times"
+ * with nothing saying 69 more ticks were dropped.
+ */
+async function recordSkippedTick(
+  jobId: Types.ObjectId,
+  reason: SkippedTickReason,
+  details: Record<string, unknown> = {},
+): Promise<void> {
+  await DbtJob.updateOne(
+    { _id: jobId },
+    {
+      $inc: { "scheduledRun.skippedCount": 1 },
+      $set: { "scheduledRun.lastSkippedAt": new Date() },
+    },
+  ).catch(error => {
+    logger.warn("Failed to count skipped dbt job tick", {
+      jobId: jobId.toString(),
+      error,
+    });
+  });
+  logger.info("dbt job scheduled tick skipped", {
+    event: "dbt.job.tick_skipped",
+    jobId: jobId.toString(),
+    reason,
+    ...details,
+  });
+}
+
+/**
+ * The queued or running run of this job a scheduled tick collapses onto, if
+ * any. Counts the tick as skipped when it does.
+ */
+async function collapseOntoActiveJobRun(
+  jobId: Types.ObjectId,
+): Promise<IDbtRun | null> {
+  const active = await DbtRun.findOne({
+    jobId,
+    status: { $in: ["queued", "running"] },
+  }).sort({ createdAt: -1 });
+  if (!active) return null;
+  await recordSkippedTick(jobId, "active_run", {
+    activeRunId: active._id.toString(),
+    activeRunStatus: active.status,
+  });
+  return active;
+}
+
 export async function triggerDbtRun(params: {
   workspaceId: string;
   projectId: string;
@@ -219,10 +287,23 @@ export async function triggerDbtRun(params: {
    * Ad-hoc/agent runs: execute with `--defer --state <last prod manifest>`
    * so unselected refs resolve to the production build instead of requiring
    * the whole upstream DAG in the target schema. No-op when the project has
-   * no prod manifest yet. Job/CI runs configure defer on the job / CI config
-   * instead of here.
+   * no prod manifest yet. Job runs pass the flag of the job definition they
+   * resolved (triggerDbtJobRun); CI runs configure defer on the CI config.
    */
   deferToProduction?: boolean;
+  /**
+   * The commit to build, when the caller already resolved it (job runs read
+   * their definition at that same commit). Null = resolved, nothing to pin.
+   * Omitted = resolve it here.
+   */
+  sourceSha?: string | null;
+  /** Job runs: the commit the job definition was read from. */
+  definitionSha?: string;
+  /**
+   * Per-run inputs ALREADY validated by `validateRunOverrides`; `commands`
+   * must already hold the final list. Only triggerDbtJobRun passes this.
+   */
+  overrides?: DbtRunOverrides;
   /**
    * A laptop checkout (`mako dbt run`): build the stored overlay over its
    * base commit instead of any branch. `label` is the display-only source
@@ -239,9 +320,10 @@ export async function triggerDbtRun(params: {
   ci?: DbtRunCiContext;
   /**
    * When set (scheduled runs), collapse onto an already-active run for the
-   * same job instead of stacking a new one — the executor only runs one run
-   * per project at a time, so overlapping schedule ticks would otherwise queue
-   * up redundant work (dbt Cloud skips overlapping scheduled runs likewise).
+   * same job instead of stacking a new one — a job runs one run at a time, so
+   * overlapping schedule ticks would otherwise queue up redundant work (dbt
+   * Cloud skips overlapping scheduled runs likewise). The tick is counted on
+   * the job (`scheduledRun.skippedCount`).
    */
   skipIfActive?: boolean;
 }): Promise<IDbtRun> {
@@ -277,22 +359,30 @@ export async function triggerDbtRun(params: {
       : undefined);
 
   if (params.skipIfActive && params.jobId) {
-    const active = await DbtRun.findOne({
-      jobId: new Types.ObjectId(params.jobId),
-      status: { $in: ["queued", "running"] },
-    }).sort({ createdAt: -1 });
+    const active = await collapseOntoActiveJobRun(
+      new Types.ObjectId(params.jobId),
+    );
     if (active) return active;
   }
 
   // Pin the tree now: building "the branch" per command would build whatever
   // the executing instance last fetched, and could change between commands.
-  const sourceSha =
-    project && !params.localOverlay
-      ? ((await resolveWorkingTreeCommit(project, {
-          branch: params.gitBranch,
-          userId: params.workingTreeUserId,
-        })) ?? undefined)
-      : undefined;
+  let sourceSha: string | undefined;
+  if (params.sourceSha !== undefined) {
+    sourceSha = params.sourceSha ?? undefined;
+  } else if (project && !params.localOverlay) {
+    sourceSha =
+      (await resolveWorkingTreeCommit(project, {
+        branch: params.gitBranch,
+        userId: params.workingTreeUserId,
+      })) ?? undefined;
+  }
+
+  const lane = dbtRunLane({
+    jobId: params.jobId,
+    trigger: params.trigger,
+    subcommands: parsedCommands.map(command => command.subcommand),
+  });
 
   const run = await DbtRun.create({
     workspaceId: new Types.ObjectId(params.workspaceId),
@@ -308,6 +398,9 @@ export async function triggerDbtRun(params: {
     sourceBranch,
     sourceSha,
     deferToProduction: params.deferToProduction,
+    definitionSha: params.definitionSha,
+    lane,
+    ...(params.overrides ? { overrides: params.overrides } : {}),
     ...(params.localOverlay
       ? {
           localOverlay: {
@@ -329,6 +422,12 @@ export async function triggerDbtRun(params: {
         projectId: params.projectId,
         runId: run._id.toString(),
         jobId: params.jobId,
+        ...dbtRunQueueKeys({
+          projectId: params.projectId,
+          runId: run._id.toString(),
+          jobId: params.jobId,
+          lane,
+        }),
       },
     });
   } catch (sendError) {
@@ -404,6 +503,26 @@ export async function recordCompletedAdhocDbtRun(params: {
   }
 }
 
+/**
+ * `dbt/jobs/<slug>.yml` is absent at the commit a run of this job would
+ * build: the job was deleted on main and the row has not caught up. Nothing
+ * may run. The scheduler treats it as a skipped tick; a manual trigger
+ * surfaces the message.
+ */
+export class DbtJobDefinitionMissingError extends Error {
+  readonly jobId: string;
+  readonly sourceSha: string;
+
+  constructor(job: Pick<IDbtJob, "_id" | "slug">, sourceSha: string) {
+    super(
+      `Job file dbt/jobs/${job.slug}.yml does not exist at commit ${sourceSha.slice(0, 7)} of the default branch: the job was deleted. No run started.`,
+    );
+    this.name = "DbtJobDefinitionMissingError";
+    this.jobId = job._id.toString();
+    this.sourceSha = sourceSha;
+  }
+}
+
 export async function triggerDbtJobRun(params: {
   workspaceId: string;
   job: IDbtJob;
@@ -415,19 +534,160 @@ export async function triggerDbtJobRun(params: {
    */
   overrides?: DbtRunOverrides;
 }): Promise<IDbtRun> {
-  // WP1: validate, apply and store the overrides.
-  if (params.overrides) throw new Error("not implemented");
+  const { job } = params;
+  if (params.overrides && params.trigger === "schedule") {
+    throw new DbtRunOverridesError(
+      "Scheduled runs take no vars or fullRefresh; change the job instead",
+    );
+  }
+  // Scheduled ticks must not stack behind a still-active run of the job.
+  // Checked before the commit is resolved: a collapsed tick costs no fetch.
+  if (params.trigger === "schedule") {
+    const active = await collapseOntoActiveJobRun(job._id);
+    if (active) return active;
+  }
+
+  const definition = await resolveJobDefinition(params.workspaceId, job);
+  if (definition.kind === "missing") {
+    if (params.trigger === "schedule") {
+      await recordSkippedTick(job._id, "definition_missing", {
+        slug: job.slug,
+        sourceSha: definition.sourceSha,
+      });
+    }
+    throw new DbtJobDefinitionMissingError(job, definition.sourceSha);
+  }
+
+  // Per-run inputs apply to this run only: nothing here writes to the job
+  // row or its yml. Skipped when absent so a plain trigger never depends on
+  // the validator.
+  const overrides = params.overrides
+    ? validateRunOverrides(params.overrides, definition.commands)
+    : undefined;
+  const commands = overrides?.fullRefresh
+    ? applyFullRefresh(definition.commands)
+    : definition.commands;
+
   return triggerDbtRun({
     workspaceId: params.workspaceId,
-    projectId: params.job.projectId.toString(),
-    jobId: params.job._id.toString(),
-    environment: params.job.environment,
-    commands: params.job.commands,
+    projectId: job.projectId.toString(),
+    jobId: job._id.toString(),
+    environment: definition.environment,
+    commands,
     trigger: params.trigger,
     triggeredBy: params.triggeredBy,
-    // Scheduled ticks must not stack behind a still-running run.
-    skipIfActive: params.trigger === "schedule",
+    sourceSha: definition.sourceSha,
+    definitionSha: definition.definitionSha,
+    deferToProduction: definition.deferToProduction,
+    overrides,
   });
+}
+
+type ResolvedJobDefinition =
+  | {
+      kind: "resolved";
+      environment: string;
+      commands: string[];
+      deferToProduction: boolean;
+      /** The commit the run builds. Null when there is no tree to pin. */
+      sourceSha: string | null;
+      /** Set only when the fields above came from the file at `sourceSha`. */
+      definitionSha?: string;
+    }
+  | { kind: "missing"; sourceSha: string };
+
+/** Push-sync the job index, detached: a trigger never waits on it. */
+function requestDbtConfigSync(workspaceId: string): void {
+  void import("./dbt-config.service")
+    .then(m => m.syncDbtConfigFromRepo(workspaceId))
+    .catch(error => {
+      logger.warn("dbt config sync requested by a job trigger failed", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+}
+
+/**
+ * What a run of this job triggered now executes, and the commit it builds.
+ *
+ * The commit is resolved ONCE and the job file is read at that commit, so
+ * the commands and the code can never come from two different commits. The
+ * row is used only when there is no file to read (no repo, a pre-adoption
+ * row) or the file at that commit is one the sync would refuse, in which
+ * case the row is the last good definition.
+ */
+async function resolveJobDefinition(
+  workspaceId: string,
+  job: IDbtJob,
+): Promise<ResolvedJobDefinition> {
+  const fromRow = (sourceSha: string | null): ResolvedJobDefinition => ({
+    kind: "resolved",
+    environment: job.environment,
+    commands: job.commands,
+    deferToProduction: !!job.deferToProduction,
+    sourceSha,
+  });
+
+  const project = await DbtProject.findOne({
+    _id: job.projectId,
+    workspaceId: new Types.ObjectId(workspaceId),
+  })
+    .select("workspaceId environments")
+    .lean();
+  if (!project) return fromRow(null);
+
+  // Jobs build the default branch.
+  const sourceSha = await resolveWorkingTreeCommit(project);
+  if (!sourceSha || !job.slug) return fromRow(sourceSha);
+
+  const atCommit = await readJobDefinitionAtCommit(
+    workspaceId,
+    job.slug,
+    sourceSha,
+  );
+  if (atCommit.kind === "missing") {
+    // The sync removes the row, so the scheduler stops finding it.
+    requestDbtConfigSync(workspaceId);
+    return { kind: "missing", sourceSha };
+  }
+  // The row is behind (or ahead of) this commit: let it catch up. A lost or
+  // late push webhook is otherwise never replayed.
+  if (atCommit.blobSha !== job.sourceBlobSha) requestDbtConfigSync(workspaceId);
+
+  if (atCommit.kind === "invalid") {
+    logger.warn("dbt job file unparseable at the run commit; using the row", {
+      event: "dbt.job.definition_fallback",
+      jobId: job._id.toString(),
+      slug: job.slug,
+      sourceSha,
+      reason: "unparseable job file",
+    });
+    return fromRow(sourceSha);
+  }
+  const { jobApplyFailure } = await import("./dbt-config.service");
+  const failure = jobApplyFailure(project, atCommit.file);
+  if (failure) {
+    logger.warn(
+      "dbt job file does not apply at the run commit; using the row",
+      {
+        event: "dbt.job.definition_fallback",
+        jobId: job._id.toString(),
+        slug: job.slug,
+        sourceSha,
+        reason: failure,
+      },
+    );
+    return fromRow(sourceSha);
+  }
+  return {
+    kind: "resolved",
+    environment: atCommit.file.environment,
+    commands: atCommit.file.commands,
+    deferToProduction: atCommit.file.deferToProduction,
+    sourceSha,
+    definitionSha: sourceSha,
+  };
 }
 
 /**
@@ -476,6 +736,11 @@ export async function triggerDbtRunRetry(params: {
         }
       : {}),
     deferToProduction: source.deferToProduction,
+    // `dbt retry` replays the prior argv, vars included: keep the record
+    // honest about what this run executes.
+    definitionSha: source.definitionSha,
+    ...(source.overrides ? { overrides: source.overrides } : {}),
+    lane: "job",
     retryOfRunId: source._id,
     restoreArtifactKeys: {
       runResults: source.artifactKeys.runResults,
@@ -491,6 +756,12 @@ export async function triggerDbtRunRetry(params: {
         projectId: source.projectId.toString(),
         runId: run._id.toString(),
         jobId: source.jobId?.toString(),
+        ...dbtRunQueueKeys({
+          projectId: source.projectId.toString(),
+          runId: run._id.toString(),
+          jobId: source.jobId?.toString(),
+          lane: "job",
+        }),
       },
     });
   } catch (sendError) {
@@ -682,6 +953,53 @@ export function reenabledAfterAutoDisableFilter(
     enabled: true,
     "scheduledRun.consecutiveFailures": { $gte: threshold },
   };
+}
+
+/**
+ * Disable a scheduled job that kept failing. The ROW flips first: it is what
+ * the scheduler scans, so the job stops even when the yml write-through
+ * fails (no repo access, a rejected push, a git lock). Committing first left
+ * a failed commit with the job still enabled and failing on every tick.
+ *
+ * A failed write-through leaves `enabled: true` in the file while the row is
+ * disabled; the row keeps its `sourceBlobSha`, so the sync sees it as level
+ * and does not re-enable it. The next edit of the file decides again.
+ */
+export async function autoDisableDbtJob(
+  job: IDbtJob,
+  failures: number,
+  lastError?: string,
+): Promise<void> {
+  await DbtJob.updateOne(
+    { _id: job._id },
+    {
+      $set: {
+        enabled: false,
+        "scheduledRun.lastError": `Auto-disabled after ${failures} consecutive failures. Last error: ${lastError ?? "unknown"}`,
+      },
+      $unset: { "scheduledRun.nextAt": "" },
+    },
+  );
+  logger.warn("Auto-disabled dbt job after repeated failures", {
+    jobId: job._id.toString(),
+    consecutiveFailures: failures,
+  });
+  try {
+    const { commitDbtJobFile } = await import("./dbt-config.service");
+    job.enabled = false;
+    await commitDbtJobFile(
+      { workspaceId: job.workspaceId },
+      job,
+      undefined,
+      `dbt: auto-disable job "${job.name}" after ${failures} failures`,
+    );
+  } catch (error) {
+    logger.warn("Auto-disable file write-through failed", {
+      jobId: job._id.toString(),
+      slug: job.slug,
+      error,
+    });
+  }
 }
 
 /** Recompute a job's next scheduled run after a schedule edit. */
