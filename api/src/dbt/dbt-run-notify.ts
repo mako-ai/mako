@@ -108,3 +108,42 @@ export async function emitDbtRunTerminalEvent(runId: string): Promise<void> {
     });
   }
 }
+
+/** One announcement per run that disabled its job, whatever retries. */
+export function dbtJobAutoDisabledEventId(runId: string): string {
+  return `dbt-job-auto-disabled:${runId}`;
+}
+
+/**
+ * Announce that a job was auto-disabled after `consecutiveFailures` failed
+ * runs in a row. `runId` is the failed run that tripped the threshold.
+ *
+ * It travels the same `flow.run.terminal` path as the run's own event, with
+ * `jobDisabled` set: every enabled rule with the failure trigger on the job
+ * or its project gets it once, whatever its cadence, under an idempotency
+ * key of its own. Without it a job on the default cadence goes silent: its
+ * rules heard the first failure and nothing after. Never throws.
+ */
+export async function emitDbtJobAutoDisabledEvent(
+  runId: string,
+  consecutiveFailures: number,
+): Promise<void> {
+  try {
+    const data = await buildDbtRunTerminalEvent(runId);
+    // Only a failed run disables a job.
+    if (!data || data.success) return;
+    await inngest.send({
+      id: dbtJobAutoDisabledEventId(data.runId),
+      name: "flow.run.terminal",
+      data: {
+        ...data,
+        jobDisabled: { consecutiveFailures },
+      } satisfies FlowRunTerminalEventData,
+    });
+  } catch (error) {
+    logger.error("dbt job auto-disabled notification event failed", {
+      runId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}

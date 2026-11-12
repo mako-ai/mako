@@ -97,6 +97,7 @@ import {
   triggerDbtJobRun,
   triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
+import { DbtJobDefinitionMissingError } from "../dbt/dbt-run-errors";
 import { validateScheduledConsoleSchedule } from "../services/scheduled-query-schedule.service";
 import { getArtifactStore } from "../services/artifact-store.service";
 
@@ -1145,6 +1146,19 @@ dbtRoutes.post(
       });
       return c.json({ success: true, runId: run._id.toString() });
     } catch (error) {
+      // The job file is gone at the commit this run would build: the job was
+      // deleted on the default branch and the row has not caught up. A
+      // conflict with the repo's state, not a server fault. Nothing ran.
+      if (error instanceof DbtJobDefinitionMissingError) {
+        return c.json(
+          {
+            success: false,
+            code: "job_definition_missing",
+            error: error.message,
+          },
+          409,
+        );
+      }
       return serverError(c, error, "Failed to trigger dbt job");
     }
   },

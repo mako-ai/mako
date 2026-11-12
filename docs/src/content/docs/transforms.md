@@ -159,10 +159,17 @@ Scheduled runs take no overrides. They always run the job as defined.
 | Rule | Limit |
 | ---- | ----- |
 | Runs of one job at a time | 1, always |
-| Job runs of one project at a time | `DBT_PROJECT_RUN_CONCURRENCY`, default `1` |
-| Validation runs (`parse`, `compile`, `show`) | Their own lane: they never wait behind a job run and never block one |
+| Job runs of one project at a time | N = `DBT_PROJECT_RUN_CONCURRENCY`, default `1`, maximum `16` |
+| Validation runs (`parse`, `compile`, `show`) of one project at a time | N as well, in their own lane: they never wait behind a job run and never block one |
 
 `DBT_PROJECT_RUN_CONCURRENCY` is an environment variable of the Mako API. With the default `1`, the job runs of a project execute one after another. Set it to `2` or more to let different jobs of one project run in parallel. Parallelism is opt-in because Mako takes no lock on tables: two jobs whose selections share a model can write the same table at the same time. Raise the value only when your jobs select disjoint models.
+
+Details of N:
+
+- **Cap of 16.** A value above `16` is read as `16`. A value that is not a whole number of at least `1` is read as `1`.
+- **N slots per lane.** A project has two lanes. The job lane holds job runs, CI runs and builds. The interactive lane holds `parse`, `compile` and `show` runs started by a person or an agent. Each lane has its own N slots, so one project runs at most 2 × N dbt processes at once.
+- **Warm directories.** With N = `1`, the job runs of an environment share one warm project directory. From N = `2`, each job gets its own, so two jobs never wait on the same directory. Each directory holds the project's `target/` and installed packages, so more directories use more of the API's temp storage.
+- **Read at start.** The API reads the value once when it starts. Restart or redeploy to change it.
 
 A scheduled tick that arrives while the previous run of the same job is still queued or running starts no second run. Mako counts the skipped tick on the job and reports the count with the job and in `dbt_list_runs`.
 
@@ -314,8 +321,8 @@ dbt routes are mounted under `/api/workspaces/:workspaceId/dbt`. Highlights (ful
 | `PUT` | `/projects/:projectId/my-environment` | Save the caller's default dev environment (`""` = Auto) |
 | `GET` / `POST` | `/projects/:projectId/jobs` | List / create jobs |
 | `PATCH` / `DELETE` | `/projects/:projectId/jobs/:jobId` | Update / delete a job |
-| `POST` | `/projects/:projectId/jobs/:jobId/trigger` | Run a job now |
-| `GET` | `/projects/:projectId/runs` | List runs |
+| `POST` | `/projects/:projectId/jobs/:jobId/trigger` | Run a job now. Optional JSON body `{ vars?, fullRefresh? }` for that run only. `409` when the job file no longer exists on the default branch |
+| `GET` | `/projects/:projectId/runs` | List runs, newest first. Query: `jobId`, `status`, `trigger`, `limit`, `before` |
 | `GET` | `/projects/:projectId/runs/:runId` | Get a run |
 | `POST` | `/projects/:projectId/runs/:runId/cancel` | Cancel a running run |
 | `POST` | `/projects/:projectId/runs/:runId/retry` | Retry a run |
@@ -324,6 +331,18 @@ dbt routes are mounted under `/api/workspaces/:workspaceId/dbt`. Highlights (ful
 | `POST` | `/projects/:projectId/run-select` | `dbt build --select` a selection |
 | `POST` | `/projects/:projectId/preview` | `dbt show --select` — bounded read-only row preview |
 | `POST` | `/projects/:projectId/command` | Run an allow-listed free-form command |
+
+Query parameters of `GET /projects/:projectId/runs`:
+
+| Parameter | Value | Effect |
+| --------- | ----- | ------ |
+| `jobId` | A job id | Only the runs of that job |
+| `status` | `queued`, `running`, `success`, `error` or `cancelled` | Only runs in that status. Any other value returns `400` |
+| `trigger` | `schedule`, `manual`, `agent` or `ci` | Only runs started that way. Any other value returns `400` |
+| `limit` | 1 to 100, default 50 | Runs per page |
+| `before` | An ISO timestamp | Only runs created before it. Pass the `nextBefore` of the previous page. `nextBefore` is `null` on the last page |
+
+Body of `POST /projects/:projectId/jobs/:jobId/trigger`: `{ vars?, fullRefresh? }`. Both keys are optional and an empty body runs the job as saved. `vars` is an object and `fullRefresh` is a boolean. See [Run overrides](#run-overrides) for the limits.
 | `GET` | `/projects/:projectId/lineage` | DAG nodes + edges from the latest manifest |
 
 ## Project rules (`.makorules.md`)

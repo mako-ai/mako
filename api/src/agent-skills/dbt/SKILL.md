@@ -202,7 +202,8 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
   verify branch work.
 - Operating what already ran (all read-only; details in the `dbt-jobs`
   skill): `dbt_list_runs` for run history and skipped schedule ticks,
-  `dbt_model_cost` for warehouse cost per model, `dbt_table_readers` before
+  `dbt_model_cost` for warehouse cost per model, `dbt_table_readers`
+  (admins and owners) before
   dropping or reshaping a model, `dbt_list_orphans` for relations deleted
   models left behind. Check the `scope` of a cost or readers answer before
   quoting it.

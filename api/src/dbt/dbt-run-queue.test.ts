@@ -18,6 +18,7 @@ import { DbtJob, DbtRun } from "../database/workspace-schema";
 import {
   DEFAULT_DBT_PROJECT_RUN_CONCURRENCY,
   dbtProjectRunConcurrency,
+  dbtRunFallbackQueueKeys,
   dbtRunLane,
   dbtRunLaneFilter,
   dbtRunQueueKeys,
@@ -130,6 +131,63 @@ describe("dbtRunQueueKeys", () => {
     });
     expect(a.laneKey).toBe(b.laneKey);
     expect(a.lockKey).not.toBe(b.lockKey);
+  });
+});
+
+describe("dbtRunFallbackQueueKeys", () => {
+  const event = { projectId: "p1", runId: "r1" };
+
+  it("returns null for an event that carries both keys", () => {
+    expect(
+      dbtRunFallbackQueueKeys({
+        ...event,
+        laneKey: "p1:job",
+        lockKey: "run:r1",
+      }),
+    ).toBeNull();
+  });
+
+  it("gives a keyless event the keys of its own project and run", () => {
+    expect(dbtRunFallbackQueueKeys(event)).toEqual({
+      laneKey: "p1:job",
+      lockKey: "run:r1",
+    });
+  });
+
+  it("never gives two projects or two runs the same key", () => {
+    const a = dbtRunFallbackQueueKeys({ projectId: "p1", runId: "r1" });
+    const b = dbtRunFallbackQueueKeys({ projectId: "p2", runId: "r2" });
+    expect(a?.laneKey).not.toBe(b?.laneKey);
+    expect(a?.lockKey).not.toBe(b?.lockKey);
+  });
+
+  it("locks a job run on its job, from the event or from the run row", () => {
+    expect(dbtRunFallbackQueueKeys({ ...event, jobId: "j1" })?.lockKey).toBe(
+      "job:j1",
+    );
+    const jobId = new Types.ObjectId();
+    expect(dbtRunFallbackQueueKeys(event, { jobId })?.lockKey).toBe(
+      `job:${jobId.toString()}`,
+    );
+  });
+
+  it("uses the run's lane when it has one, the job lane otherwise", () => {
+    expect(
+      dbtRunFallbackQueueKeys(event, { lane: "interactive" })?.laneKey,
+    ).toBe("p1:interactive");
+    expect(dbtRunFallbackQueueKeys(event, {})?.laneKey).toBe("p1:job");
+  });
+
+  it("keeps a key the event does carry", () => {
+    expect(
+      dbtRunFallbackQueueKeys({ ...event, laneKey: "p1:interactive" }),
+    ).toEqual({ laneKey: "p1:interactive", lockKey: "run:r1" });
+  });
+
+  it("treats an empty key as absent", () => {
+    expect(
+      dbtRunFallbackQueueKeys({ ...event, laneKey: "", lockKey: "" }),
+    ).toEqual({ laneKey: "p1:job", lockKey: "run:r1" });
   });
 });
 

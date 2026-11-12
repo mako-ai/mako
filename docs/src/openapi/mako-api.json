@@ -17376,8 +17376,10 @@
             "schema": {
               "type": "string",
               "enum": [
+                "scheduled_query",
                 "flow",
-                "scheduled_query"
+                "dbt_job",
+                "dbt_project"
               ]
             },
             "required": false,
@@ -17543,8 +17545,10 @@
             "schema": {
               "type": "string",
               "enum": [
+                "scheduled_query",
                 "flow",
-                "scheduled_query"
+                "dbt_job",
+                "dbt_project"
               ]
             },
             "required": false,

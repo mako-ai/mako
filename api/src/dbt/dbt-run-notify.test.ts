@@ -43,9 +43,18 @@ import type {
 } from "../services/flow-run-notification.types";
 import {
   buildDbtRunTerminalEvent,
+  dbtJobAutoDisabledEventId,
   dbtRunTerminalEventId,
+  emitDbtJobAutoDisabledEvent,
   emitDbtRunTerminalEvent,
 } from "./dbt-run-notify";
+import {
+  buildDbtSlackText,
+  dbtOutcomeWord,
+  dbtSummaryLine,
+} from "../services/flow-run-notification.helpers";
+import { renderEmail } from "../emails/render";
+import { RunNotificationTemplate } from "../emails/RunNotificationEmail";
 
 const sendMock = inngest.send as unknown as ReturnType<typeof vi.fn>;
 
@@ -516,6 +525,176 @@ describe("cadence", () => {
     expect(
       (await fanOutTerminalRunNotifications(event("r2"))).deliveriesQueued,
     ).toBe(1);
+  });
+});
+
+describe("auto-disable announcement", () => {
+  /** The event the executor emits when `runId` disabled its job. */
+  async function disabledEvent(runId: string, failures = 10) {
+    sendMock.mockClear();
+    await emitDbtJobAutoDisabledEvent(runId, failures);
+    const [sent] = sentEvents("flow.run.terminal");
+    return sent;
+  }
+
+  it("emits one event on the terminal path, with an id of its own", async () => {
+    const runId = await seedRun("error", { stepResults: [FAILED_MODEL] });
+
+    const sent = await disabledEvent(runId);
+
+    expect(sentEvents("flow.run.terminal")).toHaveLength(1);
+    expect(sent.id).toBe(dbtJobAutoDisabledEventId(runId));
+    // Not the run's own id, or Inngest would drop one of the two.
+    expect(sent.id).not.toBe(dbtRunTerminalEventId(runId));
+    expect(sent.data).toMatchObject({
+      resourceType: "dbt_job",
+      resourceId: jobId.toString(),
+      projectId: projectId.toString(),
+      runId,
+      success: false,
+      jobDisabled: { consecutiveFailures: 10 },
+    });
+  });
+
+  it("uses the same event id on a retry, so Inngest keeps one", async () => {
+    const runId = await seedRun("error");
+    await emitDbtJobAutoDisabledEvent(runId, 10);
+    await emitDbtJobAutoDisabledEvent(runId, 10);
+    const ids = sentEvents("flow.run.terminal").map(event => event.id);
+    expect(ids).toEqual([
+      dbtJobAutoDisabledEventId(runId),
+      dbtJobAutoDisabledEventId(runId),
+    ]);
+  });
+
+  it("emits nothing for a successful, cancelled, active or job-less run, and never throws", async () => {
+    for (const runId of [
+      await seedRun("success"),
+      await seedRun("cancelled"),
+      await seedRun("running"),
+      await seedRun("error", { job: null }),
+      "not-an-id",
+    ]) {
+      await emitDbtJobAutoDisabledEvent(runId, 10);
+    }
+    expect(sentEvents("flow.run.terminal")).toHaveLength(0);
+
+    const runId = await seedRun("error");
+    sendMock.mockRejectedValueOnce(new Error("inngest is down"));
+    await expect(
+      emitDbtJobAutoDisabledEvent(runId, 10),
+    ).resolves.toBeUndefined();
+  });
+
+  it("reaches a rule on the default cadence, which heard nothing since the first failure", async () => {
+    const ruleId = await seedRule("dbt_job", jobId, { triggers: ["failure"] });
+
+    expect((await finishRun("error")).queued).toBe(1); // first failure
+    for (let i = 0; i < 8; i++) {
+      expect((await finishRun("error")).queued).toBe(0); // silent repeats
+    }
+    const last = await finishRun("error"); // the 10th: disables the job
+    expect(last.queued).toBe(0);
+
+    const sent = await disabledEvent(last.runId);
+    const result = await fanOutTerminalRunNotifications(
+      sent.data as FlowRunTerminalEventData,
+    );
+
+    expect(result.deliveriesQueued).toBe(1);
+    const [delivery] = deliveries();
+    expect(delivery.ruleId).toBe(ruleId);
+    expect(delivery.trigger).toBe("failure");
+    expect(delivery.payload.jobDisabled).toEqual({ consecutiveFailures: 10 });
+  });
+
+  it("is one more message for an everyFailure rule: the failure and the announcement, each once", async () => {
+    await seedRule("dbt_job", jobId, {
+      triggers: ["failure"],
+      everyFailure: true,
+    });
+    await finishRun("error");
+    const last = await finishRun("error");
+    const sent = await disabledEvent(last.runId, 2);
+    const event = sent.data as FlowRunTerminalEventData;
+
+    await fanOutTerminalRunNotifications(event);
+    // A second fan-out of the same announcement queues nothing new.
+    await fanOutTerminalRunNotifications(event);
+
+    const rows = await NotificationDelivery.find({ runId: last.runId }).lean();
+    expect(rows.map(row => row.idempotencyKey).sort()).toEqual(
+      [
+        `dbt_job:${jobId}:${last.runId}:failure:email:${rows[0].ruleId}`,
+        `dbt_job:${jobId}:${last.runId}:auto-disabled:failure:email:${rows[0].ruleId}`,
+      ].sort(),
+    );
+    const ids = sentEvents("notification/deliver").map(event => event.id);
+    expect(new Set(ids).size).toBe(1);
+  });
+
+  it("reaches the project default too, and skips success-only and disabled rules", async () => {
+    const projectRule = await seedRule("dbt_project", projectId, {
+      triggers: ["failure"],
+    });
+    await seedRule("dbt_job", jobId, { triggers: ["success"] });
+    await seedRule("dbt_job", jobId, {
+      triggers: ["failure"],
+      enabled: false,
+    });
+    await seedRun("error");
+    const runId = await seedRun("error");
+
+    const sent = await disabledEvent(runId);
+    const result = await fanOutTerminalRunNotifications(
+      sent.data as FlowRunTerminalEventData,
+    );
+
+    expect(result.deliveriesQueued).toBe(1);
+    expect(deliveries().map(delivery => delivery.ruleId)).toEqual([
+      projectRule,
+    ]);
+  });
+
+  it("says the job was disabled, after how many failures, and what failed last", async () => {
+    await seedRun("error");
+    const runId = await seedRun("error", { stepResults: [FAILED_MODEL] });
+    const sent = await disabledEvent(runId);
+    const payload = buildOutboundPayload({
+      event: sent.data as FlowRunTerminalEventData,
+      resourceName: "Nightly build",
+      trigger: "failure",
+    });
+
+    expect(dbtOutcomeWord(payload)).toBe("disabled");
+    expect(dbtSummaryLine(payload)).toBe(
+      "Disabled after 10 failed runs in a row. No scheduled run starts " +
+        "until someone enables the job again.",
+    );
+    const slack = buildDbtSlackText(payload);
+    expect(slack.split("\n")[0]).toBe(
+      "*dbt job disabled: Nightly build* (prod)",
+    );
+    expect(slack).toContain("Disabled after 10 failed runs in a row.");
+    expect(slack).toContain("fct_orders (model, error)");
+    expect(slack).toContain(`?run=${runId}|Open the run in Mako>`);
+
+    const email = await renderEmail(RunNotificationTemplate, payload);
+    expect(email.subject).toBe('Mako: dbt job "Nightly build" disabled (prod)');
+    expect(email.text).toContain("Disabled after 10 failed runs in a row.");
+  });
+
+  it("leaves a plain failure payload without jobDisabled", async () => {
+    const runId = await seedRun("error");
+    const event = await buildDbtRunTerminalEvent(runId);
+    if (!event) throw new Error("expected an event");
+    const payload = buildOutboundPayload({
+      event,
+      resourceName: "Nightly build",
+      trigger: "failure",
+    });
+    expect(payload).not.toHaveProperty("jobDisabled");
+    expect(dbtOutcomeWord(payload)).toBe("failed");
   });
 });
 

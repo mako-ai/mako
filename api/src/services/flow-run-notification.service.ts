@@ -25,6 +25,7 @@ import {
   buildDbtSlackText,
   buildIdempotencyKey,
   dbtRunDeepLink,
+  deliveryRunKey,
   isDbtResourceType,
   ruleTargetsForEvent,
   shouldDeliverForRule,
@@ -187,6 +188,7 @@ function buildDbtOutboundPayload(
           failedSteps: event.failedSteps ?? [],
           failedStepCount:
             event.failedStepCount ?? event.failedSteps?.length ?? 0,
+          ...(event.jobDisabled ? { jobDisabled: event.jobDisabled } : {}),
         }
       : { recovered: event.previousStatus === "error" }),
   };
@@ -239,7 +241,7 @@ export async function fanOutTerminalRunNotifications(
     const idempotencyKey = buildIdempotencyKey({
       resourceType: event.resourceType,
       resourceId: event.resourceId,
-      runId: event.runId,
+      runId: deliveryRunKey(event),
       trigger,
       channelType,
       ruleId,

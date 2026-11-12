@@ -80,18 +80,33 @@ used: `dbt_get_run` and `dbt_list_runs` return `overrides` and the final
 Three read-only tools read warehouse metadata. Each runs one bounded
 metadata query and never starts a dbt run.
 
-- `dbt_model_cost({ projectId, days?, jobId?, runId? })`: bytes billed and
-  slot milliseconds per model per day for Mako's dbt runs. Use it to rank
-  models by cost or to price one job or one run.
+- `dbt_model_cost({ projectId, days?, jobId?, runId?, model? })`: bytes
+  billed and slot milliseconds per model per day for Mako's dbt runs. Use it
+  to rank models by cost or to price one job, one run or one model. `model`
+  takes a dbt unique_id (`model.analytics.fct_orders`) or a bare model name
+  (`fct_orders`). Rows add `invocations` (dbt commands that ran the model
+  that day) and `avgDurationMs` (mean time of one warehouse job). Read
+  `notes` before quoting a total.
 - `dbt_table_readers({ projectId, relation: { schema, name } })`: who read a
-  relation, grouped by Mako source, app and account. Call it before a model
-  or table is dropped, renamed or changed in shape.
+  relation, grouped by Mako source, app and account. Admins and owners only:
+  the rows hold account emails. Call it before a model or table is dropped,
+  renamed or changed in shape. A read through a downstream view is
+  invisible: the warehouse job names that other view. Call the tool again
+  for every view built on the relation. `jobsByTextOnly` counts the jobs
+  matched on the name in the query text only, which is how a view is found.
+  Pass `notes` and `warning` to the user.
 - `dbt_list_orphans({ projectId })`: relations in the project's schemas that
   no model, seed or snapshot owns. It drops nothing, and Mako has no tool
   that drops them. The list holds candidates: other tools' tables in the same
-  schema, dbt test-audit tables and branch builds appear in it. A schema that
-  no longer hosts any model is not scanned. Check `dbt_table_readers` on a
-  candidate and let the user decide.
+  schema, dbt test-audit tables and branch builds appear in it. Each orphan
+  carries `confidence` (`high`, `medium`, `low`) and `reasons`, the
+  false-positive classes that apply to it. Present `high` rows as likely
+  leftovers and quote the reasons of the others. Read `manifestAgeHours`,
+  `stale` and `warnings` first: a stale manifest lists models added since by
+  mistake. A schema with no remaining model is skipped. `schemasMissing`
+  names schemas the manifest writes to that the warehouse lacks. `skipped`
+  counts the sources and stored test failures left out. Check
+  `dbt_table_readers` on a candidate and let the user decide.
 
 Read every answer's scope before quoting it:
 
@@ -99,7 +114,7 @@ Read every answer's scope before quoting it:
   run exists yet. Report the `message`. Do not retry and do not rebuild the
   answer with hand-written SQL.
 - `scope: "project"` covers every account in the warehouse project.
-- Any other `scope` is the fallback to the connection's own account. Mako's
+- `scope: "user"` is the fallback to the connection's own account. Mako's
   own work (dbt runs, app bindings, consoles) is visible; BI tools, analysts
   and other service accounts are not. "No readers" on that scope does not
   mean the table is unused. Pass the `warning` to the user: it names the

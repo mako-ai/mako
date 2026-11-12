@@ -53,6 +53,7 @@ vi.mock("../services/artifact-store.service", () => ({
 
 vi.mock("./dbt-run-notify", () => ({
   emitDbtRunTerminalEvent: vi.fn(async () => undefined),
+  emitDbtJobAutoDisabledEvent: vi.fn(async () => undefined),
 }));
 
 vi.mock("./dbt-run-labels", () => ({
@@ -82,7 +83,11 @@ import {
 } from "../inngest/functions/dbt-run";
 import { loadDbtProjectSnapshot } from "./dbt-project.service";
 import { dbtRunLabelEnv } from "./dbt-run-labels";
-import { emitDbtRunTerminalEvent } from "./dbt-run-notify";
+import {
+  emitDbtJobAutoDisabledEvent,
+  emitDbtRunTerminalEvent,
+} from "./dbt-run-notify";
+import { dbtRunQueueKeys } from "./dbt-run-queue";
 import {
   DbtJobDefinitionMissingError,
   triggerDbtJobRun,
@@ -93,6 +98,7 @@ import { withProjectDir } from "./workspace-dir.service";
 const runDbtMock = vi.mocked(runDbt);
 const snapshotMock = vi.mocked(loadDbtProjectSnapshot);
 const emitMock = vi.mocked(emitDbtRunTerminalEvent);
+const emitDisabledMock = vi.mocked(emitDbtJobAutoDisabledEvent);
 const labelEnvMock = vi.mocked(dbtRunLabelEnv);
 const warmDirMock = vi.mocked(withProjectDir);
 const triggerJobMock = vi.mocked(triggerDbtJobRun);
@@ -110,9 +116,18 @@ function handlerOf(fn: unknown): Handler {
 /** Runs each step once, in order, and round-trips its result like Inngest. */
 function fakeStep() {
   const ids: string[] = [];
+  const sent: Array<{ id?: string; name: string; data: unknown }> = [];
   return {
     ids,
+    sent,
     step: {
+      sendEvent: async (
+        id: string,
+        event: { id?: string; name: string; data: unknown },
+      ) => {
+        ids.push(id);
+        sent.push(event);
+      },
       run: async (id: string, fn: () => unknown) => {
         ids.push(id);
         const result = await fn();
@@ -229,20 +244,36 @@ async function seedQueuedRun(fields: Record<string, unknown> = {}) {
   });
 }
 
-async function execute(run: { _id: Types.ObjectId; jobId?: Types.ObjectId }) {
-  const { step, ids } = fakeStep();
+async function execute(
+  run: { _id: Types.ObjectId; jobId?: Types.ObjectId },
+  // false = an event sent by a build that predates lanes: no queue keys.
+  options: { withQueueKeys?: boolean } = {},
+) {
+  const { step, ids, sent } = fakeStep();
+  const base = {
+    workspaceId: WS.toString(),
+    projectId: PROJECT.toString(),
+    runId: run._id.toString(),
+    jobId: run.jobId?.toString(),
+  };
   const result = await handlerOf(dbtRunExecutorFunction)({
     event: {
-      data: {
-        workspaceId: WS.toString(),
-        projectId: PROJECT.toString(),
-        runId: run._id.toString(),
-        jobId: run.jobId?.toString(),
-      },
+      data:
+        options.withQueueKeys === false
+          ? base
+          : {
+              ...base,
+              ...dbtRunQueueKeys({
+                projectId: base.projectId,
+                runId: base.runId,
+                jobId: base.jobId,
+                lane: "job",
+              }),
+            },
     },
     step,
   });
-  return { result, ids };
+  return { result, ids, sent };
 }
 
 function dbtRequests(): DbtRunRequest[] {
@@ -262,6 +293,90 @@ describe("executor concurrency (#1239)", () => {
       { key: "event.data.lockKey", limit: 1 },
     ]);
     expect(opts.retries).toBe(0);
+  });
+});
+
+describe("executor: events sent before lanes carry no queue keys", () => {
+  it("re-sends a keyless event with the keys of its own project and job, and runs nothing", async () => {
+    const job = await seedJob();
+    const run = await seedQueuedRun({ jobId: job._id, trigger: "schedule" });
+
+    const { result, ids, sent } = await execute(run, { withQueueKeys: false });
+
+    expect(result).toEqual({ runId: run._id.toString(), status: "requeued" });
+    expect(ids).toEqual(["derive-queue-keys", "requeue-with-queue-keys"]);
+    expect(sent).toEqual([
+      {
+        id: `dbt-run-requeue:${run._id.toString()}`,
+        name: "dbt/run.requested",
+        data: {
+          workspaceId: WS.toString(),
+          projectId: PROJECT.toString(),
+          runId: run._id.toString(),
+          jobId: job._id.toString(),
+          laneKey: `${PROJECT.toString()}:job`,
+          lockKey: `job:${job._id.toString()}`,
+        },
+      },
+    ]);
+    // The run waits for its copy: still queued, dbt never started.
+    expect((await DbtRun.findById(run._id).lean())?.status).toBe("queued");
+    expect(runDbtMock).not.toHaveBeenCalled();
+  });
+
+  it("gives two keyless runs of two projects different keys", async () => {
+    const other = new Types.ObjectId();
+    const first = await seedQueuedRun();
+    const second = await seedQueuedRun({ projectId: other });
+
+    const a = await execute(first, { withQueueKeys: false });
+    const { step, sent } = fakeStep();
+    await handlerOf(dbtRunExecutorFunction)({
+      event: {
+        data: {
+          workspaceId: WS.toString(),
+          projectId: other.toString(),
+          runId: second._id.toString(),
+        },
+      },
+      step,
+    });
+
+    const keysOf = (event: { data: unknown }) =>
+      event.data as { laneKey: string; lockKey: string };
+    const [x, y] = [keysOf(a.sent[0]), keysOf(sent[0])];
+    expect(x.laneKey).toBe(`${PROJECT.toString()}:job`);
+    expect(y.laneKey).toBe(`${other.toString()}:job`);
+    expect(x.lockKey).toBe(`run:${first._id.toString()}`);
+    expect(y.lockKey).toBe(`run:${second._id.toString()}`);
+  });
+
+  it("keeps the lane of an interactive run", async () => {
+    const run = await seedQueuedRun({
+      commands: ["parse"],
+      lane: "interactive",
+    });
+    const { sent } = await execute(run, { withQueueKeys: false });
+    expect(sent[0].data).toMatchObject({
+      laneKey: `${PROJECT.toString()}:interactive`,
+      lockKey: `run:${run._id.toString()}`,
+    });
+  });
+
+  it("sends nothing for a run that is no longer queued", async () => {
+    const run = await seedQueuedRun({ status: "cancelled" });
+    const { result, ids, sent } = await execute(run, { withQueueKeys: false });
+    expect(result).toEqual({ runId: run._id.toString(), status: "skipped" });
+    expect(ids).toEqual(["derive-queue-keys"]);
+    expect(sent).toEqual([]);
+  });
+
+  it("runs the copy: an event with keys goes straight to the run", async () => {
+    const run = await seedQueuedRun();
+    const { result, ids } = await execute(run);
+    expect(result).toMatchObject({ status: "success" });
+    expect(ids[0]).toBe("mark-running");
+    expect(ids).not.toContain("requeue-with-queue-keys");
   });
 });
 
@@ -523,6 +638,48 @@ describe("executor: auto-disable after repeated failures", () => {
     // The run still finalizes and notifies.
     expect((await DbtRun.findById(run._id).lean())?.status).toBe("error");
     expect(emitMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("announces the auto-disable once, in its own step, after the run's own event", async () => {
+    dbtFails();
+    const job = await seedJob({
+      scheduledRun: { runCount: 9, consecutiveFailures: 9 },
+    });
+    const run = await seedQueuedRun({ jobId: job._id, trigger: "schedule" });
+
+    const { ids } = await execute(run);
+
+    expect(emitDisabledMock).toHaveBeenCalledTimes(1);
+    expect(emitDisabledMock).toHaveBeenCalledWith(run._id.toString(), 10);
+    expect(ids.slice(-2)).toEqual([
+      "emit-terminal-event",
+      "emit-job-auto-disabled-event",
+    ]);
+  });
+
+  it("announces nothing for a failure below the threshold, a success, or a job with no schedule", async () => {
+    dbtFails();
+    const below = await seedJob({
+      scheduledRun: { runCount: 3, consecutiveFailures: 3 },
+    });
+    await execute(await seedQueuedRun({ jobId: below._id }));
+
+    // Manual-only jobs are never auto-disabled: nothing re-runs them.
+    const manualOnly = await seedJob({
+      slug: "backfill",
+      schedule: undefined,
+      scheduledRun: { runCount: 9, consecutiveFailures: 9 },
+    });
+    await execute(await seedQueuedRun({ jobId: manualOnly._id }));
+
+    dbtSucceeds();
+    const healthy = await seedJob({
+      slug: "hourly",
+      scheduledRun: { runCount: 9, consecutiveFailures: 9 },
+    });
+    await execute(await seedQueuedRun({ jobId: healthy._id }));
+
+    expect(emitDisabledMock).not.toHaveBeenCalled();
   });
 
   it("leaves the job enabled below the threshold", async () => {

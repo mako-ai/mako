@@ -47,6 +47,17 @@ export interface FlowRunTerminalEventData {
   failedStepCount?: number;
   /** dbt job runs: link to the run in the app. */
   deepLink?: string;
+  /**
+   * dbt job runs: set on the one extra event sent when this failed run
+   * auto-disabled its job. Failure rules get it whatever their cadence.
+   */
+  jobDisabled?: DbtJobDisabledInfo;
+}
+
+/** Why a dbt job stopped running on its schedule. */
+export interface DbtJobDisabledInfo {
+  /** Failed runs in a row, the last one included. */
+  consecutiveFailures: number;
 }
 
 /** Fan-out sends one delivery job per matching rule */
@@ -85,4 +96,6 @@ export interface NotificationOutboundPayload {
   recovered?: boolean;
   failedSteps?: RunFailedStep[];
   failedStepCount?: number;
+  /** Set when this message announces that the job was auto-disabled. */
+  jobDisabled?: DbtJobDisabledInfo;
 }

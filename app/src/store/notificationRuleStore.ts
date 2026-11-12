@@ -7,12 +7,6 @@ import type {
   NotificationRuleApi,
 } from "../lib/api-types";
 
-/**
- * The generated client still lists the 2 original resource types on the query
- * until the OpenAPI spec is regenerated; the API accepts all 4.
- */
-type GeneratedResourceType = "flow" | "scheduled_query";
-
 export function isDbtNotificationResource(
   resourceType: NotificationResourceTypeApi,
 ): boolean {
@@ -77,7 +71,7 @@ export const useNotificationRuleStore = create<
           params: {
             path: { workspaceId },
             query: {
-              resourceType: resourceType as GeneratedResourceType,
+              resourceType,
               resourceId,
             },
           },
@@ -98,7 +92,7 @@ export const useNotificationRuleStore = create<
             params: {
               path: { workspaceId },
               query: {
-                resourceType: resourceType as GeneratedResourceType,
+                resourceType,
                 resourceId,
                 ...(options?.limit != null
                   ? { limit: String(options.limit) }

@@ -47,9 +47,13 @@ import {
   triggerDbtJobRun,
 } from "../../dbt/dbt-run.service";
 import { dbtRunLabelEnv } from "../../dbt/dbt-run-labels";
-import { emitDbtRunTerminalEvent } from "../../dbt/dbt-run-notify";
+import {
+  emitDbtJobAutoDisabledEvent,
+  emitDbtRunTerminalEvent,
+} from "../../dbt/dbt-run-notify";
 import {
   dbtProjectRunConcurrency,
+  dbtRunFallbackQueueKeys,
   dbtRunWarmDirOwner,
 } from "../../dbt/dbt-run-queue";
 import { resolveProdLikeEnvironmentName } from "../../dbt/dbt-environments.service";
@@ -225,6 +229,34 @@ export const dbtRunExecutorFunction = inngest.createFunction(
   async ({ event, step }) => {
     const data = event.data as DbtRunRequestedEvent;
     const runObjectId = new Types.ObjectId(data.runId);
+
+    // An event sent before lanes shipped carries no concurrency keys, so
+    // every such event of every project holds the same empty key. Send it
+    // again with its own keys and stop: the copy queues where it belongs.
+    // The copy always carries both keys, so this never loops.
+    if (!data.laneKey || !data.lockKey) {
+      const keys = await step.run("derive-queue-keys", async () => {
+        const run = await DbtRun.findById(runObjectId)
+          .select("jobId lane status")
+          .lean();
+        // Cancelled or timed out while it waited: nothing left to queue.
+        if (!run || run.status !== "queued") return null;
+        return dbtRunFallbackQueueKeys(data, run);
+      });
+      if (!keys) return { runId: data.runId, status: "skipped" };
+      await step.sendEvent("requeue-with-queue-keys", {
+        // One copy per run, whatever retries the step.
+        id: `dbt-run-requeue:${data.runId}`,
+        name: "dbt/run.requested",
+        data: { ...data, ...keys },
+      });
+      logger.info("Requeued a dbt run that carried no queue keys", {
+        runId: data.runId,
+        projectId: data.projectId,
+        ...keys,
+      });
+      return { runId: data.runId, status: "requeued" };
+    }
 
     const runInfo = await step.run("mark-running", async () => {
       const run = await DbtRun.findOneAndUpdate(
@@ -608,8 +640,10 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       unregisterActiveRun(data.runId, runControl);
     }
 
-    const finalized = await step.run("finalize-run", async () => {
+    const finalizeResult = await step.run("finalize-run", async () => {
       const completedAt = new Date();
+      // Set when this run's failure auto-disabled its job.
+      let autoDisabledAfter: number | null = null;
       const run = await DbtRun.findById(runObjectId)
         .select("startedAt status cancelledAt cancelledBy")
         .lean();
@@ -689,6 +723,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           // Flips the row first, so a failed yml commit cannot leave the job
           // enabled.
           await autoDisableDbtJob(updatedJob, failures, errorMessage);
+          autoDisabledAfter = failures;
         }
       }
 
@@ -725,8 +760,9 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           }
         }
       }
-      return true;
+      return { autoDisabledAfter };
     });
+    const finalized = finalizeResult !== false;
 
     // Notification rules on the job or its project. Its own step, after the
     // terminal status is stored, so a retry of anything above never emits
@@ -734,6 +770,18 @@ export const dbtRunExecutorFunction = inngest.createFunction(
     if (finalized) {
       await step.run("emit-terminal-event", () =>
         emitDbtRunTerminalEvent(data.runId),
+      );
+    }
+
+    // The job stops running from here on, so its failure rules would hear
+    // nothing more. Tell them once that it was disabled, and why. A rule on
+    // the default cadence got no post for this run (the previous one had
+    // failed too), so this is the one message that says the job is off.
+    const autoDisabledAfter =
+      finalizeResult !== false ? finalizeResult.autoDisabledAfter : null;
+    if (autoDisabledAfter) {
+      await step.run("emit-job-auto-disabled-event", () =>
+        emitDbtJobAutoDisabledEvent(data.runId, autoDisabledAfter),
       );
     }
 

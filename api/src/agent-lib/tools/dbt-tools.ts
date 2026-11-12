@@ -95,6 +95,7 @@ import {
   listDbtRuns,
 } from "../../dbt/dbt-run-history";
 import { listDbtOrphans } from "../../dbt/dbt-orphans.service";
+import { DbtJobDefinitionMissingError } from "../../dbt/dbt-run-errors";
 import {
   modelCost,
   tableReaders,
@@ -125,6 +126,8 @@ const projectIdField = z
 const RELATION_PART_PATTERN = /^[\w$-]+$/;
 /** Warehouse project/catalog: also allows the dots and colons of legacy ids. */
 const RELATION_DATABASE_PATTERN = /^[\w$.:-]+$/;
+/** A dbt unique_id (`model.project.name`) or a bare model name. */
+const MODEL_REFERENCE_PATTERN = /^[A-Za-z0-9_.-]{1,200}$/;
 /** Orphans listed by default; the full count is always returned. */
 const DEFAULT_ORPHAN_LIMIT = 200;
 const MAX_ORPHAN_LIMIT = 1000;
@@ -1196,6 +1199,15 @@ export const createDbtServerTools = (
               "(Transforms → Jobs).",
           };
         } catch (error) {
+          if (error instanceof DbtJobDefinitionMissingError) {
+            return {
+              success: false,
+              code: "job_definition_missing",
+              error:
+                `${error.message} Do not retry: read_dbt_project_tree ` +
+                "lists the jobs that exist now.",
+            };
+          }
           return toolError(error, "Failed to trigger job");
         }
       },
@@ -1526,10 +1538,15 @@ export const createDbtServerTools = (
         "bytes billed and slot milliseconds, read from the warehouse's own " +
         "job history. Answers 'which models cost the most', 'what did this " +
         "job or this run cost', 'did a model get more expensive'. Narrow " +
-        "with `jobId` (one job's runs) or `runId` (one run). Only runs " +
+        "with `jobId` (one job's runs), `runId` (one run) or `model` (one " +
+        "model). Rows that carry them also give `invocations` (dbt commands " +
+        "that ran the model that day) and `avgDurationMs` (mean wall-clock " +
+        "time of one warehouse job). Only runs " +
         "started by Mako count, matched through the invocation ids stored " +
         "on each run, so runs older than that record are missing. Read the " +
-        "`scope` and `message` of the result before quoting a total. Looks " +
+        "`scope`, `message` and `notes` of the result before quoting a " +
+        'total: `scope` is "project" (every job of the warehouse project) ' +
+        'or "user" (only this connection\'s own account). Looks ' +
         "back 7 days by default, 30 at most. Engines without a job history " +
         "return `supported: false` with the reason — report it, do not " +
         "retry. Runs one bounded metadata query on the warehouse.",
@@ -1546,6 +1563,15 @@ export const createDbtServerTools = (
           .describe("Rows to return, most expensive first (default 100)."),
         jobId: z.string().optional().describe("Only the runs of this dbt job."),
         runId: z.string().optional().describe("Only this dbt run."),
+        model: z
+          .string()
+          .regex(MODEL_REFERENCE_PATTERN, "Invalid model reference")
+          .optional()
+          .describe(
+            "Only this model: a dbt unique_id such as " +
+              "model.analytics.fct_orders, or a bare model name such as " +
+              "fct_orders.",
+          ),
       }),
       execute: async ({
         projectId,
@@ -1554,6 +1580,7 @@ export const createDbtServerTools = (
         limit,
         jobId,
         runId,
+        model,
       }) => {
         try {
           const project = await assertProject(projectId);
@@ -1571,6 +1598,7 @@ export const createDbtServerTools = (
             limit,
             jobId,
             runId,
+            model,
           });
           if (!result.supported) {
             return {
@@ -1593,6 +1621,8 @@ export const createDbtServerTools = (
             scope: result.scope,
             days: result.days,
             ...(result.warning ? { warning: result.warning } : {}),
+            ...(result.notes?.length ? { notes: result.notes } : {}),
+            ...(model ? { model } : {}),
             message:
               describeJobHistoryScope(result) +
               (result.rows.length === 0
@@ -1612,10 +1642,16 @@ export const createDbtServerTools = (
       description:
         "Who reads one warehouse relation: the jobs that referenced it, " +
         "grouped by Mako source (app binding, console, dbt), Mako app and " +
-        "account, with job count, bytes billed and the last read time. Use " +
+        "account, with job count, bytes billed and the last read time. " +
+        "`jobsByTextOnly` counts the jobs matched on the relation's name " +
+        "in the query text only, which is how a view is found. A read " +
+        "THROUGH a downstream view is invisible: the job names that other " +
+        "view, so check the readers of every view built on this relation " +
+        "(`notes` repeats this). The rows hold account emails, so this " +
+        "tool is for workspace admins. Use " +
         "it BEFORE dropping, renaming or changing a model or table, and to " +
         "answer 'is this table still used'. An empty answer proves nothing " +
-        'unless `scope` is "project": on the fallback scope only this ' +
+        'unless `scope` is "project": on the "user" scope only this ' +
         "connection's own account is visible, so readers outside Mako " +
         "(BI tools, analysts) are missing — say so, and quote the grant in " +
         "`warning`. Looks back 7 days by default, 30 at most. Engines " +
@@ -1684,12 +1720,17 @@ export const createDbtServerTools = (
             scope: result.scope,
             days: result.days,
             ...(result.warning ? { warning: result.warning } : {}),
+            ...(result.notes?.length ? { notes: result.notes } : {}),
             message:
               describeJobHistoryScope(result) +
               (result.rows.length === 0
                 ? ` No job in that scope read ${relationName}.`
                 : ""),
             rowCount: result.rows.length,
+            jobsByTextOnly: result.rows.reduce(
+              (sum, row) => sum + (row.jobsByTextOnly ?? 0),
+              0,
+            ),
             rows: result.rows,
           };
         } catch (error) {
@@ -1708,9 +1749,16 @@ export const createDbtServerTools = (
         "READ-ONLY: it drops nothing. Treat the list as candidates, not as " +
         "a verdict: it includes tables other tools wrote into the same " +
         "schema, dbt test-audit tables and relations from branch or CI " +
-        "builds, and it is as old as `manifestGeneratedAt`. A schema that " +
-        "no longer hosts any model is not scanned, so its leftovers are " +
-        "missing. Check dbt_table_readers before the user removes one. " +
+        "builds. Each orphan carries `confidence` (high, medium or low) " +
+        "and `reasons`, the false-positive classes that apply to it: " +
+        "quote both, and present only high-confidence rows as likely " +
+        "leftovers. The list is as old as the manifest: read " +
+        "`manifestAgeHours`, `stale` and `warnings` before trusting it. " +
+        "A schema with no remaining model is skipped, so its leftovers " +
+        "are missing; `schemasMissing` names the schemas the manifest " +
+        "writes to that the warehouse does not have, and `skipped` counts " +
+        "the sources and stored test failures left out. Check " +
+        "dbt_table_readers (admins) before the user removes one. " +
         "Engines that cannot list relations, and projects with no " +
         "successful run yet, return `supported: false` with the reason.",
       inputSchema: z.object({
@@ -1757,22 +1805,38 @@ export const createDbtServerTools = (
             ...(result.manifestGeneratedAt
               ? { manifestGeneratedAt: result.manifestGeneratedAt }
               : {}),
+            ...(result.manifestAgeHours !== undefined
+              ? { manifestAgeHours: result.manifestAgeHours }
+              : {}),
+            stale: result.stale,
+            warnings: result.warnings,
             schemasScanned: result.schemasScanned,
+            schemasMissing: result.schemasMissing,
+            skipped: result.skipped,
             expectedCount: result.expectedCount,
             orphanCount: orphans.length,
             orphanBytes: orphans.reduce(
               (sum, relation) => sum + (relation.sizeBytes ?? 0),
               0,
             ),
-            ...(listed.length < orphans.length
+            ...(listed.length < orphans.length || result.truncated
               ? { truncated: true, listed: listed.length }
               : {}),
+            confidenceCounts: {
+              high: orphans.filter(o => o.confidence === "high").length,
+              medium: orphans.filter(o => o.confidence === "medium").length,
+              low: orphans.filter(o => o.confidence === "low").length,
+            },
             message:
               orphans.length === 0
                 ? "No orphan relation in the scanned schemas."
                 : `${orphans.length} relation(s) in the scanned schemas ` +
                   "belong to no model, seed or snapshot. Nothing was " +
-                  "dropped. Candidates only: confirm each with the user.",
+                  "dropped. Candidates only: confirm each with the user." +
+                  (result.stale
+                    ? " The manifest is stale, so models added since may " +
+                      "be listed here by mistake."
+                    : ""),
             orphans: listed,
           };
         } catch (error) {

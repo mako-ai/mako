@@ -76,11 +76,16 @@ export function ruleTargetsForEvent(
  * with `everyFailure`), and "success" only as the recovery after a failure.
  */
 export function shouldDeliverForRule(params: {
-  event: Pick<FlowRunTerminalEventData, "resourceType" | "previousStatus">;
+  event: Pick<
+    FlowRunTerminalEventData,
+    "resourceType" | "previousStatus" | "jobDisabled"
+  >;
   trigger: NotificationTrigger;
   rule: { everyFailure?: boolean };
 }): boolean {
   if (params.event.resourceType !== "dbt_job") return true;
+  // The job is off from here on: every failure rule hears it, once.
+  if (params.event.jobDisabled) return params.trigger === "failure";
   const previousFailed = params.event.previousStatus === "error";
   if (params.trigger === "failure") {
     return params.rule.everyFailure === true || !previousFailed;
@@ -108,6 +113,17 @@ export function buildIdempotencyKey(params: {
     params.channelType,
     params.ruleId,
   ].join(":");
+}
+
+/**
+ * The run part of a delivery's idempotency key. The auto-disabled
+ * announcement shares its run with that run's failure post, so it gets a
+ * key of its own: both are delivered, each once.
+ */
+export function deliveryRunKey(
+  event: Pick<FlowRunTerminalEventData, "runId" | "jobDisabled">,
+): string {
+  return event.jobDisabled ? `${event.runId}:auto-disabled` : event.runId;
 }
 
 export function generateWebhookSigningSecret(): string {
@@ -218,8 +234,12 @@ export function runTriggerLabel(
 
 /** "failed", "recovered" or "succeeded" for a dbt job payload. */
 export function dbtOutcomeWord(
-  payload: Pick<NotificationOutboundPayload, "trigger" | "recovered">,
+  payload: Pick<
+    NotificationOutboundPayload,
+    "trigger" | "recovered" | "jobDisabled"
+  >,
 ): string {
+  if (payload.jobDisabled) return "disabled";
   if (payload.trigger === "failure") return "failed";
   return payload.recovered ? "recovered" : "succeeded";
 }
@@ -227,6 +247,14 @@ export function dbtOutcomeWord(
 /** One line under the headline: what failed, how it ran, how long. */
 export function dbtSummaryLine(payload: NotificationOutboundPayload): string {
   const parts: string[] = [];
+  if (payload.jobDisabled) {
+    const failures = payload.jobDisabled.consecutiveFailures;
+    // Its own sentence: this message is the last one the job sends.
+    return (
+      `Disabled after ${failures} failed ${failures === 1 ? "run" : "runs"} ` +
+      "in a row. No scheduled run starts until someone enables the job again."
+    );
+  }
   if (payload.trigger === "failure") {
     const count = payload.failedStepCount ?? 0;
     if (count > 0) {

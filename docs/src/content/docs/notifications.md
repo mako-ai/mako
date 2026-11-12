@@ -59,6 +59,14 @@ dbt rules follow the state of the job, so a job that fails every hour posts once
 - A cancelled run posts nothing.
 - Runs started without a job (editor builds, agent builds, CI) post nothing.
 
+### When Mako disables a failing job
+
+Mako disables a scheduled job after 10 failed runs in a row (`DBT_AUTO_DISABLE_AFTER_FAILURES`). The job then starts no scheduled run, so it would send no further alert.
+
+Every rule with the `failure` trigger on the job or its project gets 1 more message when that happens. It says the job was disabled, after how many failed runs, and lists the failed steps of the last run. It is sent once per rule, whatever the rule's `everyFailure` setting. A rule with `everyFailure: true` gets 2 messages for that run: the failure and the announcement.
+
+The headline reads `dbt job disabled: <job name>`. The webhook payload carries `"jobDisabled": { "consecutiveFailures": 10 }` with `trigger: "failure"`. Enable the job again to restart its schedule and its failure count.
+
 ### What the message contains
 
 - The outcome, the job name, and the environment, first.
@@ -207,6 +215,7 @@ A dbt job run sends the same shape with `resourceType: "dbt_job"` and these extr
 | `failedStepCount` | `trigger: "failure"` | Every failed step, including those cut from `failedSteps`. `0` when the run failed before dbt reported a step; read `errorMessage`. |
 | `errorMessage` | `trigger: "failure"` | The run-level error, up to 500 characters. |
 | `recovered` | `trigger: "success"` | `true` when the previous run of the job had failed. |
+| `jobDisabled` | Only on the message that announces an auto-disabled job | `consecutiveFailures`: the failed runs in a row that disabled the job, the last one included. |
 
 ## API reference
 

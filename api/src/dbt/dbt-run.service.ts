@@ -22,6 +22,7 @@ import {
 } from "./dbt-working-tree.service";
 import { parseDbtCommands } from "./commands";
 import { readJobDefinitionAtCommit } from "./dbt-job-at-commit";
+import { DbtJobDefinitionMissingError } from "./dbt-run-errors";
 import {
   applyFullRefresh,
   DbtRunOverridesError,
@@ -503,25 +504,7 @@ export async function recordCompletedAdhocDbtRun(params: {
   }
 }
 
-/**
- * `dbt/jobs/<slug>.yml` is absent at the commit a run of this job would
- * build: the job was deleted on main and the row has not caught up. Nothing
- * may run. The scheduler treats it as a skipped tick; a manual trigger
- * surfaces the message.
- */
-export class DbtJobDefinitionMissingError extends Error {
-  readonly jobId: string;
-  readonly sourceSha: string;
-
-  constructor(job: Pick<IDbtJob, "_id" | "slug">, sourceSha: string) {
-    super(
-      `Job file dbt/jobs/${job.slug}.yml does not exist at commit ${sourceSha.slice(0, 7)} of the default branch: the job was deleted. No run started.`,
-    );
-    this.name = "DbtJobDefinitionMissingError";
-    this.jobId = job._id.toString();
-    this.sourceSha = sourceSha;
-  }
-}
+export { DbtJobDefinitionMissingError };
 
 export async function triggerDbtJobRun(params: {
   workspaceId: string;

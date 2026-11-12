@@ -101,6 +101,39 @@ export function dbtRunQueueKeys(run: {
 }
 
 /**
+ * Keys for a "dbt/run.requested" event that carries none: one sent by a
+ * build that predates lanes and still queued when this build took over.
+ * Without them every such event of every project would share one empty
+ * `lockKey` at limit 1. Returns null when the event already has both keys.
+ *
+ * A run that predates lanes has no `lane`: it queued in the single project
+ * queue, which is the job lane.
+ */
+export function dbtRunFallbackQueueKeys(
+  event: {
+    projectId: string;
+    runId: string;
+    jobId?: string | null;
+    laneKey?: string | null;
+    lockKey?: string | null;
+  },
+  run?: { jobId?: string | Types.ObjectId | null; lane?: DbtRunLane } | null,
+): { laneKey: string; lockKey: string } | null {
+  if (event.laneKey && event.lockKey) return null;
+  const jobId = event.jobId ?? run?.jobId?.toString() ?? null;
+  const derived = dbtRunQueueKeys({
+    projectId: event.projectId,
+    runId: event.runId,
+    jobId,
+    lane: run?.lane ?? "job",
+  });
+  return {
+    laneKey: event.laneKey || derived.laneKey,
+    lockKey: event.lockKey || derived.lockKey,
+  };
+}
+
+/**
  * Whose warm directory a run uses on the executor (`ProjectDirScope.userId`).
  * Two runs that may execute at once must never share a directory: they would
  * wait on its in-process mutex inside a step, and that wait eats the step's

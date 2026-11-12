@@ -61,6 +61,7 @@ import { MCP_MAX_RUN_WAIT_MS } from "../../mcp/mako-mcp-server";
 import { triggerDbtJobRun } from "../../dbt/dbt-run.service";
 import { resolveLiveJobRow } from "../../dbt/dbt-config.service";
 import { DbtRunOverridesError } from "../../dbt/dbt-run-overrides";
+import { DbtJobDefinitionMissingError } from "../../dbt/dbt-run-errors";
 import {
   modelCost,
   tableReaders,
@@ -540,6 +541,27 @@ describe("dbt_run_job inputs", () => {
     });
   });
 
+  it("says the job was deleted when its file is gone at the run's commit", async () => {
+    const tools = createDbtServerTools(WS, "u1");
+    const ids = await seedJob();
+    triggerJobMock.mockRejectedValue(
+      new DbtJobDefinitionMissingError(
+        { _id: new Types.ObjectId(ids.jobId), slug: "nightly-build" },
+        "0123456789abcdef0123456789abcdef01234567",
+      ),
+    );
+    const result = await run<object, JobRunResult & { code?: string }>(
+      tools.dbt_run_job,
+      ids,
+    );
+    expect(result.success).toBe(false);
+    expect(result.code).toBe("job_definition_missing");
+    expect(result.error).toMatch(
+      /^Job file dbt\/jobs\/nightly-build\.yml does not exist at commit 0123456 /,
+    );
+    expect(result.error).toMatch(/No run started\. Do not retry/);
+  });
+
   it("surfaces a rejected override as a tool error", async () => {
     const tools = createDbtServerTools(WS, "u1");
     const ids = await seedJob();
@@ -595,7 +617,16 @@ type IntrospectionResult = {
   orphanBytes?: number;
   truncated?: boolean;
   listed?: number;
-  orphans?: Array<{ name: string }>;
+  orphans?: Array<{ name: string; confidence?: string; reasons?: string[] }>;
+  notes?: string[];
+  model?: string;
+  jobsByTextOnly?: number;
+  stale?: boolean;
+  warnings?: string[];
+  manifestAgeHours?: number;
+  schemasMissing?: string[];
+  skipped?: { sources: number; testFailureTables: number };
+  confidenceCounts?: { high: number; medium: number; low: number };
 };
 
 const GRANT_WARNING =
@@ -695,6 +726,51 @@ describe("dbt_model_cost", () => {
     );
     expect(result.message).toContain(GRANT_WARNING);
     expect(result.message).toMatch(/No warehouse job matched/);
+  });
+
+  it("narrows to one model and returns notes, invocations and avgDurationMs", async () => {
+    const tools = createDbtServerTools(WS, "u1");
+    const { project } = await seed();
+    const row = {
+      day: "2026-01-14",
+      nodeId: "model.analytics.fct_orders",
+      jobs: 4,
+      bytesBilled: 2048,
+      slotMs: 80,
+      invocations: 2,
+      avgDurationMs: 1500,
+    };
+    modelCostMock.mockResolvedValue({
+      supported: true,
+      scope: "project",
+      days: 7,
+      notes: ["Only the 1000 most recent runs of the window are matched."],
+      rows: [row],
+    });
+    const result = await run<object, IntrospectionResult>(
+      tools.dbt_model_cost,
+      { projectId: project._id.toString(), model: "fct_orders" },
+    );
+    expect(modelCostMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "fct_orders" }),
+    );
+    expect(result.model).toBe("fct_orders");
+    expect(result.notes).toEqual([
+      "Only the 1000 most recent runs of the window are matched.",
+    ]);
+    expect(result.rows).toEqual([row]);
+  });
+
+  it("accepts a unique_id or a bare name as `model`, nothing that breaks out of a literal", () => {
+    const { dbt_model_cost: tool } = createDbtServerTools(WS, "u1");
+    expect(
+      accepts(tool, { projectId: "p", model: "model.analytics.fct_orders" }),
+    ).toBe(true);
+    expect(accepts(tool, { projectId: "p", model: "fct_orders" })).toBe(true);
+    expect(accepts(tool, { projectId: "p", model: "fct_orders' or 1=1" })).toBe(
+      false,
+    );
+    expect(accepts(tool, { projectId: "p", model: "" })).toBe(false);
   });
 
   it("maps a failed warehouse query to a tool error", async () => {
@@ -812,6 +888,53 @@ describe("dbt_table_readers", () => {
     expect(result.message).not.toMatch(/PARTIAL/);
   });
 
+  it("returns notes, the warning and the text-only match count", async () => {
+    const tools = createDbtServerTools(WS, "u1");
+    const { project } = await seed();
+    const notes = [
+      "If this relation is a view, a read through another view is invisible.",
+    ];
+    tableReadersMock.mockResolvedValue({
+      supported: true,
+      scope: "user",
+      days: 7,
+      warning: GRANT_WARNING,
+      notes,
+      rows: [
+        {
+          makoSource: "dbt",
+          userEmail: "runner@example.iam.gserviceaccount.com",
+          jobs: 5,
+          bytesBilled: 100,
+          lastReadAt: "2026-01-14T08:00:00.000Z",
+          jobsByTextOnly: 3,
+        },
+        {
+          userEmail: "analyst@example.com",
+          jobs: 2,
+          bytesBilled: 50,
+          lastReadAt: "2026-01-13T08:00:00.000Z",
+        },
+      ],
+    });
+    const result = await run<object, IntrospectionResult>(
+      tools.dbt_table_readers,
+      { projectId: project._id.toString(), relation },
+    );
+    expect(result.scope).toBe("user");
+    expect(result.warning).toBe(GRANT_WARNING);
+    expect(result.notes).toEqual(notes);
+    expect(result.jobsByTextOnly).toBe(3);
+    expect(result.rows).toHaveLength(2);
+  });
+
+  it("says in its description that reads through a downstream view are invisible", () => {
+    const { dbt_table_readers: tool } = createDbtServerTools(WS, "u1");
+    expect(tool.description).toMatch(
+      /read THROUGH a downstream view is invisible/,
+    );
+  });
+
   it("validates its input: a relation with safe identifier parts", () => {
     const { dbt_table_readers: tool } = createDbtServerTools(WS, "u1");
     expect(accepts(tool, { projectId: "p", relation })).toBe(true);
@@ -878,7 +1001,7 @@ describe("dbt_list_orphans", () => {
       manifestRunId: "run-1",
       manifestGeneratedAt: "2026-01-14T02:00:00.000Z",
       schemasScanned: ["dbt_prod"],
-      expectedCount: 700,
+      expectedCount: 120,
       orphans: [
         relationOf("small", 10),
         relationOf("big", 3000),
@@ -900,6 +1023,66 @@ describe("dbt_list_orphans", () => {
     expect(result.truncated).toBe(true);
     expect(result.listed).toBe(2);
     expect(result.message).toMatch(/Nothing was dropped/);
+  });
+
+  it("returns confidence, reasons and the manifest's age and limits", async () => {
+    const tools = createDbtServerTools(WS, "u1");
+    const { project } = await seed();
+    orphansMock.mockResolvedValue({
+      supported: true,
+      environment: "prod",
+      manifestRunId: "run-1",
+      manifestGeneratedAt: "2026-01-01T02:00:00.000Z",
+      manifestAgeHours: 320,
+      stale: true,
+      warnings: ["The manifest is 320 hours old."],
+      schemasScanned: ["dbt_prod"],
+      schemasMissing: ["dbt_prod_staging"],
+      expectedCount: 40,
+      relationsScanned: 44,
+      skipped: { sources: 2, testFailureTables: 1 },
+      truncated: false,
+      orphans: [
+        { ...relationOf("old_orders", 900), confidence: "high", reasons: [] },
+        {
+          ...relationOf("fct_orders__dbt_tmp", 50),
+          confidence: "low",
+          reasons: ["dbt_temporary_relation", "stale_manifest"],
+        },
+      ],
+    });
+    const result = await run<object, IntrospectionResult>(
+      tools.dbt_list_orphans,
+      { projectId: project._id.toString() },
+    );
+    expect(result.manifestAgeHours).toBe(320);
+    expect(result.stale).toBe(true);
+    expect(result.warnings).toEqual(["The manifest is 320 hours old."]);
+    expect(result.schemasMissing).toEqual(["dbt_prod_staging"]);
+    expect(result.skipped).toEqual({ sources: 2, testFailureTables: 1 });
+    expect(result.confidenceCounts).toEqual({ high: 1, medium: 0, low: 1 });
+    expect(result.orphans).toEqual([
+      expect.objectContaining({
+        name: "old_orders",
+        confidence: "high",
+        reasons: [],
+      }),
+      expect.objectContaining({
+        name: "fct_orders__dbt_tmp",
+        confidence: "low",
+        reasons: ["dbt_temporary_relation", "stale_manifest"],
+      }),
+    ]);
+    expect(result.message).toMatch(/Nothing was dropped/);
+    expect(result.message).toMatch(/manifest is stale/);
+  });
+
+  it("says in its description that it drops nothing and skips schemas with no remaining model", () => {
+    const { dbt_list_orphans: tool } = createDbtServerTools(WS, "u1");
+    expect(tool.description).toMatch(/drops nothing/);
+    expect(tool.description).toMatch(
+      /schema with no remaining model is skipped/,
+    );
   });
 
   it("says so when nothing is orphaned", async () => {

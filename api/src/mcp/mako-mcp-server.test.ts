@@ -620,7 +620,6 @@ async function main() {
       "dbt_get_run",
       "dbt_list_runs",
       "dbt_model_cost",
-      "dbt_table_readers",
       "dbt_list_orphans",
       "dbt_parse",
       "dbt_compile_model",
@@ -629,6 +628,9 @@ async function main() {
       assert.ok(names.has(readTool), `members keep ${readTool}`);
     }
     for (const adminTool of [
+      // Read-only, but its rows hold the account emails of everyone who
+      // queried the relation.
+      "dbt_table_readers",
       "create_dbt_file",
       "edit_dbt_file",
       "modify_dbt_file",

@@ -98,6 +98,7 @@ import {
   triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
 import { DbtRunOverridesError } from "../dbt/dbt-run-overrides";
+import { DbtJobDefinitionMissingError } from "../dbt/dbt-run-errors";
 import { publishRealtimeEvent } from "../services/realtime.service";
 
 const publishMock = publishRealtimeEvent as unknown as ReturnType<typeof vi.fn>;
@@ -807,6 +808,29 @@ describe("job trigger inputs", () => {
     expect(await res.json()).toEqual({
       success: false,
       error: 'Invalid var name "1x"',
+    });
+  });
+
+  it("answers 409 when the job file is gone at the commit the run would build", async () => {
+    const projectId = await createProjectAsOwner();
+    const jobId = await createJob(projectId);
+    triggerJobMock.mockRejectedValueOnce(
+      new DbtJobDefinitionMissingError(
+        { _id: new Types.ObjectId(jobId), slug: "nightly-build" },
+        "0123456789abcdef0123456789abcdef01234567",
+      ),
+    );
+    const res = await req(
+      "POST",
+      `/projects/${projectId}/jobs/${jobId}/trigger`,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      success: false,
+      code: "job_definition_missing",
+      error:
+        "Job file dbt/jobs/nightly-build.yml does not exist at commit " +
+        "0123456 of the default branch: the job was deleted. No run started.",
     });
   });
 });
