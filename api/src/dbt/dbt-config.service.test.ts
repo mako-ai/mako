@@ -5,12 +5,21 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { DbtJob, DbtProject } from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
+  blobOid,
   commitBlobsOnBranch,
   initRepo,
   readBlob,
@@ -565,6 +574,87 @@ describe("sync from repo", () => {
     expect(fresh?.schedule?.cron).toBe("30 5 * * *");
     expect(fresh?.scheduledRun?.nextAt).toBeInstanceOf(Date);
     expect(fresh?.scheduledRun?.consecutiveFailures).toBe(3);
+  });
+
+  it("a push that lands while a sync is running is applied by one more pass", async () => {
+    const project = await seedProject();
+    const job = await seedJob(project, "Nightly prod build");
+    await commitDbtJobFile(project, job);
+    const repoDir = repoDirFor(WS.toString());
+    const jobPath = jobFilePath(job.slug ?? "");
+    const edit = (select: string) =>
+      serializeJobFile({
+        name: "Nightly prod build",
+        environment: "prod",
+        commands: [`build --select ${select}`],
+        schedule: { cron: "0 6 * * *", timezone: "Europe/Zurich" },
+        enabled: true,
+        deferToProduction: false,
+      });
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { [jobPath]: edit("first_push") } },
+      { message: "first push" },
+    );
+
+    // Hold the first sync AFTER it read the tree: its first row lookup is
+    // the first thing it does with the blobs it already has in hand.
+    let release: () => void = () => {};
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    let reachedRows: () => void = () => {};
+    const readTree = new Promise<void>(resolve => {
+      reachedRows = resolve;
+    });
+    const realFindOne = DbtJob.findOne.bind(DbtJob);
+    const findOne = vi.spyOn(DbtJob, "findOne").mockImplementationOnce(((
+      ...args: Parameters<typeof realFindOne>
+    ) => {
+      reachedRows();
+      return gate.then(() => realFindOne(...args));
+    }) as unknown as typeof DbtJob.findOne);
+
+    try {
+      const firstSync = syncDbtConfigFromRepo(WS.toString());
+      await readTree;
+
+      // Two more pushes land while that sync is in flight. Each requests a
+      // sync, as the push reaction does.
+      await commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { [jobPath]: edit("second_push") } },
+        { message: "second push" },
+      );
+      const secondSync = syncDbtConfigFromRepo(WS.toString());
+      await commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { [jobPath]: edit("third_push") } },
+        { message: "third push" },
+      );
+      const thirdSync = syncDbtConfigFromRepo(WS.toString());
+
+      release();
+      await Promise.all([firstSync, secondSync, thirdSync]);
+    } finally {
+      release();
+      findOne.mockRestore();
+    }
+
+    // The running sync had read "first_push". Joining it would have left the
+    // row there for good: no later event replays the dropped pushes.
+    const fresh = await DbtJob.findById(job._id);
+    expect(fresh?.commands).toEqual(["build --select third_push"]);
+    expect(fresh?.sourceBlobSha).toBe(blobOid(edit("third_push")));
+
+    // Coalesced, not replayed: nothing is left queued for a later call.
+    await syncDbtConfigFromRepo(WS.toString());
+    expect((await DbtJob.findById(job._id))?.commands).toEqual([
+      "build --select third_push",
+    ]);
   });
 
   it("a removed file removes the job; a disallowed command is skipped", async () => {
