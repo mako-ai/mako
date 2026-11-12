@@ -20,10 +20,9 @@ import {
   Button,
   Chip,
   CircularProgress,
-  FormControlLabel,
   IconButton,
+  MenuItem,
   Stack,
-  Switch,
   TextField,
   Tooltip,
   Typography,
@@ -56,6 +55,8 @@ import {
 import { initials } from "../lib/initials";
 
 type ConnectionKind = "database" | "source";
+
+type ReadMode = "off" | "everyone" | "listed";
 
 type Who = { principal: string; label: string; kind: "person" | "workflow" };
 
@@ -266,11 +267,26 @@ export default function ConnectionWritersPanel({
       next?.map(r => ({ principal: r.principal })) ?? null,
     );
 
-  // Turning the list on starts it with the person doing it, so they are not
-  // locked out; turning it off forgets the list, so ask first.
-  const restrictReaders = async (on: boolean) => {
-    if (on) {
-      await saveReaders(user?.id ? [{ principal: `user:${user.id}` }] : []);
+  const readMode: ReadMode = !liveReads
+    ? "off"
+    : liveReaders
+      ? "listed"
+      : "everyone";
+
+  // Starting a list starts it with the person doing it, so they are not
+  // locked out; going back to everyone forgets the list, so ask first.
+  const changeReadMode = async (next: ReadMode) => {
+    if (!state || next === readMode) return;
+    if (next === "off") {
+      await save(state.writers, false);
+      return;
+    }
+    if (next === "listed") {
+      await save(
+        state.writers,
+        true,
+        user?.id ? [{ principal: `user:${user.id}` }] : [],
+      );
       return;
     }
     if (
@@ -284,7 +300,7 @@ export default function ConnectionWritersPanel({
     ) {
       return;
     }
-    await saveReaders(null);
+    await save(state.writers, true, null);
   };
 
   const allowReader = async (principal: string) => {
@@ -363,55 +379,47 @@ export default function ConnectionWritersPanel({
         </Alert>
       )}
 
-      {source && state.canEdit && (
-        <FormControlLabel
-          control={
-            <Switch
-              size="small"
-              checked={liveReads}
-              disabled={busy}
-              onChange={(_, checked) => void save(state.writers, checked)}
-            />
-          }
-          label={
-            <Typography variant="body2">
-              Live reads: workflows and agents may read {connectionName}{" "}
-              directly, not only its synced tables. Off until a manager turns it
-              on. When on, everyone in this workspace, viewers included, and
-              their agents can read live through this key, unless you limit it
-              below.
-            </Typography>
-          }
-        />
-      )}
-
-      {source && liveReads && (
+      {source && (
         <Box>
-          <SectionTitle>Allowed to read live</SectionTitle>
-          {state.canEdit && (
-            <FormControlLabel
-              sx={{ mb: 1 }}
-              control={
-                <Switch
-                  size="small"
-                  checked={liveReaders !== null}
-                  disabled={busy}
-                  onChange={(_, checked) => void restrictReaders(checked)}
-                />
-              }
-              label={
-                <Typography variant="body2">
-                  Only the people and workflows listed here, and the writers
-                  below
-                </Typography>
-              }
-            />
-          )}
-          {liveReaders === null ? (
-            <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
-              Everyone in this workspace and their agents.
-            </Typography>
-          ) : (
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 2,
+              mb: 0.5,
+            }}
+          >
+            <Typography variant="subtitle2">Allowed to read live</Typography>
+            {state.canEdit && (
+              <TextField
+                select
+                size="small"
+                margin="none"
+                value={readMode}
+                disabled={busy}
+                onChange={e => void changeReadMode(e.target.value as ReadMode)}
+                sx={{ minWidth: 220 }}
+                slotProps={{ htmlInput: { "aria-label": "Who reads live" } }}
+              >
+                <MenuItem value="off">Off</MenuItem>
+                <MenuItem value="everyone">Everyone in the workspace</MenuItem>
+                <MenuItem value="listed">Only people listed</MenuItem>
+              </TextField>
+            )}
+          </Box>
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{ mb: readMode === "listed" ? 1.5 : 0 }}
+          >
+            {readMode === "off"
+              ? `Workflows and agents use ${connectionName}'s synced tables only.`
+              : readMode === "everyone"
+                ? `Everyone in this workspace, viewers included, and their agents can query ${connectionName} directly.`
+                : `Only the people and workflows listed, and the writers below, can query ${connectionName} directly.`}
+          </Typography>
+          {liveReaders !== null && liveReads && (
             <>
               {liveReaders.length === 0 ? (
                 <Typography
