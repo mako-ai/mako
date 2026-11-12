@@ -1,9 +1,11 @@
 # Warm pool of pre-imported kernel pods. The control plane (kernel-session
 # service) claims an idle pod from this Deployment on session start — trading a
 # few always-on pods for sub-5s "cold" starts. Each running replica keeps a
-# gVisor e2-highmem-4 node up, so the default is 0 until the KernelProvider
-# control-plane wiring exists; bump it for real warm headroom once notebooks
-# consume the pool. The cluster autoscaler grows the gVisor node pool to fit.
+# gVisor e2-highmem-4 node up, so the default is 0: the API scales it up when a
+# notebook starts a kernel, and the kernel-pool-reaper Inngest function scales
+# it back to KERNEL_POOL_MIN_REPLICAS (default 0) once every kernel has been
+# idle past the session TTL. The cluster autoscaler grows and shrinks the
+# gVisor node pool to fit.
 #
 # ${KERNEL_IMAGE} is substituted by build-and-deploy.sh (envsubst) with the
 # pushed Artifact Registry tag.
