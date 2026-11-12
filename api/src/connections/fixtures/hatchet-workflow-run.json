@@ -1,0 +1,180 @@
+{
+  "run": {
+    "additionalMetadata": {
+      "hatchet__cron_expression": "* * * * *",
+      "hatchet__cron_name": "",
+      "hatchet__cron_scheduled_at": "2026-11-11T17:47:00Z",
+      "traceparent": "00-78687361a77238527a2b9d54024416c7-a7df9707d540f787-01"
+    },
+    "createdAt": "2026-11-11T17:47:00.278604Z",
+    "displayName": "runbindingproof-1794419220032",
+    "errorMessage": "",
+    "finishedAt": "0001-01-01T00:00:00Z",
+    "input": {},
+    "metadata": {
+      "createdAt": "2026-11-11T17:47:00.020662Z",
+      "id": "29db1443-b16c-42d4-80ef-d5d6dd3f54b7",
+      "updatedAt": "2026-11-11T17:47:00.020662Z"
+    },
+    "output": {},
+    "startedAt": "2026-11-11T17:47:00.355008Z",
+    "status": "RUNNING",
+    "tenantId": "76263be9-fc45-495a-abb8-373fa9c26efd",
+    "workflowId": "dded9f5f-5a8c-4485-8035-86e0fda09f45",
+    "workflowVersionId": "a21bc4d9-4d9e-46cb-a776-c36e837253b5"
+  },
+  "shape": [
+    {
+      "childrenStepIds": [],
+      "stepId": "3dc9442b-9cd8-4ad8-b8bf-a0697472d636",
+      "taskExternalId": "f07ae2f8-3dc0-4e54-a912-c751b552f1d7",
+      "taskName": "write-first"
+    },
+    {
+      "childrenStepIds": [],
+      "stepId": "1dfbecf8-c570-4950-9bba-c9fea11fc784",
+      "taskExternalId": "00000000-0000-0000-0000-000000000000",
+      "taskName": "on-failure-task"
+    }
+  ],
+  "taskEvents": [
+    {
+      "attempt": 1,
+      "errorMessage": "",
+      "eventType": "STARTED",
+      "id": 1028,
+      "message": "",
+      "output": "",
+      "retryCount": 0,
+      "taskDisplayName": "write-first-1794419220084",
+      "taskId": "f07ae2f8-3dc0-4e54-a912-c751b552f1d7",
+      "timestamp": "2026-11-11T17:47:00.41Z"
+    },
+    {
+      "attempt": 1,
+      "errorMessage": "",
+      "eventType": "SENT_TO_WORKER",
+      "id": 1027,
+      "message": "Sent task run to the assigned worker",
+      "output": "",
+      "retryCount": 0,
+      "taskDisplayName": "write-first-1794419220084",
+      "taskId": "f07ae2f8-3dc0-4e54-a912-c751b552f1d7",
+      "timestamp": "2026-11-11T17:47:00.392864Z",
+      "workerId": "2f9eaac5-4b14-4aec-b2e1-e1980e8f5f35"
+    },
+    {
+      "attempt": 1,
+      "errorMessage": "",
+      "eventType": "ASSIGNED",
+      "id": 1026,
+      "message": "",
+      "output": "",
+      "retryCount": 0,
+      "taskDisplayName": "write-first-1794419220084",
+      "taskId": "f07ae2f8-3dc0-4e54-a912-c751b552f1d7",
+      "timestamp": "2026-11-11T17:47:00.22151Z",
+      "workerId": "2f9eaac5-4b14-4aec-b2e1-e1980e8f5f35"
+    },
+    {
+      "attempt": 1,
+      "errorMessage": "",
+      "eventType": "QUEUED",
+      "id": 1025,
+      "message": "",
+      "output": "",
+      "retryCount": 0,
+      "taskDisplayName": "write-first-1794419220084",
+      "taskId": "f07ae2f8-3dc0-4e54-a912-c751b552f1d7",
+      "timestamp": "2026-11-11T17:47:00.130755Z"
+    }
+  ],
+  "tasks": [
+    {
+      "actionId": "runbindingproof:write-first",
+      "additionalMetadata": {
+        "hatchet__cron_expression": "* * * * *",
+        "hatchet__cron_name": "",
+        "hatchet__cron_scheduled_at": "2026-11-11T17:47:00Z",
+        "traceparent": "00-78687361a77238527a2b9d54024416c7-a7df9707d540f787-01"
+      },
+      "attempt": 1,
+      "createdAt": "0001-01-01T00:00:00Z",
+      "displayName": "write-first-1794419220084",
+      "errorMessage": "",
+      "input": {
+        "input": null,
+        "overrides": null,
+        "parents": {},
+        "triggered_by": "manual",
+        "triggers": {
+          "filter_payload": null
+        },
+        "user_data": null
+      },
+      "isDurable": false,
+      "isEvicted": false,
+      "metadata": {
+        "createdAt": "2026-11-11T17:47:00.020662Z",
+        "id": "f07ae2f8-3dc0-4e54-a912-c751b552f1d7",
+        "updatedAt": "2026-11-11T17:47:00.020662Z"
+      },
+      "numSpawnedChildren": 0,
+      "output": {},
+      "retryCount": 0,
+      "startedAt": "2026-11-11T17:47:00.41Z",
+      "status": "RUNNING",
+      "stepId": "3dc9442b-9cd8-4ad8-b8bf-a0697472d636",
+      "taskExternalId": "f07ae2f8-3dc0-4e54-a912-c751b552f1d7",
+      "taskId": 305,
+      "taskInsertedAt": "2026-11-11T17:47:00.020662Z",
+      "tenantId": "76263be9-fc45-495a-abb8-373fa9c26efd",
+      "type": "TASK",
+      "workflowId": "dded9f5f-5a8c-4485-8035-86e0fda09f45",
+      "workflowRunExternalId": "29db1443-b16c-42d4-80ef-d5d6dd3f54b7",
+      "workflowVersionId": "a21bc4d9-4d9e-46cb-a776-c36e837253b5"
+    }
+  ],
+  "workflowConfig": {
+    "CronInput": null,
+    "CronTriggers": [
+      "* * * * *"
+    ],
+    "DefaultPriority": null,
+    "EventTriggers": null,
+    "Name": "runbindingproof",
+    "Sticky": null,
+    "Tasks": [
+      {
+        "Action": "runbindingproof:write-first",
+        "DesiredWorkerLabels": null,
+        "Parents": [],
+        "RateLimits": [],
+        "ReadableId": "write-first",
+        "Retries": 0,
+        "RetryBackoffFactor": null,
+        "RetryBackoffMaxSeconds": null,
+        "ScheduleTimeout": null,
+        "Timeout": "60s",
+        "TriggerConditions": []
+      }
+    ],
+    "description": "",
+    "onFailureJob": {
+      "Action": "runbindingproof:on-failure-task",
+      "DesiredWorkerLabels": null,
+      "Parents": [],
+      "RateLimits": [],
+      "ReadableId": "on-failure-task",
+      "Retries": 0,
+      "RetryBackoffFactor": null,
+      "RetryBackoffMaxSeconds": null,
+      "ScheduleTimeout": null,
+      "Timeout": "60s",
+      "TriggerConditions": [],
+      "slotRequests": {
+        "default": 1
+      }
+    }
+  }
+}
