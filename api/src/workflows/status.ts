@@ -2,14 +2,20 @@
  * One run, sandbox (read from the person's box, sandbox.ts) or deployed
  * (read from the workspace's Hatchet, runs.ts), waiting on the server up to
  * `wait` seconds for it to end. Shared by workflows_status and the routes.
- * And the deploy, waited on the same way.
+ * And the deploy, waited on the same way. A dry run answers the writes it
+ * recorded instead of sending: their count and one page (`recordedWrites`,
+ * from `recordedFrom`; workflows/recorded-writes.ts).
  */
+import { loggers } from "../logging";
 import { readRunCosts } from "./costs";
 import { requireTenant } from "./hatchet";
 import { deployCarries } from "./on-push";
+import { withRecordedWrites } from "./recorded-writes";
 import { deploySettled, readDeployment, readRun } from "./runs";
 import { isSandboxRunId, readSandboxRun } from "./sandbox";
 import { waitFor, waitSeconds } from "./wait";
+
+const logger = loggers.api("workflows-status");
 
 const ACTIVE = ["QUEUED", "RUNNING", "PENDING"];
 
@@ -17,7 +23,12 @@ export async function waitForRun(
   workspaceId: string,
   userId: string | undefined,
   runId: string,
-  options: { wait?: number; full?: boolean; signal?: AbortSignal } = {},
+  options: {
+    wait?: number;
+    full?: boolean;
+    signal?: AbortSignal;
+    recordedFrom?: number;
+  } = {},
 ) {
   const sandbox = isSandboxRunId(runId);
   const read = async () => {
@@ -50,7 +61,21 @@ export async function waitForRun(
       signal: options.signal,
     },
   );
-  return { run, done };
+  // A sandbox run's are its person's only. A failed read says so: the run
+  // is never answered as if it recorded nothing.
+  const recorded = await withRecordedWrites(workspaceId, runId, run, {
+    ...(sandbox ? { userId: userId ?? "" } : {}),
+    full: options.full,
+    from: options.recordedFrom,
+  }).catch(error => {
+    logger.warn("Could not read a run's recorded writes", { runId, error });
+    return {
+      ...run,
+      recordedWritesError:
+        "Mako could not read this run's recorded writes; ask again.",
+    };
+  });
+  return { run: recorded, done };
 }
 
 /**

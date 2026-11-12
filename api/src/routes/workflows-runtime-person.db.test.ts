@@ -247,7 +247,10 @@ async function main() {
         });
       res = await request(login, "POST");
       assert.equal(res.status, 403, JSON.stringify(res.body));
-      assert.match(res.body.error, /^Agents only read/);
+      assert.match(
+        res.body.error,
+        /^Agents and runs started with an API key only read/,
+      );
       assert.equal(forwarded.length, 0, "a refused write is never sent");
       let attempt = null;
       for (let i = 0; i < 40 && !attempt; i++) {
@@ -265,8 +268,9 @@ async function main() {
         ["GET", "POST"],
       );
 
-      // A sandbox run's key acts as marc: his own run (from the app) writes;
-      // one an agent started only reads, and its attempt is the agent's.
+      // A sandbox run's key acts as marc: his own run (from the app, an MCP
+      // login, the agent's tool) writes; one started with an API key only
+      // reads, and its attempt is the agent's.
       await setKey(
         String(ws),
         "marc",
@@ -290,7 +294,10 @@ async function main() {
       await ConnectionWriteEvent.deleteMany({});
       res = await request(AGENT_RUN_KEY, "POST");
       assert.equal(res.status, 403, JSON.stringify(res.body));
-      assert.match(res.body.error, /^Agents only read/);
+      assert.match(
+        res.body.error,
+        /^Agents and runs started with an API key only read/,
+      );
       attempt = await ConnectionWriteEvent.findOne({}).lean();
       assert.equal(attempt?.principal, "agent:user:marc");
       assert.equal(attempt?.allowed, false);
