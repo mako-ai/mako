@@ -33,6 +33,16 @@ const VALUE_FLAGS = new Set([
   "--vars",
   "--limit",
   "--output",
+  "--indirect-selection",
+]);
+
+/**
+ * Value flags whose value must be one of a fixed set. dbt requires a value
+ * for `--indirect-selection`; the bare flag used to pass validation here and
+ * then fail inside dbt.
+ */
+const ENUM_VALUE_FLAGS = new Map<string, readonly string[]>([
+  ["--indirect-selection", ["eager", "cautious", "buildable", "empty"]],
 ]);
 
 /**
@@ -51,7 +61,6 @@ const BOOLEAN_FLAGS = new Set([
   "--store-failures",
   "--empty",
   "--favor-state",
-  "--indirect-selection",
 ]);
 
 export interface ParsedDbtCommand {
@@ -84,11 +93,71 @@ export function isWarehouseWriteCommand(parsed: ParsedDbtCommand): boolean {
 
 export class DbtCommandValidationError extends Error {}
 
-function tokenize(command: string): string[] {
-  return command
-    .trim()
-    .split(/\s+/)
-    .filter(token => token.length > 0);
+const WHITESPACE = /\s/;
+
+/**
+ * Split a stored command into argv tokens.
+ *
+ * Tokens are separated by whitespace. A token that STARTS with `'` or `"` is
+ * a quoted token: it runs to the matching quote, keeps its spaces, and loses
+ * the quotes, so `--vars '{"a": 1}'` is one value. Inside double quotes `\"`
+ * and `\\` are escapes; single quotes are literal throughout.
+ *
+ * A quote in the middle of a token stays a literal character. That keeps
+ * every command that parsed before parsing the same way: `--vars {"a":1}`
+ * (the only form that worked with the old whitespace split) still reaches dbt
+ * with its JSON quotes intact.
+ */
+export function tokenizeDbtCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let i = 0;
+  while (i < command.length) {
+    if (WHITESPACE.test(command[i])) {
+      i++;
+      continue;
+    }
+    const quote = command[i];
+    if (quote !== "'" && quote !== '"') {
+      const start = i;
+      while (i < command.length && !WHITESPACE.test(command[i])) i++;
+      tokens.push(command.slice(start, i));
+      continue;
+    }
+    let value = "";
+    let closed = false;
+    i++;
+    while (i < command.length) {
+      const char = command[i];
+      if (char === quote) {
+        closed = true;
+        i++;
+        break;
+      }
+      const next = command[i + 1];
+      if (quote === '"' && char === "\\" && (next === '"' || next === "\\")) {
+        value += next;
+        i += 2;
+        continue;
+      }
+      value += char;
+      i++;
+    }
+    if (!closed) {
+      throw new DbtCommandValidationError(
+        `Unterminated ${quote} quote in dbt command`,
+      );
+    }
+    if (i < command.length && !WHITESPACE.test(command[i])) {
+      throw new DbtCommandValidationError(
+        `A closing ${quote} quote must be followed by a space in dbt commands`,
+      );
+    }
+    if (value.length === 0) {
+      throw new DbtCommandValidationError("Empty quoted value in dbt command");
+    }
+    tokens.push(value);
+  }
+  return tokens;
 }
 
 /**
@@ -96,7 +165,7 @@ function tokenize(command: string): string[] {
  * human-readable message when the command is not allowed.
  */
 export function parseDbtCommand(command: string): ParsedDbtCommand {
-  const tokens = tokenize(command);
+  const tokens = tokenizeDbtCommand(command);
   if (tokens.length === 0) {
     throw new DbtCommandValidationError("Empty dbt command");
   }
@@ -131,6 +200,12 @@ export function parseDbtCommand(command: string): ParsedDbtCommand {
         const value = rest[i + 1];
         if (value === undefined || value.startsWith("-")) {
           throw new DbtCommandValidationError(`Flag ${token} requires a value`);
+        }
+        const allowedValues = ENUM_VALUE_FLAGS.get(token);
+        if (allowedValues && !allowedValues.includes(value)) {
+          throw new DbtCommandValidationError(
+            `Flag ${token} must be one of: ${allowedValues.join(", ")} (got "${value}")`,
+          );
         }
         i++;
         if (MULTI_VALUE_FLAGS.has(token)) {
