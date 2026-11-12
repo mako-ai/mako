@@ -652,6 +652,37 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Checking dbt run status",
     icon: "clock",
   },
+  dbt_list_runs: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Reading dbt run history",
+    icon: "list",
+  },
+  dbt_model_cost: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Reading dbt model cost",
+    icon: "bar-chart",
+  },
+  dbt_table_readers: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const relation = (input as Record<string, unknown>)?.relation as
+        Record<string, unknown> | undefined;
+      const name = relation?.name;
+      return typeof name === "string" && name
+        ? `Finding readers of ${name}`
+        : "Finding table readers";
+    },
+    icon: "eye",
+  },
+  dbt_list_orphans: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Listing orphan relations",
+    icon: "list",
+  },
   dbt_show: {
     domain: "dbt",
     execution: "server",
