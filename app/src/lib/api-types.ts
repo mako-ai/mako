@@ -220,7 +220,13 @@ export interface ScheduledQueryListResponse {
 
 // ==================== Flow run notifications ====================
 
-export type NotificationResourceTypeApi = "scheduled_query" | "flow";
+export type NotificationResourceTypeApi =
+  | "scheduled_query"
+  | "flow"
+  /** Rules on one dbt job. */
+  | "dbt_job"
+  /** Default rules for every job of a dbt project. */
+  | "dbt_project";
 
 export type NotificationTriggerApi = "success" | "failure";
 
@@ -255,6 +261,8 @@ export interface NotificationRuleApi {
   resourceId: string;
   enabled: boolean;
   triggers: NotificationTriggerApi[];
+  /** dbt rules only: post every failed run, not only the first. */
+  everyFailure?: boolean;
   channel: NotificationRuleChannelApi;
   createdBy: string;
   createdAt: string;

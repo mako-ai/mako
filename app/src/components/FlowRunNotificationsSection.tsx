@@ -43,6 +43,7 @@ import type {
   NotificationTriggerApi,
 } from "../lib/api-types";
 import {
+  isDbtNotificationResource,
   ruleSummary,
   useNotificationRuleStore,
 } from "../store/notificationRuleStore";
@@ -56,7 +57,17 @@ export interface FlowRunNotificationsSectionProps {
   workspaceRole: string;
   /** Compact layout for dialogs */
   compact?: boolean;
+  /** Section heading. Defaults to "Run notifications". */
+  title?: string;
 }
+
+/** The resource as a sentence reads it: "this job", "Save this flow first". */
+const RESOURCE_NOUN: Record<NotificationResourceTypeApi, string> = {
+  scheduled_query: "scheduled query",
+  flow: "flow",
+  dbt_job: "job",
+  dbt_project: "project",
+};
 
 function resourceCacheKey(
   resourceType: NotificationResourceTypeApi,
@@ -65,10 +76,18 @@ function resourceCacheKey(
   return `${resourceType}:${resourceId}`;
 }
 
-function triggersLabel(triggers: NotificationTriggerApi[]): string {
+function triggersLabel(rule: NotificationRuleApi): string {
   const parts: string[] = [];
-  if (triggers.includes("success")) parts.push("Success");
-  if (triggers.includes("failure")) parts.push("Failure");
+  if (isDbtNotificationResource(rule.resourceType)) {
+    // dbt rules follow the job's state, so the chip names the transitions.
+    if (rule.triggers.includes("failure")) {
+      parts.push(rule.everyFailure ? "Every failure" : "First failure");
+    }
+    if (rule.triggers.includes("success")) parts.push("Recovery");
+    return parts.join(" · ");
+  }
+  if (rule.triggers.includes("success")) parts.push("Success");
+  if (rule.triggers.includes("failure")) parts.push("Failure");
   return parts.join(" · ");
 }
 
@@ -110,8 +129,11 @@ export function FlowRunNotificationsSection({
   resourceId,
   workspaceRole,
   compact,
+  title,
 }: FlowRunNotificationsSectionProps) {
   const canManage = workspaceRole === "owner" || workspaceRole === "admin";
+  const isDbt = isDbtNotificationResource(resourceType);
+  const resourceNoun = RESOURCE_NOUN[resourceType];
   const cacheKey = resourceId ? resourceCacheKey(resourceType, resourceId) : "";
 
   const rules = useNotificationRuleStore(s =>
@@ -134,6 +156,7 @@ export function FlowRunNotificationsSection({
 
   const [successChecked, setSuccessChecked] = useState(true);
   const [failureChecked, setFailureChecked] = useState(true);
+  const [everyFailure, setEveryFailure] = useState(false);
   const [channelType, setChannelType] =
     useState<NotificationChannelTypeApi>("email");
   const [recipients, setRecipients] = useState<string[]>([]);
@@ -157,6 +180,7 @@ export function FlowRunNotificationsSection({
   const resetDialogFields = useCallback(() => {
     setSuccessChecked(true);
     setFailureChecked(true);
+    setEveryFailure(false);
     setChannelType("email");
     setRecipients([]);
     setWebhookUrl("");
@@ -178,6 +202,7 @@ export function FlowRunNotificationsSection({
     setSecretBanner(null);
     setSuccessChecked(rule.triggers.includes("success"));
     setFailureChecked(rule.triggers.includes("failure"));
+    setEveryFailure(rule.everyFailure === true);
     const ch = rule.channel;
     setChannelType(ch.type);
     if (ch.type === "email") {
@@ -266,6 +291,7 @@ export function FlowRunNotificationsSection({
     const base: Record<string, unknown> = {
       triggers,
       channelType,
+      ...(isDbt ? { everyFailure: failureChecked && everyFailure } : {}),
     };
 
     if (channelType === "email") {
@@ -304,7 +330,9 @@ export function FlowRunNotificationsSection({
     const body = buildPayloadBase();
     if (!body) {
       setLoadError(
-        "Choose at least one event (success or failure) and complete the channel fields.",
+        isDbt
+          ? "Choose at least one event (failure or recovery) and complete the channel fields."
+          : "Choose at least one event (success or failure) and complete the channel fields.",
       );
       return;
     }
@@ -374,7 +402,7 @@ export function FlowRunNotificationsSection({
 
   const handleOpenTest = (ruleId: string) => {
     setTestRuleId(ruleId);
-    setTestTrigger("success");
+    setTestTrigger(isDbt ? "failure" : "success");
     setTestDialogOpen(true);
   };
 
@@ -397,7 +425,7 @@ export function FlowRunNotificationsSection({
     return (
       <Alert severity="info" sx={{ mt: compact ? 0 : 2 }}>
         {`Save this ${
-          resourceType === "scheduled_query" ? "query" : "flow"
+          resourceType === "scheduled_query" ? "query" : resourceNoun
         } first to configure run notifications.`}
       </Alert>
     );
@@ -421,7 +449,7 @@ export function FlowRunNotificationsSection({
             color: "text.secondary",
           }}
         >
-          Run notifications
+          {title ?? "Run notifications"}
         </Typography>
         <Stack
           direction="row"
@@ -484,8 +512,11 @@ export function FlowRunNotificationsSection({
               color: "text.secondary",
             }}
           >
-            No notifications yet. Notify on success or failure via email,
-            webhook, or Slack.
+            {isDbt
+              ? resourceType === "dbt_project"
+                ? "No default alerts yet. Add one to hear by email, webhook, or Slack when any job of this project fails and when it recovers."
+                : "No alerts on this job yet. Add one to hear by email, webhook, or Slack when it fails and when it recovers."
+              : "No notifications yet. Notify on success or failure via email, webhook, or Slack."}
           </Typography>
         ) : (
           (rules ?? []).map(rule => (
@@ -503,7 +534,7 @@ export function FlowRunNotificationsSection({
                     <Typography variant="subtitle2">
                       {channelTitle(rule.channel.type)}
                     </Typography>
-                    <Chip size="small" label={triggersLabel(rule.triggers)} />
+                    <Chip size="small" label={triggersLabel(rule)} />
                   </Stack>
                   <Typography
                     variant="body2"
@@ -608,9 +639,9 @@ export function FlowRunNotificationsSection({
               mb: 2,
             }}
           >
-            Notification send attempts for this{" "}
-            {resourceType === "flow" ? "flow" : "scheduled query"}, newest first
-            (up to 100).
+            {resourceType === "dbt_project"
+              ? "Send attempts of this project's default alerts, newest first (up to 100)."
+              : `Notification send attempts for this ${resourceNoun}, newest first (up to 100).`}
           </Typography>
           {deliveryLogLoading ? (
             <Typography
@@ -696,7 +727,11 @@ export function FlowRunNotificationsSection({
                     onChange={e => setSuccessChecked(e.target.checked)}
                   />
                 }
-                label="Run succeeds"
+                label={
+                  isDbt
+                    ? "Job recovers (first success after a failure)"
+                    : "Run succeeds"
+                }
               />
               <FormControlLabel
                 control={
@@ -705,8 +740,31 @@ export function FlowRunNotificationsSection({
                     onChange={e => setFailureChecked(e.target.checked)}
                   />
                 }
-                label="Run fails"
+                label={isDbt ? "Job fails" : "Run fails"}
               />
+              {isDbt && (
+                <>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={failureChecked && everyFailure}
+                        disabled={!failureChecked}
+                        onChange={e => setEveryFailure(e.target.checked)}
+                      />
+                    }
+                    label="Notify on every failed run"
+                    sx={{ ml: 3 }}
+                  />
+                  <Typography
+                    variant="caption"
+                    sx={{ color: "text.secondary", ml: 7 }}
+                  >
+                    {failureChecked && everyFailure
+                      ? "A job failing every hour sends 24 alerts a day."
+                      : "One alert when the job starts failing. Later failed runs stay quiet until it recovers."}
+                  </Typography>
+                </>
+              )}
             </FormGroup>
             <Divider />
             <Typography variant="subtitle2">Channel</Typography>
@@ -855,7 +913,9 @@ export function FlowRunNotificationsSection({
                   setTestTrigger(e.target.value as NotificationTriggerApi)
                 }
               >
-                <MenuItem value="success">Success</MenuItem>
+                <MenuItem value="success">
+                  {isDbt ? "Recovery" : "Success"}
+                </MenuItem>
                 <MenuItem value="failure">Failure</MenuItem>
               </Select>
             </FormControl>
