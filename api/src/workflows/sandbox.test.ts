@@ -1,6 +1,7 @@
 /**
  * Sandbox runs (sandbox.ts) without a box: what a run's result looks like to
- * an agent (summary and full), which ids are sandbox runs, that the box gets
+ * an agent (summary and full), which ids are sandbox runs, which run a run's
+ * key names (where its recorded writes go), that the box gets
  * `mako workflow run` itself (runtime-files.ts), and the server-side wait.
  * A real run in a real box is verified end to end (see the PR).
  *
@@ -9,7 +10,12 @@
 import assert from "node:assert/strict";
 
 import { installRuntimeCommand } from "./runtime-files";
-import { type RunResult, isSandboxRunId, shapeSandboxRun } from "./sandbox";
+import {
+  type RunResult,
+  isSandboxRunId,
+  sandboxRunOfKey,
+  shapeSandboxRun,
+} from "./sandbox";
 import { MAX_WAIT_SECONDS, waitFor, waitSeconds } from "./wait";
 
 const RUN = "sandbox-0d15f705-25a0-4520-8053-eceebe02dc43";
@@ -133,6 +139,25 @@ async function main() {
   );
   assert.equal(still.done, false);
   assert.equal(clock, 5000, "never past the deadline");
+
+  // A run's key names its run, for its own creator only.
+  assert.equal(
+    sandboxRunOfKey({ name: `Workflows sandbox u1 ${RUN}`, createdBy: "u1" }),
+    RUN,
+  );
+  assert.equal(
+    sandboxRunOfKey({ name: `Workflows sandbox u2 ${RUN}`, createdBy: "u1" }),
+    null,
+  );
+  assert.equal(
+    sandboxRunOfKey({
+      name: "Workflows sandbox u1 sandbox-own",
+      createdBy: "u1",
+    }),
+    null,
+  );
+  assert.equal(sandboxRunOfKey({ name: "Mine", createdBy: "u1" }), null);
+  assert.equal(sandboxRunOfKey(undefined), null);
 
   console.log("sandbox runs tests passed");
 }
