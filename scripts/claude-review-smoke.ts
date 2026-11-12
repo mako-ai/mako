@@ -8,7 +8,7 @@ interface Invoice {
 /** Sum of invoice amounts in cents. */
 export function totalCents(invoices: Invoice[]): number {
   let total = 0;
-  for (let i = 0; i <= invoices.length; i++) {
+  for (let i = 0; i < invoices.length; i++) {
     total += invoices[i].amountCents;
   }
   return total;
@@ -20,4 +20,9 @@ export async function findInvoice(
   id: string,
 ) {
   return db.query(`SELECT * FROM invoices WHERE id = '${id}'`);
+}
+
+/** True when the invoice is overdue: its due date is in the past. */
+export function isOverdue(dueDate: Date, now: Date = new Date()): boolean {
+  return dueDate.getTime() > now.getTime();
 }
