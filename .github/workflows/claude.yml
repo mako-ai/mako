@@ -1,9 +1,12 @@
 name: Claude Code
 
-# Two jobs:
+# Three jobs:
 #   claude       answers @claude mentions in issues, PR comments and reviews.
-#   auto-review  reviews every non-draft pull request with Anthropic's
-#                official code-review plugin and posts the findings on the PR.
+#   auto-review  first pass: reviews a non-draft pull request when it opens,
+#                with Anthropic's official code-review plugin, and posts the
+#                findings on the PR.
+#   re-review    second pass: on every later push, reviews only the new
+#                commits and posts only findings that are new.
 #
 # Setup follows https://code.claude.com/docs/en/github-actions (the "Run a
 # skill" review example). No model is pinned: the action uses the Claude Code
@@ -26,10 +29,10 @@ on:
   issues:
     types: [opened]
   pull_request:
-    # No `synchronize`: the plugin skips a pull request that already carries a
-    # Claude comment, so a run on every push would start a runner for nothing.
-    # Ask for another pass with an `@claude review the new commits` comment.
-    types: [opened, reopened, ready_for_review]
+    # opened / reopened / ready_for_review start auto-review. synchronize (a
+    # push to the branch) starts re-review: the plugin skips a pull request
+    # that already carries a Claude comment, so it cannot do the second pass.
+    types: [opened, reopened, ready_for_review, synchronize]
 
 jobs:
   claude:
@@ -60,6 +63,7 @@ jobs:
   auto-review:
     if: |
       github.event_name == 'pull_request' &&
+      github.event.action != 'synchronize' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -91,3 +95,130 @@ jobs:
           # Keep this line: the action starts the MCP server that posts inline
           # comments only when --allowedTools names it here.
           claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment"'
+
+  re-review:
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action == 'synchronize' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Same group as auto-review: a push cancels a review of the older commit.
+    concurrency:
+      group: ${{ github.workflow }}-auto-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      # Plain code gathers what the model needs, so the model gets no broad
+      # GitHub API tool: the range of new commits, and every existing review
+      # thread with its resolved state.
+      - name: Collect new commits and existing review threads
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # After a force push or rebase the old head is gone or is no longer an
+          # ancestor: fall back to the whole pull request diff.
+          if git cat-file -e "$BEFORE^{commit}" 2>/dev/null \
+            && git merge-base --is-ancestor "$BEFORE" "$AFTER"; then
+            range="$BEFORE..$AFTER"
+            scope=incremental
+          else
+            range="$(git merge-base "$BASE_SHA" "$AFTER")..$AFTER"
+            scope=full
+          fi
+          # A push that only merges the base branch brings no change of its own.
+          own=$(git log --no-merges --format=%H "$range" | wc -l | tr -d ' ')
+          echo "range=$range" >> "$GITHUB_OUTPUT"
+          echo "scope=$scope" >> "$GITHUB_OUTPUT"
+          echo "own_commits=$own" >> "$GITHUB_OUTPUT"
+          gh api graphql --paginate \
+            -f owner="$OWNER" -f name="$NAME" -F number="$PR_NUMBER" \
+            -f query='
+              query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+                repository(owner: $owner, name: $name) {
+                  pullRequest(number: $number) {
+                    reviewThreads(first: 100, after: $endCursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        isResolved
+                        isOutdated
+                        path
+                        line
+                        comments(first: 20) { nodes { author { login } body } }
+                      }
+                    }
+                  }
+                }
+              }' \
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+                  | {resolved: .isResolved, outdated: .isOutdated, path, line,
+                     comments: [.comments.nodes[] | {author: .author.login, body}]}' \
+            > "$RUNNER_TEMP/review-threads.jsonl"
+          cp "$RUNNER_TEMP/review-threads.jsonl" .claude-review-threads.jsonl
+          echo "threads=$(wc -l < .claude-review-threads.jsonl | tr -d ' ')" >> "$GITHUB_OUTPUT"
+      - uses: anthropics/claude-code-action@v1
+        if: steps.context.outputs.own_commits != '0'
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            NEW COMMITS: ${{ steps.context.outputs.range }} (${{ steps.context.outputs.scope }})
+
+            This pull request was reviewed before. New commits were pushed. Do
+            a second pass on the new commits only. The pull request branch is
+            checked out in the current directory. CLAUDE.md holds the house
+            rules.
+
+            Read first:
+            - `.claude-review-threads.jsonl`: every existing review thread on
+              this pull request, one JSON object per line, with `resolved`,
+              `outdated`, `path`, `line` and its comments.
+            - `git log --no-merges NEW COMMITS` and `git diff NEW COMMITS` for
+              what changed. Changes that only come from merging the base
+              branch are out of scope. When the scope is `full` (a force push
+              or rebase), the range is the whole pull request: review it all,
+              and still apply the rules below.
+
+            Flag only HIGH SIGNAL issues in the changed lines: code that will
+            not compile or parse, clear logic errors, security holes, and
+            unambiguous CLAUDE.md violations you can quote. No style nits, no
+            speculation, nothing a linter or the type checker reports. Verify
+            each issue against the code before posting it: read the
+            surrounding file, do not guess from the diff alone.
+
+            Never repeat a finding:
+            - Do not raise an issue an existing thread already covers, whoever
+              wrote it and whether or not it is fixed.
+            - A resolved thread is a decision by the author. Do not raise the
+              same point again, even if the code did not change.
+            - Do not comment on a previous finding that is now fixed.
+            - If a new commit introduces a regression of something a thread
+              marked fixed, that is a new issue: flag it.
+
+            Post each new issue as one inline comment on the changed line with
+            `mcp__github_inline_comment__create_inline_comment`, with
+            `confirmed: true`: what is wrong, why it matters, and a suggestion
+            block only when the fix is small and complete. If you find nothing
+            new, post nothing and end with the sentence "No new issues in the
+            new commits."
+          claude_args: |
+            --max-turns 40
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
+
