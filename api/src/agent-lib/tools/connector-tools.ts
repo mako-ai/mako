@@ -57,7 +57,6 @@ import { loggers } from "../../logging";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { isEncryptedValue } from "../../services/crypto.service";
 import { redactConnectionString } from "../../utils/connection-secrets";
-import { sourceWriterPrincipal } from "../../access/connection-writers-list";
 import { callableFor } from "../../connections/callable";
 import { summarizeConnectionForListing } from "./universal-tools";
 import { connectionRequest } from "../../connections/proxy.service";
@@ -202,21 +201,13 @@ export function sourceConnectionAccess(row: {
   liveReaders?: IConnectionWriter[];
   writers?: IConnectionWriter[];
 }) {
-  const writers = [
-    ...new Set(
-      (row.writers ?? []).map(w => sourceWriterPrincipal(w.principal)),
-    ),
-  ];
+  const writers = [...new Set((row.writers ?? []).map(w => w.principal))];
   return {
     // Absent (every connection older than the proxy) means off.
     liveReads: row.liveReads === true,
     // "everyone", or the principals listed (writers read live too).
     liveReaders: row.liveReaders
-      ? [
-          ...new Set(
-            row.liveReaders.map(w => sourceWriterPrincipal(w.principal)),
-          ),
-        ]
+      ? [...new Set(row.liveReaders.map(w => w.principal))]
       : "everyone",
     writers,
     // Whether the proxy can call this connector at all yet.

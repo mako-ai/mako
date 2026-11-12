@@ -15,10 +15,14 @@ import {
   loggers,
   enrichContextWithUser,
   enrichContextWithWorkflow,
+  enrichContextWithWorkflowRun,
   enrichContextWithWorkflowWorker,
   enrichContextWithWorkspace,
 } from "../logging";
-import { workflowIdentity } from "../workflows/worker-key";
+import { Types } from "mongoose";
+import { isWorkerKey, workerKeyName } from "../workflows/worker-key";
+import { isPassToken, keyIdOf, readPass } from "../workflows/pass";
+import { runStartedBy } from "../workflows/runs";
 
 const logger = loggers.auth();
 
@@ -105,20 +109,55 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
       }
     }
 
-    if (apiKey.startsWith("revops_")) {
+    if (apiKey.startsWith("revops_") || isPassToken(apiKey)) {
       try {
-        // Hash the provided key
-        const keyHash = hashApiKey(apiKey);
+        // A workflow pass (workflows/pass.ts) acts with its worker key, as
+        // the workflow and run it names: one step of one deployed run.
+        const passToken = isPassToken(apiKey);
+        const pass = passToken ? readPass(apiKey) : null;
+        if (passToken && !pass) {
+          return c.json({ error: "Invalid or expired workflow pass" }, 401);
+        }
+        const keyHash = pass ? null : hashApiKey(apiKey);
 
         // Find workspace with this API key
-        const workspace = await Workspace.findOne({
-          "apiKeys.keyHash": keyHash,
-        });
+        const workspace = pass
+          ? Types.ObjectId.isValid(pass.workspaceId)
+            ? await Workspace.findById(pass.workspaceId)
+            : null
+          : await Workspace.findOne({ "apiKeys.keyHash": keyHash });
 
+        if (pass && !workspace) {
+          return c.json({ error: "Invalid workflow pass" }, 401);
+        }
         if (workspace) {
-          const workspaceApiKey = workspace.apiKeys?.find(
-            k => k.keyHash === keyHash,
+          const workspaceApiKey = workspace.apiKeys?.find(k =>
+            pass
+              ? k.name === workerKeyName() &&
+                !!k.keyHash &&
+                keyIdOf(k.keyHash) === pass.keyId
+              : k.keyHash === keyHash,
           );
+          if (pass && !workspaceApiKey) {
+            return c.json(
+              {
+                error:
+                  "This workflow pass was made for a worker key that has been replaced",
+              },
+              401,
+            );
+          }
+          // A pass works only while its run executes: a finished run's pass
+          // is worth nothing, wherever it ended up.
+          if (
+            pass &&
+            !(await runStartedBy(pass.workspaceId, pass.runId, pass.workflow))
+          ) {
+            return c.json(
+              { error: "This workflow pass's run is no longer executing" },
+              401,
+            );
+          }
           if (!workspaceApiKey?.createdBy) {
             logger.warn("API key is missing creator metadata", {
               workspaceId: workspace._id.toString(),
@@ -179,19 +218,16 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
           enrichContextWithUser(creator._id);
           // Enrich logging context with workspace ID (API key auth)
           enrichContextWithWorkspace(workspace._id.toString());
-          // Only the deployed worker's key may say which deployed workflow
-          // a request runs for, so the workflow writes as itself
-          // (access/connection-writes.ts). A sandbox run's key, which the
-          // code being tested can read, acts as its person; the worker
-          // naming no deployed workflow acts as no one listable.
-          const identity = workflowIdentity(
-            workspaceApiKey,
-            workspace,
-            c.req.header("x-mako-workflow"),
-          );
-          if (identity.kind === "workflow") {
-            enrichContextWithWorkflow(identity.name);
-          } else if (identity.kind === "worker") {
+          // A deployed workflow acts as itself only with a pass: the worker
+          // key alone, whatever workflow a request says it is for, acts as
+          // no one who can be listed (access/connection-writes.ts). A sandbox
+          // run's key, which the code being tested can read, acts as its
+          // person.
+          if (pass) {
+            enrichContextWithWorkflow(pass.workflow);
+            enrichContextWithWorkflowRun(pass.runId, pass.step);
+            c.set("workflowPass", pass);
+          } else if (isWorkerKey(workspaceApiKey)) {
             enrichContextWithWorkflowWorker();
           }
 

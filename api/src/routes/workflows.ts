@@ -65,6 +65,8 @@ import {
   startSandboxRun,
 } from "../workflows/sandbox";
 import { waitForRun } from "../workflows/status";
+import { keyIdOf, mintPass } from "../workflows/pass";
+import { isWorkerKey } from "../workflows/worker-key";
 import { isWebhookSecret, setTriggers } from "../workflows/webhook";
 
 const logger = loggers.api("workflows");
@@ -514,17 +516,21 @@ export function languageModelGatewayBase(
 type Worker = { workspaceId: string; userId: string };
 
 /**
- * The run and step a deployed worker's request comes from: the workflow is
- * the one Mako checked (X-Mako-Workflow, logging/context.ts), the run and step
- * what the worker sends with it (worker.mjs). A model call's cost is counted
- * against them; a person's own run sends none.
+ * The run and step a deployed step's request comes from, as its workflow pass
+ * names them (workflows/pass.ts): a model call's cost is counted against
+ * them, and a write is recorded under the run. Nothing a request says about
+ * itself is believed; a person's own run has none.
  */
-function workflowRunOf(c: Context): IWorkflowRunRef | undefined {
-  const workflowId = getRequestContext()?.workflow;
-  const runId = c.req.header("X-Mako-Run");
-  if (!workflowId || !runId || !isHatchetId(runId)) return undefined;
-  const step = c.req.header("X-Mako-Step")?.trim().slice(0, 100);
-  return { workflowId, runId, ...(step ? { step } : {}) };
+function workflowRunOf(_c: Context): IWorkflowRunRef | undefined {
+  const context = getRequestContext();
+  const workflowId = context?.workflow;
+  const run = context?.workflowRun;
+  if (!workflowId || !run || !isHatchetId(run.runId)) return undefined;
+  return {
+    workflowId,
+    runId: run.runId,
+    ...(run.step ? { step: run.step.slice(0, 100) } : {}),
+  };
 }
 
 // Mako's own auth resolves the key; a session or a key without the worker's
@@ -561,15 +567,27 @@ function personOf(c: AuthenticatedContext): Worker | null {
   return { workspaceId: workspace._id.toString(), userId: String(user.id) };
 }
 
-/** A runtime handler: it runs only for a worker key, and is given its worker. */
+/**
+ * A runtime handler: it runs only for a worker key, and is given its worker.
+ * `supervisor` routes (what to run, the Hatchet token, the source, passes)
+ * are the pod's own and refuse a workflow pass: a step must not get the
+ * Hatchet token, nor a pass for another workflow.
+ */
 const asWorker =
   (
     handler: (c: Context, worker: Worker) => Promise<Response>,
-    { person = false } = {},
+    { person = false, supervisor = false } = {},
   ) =>
   async (c: AuthenticatedContext) => {
     const worker = workerOf(c);
+    if (worker && supervisor && c.get("workflowPass")) {
+      return c.json(
+        { error: "A workflow pass cannot call the worker's own routes" },
+        403,
+      );
+    }
     if (worker) return handler(c, worker);
+    if (supervisor) return c.json({ error: "Invalid worker key" }, 401);
     const self = person ? personOf(c) : null;
     if (!self) return c.json({ error: "Invalid worker key" }, 401);
     // A person acts as themselves only while they belong to the workspace:
@@ -586,6 +604,11 @@ const asWorker =
     return handler(c, self);
   };
 
+/** The pod's own routes: the worker key, never a workflow pass. */
+const asSupervisor = (
+  handler: (c: Context, worker: Worker) => Promise<Response>,
+) => asWorker(handler, { supervisor: true });
+
 /** The SQL, model and agent routes, which a person's own run calls too. */
 const asWorkerOrPerson = (
   handler: (c: Context, worker: Worker) => Promise<Response>,
@@ -596,7 +619,7 @@ const asWorkerOrPerson = (
 // worker holds one credential only.
 workflowRuntimeRoutes.get(
   "/head",
-  asWorker(async (c, { workspaceId }) => {
+  asSupervisor(async (c, { workspaceId }) => {
     const [workspace, tenant] = await Promise.all([
       Workspace.findById(workspaceId)
         .select("workflows.live workflows.active")
@@ -618,7 +641,7 @@ workflowRuntimeRoutes.get(
 // error. A report for a commit that is no longer wanted changes nothing.
 workflowRuntimeRoutes.post(
   "/status",
-  asWorker(async (c, { workspaceId }) => {
+  asSupervisor(async (c, { workspaceId }) => {
     const body = (await c.req.json().catch(() => null)) as {
       sha?: unknown;
       error?: unknown;
@@ -643,6 +666,65 @@ workflowRuntimeRoutes.post(
           },
     );
     return c.json({ ok: true });
+  }),
+);
+
+// A pass for one step of one deployed run (workflows/pass.ts). The
+// dispatcher (worker.mjs) asks before it starts the step program, which then
+// calls Mako with the pass and never sees the worker key. Only the deployed
+// worker key may ask, for a workflow deployed from main, and only for a run
+// of that workflow that is executing now (runs.ts `runStartedBy`): a pass
+// for a run that is not one is a 403.
+workflowRuntimeRoutes.post(
+  "/passes",
+  asSupervisor(async (c, { workspaceId }) => {
+    const key = c.get("apiKey") as
+      { name?: string; scopes?: string[]; keyHash?: string } | undefined;
+    if (!isWorkerKey(key) || !key?.keyHash) {
+      return c.json(
+        { error: "Only the deployed worker's key asks for passes" },
+        403,
+      );
+    }
+    const body = (await c.req.json().catch(() => null)) as {
+      workflow?: unknown;
+      runId?: unknown;
+      step?: unknown;
+    } | null;
+    const workflow = typeof body?.workflow === "string" ? body.workflow : "";
+    const runId = typeof body?.runId === "string" ? body.runId : "";
+    const step =
+      typeof body?.step === "string" && body.step.trim()
+        ? body.step.trim().slice(0, 100)
+        : undefined;
+    if (!workflow || !isHatchetId(runId)) {
+      return c.json({ error: "A workflow and a run id are required" }, 400);
+    }
+    const workspace = await Workspace.findById(workspaceId)
+      .select("workflows.live.names")
+      .lean();
+    if (!workspace?.workflows?.live?.names?.includes(workflow)) {
+      return c.json({ error: `${workflow} is not deployed` }, 403);
+    }
+    if (!(await runStartedBy(workspaceId, runId, workflow))) {
+      logger.warn("Refused a pass for a run that is not executing", {
+        workspaceId,
+        workflow,
+        runId,
+      });
+      return c.json(
+        { error: `Run ${runId} is not an executing run of ${workflow}` },
+        403,
+      );
+    }
+    const { token, expiresAt } = mintPass({
+      workspaceId,
+      workflow,
+      runId,
+      step,
+      keyId: keyIdOf(key.keyHash),
+    });
+    return c.json({ pass: token, expiresAt });
   }),
 );
 
@@ -883,7 +965,7 @@ workflowRuntimeRoutes.post(
 // One request to a service through a source connection (lib/mako
 // `connection(id)`): Mako adds the stored credential, which workflow code
 // never sees. A read needs live reads on for the connection; a write needs
-// this workflow ("All deployed workflows") or, on a person's own run, this
+// this workflow (by name, or "All deployed workflows") or, on a person's own run, this
 // person on the connection's writers list (connections/proxy.service.ts); a
 // dry run records its writes instead of sending them (202, `recorded:
 // true`). The service's status comes back as is.
@@ -973,7 +1055,7 @@ workflowRuntimeRoutes.post(
 // its own workspace's repository.
 workflowRuntimeRoutes.get(
   "/source/:sha",
-  asWorker(async (c, { workspaceId }) => {
+  asSupervisor(async (c, { workspaceId }) => {
     const sha = c.req.param("sha") ?? "";
     if (!isOid(sha)) return c.json({ error: "Invalid commit" }, 400);
     // A fresh API instance has an empty disk: restore the repository and this

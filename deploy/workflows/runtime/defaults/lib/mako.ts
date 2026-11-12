@@ -300,7 +300,7 @@ export class ConnectionError extends Error {
  * the stored credential: workflow code never sees it. Paths are relative to
  * the connection's base URL. GETs (and GraphQL queries, Close searches) are
  * reads, when live reads are on for the connection; anything else is a
- * write and needs "All deployed workflows" on the connection's writers list
+ * write and needs this workflow (or "All deployed workflows") on the connection's writers list
  * (a person's own run: that person). A dry run (`dryRun: true`) does not
  * write: its writes are recorded, not sent, and answered 202 with
  * `{ recorded: true, sent: false }` (the run's `recordedWrites`). A run
