@@ -373,14 +373,12 @@ export async function forward(
   );
 }
 
-/** `forward` for a request already resolved (`resolveRequest`). */
-export async function send(
-  connection: ForwardConnection,
+/** The URL, headers and body `request` goes on the wire with, credential not yet added. */
+function wireShape(
   callable: CallableConnection,
+  config: NonNullable<ForwardConnection["config"]>,
   request: ResolvedRequest,
-  options: { signal?: AbortSignal; timeoutMs?: number } = {},
-): Promise<ForwardResult> {
-  const config = connection.config ?? {};
+) {
   const url = new URL(request.url);
   const headers = {
     ...request.headers,
@@ -391,6 +389,79 @@ export async function send(
     : readsByProfile(callable, request, config)
       ? encodeReadBody(request.body, headers)
       : encodeBody(request.body, callable, headers);
+  return { url, headers, body };
+}
+
+/** A request as it would have been sent, every credential value redacted. */
+export interface RecordedRequest {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  /** Parsed JSON when sent as JSON, else the text sent; none for no body. */
+  body?: unknown;
+}
+
+/**
+ * What `send` would put on the wire for `request`, without sending it: the
+ * full URL, headers and encoded body, with the credential in its place as
+ * `[redacted]` and every credential value (and what it is sent as) redacted
+ * wherever else it shows. A credential
+ * Mako mints per request (a Google token) is not minted: it shows as a
+ * redacted bearer token.
+ */
+export function describeRequest(
+  connection: Pick<ForwardConnection, "config">,
+  callable: CallableConnection,
+  request: ResolvedRequest,
+): RecordedRequest {
+  const config = connection.config ?? {};
+  const { url, headers, body } = wireShape(callable, config, request);
+  const credential = callable.credential(config);
+  const minted =
+    credential.type === "google_service_account" ||
+    credential.type === "google_id_token";
+  // What the real credential puts on the wire, on a copy, to redact it
+  // wherever else it shows (a body that repeats it).
+  const sent = minted ? [] : applyCredential(credential, {}, new URL(url));
+  // The credential in its place, as `[redacted]`.
+  if (minted || credential.type === "bearer") {
+    headers.authorization = "Bearer [redacted]";
+  } else if (credential.type === "basic") {
+    headers.authorization = "Basic [redacted]";
+  } else if (credential.type !== "none") {
+    applyCredential({ ...credential, token: "[redacted]" }, headers, url);
+  }
+  const secrets = searchableSecrets(secretsOf(callable, config), sent);
+  const shown: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    shown[name] = redactSecrets(value, secrets);
+  }
+  const text = body === undefined ? undefined : redactSecrets(body, secrets);
+  let parsed: unknown = text;
+  if (text && /\bjson\b/i.test(headers["content-type"] ?? "")) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = text;
+    }
+  }
+  return {
+    method: request.method,
+    url: redactSecrets(url.toString(), secrets),
+    headers: shown,
+    ...(parsed === undefined ? {} : { body: parsed }),
+  };
+}
+
+/** `forward` for a request already resolved (`resolveRequest`). */
+export async function send(
+  connection: ForwardConnection,
+  callable: CallableConnection,
+  request: ResolvedRequest,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<ForwardResult> {
+  const config = connection.config ?? {};
+  const { url, headers, body } = wireShape(callable, config, request);
   const sent = applyCredential(
     await wireCredential(callable.credential(config), url),
     headers,
