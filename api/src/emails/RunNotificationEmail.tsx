@@ -1,5 +1,12 @@
 import { Heading, Section, Text } from "react-email";
 import type { FC } from "react";
+import {
+  dbtOutcomeWord,
+  dbtSummaryLine,
+  failedStepLabel,
+  hiddenFailedStepCount,
+  isDbtResourceType,
+} from "../services/flow-run-notification.helpers";
 import type { NotificationOutboundPayload } from "../services/flow-run-notification.types";
 import { MakoButton } from "./components/MakoButton";
 import { MakoLayout } from "./components/MakoLayout";
@@ -26,7 +33,110 @@ function formatTriggerLabel(trigger: NotificationOutboundPayload["trigger"]) {
   return trigger === "failure" ? "failed" : "succeeded";
 }
 
+const MONO_FONT =
+  "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+
+/** dbt job run: outcome first, then the failing models and tests. */
+const DbtRunNotificationEmail: FC<RunNotificationEmailProps> = props => {
+  const outcome = dbtOutcomeWord(props);
+  const environment = props.environment ? ` (${props.environment})` : "";
+  const failedSteps = props.failedSteps ?? [];
+  const hidden = hiddenFailedStepCount(props);
+  const showRunError =
+    props.trigger === "failure" &&
+    props.errorMessage &&
+    failedSteps.length === 0;
+
+  return (
+    <MakoLayout
+      previewText={`dbt job "${props.resourceName}" ${outcome}${environment}`}
+      footerNote={`Run ID: ${props.runId} · Finished: ${props.completedAt} · Workspace ID: ${props.workspaceId}`}
+    >
+      <Heading
+        style={{ fontSize: "22px", margin: "0 0 8px", color: "#18181b" }}
+      >
+        dbt job {outcome}: {props.resourceName}
+        {environment}
+      </Heading>
+      <Text
+        style={{
+          fontSize: "15px",
+          lineHeight: "22px",
+          color: "#3f3f46",
+          margin: "0 0 16px",
+        }}
+      >
+        {dbtSummaryLine(props)}
+      </Text>
+      {failedSteps.length > 0 || showRunError ? (
+        <Section
+          style={{
+            backgroundColor: "#fafafa",
+            borderRadius: "6px",
+            padding: "14px 16px",
+            marginBottom: "20px",
+          }}
+        >
+          {failedSteps.map((step, idx) => (
+            <Text
+              key={`${idx}-${step.name.slice(0, 48)}`}
+              style={{
+                fontSize: "13px",
+                lineHeight: "20px",
+                color: "#52525b",
+                margin: "0 0 10px",
+                fontFamily: MONO_FONT,
+              }}
+            >
+              <strong>{failedStepLabel(step)}</strong>
+              {step.message ? (
+                <>
+                  <br />
+                  {step.message}
+                </>
+              ) : null}
+            </Text>
+          ))}
+          {hidden > 0 ? (
+            <Text
+              style={{
+                fontSize: "13px",
+                lineHeight: "20px",
+                color: "#52525b",
+                margin: "0",
+              }}
+            >
+              …and {hidden} more
+            </Text>
+          ) : null}
+          {showRunError ? (
+            <Text
+              style={{
+                fontSize: "13px",
+                lineHeight: "20px",
+                color: "#52525b",
+                margin: "0",
+                fontFamily: MONO_FONT,
+              }}
+            >
+              {props.errorMessage}
+            </Text>
+          ) : null}
+        </Section>
+      ) : null}
+      {props.deepLink ? (
+        <Section style={{ marginTop: "8px" }}>
+          <MakoButton href={props.deepLink}>Open the run in Mako</MakoButton>
+        </Section>
+      ) : null}
+    </MakoLayout>
+  );
+};
+
 const RunNotificationEmail: FC<RunNotificationEmailProps> = props => {
+  if (isDbtResourceType(props.resourceType)) {
+    return <DbtRunNotificationEmail {...props} />;
+  }
   const kind = resourceKindLabel(props.resourceType);
   const statusWord = formatTriggerLabel(props.trigger);
   const previewText = `${kind} "${props.resourceName}" ${statusWord}`;
@@ -81,8 +191,7 @@ const RunNotificationEmail: FC<RunNotificationEmailProps> = props => {
               lineHeight: "20px",
               color: "#52525b",
               margin: "0 0 6px",
-              fontFamily:
-                "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+              fontFamily: MONO_FONT,
             }}
           >
             {line}
@@ -99,6 +208,10 @@ const RunNotificationEmail: FC<RunNotificationEmailProps> = props => {
 };
 
 function runNotificationSubject(props: RunNotificationEmailProps): string {
+  if (isDbtResourceType(props.resourceType)) {
+    const environment = props.environment ? ` (${props.environment})` : "";
+    return `Mako: dbt job "${props.resourceName}" ${dbtOutcomeWord(props)}${environment}`;
+  }
   const kind = resourceKindLabel(props.resourceType);
   const verb = props.trigger === "failure" ? "failed" : "completed";
   return `Mako: ${kind} "${props.resourceName}" ${verb}`;

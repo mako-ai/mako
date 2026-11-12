@@ -1,11 +1,14 @@
 /**
- * Workspace-scoped notification rules for scheduled queries and flows.
+ * Workspace-scoped notification rules for scheduled queries, flows, dbt jobs
+ * (`dbt_job`) and dbt projects (`dbt_project`, the default for every job).
  * Authenticated + workspace member access; admin-only for mutations.
  */
 import { createRoute, z } from "@hono/zod-openapi";
 import { Types } from "mongoose";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
+  DbtJob,
+  DbtProject,
   Flow,
   NotificationDelivery,
   NotificationRule,
@@ -27,10 +30,16 @@ import {
   resolveResourceDisplayName,
   sanitizeRuleForClient,
 } from "../services/flow-run-notification.service";
-import type { NotificationDeliverJobData } from "../services/flow-run-notification.types";
+import type {
+  FlowRunTerminalEventData,
+  NotificationDeliverJobData,
+} from "../services/flow-run-notification.types";
 import {
+  NOTIFICATION_RESOURCE_TYPES,
   generateWebhookSigningSecret,
   hashForIdempotencySecret,
+  isDbtResourceType,
+  isNotificationResourceType,
 } from "../services/flow-run-notification.helpers";
 import { inngest } from "../inngest";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
@@ -49,7 +58,7 @@ const RuleIdParam = WorkspaceParam.extend({
 });
 const ResourceQuery = z.object({
   resourceType: z
-    .enum(["flow", "scheduled_query"])
+    .enum(NOTIFICATION_RESOURCE_TYPES)
     .optional()
     .openapi({
       param: { name: "resourceType", in: "query" },
@@ -100,11 +109,54 @@ async function assertResourceInWorkspace(
     }).lean();
     return !!doc;
   }
+  if (resourceType === "dbt_job") {
+    const doc = await DbtJob.findOne({ _id: rid, workspaceId: ws })
+      .select("_id")
+      .lean();
+    return !!doc;
+  }
+  if (resourceType === "dbt_project") {
+    const doc = await DbtProject.findOne({ _id: rid, workspaceId: ws })
+      .select("_id")
+      .lean();
+    return !!doc;
+  }
   const doc = await Flow.findOne({
     _id: rid,
     workspaceId: ws,
   }).lean();
   return !!doc;
+}
+
+const EVERY_FAILURE_DBT_ONLY =
+  "everyFailure applies to dbt job and dbt project rules only";
+
+async function dbtTestEventFields(
+  resourceType: "dbt_job" | "dbt_project",
+  resourceId: string,
+  trigger: NotificationTrigger,
+): Promise<Partial<FlowRunTerminalEventData>> {
+  const job =
+    resourceType === "dbt_job"
+      ? await DbtJob.findById(resourceId).select("projectId environment").lean()
+      : null;
+  return {
+    projectId: job?.projectId.toString(),
+    environment: job?.environment,
+    ...(trigger === "failure"
+      ? {
+          failedSteps: [
+            {
+              name: "example_model",
+              resourceType: "model",
+              status: "error",
+              message: "Test failure notification",
+            },
+          ],
+          failedStepCount: 1,
+        }
+      : { previousStatus: "error" as const }),
+  };
 }
 
 function parseTriggers(raw: unknown): NotificationTrigger[] | null {
@@ -188,13 +240,11 @@ notificationRulesRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId") as string;
       const resourceType = c.req.query("resourceType") as
-        | NotificationResourceType
-        | undefined;
+        NotificationResourceType | undefined;
       const resourceId = c.req.query("resourceId");
 
       if (
-        !resourceType ||
-        (resourceType !== "flow" && resourceType !== "scheduled_query") ||
+        !isNotificationResourceType(resourceType) ||
         !resourceId ||
         !Types.ObjectId.isValid(resourceId)
       ) {
@@ -261,8 +311,7 @@ notificationRulesRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId") as string;
       const resourceType = c.req.query("resourceType") as
-        | NotificationResourceType
-        | undefined;
+        NotificationResourceType | undefined;
       const resourceId = c.req.query("resourceId");
       const limitRaw = c.req.query("limit");
       const limit = Math.min(
@@ -271,8 +320,7 @@ notificationRulesRoutes.openapi(
       );
 
       if (
-        !resourceType ||
-        (resourceType !== "flow" && resourceType !== "scheduled_query") ||
+        !isNotificationResourceType(resourceType) ||
         !resourceId ||
         !Types.ObjectId.isValid(resourceId)
       ) {
@@ -291,11 +339,29 @@ notificationRulesRoutes.openapi(
         return c.json({ success: false, error: "Resource not found" }, 404);
       }
 
-      const deliveries = await NotificationDelivery.find({
-        workspaceId: new Types.ObjectId(workspaceId),
-        resourceType,
-        resourceId: new Types.ObjectId(resourceId),
-      })
+      const ws = new Types.ObjectId(workspaceId);
+      const rid = new Types.ObjectId(resourceId);
+      // A project default delivers under the job the run belongs to, so the
+      // project's log lists the deliveries of its own rules.
+      const projectRuleIds =
+        resourceType === "dbt_project"
+          ? await NotificationRule.find({
+              workspaceId: ws,
+              resourceType,
+              resourceId: rid,
+            }).distinct("_id")
+          : [];
+      const deliveries = await NotificationDelivery.find(
+        projectRuleIds.length > 0
+          ? {
+              workspaceId: ws,
+              $or: [
+                { resourceType, resourceId: rid },
+                { ruleId: { $in: projectRuleIds } },
+              ],
+            }
+          : { workspaceId: ws, resourceType, resourceId: rid },
+      )
         .sort({ completedAt: -1, createdAt: -1 })
         .limit(limit)
         .lean();
@@ -357,8 +423,7 @@ notificationRulesRoutes.openapi(
       const triggers = parseTriggers(body.triggers);
 
       if (
-        !resourceType ||
-        (resourceType !== "flow" && resourceType !== "scheduled_query") ||
+        !isNotificationResourceType(resourceType) ||
         !resourceId ||
         !Types.ObjectId.isValid(resourceId) ||
         !triggers
@@ -367,6 +432,18 @@ notificationRulesRoutes.openapi(
           { success: false, error: "Invalid resource or triggers" },
           400,
         );
+      }
+      if (
+        body.everyFailure !== undefined &&
+        typeof body.everyFailure !== "boolean"
+      ) {
+        return c.json(
+          { success: false, error: "everyFailure must be a boolean" },
+          400,
+        );
+      }
+      if (body.everyFailure === true && !isDbtResourceType(resourceType)) {
+        return c.json({ success: false, error: EVERY_FAILURE_DBT_ONLY }, 400);
       }
 
       const ok = await assertResourceInWorkspace(
@@ -394,6 +471,7 @@ notificationRulesRoutes.openapi(
         resourceId: new Types.ObjectId(resourceId),
         enabled,
         triggers,
+        ...(body.everyFailure === true ? { everyFailure: true } : {}),
         channel,
         createdBy: user?.id || "unknown",
       });
@@ -462,6 +540,19 @@ notificationRulesRoutes.openapi(
       const triggers = parseTriggers(body.triggers);
       if (triggers) {
         update.triggers = triggers;
+      }
+      if (body.everyFailure !== undefined) {
+        if (typeof body.everyFailure !== "boolean") {
+          return c.json(
+            { success: false, error: "everyFailure must be a boolean" },
+            400,
+          );
+        }
+        if (isDbtResourceType(existing.resourceType)) {
+          update.everyFailure = body.everyFailure;
+        } else if (body.everyFailure) {
+          return c.json({ success: false, error: EVERY_FAILURE_DBT_ONLY }, 400);
+        }
       }
 
       if (body.channelType !== undefined) {
@@ -650,8 +741,7 @@ notificationRulesRoutes.openapi(
       const trigger = body.trigger === "success" ? "success" : "failure";
 
       if (
-        !resourceType ||
-        (resourceType !== "flow" && resourceType !== "scheduled_query") ||
+        !isNotificationResourceType(resourceType) ||
         !resourceId ||
         !Types.ObjectId.isValid(resourceId)
       ) {
@@ -689,10 +779,17 @@ notificationRulesRoutes.openapi(
         channel = encryptNotificationChannel(parsed.channel);
       }
 
-      const resourceName = await resolveResourceDisplayName({
-        resourceType,
-        resourceId,
-      });
+      // A project default has no job of its own to name in a test.
+      const resourceName =
+        resourceType === "dbt_project"
+          ? "Example job"
+          : await resolveResourceDisplayName({ resourceType, resourceId });
+
+      // A dbt test shows the real message shape: a failing step on failure,
+      // a recovery on success, and the job's own link.
+      const dbtSample = isDbtResourceType(resourceType)
+        ? await dbtTestEventFields(resourceType, resourceId, trigger)
+        : {};
 
       const payload = buildOutboundPayload({
         event: {
@@ -707,6 +804,7 @@ notificationRulesRoutes.openapi(
           durationMs: 0,
           errorMessage:
             trigger === "failure" ? "Test failure notification" : undefined,
+          ...dbtSample,
         },
         resourceName,
         trigger,

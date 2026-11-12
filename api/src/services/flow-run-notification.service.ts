@@ -2,6 +2,8 @@ import { Types } from "mongoose";
 import {
   SourceConnection,
   DatabaseConnection,
+  DbtJob,
+  DbtProject,
   Flow,
   SavedConsole,
   NotificationRule,
@@ -20,7 +22,12 @@ import { renderEmail } from "../emails/render";
 import { loggers } from "../logging";
 import { emailService } from "./email.service";
 import {
+  buildDbtSlackText,
   buildIdempotencyKey,
+  dbtRunDeepLink,
+  isDbtResourceType,
+  ruleTargetsForEvent,
+  shouldDeliverForRule,
   signWebhookBody,
   terminalTriggerFromRunEvent,
 } from "./flow-run-notification.helpers";
@@ -47,6 +54,14 @@ export async function resolveResourceDisplayName(params: {
   const id = params.resourceId;
   if (params.resourceType === "scheduled_query") {
     const doc = await SavedConsole.findById(id).select("name").lean();
+    return doc?.name || id;
+  }
+  if (params.resourceType === "dbt_job") {
+    const doc = await DbtJob.findById(id).select("name").lean();
+    return doc?.name || id;
+  }
+  if (params.resourceType === "dbt_project") {
+    const doc = await DbtProject.findById(id).select("name").lean();
     return doc?.name || id;
   }
   const flowDoc = await Flow.findById(id);
@@ -97,6 +112,9 @@ export function buildOutboundPayload(params: {
   trigger: NotificationTrigger;
 }): NotificationOutboundPayload {
   const base = clientUrl();
+  if (isDbtResourceType(params.event.resourceType)) {
+    return buildDbtOutboundPayload(params, base);
+  }
   const deepLink =
     params.event.resourceType === "flow"
       ? base
@@ -124,6 +142,56 @@ export function buildOutboundPayload(params: {
   };
 }
 
+function buildDbtOutboundPayload(
+  params: {
+    event: FlowRunTerminalEventData;
+    resourceName: string;
+    trigger: NotificationTrigger;
+  },
+  base: string,
+): NotificationOutboundPayload {
+  const { event, trigger } = params;
+  const failed = trigger === "failure";
+  // A `dbt_project` event only comes from the test route: link to the runs.
+  const deepLink =
+    event.deepLink ??
+    (event.resourceType === "dbt_job" && event.projectId
+      ? dbtRunDeepLink({
+          baseUrl: base,
+          projectId: event.projectId,
+          jobId: event.resourceId,
+        })
+      : event.resourceType === "dbt_project" && base
+        ? `${base}/x/${event.resourceId}/runs`
+        : undefined);
+  return {
+    version: 1,
+    event: "flow.run.terminal",
+    trigger,
+    resourceType: event.resourceType,
+    resourceId: event.resourceId,
+    resourceName: params.resourceName,
+    runId: event.runId,
+    completedAt: event.completedAt,
+    durationMs: event.durationMs,
+    errorMessage: failed ? event.errorMessage : undefined,
+    triggerType: event.triggerType,
+    workspaceId: event.workspaceId,
+    deepLink,
+    projectId:
+      event.projectId ??
+      (event.resourceType === "dbt_project" ? event.resourceId : undefined),
+    environment: event.environment,
+    ...(failed
+      ? {
+          failedSteps: event.failedSteps ?? [],
+          failedStepCount:
+            event.failedStepCount ?? event.failedSteps?.length ?? 0,
+        }
+      : { recovered: event.previousStatus === "error" }),
+  };
+}
+
 export async function fanOutTerminalRunNotifications(
   event: FlowRunTerminalEventData,
 ): Promise<{ deliveriesQueued: number }> {
@@ -132,22 +200,33 @@ export async function fanOutTerminalRunNotifications(
     return { deliveriesQueued: 0 };
   }
 
-  const rules = await NotificationRule.find({
-    workspaceId: new Types.ObjectId(event.workspaceId),
-    resourceType: event.resourceType,
-    resourceId: new Types.ObjectId(event.resourceId),
+  const workspaceId = new Types.ObjectId(event.workspaceId);
+  const targets = ruleTargetsForEvent(event).filter(target =>
+    Types.ObjectId.isValid(target.resourceId),
+  );
+  const matched = await NotificationRule.find({
+    workspaceId,
     enabled: true,
     triggers: trigger,
+    $or: targets.map(target => ({
+      resourceType: target.resourceType,
+      resourceId: new Types.ObjectId(target.resourceId),
+    })),
   }).lean();
+  const rules = matched.filter(rule =>
+    shouldDeliverForRule({ event, trigger, rule }),
+  );
 
   if (rules.length === 0) {
     return { deliveriesQueued: 0 };
   }
 
-  const resourceName = await resolveResourceDisplayName({
-    resourceType: event.resourceType,
-    resourceId: event.resourceId,
-  });
+  const resourceName =
+    event.resourceName ||
+    (await resolveResourceDisplayName({
+      resourceType: event.resourceType,
+      resourceId: event.resourceId,
+    }));
   const payload = buildOutboundPayload({ event, resourceName, trigger });
 
   const { inngest } = await import("../inngest/client");
@@ -155,6 +234,8 @@ export async function fanOutTerminalRunNotifications(
   for (const rule of rules) {
     const ruleId = rule._id.toString();
     const channelType = rule.channel.type as NotificationChannelType;
+    // Keyed on the run's resource, so a project default and a job rule get
+    // one delivery each per run, under the job the run belongs to.
     const idempotencyKey = buildIdempotencyKey({
       resourceType: event.resourceType,
       resourceId: event.resourceId,
@@ -164,27 +245,36 @@ export async function fanOutTerminalRunNotifications(
       ruleId,
     });
 
-    const existing = await NotificationDelivery.findOne({
-      idempotencyKey,
-    }).lean();
-    if (existing) {
-      continue;
+    // Upsert, so two fan-outs of one run race to a single row.
+    const claim = await NotificationDelivery.updateOne(
+      { idempotencyKey },
+      {
+        $setOnInsert: {
+          workspaceId,
+          ruleId: new Types.ObjectId(ruleId),
+          resourceType: event.resourceType,
+          resourceId: new Types.ObjectId(event.resourceId),
+          runId: event.runId,
+          trigger,
+          channelType,
+          idempotencyKey,
+          status: "pending",
+          attempts: 0,
+        },
+      },
+      { upsert: true },
+    );
+    if (claim.upsertedCount === 0) {
+      const existing = await NotificationDelivery.findOne({ idempotencyKey })
+        .select("status")
+        .lean();
+      // A row still pending means an earlier attempt stopped before its send.
+      // Send again: the event id below makes Inngest drop a true duplicate.
+      if (existing?.status !== "pending") continue;
     }
 
-    await NotificationDelivery.create({
-      workspaceId: new Types.ObjectId(event.workspaceId),
-      ruleId: new Types.ObjectId(ruleId),
-      resourceType: event.resourceType,
-      resourceId: new Types.ObjectId(event.resourceId),
-      runId: event.runId,
-      trigger,
-      channelType,
-      idempotencyKey,
-      status: "pending",
-      attempts: 0,
-    });
-
     await inngest.send({
+      id: `notification-deliver:${idempotencyKey}`,
       name: "notification/deliver",
       data: {
         workspaceId: event.workspaceId,
@@ -350,15 +440,9 @@ async function deliverSlack(
   webhookUrl: string,
   payload: NotificationOutboundPayload,
 ): Promise<void> {
-  const text =
-    `*Mako run ${payload.trigger}*\n` +
-    `*${payload.resourceType}*: ${payload.resourceName}\n` +
-    `Run: \`${payload.runId}\`\n` +
-    `Completed: ${payload.completedAt}` +
-    (payload.durationMs != null ? `\nDuration: ${payload.durationMs}ms` : "") +
-    (payload.rowCount != null ? `\nRows: ${payload.rowCount}` : "") +
-    (payload.errorMessage ? `\nError: ${payload.errorMessage}` : "") +
-    (payload.deepLink ? `\n<${payload.deepLink}|Open in Mako>` : "");
+  const text = isDbtResourceType(payload.resourceType)
+    ? buildDbtSlackText(payload)
+    : buildRunSlackText(payload);
 
   const slackBody = JSON.stringify({
     text,
@@ -384,6 +468,19 @@ async function deliverSlack(
       `Slack webhook HTTP ${response.status}${t ? `: ${t.slice(0, 200)}` : ""}`,
     );
   }
+}
+
+function buildRunSlackText(payload: NotificationOutboundPayload): string {
+  return (
+    `*Mako run ${payload.trigger}*\n` +
+    `*${payload.resourceType}*: ${payload.resourceName}\n` +
+    `Run: \`${payload.runId}\`\n` +
+    `Completed: ${payload.completedAt}` +
+    (payload.durationMs != null ? `\nDuration: ${payload.durationMs}ms` : "") +
+    (payload.rowCount != null ? `\nRows: ${payload.rowCount}` : "") +
+    (payload.errorMessage ? `\nError: ${payload.errorMessage}` : "") +
+    (payload.deepLink ? `\n<${payload.deepLink}|Open in Mako>` : "")
+  );
 }
 
 /** Encrypt channel secrets for persistence */
@@ -418,6 +515,9 @@ export function sanitizeRuleForClient(
     resourceId: rule.resourceId.toString(),
     enabled: rule.enabled,
     triggers: rule.triggers,
+    ...(isDbtResourceType(rule.resourceType)
+      ? { everyFailure: rule.everyFailure === true }
+      : {}),
     createdBy: rule.createdBy,
     createdAt: rule.createdAt,
     updatedAt: rule.updatedAt,

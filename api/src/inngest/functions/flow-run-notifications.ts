@@ -16,6 +16,9 @@ export const flowRunTerminalFanoutFunction = inngest.createFunction(
     id: "flow-run-notification-fanout",
     name: "Flow run notification fan-out",
     retries: 3,
+    // One fan-out per run at a time, so a re-emitted event cannot race the
+    // first one into a second delivery row.
+    concurrency: { limit: 1, key: "event.data.runId" },
     triggers: { event: "flow.run.terminal" },
   },
   async ({ event, step }) => {
@@ -39,6 +42,7 @@ export const notificationDeliverFunction = inngest.createFunction(
     id: "notification-deliver",
     name: "Deliver notification",
     retries: 5,
+    concurrency: { limit: 1, key: "event.data.idempotencyKey" },
     triggers: { event: "notification/deliver" },
   },
   async ({ event, step }) => {

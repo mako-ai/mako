@@ -53,6 +53,8 @@ import type { Connection } from "../store/schemaStore";
 import { dbtVersionLabel, normalizeDbtVersion } from "../lib/dbt-versions";
 import { resolveDevEnvName, resolveProdLikeEnvName } from "../lib/dbt-env";
 import DbtVersionSelect from "./DbtVersionSelect";
+import { FlowRunNotificationsSection } from "./FlowRunNotificationsSection";
+import { useWorkspace } from "../contexts/workspace-context";
 
 const DRAWER_WIDTH = 540;
 
@@ -195,6 +197,7 @@ export default function DbtProjectSettingsDrawer({
   onClose,
 }: DbtProjectSettingsDrawerProps) {
   const { user } = useAuth();
+  const { currentWorkspace } = useWorkspace();
   const projects = useDbtStore(s => s.projects);
   const updateProject = useDbtStore(s => s.updateProject);
   const ensurePersonalEnvironment = useDbtStore(
@@ -1255,6 +1258,25 @@ export default function DbtProjectSettingsDrawer({
                 Click a row for details, or use Add environment / Edit to create
                 prod, staging, or personal dev schemas.
               </Typography>
+            </SettingsSection>
+
+            <SettingsSection title="Job alerts">
+              <Typography
+                variant="caption"
+                sx={{ color: "text.secondary", display: "block", mb: 1 }}
+              >
+                Defaults for every job of this project. Each alert fires when a
+                job starts failing and when it recovers. Add alerts for one job
+                from that job&apos;s Alerts button.
+              </Typography>
+              <FlowRunNotificationsSection
+                workspaceId={workspaceId}
+                resourceType="dbt_project"
+                resourceId={project._id}
+                workspaceRole={currentWorkspace?.role ?? "viewer"}
+                title="Default alerts"
+                compact
+              />
             </SettingsSection>
           </>
         )}

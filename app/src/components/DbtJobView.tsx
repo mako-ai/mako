@@ -9,6 +9,11 @@ import {
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
   FormControl,
   FormControlLabel,
   IconButton,
@@ -29,12 +34,15 @@ import {
   RefreshCw as RefreshIcon,
   Plus as AddIcon,
   Trash2 as RemoveIcon,
+  Bell as AlertsIcon,
 } from "lucide-react";
 import { CronExpressionParser } from "cron-parser";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useDbtStore, type DbtJobItem } from "../store/dbtStore";
+import { useNotificationRuleStore } from "../store/notificationRuleStore";
 import { useIsMobile } from "../hooks/useIsMobile";
 import DbtRunHistory from "./DbtRunHistory";
+import { FlowRunNotificationsSection } from "./FlowRunNotificationsSection";
 import EntityLoadErrorState, {
   EntityLoadingState,
 } from "./EntityLoadErrorState";
@@ -64,6 +72,30 @@ const COMMAND_PRESETS = [
   "source freshness",
   "docs generate",
 ];
+
+/**
+ * A failure alert links to `/x/:projectId/job/:jobId?run=:runId`. Read the run
+ * when the module loads: URL sync rewrites the address to the bare job path
+ * once the tab opens, which drops the query.
+ */
+function readLinkedRun(): { jobId: string; runId: string } | null {
+  if (typeof window === "undefined") return null;
+  const match = window.location.pathname.match(
+    /^\/x\/[a-zA-Z0-9-]+\/job\/([a-zA-Z0-9-]+)/,
+  );
+  const runId = new URLSearchParams(window.location.search).get("run");
+  return match && runId ? { jobId: match[1], runId } : null;
+}
+
+let linkedRun = readLinkedRun();
+
+/** The linked run of this job, handed out once. */
+function takeLinkedRunId(jobId: string): string | null {
+  const current = linkedRun ?? readLinkedRun();
+  if (!current || current.jobId !== jobId) return null;
+  linkedRun = null;
+  return current.runId;
+}
 
 function presetFromCron(cron: string): SchedulePreset {
   if (cron === PRESET_CRONS.hourly) return "hourly";
@@ -111,8 +143,26 @@ export default function DbtJobView({
     [runs, jobId],
   );
 
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(() =>
+    takeLinkedRunId(jobId),
+  );
   const [editing, setEditing] = useState(false);
+
+  // Alerts: rules on this job, plus the project defaults that also apply.
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const jobRules = useNotificationRuleStore(
+    s => s.rulesByKey[`dbt_job:${jobId}`],
+  );
+  const projectRules = useNotificationRuleStore(
+    s => s.rulesByKey[`dbt_project:${projectId}`],
+  );
+  const fetchNotificationRules = useNotificationRuleStore(s => s.fetchRules);
+  const openProjectSettings = useDbtStore(s => s.openProjectSettings);
+  const activeJobRuleCount = (jobRules ?? []).filter(r => r.enabled).length;
+  const activeProjectRuleCount = (projectRules ?? []).filter(
+    r => r.enabled,
+  ).length;
+  const activeAlertCount = activeJobRuleCount + activeProjectRuleCount;
 
   // Edit-form state
   const [formName, setFormName] = useState("");
@@ -150,6 +200,18 @@ export default function DbtJobView({
     fetchJobs,
     fetchRuns,
   ]);
+
+  // The header shows how many alerts cover this job. A job that exists only
+  // in git has no rules yet, so a failed load just leaves the count empty.
+  useEffect(() => {
+    if (!workspaceId) return;
+    void fetchNotificationRules(workspaceId, "dbt_job", jobId).catch(
+      () => undefined,
+    );
+    void fetchNotificationRules(workspaceId, "dbt_project", projectId).catch(
+      () => undefined,
+    );
+  }, [workspaceId, projectId, jobId, fetchNotificationRules]);
 
   useEffect(() => {
     if (!selectedRunId && jobRuns.length > 0) {
@@ -429,6 +491,25 @@ export default function DbtJobView({
           {editing ? "Cancel" : "Edit"}
         </Button>
         {!editing && (
+          <Tooltip
+            title={
+              activeAlertCount > 0
+                ? `${activeAlertCount} ${activeAlertCount === 1 ? "alert covers" : "alerts cover"} this job`
+                : "Nobody is notified when this job fails"
+            }
+          >
+            <Button
+              size="small"
+              variant="outlined"
+              color={activeAlertCount > 0 ? "primary" : "warning"}
+              startIcon={<AlertsIcon size={14} />}
+              onClick={() => setAlertsOpen(true)}
+            >
+              {activeAlertCount > 0 ? `Alerts (${activeAlertCount})` : "Alerts"}
+            </Button>
+          </Tooltip>
+        )}
+        {!editing && (
           <Tooltip title="Refresh">
             <IconButton size="small" onClick={handleRefresh}>
               <RefreshIcon size={16} />
@@ -472,6 +553,49 @@ export default function DbtJobView({
         </Alert>
       )}
     </Box>
+  );
+
+  const alertsDialog = (
+    <Dialog
+      open={alertsOpen}
+      onClose={() => setAlertsOpen(false)}
+      fullWidth
+      maxWidth="sm"
+    >
+      <DialogTitle>Alerts for {job.name}</DialogTitle>
+      <DialogContent dividers>
+        {workspaceId && currentWorkspace && (
+          <FlowRunNotificationsSection
+            workspaceId={workspaceId}
+            resourceType="dbt_job"
+            resourceId={jobId}
+            workspaceRole={currentWorkspace.role}
+            title="Alerts on this job"
+            compact
+          />
+        )}
+        <Divider sx={{ my: 2 }} />
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Typography variant="body2" sx={{ color: "text.secondary", flex: 1 }}>
+            {activeProjectRuleCount > 0
+              ? `${activeProjectRuleCount} project default ${activeProjectRuleCount === 1 ? "alert also covers" : "alerts also cover"} this job.`
+              : "No project default alerts. A default covers every job of the project."}
+          </Typography>
+          <Button
+            size="small"
+            onClick={() => {
+              setAlertsOpen(false);
+              openProjectSettings(projectId);
+            }}
+          >
+            Project defaults
+          </Button>
+        </Box>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={() => setAlertsOpen(false)}>Close</Button>
+      </DialogActions>
+    </Dialog>
   );
 
   if (editing) {
@@ -728,6 +852,7 @@ export default function DbtJobView({
           emptyHint="No runs yet. Press Run now to start one."
         />
       </Box>
+      {alertsDialog}
     </Box>
   );
 }
