@@ -4,6 +4,12 @@
  * and the IDE edit it through the same path.
  */
 
+import {
+  DBT_QUERY_COMMENT_MACRO,
+  DBT_QUERY_COMMENT_MACRO_PATH,
+  DBT_QUERY_COMMENT_PROJECT_CONFIG,
+} from "./dbt-run-labels";
+
 export const DBT_PROJECT_FILE = "dbt_project.yml";
 
 export function buildStarterScaffold(
@@ -40,7 +46,16 @@ models:
       +materialized: view
     marts:
       +materialized: table
-`,
+
+# Tags every query with the Mako job, run and trigger that started it (see
+# ${DBT_QUERY_COMMENT_MACRO_PATH}). On BigQuery the fields are also job labels.
+${DBT_QUERY_COMMENT_PROJECT_CONFIG}`,
+    },
+    {
+      // New projects only: an existing project adds this itself (Transforms
+      // docs, "Run identity"). Mako never edits a project's dbt_project.yml.
+      path: DBT_QUERY_COMMENT_MACRO_PATH,
+      content: DBT_QUERY_COMMENT_MACRO,
     },
     {
       path: "packages.yml",

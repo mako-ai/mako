@@ -37,6 +37,7 @@ export type MakoQuerySource =
   | "flow"
   | "metadata"
   | "connection_test"
+  | "dbt"
   | "other";
 
 const storage = new AsyncLocalStorage<Record<string, string>>();
@@ -81,6 +82,14 @@ function sanitizePart(raw: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, "_")
     .slice(0, MAX_LENGTH);
+}
+
+/**
+ * One label value under BigQuery's rules: lowercase, invalid characters to
+ * `_`, truncated to 63. Empty in, empty out: the caller drops it.
+ */
+export function sanitizeBigQueryLabelValue(raw: string): string {
+  return sanitizePart(raw);
 }
 
 /**

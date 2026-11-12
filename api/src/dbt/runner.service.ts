@@ -90,7 +90,10 @@ export interface DbtRunRequest {
   packagesHash?: string | null;
   /**
    * Extra non-secret env for the dbt child (run identity from
-   * `dbtRunLabelEnv`). Spread into the child env after the allowlist.
+   * `dbtRunLabelEnv`). Only `MAKO_DBT_*` and `MAKO_TRIGGER` names pass, bare
+   * or under `DBT_ENV_CUSTOM_ENV_` (see `filterDbtExtraEnv`); anything else is
+   * dropped. Spread into the child env after the allowlist, under the
+   * connection's credentials.
    */
   extraEnv?: Record<string, string>;
   signal?: AbortSignal;
@@ -175,7 +178,71 @@ interface DbtJsonLogEvent {
     ts?: string;
     level?: string;
     msg?: string;
+    invocation_id?: string;
   };
+}
+
+/**
+ * Names a caller may add to the dbt child env: the run identity variables,
+ * bare or under dbt's artifact-metadata prefix. Project Jinja can read the
+ * child env through `env_var()`, so this stays an allowlist: a caller can
+ * never use `extraEnv` to hand dbt a server secret or to replace PATH, HOME
+ * or a connection credential.
+ */
+const EXTRA_ENV_NAME =
+  /^(?:DBT_ENV_CUSTOM_ENV_)?(?:MAKO_DBT_[A-Z0-9_]+|MAKO_TRIGGER)$/;
+
+/** Keep the allowlisted, string-valued entries of `extraEnv`; drop the rest. */
+export function filterDbtExtraEnv(
+  extraEnv: Record<string, string> | undefined,
+): Record<string, string> {
+  const allowed: Record<string, string> = {};
+  if (!extraEnv) return allowed;
+  const dropped: string[] = [];
+  for (const [name, value] of Object.entries(extraEnv)) {
+    if (EXTRA_ENV_NAME.test(name) && typeof value === "string") {
+      allowed[name] = value;
+    } else {
+      dropped.push(name);
+    }
+  }
+  if (dropped.length > 0) {
+    // Names only: a dropped value may be something that must not be logged.
+    logger.warn("Dropped dbt extraEnv entries outside the allowlist", {
+      dropped,
+    });
+  }
+  return allowed;
+}
+
+/**
+ * dbt's `invocation_id` from one JSON log line (`info.invocation_id`, on
+ * every structured event). Undefined for non-JSON output.
+ */
+export function invocationIdFromLogLine(raw: string): string | undefined {
+  if (!raw.startsWith("{")) return undefined;
+  try {
+    const id = (JSON.parse(raw) as DbtJsonLogEvent).info?.invocation_id;
+    return typeof id === "string" && id.length > 0 ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** dbt's `invocation_id` from a run_results.json buffer (`metadata`). */
+export function invocationIdFromRunResults(
+  runResults: Buffer | undefined,
+): string | undefined {
+  if (!runResults) return undefined;
+  try {
+    const parsed = JSON.parse(runResults.toString("utf8")) as {
+      metadata?: { invocation_id?: unknown };
+    };
+    const id = parsed.metadata?.invocation_id;
+    return typeof id === "string" && id.length > 0 ? id : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -396,7 +463,7 @@ function execDbtCommand(params: {
   timeoutMs: number;
   signal?: AbortSignal;
   onLog: (line: DbtLogLine) => void;
-}): Promise<number> {
+}): Promise<{ exitCode: number; invocationId?: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(params.bin, params.args, {
       cwd: params.cwd,
@@ -405,6 +472,12 @@ function execDbtCommand(params: {
     });
 
     let stdoutBuffer = "";
+    let invocationId: string | undefined;
+    // First structured line wins: one dbt process has one invocation id.
+    const handleStdoutLine = (raw: string) => {
+      invocationId ??= invocationIdFromLogLine(raw);
+      params.onLog(parseLogLine(raw));
+    };
     let settled = false;
     let killTimer: ReturnType<typeof setTimeout> | null = null;
     const graceMs = killGraceMs();
@@ -460,7 +533,7 @@ function execDbtCommand(params: {
       while (newlineIdx >= 0) {
         const raw = stdoutBuffer.slice(0, newlineIdx).trim();
         stdoutBuffer = stdoutBuffer.slice(newlineIdx + 1);
-        if (raw) params.onLog(parseLogLine(raw));
+        if (raw) handleStdoutLine(raw);
         newlineIdx = stdoutBuffer.indexOf("\n");
       }
     };
@@ -487,8 +560,8 @@ function execDbtCommand(params: {
       clearTimeout(timeout);
       if (killTimer) clearTimeout(killTimer);
       params.signal?.removeEventListener("abort", onAbort);
-      if (stdoutBuffer.trim()) params.onLog(parseLogLine(stdoutBuffer.trim()));
-      resolve(code ?? 1);
+      if (stdoutBuffer.trim()) handleStdoutLine(stdoutBuffer.trim());
+      resolve({ exitCode: code ?? 1, invocationId });
     });
   });
 }
@@ -704,6 +777,9 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
       // SECURITY: allowlisted base env only — never spread process.env, or
       // dbt's env_var() would expose server secrets. See buildDbtBaseEnv.
       ...buildDbtBaseEnv(),
+      // Run identity (MAKO_DBT_*, MAKO_TRIGGER). Below the credentials so it
+      // can never replace one.
+      ...filterDbtExtraEnv(request.extraEnv),
       ...request.profile.secretEnv,
       ...keyfileEnv,
       DBT_SEND_ANONYMOUS_USAGE_STATS: "false",
@@ -760,7 +836,7 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
           request.onLog?.(line);
         };
         onDepsLog({ ts: new Date(), level: "info", line: "$ dbt deps" });
-        const depsExit = await execDbtCommand({
+        const depsRun = await execDbtCommand({
           bin: resolved.bin,
           args: [
             ...resolved.prefixArgs,
@@ -779,12 +855,14 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
           signal: request.signal,
           onLog: onDepsLog,
         });
+        const depsExit = depsRun.exitCode;
         if (depsExit !== 0) {
           commandResults.push({
             command: "deps",
             exitCode: depsExit,
             logLines: depsLogLines,
             runResults: undefined,
+            invocationId: depsRun.invocationId,
           });
           return { success: false, commandResults, artifacts, projectChanged };
         }
@@ -841,7 +919,7 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
         projectDir: projectDir.split(sep).pop(),
       });
 
-      const exitCode = await execDbtCommand({
+      const commandRun = await execDbtCommand({
         bin: resolved.bin,
         args,
         cwd: projectDir,
@@ -850,6 +928,7 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
         signal: request.signal,
         onLog,
       });
+      const exitCode = commandRun.exitCode;
 
       let runResults: RunResultsArtifact | undefined;
       const runResultsRaw = await readArtifact(projectDir, "run_results.json");
@@ -868,6 +947,11 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
         exitCode,
         logLines,
         runResults,
+        // The log is the first source: `parse` and `deps` write no
+        // run_results.json, and after a failed `retry` the file on disk is
+        // still the previous invocation's.
+        invocationId:
+          commandRun.invocationId ?? invocationIdFromRunResults(runResultsRaw),
       });
 
       if (exitCode !== 0) {
