@@ -224,10 +224,16 @@ export interface IWorkspaceApiKey {
   lastUsedAt?: Date;
   createdBy: string;
   /**
-   * A sandbox run an agent started: it acts as its person but only reads
-   * through connections (connections/proxy.service.ts).
+   * A sandbox run started with an API key (CI, a script): it acts as its
+   * person but only reads through connections; its writes are refused
+   * (connections/proxy.service.ts).
    */
   agentRun?: boolean;
+  /**
+   * A sandbox dry run: its connection writes are recorded under the run,
+   * which the key's name gives, instead of sent, and its SQL only reads.
+   */
+  recordWrites?: boolean;
 }
 
 /**
@@ -1550,6 +1556,7 @@ const WorkspaceSchema = new Schema<IWorkspace>(
           required: true,
         },
         agentRun: { type: Boolean },
+        recordWrites: { type: Boolean },
       },
     ],
   },

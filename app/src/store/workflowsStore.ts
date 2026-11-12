@@ -50,6 +50,11 @@ export interface WorkflowRun extends WorkflowRunSummary {
   input?: string;
   output?: string;
   steps: WorkflowRunStep[];
+  /**
+   * A dry run: its connection writes were recorded, not sent.
+   * How many (the API also answers a page of them, `recordedWrites`).
+   */
+  recordedWriteCount?: number;
 }
 
 interface WorkflowsOverview {
