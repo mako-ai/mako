@@ -5,7 +5,9 @@
  * Reads are live reads: on only where a manager turned them on in the Access
  * tab (every connection starts off, and one made before live reads existed,
  * with no `liveReads` stored, is off), and then for everyone in the
- * workspace. GET, HEAD, OPTIONS, a connection's `reads` (a Close search POST)
+ * workspace, or, when the connection has a live readers list, only for the
+ * principals on it and its writers (same identity rule as writers; a request
+ * that identifies no one reads nothing there). GET, HEAD, OPTIONS, a connection's `reads` (a Close search POST)
  * and a GraphQL query are reads; everything else is a write, for the
  * principals on the connection's writers list only (the same list and the
  * same identity rule as database connections, access/connection-writes.ts):
@@ -117,6 +119,22 @@ export function mayWrite(
   const wanted = sourceWriterPrincipal(principal);
   return (writers ?? []).some(
     w => sourceWriterPrincipal(w.principal) === wanted,
+  );
+}
+
+/**
+ * Whether `principal` may read live through a source connection whose live
+ * reads are on: everyone when it has no live readers list, else the listed
+ * principals and its writers, a deployed workflow as `workflow:*`.
+ */
+export function mayReadLive(
+  row: Pick<ISourceConnection, "liveReaders" | "writers">,
+  principal: string | undefined,
+): boolean {
+  if (!row.liveReaders) return true;
+  if (!principal) return false;
+  return (
+    mayWrite(row.liveReaders, principal) || mayWrite(row.writers, principal)
   );
 }
 
@@ -319,6 +337,15 @@ export async function connectionRequest(
     if (row.liveReads !== true) {
       throw new ConnectionRequestError(
         `Live reads are off for ${row.name}: read its synced tables, or ask one of this connection's managers or the workspace owner to turn live reads on in its Access tab.`,
+        403,
+      );
+    }
+    if (!mayReadLive(row, principal)) {
+      logger.warn("Refused a connection read", where);
+      throw new ConnectionRequestError(
+        principal
+          ? `${principal} is not allowed to read ${row.name} live. Read its synced tables, or ask one of this connection's managers or the workspace owner to allow ${principal.startsWith("workflow:") ? "All deployed workflows" : principal} to read live on its Access tab.`
+          : `Only some people and workflows may read ${row.name} live, and Mako could not tell who is reading.`,
         403,
       );
     }

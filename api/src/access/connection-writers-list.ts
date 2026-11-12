@@ -175,17 +175,20 @@ export async function writersOutsideRefusal(
   workspaceId: string,
   writers: { principal: string }[],
   stored: { principal: string }[] = [],
+  /** A live readers list: same checks, and viewers may be on it. */
+  { readers = false }: { readers?: boolean } = {},
 ): Promise<string | null> {
   const known = new Set(stored.map(w => w.principal));
   const principals = writers.map(w => w.principal).filter(p => !known.has(p));
   const unlistable = principals.filter(p => !SOURCE_LISTABLE_PRINCIPAL.test(p));
   if (unlistable.length > 0) {
-    return `${unlistable.join(", ")} cannot be on a writers list`;
+    return `${unlistable.join(", ")} cannot be on a ${readers ? "live readers" : "writers"} list`;
   }
   const strangers = await principalsOutsideWorkspace(workspaceId, principals);
   if (strangers.length > 0) {
     return `${strangers.join(", ")} is not a member of this workspace`;
   }
+  if (readers) return null;
   const viewers = await viewerPrincipals(workspaceId, principals);
   return viewers.length > 0
     ? `Viewers can't write through a connection (${viewers.join(", ")}).`

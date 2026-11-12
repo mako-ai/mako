@@ -160,6 +160,81 @@ describe("source connection writers", () => {
     expect(stored?.liveReads).toBe(false);
   });
 
+  it("limits live reads to the listed, viewers included, and opens them again", async () => {
+    expect(
+      (await (await req("GET", `/${id}/writers`)).json()).data.liveReaders,
+    ).toBeNull();
+    await WorkspaceMember.create({
+      workspaceId: WS,
+      userId: "vera",
+      role: "viewer",
+      joinedAt: new Date(),
+    });
+    const put = await req("PUT", `/${id}/writers`, {
+      writers: [],
+      liveReads: true,
+      liveReaders: [
+        { principal: "user:vera" },
+        { principal: "workflow:fr-offer-to-cash" },
+        { principal: "workflow:other-flow" },
+      ],
+    });
+    expect(put.status).toBe(200);
+    const { data } = await (await req("GET", `/${id}/writers`)).json();
+    expect(data.liveReaders).toMatchObject([
+      { principal: "user:vera", addedBy: "manager1" },
+      { principal: "workflow:*", where: null },
+    ]);
+    // Omitted: unchanged, while the writers change.
+    await req("PUT", `/${id}/writers`, {
+      writers: [{ principal: "workflow:*" }],
+    });
+    expect(
+      (await SourceConnection.findById(id).lean())?.liveReaders,
+    ).toHaveLength(2);
+    // An empty list: only the writers.
+    await req("PUT", `/${id}/writers`, { writers: [], liveReaders: [] });
+    expect((await SourceConnection.findById(id).lean())?.liveReaders).toEqual(
+      [],
+    );
+    // Null: everyone again.
+    await req("PUT", `/${id}/writers`, { writers: [], liveReaders: null });
+    expect(
+      (await SourceConnection.findById(id).lean())?.liveReaders,
+    ).toBeUndefined();
+  });
+
+  it("refuses a stranger, an agent or an API key as a live reader", async () => {
+    expect(
+      (
+        await req("PUT", `/${id}/writers`, {
+          writers: [],
+          liveReaders: [{ principal: "user:stranger" }],
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await req("PUT", `/${id}/writers`, {
+          writers: [],
+          liveReaders: [{ principal: "agent:user:manager1" }],
+        })
+      ).status,
+    ).toBe(400);
+    who.authType = "apiKey";
+    expect(
+      (
+        await req("PUT", `/${id}/writers`, {
+          writers: [],
+          liveReaders: [{ principal: "user:manager1" }],
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (await SourceConnection.findById(id).lean())?.liveReaders,
+    ).toBeUndefined();
+  });
+
   it("refuses a change from an API key, or for a stranger", async () => {
     who.authType = "apiKey";
     expect(

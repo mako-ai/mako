@@ -405,6 +405,12 @@ export interface ISourceConnection extends Document {
    * with it off.
    */
   liveReads?: boolean;
+  /**
+   * Who may read live, while `liveReads` is on. Absent: everyone in the
+   * workspace. A list, even empty: only its principals, and the connection's
+   * writers (a writer reads what it writes to). Same entries as `writers`.
+   */
+  liveReaders?: IConnectionWriter[];
   createdBy: string;
   /**
    * User ids that configure this connection (edit, reveal or replace its
@@ -1794,6 +1800,10 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
       default: undefined,
     },
     liveReads: { type: Boolean },
+    liveReaders: {
+      type: [ConnectionWriterSchema],
+      default: undefined,
+    },
     createdBy: {
       type: String,
       ref: "User",
