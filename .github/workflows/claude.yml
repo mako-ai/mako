@@ -12,6 +12,13 @@ name: Claude Code
 # skill" review example). No model is pinned: the action uses the Claude Code
 # default model, so this file does not go stale when a new model ships.
 #
+# Subagents must run in the foreground here. A headless run ends when the
+# main session ends, so reviewers started in the background are lost: the
+# first review of a 13,449-line pull request ended after 9 turns with "I'll
+# validate their findings when they report back" and posted nothing.
+# CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 makes Claude wait for its subagents
+# (https://code.claude.com/docs/en/sub-agents).
+#
 # Public repo rules:
 #   - GitHub withholds secrets from fork pull requests, so auto-review runs
 #     only on branches of this repository. Never mirror a fork branch into
@@ -59,6 +66,7 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          settings: '{"env": {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}}'
 
   auto-review:
     if: |
@@ -67,7 +75,8 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Reviewers run in the foreground, so a large diff takes longer.
+    timeout-minutes: 60
     concurrency:
       group: ${{ github.workflow }}-auto-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -91,6 +100,7 @@ jobs:
         id: review
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          settings: '{"env": {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}}'
           plugin_marketplaces: "https://github.com/anthropics/claude-plugins-official.git"
           plugins: "code-review@claude-plugins-official"
           # `--comment` makes the plugin post on the pull request: one inline
@@ -249,6 +259,7 @@ jobs:
         if: steps.context.outputs.own_commits != '0'
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          settings: '{"env": {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}}'
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
