@@ -97,7 +97,10 @@ export async function setKey(
   userId: string,
   name: string,
   key: string,
-  { agentRun = false }: { agentRun?: boolean } = {},
+  {
+    agentRun = false,
+    recordWrites = false,
+  }: { agentRun?: boolean; recordWrites?: boolean } = {},
 ): Promise<void> {
   const _id = new Types.ObjectId(workspaceId);
   const keyHash = hashApiKey(key);
@@ -124,6 +127,7 @@ export async function setKey(
           createdAt: new Date(),
           createdBy: userId,
           ...(agentRun ? { agentRun: true } : {}),
+          ...(recordWrites ? { recordWrites: true } : {}),
         },
       },
     },
