@@ -163,9 +163,13 @@ function deploymentBody(workspaceId: string): V1Deployment {
                 exec: { command: ["test", "-f", "/tmp/ready"] },
                 periodSeconds: 5,
               },
+              // Each step runs in a program of its own, ~120 MB: up to
+              // WORKFLOWS_MAX_STEPS (8, worker.mjs) of them, the dispatcher
+              // and the entrypoint fit under the limit. Only the request is
+              // reserved.
               resources: {
                 requests: { cpu: "100m", memory: "256Mi" },
-                limits: { cpu: "1", memory: "1Gi" },
+                limits: { cpu: "1", memory: "2Gi" },
               },
               securityContext: {
                 allowPrivilegeEscalation: false,

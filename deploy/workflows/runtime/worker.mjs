@@ -172,11 +172,30 @@ async function passFor(workflow, runId, step) {
 // ---------------------------------------------------------------------------
 
 const uidOf = new Map();
-const idle = new Map(); // workflow -> [{ child, timer }]
+const idle = new Map(); // workflow -> [{ child, timer, at }]
+
+// Step programs alive at once, busy or idle: each is a Node process, and the
+// pod has a memory limit. Past it a step waits for one to finish (or an idle
+// one of another workflow is stopped), and Hatchet is given as many slots,
+// so it does not hand out more steps than run.
+const MAX_STEPS = Math.max(1, Number(process.env.WORKFLOWS_MAX_STEPS) || 8);
+let live = 0;
+let waiting = [];
+const wake = () => {
+  const woken = waiting;
+  waiting = [];
+  for (const resolve of woken) resolve();
+};
+const alive = child => child.exitCode === null && child.connected;
 
 function spawnFor(workflow) {
+  live++;
   return new Promise((resolve, reject) => {
     const child = startStepProgram(["run", workflow], uidOf.get(workflow));
+    child.once("exit", () => {
+      live--;
+      wake();
+    });
     child.stderrTail = "";
     child.stderr.on("data", chunk => {
       process.stderr.write(chunk);
@@ -197,20 +216,40 @@ function spawnFor(workflow) {
   });
 }
 
-async function acquire(workflow) {
-  const list = idle.get(workflow) ?? [];
-  while (list.length) {
-    const { child, timer } = list.pop();
-    clearTimeout(timer);
-    if (child.exitCode === null && child.connected) return child;
+/** Stop the step program idle the longest, any workflow's. */
+function stopOldestIdle() {
+  let oldest = null;
+  for (const [workflow, list] of idle) {
+    for (const entry of list) {
+      if (!oldest || entry.at < oldest.entry.at) oldest = { workflow, entry };
+    }
   }
-  return spawnFor(workflow);
+  if (!oldest) return;
+  const list = idle.get(oldest.workflow);
+  list.splice(list.indexOf(oldest.entry), 1);
+  clearTimeout(oldest.entry.timer);
+  oldest.entry.child.kill("SIGTERM");
+}
+
+async function acquire(workflow) {
+  for (;;) {
+    const list = idle.get(workflow) ?? [];
+    while (list.length) {
+      const { child, timer } = list.pop();
+      clearTimeout(timer);
+      if (alive(child)) return child;
+    }
+    if (live < MAX_STEPS) return spawnFor(workflow);
+    stopOldestIdle();
+    // Woken when a program exits or goes idle.
+    await new Promise(resolve => waiting.push(resolve));
+  }
 }
 
 function release(workflow, child) {
-  if (child.exitCode !== null || !child.connected) return;
+  if (!alive(child)) return;
   const list = idle.get(workflow) ?? [];
-  const entry = { child };
+  const entry = { child, at: Date.now() };
   entry.timer = setTimeout(() => {
     const at = list.indexOf(entry);
     if (at >= 0) list.splice(at, 1);
@@ -218,6 +257,7 @@ function release(workflow, child) {
   }, IDLE_MS);
   list.push(entry);
   idle.set(workflow, list);
+  wake();
 }
 
 // What a step program may ask of its step's Hatchet context. Everything
@@ -449,7 +489,7 @@ if (workflows.length === 0) {
 
 const worker = await hatchet.worker("workspace", {
   workflows,
-  slots: 50,
+  slots: MAX_STEPS,
   labels: { git_sha: process.env.GIT_SHA },
 });
 
