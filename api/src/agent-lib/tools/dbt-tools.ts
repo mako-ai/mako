@@ -10,6 +10,12 @@
  *   dbt_run_job        — trigger a saved job (requires explicit user
  *                        confirmation in the prompt, like schedule_query)
  *
+ * and operates what already ran, read-only:
+ *   dbt_list_runs      — paged run history of a project or one job
+ *   dbt_model_cost     — warehouse cost per model per day
+ *   dbt_table_readers  — who reads one relation
+ *   dbt_list_orphans   — relations no model, seed or snapshot owns
+ *
  * All tools go through the same workspace-scoped ad-hoc service path as the
  * IDE buttons (api/src/dbt/dbt-project.service.ts).
  */
@@ -82,6 +88,19 @@ import { validateScheduledConsoleSchedule } from "../../services/scheduled-query
 import type { DbtLogLine } from "../../dbt/runner.service";
 import { describeQueuedRun } from "../../dbt/dbt-run-queue";
 import {
+  DBT_RUN_LIST_DEFAULT_LIMIT,
+  DBT_RUN_LIST_MAX_LIMIT,
+  DBT_RUN_STATUSES,
+  DBT_RUN_TRIGGERS,
+  listDbtRuns,
+} from "../../dbt/dbt-run-history";
+import { listDbtOrphans } from "../../dbt/dbt-orphans.service";
+import {
+  modelCost,
+  tableReaders,
+  type JobHistoryMeta,
+} from "../../services/warehouse-job-history.service";
+import {
   FULL_STEPS_THRESHOLD,
   FULL_TREE_THRESHOLD,
   shapeStepResults,
@@ -101,6 +120,45 @@ const SELECTOR_PATTERN = /^[\w.@:+*/,-]+$/;
 const projectIdField = z
   .string()
   .describe("dbt project ID (from read_dbt_project_tree)");
+
+/** A warehouse identifier part: no quotes, whitespace or statement breaks. */
+const RELATION_PART_PATTERN = /^[\w$-]+$/;
+/** Warehouse project/catalog: also allows the dots and colons of legacy ids. */
+const RELATION_DATABASE_PATTERN = /^[\w$.:-]+$/;
+/** Orphans listed by default; the full count is always returned. */
+const DEFAULT_ORPHAN_LIMIT = 200;
+const MAX_ORPHAN_LIMIT = 1000;
+
+const environmentField = z
+  .string()
+  .min(1)
+  .optional()
+  .describe("Environment name. Defaults to the project's production one.");
+
+const historyDaysField = z
+  .number()
+  .int()
+  .min(1)
+  .max(30)
+  .optional()
+  .describe("Look-back window in days (default 7, max 30).");
+
+/**
+ * What a job-history answer covers. A "project" scope sees every account's
+ * jobs; anything else is the fallback to the connection's own account, which
+ * the caller must not read as the whole project.
+ */
+function describeJobHistoryScope(meta: JobHistoryMeta): string {
+  if (meta.scope === "project") {
+    return `Covers every job in the warehouse project over the last ${meta.days} days.`;
+  }
+  return (
+    `PARTIAL: covers only jobs run by this connection's own account over ` +
+    `the last ${meta.days} days. Jobs from other accounts (BI tools, ` +
+    `analysts, other service accounts) are NOT included.` +
+    (meta.warning ? ` ${meta.warning}` : "")
+  );
+}
 
 function toolError(error: unknown, fallback: string) {
   return {
@@ -1065,13 +1123,36 @@ export const createDbtServerTools = (
         "job to verify draft or feature-branch work (it would silently run " +
         "the old code); use dbt_run_model (supports fullRefresh) instead. " +
         "Runs asynchronously via the job runner; returns the runId to share " +
-        "with the user. Only call after the user explicitly confirms which " +
-        "job to run — never trigger prod jobs proactively.",
+        "with the user. Optional per-run inputs, never saved to the job: " +
+        "`vars` (dbt vars merged over the environment's vars) and " +
+        "`fullRefresh` (adds --full-refresh to the job's run/build/seed " +
+        "commands, which DROPS AND REBUILDS its incremental tables — state " +
+        "that to the user before confirming). Invalid inputs come back as an " +
+        "error and queue nothing. Only call after the user explicitly " +
+        "confirms which job to run — never trigger prod jobs proactively.",
       inputSchema: z.object({
         projectId: projectIdField,
         jobId: z.string().describe("dbt job ID (from read_dbt_project_tree)"),
+        vars: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe(
+            'dbt vars for THIS run only, e.g. { "start_date": "2026-01-01" }. ' +
+              "Keys are identifiers (letters, digits, underscore), at most " +
+              "50 keys and 4 KB, JSON values nested at most 5 levels. " +
+              "Refused when a job command already declares --vars.",
+          ),
+        fullRefresh: z
+          .boolean()
+          .optional()
+          .describe(
+            "Run THIS run with --full-refresh: rebuilds the job's " +
+              "incremental models from scratch. Only when the user asked " +
+              "for a full refresh of this job. Refused when the job has no " +
+              "run, build or seed command.",
+          ),
       }),
-      execute: async ({ projectId, jobId }) => {
+      execute: async ({ projectId, jobId, vars, fullRefresh }) => {
         try {
           const project = await assertProject(projectId);
           if (!Types.ObjectId.isValid(jobId)) {
@@ -1080,11 +1161,15 @@ export const createDbtServerTools = (
           const resolved = await resolveLiveJobRow(project, jobId);
           if (!resolved.ok) return { success: false, error: resolved.error };
           const job = resolved.row;
+          const hasOverrides = vars !== undefined || fullRefresh !== undefined;
+          // Validation (and the refusal of bad inputs) lives in the trigger,
+          // shared with the REST route; its error surfaces as a tool error.
           const run = await triggerDbtJobRun({
             workspaceId,
             job,
             trigger: "agent",
             triggeredBy: "agent",
+            ...(hasOverrides ? { overrides: { vars, fullRefresh } } : {}),
           });
           publishRunUpdated(projectId, {
             runId: run._id.toString(),
@@ -1095,8 +1180,10 @@ export const createDbtServerTools = (
             success: true,
             runId: run._id.toString(),
             jobName: job.name,
-            environment: job.environment,
-            commands: job.commands,
+            environment: run.environment ?? job.environment,
+            // The run's own list: it carries --full-refresh when applied.
+            commands: run.commands ?? job.commands,
+            ...(run.overrides ? { overrides: run.overrides } : {}),
             ...(trackedBranch ? { sourceBranch: trackedBranch } : {}),
             message:
               "Run queued. " +
@@ -1177,7 +1264,12 @@ export const createDbtServerTools = (
         `\`stepsTotal\` are exact, and a run with more than ${FULL_STEPS_THRESHOLD} ` +
         "steps lists only the steps that did not pass. Page every step with " +
         'stepOffset/stepLimit, or pass detail "full". `logs` holds distinct ' +
-        "error/warning lines (with repeat counts) plus the last `logTail` lines.",
+        "error/warning lines (with repeat counts) plus the last `logTail` " +
+        "lines. A run triggered with inputs carries `overrides`; a job run " +
+        "carries `definitionSha` (the commit its job yml was read from) and, " +
+        "once commands ran, `invocationIds` (dbt's invocation id per " +
+        "command, the `dbt_invocation_id` label on warehouse jobs). For " +
+        "several runs at once use dbt_list_runs.",
       inputSchema: z.object({
         projectId: projectIdField,
         runId: z
@@ -1296,10 +1388,18 @@ export const createDbtServerTools = (
           return {
             success: true,
             runId: run._id.toString(),
+            ...(run.jobId ? { jobId: run.jobId.toString() } : {}),
             status: run.status,
             trigger: run.trigger,
             environment: run.environment,
             commands: run.commands,
+            // Present only when set, so an ordinary run's payload is unchanged.
+            ...(run.overrides ? { overrides: run.overrides } : {}),
+            ...(run.definitionSha ? { definitionSha: run.definitionSha } : {}),
+            ...(run.lane ? { lane: run.lane } : {}),
+            ...(run.invocationIds?.length
+              ? { invocationIds: run.invocationIds }
+              : {}),
             createdAt: run.createdAt,
             startedAt: run.startedAt,
             completedAt: run.completedAt,
@@ -1323,6 +1423,360 @@ export const createDbtServerTools = (
           };
         } catch (error) {
           return toolError(error, "Failed to read dbt run");
+        }
+      },
+    }),
+
+    dbt_list_runs: tool({
+      description:
+        "List a dbt project's run history, newest first — answers 'did last " +
+        "night's job pass', 'how often does this job fail', 'how long does " +
+        "it take', 'what ran today'. Use it to find a run or see a trend; " +
+        "use dbt_get_run for one run's steps and logs. Filter by `jobId`, " +
+        "`status` and `trigger`. Each run carries id, job, trigger, status, " +
+        "environment, commands, created/started/completed times, " +
+        "`durationMs`, `queuedMs`, `stepCounts` by dbt status, the first " +
+        "300 characters of its error, and, when set, `overrides` and " +
+        "`definitionSha`. No step lists or logs. With `jobId` the result " +
+        "adds `skipped`: scheduled ticks dropped because a run of that job " +
+        "was still active. Returns " +
+        `${DBT_RUN_LIST_DEFAULT_LIMIT} runs by default, at most ` +
+        `${DBT_RUN_LIST_MAX_LIMIT}; pass the returned \`nextBefore\` as ` +
+        "`before` for the next page (null means no older runs). History is " +
+        "kept for a limited retention window (30 days by default).",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        jobId: z
+          .string()
+          .optional()
+          .describe(
+            "dbt job ID (from read_dbt_project_tree): only this job's runs, " +
+              "plus its skipped-tick counters.",
+          ),
+        status: z
+          .enum(DBT_RUN_STATUSES)
+          .optional()
+          .describe("Only runs in this status."),
+        trigger: z
+          .enum(DBT_RUN_TRIGGERS)
+          .optional()
+          .describe(
+            "Only runs started this way: schedule (cron), manual (a user), " +
+              "agent, ci (pull request).",
+          ),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(DBT_RUN_LIST_MAX_LIMIT)
+          .optional()
+          .describe(
+            `Runs per page (default ${DBT_RUN_LIST_DEFAULT_LIMIT}, max ` +
+              `${DBT_RUN_LIST_MAX_LIMIT}).`,
+          ),
+        before: z
+          .string()
+          .optional()
+          .describe(
+            "Paging cursor: an ISO timestamp, normally the previous page's " +
+              "`nextBefore`. Returns runs created before it.",
+          ),
+      }),
+      execute: async ({ projectId, jobId, status, trigger, limit, before }) => {
+        try {
+          const project = await assertProject(projectId);
+          if (jobId !== undefined && !Types.ObjectId.isValid(jobId)) {
+            return { success: false, error: "Invalid job id" };
+          }
+          const beforeDate =
+            before === undefined ? undefined : new Date(before);
+          if (beforeDate && Number.isNaN(beforeDate.getTime())) {
+            return {
+              success: false,
+              error:
+                "Invalid `before`: pass an ISO timestamp such as the " +
+                "previous page's nextBefore",
+            };
+          }
+          const page = await listDbtRuns({
+            workspaceId,
+            projectId: project._id.toString(),
+            jobId,
+            status,
+            trigger,
+            limit,
+            before: beforeDate,
+          });
+          return {
+            success: true,
+            count: page.runs.length,
+            runs: page.runs,
+            nextBefore: page.nextBefore,
+            ...(page.skipped ? { skipped: page.skipped } : {}),
+          };
+        } catch (error) {
+          return toolError(error, "Failed to list dbt runs");
+        }
+      },
+    }),
+
+    dbt_model_cost: tool({
+      description:
+        "Warehouse cost of the project's dbt runs, per model per day: jobs, " +
+        "bytes billed and slot milliseconds, read from the warehouse's own " +
+        "job history. Answers 'which models cost the most', 'what did this " +
+        "job or this run cost', 'did a model get more expensive'. Narrow " +
+        "with `jobId` (one job's runs) or `runId` (one run). Only runs " +
+        "started by Mako count, matched through the invocation ids stored " +
+        "on each run, so runs older than that record are missing. Read the " +
+        "`scope` and `message` of the result before quoting a total. Looks " +
+        "back 7 days by default, 30 at most. Engines without a job history " +
+        "return `supported: false` with the reason — report it, do not " +
+        "retry. Runs one bounded metadata query on the warehouse.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        environment: environmentField,
+        days: historyDaysField,
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe("Rows to return, most expensive first (default 100)."),
+        jobId: z.string().optional().describe("Only the runs of this dbt job."),
+        runId: z.string().optional().describe("Only this dbt run."),
+      }),
+      execute: async ({
+        projectId,
+        environment,
+        days,
+        limit,
+        jobId,
+        runId,
+      }) => {
+        try {
+          const project = await assertProject(projectId);
+          if (jobId !== undefined && !Types.ObjectId.isValid(jobId)) {
+            return { success: false, error: "Invalid job id" };
+          }
+          if (runId !== undefined && !Types.ObjectId.isValid(runId)) {
+            return { success: false, error: "Invalid run id" };
+          }
+          const result = await modelCost({
+            workspaceId,
+            projectId: project._id.toString(),
+            environment,
+            days,
+            limit,
+            jobId,
+            runId,
+          });
+          if (!result.supported) {
+            return {
+              success: true,
+              supported: false,
+              message: `Model cost is not available: ${result.reason}`,
+            };
+          }
+          const totals = result.rows.reduce(
+            (sum, row) => ({
+              jobs: sum.jobs + row.jobs,
+              bytesBilled: sum.bytesBilled + row.bytesBilled,
+              slotMs: sum.slotMs + row.slotMs,
+            }),
+            { jobs: 0, bytesBilled: 0, slotMs: 0 },
+          );
+          return {
+            success: true,
+            supported: true,
+            scope: result.scope,
+            days: result.days,
+            ...(result.warning ? { warning: result.warning } : {}),
+            message:
+              describeJobHistoryScope(result) +
+              (result.rows.length === 0
+                ? " No warehouse job matched a Mako dbt run in this window."
+                : ""),
+            rowCount: result.rows.length,
+            totals,
+            rows: result.rows,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to read model cost");
+        }
+      },
+    }),
+
+    dbt_table_readers: tool({
+      description:
+        "Who reads one warehouse relation: the jobs that referenced it, " +
+        "grouped by Mako source (app binding, console, dbt), Mako app and " +
+        "account, with job count, bytes billed and the last read time. Use " +
+        "it BEFORE dropping, renaming or changing a model or table, and to " +
+        "answer 'is this table still used'. An empty answer proves nothing " +
+        'unless `scope` is "project": on the fallback scope only this ' +
+        "connection's own account is visible, so readers outside Mako " +
+        "(BI tools, analysts) are missing — say so, and quote the grant in " +
+        "`warning`. Looks back 7 days by default, 30 at most. Engines " +
+        "without a job history return `supported: false` with the reason. " +
+        "Runs one bounded metadata query on the warehouse.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        relation: z
+          .object({
+            database: z
+              .string()
+              .regex(RELATION_DATABASE_PATTERN, "Invalid database name")
+              .optional()
+              .describe(
+                "Warehouse project/catalog. Defaults to the environment's.",
+              ),
+            schema: z
+              .string()
+              .regex(RELATION_PART_PATTERN, "Invalid schema name")
+              .describe("Schema / dataset, e.g. dbt_prod"),
+            name: z
+              .string()
+              .regex(RELATION_PART_PATTERN, "Invalid relation name")
+              .describe("Table or view name, e.g. fct_orders"),
+          })
+          .describe("The relation whose readers are listed."),
+        environment: environmentField,
+        days: historyDaysField,
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe("Reader groups to return (default 100)."),
+      }),
+      execute: async ({ projectId, relation, environment, days, limit }) => {
+        try {
+          const project = await assertProject(projectId);
+          const result = await tableReaders({
+            workspaceId,
+            projectId: project._id.toString(),
+            environment,
+            days,
+            limit,
+            relation,
+          });
+          if (!result.supported) {
+            return {
+              success: true,
+              supported: false,
+              message: `Table readers are not available: ${result.reason}`,
+            };
+          }
+          const relationName = [
+            relation.database,
+            relation.schema,
+            relation.name,
+          ]
+            .filter(Boolean)
+            .join(".");
+          return {
+            success: true,
+            supported: true,
+            relation: relationName,
+            scope: result.scope,
+            days: result.days,
+            ...(result.warning ? { warning: result.warning } : {}),
+            message:
+              describeJobHistoryScope(result) +
+              (result.rows.length === 0
+                ? ` No job in that scope read ${relationName}.`
+                : ""),
+            rowCount: result.rows.length,
+            rows: result.rows,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to read table readers");
+        }
+      },
+    }),
+
+    dbt_list_orphans: tool({
+      description:
+        "List warehouse relations that no dbt model, seed or snapshot owns " +
+        "any more — what deleted or renamed models left behind. Compares " +
+        "the environment's last successful manifest with the relations in " +
+        "the schemas that manifest builds into, and returns each orphan's " +
+        "type, size, row count and last-modified time, largest first. " +
+        "READ-ONLY: it drops nothing. Treat the list as candidates, not as " +
+        "a verdict: it includes tables other tools wrote into the same " +
+        "schema, dbt test-audit tables and relations from branch or CI " +
+        "builds, and it is as old as `manifestGeneratedAt`. A schema that " +
+        "no longer hosts any model is not scanned, so its leftovers are " +
+        "missing. Check dbt_table_readers before the user removes one. " +
+        "Engines that cannot list relations, and projects with no " +
+        "successful run yet, return `supported: false` with the reason.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        environment: environmentField,
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_ORPHAN_LIMIT)
+          .optional()
+          .describe(
+            `Orphans to list (default ${DEFAULT_ORPHAN_LIMIT}). ` +
+              "`orphanCount` is always the full count.",
+          ),
+      }),
+      execute: async ({ projectId, environment, limit }) => {
+        try {
+          const project = await assertProject(projectId);
+          const result = await listDbtOrphans({
+            workspaceId,
+            projectId: project._id.toString(),
+            environment,
+          });
+          if (!result.supported) {
+            return {
+              success: true,
+              supported: false,
+              message: `Orphan listing is not available: ${result.reason}`,
+            };
+          }
+          const cap = limit ?? DEFAULT_ORPHAN_LIMIT;
+          const orphans = [...result.orphans].sort(
+            (a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0),
+          );
+          const listed = orphans.slice(0, cap);
+          return {
+            success: true,
+            supported: true,
+            environment: result.environment,
+            ...(result.manifestRunId
+              ? { manifestRunId: result.manifestRunId }
+              : {}),
+            ...(result.manifestGeneratedAt
+              ? { manifestGeneratedAt: result.manifestGeneratedAt }
+              : {}),
+            schemasScanned: result.schemasScanned,
+            expectedCount: result.expectedCount,
+            orphanCount: orphans.length,
+            orphanBytes: orphans.reduce(
+              (sum, relation) => sum + (relation.sizeBytes ?? 0),
+              0,
+            ),
+            ...(listed.length < orphans.length
+              ? { truncated: true, listed: listed.length }
+              : {}),
+            message:
+              orphans.length === 0
+                ? "No orphan relation in the scanned schemas."
+                : `${orphans.length} relation(s) in the scanned schemas ` +
+                  "belong to no model, seed or snapshot. Nothing was " +
+                  "dropped. Candidates only: confirm each with the user.",
+            orphans: listed,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to list orphan relations");
         }
       },
     }),

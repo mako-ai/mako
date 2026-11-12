@@ -200,6 +200,12 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
   flags) with optional cron schedules. Trigger via `dbt_run_job` only after
   explicit user confirmation, and only for work merged to main — never to
   verify branch work.
+- Operating what already ran (all read-only; details in the `dbt-jobs`
+  skill): `dbt_list_runs` for run history and skipped schedule ticks,
+  `dbt_model_cost` for warehouse cost per model, `dbt_table_readers` before
+  dropping or reshaping a model, `dbt_list_orphans` for relations deleted
+  models left behind. Check the `scope` of a cost or readers answer before
+  quoting it.
 
 ## Iterating on models that feed apps (dev → prod loop)
 

@@ -124,6 +124,42 @@ export const DBT_CAPABILITIES = [
     resultKind: "run",
     requiresQueryAccess: true,
   }),
+  // Run history and warehouse introspection: read-only, open to members like
+  // dbt_get_run. They answer from run rows and warehouse metadata (job
+  // history, relation listings) and never start a dbt run. The three
+  // warehouse ones issue a bounded metadata query, hence the query envelope.
+  define({
+    name: "dbt_list_runs",
+    pack: "dbt-jobs",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+    requiresQueryAccess: true,
+  }),
+  define({
+    name: "dbt_model_cost",
+    pack: "dbt-jobs",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+    requiresQueryAccess: true,
+  }),
+  define({
+    name: "dbt_table_readers",
+    pack: "dbt-jobs",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+    requiresQueryAccess: true,
+  }),
+  define({
+    name: "dbt_list_orphans",
+    pack: "dbt-jobs",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+    requiresQueryAccess: true,
+  }),
   define({
     name: "dbt_cancel_run",
     pack: "dbt-validation",
