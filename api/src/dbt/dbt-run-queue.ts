@@ -1,20 +1,136 @@
 /**
- * Why a queued dbt run is waiting.
+ * The dbt run queue: who may run at once, and why a queued run is waiting.
  *
- * The executor (`dbtRunExecutorFunction`) runs one dbt invocation at a time
- * per project: an Inngest concurrency lock keyed on `projectId`, limit 1. A
- * run triggered while another one holds that slot sits in "queued" with no
- * other signal, so a caller polling it cannot tell "behind a 40-minute
- * nightly build" from "the worker never got the event". This module answers
- * that from the runs collection alone: the run holding the slot, the runs
- * queued ahead of this one, and a start estimate from the blocking job's
- * recent durations.
+ * The executor (`dbtRunExecutorFunction`) holds two Inngest concurrency
+ * locks per run, both read from the "dbt/run.requested" event:
+ *
+ *  - `laneKey`, limit N: `<projectId>:job` or `<projectId>:interactive`.
+ *    N is `DBT_PROJECT_RUN_CONCURRENCY`, default 1. Each lane has its own N
+ *    slots per project, so a validation run (parse / compile / show) never
+ *    waits behind a 40-minute build and never holds a build back.
+ *  - `lockKey`, limit 1: `job:<jobId>` for runs of a saved job, so one job
+ *    never runs twice at once whatever N is; `run:<runId>` otherwise, which
+ *    locks nothing.
+ *
+ * A run triggered while its lane is full sits in "queued" with no other
+ * signal, so a caller polling it cannot tell "behind the nightly build" from
+ * "the worker never got the event". `describeQueuedRun` answers that from
+ * the runs collection alone: the run holding it back, the runs queued ahead
+ * of it, and a start estimate from the blocking job's recent durations.
  *
  * Inngest does not promise FIFO order inside a concurrency key, so the
- * position is an estimate. The blocking run is exact.
+ * position is an estimate. The blocking run is exact when N is 1.
  */
 import { Types } from "mongoose";
-import { DbtJob, DbtRun } from "../database/workspace-schema";
+import {
+  DbtJob,
+  DbtRun,
+  type DbtRunLane,
+  type IDbtRun,
+} from "../database/workspace-schema";
+
+/** Runs of one project and lane that may execute at once, unless overridden. */
+export const DEFAULT_DBT_PROJECT_RUN_CONCURRENCY = 1;
+/** Above this a typo reads as "no limit": two dbt processes already share RAM. */
+const MAX_DBT_PROJECT_RUN_CONCURRENCY = 16;
+
+/**
+ * `DBT_PROJECT_RUN_CONCURRENCY`: how many runs of one project execute at
+ * once per lane. Parallel jobs are opt-in, because two jobs whose selections
+ * share a model would write the same table at once and nothing locks tables.
+ * Anything that is not a whole number of at least 1 falls back to 1.
+ */
+export function dbtProjectRunConcurrency(
+  raw: string | undefined = process.env.DBT_PROJECT_RUN_CONCURRENCY,
+): number {
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return DEFAULT_DBT_PROJECT_RUN_CONCURRENCY;
+  }
+  return Math.min(parsed, MAX_DBT_PROJECT_RUN_CONCURRENCY);
+}
+
+/** dbt subcommands that only read: they validate, they build nothing. */
+const INTERACTIVE_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "parse",
+  "compile",
+  "show",
+]);
+
+/**
+ * The lane a run executes in. Interactive = a person or an agent waiting on
+ * a validation: no saved job, a manual or agent trigger, and every command a
+ * parse, compile or show. Everything else is the job lane, CI included.
+ */
+export function dbtRunLane(run: {
+  jobId?: string | Types.ObjectId | null;
+  trigger: IDbtRun["trigger"];
+  subcommands: string[];
+}): DbtRunLane {
+  if (run.jobId) return "job";
+  if (run.trigger !== "manual" && run.trigger !== "agent") return "job";
+  if (run.subcommands.length === 0) return "job";
+  return run.subcommands.every(subcommand =>
+    INTERACTIVE_SUBCOMMANDS.has(subcommand),
+  )
+    ? "interactive"
+    : "job";
+}
+
+/**
+ * Mongo filter for the runs of one lane. Runs that predate lanes carry no
+ * `lane` and executed in the single project queue, which is the job lane.
+ */
+export function dbtRunLaneFilter(lane: DbtRunLane): Record<string, unknown> {
+  return lane === "interactive"
+    ? { lane: "interactive" }
+    : { lane: { $ne: "interactive" } };
+}
+
+/** The two concurrency keys a "dbt/run.requested" event carries. */
+export function dbtRunQueueKeys(run: {
+  projectId: string;
+  runId: string;
+  jobId?: string | null;
+  lane: DbtRunLane;
+}): { laneKey: string; lockKey: string } {
+  return {
+    laneKey: `${run.projectId}:${run.lane}`,
+    lockKey: run.jobId ? `job:${run.jobId}` : `run:${run.runId}`,
+  };
+}
+
+/**
+ * Whose warm directory a run uses on the executor (`ProjectDirScope.userId`).
+ * Two runs that may execute at once must never share a directory: they would
+ * wait on its in-process mutex inside a step, and that wait eats the step's
+ * time budget.
+ *
+ *  - Interactive runs get their own directory, apart from any build.
+ *  - Working-tree and laptop runs keep their per-user directory.
+ *  - Job runs share the committed-deploy directory while the project runs
+ *    one job at a time (N = 1, unchanged). With N > 1 each job gets its own.
+ */
+export function dbtRunWarmDirOwner(
+  run: {
+    lane: DbtRunLane;
+    jobId?: string | null;
+    workingTreeUserId?: string | null;
+    localOverlayKey?: string | null;
+    triggeredBy: string;
+  },
+  projectConcurrency: number = dbtProjectRunConcurrency(),
+): string | undefined {
+  const treeOwner =
+    run.workingTreeUserId ??
+    (run.localOverlayKey ? `local:${run.triggeredBy}` : undefined);
+  if (run.lane === "interactive") {
+    return treeOwner ? `interactive:${treeOwner}` : "interactive";
+  }
+  if (treeOwner) return treeOwner;
+  if (run.jobId && projectConcurrency > 1) return `job:${run.jobId}`;
+  return undefined;
+}
 
 /** Runs listed in `queuedAhead`; the count stays exact past it. */
 const MAX_LISTED_AHEAD = 5;
@@ -31,15 +147,25 @@ export interface QueuedRunRef {
 }
 
 export interface DbtRunQueueInfo {
+  /** The lane this run waits in. */
+  lane: DbtRunLane;
+  /** Runs of this project and lane that may execute at once. */
+  slots: number;
+  /** Runs of this project and lane executing now. */
+  runningCount: number;
   /**
-   * Runs ahead of this one: the run holding the slot plus earlier queued
-   * runs. 1 = next to start once the slot frees.
+   * Runs ahead of this one: the run holding it back plus earlier queued
+   * runs. 1 = next to start once that run finishes.
    */
   runsAhead: number;
-  /** The run holding the project's single execution slot, if any. */
+  /**
+   * The run holding this one back: a running run of the same job, else the
+   * longest-running run of the lane when every slot is taken. Null when a
+   * slot is free.
+   */
   blockedBy:
     (QueuedRunRef & { startedAt?: Date; runningForMs?: number }) | null;
-  /** Other queued runs of this project created before this one. */
+  /** Other queued runs of this project and lane created before this one. */
   queuedAheadCount: number;
   queuedAhead: QueuedRunRef[];
   /**
@@ -60,6 +186,8 @@ type QueueRun = {
   trigger?: string;
   commands?: string[];
   status: string;
+  /** Unset on runs that predate lanes (= "job"). */
+  lane?: string;
   createdAt?: Date;
   startedAt?: Date;
 };
@@ -78,6 +206,23 @@ function formatMinutes(ms: number): string {
   return minutes < 1 ? "under a minute" : `${minutes} min`;
 }
 
+/** Why the blocking run blocks: the per-job lock, or a full lane. */
+function capacitySentence(
+  lane: DbtRunLane,
+  slots: number,
+  sameJob: boolean,
+): string {
+  if (sameJob) return "A job runs one run at a time.";
+  if (lane === "interactive") {
+    return slots === 1
+      ? "Validation runs (parse, compile, show) run one at a time per project, apart from jobs."
+      : `All ${slots} validation slots of the project are in use.`;
+  }
+  return slots === 1
+    ? "The project runs one job or build at a time; validation runs (parse, compile, show) do not wait here."
+    : `All ${slots} run slots of the project are in use.`;
+}
+
 /**
  * Explain a queued run. Returns null for any run that is not queued.
  */
@@ -87,11 +232,16 @@ export async function describeQueuedRun(
 ): Promise<DbtRunQueueInfo | null> {
   if (run.status !== "queued" || !run.projectId) return null;
 
-  const [running, ahead] = await Promise.all([
-    DbtRun.findOne({
+  const lane: DbtRunLane = run.lane === "interactive" ? "interactive" : "job";
+  const slots = dbtProjectRunConcurrency();
+  const laneFilter = dbtRunLaneFilter(lane);
+
+  const [runningInLane, ahead] = await Promise.all([
+    DbtRun.find({
       projectId: run.projectId,
       status: "running",
       _id: { $ne: run._id },
+      ...laneFilter,
     })
       .sort({ startedAt: 1 })
       .select("_id jobId trigger commands createdAt startedAt")
@@ -100,12 +250,21 @@ export async function describeQueuedRun(
       projectId: run.projectId,
       status: "queued",
       _id: { $ne: run._id },
+      ...laneFilter,
       ...(run.createdAt ? { createdAt: { $lt: run.createdAt } } : {}),
     })
       .sort({ createdAt: 1 })
       .select("_id jobId trigger commands createdAt")
       .lean(),
   ]);
+
+  // Two things hold a queued run back: a running run of its own job (the
+  // per-job lock, whatever N is) or a lane with every slot taken.
+  const sameJobRunning = run.jobId
+    ? runningInLane.find(r => r.jobId?.toString() === run.jobId?.toString())
+    : undefined;
+  const laneFull = runningInLane.length >= slots;
+  const running = sameJobRunning ?? (laneFull ? runningInLane[0] : undefined);
 
   const jobIds = [
     ...new Set(
@@ -199,19 +358,29 @@ export async function describeQueuedRun(
         : "";
     reason =
       `Queued behind run ${blockedBy.runId} of ${what}${age}${behind}. ` +
-      `The project runs one dbt invocation at a time.${eta}`;
+      `${capacitySentence(lane, slots, Boolean(sameJobRunning))}${eta}`;
   } else if (ahead.length > 0) {
+    const inUse =
+      runningInLane.length === 0
+        ? "none is executing yet"
+        : `${runningInLane.length} of ${slots} slots are in use`;
     reason =
       `Queued behind ${ahead.length} earlier run${ahead.length === 1 ? "" : "s"} ` +
-      `of this project; none is executing yet.`;
+      `of this project; ${inUse}.`;
   } else {
+    const free =
+      runningInLane.length === 0
+        ? "Nothing is ahead of this run"
+        : `A slot is free (${runningInLane.length} of ${slots} in use)`;
     reason =
-      "Nothing else is running for this project, so the dbt worker should " +
-      "start it within seconds. If it stays queued, the worker is not " +
-      "receiving run events.";
+      `${free}, so the dbt worker should start it within seconds. If it ` +
+      "stays queued, the worker is not receiving run events.";
   }
 
   return {
+    lane,
+    slots,
+    runningCount: runningInLane.length,
     runsAhead,
     blockedBy,
     queuedAheadCount: ahead.length,
