@@ -39,10 +39,14 @@ const HATCHET_TOKEN = `x.${Buffer.from(
 const BILLING_RUN = "0f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 const OTHER_RUN = "1f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 const DONE_RUN = "2f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+/** A run Hatchet first answers without its tasks, as right after it starts. */
+const YOUNG_RUN = "3f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+let youngReadsWithoutTasks = 0;
 const RUNS: Record<string, { workflow: string; status: string }> = {
   [BILLING_RUN]: { workflow: "billing-sync", status: "RUNNING" },
   [OTHER_RUN]: { workflow: "other-flow", status: "RUNNING" },
   [DONE_RUN]: { workflow: "billing-sync", status: "COMPLETED" },
+  [YOUNG_RUN]: { workflow: "billing-sync", status: "RUNNING" },
 };
 
 // The MCP endpoint is where workflow code queries; answer who is acting.
@@ -105,9 +109,12 @@ async function main() {
     const id = href.match(/workflow-runs\/([0-9a-f-]{36})/)?.[1] ?? "";
     const run = RUNS[id];
     if (!run) return Response.json({ message: "not found" }, { status: 404 });
+    const young = id === YOUNG_RUN && youngReadsWithoutTasks-- > 0;
     return Response.json({
       run: { metadata: { id }, status: run.status, additionalMetadata: {} },
-      tasks: [{ actionId: `${run.workflow}:step`, status: run.status }],
+      tasks: young
+        ? []
+        : [{ actionId: `${run.workflow}:step`, status: run.status }],
     });
   }) as typeof fetch;
   try {
@@ -181,6 +188,13 @@ async function main() {
     assert.match(ended.error ?? "", /no longer executing/);
     const borrowed = await call(pass("billing-sync", OTHER_RUN));
     assert.equal(borrowed.status, 401, "another workflow's run lends nothing");
+
+    // A run whose tasks Hatchet does not list yet (they lag the run) is read
+    // again, not taken as a run of no workflow, and not remembered as one.
+    youngReadsWithoutTasks = 2;
+    const young = await call(pass("billing-sync", YOUNG_RUN));
+    assert.equal(young.status, 200, young.error);
+    assert.equal(young.principal, "workflow:billing-sync");
 
     // A pass Mako did not sign, or one that expired, is nothing.
     const good = pass("billing-sync", BILLING_RUN);

@@ -140,7 +140,9 @@ function describeWorkflows() {
 /** A pass for one step of one run, from Mako; retried while Mako is busy. */
 async function passFor(workflow, runId, step) {
   let last;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  // Hatchet can lag a run it just started (its tasks show up a moment
+  // later), so a refusal is asked again too, for a few seconds.
+  for (let attempt = 0; attempt < 6; attempt++) {
     if (attempt) await new Promise(r => setTimeout(r, 250 * 2 ** attempt));
     try {
       const res = await fetch(`${makoUrl}/api/workflows/runtime/passes`, {
@@ -154,8 +156,8 @@ async function passFor(workflow, runId, step) {
       const body = await res.json().catch(() => ({}));
       if (res.ok && typeof body.pass === "string") return body.pass;
       last = new Error(body.error ?? `Mako answered ${res.status}`);
-      // Refused (not an executing run of this workflow): asking again won't help.
-      if (res.status >= 400 && res.status < 500) break;
+      // A mistake (400) or a key Mako refuses (401) stays so.
+      if (res.status === 400 || res.status === 401) break;
     } catch (err) {
       last = err;
     }

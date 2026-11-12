@@ -431,7 +431,15 @@ async function readNewRunDetail(
 ): Promise<RunDetail | null> {
   for (let attempt = 0; ; attempt++) {
     const detail = await readDetail(tenant, runId).catch(() => null);
-    if (detail?.run && idOf(detail.run) === runId) return detail;
+    // A run's tasks, which name its workflow, can show up after the run
+    // itself: a run without them yet is not known yet either.
+    if (
+      detail?.run &&
+      idOf(detail.run) === runId &&
+      workflowOfRunDetail(detail) !== ""
+    ) {
+      return detail;
+    }
     const wait = firstReadRetryMs[attempt];
     if (wait === undefined) return null;
     await new Promise(resolve => setTimeout(resolve, wait));
@@ -485,6 +493,8 @@ export async function runStartedBy(
       ? known.origin
       : null;
   }
+  // Never kept without its workflow: that would refuse the run for good.
+  if (!known && workflowOfRunDetail(detail) === "") return null;
   const run: KnownRun = known ?? {
     origin: originOf(detail.run),
     workflow: workflowOfRunDetail(detail),
