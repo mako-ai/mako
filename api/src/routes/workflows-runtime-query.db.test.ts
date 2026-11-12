@@ -33,6 +33,7 @@ import { workflowRuntimeRoutes } from "./workflows";
 
 const WORKER_KEY = "revops_worker_query_route_key_tests";
 const OTHER_KEY = "revops_person_query_route_key_tests";
+const DRY_RUN_KEY = "revops_dry_run_query_route_key_tests";
 const ROWS = 650;
 const LONG = "x".repeat(5000);
 const SCHEMA = `mako_wq_${Date.now().toString(36)}`;
@@ -195,6 +196,15 @@ async function main() {
         key(workerKeyName(), WORKER_KEY, WORKER_KEY_SCOPES),
         // May query and write, but is not the worker.
         key("Mine", OTHER_KEY, ["mcp", "query:write"]),
+        // A sandbox dry run's key: its SQL only reads.
+        {
+          ...key(
+            "Workflows sandbox deployer sandbox-5f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+            DRY_RUN_KEY,
+            WORKER_KEY_SCOPES,
+          ),
+          recordWrites: true,
+        },
       ],
       workflows: {
         live: {
@@ -406,6 +416,22 @@ async function main() {
       after.answer.rows.slice(0, 6).map(r => r.body),
       ["again", "again", "again", "again", "again", "row 6"],
     );
+
+    // A dry run's SQL only reads: a write is refused before it runs, and
+    // says why; a read runs.
+    const dryWrite = await post(
+      DRY_RUN_KEY,
+      { connectionId, query: UPDATE },
+      "crm-chat-classifier",
+    );
+    assert.equal(dryWrite.status, 400);
+    assert.match(
+      dryWrite.answer.error ?? "",
+      /This is a dry run: its SQL only reads/,
+    );
+    if (stats) assert.equal(stats.runs.get(UPDATE), 1, "the write did not run");
+    const dryRead = await post(DRY_RUN_KEY, { connectionId, query: SELECT });
+    assert.equal(dryRead.status, 200, dryRead.answer.error);
 
     // Each query is in the workspace's query history, like the agent's.
     for (let i = 0; i < 50; i++) {
