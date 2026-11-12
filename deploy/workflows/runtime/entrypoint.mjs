@@ -16,6 +16,7 @@ import { prepare, startWorker, typecheck } from "./build.mjs";
 
 const READY_FILE = "/tmp/ready";
 const SOURCE_ROOT = "/tmp/src";
+const WORKER_HOMES = "/tmp/wf";
 const POLL_MS = 10_000;
 // A failed target is tried again, later: a commit that does not build costs
 // a typecheck now and then, and a Hatchet that was down is not waited on
@@ -73,6 +74,7 @@ async function switchTo(target, hatchetToken, active) {
   console.log(`Switching to ${target.sha} (active: ${active.join(", ")})`);
   let root;
   let child;
+  const run = `${target.sha.slice(0, 12)}-${Date.now()}`;
   try {
     root = await fetchSource(target.sha);
     prepare(root);
@@ -80,6 +82,8 @@ async function switchTo(target, hatchetToken, active) {
     if (errors) throw new Error(errors);
     child = await startWorker(root, {
       GIT_SHA: target.sha,
+      // The worker's step homes are under /tmp/wf/<this>, removed on exit.
+      WORKER_RUN: run,
       HATCHET_CLIENT_TOKEN: hatchetToken,
       WORKFLOWS_ACTIVE: active.join(","),
     });
@@ -93,6 +97,7 @@ async function switchTo(target, hatchetToken, active) {
     const wait = Math.min(RETRY_MIN_MS * 2 ** (attempts - 1), RETRY_MAX_MS);
     failed = { key, attempts, retryAt: Date.now() + wait };
     rmSync(root, { recursive: true, force: true });
+    rmSync(join(WORKER_HOMES, run), { recursive: true, force: true });
     await report(target.sha, err.message);
     return;
   }
@@ -101,6 +106,8 @@ async function switchTo(target, hatchetToken, active) {
   failed = null;
   child.once("exit", () => {
     rmSync(root, { recursive: true, force: true });
+    // What its steps left in their homes goes with it.
+    rmSync(join(WORKER_HOMES, run), { recursive: true, force: true });
     // If this worker died on its own, the next poll starts it again.
     if (current?.child === child) current = null;
   });

@@ -14,7 +14,14 @@
 // Env: WORKFLOWS_ROOT, GIT_SHA, HATCHET_CLIENT_TOKEN, WORKFLOWS_ACTIVE,
 // MAKO_URL, MAKO_API_KEY.
 import { fork } from "node:child_process";
-import { chownSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  chownSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+} from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -42,14 +49,45 @@ const workerKey = process.env.MAKO_API_KEY ?? "";
 // token.
 const canSwitchUsers =
   typeof process.getuid === "function" && process.getuid() === 0;
-const FIRST_UID = 20_000;
-const HOMES = "/tmp/wf";
+//
+// A workflow's user comes from its name, so it is the same in every deploy:
+// a user, and whatever it left behind, never passes to another workflow.
+const FIRST_UID = 100_000;
+const UID_RANGE = 1_000_000;
 const DESCRIBE_UID = FIRST_UID - 1;
+// Homes are this worker's own (WORKER_RUN, from entrypoint.mjs), removed
+// when it stops: nothing a step left survives into the next deploy.
+const HOMES = join("/tmp/wf", process.env.WORKER_RUN || "local");
+
+/** Users for `names`, from each name; a clash (rare) takes the next free one. */
+function usersFor(names) {
+  const users = new Map();
+  const taken = new Set([DESCRIBE_UID]);
+  for (const name of names) {
+    let uid =
+      FIRST_UID +
+      (createHash("sha256").update(name).digest().readUInt32BE(0) % UID_RANGE);
+    while (taken.has(uid))
+      uid = FIRST_UID + ((uid - FIRST_UID + 1) % UID_RANGE);
+    taken.add(uid);
+    users.set(name, uid);
+  }
+  return users;
+}
+
+if (canSwitchUsers) {
+  // Step users may pass through /tmp to their homes, not list it or write
+  // there: no file is left for another workflow to find.
+  chmodSync("/tmp", 0o711);
+  mkdirSync("/tmp/wf", { recursive: true, mode: 0o711 });
+  chmodSync("/tmp/wf", 0o711);
+}
 
 /** A step program's environment: no key, no token, a home of its own. */
 function stepEnv(uid) {
   // Each user may enter its own home and no other's.
   mkdirSync(HOMES, { recursive: true, mode: 0o711 });
+  if (canSwitchUsers) chmodSync(HOMES, 0o711);
   const home = join(HOMES, canSwitchUsers ? String(uid) : "steps");
   mkdirSync(home, { mode: 0o700, recursive: true });
   if (canSwitchUsers) chownSync(home, uid, uid);
@@ -328,7 +366,7 @@ const folders = readdirSync(join(root, "workflows"), { withFileTypes: true })
   )
   .map(entry => entry.name)
   .sort();
-folders.forEach((name, i) => uidOf.set(name, FIRST_UID + i));
+for (const [name, uid] of usersFor(folders)) uidOf.set(name, uid);
 if (folders.length === 0) {
   // A workflow file in the wrong place is a mistake in the layout, not a
   // deploy: say where it is, so a file one folder too deep is seen at once.
