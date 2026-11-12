@@ -665,16 +665,42 @@ export async function commitDbtEnvironmentsFile(
  * and skipped — a broken YAML must not take a production job down.
  */
 const syncInFlight = new Map<string, Promise<void>>();
+/**
+ * Workspaces whose sync was requested again while one was running. The
+ * running pass may already have read the older tree, so joining it would drop
+ * that push for good: no later event replays it. One more pass runs instead,
+ * however many requests arrived meanwhile.
+ */
+const syncRequestedAgain = new Set<string>();
 
 export async function syncDbtConfigFromRepo(
   workspaceId: string,
   actorUserId?: string,
 ): Promise<void> {
   const running = syncInFlight.get(workspaceId);
-  if (running) return running;
-  const run = syncDbtConfigNow(workspaceId, actorUserId).finally(() => {
-    syncInFlight.delete(workspaceId);
-  });
+  if (running) {
+    syncRequestedAgain.add(workspaceId);
+    // Resolves after the extra pass, so the caller's push is applied by then.
+    return running;
+  }
+  const run = (async () => {
+    try {
+      let lastError: unknown;
+      do {
+        syncRequestedAgain.delete(workspaceId);
+        lastError = undefined;
+        try {
+          await syncDbtConfigNow(workspaceId, actorUserId);
+        } catch (error) {
+          // A failed pass must not swallow the push that arrived during it.
+          lastError = error;
+        }
+      } while (syncRequestedAgain.has(workspaceId));
+      if (lastError) throw lastError;
+    } finally {
+      syncInFlight.delete(workspaceId);
+    }
+  })();
   syncInFlight.set(workspaceId, run);
   return run;
 }
