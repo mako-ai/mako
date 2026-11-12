@@ -161,8 +161,9 @@ export class GKEKernelProvider implements KernelProvider {
   }
 
   release(endpoint: KernelEndpoint): Promise<void> {
-    // v1: pods stay in the warm pool for reuse; the session service deletes the
-    // kernel via the gateway, and the Inngest reaper scales the pool back down.
+    // Pods stay in the pool for reuse; the session service deletes the
+    // kernel via the gateway, and the kernel-pool-reaper Inngest function
+    // scales the pool back down once it is idle (kernel-pool-reaper.ts).
     logger.debug("release (no-op, pod stays in pool)", {
       pod: endpoint.podName,
     });

@@ -152,6 +152,14 @@ up from zero when cold), mints a read-only kernel token, and drives execution
 over the gateway. Warm-pool `replicas` trade always-on cost for sub-5s starts;
 the autoscaler grows the `kernels` pool to fit demand.
 
+The `kernel-pool-reaper` Inngest function (every 5 minutes) scales the pool
+back down to `KERNEL_POOL_MIN_REPLICAS` (default 0) once every kernel on every
+pod has been idle past `KERNEL_SESSION_IDLE_MS` (default 15 minutes) and no pod
+is newer than that. It reads the gateways' `GET /api/kernels`, so sessions held
+by any API instance count. With the pool at 0 the `kernels` node pool scales to
+0 too; the first notebook run after that waits for a node and a pod (a minute
+or two). Set `KERNEL_POOL_MIN_REPLICAS=1` to keep one warm pod instead.
+
 To turn it on, the Cloud Run `mako` service needs:
 
 **IAM** — the runtime SA needs `roles/container.developer` (call the k8s API to

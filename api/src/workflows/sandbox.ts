@@ -9,10 +9,13 @@
  * The steps call Mako with a key made for the run that acts as the person
  * (routes/workflows.ts), so a test can do what they can do. A run an agent
  * started (the in-chat agent, an MCP client) is marked on its key: through
- * connections it only reads, as the agent itself does.
+ * connections it writes as the person, as their own run does; a dry run
+ * records its writes under the run instead (workflows/recorded-writes.ts),
+ * and a run started with an API key (CI, a script) has them refused.
  */
 import { randomUUID } from "node:crypto";
 import { Types } from "mongoose";
+import type { RunWrites } from "./runs";
 
 import { appsGitOriginBase } from "../apps/config";
 import { getSandboxProvider } from "../apps/sandbox/provider";
@@ -48,6 +51,20 @@ const REPLY_BUDGET = 180_000;
 
 const keyNameOf = (userId: string, runId: string) =>
   `${sandboxKeyName(userId)} ${runId}`;
+
+/**
+ * The sandbox run a run's key was made for (`keyNameOf`), or null for any
+ * other key. Trust it only from a key Mako made (`recordWrites` on it).
+ */
+export function sandboxRunOfKey(
+  key: { name?: string; createdBy?: unknown } | undefined,
+): string | null {
+  if (!key?.name || key.createdBy === undefined) return null;
+  const prefix = `${sandboxKeyName(String(key.createdBy))} `;
+  if (!key.name.startsWith(prefix)) return null;
+  const runId = key.name.slice(prefix.length);
+  return isSandboxRunId(runId) ? runId : null;
+}
 const runsDir = (scratch: string) => `${scratch}/mako-workflow-runs`;
 
 /** The person's run keys older than a run can live: none is in use. */
@@ -72,8 +89,11 @@ export async function startSandboxRun(
   userId: string,
   workflowId: string,
   input: object = {},
-  /** Started by an agent, not by the person themselves. */
-  { byAgent }: { byAgent: boolean } = { byAgent: true },
+  /**
+   * What its connection writes do (runs.ts `RunWrites`): sent as the
+   * person, recorded (a dry run), or refused (started with an API key).
+   */
+  { writes }: { writes: RunWrites },
 ) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(workflowId)) {
     throw new HatchetError(`Invalid workflow: ${workflowId}`, 400);
@@ -85,7 +105,8 @@ export async function startSandboxRun(
   await pruneRunKeys(workspaceId, userId);
   const { key } = generateApiKey();
   await setKey(workspaceId, userId, keyNameOf(userId, runId), key, {
-    agentRun: byAgent,
+    agentRun: writes === "refuse",
+    recordWrites: writes === "record",
   });
 
   const dir = runsDir(provider.scratch(ctx));
