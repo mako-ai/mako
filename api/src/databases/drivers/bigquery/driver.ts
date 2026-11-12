@@ -9,9 +9,21 @@ import {
   StreamingQueryOptions,
   TablePartitioning,
   TableClustering,
+  WarehouseRelation,
+  JobHistoryQueryKind,
+  JobHistoryQueryParams,
+  JOB_HISTORY_MAX_DAYS,
+  JOB_HISTORY_MAX_LIMIT,
+  JOB_HISTORY_DEFAULT_LIMIT,
+  JOB_HISTORY_MAX_IDS,
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
-import { databaseConnectionService } from "../../../services/database-connection.service";
+import {
+  bigQueryGrantTarget,
+  bigQueryJobsAccessHint,
+  databaseConnectionService,
+  isBigQueryJobsAccessDenied,
+} from "../../../services/database-connection.service";
 import { loggers } from "../../../logging";
 import { BIGQUERY_WORKING_DATASET } from "../../../utils/bigquery-working-dataset";
 import { escapeSqlLiteral } from "../../sql-utils";
@@ -278,6 +290,104 @@ function formatBigQueryValue(
   return `'${escapedStr}'`;
 }
 
+// ── Job history and relation listing (read-only introspection) ──────────
+//
+// The REST path sends no query parameters, so every value that reaches these
+// queries is either an integer checked against its bounds or a name checked
+// against one of the patterns below. Anything else throws before SQL exists.
+
+const SAFE_BQ_PROJECT = /^[A-Za-z0-9_-]{1,64}$/;
+const SAFE_BQ_NAME = /^[A-Za-z0-9_]{1,1024}$/;
+const SAFE_BQ_REGION = /^[a-z0-9-]{1,40}$/;
+/** A BigQuery label value: what dbt and Mako both write. */
+const SAFE_BQ_LABEL_VALUE = /^[a-z0-9_-]{1,63}$/;
+/** A dbt unique_id (`model.project.name`) or a bare model name. */
+const SAFE_DBT_NODE = /^[A-Za-z0-9_.-]{1,200}$/;
+
+/** Statements that define or remove a relation: never a read of it. */
+const NON_READ_STATEMENT_TYPES = [
+  "SCRIPT",
+  "CREATE_VIEW",
+  "ALTER_VIEW",
+  "DROP_VIEW",
+  "CREATE_MATERIALIZED_VIEW",
+  "ALTER_MATERIALIZED_VIEW",
+  "DROP_MATERIALIZED_VIEW",
+  "ALTER_TABLE",
+  "DROP_TABLE",
+  "TRUNCATE_TABLE",
+];
+
+/** Most relations one schema listing returns. */
+const LIST_RELATIONS_MAX_ROWS = 50_000;
+
+function boundedInteger(
+  value: unknown,
+  name: string,
+  min: number,
+  max: number,
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < min ||
+    value > max
+  ) {
+    throw new RangeError(`${name} must be an integer from ${min} to ${max}`);
+  }
+  return value;
+}
+
+function checkedName(value: unknown, name: string, pattern: RegExp): string {
+  if (typeof value !== "string" || !pattern.test(value)) {
+    throw new RangeError(`${name} is not a valid identifier`);
+  }
+  return value;
+}
+
+/** A validated list as SQL string literals, or null when empty. */
+function labelValueList(values: string[] | undefined, name: string) {
+  if (!values || values.length === 0) return null;
+  if (values.length > JOB_HISTORY_MAX_IDS) {
+    throw new RangeError(
+      `${name} holds more than ${JOB_HISTORY_MAX_IDS} values`,
+    );
+  }
+  return values
+    .map(value => `'${checkedName(value, name, SAFE_BQ_LABEL_VALUE)}'`)
+    .join(", ");
+}
+
+/** dbt's label sanitizer: lowercase, `_` for anything else, 63 characters. */
+function asLabelValue(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "_")
+    .slice(0, 63);
+}
+
+function mapBigQueryTableType(raw: unknown): WarehouseRelation["type"] {
+  switch (String(raw ?? "").toUpperCase()) {
+    case "BASE TABLE":
+    case "CLONE":
+      return "table";
+    case "VIEW":
+      return "view";
+    case "MATERIALIZED VIEW":
+      return "materialized_view";
+    case "EXTERNAL":
+      return "external";
+    default:
+      return "other";
+  }
+}
+
+function finiteNumber(raw: unknown): number | undefined {
+  if (raw === null || raw === undefined || raw === "") return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
 export class BigQueryDatabaseDriver implements DatabaseDriver {
   private logger = loggers.db("bigquery");
   private tableColumnTypeCache = new Map<string, Map<string, string>>();
@@ -425,6 +535,277 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       ? `\`${options.projectId}\`.\`${schema}\``
       : `\`${schema}\``;
     return `SELECT table_id, row_count FROM ${dataset}.__TABLES__ WHERE table_id IN (${inList})`;
+  }
+
+  /**
+   * One bounded query over `INFORMATION_SCHEMA.JOBS_BY_PROJECT` (scope
+   * "project", needs `bigquery.jobs.listAll`) or `JOBS_BY_USER` (scope
+   * "user", this account's own jobs) in the connection's region. Always
+   * filters the `creation_time` partition and always carries a LIMIT.
+   */
+  buildJobHistoryQuery(
+    database: IDatabaseConnection,
+    kind: JobHistoryQueryKind,
+    params: JobHistoryQueryParams,
+  ): string | null {
+    const connection = (database.connection ?? {}) as {
+      project_id?: unknown;
+      location?: unknown;
+    };
+    const project = checkedName(
+      connection.project_id,
+      "connection project_id",
+      SAFE_BQ_PROJECT,
+    );
+    const region = checkedName(
+      String(connection.location || "US").toLowerCase(),
+      "connection location",
+      SAFE_BQ_REGION,
+    );
+    const days = boundedInteger(params.days, "days", 1, JOB_HISTORY_MAX_DAYS);
+    const limit = boundedInteger(
+      params.limit ?? JOB_HISTORY_DEFAULT_LIMIT,
+      "limit",
+      1,
+      JOB_HISTORY_MAX_LIMIT,
+    );
+    if (params.scope !== "project" && params.scope !== "user") {
+      throw new RangeError("scope must be project or user");
+    }
+    const view =
+      params.scope === "project" ? "JOBS_BY_PROJECT" : "JOBS_BY_USER";
+    const jobs = `\`${project}\`.\`region-${region}\`.INFORMATION_SCHEMA.${view}`;
+    const window = `creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${days} DAY)`;
+
+    if (kind === "model_cost") {
+      return this.buildModelCostQuery({ jobs, window, limit, params });
+    }
+    if (kind === "table_readers") {
+      return this.buildTableReadersQuery({
+        jobs,
+        window,
+        limit,
+        project,
+        relation: params.relation,
+      });
+    }
+    return null;
+  }
+
+  isJobHistoryAccessDenied(error: string): boolean {
+    return isBigQueryJobsAccessDenied(error);
+  }
+
+  describeJobHistoryGrant(database: IDatabaseConnection): string {
+    return bigQueryJobsAccessHint(bigQueryGrantTarget(database));
+  }
+
+  private buildModelCostQuery(input: {
+    jobs: string;
+    window: string;
+    limit: number;
+    params: JobHistoryQueryParams;
+  }): string {
+    const { jobs, window, limit, params } = input;
+    const invocations = labelValueList(params.invocationIds, "invocationIds");
+    const runs = labelValueList(params.makoRunIds, "makoRunIds");
+    const jobLabels = labelValueList(params.makoJobLabels, "makoJobLabels");
+    const labelMatches = [
+      invocations &&
+        `(l.key = 'dbt_invocation_id' AND l.value IN (${invocations}))`,
+      runs && `(l.key = 'mako_dbt_run' AND l.value IN (${runs}))`,
+      jobLabels && `(l.key = 'mako_dbt_job' AND l.value IN (${jobLabels}))`,
+    ].filter((clause): clause is string => Boolean(clause));
+    if (labelMatches.length === 0) {
+      // Without a run set the query would price every job of the project.
+      throw new RangeError(
+        "model_cost needs invocationIds, makoRunIds or makoJobLabels",
+      );
+    }
+
+    let modelFilter = "";
+    if (params.model !== undefined) {
+      const model = checkedName(params.model, "model", SAFE_DBT_NODE);
+      modelFilter =
+        `\nWHERE node_id = '${model}'` +
+        `\n  OR ENDS_WITH(node_id, '.${model}')` +
+        `\n  OR node_id = '${asLabelValue(model)}'`;
+    }
+
+    // Script children repeat their parent's cost, so only top-level jobs are
+    // summed. The node id comes from dbt's query comment, else its job label.
+    return `WITH dbt_jobs AS (
+  SELECT
+    DATE(creation_time) AS day,
+    COALESCE(
+      REGEXP_EXTRACT(query, r'"node_id":\\s*"([^"]+)"'),
+      (SELECT l.value FROM UNNEST(labels) AS l WHERE l.key = 'node_id' LIMIT 1)
+    ) AS node_id,
+    IF(
+      destination_table.dataset_id IS NOT NULL
+        AND NOT STARTS_WITH(destination_table.dataset_id, '_'),
+      CONCAT(destination_table.project_id, '.', destination_table.dataset_id, '.', destination_table.table_id),
+      NULL
+    ) AS relation,
+    (SELECT l.value FROM UNNEST(labels) AS l WHERE l.key = 'dbt_invocation_id' LIMIT 1) AS invocation_id,
+    total_bytes_billed,
+    total_slot_ms,
+    TIMESTAMP_DIFF(end_time, start_time, MILLISECOND) AS duration_ms
+  FROM ${jobs}
+  WHERE ${window}
+    AND job_type = 'QUERY'
+    AND parent_job_id IS NULL
+    AND EXISTS (
+      SELECT 1 FROM UNNEST(labels) AS l
+      WHERE ${labelMatches.join("\n        OR ")}
+    )
+)
+SELECT
+  day,
+  node_id,
+  MAX(relation) AS relation,
+  COUNT(*) AS jobs,
+  IFNULL(SUM(total_bytes_billed), 0) AS bytes_billed,
+  IFNULL(SUM(total_slot_ms), 0) AS slot_ms,
+  COUNT(DISTINCT invocation_id) AS invocations,
+  CAST(ROUND(AVG(duration_ms)) AS INT64) AS avg_duration_ms
+FROM dbt_jobs${modelFilter}
+GROUP BY day, node_id
+ORDER BY day DESC, slot_ms DESC
+LIMIT ${limit}`;
+  }
+
+  private buildTableReadersQuery(input: {
+    jobs: string;
+    window: string;
+    limit: number;
+    project: string;
+    relation: JobHistoryQueryParams["relation"];
+  }): string {
+    const { jobs, window, limit } = input;
+    if (!input.relation) {
+      throw new RangeError("table_readers needs a relation");
+    }
+    const project = checkedName(
+      input.relation.database ?? input.project,
+      "relation database",
+      SAFE_BQ_PROJECT,
+    );
+    const dataset = checkedName(
+      input.relation.schema,
+      "relation schema",
+      SAFE_BQ_NAME,
+    );
+    const table = checkedName(
+      input.relation.name,
+      "relation name",
+      SAFE_BQ_NAME,
+    );
+    const isRelation = (alias: string) =>
+      `${alias}.project_id = '${project}' AND ${alias}.dataset_id = '${dataset}' AND ${alias}.table_id = '${table}'`;
+    const excluded = NON_READ_STATEMENT_TYPES.map(type => `'${type}'`).join(
+      ", ",
+    );
+
+    // A view never appears in referenced_tables (BigQuery lists the tables
+    // under it), so its readers are found in the query text. STRPOS on the
+    // bare name runs first: the regex only sees rows that can match.
+    return `WITH reads AS (
+  SELECT
+    user_email,
+    (SELECT l.value FROM UNNEST(labels) AS l WHERE l.key = 'mako_source' LIMIT 1) AS mako_source,
+    (SELECT l.value FROM UNNEST(labels) AS l WHERE l.key = 'mako_app' LIMIT 1) AS mako_app,
+    total_bytes_billed,
+    creation_time,
+    EXISTS (
+      SELECT 1 FROM UNNEST(referenced_tables) AS r
+      WHERE ${isRelation("r")}
+    ) AS by_reference
+  FROM ${jobs}
+  WHERE ${window}
+    AND job_type = 'QUERY'
+    AND (statement_type IS NULL OR statement_type NOT IN (${excluded}))
+    AND NOT IFNULL(${isRelation("destination_table")}, FALSE)
+    AND (
+      EXISTS (
+        SELECT 1 FROM UNNEST(referenced_tables) AS r
+        WHERE ${isRelation("r")}
+      )
+      OR (
+        STRPOS(query, '${table}') > 0
+        AND REGEXP_CONTAINS(query, r'(?i)(^|[^a-z0-9_])\`?${dataset}\`?\\s*\\.\\s*\`?${table}\`?([^a-z0-9_]|$)')
+      )
+    )
+    AND NOT IFNULL(REGEXP_CONTAINS(query, r'(?i)information_schema|__tables__'), FALSE)
+    AND NOT EXISTS (
+      SELECT 1 FROM UNNEST(labels) AS l
+      WHERE l.key = 'mako_source' AND l.value = 'metadata'
+    )
+)
+SELECT
+  mako_source,
+  mako_app,
+  user_email,
+  COUNT(*) AS jobs,
+  IFNULL(SUM(total_bytes_billed), 0) AS bytes_billed,
+  FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', MAX(creation_time)) AS last_read_at,
+  COUNTIF(NOT by_reference) AS jobs_by_text_only
+FROM reads
+GROUP BY mako_source, mako_app, user_email
+ORDER BY jobs DESC, last_read_at DESC
+LIMIT ${limit}`;
+  }
+
+  /**
+   * Every table and view of one dataset: `INFORMATION_SCHEMA.TABLES` (views
+   * included) joined to `__TABLES__` for size, rows and last write. Null
+   * when the dataset does not exist.
+   */
+  async listRelations(
+    database: IDatabaseConnection,
+    schema: string,
+    options?: { projectId?: string },
+  ): Promise<WarehouseRelation[] | null> {
+    const project = checkedName(
+      options?.projectId ?? this.getProjectId(database),
+      "project",
+      SAFE_BQ_PROJECT,
+    );
+    const dataset = checkedName(schema, "schema", SAFE_BQ_NAME);
+    const qualified = `${project}.${dataset}`;
+    const result = await this.executeQuery(
+      database,
+      `SELECT t.table_name, t.table_type, s.size_bytes, s.row_count, s.last_modified_time ` +
+        `FROM \`${qualified}\`.INFORMATION_SCHEMA.TABLES AS t ` +
+        `LEFT JOIN \`${qualified}.__TABLES__\` AS s ON s.table_id = t.table_name ` +
+        `ORDER BY t.table_name LIMIT ${LIST_RELATIONS_MAX_ROWS}`,
+      { readOnly: true, labels: { mako_source: "metadata" } },
+    );
+    if (!result.success) {
+      if (/not found: dataset/i.test(result.error ?? "")) return null;
+      throw new Error(
+        `Could not list relations of ${qualified}: ${result.error ?? "unknown error"}`,
+      );
+    }
+    const rows = Array.isArray(result.data) ? result.data : [];
+    const relations: WarehouseRelation[] = [];
+    for (const row of rows as Array<Record<string, unknown>>) {
+      if (typeof row.table_name !== "string") continue;
+      const type = mapBigQueryTableType(row.table_type);
+      const stored = type === "table" || type === "materialized_view";
+      const modified = finiteNumber(row.last_modified_time);
+      relations.push({
+        database: project,
+        schema: dataset,
+        name: row.table_name,
+        type,
+        // Views and external tables report 0 here: not a real measure.
+        sizeBytes: stored ? finiteNumber(row.size_bytes) : undefined,
+        rowCount: stored ? finiteNumber(row.row_count) : undefined,
+        lastModified: modified !== undefined ? new Date(modified) : undefined,
+      });
+    }
+    return relations;
   }
 
   // ============ WRITE CAPABILITIES ============
@@ -1010,7 +1391,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     let chunkSize = 1000; // Start smaller to be safe
     let totalWritten = 0;
 
-    for (let i = 0; i < rows.length; ) {
+    for (let i = 0; i < rows.length;) {
       // Build query for current chunk using VALUES syntax (more compact than SELECT...UNION ALL)
       let chunk = rows.slice(i, i + chunkSize);
       let query = this.buildInsertQuery(
@@ -1231,7 +1612,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     let chunkSize = 500; // MERGE is more verbose, start smaller
     let totalWritten = 0;
 
-    for (let i = 0; i < rows.length; ) {
+    for (let i = 0; i < rows.length;) {
       // Build MERGE query for current chunk
       let chunk = rows.slice(i, i + chunkSize);
       let query = this.buildMergeQuery(

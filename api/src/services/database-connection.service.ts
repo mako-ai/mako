@@ -394,6 +394,80 @@ function describeGoogleApiError(error: any, fallback: string): string {
 }
 
 /**
+ * A denial of the project-wide job history. `JOBS_BY_USER` is left out: it
+ * needs no grant beyond running jobs, so this hint would not fix it.
+ */
+const BIGQUERY_JOBS_VIEW = /INFORMATION_SCHEMA\.JOBS(?!_BY_USER)/i;
+const BIGQUERY_DENIAL = /HTTP 403|access denied|permission/i;
+
+/** True when BigQuery refused `INFORMATION_SCHEMA.JOBS*` for missing IAM. */
+export function isBigQueryJobsAccessDenied(message: unknown): boolean {
+  return (
+    typeof message === "string" &&
+    BIGQUERY_JOBS_VIEW.test(message) &&
+    BIGQUERY_DENIAL.test(message)
+  );
+}
+
+/** The service account and project of a BigQuery connection, when known. */
+export function bigQueryGrantTarget(database: IDatabaseConnection): {
+  projectId?: string;
+  serviceAccountEmail?: string;
+} {
+  const { project_id, service_account_json } = (database.connection ??
+    {}) as Record<string, unknown>;
+  let key: unknown = service_account_json;
+  if (typeof key === "string") {
+    try {
+      key = JSON.parse(key);
+    } catch {
+      key = undefined;
+    }
+  }
+  const email =
+    key && typeof key === "object"
+      ? (key as Record<string, unknown>).client_email
+      : undefined;
+  return {
+    projectId:
+      typeof project_id === "string" && project_id ? project_id : undefined,
+    serviceAccountEmail: typeof email === "string" && email ? email : undefined,
+  };
+}
+
+/**
+ * What to grant so a connection can read every principal's jobs: the
+ * permission, the role that holds it, and the command, filled in.
+ */
+export function bigQueryJobsAccessHint(target: {
+  projectId?: string;
+  serviceAccountEmail?: string;
+}): string {
+  const project = target.projectId ?? "PROJECT_ID";
+  const account = target.serviceAccountEmail ?? "SERVICE_ACCOUNT_EMAIL";
+  return (
+    `The connection's service account ${account} lacks the ` +
+    `bigquery.jobs.listAll permission on project ${project}. ` +
+    `Grant it the role roles/bigquery.resourceViewer: ` +
+    `gcloud projects add-iam-policy-binding ${project} ` +
+    `--member="serviceAccount:${account}" ` +
+    `--role="roles/bigquery.resourceViewer". ` +
+    `Without the grant, INFORMATION_SCHEMA.JOBS_BY_USER still lists the ` +
+    `jobs this service account started itself.`
+  );
+}
+
+/** Append the grant hint to a JOBS denial; any other message is unchanged. */
+export function withBigQueryJobsAccessHint(
+  message: string,
+  target: { projectId?: string; serviceAccountEmail?: string },
+): string {
+  if (!isBigQueryJobsAccessDenied(message)) return message;
+  if (message.includes("bigquery.jobs.listAll")) return message;
+  return `${message} ${bigQueryJobsAccessHint(target)}`;
+}
+
+/**
  * Non-SQL engines whose queries cannot be validated by the lexical read-only
  * analyzer (`checkPreviewQuerySafety`). Under `readOnly` these fail closed in
  * `executeQuery`; SQL engines (incl. BigQuery) are enforced read-only lexically
@@ -638,7 +712,10 @@ export class DatabaseConnectionService {
         case "mssql":
           return await this.executeMSSQLQuery(database, query, options);
         case "bigquery":
-          return await this.executeBigQueryQuery(database, query, options);
+          return this.hintBigQueryJobsDenial(
+            database,
+            await this.executeBigQueryQuery(database, query, options),
+          );
         case "clickhouse":
           return await this.executeClickHouseQuery(database, query, options);
         case "cloudflare-d1": {
@@ -834,7 +911,10 @@ export class DatabaseConnectionService {
         database.type === "bigquery" &&
         typeof query === "string"
       ) {
-        return await this.executeBigQueryPreviewQuery(database, query, options);
+        return this.hintBigQueryJobsDenial(
+          database,
+          await this.executeBigQueryPreviewQuery(database, query, options),
+        );
       }
 
       if (
@@ -961,7 +1041,10 @@ export class DatabaseConnectionService {
     // BigQuery paginates via native job page tokens, not offset batches, so it
     // always streams through its native path.
     if (database.type === "bigquery" && typeof query === "string") {
-      return await this.executeBigQueryStreamingQuery(database, query, options);
+      return this.hintBigQueryJobsDenial(
+        database,
+        await this.executeBigQueryStreamingQuery(database, query, options),
+      );
     }
 
     const driver = databaseRegistry.getDriver(database.type);
@@ -1732,6 +1815,22 @@ export class DatabaseConnectionService {
       return 1000;
     }
     return Math.max(100, configured);
+  }
+
+  /** A failed BigQuery result, with the IAM grant hint on a JOBS denial. */
+  private hintBigQueryJobsDenial<
+    T extends { success: boolean; error?: string },
+  >(database: IDatabaseConnection, result: T): T {
+    if (result.success || !isBigQueryJobsAccessDenied(result.error)) {
+      return result;
+    }
+    return {
+      ...result,
+      error: withBigQueryJobsAccessHint(
+        result.error ?? "",
+        bigQueryGrantTarget(database),
+      ),
+    };
   }
 
   /**

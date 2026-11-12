@@ -114,10 +114,24 @@ export interface JobHistoryQueryParams {
   days: number;
   /** model_cost: restrict to these dbt invocations. */
   invocationIds?: string[];
+  /** model_cost: also match jobs labelled `mako_dbt_run` with these ids. */
+  makoRunIds?: string[];
+  /** model_cost: also match jobs labelled `mako_dbt_job` with these values. */
+  makoJobLabels?: string[];
+  /** model_cost: keep one model, by dbt unique_id or bare model name. */
+  model?: string;
   /** table_readers: the relation whose readers are listed (required). */
   relation?: { database?: string; schema: string; name: string };
+  /** Row cap, 1 to 500. Default 100. */
   limit?: number;
 }
+
+/** Hard bounds every job-history query is built within. */
+export const JOB_HISTORY_MAX_DAYS = 30;
+export const JOB_HISTORY_MAX_LIMIT = 500;
+export const JOB_HISTORY_DEFAULT_LIMIT = 100;
+/** Most ids one model_cost query filters on (each id list). */
+export const JOB_HISTORY_MAX_IDS = 2000;
 
 export interface DatabaseDriver {
   getMetadata(): DatabaseDriverMetadata;
@@ -226,9 +240,12 @@ export interface DatabaseDriver {
   /**
    * Build one read-only query over the engine's job history. Null when the
    * engine has none. Result columns are fixed per kind:
-   * model_cost: day, node_id, relation, jobs, bytes_billed, slot_ms.
+   * model_cost: day, node_id, relation, jobs, bytes_billed, slot_ms,
+   * invocations, avg_duration_ms.
    * table_readers: mako_source, mako_app, user_email, jobs, bytes_billed,
-   * last_read_at.
+   * last_read_at, jobs_by_text_only.
+   * Throws RangeError on a parameter outside its bounds or an identifier
+   * that fails validation: no caller input reaches the SQL unchecked.
    */
   buildJobHistoryQuery?(
     database: IDatabaseConnection,
@@ -237,8 +254,21 @@ export interface DatabaseDriver {
   ): string | null;
 
   /**
+   * True when `error` is the engine refusing its project-wide job history
+   * for a missing grant. Callers then retry with `scope: "user"`.
+   */
+  isJobHistoryAccessDenied?(error: string): boolean;
+
+  /**
+   * What an admin must grant for project-wide job history on this
+   * connection: the permission, the role and the command, filled in.
+   */
+  describeJobHistoryGrant?(database: IDatabaseConnection): string;
+
+  /**
    * List every table and view in one schema with size and last-modified
-   * metadata. Null when the schema does not exist.
+   * metadata. Null when the schema does not exist. Throws on any other
+   * failed listing.
    */
   listRelations?(
     database: IDatabaseConnection,
