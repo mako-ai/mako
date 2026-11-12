@@ -35,7 +35,7 @@ const EXISTING_VALID_COMMANDS = [
   "show --select stg_orders --limit 5",
   "show --select stg_orders --limit 500 --output json",
   "build --full-refresh --fail-fast",
-  "run --select stg_crm__reviews stg_crm__teams stg_crm__property_transactions --full-refresh",
+  "run --select stg_reviews stg_teams stg_transactions --full-refresh",
   "build -s a b --exclude c d --threads 4",
   "run --select stg_orders",
   "build --select stg_orders+ --full-refresh",
@@ -135,14 +135,14 @@ describe("parseDbtCommand", () => {
     // never got a scheduler row.
     expect(
       parseDbtCommand(
-        "run --select stg_crm__reviews stg_crm__teams stg_crm__property_transactions --full-refresh",
+        "run --select stg_reviews stg_teams stg_transactions --full-refresh",
       ).argv,
     ).toEqual([
       "run",
       "--select",
-      "stg_crm__reviews",
-      "stg_crm__teams",
-      "stg_crm__property_transactions",
+      "stg_reviews",
+      "stg_teams",
+      "stg_transactions",
       "--full-refresh",
     ]);
     expect(

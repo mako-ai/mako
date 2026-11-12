@@ -491,7 +491,7 @@ describe("environments follow dbt/environments.yml; jobs resolve through the ove
             "environment: prod",
             "commands:",
             "  # comment lines are fine",
-            "  - run --select stg_crm__reviews stg_crm__teams stg_crm__property_transactions --full-refresh",
+            "  - run --select stg_reviews stg_teams stg_transactions --full-refresh",
             "  - build --select activation_levels tag:activation",
             "enabled: true",
             "",
