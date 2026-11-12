@@ -672,7 +672,8 @@ export interface IScheduledQueryRun extends Document {
   inngestRunId?: string;
 }
 
-export type NotificationResourceType = "scheduled_query" | "flow";
+export type NotificationResourceType =
+  "scheduled_query" | "flow" | "dbt_job" | "dbt_project";
 
 export type NotificationTrigger = "success" | "failure";
 
@@ -711,6 +712,12 @@ export interface INotificationRule extends Document {
   resourceId: Types.ObjectId;
   enabled: boolean;
   triggers: NotificationTrigger[];
+  /**
+   * dbt rules only. Default (unset): "failure" posts when a job run fails
+   * and the previous run of that job had not failed; "success" posts once on
+   * recovery. True: "failure" posts on every failed run.
+   */
+  everyFailure?: boolean;
   channel: INotificationRuleChannel;
   createdBy: string;
   createdAt: Date;
@@ -3399,7 +3406,7 @@ const NotificationRuleSchema = new Schema<INotificationRule>(
     },
     resourceType: {
       type: String,
-      enum: ["scheduled_query", "flow"],
+      enum: ["scheduled_query", "flow", "dbt_job", "dbt_project"],
       required: true,
     },
     resourceId: {
@@ -3422,6 +3429,7 @@ const NotificationRuleSchema = new Schema<INotificationRule>(
       },
       required: true,
     },
+    everyFailure: { type: Boolean },
     channel: {
       type: Schema.Types.Mixed,
       required: true,
@@ -3458,7 +3466,7 @@ const NotificationDeliverySchema = new Schema<INotificationDelivery>(
     },
     resourceType: {
       type: String,
-      enum: ["scheduled_query", "flow"],
+      enum: ["scheduled_query", "flow", "dbt_job", "dbt_project"],
       required: true,
     },
     resourceId: {
@@ -4183,6 +4191,9 @@ export interface IDbtJob extends Document {
     lastDurationMs?: number;
     runCount: number;
     consecutiveFailures: number;
+    /** Scheduled ticks dropped because a run of this job was still active. */
+    skippedCount?: number;
+    lastSkippedAt?: Date;
   };
   enabled: boolean;
   /** Reserved for Slim CI (--defer against the stored prod manifest). */
@@ -4226,6 +4237,8 @@ const DbtJobSchema = new Schema<IDbtJob>(
       lastDurationMs: { type: Number },
       runCount: { type: Number, default: 0 },
       consecutiveFailures: { type: Number, default: 0 },
+      skippedCount: { type: Number },
+      lastSkippedAt: { type: Date },
     },
     enabled: { type: Boolean, default: true },
     deferToProduction: { type: Boolean, default: false },
@@ -4261,6 +4274,20 @@ export interface IDbtRunStepResult {
   rowsAffected?: number;
   message?: string;
 }
+
+/** Per-run inputs of a manual job trigger. Never written to the job. */
+export interface IDbtRunOverrides {
+  /** Merged over the environment's vars for this run only. */
+  vars?: Record<string, unknown>;
+  /** `--full-refresh` was appended to the run/build/seed commands. */
+  fullRefresh?: boolean;
+}
+
+/**
+ * Executor lane. "interactive" = validation runs (parse / compile / show)
+ * that neither wait behind job runs nor block them. Unset = "job".
+ */
+export type DbtRunLane = "job" | "interactive";
 
 export interface IDbtRun extends Document {
   _id: Types.ObjectId;
@@ -4309,6 +4336,21 @@ export interface IDbtRun extends Document {
    * project CI config, so those leave this unset.
    */
   deferToProduction?: boolean;
+  /**
+   * Job runs: the commit `dbt/jobs/<slug>.yml` was read from for this run's
+   * commands, environment and defer flag (equals `sourceSha`). Unset when the
+   * definition came from the job row (file invalid at that commit, or a run
+   * that predates this field).
+   */
+  definitionSha?: string;
+  /** Manual-trigger inputs; `commands` already holds the final list. */
+  overrides?: IDbtRunOverrides;
+  lane?: DbtRunLane;
+  /**
+   * dbt's `invocation_id` per executed command, in order. Joins to the
+   * `dbt_invocation_id` label on warehouse jobs.
+   */
+  invocationIds?: string[];
   /**
    * `mako dbt run` from a laptop checkout: the run builds the tree at
    * `baseSha` (a commit of the workspace repo) with the developer's local
@@ -4413,6 +4455,19 @@ const DbtRunSchema = new Schema<IDbtRun>(
     sourceBranch: { type: String },
     sourceSha: { type: String },
     deferToProduction: { type: Boolean },
+    definitionSha: { type: String },
+    overrides: {
+      type: new Schema(
+        {
+          vars: { type: Schema.Types.Mixed },
+          fullRefresh: { type: Boolean },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
+    lane: { type: String, enum: ["job", "interactive"] },
+    invocationIds: { type: [String], default: undefined },
     localOverlay: {
       type: new Schema(
         {

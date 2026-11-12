@@ -88,6 +88,11 @@ export interface DbtRunRequest {
    * skip `dbt deps` when the on-disk dbt_packages/ tree already matches.
    */
   packagesHash?: string | null;
+  /**
+   * Extra non-secret env for the dbt child (run identity from
+   * `dbtRunLabelEnv`). Spread into the child env after the allowlist.
+   */
+  extraEnv?: Record<string, string>;
   signal?: AbortSignal;
   onLog?: (line: DbtLogLine) => void;
 }
@@ -108,6 +113,8 @@ export interface DbtCommandResult {
   exitCode: number;
   logLines: DbtLogLine[];
   runResults?: RunResultsArtifact;
+  /** dbt's `invocation_id` for this command (run_results.json metadata). */
+  invocationId?: string;
 }
 
 export interface DbtRunResult {

@@ -21,6 +21,7 @@ import {
   resolveWorkingTreeCommit,
 } from "./dbt-working-tree.service";
 import { parseDbtCommands } from "./commands";
+import type { DbtRunOverrides } from "./dbt-run-overrides";
 import { cancelLocalRun } from "./dbt-run-registry";
 import type { AdhocDbtResult } from "./dbt-project.service";
 import { loggers } from "../logging";
@@ -408,7 +409,14 @@ export async function triggerDbtJobRun(params: {
   job: IDbtJob;
   trigger: "schedule" | "manual" | "agent";
   triggeredBy: string;
+  /**
+   * Manual/agent triggers only: per-run vars and full refresh. Validated here
+   * with `validateRunOverrides`; throws DbtRunOverridesError on bad input.
+   */
+  overrides?: DbtRunOverrides;
 }): Promise<IDbtRun> {
+  // WP1: validate, apply and store the overrides.
+  if (params.overrides) throw new Error("not implemented");
   return triggerDbtRun({
     workspaceId: params.workspaceId,
     projectId: params.job.projectId.toString(),

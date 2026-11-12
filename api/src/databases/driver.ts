@@ -93,6 +93,32 @@ export interface StreamingQueryOptions {
   databaseName?: string;
 }
 
+/** A table or view as the warehouse lists it. */
+export interface WarehouseRelation {
+  /** Warehouse project/catalog when the engine has one. */
+  database?: string;
+  schema: string;
+  name: string;
+  type: "table" | "view" | "materialized_view" | "external" | "other";
+  sizeBytes?: number;
+  rowCount?: number;
+  lastModified?: Date;
+}
+
+export type JobHistoryQueryKind = "model_cost" | "table_readers";
+
+export interface JobHistoryQueryParams {
+  /** "project" = every principal (needs a grant); "user" = this account. */
+  scope: "project" | "user";
+  /** Look-back window, 1 to 30 days. */
+  days: number;
+  /** model_cost: restrict to these dbt invocations. */
+  invocationIds?: string[];
+  /** table_readers: the relation whose readers are listed (required). */
+  relation?: { database?: string; schema: string; name: string };
+  limit?: number;
+}
+
 export interface DatabaseDriver {
   getMetadata(): DatabaseDriverMetadata;
   getTreeRoot(database: IDatabaseConnection): Promise<DatabaseTreeNode[]>;
@@ -196,6 +222,29 @@ export interface DatabaseDriver {
     tableNames: string[],
     options?: { projectId?: string },
   ): string | null;
+
+  /**
+   * Build one read-only query over the engine's job history. Null when the
+   * engine has none. Result columns are fixed per kind:
+   * model_cost: day, node_id, relation, jobs, bytes_billed, slot_ms.
+   * table_readers: mako_source, mako_app, user_email, jobs, bytes_billed,
+   * last_read_at.
+   */
+  buildJobHistoryQuery?(
+    database: IDatabaseConnection,
+    kind: JobHistoryQueryKind,
+    params: JobHistoryQueryParams,
+  ): string | null;
+
+  /**
+   * List every table and view in one schema with size and last-modified
+   * metadata. Null when the schema does not exist.
+   */
+  listRelations?(
+    database: IDatabaseConnection,
+    schema: string,
+    options?: { projectId?: string },
+  ): Promise<WarehouseRelation[] | null>;
 
   // ============ WRITE CAPABILITIES (for db-to-db sync) ============
 
