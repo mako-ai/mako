@@ -9,29 +9,19 @@ import { Types } from "mongoose";
 import type { IConnectionWriter } from "../database/workspace-schema";
 import { ConnectionWriteEvent } from "./connection-write-event";
 import {
+  ALL_WORKFLOWS,
   principalsOutsideWorkspace,
   viewerPrincipals,
 } from "./connection-writes";
 
+export { ALL_WORKFLOWS };
+
 /** A principal that can be put on a writers list. */
 export const LISTABLE_PRINCIPAL =
-  /^(user:[A-Za-z0-9_-]+|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$/;
-
-/**
- * Every deployed workflow, on a source connection's writers list. Deployed
- * workflows share one identity today (the worker's key), so the workflow name
- * a request sends cannot be trusted to tell one from another: a source
- * connection lists them all at once or none.
- */
-export const ALL_WORKFLOWS = "workflow:*";
-
-/** A principal a source connection's writers list takes. */
-export const SOURCE_LISTABLE_PRINCIPAL =
   /^(user:[A-Za-z0-9_-]+|workflow:\*|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$/;
 
-/** A source writer's principal: any `workflow:<name>` is every workflow. */
-export const sourceWriterPrincipal = (principal: string): string =>
-  principal.startsWith("workflow:") ? ALL_WORKFLOWS : principal;
+/** A principal a source connection's writers or live readers list takes. */
+export const SOURCE_LISTABLE_PRINCIPAL = LISTABLE_PRINCIPAL;
 
 const RECENT_WRITES_DAYS = 30;
 
@@ -53,8 +43,6 @@ interface RecentWriter {
 export async function recentWriters(
   connectionId: string,
   covered: (principal: string, target: string) => boolean,
-  /** Source connections: every workflow's attempts, offered as one. */
-  { allWorkflows = false }: { allWorkflows?: boolean } = {},
 ): Promise<RecentWriter[]> {
   const since = new Date(Date.now() - RECENT_WRITES_DAYS * 86_400_000);
   const recent = await ConnectionWriteEvent.aggregate<{
@@ -85,12 +73,7 @@ export async function recentWriters(
     { count: number; lastAt: Date; targets: string[]; uncovered: string[] }
   >();
   for (const r of recent.filter(r => LISTABLE_PRINCIPAL.test(r._id))) {
-    const principal = allWorkflows ? sourceWriterPrincipal(r._id) : r._id;
-    // The name a workflow sent stays visible: it is all Mako knows of it.
-    const label = (t: string) =>
-      principal === r._id
-        ? t
-        : `${t} (the workflow sent the name ${r._id.slice("workflow:".length)})`;
+    const principal = r._id;
     const targets = r.targets.filter((t): t is string => !!t);
     const into = merged.get(principal) ?? {
       count: 0,
@@ -100,11 +83,9 @@ export async function recentWriters(
     };
     into.count += r.count;
     if (r.lastAt > into.lastAt) into.lastAt = r.lastAt;
-    into.targets.push(...targets.map(label));
+    into.targets.push(...targets);
     // Against the list as it is now, not as it was then.
-    into.uncovered.push(
-      ...targets.filter(t => !covered(principal, t)).map(label),
-    );
+    into.uncovered.push(...targets.filter(t => !covered(principal, t)));
     merged.set(principal, into);
   }
   return [...merged].map(([principal, r]) => ({

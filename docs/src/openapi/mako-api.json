@@ -5014,7 +5014,7 @@
                       "properties": {
                         "principal": {
                           "type": "string",
-                          "pattern": "^(user:[A-Za-z0-9_-]+|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$",
+                          "pattern": "^(user:[A-Za-z0-9_-]+|workflow:\\*|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$",
                           "example": "workflow:crm-chat-issues"
                         },
                         "where": {

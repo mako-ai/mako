@@ -4,6 +4,10 @@
 // that commit, starts a worker, stops the old one, and reports. A commit that does not build is reported and the previous one
 // keeps running.
 //
+// It runs as root inside the pod's gVisor sandbox and runs no workflow
+// code: the worker it starts (worker.mjs) runs each workflow's steps as that
+// workflow's own user, with a pass per step instead of this key.
+//
 // Env: MAKO_URL, MAKO_API_KEY. The Hatchet token comes from Mako.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";

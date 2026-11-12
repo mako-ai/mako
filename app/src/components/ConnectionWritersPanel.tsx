@@ -193,18 +193,18 @@ export default function ConnectionWritersPanel({
       })),
     [members],
   );
-  // A source connection allows deployed workflows together (they share one
-  // identity today): one option, never each workflow.
+  // Every deployed workflow acts as itself (its step's pass), so each can be
+  // allowed alone, or all of them at once.
   const flows = useMemo<Who[]>(
-    () =>
-      source
-        ? [ALL_WORKFLOWS]
-        : (workflows ?? []).map(w => ({
-            principal: `workflow:${w.workflowId}`,
-            label: w.workflowId,
-            kind: "workflow",
-          })),
-    [workflows, source],
+    () => [
+      ALL_WORKFLOWS,
+      ...(workflows ?? []).map(w => ({
+        principal: `workflow:${w.workflowId}`,
+        label: w.workflowId,
+        kind: "workflow" as const,
+      })),
+    ],
+    [workflows],
   );
   const describe = useCallback(
     (principal: string): Who => {
@@ -530,20 +530,6 @@ export default function ConnectionWritersPanel({
       {/* Allowed */}
       <Box>
         <SectionTitle>Allowed to write</SectionTitle>
-        {source &&
-          (who?.kind === "workflow" ||
-            state.writers.some(
-              writer => describe(writer.principal).kind === "workflow",
-            )) && (
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", mb: 1 }}
-            >
-              Workflows are allowed together: they share one deployed identity
-              today, so Mako cannot tell one from another.
-            </Typography>
-          )}
         {state.writers.length === 0 ? (
           <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
             {source

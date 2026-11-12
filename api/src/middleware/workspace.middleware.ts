@@ -25,6 +25,8 @@ export interface AuthenticatedContext extends Context {
   get(key: "authType"): "session" | "apiKey" | "mcpOAuth" | undefined;
   get(key: "workspaceId"): string | undefined;
   get(key: "apiKey"): any;
+  /** The workflow pass a deployed step called with (workflows/pass.ts). */
+  get(key: "workflowPass"): { workflow: string; runId: string } | undefined;
   set(key: "user", value: ValidatedUser): void;
   set(key: "session", value: ValidatedSession): void;
   set(key: "workspace", value: any): void;

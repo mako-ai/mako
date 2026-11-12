@@ -134,9 +134,12 @@ function deploymentBody(workspaceId: string): V1Deployment {
           // Long enough for a running task to finish when the pod is
           // replaced. Hatchet retries what does not finish in time.
           terminationGracePeriodSeconds: 1800,
+          // Root inside gVisor, holding only what starting each workflow's
+          // steps as that workflow's own user takes (worker.mjs): workflow
+          // code never runs as root, nor as another workflow's user.
           securityContext: {
-            runAsNonRoot: true,
-            runAsUser: 1000,
+            runAsUser: 0,
+            runAsGroup: 0,
             fsGroup: 1000,
             seccompProfile: { type: "RuntimeDefault" },
           },
@@ -167,7 +170,10 @@ function deploymentBody(workspaceId: string): V1Deployment {
               securityContext: {
                 allowPrivilegeEscalation: false,
                 readOnlyRootFilesystem: true,
-                capabilities: { drop: ["ALL"] },
+                capabilities: {
+                  drop: ["ALL"],
+                  add: ["SETUID", "SETGID", "CHOWN", "KILL"],
+                },
               },
               volumeMounts: [{ name: "tmp", mountPath: "/tmp" }],
             },

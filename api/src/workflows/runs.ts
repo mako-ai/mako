@@ -444,12 +444,11 @@ async function readNewRunDetail(
  * now; else null, as when
  * Mako cannot tell (no run id, no tenant, a run the tenant does not have).
  *
- * The run is the one the worker names (X-Mako-Run), and deployed workflow
- * code holds the worker's key, so it could name another run: an old
- * scheduled run's, to write with that run's rights. So the run must be of
- * the workflow the request is for (X-Mako-Workflow, compared ignoring case)
- * and still executing: the run QUEUED, PENDING or RUNNING, or one of its
- * tasks so (an `onFailure` task runs while the run shows FAILED).
+ * Asked before a workflow pass is given for a step (pass.ts) and each time
+ * one is used: the run must be of the pass's workflow (compared ignoring
+ * case) and still executing, the run QUEUED, PENDING or RUNNING, or one of
+ * its tasks so (an `onFailure` task runs while the run shows FAILED). A
+ * pass for an old scheduled run lends nothing.
  *
  * Who started a run and its workflow never change: they are kept. Whether
  * it executes is asked again after ACTIVE_FOR_MS. When Hatchet does not

@@ -5,6 +5,7 @@
 
 import {
   actingPrincipal,
+  principalMatches,
   notAWriterRefusal,
   recordWrite,
 } from "../../access/connection-writes";
@@ -923,7 +924,8 @@ export function effectiveSqlQueryAccess(
   // principal only; where it may write is checked when the query runs
   // (access/connection-writes.ts).
   const acting = actingPrincipal();
-  return acting && connection.writers?.some(w => w.principal === acting)
+  return acting &&
+    connection.writers?.some(w => principalMatches(w.principal, acting))
     ? "write"
     : "read";
 }

@@ -57,7 +57,6 @@ import {
   publicWriters,
   recentWriters,
   SOURCE_LISTABLE_PRINCIPAL,
-  sourceWriterPrincipal,
   writersEditor,
   writersOutsideRefusal,
 } from "../access/connection-writers-list";
@@ -1655,20 +1654,17 @@ export const dataSourceRoutes = sourceConnectionRoutes;
 // Syncs are not concerned.
 
 const SourceWriterSchema = z.object({
-  // `workflow:*`: every deployed workflow. A `workflow:<name>` is taken as
-  // that (they share one identity today).
+  // `workflow:*`: every deployed workflow; `workflow:<name>`: that one.
   principal: z
     .string()
     .regex(SOURCE_LISTABLE_PRINCIPAL)
     .openapi({ example: "workflow:*" }),
 });
 
-/** One entry per principal, any `workflow:<name>` as `workflow:*`. */
+/** One entry per principal. */
 function sourceWriters<T extends { principal: string }>(writers: T[]): T[] {
   const seen = new Set<string>();
-  return writers
-    .map(w => ({ ...w, principal: sourceWriterPrincipal(w.principal) }))
-    .filter(w => !seen.has(w.principal) && seen.add(w.principal));
+  return writers.filter(w => !seen.has(w.principal) && seen.add(w.principal));
 }
 
 /**
@@ -1728,10 +1724,8 @@ sourceConnectionRoutes.openapi(
           : null,
         // Whether the proxy can call this connection at all yet.
         callable: callableFor(row.type) !== null,
-        recent: await recentWriters(
-          id,
-          principal => mayWrite(row.writers, principal),
-          { allWorkflows: true },
+        recent: await recentWriters(id, principal =>
+          mayWrite(row.writers, principal),
         ),
       },
     });
