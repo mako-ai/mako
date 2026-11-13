@@ -146,10 +146,15 @@ export interface JobHistoryDeps {
     limit: number;
   }): Promise<Array<{ id: string; invocationIds: string[] }>>;
   getDriver(type: string): DatabaseDriver | undefined;
+  /**
+   * `location` is the region the SQL reads (`region-<location>`). The job
+   * must run there: a job submitted in the connection's own location cannot
+   * read another region's job history.
+   */
   runQuery(
     connection: IDatabaseConnection,
     sql: string,
-    signal?: AbortSignal,
+    options?: { signal?: AbortSignal; location?: string },
   ): Promise<QueryOutcome>;
   now(): Date;
 }
@@ -227,12 +232,14 @@ export const defaultJobHistoryDeps: JobHistoryDeps = {
     }));
   },
   getDriver: type => databaseRegistry.getDriver(type),
-  runQuery: (connection, sql, signal) =>
+  runQuery: (connection, sql, options) =>
     // Labelled "metadata" so these lookups never count as readers themselves.
     withQueryLabels({ mako_source: "metadata" }, () =>
       databaseConnectionService.executeQuery(connection, sql, {
         readOnly: true,
-        ...(signal ? { signal } : {}),
+        ...(options?.signal ? { signal: options.signal } : {}),
+        // Wins over the connection's own location in the job request.
+        ...(options?.location ? { location: options.location } : {}),
       }),
     ),
   now: () => new Date(),
@@ -360,7 +367,9 @@ async function runWithScopeFallback(
 
   const projectSql = build("project");
   if (projectSql === null) return null;
-  const projectWide = await deps.runQuery(connection, projectSql, signal);
+  // Both views are read in the region the SQL names, so both jobs run there.
+  const run = { signal, location: params.region };
+  const projectWide = await deps.runQuery(connection, projectSql, run);
   // A stopped caller is not a denial: never start the second query.
   signal?.throwIfAborted();
   if (projectWide.success) {
@@ -376,7 +385,7 @@ async function runWithScopeFallback(
   if (userSql === null) {
     throw new Error(projectWide.error ?? "Job history query failed");
   }
-  const own = await deps.runQuery(connection, userSql, signal);
+  const own = await deps.runQuery(connection, userSql, run);
   signal?.throwIfAborted();
   if (!own.success) throw new Error(own.error ?? "Job history query failed");
   logger.info("Job history fell back to the connection's own jobs", {

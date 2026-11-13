@@ -720,13 +720,19 @@ function makeDeps(
     target?: IDatabaseConnection;
     targetSchema?: string;
   } = {},
-): JobHistoryDeps & { queries: string[]; signals: unknown[] } {
+): JobHistoryDeps & {
+  queries: string[];
+  signals: unknown[];
+  locations: Array<string | undefined>;
+} {
   const queries: string[] = [];
   const signals: unknown[] = [];
+  const locations: Array<string | undefined> = [];
   const { respond, target, targetSchema, ...rest } = overrides;
   return {
     queries,
     signals,
+    locations,
     resolveTarget: async params => ({
       connection: target ?? connection,
       environment: params.environment ?? "prod",
@@ -735,9 +741,10 @@ function makeDeps(
     }),
     listRuns: async () => [{ id: RUN_ID, invocationIds: [INVOCATION] }],
     getDriver: () => driver,
-    runQuery: async (_connection, sql, signal) => {
+    runQuery: async (_connection, sql, options) => {
       queries.push(sql);
-      signals.push(signal);
+      signals.push(options?.signal);
+      locations.push(options?.location);
       return respond?.(sql, queries.length) ?? { success: true, data: [] };
     },
     now: () => new Date("2026-06-15T12:00:00Z"),
@@ -1216,6 +1223,35 @@ async function testRegionComesFromTheDataset(): Promise<void> {
   assert.ok(zurich.supported);
   assert.ok(mismatch.queries[0].includes("`region-europe-west6`"));
   assert.equal(zurich.regionSource, "dataset");
+  // Second-pass review: the job must RUN in the region its SQL reads. Left
+  // to the connection's location (EU here), BigQuery refuses the query:
+  // "not found in location EU".
+  assert.deepEqual(mismatch.locations, ["europe-west6"]);
+  // The fallback to the connection's own jobs runs in that region too.
+  const deniedElsewhere = makeDeps({
+    respond: sql =>
+      sql.includes("JOBS_BY_PROJECT")
+        ? {
+            success: false,
+            error: DENIED.replaceAll("region-eu", "region-europe-west6"),
+          }
+        : { success: true, data: [] },
+  });
+  await tableReaders({ ...TARGET, relation }, deniedElsewhere);
+  assert.equal(deniedElsewhere.queries.length, 2);
+  assert.deepEqual(deniedElsewhere.locations, ["europe-west6", "europe-west6"]);
+  // Model cost: the job runs where the environment's dataset lives.
+  datasetLocations.set("dbt_prod", "europe-west6");
+  const costElsewhere = makeDeps();
+  await modelCost(TARGET, costElsewhere);
+  assert.ok(costElsewhere.queries[0].includes("`region-europe-west6`"));
+  assert.deepEqual(costElsewhere.locations, ["europe-west6"]);
+  // Every query of this suite ran in the region its own SQL names.
+  for (const deps of [eu, mismatch, deniedElsewhere, costElsewhere]) {
+    deps.queries.forEach((sql, index) =>
+      assert.ok(sql.includes(`\`region-${deps.locations[index]}\``)),
+    );
+  }
 
   // Model cost reads the region of the environment's target schema.
   datasetLocations.set("dbt_prod", "EU");
@@ -1325,21 +1361,28 @@ async function testAbortSignalReachesTheWarehouse(): Promise<void> {
     executeBigQueryQuery(
       database: unknown,
       query: string,
-      options?: { signal?: AbortSignal },
+      options?: { signal?: AbortSignal; location?: string },
     ): Promise<{ success: boolean; data?: unknown }>;
   };
   const original = service.executeBigQueryQuery;
   const seen: Array<AbortSignal | undefined> = [];
+  const seenLocations: Array<string | undefined> = [];
   try {
     service.executeBigQueryQuery = async (_database, _query, options) => {
       seen.push(options?.signal);
+      seenLocations.push(options?.location);
       return { success: true, data: [] };
     };
-    await defaultJobHistoryDeps.runQuery(connection, "SELECT 1", live.signal);
+    await defaultJobHistoryDeps.runQuery(connection, "SELECT 1", {
+      signal: live.signal,
+      location: "europe-west6",
+    });
   } finally {
     service.executeBigQueryQuery = original;
   }
   assert.deepEqual(seen, [live.signal]);
+  // The region reaches the job request, over the connection's "EU".
+  assert.deepEqual(seenLocations, ["europe-west6"]);
 }
 
 async function testUnsupportedEngines(): Promise<void> {
@@ -1390,6 +1433,8 @@ async function testUnsupportedEngines(): Promise<void> {
 // ── The relation lister ───────────────────────────────────────────
 
 async function testListRelations(): Promise<void> {
+  // The connection says EU. The dataset lives in Zurich.
+  datasetLocations.set("analytics", "europe-west6");
   const capturing = makeCapturingDriver(new BigQueryDatabaseDriver(), () => ({
     success: true,
     data: [
@@ -1431,9 +1476,17 @@ async function testListRelations(): Promise<void> {
         "LEFT JOIN `fake-project.analytics.__TABLES__` AS s ON s.table_id = t.table_name " +
         "ORDER BY t.table_name LIMIT 50000",
     );
+    // Second-pass review: the job runs in the dataset's own location, read
+    // from its metadata, never in the connection's.
     assert.deepEqual(capturing.calls[0].options, {
       readOnly: true,
       labels: { mako_source: "metadata" },
+      location: "europe-west6",
+    });
+    assert.deepEqual(datasetLookups.at(-1), {
+      dataset: "analytics",
+      projectId: "fake-project",
+      signal: undefined,
     });
 
     // Review B10: the caller's signal reaches the query.
@@ -1444,8 +1497,10 @@ async function testListRelations(): Promise<void> {
     assert.deepEqual(capturing.calls[1].options, {
       readOnly: true,
       labels: { mako_source: "metadata" },
+      location: "europe-west6",
       signal: controller.signal,
     });
+    assert.equal(datasetLookups.at(-1)?.signal, controller.signal);
 
     // Review A6: a domain-scoped project is a legal dataset path.
     await capturing.driver.listRelations(connection, "analytics", {
@@ -1534,7 +1589,23 @@ async function testListRelations(): Promise<void> {
     capturing.restore();
   }
 
-  // A dataset that does not exist is null; any other failure throws.
+  // The metadata says the dataset is gone: null, and no query is started.
+  datasetLocations.set("gone", null);
+  const absent = makeCapturingDriver(new BigQueryDatabaseDriver());
+  assert.equal(await absent.driver.listRelations(connection, "gone"), null);
+  assert.equal(absent.calls.length, 0);
+  // Metadata unreadable: the query still runs, in the connection's location.
+  datasetLocations.set("analytics", new Error("Access Denied (HTTP 403)"));
+  const unread = makeCapturingDriver(new BigQueryDatabaseDriver());
+  await unread.driver.listRelations(connection, "analytics");
+  assert.deepEqual(unread.calls[0].options, {
+    readOnly: true,
+    labels: { mako_source: "metadata" },
+  });
+  datasetLocations.clear();
+
+  // A dataset the query itself reports missing is null; any other failure
+  // throws.
   const missing = makeCapturingDriver(new BigQueryDatabaseDriver(), () => ({
     success: false,
     error: "Not found: Dataset fake-project:gone was not found (HTTP 404)",
@@ -1580,10 +1651,10 @@ async function main(): Promise<void> {
     await testRegionComesFromTheDataset();
     await testAbortSignalReachesTheWarehouse();
     await testUnsupportedEngines();
+    await testListRelations();
   } finally {
     restoreDatasetLocations();
   }
-  await testListRelations();
   process.stdout.write("warehouse-job-history.service.test.ts: ok\n");
 }
 

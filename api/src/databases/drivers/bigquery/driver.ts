@@ -868,6 +868,27 @@ LIMIT ${limit}`;
     );
     const dataset = checkedName(schema, "schema", SAFE_BQ_NAME);
     const qualified = `${project}.${dataset}`;
+    // A dataset's INFORMATION_SCHEMA is read by a job in that dataset's own
+    // location. The connection's location is another dataset's when the
+    // manifest writes to more than one region, and BigQuery then answers
+    // "not found in location". So the job runs where the dataset lives.
+    let location: string | null | undefined;
+    try {
+      location = await databaseConnectionService.getBigQueryDatasetLocation(
+        database,
+        dataset,
+        { projectId: project, signal: options?.signal },
+      );
+    } catch (error) {
+      if (options?.signal?.aborted) throw error;
+      // Metadata unreadable: let the query run in the connection's location.
+      this.logger.warn("Could not read a BigQuery dataset location", {
+        dataset,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // The metadata says the dataset does not exist: no query to run.
+    if (location === null) return null;
     const result = await this.executeQuery(
       database,
       `SELECT t.table_name, t.table_type, s.size_bytes, s.row_count, s.last_modified_time ` +
@@ -877,6 +898,7 @@ LIMIT ${limit}`;
       {
         readOnly: true,
         labels: { mako_source: "metadata" },
+        ...(location ? { location } : {}),
         ...(options?.signal ? { signal: options.signal } : {}),
       },
     );
