@@ -211,3 +211,383 @@ entities:
     sources: [crm_public.organisations]
     synonyms: [organisation, customer organisation]
 `;
+
+/**
+ * The registry with entities and relationships, in the shape of the
+ * workspace file: identities, composite keys, open points, governed and
+ * draft relationships, two relationships between one pair, a cycle
+ * (account - organisation - team - user - account) and a self relationship.
+ */
+export const ONTOLOGY_GRAPH_YAML = `version: 1
+terms:
+  - name: mrr
+    label: MRR
+    definition: Monthly recurring revenue.
+    owner: finance
+    status: governed
+    canonical: {model: fct_account_product_month, column: mrr_eur}
+entities:
+  - name: account
+    label: Account
+    definition: >-
+      A CRM organisation that links to at least one Stripe customer.
+    owner: data
+    status: governed
+    canonical: {model: dim_account, primary_key: account_key}
+    grain: one row per CRM organisation with at least one Stripe customer
+    sources: [crm_public.organisations, int_crm__customer_account]
+    identities:
+      - {system: crm, column: organisation_id, resolver: dim_account}
+      - {system: stripe, column: customer_id, resolver: int_crm__customer_account}
+      - {system: close, column: close_lead_id}
+    synonyms: [customer account, customer, client]
+    known_variants:
+      - {model: int_fr_renewals__identity, difference: 'FR only. Maps a Stripe customer to a Close lead.'}
+  - name: organisation
+    label: Organisation
+    definition: A legal entity in the CRM.
+    owner: data
+    status: governed
+    canonical: {model: stg_crm__organisations, primary_key: organisation_id}
+    grain: one row per CRM organisation
+    sources: [crm_public.organisations]
+    synonyms: [org, company]
+  - name: crm_team
+    label: Team (agency)
+    definition: The public agency profile in the CRM.
+    owner: data
+    status: draft
+    open_point: >-
+      stg_crm__teams keeps only teams with an organisation_id.
+    canonical: {model: stg_crm__teams, primary_key: team_id}
+    grain: one row per team
+    sources: [crm_public.teams]
+    synonyms: [agency, team]
+  - name: crm_user
+    label: CRM user
+    definition: A person with a CRM login.
+    owner: data
+    status: governed
+    canonical: {model: int_crm__users, primary_key: user_id}
+    grain: one row per user
+    sources: [crm_public.users]
+    synonyms: [user, agent]
+  - name: stripe_customer
+    label: Stripe customer
+    definition: A Stripe customer linked to an organisation.
+    owner: finance
+    status: governed
+    canonical: {model: int_crm__customer_account, primary_key: customer_id}
+    grain: one row per Stripe customer
+    sources: [stripe.customers]
+    synonyms: [payer]
+  - name: subscription
+    label: Subscription
+    definition: A Stripe subscription.
+    owner: finance
+    status: governed
+    canonical: {model: stg_stripe__subscriptions, primary_key: subscription_id}
+    grain: one row per subscription
+    sources: [stripe.subscriptions]
+    synonyms: [sub, contract]
+  - name: demo
+    label: Demo
+    definition: A sales demo.
+    owner: sales
+    status: draft
+    open_point: The demo key is per country.
+    canonical: {model: fct_intl_sales_demos, primary_key: [country, demo_key]}
+    grain: one row per demo
+    sources: []
+    synonyms: [meeting]
+  - name: close_lead
+    label: Close lead
+    definition: A prospect agency in Close.
+    owner: sales
+    status: draft
+    open_point: Lead ids repeat across countries.
+    canonical: {model: int_close__leads, primary_key: lead_id}
+    grain: one row per Close lead
+    sources: []
+    synonyms: [prospect]
+  - name: tag
+    label: Tag
+    definition: A label on an account.
+    owner: data
+    status: draft
+    open_point: No model yet.
+    canonical: {model: stg_crm__tags, primary_key: tag_id}
+    grain: one row per tag
+    sources: []
+    synonyms: []
+  - name: ad_campaign
+    label: Ad campaign
+    definition: A paid campaign.
+    owner: marketing
+    status: draft
+    open_point: No key to an account.
+    canonical: {model: fct_ad_spend_daily, primary_key: [country, platform, campaign_id]}
+    grain: one row per campaign per day
+    sources: []
+    synonyms: [campaign]
+relationships:
+  - name: account_is_organisation
+    from: account
+    to: organisation
+    cardinality: one_to_one
+    join:
+      - {from_column: organisation_id, to_column: organisation_id}
+    status: governed
+    source: declared
+    evidence: '0 orphans in 10,315 rows.'
+  - name: stripe_customer_belongs_to_account
+    from: stripe_customer
+    to: account
+    cardinality: many_to_one
+    join:
+      - {from_column: account_key, to_column: account_key}
+    status: governed
+    source: declared
+  - name: stripe_customer_belongs_to_organisation
+    from: stripe_customer
+    to: organisation
+    cardinality: many_to_one
+    join:
+      - {from_column: organisation_id, to_column: organisation_id}
+    status: governed
+    source: declared
+  - name: subscription_belongs_to_stripe_customer
+    from: subscription
+    to: stripe_customer
+    cardinality: many_to_one
+    join:
+      - {from_column: customer_id, to_column: customer_id}
+    status: governed
+    source: hasura_fk
+  - name: crm_team_belongs_to_organisation
+    from: crm_team
+    to: organisation
+    cardinality: many_to_one
+    join:
+      - {from_column: organisation_id, to_column: organisation_id}
+    status: governed
+    source: hasura_fk
+  - name: crm_team_billed_to_organisation
+    from: crm_team
+    to: organisation
+    cardinality: many_to_one
+    join:
+      - {from_column: billing_organisation_id, to_column: organisation_id}
+    status: draft
+    source: mined
+    open_point: The column is null on two-thirds of teams.
+  - name: crm_user_has_primary_crm_team
+    from: crm_user
+    to: crm_team
+    cardinality: many_to_one
+    join:
+      - {from_column: team_id, to_column: team_id}
+    status: draft
+    source: hasura_fk
+  - name: account_closed_by_crm_user
+    from: account
+    to: crm_user
+    cardinality: many_to_one
+    join:
+      - {from_column: closer_user_id, to_column: user_id}
+    status: governed
+    source: declared
+  - name: organisation_has_parent_organisation
+    from: organisation
+    to: organisation
+    cardinality: many_to_one
+    join:
+      - {from_column: parent_organisation_id, to_column: organisation_id}
+    status: draft
+    source: declared
+  - name: demo_belongs_to_close_lead
+    from: demo
+    to: close_lead
+    cardinality: many_to_one
+    join:
+      - {from_column: lead_id, to_column: lead_id}
+      - {from_column: country, to_column: country}
+    status: draft
+    source: mined
+  - name: account_has_close_lead
+    from: account
+    to: close_lead
+    cardinality: many_to_one
+    join:
+      - {from_column: close_lead_id, to_column: lead_id}
+    status: draft
+    source: declared
+  - name: account_has_tag
+    from: account
+    to: tag
+    cardinality: many_to_many
+    join:
+      - {from_column: account_key, to_column: account_key}
+    status: draft
+    source: mined
+`;
+
+/**
+ * The generated raw-relationships file, in the shape the import script
+ * writes: a mapping with `source`, `counts` and `relationships`; bare
+ * table names; `hasura_name`; each foreign key listed from both tables.
+ */
+export const ONTOLOGY_RAW_RELATIONSHIPS_YAML = `# GENERATED. Do not edit by hand.
+source:
+  repo: example/mono
+  commit: b84619128aee977effc12c79f6cd4d40e2bcf39d
+counts:
+  tables: 5
+  relationships: 7
+relationships:
+  - from_table: users
+    from_columns: [default_team_id]
+    to_table: teams
+    to_columns: [id]
+    cardinality: many_to_one
+    hasura_name: default_team
+    kind: fk
+    in_bigquery: true
+  - from_table: teams
+    from_columns: [id]
+    to_table: users
+    to_columns: [default_team_id]
+    cardinality: one_to_many
+    hasura_name: default_team_users
+    kind: fk
+    in_bigquery: true
+  - from_table: teams
+    from_columns: [organisation_id]
+    to_table: organisations
+    to_columns: [id]
+    cardinality: many_to_one
+    hasura_name: organisation
+    kind: fk
+    in_bigquery: true
+  - from_table: activities
+    from_columns: [assigned_to]
+    to_table: users
+    to_columns: [id]
+    cardinality: many_to_one
+    hasura_name: assignee
+    kind: fk
+    in_bigquery: true
+  - from_table: activities
+    from_columns: [id]
+    to_table: activities_participants
+    to_columns: [activity_id]
+    cardinality: one_to_many
+    hasura_name: activities_participants
+    kind: manual
+    in_bigquery: false
+    inferred: true
+  - from_table: leads
+    from_columns: [tenant_id, property_id]
+    to_table: properties
+    to_columns: [tenant_id, id]
+    cardinality: many_to_one
+    hasura_name: property
+    kind: manual
+    in_bigquery: true
+  - from_table: orphans
+    from_columns: [a, b]
+    to_table: users
+    to_columns: [id]
+    cardinality: many_to_one
+    hasura_name: broken_columns
+    kind: fk
+`;
+
+/**
+ * A registry with a role link (`traversal: explicit`) and a curated path
+ * (`paths`), around the join that a plain search gets wrong: an enquiry to
+ * the account it belongs to. Searched, the shortest way is enquiry ->
+ * broker -> accounts that broker closed, which pairs unrelated rows.
+ */
+export const ONTOLOGY_PATHS_YAML = `version: 1
+entities:
+  - {name: enquiry, label: Enquiry, status: draft, canonical: {model: stg_crm__enquiries, primary_key: enquiry_id}, synonyms: [contact request]}
+  - {name: listing, label: Listing, status: governed, canonical: {model: stg_crm__lots, primary_key: lot_id}, synonyms: [lot]}
+  - {name: crm_user, label: CRM user, status: governed, canonical: {model: int_crm__users, primary_key: user_id}, synonyms: [user, broker]}
+  - {name: crm_team, label: Team, status: draft, canonical: {model: stg_crm__teams, primary_key: team_id}, synonyms: [agency]}
+  - {name: organisation, label: Organisation, status: governed, canonical: {model: stg_crm__organisations, primary_key: organisation_id}, synonyms: [org]}
+  - {name: account, label: Account, status: governed, canonical: {model: dim_account, primary_key: account_key}, synonyms: [customer]}
+relationships:
+  - name: enquiry_sent_to_crm_user
+    from: enquiry
+    to: crm_user
+    cardinality: many_to_one
+    join: [{from_column: broker_id, to_column: user_id}]
+    status: draft
+    source: hasura_fk
+  - name: enquiry_in_linked_tenant_of_organisation
+    from: enquiry
+    to: organisation
+    cardinality: many_to_one
+    join: [{from_column: tenant_id, to_column: linked_tenant_id}]
+    status: draft
+    source: declared
+  - name: enquiry_about_listing
+    from: enquiry
+    to: listing
+    cardinality: many_to_one
+    join: [{from_column: lot_id, to_column: lot_id}]
+    status: draft
+    source: hasura_fk
+  - name: listing_managed_by_crm_user
+    from: listing
+    to: crm_user
+    cardinality: many_to_one
+    join: [{from_column: broker_user_id, to_column: user_id}]
+    status: draft
+    source: hasura_fk
+  - name: crm_user_has_primary_crm_team
+    from: crm_user
+    to: crm_team
+    cardinality: many_to_one
+    join: [{from_column: team_id, to_column: team_id}]
+    status: draft
+    source: hasura_fk
+  - name: crm_team_belongs_to_organisation
+    from: crm_team
+    to: organisation
+    cardinality: many_to_one
+    join: [{from_column: organisation_id, to_column: organisation_id}]
+    status: governed
+    source: hasura_fk
+  - name: account_is_organisation
+    from: account
+    to: organisation
+    cardinality: one_to_one
+    join: [{from_column: organisation_id, to_column: organisation_id}]
+    status: governed
+    source: declared
+  - name: account_closed_by_crm_user
+    from: account
+    to: crm_user
+    cardinality: many_to_one
+    join: [{from_column: closer_user_id, to_column: user_id}]
+    status: governed
+    source: hasura_fk
+    traversal: explicit
+paths:
+  - name: enquiry_to_account
+    from: enquiry
+    to: account
+    status: draft
+    description: >-
+      The account an enquiry belongs to: the organisation of its tenant,
+      else the organisation of the team of the listing's broker.
+    steps:
+      - name: linked_tenant
+        via: [enquiry_in_linked_tenant_of_organisation, account_is_organisation]
+        note: 'Covers enquiries of a white-label tenant.'
+      - name: listing_broker
+        via: [enquiry_about_listing, listing_managed_by_crm_user, crm_user_has_primary_crm_team, crm_team_belongs_to_organisation, account_is_organisation]
+    caveats: ['team_id is filled on 2.4% of enquiries']
+`;

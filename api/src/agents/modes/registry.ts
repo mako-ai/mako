@@ -186,6 +186,7 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "lookup_term",
   "find_models",
   "describe_model",
+  "find_join_path",
   // Discovery for validating binding queries
   "search_consoles",
   "list_connections",

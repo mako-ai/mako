@@ -69,6 +69,13 @@ export const DBT_CAPABILITIES = [
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "data",
   }),
+    define({
+    name: "find_join_path",
+    pack: "dbt-orient",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+  }),
   define({
     name: "create_dbt_file",
     pack: "dbt-edit",

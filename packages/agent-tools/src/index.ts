@@ -126,7 +126,8 @@ export {
   findModelsSchema,
   describeModelSchema,
   lookupTermSchema,
-  modelReadersSchema,
+    modelReadersSchema,
+  findJoinPathSchema,
 } from "./dbt-tools";
 export type {
   DbtCreateFileInput,
@@ -135,7 +136,8 @@ export type {
   FindModelsInput,
   DescribeModelInput,
   LookupTermInput,
-  ModelReadersInput,
+    ModelReadersInput,
+  FindJoinPathInput,
 } from "./dbt-tools";
 
 export { clientDataSourceTools } from "./data-source-tools";

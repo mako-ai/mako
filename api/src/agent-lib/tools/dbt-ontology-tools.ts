@@ -20,6 +20,7 @@ import { tool } from "ai";
 import { Types } from "mongoose";
 import {
   describeModelSchema,
+  findJoinPathSchema,
   findModelsSchema,
   lookupTermSchema,
   modelReadersSchema,
@@ -57,9 +58,14 @@ import {
   scoreRegistry,
   type ModelRegistryRoles,
   type OntologyRegistry,
+  type RegistryEntity,
   type RegistryEntry,
 } from "../../dbt/ontology/registry";
 import { loadOntologyRegistry } from "../../dbt/ontology/registry.service";
+import {
+  findJoinPath,
+  relationshipsOfEntity,
+} from "../../dbt/ontology/join-path";
 
 const logger = loggers.api("dbt-ontology-tools");
 
@@ -78,6 +84,8 @@ const MAX_BINDINGS_PER_READER = 5;
 const MAX_EXPOSURES = 10;
 const MAX_META_CHARS = 1500;
 const MAX_TERM_MATCHES = 5;
+/** Relationships listed per entity; find_join_path walks them all. */
+const MAX_ENTITY_RELATIONSHIPS = 12;
 const NO_MANIFEST =
   "No dbt manifest is stored for this workspace yet: a dbt run has to finish first. Use read_dbt_project_tree and read_dbt_file to read the project's files.";
 
@@ -140,7 +148,7 @@ function variantWarnings(roles: ModelRegistryRoles | undefined): string[] {
     const difference = variant.difference
       ? ` Difference: ${truncateText(variant.difference, 300)}`
       : "";
-    return `This model is a known variant of the term \`${variant.term}\`.${canonical}${difference}`;
+    return `This model is a known variant of the ${variant.kind ?? "term"} \`${variant.term}\`.${canonical}${difference}`;
   });
 }
 
@@ -167,7 +175,42 @@ function readerSummary(reader: ModelReader) {
   };
 }
 
-function entrySummary(entry: RegistryEntry) {
+/** How an entity joins and what identifies it elsewhere. */
+function entityGraph(entity: RegistryEntity, registry: OntologyRegistry) {
+  const relationships = capList(
+    relationshipsOfEntity(registry, entity.name),
+    MAX_ENTITY_RELATIONSHIPS,
+  );
+  // The curated joins that start or end at this entity (find_join_path
+  // expands them).
+  const name = entity.name.toLowerCase();
+  const curated = registry.paths
+    .filter(
+      path =>
+        path.from.toLowerCase() === name || path.to.toLowerCase() === name,
+    )
+    .map(path => ({
+      name: path.name,
+      with: path.from.toLowerCase() === name ? path.to : path.from,
+      ...(path.status ? { status: path.status } : {}),
+    }));
+  return {
+    ...(curated.length ? { curatedPaths: curated.slice(0, 12) } : {}),
+    ...(entity.identities.length
+      ? { identities: entity.identities.slice(0, 12) }
+      : {}),
+    ...(relationships.total
+      ? {
+          relationships: relationships.items,
+          ...(relationships.truncated
+            ? { relationshipsTotal: relationships.total }
+            : {}),
+        }
+      : {}),
+  };
+}
+
+function entrySummary(entry: RegistryEntry, registry: OntologyRegistry) {
   const common = {
     kind: entry.kind,
     name: entry.name,
@@ -191,7 +234,23 @@ function entrySummary(entry: RegistryEntry) {
             },
           }
         : {}),
+      ...(entry.status ? { status: entry.status } : {}),
+      ...(entry.grain ? { grain: entry.grain } : {}),
       ...(entry.sources.length ? { sources: entry.sources.slice(0, 20) } : {}),
+      ...entityGraph(entry, registry),
+      ...(entry.knownVariants.length
+        ? {
+            knownVariants: entry.knownVariants.slice(0, 20).map(variant => ({
+              model: variant.model,
+              ...(variant.difference
+                ? { difference: truncateText(variant.difference, 300) }
+                : {}),
+            })),
+          }
+        : {}),
+      ...(entry.openPoint
+        ? { openPoint: truncateText(entry.openPoint, 400) }
+        : {}),
     };
   }
   const variants = capList(entry.knownVariants, 20);
@@ -288,6 +347,21 @@ export const createDbtOntologyTools = (
       : null;
     const exposures = capList(node.exposures, MAX_EXPOSURES);
     const warnings = variantWarnings(roles);
+    const modelName = node.name.toLowerCase();
+    // The entities this model is the canonical relation of, with how each
+    // joins, and the identities this model resolves for other entities.
+    const canonicalEntities = registry.entities.filter(
+      entity => entity.canonical?.model.toLowerCase() === modelName,
+    );
+    const resolverFor = registry.entities.flatMap(entity =>
+      entity.identities
+        .filter(identity => identity.resolver?.toLowerCase() === modelName)
+        .map(identity => ({
+          entity: entity.name,
+          system: identity.system,
+          column: identity.column,
+        })),
+    );
     return {
       name: node.name,
       resourceType: node.resourceType,
@@ -356,6 +430,19 @@ export const createDbtOntologyTools = (
         ? { canonicalFor: roles.canonicalFor }
         : {}),
       ...(roles?.variantOf.length ? { variantOf: roles.variantOf } : {}),
+      ...(canonicalEntities.length
+        ? {
+            entities: canonicalEntities.map(entity => ({
+              name: entity.name,
+              ...(entity.status ? { status: entity.status } : {}),
+              ...(entity.canonical?.primaryKey
+                ? { primaryKey: entity.canonical.primaryKey }
+                : {}),
+              ...entityGraph(entity, registry),
+            })),
+          }
+        : {}),
+      ...(resolverFor.length ? { identityResolverFor: resolverFor } : {}),
       ...(warnings.length ? { warnings } : {}),
       manifest: manifestNote(project),
     };
@@ -534,7 +621,7 @@ export const createDbtOntologyTools = (
 
     describe_model: tool({
       description:
-        "Everything the last production build knows about one dbt model, source or seed: description, columns with descriptions, types and tests, meta, tags, group, access, contract, upstream and downstream models, exposures, the apps and binding files that read it, and the registry terms or entities it is canonical for. `warnings` says when the model is a known variant of a term and names the canonical model to read instead. Accepts a model name, `<source>.<table>` or a warehouse relation.",
+        "Everything the last production build knows about one dbt model, source or seed: description, columns with descriptions, types and tests, meta, tags, group, access, contract, upstream and downstream models, exposures, the apps and binding files that read it, and the registry terms or entities it is canonical for, with each entity's identities and relationships. `warnings` says when the model is a known variant of a term and names the canonical model to read instead. Accepts a model name, `<source>.<table>` or a warehouse relation.",
       inputSchema: describeModelSchema,
       execute: async ({ name, projectId }) => {
         try {
@@ -594,7 +681,7 @@ export const createDbtOntologyTools = (
     }),
 
     lookup_term: tool({
-      description: `Resolve a business term or entity ("MRR", "paying customers", "account") from the workspace's ontology registry (${ONTOLOGY_REGISTRY_PATH}), by name, label or synonym. Returns the definition, owner, status, the canonical model and column, the grain, known variants and forbidden patterns. Call this BEFORE writing SQL that computes a business metric: when a canonical model exists, read it. With no match it returns the closest registry names and points to find_models.`,
+      description: `Resolve a business term or entity ("MRR", "paying customers", "account") from the workspace's ontology registry (${ONTOLOGY_REGISTRY_PATH}), by name, label or synonym. Returns the definition, owner, status, the canonical model and column, the grain, known variants and forbidden patterns; for an entity also its primary key, its identities in other systems and its relationships to other entities. Call this BEFORE writing SQL that computes a business metric: when a canonical model exists, read it. With no match it returns the closest registry names and points to find_models.`,
       inputSchema: lookupTermSchema,
       execute: async ({ query }) => {
         try {
@@ -607,7 +694,7 @@ export const createDbtOntologyTools = (
             return {
               success: true as const,
               matches: matches.map(match => ({
-                ...entrySummary(match.entry),
+                ...entrySummary(match.entry, registry),
                 matchedOn: match.matchedOn,
                 score: Math.round(match.score * 100) / 100,
               })),
@@ -717,6 +804,39 @@ export const createDbtOntologyTools = (
         } catch (error) {
           logger.error("model_readers failed", { error });
           return toolError(error, "Failed to list model readers");
+        }
+      },
+    }),
+
+    find_join_path: tool({
+      description: `How two entities join: the shortest declared path between them in the ontology registry (${ONTOLOGY_REGISTRY_PATH}). \`from\` and \`to\` are entity names or synonyms, dbt models or raw tables. Each hop gives the two canonical models (or raw tables), the join columns, the join condition, the cardinality in the direction of the hop, the status and a fan-out warning when the hop multiplies rows. A path the registry curates for the pair comes first, marked \`curated\`: its paths are ordered alternatives to coalesce, and \`alternatives\` then holds searched paths for reference only. Otherwise the path is searched: governed relationships before draft ones, entity relationships before raw-table foreign keys, never through a role link (closer, manager). A searched path marked \`suspect\` relates the two only through a shared third entity: do not write a join from it. Call this BEFORE writing a join between two entities, and join on the columns it returns. With no path it says so and lists what each end joins to directly.`,
+      inputSchema: findJoinPathSchema,
+      execute: async ({ from, to, maxHops }) => {
+        try {
+          const [registry, projects] = await Promise.all([
+            loadOntologyRegistry(workspaceId),
+            loadManifestIndexes(workspaceId),
+          ]);
+          // A warehouse relation names its dbt model through the manifest.
+          const modelNameOf = (text: string) => {
+            for (const project of projects) {
+              const nodes = resolveNodes(project.index, text);
+              if (nodes.length === 1) return nodes[0].name;
+            }
+            return undefined;
+          };
+          const result = findJoinPath(registry, from, to, {
+            maxHops,
+            modelNameOf,
+          });
+          return {
+            success: true as const,
+            ...result,
+            ...registryNote(registry),
+          };
+        } catch (error) {
+          logger.error("find_join_path failed", { error });
+          return toolError(error, "Failed to find a join path");
         }
       },
     }),

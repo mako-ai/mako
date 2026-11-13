@@ -298,6 +298,11 @@ async function main() {
       /Before creating a dbt model or a binding that aggregates a business metric[\s\S]*lookup_term[\s\S]*find_models[\s\S]*extend it/,
       "initialize should tell agents to check the ontology before writing SQL",
     );
+    assert.match(
+      result.instructions ?? "",
+      /Before joining two entities, call find_join_path/,
+      "initialize should tell agents to look up the join path",
+    );
   }
 
   // 2b. ACP Desktop Chat: no headless preview workflow in instructions.
@@ -331,6 +336,10 @@ async function main() {
       assert.match(
         result.instructions ?? "",
         /call lookup_term[\s\S]*find_models[\s\S]*extend it/,
+      );
+      assert.match(
+        result.instructions ?? "",
+        /Before joining two entities, call find_join_path/,
       );
       assert.doesNotMatch(
         result.instructions ?? "",
@@ -386,6 +395,7 @@ async function main() {
       "describe_model",
       "lookup_term",
       "model_readers",
+      "find_join_path",
     ]) {
       assert.equal(
         byName.get(readOnlyTool)?.annotations?.readOnlyHint,
@@ -443,6 +453,7 @@ async function main() {
       "describe_model",
       "lookup_term",
       "model_readers",
+      "find_join_path",
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }
@@ -611,6 +622,7 @@ async function main() {
       "describe_model",
       "lookup_term",
       "model_readers",
+      "find_join_path",
     ]) {
       assert.ok(names.has(lookup), `${lookup} must be open to a viewer`);
     }
