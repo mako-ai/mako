@@ -16,8 +16,16 @@
  * Access to a given dir is serialized by an in-process async mutex. Within one
  * process (local dev runs the executor in the API process) this prevents two
  * commands from corrupting the same dir. In production the executor and API
- * are separate containers with separate disks, and the executor is already
- * concurrency=1 per project, so the mutex is sufficient.
+ * are separate containers with separate disks.
+ *
+ * The mutex keeps a dir correct; it does not keep it fast. Two executor runs
+ * that share a dir on one instance wait on each other INSIDE a step, and
+ * that wait counts against the step's time budget. So runs the queue allows
+ * to execute at once must not share a dir: the executor picks the dir owner
+ * with `dbtRunWarmDirOwner` (dbt-run-queue.ts), which gives interactive runs
+ * their own dir and, when `DBT_PROJECT_RUN_CONCURRENCY` > 1, each job its own
+ * and every other run a dir of its own. At the default of 1, jobs of a
+ * project never overlap and keep the single shared deploy dir.
  *
  * Cloud Run instances are ephemeral (their /tmp is cleared on recycle), so
  * warm dirs self-bound across deploys; a cold instance simply warms on first
@@ -68,7 +76,9 @@ export interface ProjectDirScope {
    * Acting user for interactive (adhoc) commands. Working trees are per user
    * (draft overlays), so each user gets their own warm dir — one user's
    * materialized uncommitted edits never leak into another user's compile.
-   * Deploy runs (role "run") build committed trees and stay shared.
+   * Deploy runs (role "run") build committed trees and stay shared, unless
+   * the executor passes an owner of its own (`interactive`, `job:<jobId>`)
+   * to keep runs that execute at once apart.
    */
   userId?: string;
 }

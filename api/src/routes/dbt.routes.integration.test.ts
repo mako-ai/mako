@@ -94,8 +94,11 @@ import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
 import {
   recordCompletedAdhocDbtRun,
   requestDbtRunCancel,
+  triggerDbtJobRun,
   triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
+import { DbtRunOverridesError } from "../dbt/dbt-run-overrides";
+import { DbtJobDefinitionMissingError } from "../dbt/dbt-run-errors";
 import { publishRealtimeEvent } from "../services/realtime.service";
 
 const publishMock = publishRealtimeEvent as unknown as ReturnType<typeof vi.fn>;
@@ -105,6 +108,7 @@ const recordAdhocMock = recordCompletedAdhocDbtRun as unknown as ReturnType<
 >;
 const cancelMock = requestDbtRunCancel as unknown as ReturnType<typeof vi.fn>;
 const retryMock = triggerDbtRunRetry as unknown as ReturnType<typeof vi.fn>;
+const triggerJobMock = triggerDbtJobRun as unknown as ReturnType<typeof vi.fn>;
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
@@ -566,6 +570,101 @@ describe("runs lifecycle", () => {
     expect(filtered.runs).toHaveLength(1);
   });
 
+  it("keeps the list shape: full rows with step results, no logs", async () => {
+    const projectId = await createProjectAsOwner();
+    const runId = await insertRun(projectId, {
+      logs: [{ ts: new Date(), level: "info", line: "a" }],
+      stepResults: [
+        {
+          uniqueId: "model.analytics.m",
+          name: "m",
+          resourceType: "model",
+          status: "success",
+          executionTimeMs: 5,
+        },
+      ],
+    });
+    const json = await (await req("GET", `/projects/${projectId}/runs`)).json();
+    expect(json.success).toBe(true);
+    expect(json.nextBefore).toBeNull();
+    expect(json.runs[0]._id).toBe(runId);
+    expect(json.runs[0].stepResults[0].name).toBe("m");
+    expect(json.runs[0].logs).toBeUndefined();
+  });
+
+  it("filters by status and trigger, and refuses unknown values", async () => {
+    const projectId = await createProjectAsOwner();
+    await insertRun(projectId, { status: "error", trigger: "schedule" });
+    await insertRun(projectId, { status: "success", trigger: "schedule" });
+    await insertRun(projectId, { status: "error", trigger: "manual" });
+
+    const failed = await (
+      await req("GET", `/projects/${projectId}/runs?status=error`)
+    ).json();
+    expect(failed.runs).toHaveLength(2);
+
+    const scheduledFailures = await (
+      await req(
+        "GET",
+        `/projects/${projectId}/runs?status=error&trigger=schedule`,
+      )
+    ).json();
+    expect(scheduledFailures.runs).toHaveLength(1);
+
+    const badStatus = await req(
+      "GET",
+      `/projects/${projectId}/runs?status=broken`,
+    );
+    expect(badStatus.status).toBe(400);
+    expect((await badStatus.json()).error).toMatch(/Invalid status/);
+    expect(
+      (await req("GET", `/projects/${projectId}/runs?trigger=cron`)).status,
+    ).toBe(400);
+  });
+
+  it("pages with the before cursor", async () => {
+    const projectId = await createProjectAsOwner();
+    const base = Date.now();
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      ids.push(
+        await insertRun(projectId, {
+          createdAt: new Date(base - i * 60_000),
+        }),
+      );
+    }
+    const first = await (
+      await req("GET", `/projects/${projectId}/runs?limit=2`)
+    ).json();
+    expect(first.runs.map((r: { _id: string }) => r._id)).toEqual(
+      ids.slice(0, 2),
+    );
+    expect(first.nextBefore).toBe(new Date(base - 60_000).toISOString());
+
+    const second = await (
+      await req(
+        "GET",
+        `/projects/${projectId}/runs?limit=2&before=${encodeURIComponent(first.nextBefore)}`,
+      )
+    ).json();
+    expect(second.runs.map((r: { _id: string }) => r._id)).toEqual(
+      ids.slice(2, 4),
+    );
+
+    const last = await (
+      await req(
+        "GET",
+        `/projects/${projectId}/runs?limit=2&before=${encodeURIComponent(second.nextBefore)}`,
+      )
+    ).json();
+    expect(last.runs).toHaveLength(1);
+    expect(last.nextBefore).toBeNull();
+
+    expect(
+      (await req("GET", `/projects/${projectId}/runs?before=yesterday`)).status,
+    ).toBe(400);
+  });
+
   it("returns run detail with logs sliced by the cursor", async () => {
     const projectId = await createProjectAsOwner();
     const runId = await insertRun(projectId, {
@@ -628,6 +727,140 @@ describe("runs lifecycle", () => {
     expect(
       (await req("POST", `/projects/${projectId}/runs/${runId}/retry`)).status,
     ).toBe(400);
+  });
+});
+
+describe("job trigger inputs", () => {
+  async function createJob(projectId: string): Promise<string> {
+    const create = await req("POST", `/projects/${projectId}/jobs`, {
+      name: "Nightly",
+      environment: "dev",
+      commands: ["build"],
+    });
+    expect(create.status).toBe(200);
+    return (await create.json()).job._id;
+  }
+
+  it("a bare trigger passes no overrides", async () => {
+    const projectId = await createProjectAsOwner();
+    const jobId = await createJob(projectId);
+    triggerJobMock.mockClear();
+    const res = await req(
+      "POST",
+      `/projects/${projectId}/jobs/${jobId}/trigger`,
+    );
+    expect(res.status).toBe(200);
+    expect(triggerJobMock).toHaveBeenCalledTimes(1);
+    expect(triggerJobMock.mock.calls[0][0]).not.toHaveProperty("overrides");
+    expect(triggerJobMock.mock.calls[0][0]).toMatchObject({
+      trigger: "manual",
+      triggeredBy: "u1",
+    });
+  });
+
+  it("passes vars and fullRefresh as overrides", async () => {
+    const projectId = await createProjectAsOwner();
+    const jobId = await createJob(projectId);
+    triggerJobMock.mockClear();
+    const res = await req(
+      "POST",
+      `/projects/${projectId}/jobs/${jobId}/trigger`,
+      { vars: { start_date: "2026-01-01" }, fullRefresh: true },
+    );
+    expect(res.status).toBe(200);
+    expect(triggerJobMock.mock.calls[0][0]).toMatchObject({
+      overrides: { vars: { start_date: "2026-01-01" }, fullRefresh: true },
+    });
+  });
+
+  it("refuses a malformed body with a 400 and queues nothing", async () => {
+    const projectId = await createProjectAsOwner();
+    const jobId = await createJob(projectId);
+    triggerJobMock.mockClear();
+    const badVars = await req(
+      "POST",
+      `/projects/${projectId}/jobs/${jobId}/trigger`,
+      { vars: ["a"] },
+    );
+    expect(badVars.status).toBe(400);
+    expect((await badVars.json()).error).toMatch(/^vars:/);
+    const badFlag = await req(
+      "POST",
+      `/projects/${projectId}/jobs/${jobId}/trigger`,
+      { fullRefresh: "yes" },
+    );
+    expect(badFlag.status).toBe(400);
+    expect(triggerJobMock).not.toHaveBeenCalled();
+  });
+
+  // Review B5. The body schema stripped unknown keys, so each of these
+  // parsed to `{}`: the route answered 200 and the job ran as saved.
+  it("refuses an unknown key with a 400 and queues nothing", async () => {
+    const projectId = await createProjectAsOwner();
+    const jobId = await createJob(projectId);
+    triggerJobMock.mockClear();
+    const path = `/projects/${projectId}/jobs/${jobId}/trigger`;
+
+    const snakeCase = await req("POST", path, { full_refresh: true });
+    expect(snakeCase.status).toBe(400);
+    expect((await snakeCase.json()).error).toBe(
+      'Unknown field "full_refresh": the body accepts `vars` and ' +
+        "`fullRefresh` only. No run started.",
+    );
+
+    const nested = await req("POST", path, {
+      overrides: { vars: { start_date: "2026-01-01" } },
+    });
+    expect(nested.status).toBe(400);
+    expect((await nested.json()).error).toMatch(/^Unknown field "overrides"/);
+
+    // A known key beside an unknown one is refused whole.
+    const mixed = await req("POST", path, { fullRefresh: true, var: { a: 1 } });
+    expect(mixed.status).toBe(400);
+    expect((await mixed.json()).error).toMatch(/^Unknown field "var"/);
+
+    expect(triggerJobMock).not.toHaveBeenCalled();
+  });
+
+  it("maps a rejected override to a 400 with its message", async () => {
+    const projectId = await createProjectAsOwner();
+    const jobId = await createJob(projectId);
+    triggerJobMock.mockRejectedValueOnce(
+      new DbtRunOverridesError('Invalid var name "1x"'),
+    );
+    const res = await req(
+      "POST",
+      `/projects/${projectId}/jobs/${jobId}/trigger`,
+      { vars: { "1x": 1 } },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      success: false,
+      error: 'Invalid var name "1x"',
+    });
+  });
+
+  it("answers 409 when the job file is gone at the commit the run would build", async () => {
+    const projectId = await createProjectAsOwner();
+    const jobId = await createJob(projectId);
+    triggerJobMock.mockRejectedValueOnce(
+      new DbtJobDefinitionMissingError(
+        { _id: new Types.ObjectId(jobId), slug: "nightly-build" },
+        "0123456789abcdef0123456789abcdef01234567",
+      ),
+    );
+    const res = await req(
+      "POST",
+      `/projects/${projectId}/jobs/${jobId}/trigger`,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      success: false,
+      code: "job_definition_missing",
+      error:
+        "Job file dbt/jobs/nightly-build.yml does not exist at commit " +
+        "0123456 of the default branch: the job was deleted. No run started.",
+    });
   });
 });
 

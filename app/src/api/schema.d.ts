@@ -15366,7 +15366,7 @@ export interface operations {
     get_api_workspaces_workspaceId_notification_rules: {
         parameters: {
             query?: {
-                resourceType?: "flow" | "scheduled_query";
+                resourceType?: "scheduled_query" | "flow" | "dbt_job" | "dbt_project";
                 resourceId?: string;
             };
             header?: never;
@@ -15455,7 +15455,7 @@ export interface operations {
     get_api_workspaces_workspaceId_notification_rules_deliveries: {
         parameters: {
             query?: {
-                resourceType?: "flow" | "scheduled_query";
+                resourceType?: "scheduled_query" | "flow" | "dbt_job" | "dbt_project";
                 resourceId?: string;
                 limit?: string;
             };

@@ -7,6 +7,11 @@
  */
 
 import { describeQueuedRun } from "../dbt/dbt-run-queue";
+import {
+  DBT_RUN_STATUSES,
+  DBT_RUN_TRIGGERS,
+  listDbtRunRows,
+} from "../dbt/dbt-run-history";
 import { Hono } from "hono";
 import { workspaceResourceLoader } from "./lib/load-resource";
 import { Readable } from "stream";
@@ -88,11 +93,11 @@ import {
   applyJobScheduleChange,
   recordCompletedAdhocDbtRun,
   reconcileStaleQueuedRun,
-  reconcileStaleQueuedRuns,
   requestDbtRunCancel,
   triggerDbtJobRun,
   triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
+import { DbtJobDefinitionMissingError } from "../dbt/dbt-run-errors";
 import { validateScheduledConsoleSchedule } from "../services/scheduled-query-schedule.service";
 import { getArtifactStore } from "../services/artifact-store.service";
 
@@ -195,6 +200,11 @@ function serverError(
     );
   }
   if (error instanceof DbtProtectedEnvironmentError) {
+    return c.json({ success: false, error: error.message }, 400);
+  }
+  // Rejected commands and rejected run inputs (DbtRunOverridesError extends
+  // this) are the caller's to fix, never a server fault.
+  if (error instanceof DbtCommandValidationError) {
     return c.json({ success: false, error: error.message }, 400);
   }
   logger.error(fallback, { error });
@@ -1074,6 +1084,35 @@ dbtRoutes.delete(
   },
 );
 
+/**
+ * Per-run inputs of a manual trigger. Shape only: the limits (key pattern,
+ * 50 keys, 4 KB, no clash with a command's own --vars) are enforced by
+ * `validateRunOverrides` inside `triggerDbtJobRun`, shared with the agent tool.
+ *
+ * Strict: an unknown key is a 400. A stripped `full_refresh` or `overrides`
+ * would answer 200 and run the job with none of what the caller asked for.
+ */
+const triggerJobBodySchema = z
+  .object({
+    vars: z.record(z.string(), z.unknown()).optional(),
+    fullRefresh: z.boolean().optional(),
+  })
+  .strict()
+  .nullish();
+
+/** One line for a 400: the offending path, or the unknown keys by name. */
+function describeBodyIssue(issue: z.core.$ZodIssue | undefined): string {
+  if (!issue) return "Invalid body";
+  if (issue.code === "unrecognized_keys") {
+    return (
+      `Unknown field${issue.keys.length === 1 ? "" : "s"} ` +
+      `${issue.keys.map(key => `"${key}"`).join(", ")}: ` +
+      "the body accepts `vars` and `fullRefresh` only. No run started."
+    );
+  }
+  return `${issue.path.join(".") || "body"}: ${issue.message}`;
+}
+
 dbtRoutes.post(
   "/projects/:projectId/jobs/:jobId/trigger",
   async (c: AuthenticatedContext) => {
@@ -1094,11 +1133,21 @@ dbtRoutes.post(
         );
       }
       const job = resolved.row;
+      // The body is optional: a bare POST runs the job as saved.
+      const parsed = triggerJobBodySchema.safeParse(
+        await c.req.json().catch(() => ({})),
+      );
+      if (!parsed.success) {
+        return badRequest(c, describeBodyIssue(parsed.error.issues[0]));
+      }
+      const { vars, fullRefresh } = parsed.data ?? {};
+      const hasOverrides = vars !== undefined || fullRefresh !== undefined;
       const run = await triggerDbtJobRun({
         workspaceId: project.workspaceId.toString(),
         job,
         trigger: "manual",
         triggeredBy: getUserId(c),
+        ...(hasOverrides ? { overrides: { vars, fullRefresh } } : {}),
       });
       publishDbtEvent(c, {
         type: "dbt.run.updated",
@@ -1108,6 +1157,19 @@ dbtRoutes.post(
       });
       return c.json({ success: true, runId: run._id.toString() });
     } catch (error) {
+      // The job file is gone at the commit this run would build: the job was
+      // deleted on the default branch and the row has not caught up. A
+      // conflict with the repo's state, not a server fault. Nothing ran.
+      if (error instanceof DbtJobDefinitionMissingError) {
+        return c.json(
+          {
+            success: false,
+            code: "job_definition_missing",
+            error: error.message,
+          },
+          409,
+        );
+      }
       return serverError(c, error, "Failed to trigger dbt job");
     }
   },
@@ -1117,28 +1179,57 @@ dbtRoutes.post(
 // Runs
 // ---------------------------------------------------------------------------
 
+const runStatusSchema = z.enum(DBT_RUN_STATUSES).optional();
+const runTriggerSchema = z.enum(DBT_RUN_TRIGGERS).optional();
+
 dbtRoutes.get("/projects/:projectId/runs", async (c: AuthenticatedContext) => {
   try {
     const project = await findProject(c);
     if (!project) {
       return c.json({ success: false, error: "dbt project not found" }, 404);
     }
+    // Query: jobId, limit (default 50, max 100), status, trigger, and
+    // `before` (an ISO timestamp: the `nextBefore` of the previous page).
     const jobId = c.req.query("jobId");
-    const limit = Math.min(Number(c.req.query("limit")) || 50, 100);
-    const filter: Record<string, unknown> = { projectId: project._id };
-    if (jobId && Types.ObjectId.isValid(jobId)) {
-      filter.jobId = new Types.ObjectId(jobId);
+    const status = c.req.query("status");
+    const trigger = c.req.query("trigger");
+    const before = c.req.query("before");
+    const parsedStatus = runStatusSchema.safeParse(status || undefined);
+    if (!parsedStatus.success) {
+      return badRequest(
+        c,
+        `Invalid status: expected one of ${DBT_RUN_STATUSES.join(", ")}`,
+      );
     }
-    const runs = await DbtRun.find(filter)
-      .select("-logs")
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .lean();
-    // Present any run stuck in "queued" past the worker-pickup deadline as
-    // errored so history never shows a perpetually-queued run. Read-only on
-    // this GET path (persist: false) — the cron sweeper is the single writer.
-    const reconciled = await reconcileStaleQueuedRuns(runs, { persist: false });
-    return c.json({ success: true, runs: reconciled });
+    const parsedTrigger = runTriggerSchema.safeParse(trigger || undefined);
+    if (!parsedTrigger.success) {
+      return badRequest(
+        c,
+        `Invalid trigger: expected one of ${DBT_RUN_TRIGGERS.join(", ")}`,
+      );
+    }
+    const beforeDate = before ? new Date(before) : undefined;
+    if (beforeDate && Number.isNaN(beforeDate.getTime())) {
+      return badRequest(c, "Invalid before: expected an ISO timestamp");
+    }
+    // Rows keep their full shape (minus logs): the Runs view renders step
+    // results from this list. A run stuck in "queued" past the pickup
+    // deadline reads as errored; the read never writes (the cron sweeper
+    // is the single writer).
+    const page = await listDbtRunRows(
+      {
+        workspaceId: project.workspaceId.toString(),
+        projectId: project._id.toString(),
+        // An unparseable jobId has always been ignored here, not refused.
+        jobId: jobId && Types.ObjectId.isValid(jobId) ? jobId : undefined,
+        status: parsedStatus.data,
+        trigger: parsedTrigger.data,
+        limit: Number(c.req.query("limit")) || undefined,
+        before: beforeDate,
+      },
+      { defaultLimit: 50 },
+    );
+    return c.json({ success: true, ...page });
   } catch (error) {
     return serverError(c, error, "Failed to list dbt runs");
   }

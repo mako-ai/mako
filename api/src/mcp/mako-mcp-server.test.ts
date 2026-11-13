@@ -373,6 +373,10 @@ async function main() {
       "read_dbt_project_tree",
       "read_dbt_file",
       "dbt_get_run",
+      "dbt_list_runs",
+      "dbt_model_cost",
+      "dbt_table_readers",
+      "dbt_list_orphans",
     ]) {
       assert.equal(
         byName.get(readOnlyTool)?.annotations?.readOnlyHint,
@@ -420,6 +424,11 @@ async function main() {
       "modify_dbt_file",
       "delete_dbt_file",
       "dbt_get_run",
+      // Run history and warehouse introspection — read-risk, never start a run.
+      "dbt_list_runs",
+      "dbt_model_cost",
+      "dbt_table_readers",
+      "dbt_list_orphans",
       // Async validation runs (queue + poll dbt_get_run) — read-risk, so
       // they bridge for every query:read key: author AND validate headlessly.
       "dbt_parse",
@@ -609,6 +618,9 @@ async function main() {
       "read_dbt_project_tree",
       "read_dbt_file",
       "dbt_get_run",
+      "dbt_list_runs",
+      "dbt_model_cost",
+      "dbt_list_orphans",
       "dbt_parse",
       "dbt_compile_model",
       "dbt_show",
@@ -616,6 +628,9 @@ async function main() {
       assert.ok(names.has(readTool), `members keep ${readTool}`);
     }
     for (const adminTool of [
+      // Read-only, but its rows hold the account emails of everyone who
+      // queried the relation.
+      "dbt_table_readers",
       "create_dbt_file",
       "edit_dbt_file",
       "modify_dbt_file",
@@ -1051,6 +1066,18 @@ async function main() {
       false,
       "dbt run output must stay hidden without query:read",
     );
+    for (const hidden of [
+      "dbt_list_runs",
+      "dbt_model_cost",
+      "dbt_table_readers",
+      "dbt_list_orphans",
+    ]) {
+      assert.equal(
+        tools.some(tool => tool.name === hidden),
+        false,
+        `${hidden} must stay hidden without query:read`,
+      );
+    }
     // Warehouse-executing tools from the other migrated domains carry the
     // same query envelope.
     for (const queryTool of ["run_notebook_sql_cell", "materialize_binding"]) {

@@ -5,7 +5,8 @@
  *   command (each must finish inside the Cloud Run request timeout), with
  *   batched log writes into dbt_runs.logs and artifact upload to the
  *   artifact store. Secrets never cross step boundaries — every step loads
- *   the project snapshot + decrypted profile itself.
+ *   the project snapshot + decrypted profile itself. Concurrency (lanes and
+ *   the per-job lock) is described in dbt/dbt-run-queue.ts.
  * - dbtSchedulerFunction: cron sweep over due dbt_jobs with the same
  *   optimistic claim pattern as scheduled-query.ts.
  * - dbtRunCancelFunction: companion that finalizes runs killed by cancelOn.
@@ -38,11 +39,24 @@ import {
   type DbtLogLine,
 } from "../../dbt/runner.service";
 import {
+  autoDisableDbtJob,
   DBT_AUTO_DISABLE_AFTER_FAILURES,
+  DbtJobDefinitionMissingError,
+  DbtJobNotScheduledAtCommitError,
   finalizeCancelledDbtRun,
   promotesProdManifest,
   triggerDbtJobRun,
 } from "../../dbt/dbt-run.service";
+import { dbtRunLabelEnv } from "../../dbt/dbt-run-labels";
+import {
+  emitDbtJobAutoDisabledEvent,
+  emitDbtRunTerminalEvent,
+} from "../../dbt/dbt-run-notify";
+import {
+  dbtProjectRunConcurrency,
+  dbtRunFallbackQueueKeys,
+  dbtRunWarmDirOwner,
+} from "../../dbt/dbt-run-queue";
 import { resolveProdLikeEnvironmentName } from "../../dbt/dbt-environments.service";
 import {
   registerActiveRun,
@@ -141,7 +155,16 @@ interface DbtRunRequestedEvent {
   projectId: string;
   runId: string;
   jobId?: string;
+  /** Concurrency keys (dbtRunQueueKeys). Absent on events sent before lanes. */
+  laneKey?: string;
+  lockKey?: string;
 }
+
+/**
+ * Runs of one project and lane that execute at once. Read once at load:
+ * Inngest takes the limit from the function definition, not per event.
+ */
+const DBT_PROJECT_RUN_CONCURRENCY = dbtProjectRunConcurrency();
 
 /**
  * Mutable, process-local state backing a run's {@link ActiveRunControl}. The
@@ -189,10 +212,13 @@ export const dbtRunExecutorFunction = inngest.createFunction(
     id: "dbt-run-executor",
     name: "Execute dbt Run",
     retries: 0,
-    concurrency: {
-      key: "event.data.projectId",
-      limit: 1,
-    },
+    concurrency: [
+      // Per project and lane: jobs and builds in one, validation runs
+      // (parse / compile / show) in the other, so neither waits on the other.
+      { key: "event.data.laneKey", limit: DBT_PROJECT_RUN_CONCURRENCY },
+      // Never two runs of the same job, whatever the lane limit is.
+      { key: "event.data.lockKey", limit: 1 },
+    ],
     cancelOn: [
       {
         event: "dbt/run.cancel",
@@ -204,6 +230,34 @@ export const dbtRunExecutorFunction = inngest.createFunction(
   async ({ event, step }) => {
     const data = event.data as DbtRunRequestedEvent;
     const runObjectId = new Types.ObjectId(data.runId);
+
+    // An event sent before lanes shipped carries no concurrency keys, so
+    // every such event of every project holds the same empty key. Send it
+    // again with its own keys and stop: the copy queues where it belongs.
+    // The copy always carries both keys, so this never loops.
+    if (!data.laneKey || !data.lockKey) {
+      const keys = await step.run("derive-queue-keys", async () => {
+        const run = await DbtRun.findById(runObjectId)
+          .select("jobId lane status")
+          .lean();
+        // Cancelled or timed out while it waited: nothing left to queue.
+        if (!run || run.status !== "queued") return null;
+        return dbtRunFallbackQueueKeys(data, run);
+      });
+      if (!keys) return { runId: data.runId, status: "skipped" };
+      await step.sendEvent("requeue-with-queue-keys", {
+        // One copy per run, whatever retries the step.
+        id: `dbt-run-requeue:${data.runId}`,
+        name: "dbt/run.requested",
+        data: { ...data, ...keys },
+      });
+      logger.info("Requeued a dbt run that carried no queue keys", {
+        runId: data.runId,
+        projectId: data.projectId,
+        ...keys,
+      });
+      return { runId: data.runId, status: "requeued" };
+    }
 
     const runInfo = await step.run("mark-running", async () => {
       const run = await DbtRun.findOneAndUpdate(
@@ -219,15 +273,17 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       // disables defer), and (c) ad-hoc/agent runs that set the run-level
       // deferToProduction flag (fast iteration in personal dev schemas).
       let deferStateKey: string | null = null;
-      let wantsDefer = false;
-      if (run.jobId) {
-        wantsDefer = Boolean(
-          (await DbtJob.findById(run.jobId).select("deferToProduction").lean())
-            ?.deferToProduction,
-        );
-      } else if (run.deferToProduction) {
-        wantsDefer = true;
-      }
+      const job = run.jobId
+        ? await DbtJob.findById(run.jobId)
+            .select("slug deferToProduction")
+            .lean()
+        : null;
+      // Job runs carry the defer flag of the definition they were triggered
+      // from (the job file at the run's commit). Only a run queued before
+      // that was stored falls back to the row.
+      const wantsDefer =
+        run.deferToProduction ??
+        (run.jobId ? Boolean(job?.deferToProduction) : false);
       if (wantsDefer) {
         const project = await DbtProject.findById(run.projectId)
           .select("lastProdManifestKey")
@@ -247,7 +303,13 @@ export const dbtRunExecutorFunction = inngest.createFunction(
         // A laptop run builds in its owner's own warm dir, like a
         // working-tree build: never the shared committed-deploy dir.
         triggeredBy: run.triggeredBy,
+        trigger: run.trigger,
+        lane: run.lane ?? "job",
         jobId: run.jobId?.toString(),
+        jobSlug: job?.slug,
+        // Per-run vars of a manual trigger. Not secrets: they are stored on
+        // the run and echoed back by the run APIs.
+        overrideVars: run.overrides?.vars ?? null,
         restoreArtifactKeys: run.restoreArtifactKeys
           ? {
               runResults: run.restoreArtifactKeys.runResults,
@@ -380,7 +442,18 @@ export const dbtRunExecutorFunction = inngest.createFunction(
                 profile: snapshot.profile,
                 commands: [parsed],
                 dbtVersion: snapshot.project.dbtVersion,
-                vars: snapshot.environment.vars,
+                // Run overrides win over the environment's vars, for this
+                // run only.
+                vars: runInfo.overrideVars
+                  ? { ...snapshot.environment.vars, ...runInfo.overrideVars }
+                  : snapshot.environment.vars,
+                // Run identity for warehouse job labels (non-secret).
+                extraEnv: dbtRunLabelEnv({
+                  runId: data.runId,
+                  trigger: runInfo.trigger,
+                  jobId: runInfo.jobId,
+                  jobSlug: runInfo.jobSlug,
+                }),
                 // Cloud Run services deploy with --timeout=3600; leave buffer for
                 // snapshot loading + artifact upload within the step request.
                 commandTimeoutMs: 50 * 60 * 1000,
@@ -405,12 +478,13 @@ export const dbtRunExecutorFunction = inngest.createFunction(
                     // Working-tree (agent verification) builds materialize a
                     // user's draft overlay — isolate them in a per-user dir so
                     // they can never reconcile the shared committed-deploy dir
-                    // into a draft state.
-                    userId:
-                      runInfo.workingTreeUserId ??
-                      (runInfo.localOverlayKey
-                        ? `local:${runInfo.triggeredBy}`
-                        : undefined),
+                    // into a draft state. Runs that may execute at once
+                    // (the interactive lane, parallel jobs) never share a
+                    // dir either: see dbtRunWarmDirOwner.
+                    userId: dbtRunWarmDirOwner(
+                      { ...runInfo, runId: data.runId },
+                      DBT_PROJECT_RUN_CONCURRENCY,
+                    ),
                   },
                   dir => runOnce(dir),
                 );
@@ -500,14 +574,26 @@ export const dbtRunExecutorFunction = inngest.createFunction(
                 text: extractShowPreview(commandResult.logLines),
               };
             }
-            if (stepResults.length > 0 || Object.keys(update).length > 0) {
+            // dbt's invocation id joins this command to the
+            // `dbt_invocation_id` label on its warehouse jobs. Pushed per
+            // command, so the array is in command order.
+            const push: Record<string, unknown> = {
+              ...(stepResults.length > 0
+                ? { stepResults: { $each: stepResults } }
+                : {}),
+              ...(commandResult?.invocationId
+                ? { invocationIds: commandResult.invocationId }
+                : {}),
+            };
+            if (
+              Object.keys(push).length > 0 ||
+              Object.keys(update).length > 0
+            ) {
               await DbtRun.updateOne(
                 { _id: runObjectId },
                 {
                   ...(Object.keys(update).length > 0 ? { $set: update } : {}),
-                  ...(stepResults.length > 0
-                    ? { $push: { stepResults: { $each: stepResults } } }
-                    : {}),
+                  ...(Object.keys(push).length > 0 ? { $push: push } : {}),
                 },
               );
             }
@@ -555,8 +641,10 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       unregisterActiveRun(data.runId, runControl);
     }
 
-    await step.run("finalize-run", async () => {
+    const finalizeResult = await step.run("finalize-run", async () => {
       const completedAt = new Date();
+      // Set when this run's failure auto-disabled its job.
+      let autoDisabledAfter: number | null = null;
       const run = await DbtRun.findById(runObjectId)
         .select("startedAt status cancelledAt cancelledBy")
         .lean();
@@ -571,14 +659,14 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       if (run?.status === "cancelled" || run?.cancelledAt) {
         await finalizeCancelledDbtRun(runObjectId, run?.cancelledBy);
         logger.info("dbt run cancelled; finalized", { runId: data.runId });
-        return;
+        return false;
       }
 
       const durationMs = run?.startedAt
         ? completedAt.getTime() - new Date(run.startedAt).getTime()
         : undefined;
 
-      await DbtRun.updateOne(
+      const terminalWrite = await DbtRun.updateOne(
         { _id: runObjectId, status: "running" },
         {
           $set: {
@@ -589,6 +677,16 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           },
         },
       );
+      // Someone else already wrote the terminal status (the stale-run
+      // sweeper, or a cancel that landed after the read above). That writer
+      // owns the job stats and the notification: doing them again here would
+      // count the run twice and notify twice.
+      if (terminalWrite.modifiedCount === 0) {
+        logger.warn("dbt run already finalized elsewhere; skipping", {
+          runId: data.runId,
+        });
+        return false;
+      }
 
       if (runInfo.jobId) {
         const updatedJob = await DbtJob.findOneAndUpdate(
@@ -623,33 +721,10 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           DBT_AUTO_DISABLE_AFTER_FAILURES > 0 &&
           failures >= DBT_AUTO_DISABLE_AFTER_FAILURES
         ) {
-          try {
-            const { commitDbtJobFile } =
-              await import("../../dbt/dbt-config.service");
-            updatedJob.enabled = false;
-            await commitDbtJobFile(
-              { workspaceId: updatedJob.workspaceId },
-              updatedJob,
-              undefined,
-              `dbt: auto-disable job "${updatedJob.name}" after ${failures} failures`,
-            );
-            await DbtJob.updateOne(
-              { _id: updatedJob._id },
-              {
-                $set: {
-                  enabled: false,
-                  "scheduledRun.lastError": `Auto-disabled after ${failures} consecutive failures. Last error: ${errorMessage ?? "unknown"}`,
-                },
-                $unset: { "scheduledRun.nextAt": "" },
-              },
-            );
-            logger.warn("Auto-disabled dbt job after repeated failures", {
-              jobId: updatedJob._id.toString(),
-              consecutiveFailures: failures,
-            });
-          } catch (error) {
-            logger.warn("Auto-disable file write-through failed", { error });
-          }
+          // Flips the row first, so a failed yml commit cannot leave the job
+          // enabled.
+          await autoDisableDbtJob(updatedJob, failures, errorMessage);
+          autoDisabledAfter = failures;
         }
       }
 
@@ -686,7 +761,30 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           }
         }
       }
+      return { autoDisabledAfter };
     });
+    const finalized = finalizeResult !== false;
+
+    // Notification rules on the job or its project. Its own step, after the
+    // terminal status is stored, so a retry of anything above never emits
+    // twice. Only the writer of the terminal status emits.
+    if (finalized) {
+      await step.run("emit-terminal-event", () =>
+        emitDbtRunTerminalEvent(data.runId),
+      );
+    }
+
+    // The job stops running from here on, so its failure rules would hear
+    // nothing more. Tell them once that it was disabled, and why. A rule on
+    // the default cadence got no post for this run (the previous one had
+    // failed too), so this is the one message that says the job is off.
+    const autoDisabledAfter =
+      finalizeResult !== false ? finalizeResult.autoDisabledAfter : null;
+    if (autoDisabledAfter) {
+      await step.run("emit-job-auto-disabled-event", () =>
+        emitDbtJobAutoDisabledEvent(data.runId, autoDisabledAfter),
+      );
+    }
 
     // Surface unexpected executor failures (a thrown step rather than a clean
     // non-zero dbt exit) to Inngest after the run doc has been finalized as
@@ -755,18 +853,36 @@ export const dbtSchedulerFunction = inngest.createFunction(
 
       if (updateResult.modifiedCount === 0) continue;
 
-      await step.run(`trigger-${dueJob.id}`, async () => {
+      const outcome = await step.run(`trigger-${dueJob.id}`, async () => {
         const job = await DbtJob.findById(new Types.ObjectId(dueJob.id));
         if (!job) return null;
-        const run = await triggerDbtJobRun({
-          workspaceId: dueJob.workspaceId,
-          job,
-          trigger: "schedule",
-          triggeredBy: "scheduler",
-        });
-        return run._id.toString();
+        try {
+          // Returns the active run when the tick collapsed onto it; the
+          // service counts that tick on the job.
+          const run = await triggerDbtJobRun({
+            workspaceId: dueJob.workspaceId,
+            job,
+            trigger: "schedule",
+            triggeredBy: "scheduler",
+          });
+          return { runId: run._id.toString() };
+        } catch (error) {
+          // The job file is gone at the commit the run would build. Not a
+          // failure to retry: the tick is skipped (and counted) and the
+          // config sync removes the row.
+          if (error instanceof DbtJobDefinitionMissingError) {
+            return { skipped: "definition_missing", reason: error.message };
+          }
+          // The job file at that commit turned the schedule off (disabled,
+          // or no schedule) and the row has not caught up. Same handling:
+          // the tick is skipped and counted, and the sync fixes the row.
+          if (error instanceof DbtJobNotScheduledAtCommitError) {
+            return { skipped: error.reason, reason: error.message };
+          }
+          throw error;
+        }
       });
-      triggered++;
+      if (outcome && "runId" in outcome) triggered++;
     }
 
     return { checked: dueJobs.length, triggered };
@@ -867,8 +983,8 @@ export const dbtRunSweeperFunction = inngest.createFunction(
 
       for (const run of activeRuns) {
         if (run.status === "queued") {
-          // Queued runs can legitimately wait behind the per-project
-          // concurrency lock — only sweep clearly lost events.
+          // Queued runs can legitimately wait for a lane slot or behind a
+          // run of their own job — only sweep clearly lost events.
           if (now - run.createdAt.getTime() > DBT_RUN_QUEUED_STALL_MS) {
             abandoned.push({
               run,
@@ -915,6 +1031,7 @@ export const dbtRunSweeperFunction = inngest.createFunction(
         }
       }
 
+      const sweptRunIds: string[] = [];
       for (const { run, status, error, recoveredFromLogs } of abandoned) {
         const failedRun = status === "error";
         const completedAt = new Date();
@@ -964,10 +1081,22 @@ export const dbtRunSweeperFunction = inngest.createFunction(
           status,
           recoveredFromLogs,
         });
+        sweptRunIds.push(run._id.toString());
       }
 
-      return abandoned.length;
+      // Only runs THIS sweep finalized: one the executor or the cancel
+      // finalizer got to first is theirs to notify about.
+      return sweptRunIds;
     });
+
+    // A run the executor died on never reached its own emit step, so a job
+    // that fails this way would otherwise fail silently. One step per run:
+    // a retry of the sweep never notifies twice.
+    for (const runId of swept) {
+      await step.run(`emit-terminal-event-${runId}`, () =>
+        emitDbtRunTerminalEvent(runId),
+      );
+    }
 
     const pruned = await step.run("prune-old-dbt-runs", async () => {
       if (
@@ -992,6 +1121,6 @@ export const dbtRunSweeperFunction = inngest.createFunction(
       return result.deletedCount ?? 0;
     });
 
-    return { swept, pruned };
+    return { swept: swept.length, pruned };
   },
 );

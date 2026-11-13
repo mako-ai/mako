@@ -15,7 +15,7 @@ A **project** is a dbt Core project scoped to one workspace. It holds:
 - A set of **environments** — each maps a name (e.g. `dev`, `prod`) to a database **connection** + **target schema**, with `threads` (1–16, default 4), optional dbt `vars`, and optional **ownership** (see [Personal environments](#personal-environments)).
 - A `defaultEnvironment` (default `dev`). Ad-hoc and agent-triggered builds resolve their target as: explicit selection → your saved per-user dev environment → your personal environment (when provisioned) → the project default. Production targets require an explicit job or selection.
 
-Project names are unique per workspace. New projects are scaffolded with a standard `dbt_project.yml`, `models/staging`, `models/marts`, `seeds/`, `macros/`, and `snapshots/` layout.
+Project names are unique per workspace. New projects are scaffolded with a standard `dbt_project.yml`, `models/staging`, `models/marts`, `seeds/`, `macros/`, and `snapshots/` layout. The scaffold includes the `mako_query_comment` macro and its `query-comment` block (see [Run identity and warehouse labels](#run-identity-and-warehouse-labels)).
 
 ## Personal environments
 
@@ -67,7 +67,29 @@ Three ways to execute dbt, all routed through the same validated runner:
 | **Run selection** | `dbt build --select <model>` | Builds the model **and its tests** on the chosen environment |
 | **Command bar** | Any allow-listed `dbt` command | dbt Cloud parity — free-form command bar |
 
-The command bar accepts a free-form command (an optional leading `dbt` is stripped), but every command is tokenized and validated against the same allowlist as saved jobs before it reaches the runner. The subcommand must be on the allowlist (`run`, `build`, `test`, `seed`, `snapshot`, `compile`, `parse`, `source freshness`, `docs generate`, `deps`, `retry`, `show`), and unknown flags are rejected. Commands are executed with `spawn` (no shell), and `--select` selectors on compile / run-select are pattern-checked.
+The command bar accepts a free-form command (an optional leading `dbt` is stripped), but every command is tokenized and validated against the same allowlist as saved jobs before it reaches the runner. The subcommand must be on the allowlist (`run`, `build`, `test`, `seed`, `snapshot`, `compile`, `parse`, `source freshness`, `docs generate`, `deps`, `retry`, `show`), and unknown flags are rejected. `run-operation` is not on the allowlist. Commands are executed with `spawn` (no shell), and `--select` selectors on compile / run-select are pattern-checked.
+
+### Command syntax
+
+The same rules apply to the command bar and to job commands.
+
+| Flag | Value |
+| ---- | ----- |
+| `--select`, `-s`, `--exclude` | One or more selectors, space-separated |
+| `--selector`, `--threads`, `--limit`, `--output` | One value |
+| `--vars` | One value: a JSON or YAML dictionary |
+| `--indirect-selection` | One of `eager`, `cautious`, `buildable`, `empty` |
+| `--full-refresh`, `--fail-fast`, `--store-failures`, `--empty`, `--favor-state` | No value |
+
+A value that contains spaces goes in quotes. A token that starts with `'` or `"` runs to the matching quote and is passed to dbt as one argument, without the quotes:
+
+```text
+run --select orders --vars '{"start_date": "2026-01-01", "days": 7}'
+build --select "tag:nightly" --indirect-selection cautious
+run --vars "{\"start_date\": \"2026-01-01\"}"
+```
+
+Inside double quotes, `\"` and `\\` are escapes. Single quotes are literal. A quote in the middle of a token is a literal character, so the unquoted form `--vars {"a":1}` (no spaces) keeps working. No shell is involved: quotes only group a value, and `$VAR`, backticks and `;` have no meaning.
 
 ## Local CLI runs
 
@@ -105,6 +127,69 @@ A **job** is a saved list of dbt commands (`build`, `test`, `seed`, `snapshot`, 
 - **Manually** — trigger from the UI or the agent (after explicit user confirmation).
 - **On a schedule** — set a cron expression; the scheduler picks up due jobs.
 
+### Run overrides
+
+A manual trigger can change two things for that one run. The job definition stays as it is: overrides are stored on the run and shown in its history.
+
+| Override | Type | Effect |
+| -------- | ---- | ------ |
+| `vars` | JSON object | Merged over the environment's `vars` for this run. A run value wins over an environment value with the same name. Reaches dbt as `--vars`, so `{{ var('start_date') }}` reads it. |
+| `fullRefresh` | boolean | Appends `--full-refresh` to the job's `run`, `build` and `seed` commands that lack it. Other commands run unchanged. |
+
+Send them with the trigger: `POST .../jobs/:jobId/trigger` with a body such as `{"vars": {"start_date": "2026-01-01"}, "fullRefresh": true}`, or the `vars` and `fullRefresh` arguments of the `dbt_run_job` tool.
+
+Limits on `vars`:
+
+- At most 50 keys. Each key matches `[A-Za-z_][A-Za-z0-9_]*`.
+- At most 4 KB as JSON (4,096 bytes).
+- At most 5 levels of nesting, counting the `vars` object as level 1.
+- Values are JSON: strings, finite numbers, booleans, `null`, arrays and objects.
+
+Mako rejects the trigger with a `400` in two more cases:
+
+- `vars` is sent and a job command already has `--vars`. The runner keeps the command's own `--vars`, so the run value would be ignored. Remove `--vars` from the job command and keep the defaults in the environment's `vars`.
+- `fullRefresh` is `true` and the job has no `run`, `build` or `seed` command.
+
+The body accepts `vars` and `fullRefresh` and nothing else. Any other field is a `400` that names the field, and no run starts. `dbt_run_job` refuses unknown inputs the same way. A misspelt `full_refresh` therefore never runs the job with its defaults.
+
+Scheduled runs take no overrides. They always run the job as defined.
+
+`--full-refresh` rebuilds incremental models and seeds from scratch. On a production environment that can mean a full scan of the sources. Retrying a run keeps its overrides.
+
+### Concurrency
+
+| Rule | Limit |
+| ---- | ----- |
+| Runs of one job at a time | 1, always |
+| Job runs of one project at a time | N = `DBT_PROJECT_RUN_CONCURRENCY`, default `1`, maximum `16` |
+| Validation runs (`parse`, `compile`, `show`) of one project at a time | N as well, in their own lane: they never wait behind a job run and never block one |
+
+`DBT_PROJECT_RUN_CONCURRENCY` is an environment variable of the Mako API. With the default `1`, the job runs of a project execute one after another. Set it to `2` or more to let different jobs of one project run in parallel. Parallelism is opt-in because Mako takes no lock on tables: two jobs whose selections share a model can write the same table at the same time. Raise the value only when your jobs select disjoint models.
+
+Details of N:
+
+- **Cap of 16.** A value above `16` is read as `16`. A value that is not a whole number of at least `1` is read as `1`.
+- **N slots per lane.** A project has two lanes. The job lane holds job runs, CI runs and builds. The interactive lane holds `parse`, `compile` and `show` runs started by a person or an agent. Each lane has its own N slots, so one project runs at most 2 × N dbt processes at once.
+- **Warm directories.** With N = `1`, the job runs of an environment share one warm project directory. From N = `2`, each job gets its own, and every run that belongs to no job (a validation run, an ad-hoc build, a CI run) gets a directory for that run alone. Two runs that execute at once therefore never wait on the same directory. A per-run directory starts cold: it is seeded from the stored parse and package caches, and Mako removes it once idle. Each directory holds the project's `target/` and installed packages, so more directories use more of the API's temp storage.
+- **Read at start.** The API reads the value once when it starts. Restart or redeploy to change it.
+
+A scheduled tick that arrives while the previous run of the same job is still queued or running starts no second run. Mako counts the skipped tick on the job and reports the count with the job and in `dbt_list_runs`.
+
+### Skipped scheduled ticks
+
+A scheduled tick starts no run in 4 cases. Each one adds 1 to the job's skipped count, and `dbt_list_runs` returns the last reason as `skipped.lastReason`.
+
+| `lastReason` | The tick was skipped because |
+| ------------ | ---------------------------- |
+| `active_run` | A run of the job was still queued or running |
+| `definition_missing` | `dbt/jobs/<slug>.yml` no longer exists at the commit the run would build |
+| `disabled_in_file` | That file, at that commit, says `enabled: false` |
+| `unscheduled_in_file` | That file, at that commit, has no `schedule` |
+
+The last 3 cover the seconds between a push and the moment Mako has read it. The job file at the commit decides: a job you disabled on the default branch never runs on its old schedule, even when the tick fires before the sync.
+
+`enabled` and `schedule` govern scheduled runs only. A manual trigger (the Run button, `POST .../trigger`, `dbt_run_job`) runs a disabled job. It refuses only a job whose file was deleted, with a `409`.
+
 ## Run history & artifacts
 
 Every execution produces a **run** record with per-node status, timing, and logs. Runs can be **cancelled** while in flight or **retried**. dbt's standard artifacts are captured and downloadable per run:
@@ -115,6 +200,116 @@ Every execution produces a **run** record with per-node status, timing, and logs
 | `runResults` | Per-node execution results and timing |
 | `catalog` | Column-level metadata from `docs generate` |
 | `sources` | Source freshness results |
+
+## Run identity and warehouse labels
+
+Mako tells dbt which job and run it is executing, so warehouse cost can be traced to a job.
+
+### What every run gets, with no setup
+
+The dbt process of every run started by Mako has these environment variables:
+
+| Variable | Value | Present |
+| -------- | ----- | ------- |
+| `MAKO_DBT_JOB` | The job's id. It is unique across projects and workspaces | Job runs only |
+| `MAKO_DBT_JOB_SLUG` | The job's slug, for reading. Two projects can share a slug | Job runs only |
+| `MAKO_DBT_RUN` | The Mako run id | Every run |
+| `MAKO_TRIGGER` | `schedule`, `manual`, `agent` or `ci` | Every run |
+
+Values are lowercased, limited to `a-z`, `0-9`, `_` and `-` (any other character becomes `_`), and cut at 63 characters. Those are BigQuery's label rules, so a value is always a valid label. The four are not secrets: project code can read them with `env_var('MAKO_DBT_RUN', '')`.
+
+The same four are set as `DBT_ENV_CUSTOM_ENV_MAKO_DBT_JOB`, `DBT_ENV_CUSTOM_ENV_MAKO_DBT_JOB_SLUG`, `DBT_ENV_CUSTOM_ENV_MAKO_DBT_RUN` and `DBT_ENV_CUSTOM_ENV_MAKO_TRIGGER`. dbt copies variables with that prefix into the `metadata.env` block of `run_results.json`.
+
+Mako also stores dbt's `invocation_id` for each command of a run. On BigQuery, dbt puts that id on every job it starts as the label `dbt_invocation_id`, in every project, with no configuration. The `dbt_model_cost` tool joins on it.
+
+### The query-comment macro
+
+To see the job, run and trigger on the queries themselves, add one macro and one config block. New projects created in Mako have both. For an existing project you add them yourself: Mako never edits a project's `dbt_project.yml`.
+
+1. Create `macros/mako_query_comment.sql`:
+
+```sql
+{% macro mako_query_comment(node) %}
+  {%- set comment_dict = {
+    "app": "dbt",
+    "dbt_version": dbt_version,
+    "profile_name": target.get("profile_name"),
+    "target_name": target.get("target_name"),
+  } -%}
+  {%- if node is not none -%}
+    {%- do comment_dict.update(node_id=node.unique_id) -%}
+  {%- endif -%}
+  {#- Set by Mako on every run it starts. Empty outside Mako: no mako_* fields. -#}
+  {%- set mako_fields = {
+    "mako_dbt_job": env_var("MAKO_DBT_JOB", ""),
+    "mako_dbt_job_slug": env_var("MAKO_DBT_JOB_SLUG", ""),
+    "mako_dbt_run": env_var("MAKO_DBT_RUN", ""),
+    "mako_trigger": env_var("MAKO_TRIGGER", ""),
+  } -%}
+  {%- if mako_fields["mako_dbt_run"] -%}
+    {%- do comment_dict.update(mako_source="dbt") -%}
+  {%- endif -%}
+  {%- for key, value in mako_fields.items() -%}
+    {%- if value -%}
+      {%- do comment_dict.update({key: value}) -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {{ return(tojson(comment_dict)) }}
+{% endmacro %}
+```
+
+2. Add to `dbt_project.yml`:
+
+```yaml
+query-comment:
+  comment: "{{ mako_query_comment(node) }}"
+  job-label: true
+```
+
+A project that already has a `query-comment` keeps its own macro and adds the four `env_var(...)` fields to its dictionary. The comment must render as a JSON object for the labels to work.
+
+### What you get
+
+Every query dbt sends starts with a comment like this:
+
+```sql
+/* {"app": "dbt", "dbt_version": "1.9.10", "profile_name": "mako", "target_name": "prod", "node_id": "model.analytics.orders", "mako_source": "dbt", "mako_dbt_job": "6650f0c2a1b2c3d4e5f60700", "mako_dbt_job_slug": "nightly-build", "mako_dbt_run": "6650f0c2a1b2c3d4e5f60718", "mako_trigger": "schedule"} */
+```
+
+That works on every warehouse. On BigQuery, `job-label: true` also turns each field of the comment into a label on the job:
+
+| Label | Value | Source |
+| ----- | ----- | ------ |
+| `mako_dbt_job` | Job id | Macro, job runs only |
+| `mako_dbt_job_slug` | Job slug | Macro, job runs only |
+| `mako_dbt_run` | Mako run id | Macro |
+| `mako_trigger` | `schedule`, `manual`, `agent`, `ci` | Macro |
+| `mako_source` | `dbt` | Macro, same key Mako sets on its own queries |
+| `app`, `dbt_version`, `profile_name`, `target_name`, `node_id` | dbt's default comment fields | Macro |
+| `dbt_invocation_id` | dbt's id for the command | dbt, always, with or without the macro |
+
+Query them in `INFORMATION_SCHEMA.JOBS`:
+
+```sql
+select
+  (select value from unnest(labels) where key = 'mako_dbt_job') as job_id,
+  any_value((select value from unnest(labels) where key = 'mako_dbt_job_slug')) as job_slug,
+  sum(total_bytes_billed) as bytes_billed,
+  sum(total_slot_ms) as slot_ms
+from `region-eu`.INFORMATION_SCHEMA.JOBS
+where creation_time >= timestamp_sub(current_timestamp(), interval 7 day)
+group by job_id
+```
+
+Group by `mako_dbt_job`, the job id. A slug is unique inside one project only: two projects that write to the same warehouse project can both have a job called `nightly`.
+
+Facts to know:
+
+- Without `job-label: true`, BigQuery jobs carry `dbt_invocation_id` and no other label. The comment is still written.
+- dbt sanitizes labels the same way Mako does: lowercase, `[a-z0-9_-]`, 63 characters. `node_id` values contain dots, so `model.analytics.orders` becomes the label `model_analytics_orders`.
+- Outside Mako (a laptop, another scheduler) the variables are unset. The macro then emits dbt's five default fields and no `mako_*` field.
+- The macro reads the variables when a query runs. A new run id never invalidates dbt's partial parse.
+- BigQuery allows 64 labels per job. The macro uses at most 10, and dbt adds 1.
 
 ## Access control (RBAC)
 
@@ -127,6 +322,8 @@ Transforms access is enforced by a pure policy (`api/src/dbt/rbac.ts`):
 ## Runner security
 
 dbt model code can call `env_var()`, so the runner does **not** inherit the API's process environment. The dbt subprocess runs with an allowlisted base env (`buildDbtBaseEnv`) forwarding only what uv/python/dbt need; per-connection secrets are layered on top. This stops workspace members from exfiltrating server secrets (e.g. `ENCRYPTION_KEY`, `AI_GATEWAY_API_KEY`, `DATABASE_URL`) through a one-line model.
+
+The only other variables the runner adds are the run identity ones: names matching `MAKO_DBT_*` or `MAKO_TRIGGER`, bare or under `DBT_ENV_CUSTOM_ENV_` (see [Run identity and warehouse labels](#run-identity-and-warehouse-labels)). Any other name is dropped, and a connection credential always wins over them.
 
 ## Lineage
 
@@ -147,8 +344,8 @@ dbt routes are mounted under `/api/workspaces/:workspaceId/dbt`. Highlights (ful
 | `PUT` | `/projects/:projectId/my-environment` | Save the caller's default dev environment (`""` = Auto) |
 | `GET` / `POST` | `/projects/:projectId/jobs` | List / create jobs |
 | `PATCH` / `DELETE` | `/projects/:projectId/jobs/:jobId` | Update / delete a job |
-| `POST` | `/projects/:projectId/jobs/:jobId/trigger` | Run a job now |
-| `GET` | `/projects/:projectId/runs` | List runs |
+| `POST` | `/projects/:projectId/jobs/:jobId/trigger` | Run a job now. Optional JSON body `{ vars?, fullRefresh? }` for that run only. `400` on any other field, for example `full_refresh`: nothing runs. `409` when the job file no longer exists on the default branch |
+| `GET` | `/projects/:projectId/runs` | List runs, newest first. Query: `jobId`, `status`, `trigger`, `limit`, `before` |
 | `GET` | `/projects/:projectId/runs/:runId` | Get a run |
 | `POST` | `/projects/:projectId/runs/:runId/cancel` | Cancel a running run |
 | `POST` | `/projects/:projectId/runs/:runId/retry` | Retry a run |
@@ -157,6 +354,18 @@ dbt routes are mounted under `/api/workspaces/:workspaceId/dbt`. Highlights (ful
 | `POST` | `/projects/:projectId/run-select` | `dbt build --select` a selection |
 | `POST` | `/projects/:projectId/preview` | `dbt show --select` — bounded read-only row preview |
 | `POST` | `/projects/:projectId/command` | Run an allow-listed free-form command |
+
+Query parameters of `GET /projects/:projectId/runs`:
+
+| Parameter | Value | Effect |
+| --------- | ----- | ------ |
+| `jobId` | A job id | Only the runs of that job |
+| `status` | `queued`, `running`, `success`, `error` or `cancelled` | Only runs in that status. Any other value returns `400` |
+| `trigger` | `schedule`, `manual`, `agent` or `ci` | Only runs started that way. Any other value returns `400` |
+| `limit` | 1 to 100, default 50 | Runs per page |
+| `before` | An ISO timestamp | Only runs created before it. Pass the `nextBefore` of the previous page. `nextBefore` is `null` on the last page |
+
+Body of `POST /projects/:projectId/jobs/:jobId/trigger`: `{ vars?, fullRefresh? }`. Both keys are optional and an empty body runs the job as saved. `vars` is an object and `fullRefresh` is a boolean. See [Run overrides](#run-overrides) for the limits.
 | `GET` | `/projects/:projectId/lineage` | DAG nodes + edges from the latest manifest |
 
 ## Project rules (`.makorules.md`)

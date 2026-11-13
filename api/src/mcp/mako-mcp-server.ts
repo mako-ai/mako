@@ -96,7 +96,7 @@ Typical loop:
 
 App performance (rules: mako://skills/apps, "Performance"): filter, join and aggregate in SQL with useDuckDB(sql), one query per panel, so only the rows a panel draws reach JS. useQuery(name) is for bindings under ~10k rows. Each panel shows a same-size skeleton while it loads, and filter clicks never wait on a query. Before calling a UI done, trace a filter change with app_browse: no main-thread task over 200 ms.
 
-dbt: create/read projects → create/read/edit/delete model files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run) → create/update/delete jobs. Edits commit straight to the user's session branch of the workspace repo (dbt/ folder). Warehouse-mutating runs (dbt_run_model, dbt_run_job, dbt_cancel_run) appear only with the explicit warehouse:write OAuth/API-key scope.
+dbt: create/read projects → create/read/edit/delete model files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run) → create/update/delete jobs. Operate what ran, read-only: dbt_list_runs (run history of a project or job), dbt_model_cost (warehouse cost per model), dbt_table_readers (who reads a table), dbt_list_orphans (relations no model owns). Edits commit straight to the user's session branch of the workspace repo (dbt/ folder). Warehouse-mutating runs (dbt_run_model, dbt_run_job, dbt_cancel_run) appear only with the explicit warehouse:write OAuth/API-key scope.
 
 Syncs (flows, what loads sources into the warehouse): flow_list → flow_read / flow_status (per entity: mode, backlog, failures, last materialised). flow_backfill starts a full backfill; flow_update changes only the triggers (poll cron, webhook on/off, resync cron). Both need warehouse:write and an owner/admin.
 

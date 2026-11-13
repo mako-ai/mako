@@ -7,6 +7,12 @@ import type {
   NotificationRuleApi,
 } from "../lib/api-types";
 
+export function isDbtNotificationResource(
+  resourceType: NotificationResourceTypeApi,
+): boolean {
+  return resourceType === "dbt_job" || resourceType === "dbt_project";
+}
+
 function resourceKey(
   resourceType: NotificationResourceTypeApi,
   resourceId: string,
@@ -64,7 +70,10 @@ export const useNotificationRuleStore = create<
         await api.GET("/api/workspaces/{workspaceId}/notification-rules", {
           params: {
             path: { workspaceId },
-            query: { resourceType, resourceId },
+            query: {
+              resourceType,
+              resourceId,
+            },
           },
         }),
       ) as { rules?: NotificationRuleApi[] };

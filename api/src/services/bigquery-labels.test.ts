@@ -18,6 +18,7 @@ import {
   bigQueryJobLabels,
   bindingActorLabels,
   currentQueryLabels,
+  sanitizeBigQueryLabelValue,
   sanitizeBigQueryLabels,
   withDefaultQueryLabels,
   withQueryLabels,
@@ -70,6 +71,18 @@ function testSanitizer(): void {
     assert.match(k, /^[a-z][a-z0-9_-]{0,62}$/);
     assert.match(v, /^[a-z0-9_-]{1,63}$/);
   }
+
+  // The single-value form applies the same rules (dbt run identity uses it).
+  assert.equal(
+    sanitizeBigQueryLabelValue("Nightly Build.v2"),
+    "nightly_build_v2",
+  );
+  assert.equal(sanitizeBigQueryLabelValue("b".repeat(100)).length, 63);
+  assert.equal(sanitizeBigQueryLabelValue(""), "");
+  assert.equal(
+    sanitizeBigQueryLabelValue("Nightly Build.v2"),
+    sanitizeBigQueryLabels({ k: "Nightly Build.v2" }).k,
+  );
 }
 
 async function testContext(): Promise<void> {
