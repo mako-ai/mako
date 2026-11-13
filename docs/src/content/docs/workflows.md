@@ -116,6 +116,8 @@ All of a workspace's deployed workflows run in one worker pod, but workflow code
 
 So a writers list or a live readers list can name one workflow: Mako believes the workflow a pass names, and nothing a request says about itself. A pass stops working when its run ends, when the worker key is replaced, and after 24 hours at the latest. A step program stays for 60 seconds after its step, so a workflow that runs every few seconds keeps one and a daily one does not.
 
+The dispatcher keeps at most `WORKFLOWS_MAX_STEPS` step programs alive at once (default 8, busy or idle, about 120 MB each). A step waits for a free one; an idle program of another workflow is stopped to make room. The worker pod's memory limit is 2 GiB.
+
 What a step's `ctx` offers: its input, its parents' outputs, the run's ids and metadata, logs, `refreshTimeout`, `releaseSlot`, `putStream`, `cancel`, `runChild` and `spawnChild` (by workflow name), and in a durable task `sleepFor`, `sleepUntil`, `now` and `waitForEvent` (key and expression). Task options that are not plain data (a `waitFor`, `skipIf` or `cancelIf` condition object) are refused when the workflows are loaded. A workspace's own `workflows/hatchet.ts` is used to declare workflows only: the dispatcher connects to Hatchet with its own client.
 
 ### Query results
@@ -188,6 +190,7 @@ A worker run this way serves one workspace and has **no sandbox**: workflow code
 | `HATCHET_DASHBOARD_URL`                                            | API                                   | Where Mako links admins to the Hatchet dashboard                                                                                                                                                                          |
 | `WORKFLOWS_WORKER_KEY`                                             | API, and the worker as `MAKO_API_KEY` | The worker's Mako API key                                                                                                                                                                                                 |
 | `MAKO_URL`, `MAKO_API_KEY`                                         | Worker                                | All the worker needs. It gets the Hatchet token from Mako.                                                                                                                                                                |
+| `WORKFLOWS_MAX_STEPS`                                              | Worker                                | Most step programs alive at once (default 8)                                                                                                                                                                              |
 | `HATCHET_API_URL`, `HATCHET_ADMIN_EMAIL`, `HATCHET_ADMIN_PASSWORD` | API                                   | Only for a Hatchet you operate: lets Mako create a Hatchet tenant per workspace. Used by the local setup.                                                                                                                 |
 
 With none of these set, Mako runs without workflows.
