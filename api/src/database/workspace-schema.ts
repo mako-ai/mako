@@ -5421,6 +5421,8 @@ export interface IAppIndexEntry extends Document {
   schedules: Array<{ binding: string; cron: string; timezone?: string }>;
   /** Tables the app's bindings read (`FROM`/`JOIN`) — search input. */
   tables?: string[];
+  /** The same tables per binding — which binding file reads which table. */
+  bindingTables?: Array<{ binding: string; tables: string[] }>;
   /** Binding names on main — which binding state rows are current. */
   bindings?: string[];
   /** Who first committed the app's manifest, and when (discovery). */
@@ -5473,6 +5475,18 @@ const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
       default: [],
     },
     tables: { type: [String], default: undefined },
+    bindingTables: {
+      type: [
+        new Schema(
+          {
+            binding: { type: String, required: true },
+            tables: { type: [String], default: [] },
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
+    },
     bindings: { type: [String], default: undefined },
     authorEmail: { type: String },
     firstCommitAt: { type: Date },

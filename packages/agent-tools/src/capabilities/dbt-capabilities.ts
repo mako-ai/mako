@@ -38,6 +38,37 @@ export const DBT_CAPABILITIES = [
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "data",
   }),
+  // Ontology lookups: the last production manifest and the term registry
+  // (dbt/ontology/terms.yml). Metadata only, so they carry the same gate as
+  // the two reads above: any workspace role, no grant, no query access.
+  define({
+    name: "find_models",
+    pack: "dbt-orient",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+  }),
+  define({
+    name: "describe_model",
+    pack: "dbt-orient",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+  }),
+  define({
+    name: "lookup_term",
+    pack: "dbt-orient",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+  }),
+  define({
+    name: "model_readers",
+    pack: "dbt-orient",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+  }),
   define({
     name: "create_dbt_file",
     pack: "dbt-edit",

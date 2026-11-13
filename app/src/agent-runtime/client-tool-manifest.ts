@@ -561,6 +561,44 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "eye",
   },
+  // Ontology lookups (api/src/agent-lib/tools/dbt-ontology-tools.ts): the
+  // last production manifest and the term registry, never a file.
+  find_models: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const query = (input as Record<string, unknown>)?.query;
+      return query ? `Searching models for "${query}"` : "Searching dbt models";
+    },
+    icon: "search",
+  },
+  describe_model: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Describing ${name}` : "Describing dbt model";
+    },
+    icon: "table",
+  },
+  lookup_term: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const query = (input as Record<string, unknown>)?.query;
+      return query ? `Looking up "${query}"` : "Looking up a term";
+    },
+    icon: "search",
+  },
+  model_readers: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Finding readers of ${name}` : "Finding model readers";
+    },
+    icon: "search",
+  },
   // dbt file mutation tools execute SERVER-SIDE (issue #475 pattern; see
   // createDbtServerTools in api/src/agent-lib/tools/dbt-tools.ts). Open editor
   // tabs follow along via the realtime channel (dbt.file.updated).

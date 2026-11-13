@@ -48,6 +48,12 @@ import {
   escapeSqliteIdentifier,
 } from "./shared/sql-dialects";
 import { MYSQL_SYSTEM_DATABASES_SET } from "../../databases/drivers/mysql/driver";
+import {
+  bigQueryDescriptionsFromRows,
+  dbtTableDescriptions,
+  withDescriptions,
+  type TableDescriptions,
+} from "../../dbt/ontology/table-descriptions";
 
 /** Budget for inspect_table's sample rows: enough to show the data's shape. */
 const INSPECT_SAMPLE_MAX_CHARS = 8_000;
@@ -550,6 +556,7 @@ export async function inspectSqlTableImpl(
           dialect,
           databaseName,
           tableName,
+          workspaceId,
           registeredExecutionId,
           signal,
         ),
@@ -565,9 +572,15 @@ async function inspectTableInner(
   dialect: ReturnType<typeof getDialect>,
   databaseName: string,
   tableName: string,
+  workspaceId: string,
   executionId?: string,
   signal?: AbortSignal,
 ) {
+  // The table's address, outermost part first, for matching a dbt relation.
+  let relationParts: string[] = [databaseName, tableName];
+  // The warehouse's own descriptions, asked only when dbt has none.
+  let warehouseDescriptions:
+    (() => Promise<TableDescriptions | null>) | undefined;
   let columns: Array<{
     name: string;
     types: string[];
@@ -586,6 +599,7 @@ async function inspectTableInner(
       schema = parts[0];
       table = parts.slice(1).join(".");
     }
+    relationParts = [databaseName, schema, table];
 
     // Get columns
     const columnsResult = await databaseConnectionService.executeQuery(
@@ -666,7 +680,33 @@ async function inspectTableInner(
     // Get columns
     const safeProject = escapeBigQueryIdentifier(projectId);
     const safeDataset = escapeBigQueryIdentifier(dataset);
-    const safeTableForQuery = table.replace(/'/g, "\\'");
+    // Backslashes first: `x\'` must not turn into an escaped backslash
+    // followed by a quote that closes the literal.
+    const safeTableForQuery = table.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    relationParts = [projectId, dataset, table];
+    // One metadata query: the table's `description` option (the row with
+    // an empty column name) and each top-level column's description.
+    warehouseDescriptions = async () => {
+      const result = await databaseConnectionService.executeQuery(
+        database as Parameters<
+          typeof databaseConnectionService.executeQuery
+        >[0],
+        `SELECT '' AS column_name, option_value AS description
+         FROM ${safeProject}.${safeDataset}.INFORMATION_SCHEMA.TABLE_OPTIONS
+         WHERE table_name = '${safeTableForQuery}' AND option_name = 'description'
+         UNION ALL
+         SELECT column_name, description
+         FROM ${safeProject}.${safeDataset}.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS
+         WHERE table_name = '${safeTableForQuery}'
+           AND field_path = column_name
+           AND description IS NOT NULL
+         LIMIT 2000`,
+        { executionId, signal },
+      );
+      return result.success
+        ? bigQueryDescriptionsFromRows(result.data || [])
+        : null;
+    };
 
     const columnsResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
@@ -829,6 +869,7 @@ async function inspectTableInner(
     }
   } else {
     // SQLite/D1
+    relationParts = [tableName];
     // Get columns using PRAGMA
     const columnsResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
@@ -877,15 +918,25 @@ async function inspectTableInner(
     maxRows: MAX_SAMPLE_ROWS,
     maxChars: INSPECT_SAMPLE_MAX_CHARS,
   });
-  return {
-    sqlDialect: dialect,
-    entityKind,
-    entityName: tableName,
-    database: databaseName,
-    fields: columns,
-    samples: sampleTable.table,
-    ...(sampleTable.note ? { _note: sampleTable.note } : {}),
-  };
+  // Descriptions: what dbt documents for this relation, else the
+  // warehouse's own. Extra to the inspection, so a failure only omits them.
+  const descriptions =
+    (await dbtTableDescriptions(workspaceId, relationParts)) ??
+    (warehouseDescriptions
+      ? await warehouseDescriptions().catch(() => null)
+      : null);
+  return withDescriptions(
+    {
+      sqlDialect: dialect,
+      entityKind,
+      entityName: tableName,
+      database: databaseName,
+      fields: columns,
+      samples: sampleTable.table,
+      ...(sampleTable.note ? { _note: sampleTable.note } : {}),
+    },
+    descriptions,
+  );
 }
 
 // ============================================================================
@@ -1296,7 +1347,7 @@ export const createSqlToolsV2 = (
 
     sql_inspect_table: tool({
       description:
-        "Get table/view schema (columns, types, nullability) plus up to 25 sample rows. Returns sqlDialect to guide query syntax. For PostgreSQL, use 'schema.table' format if not in public schema. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
+        "Get table/view schema (columns, types, nullability, and descriptions where dbt or the warehouse has them) plus up to 25 sample rows. Returns sqlDialect to guide query syntax. For PostgreSQL, use 'schema.table' format if not in public schema. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
       inputSchema: inspectTableSchema,
       execute: async ({ connectionId, database, table }) => {
         try {
