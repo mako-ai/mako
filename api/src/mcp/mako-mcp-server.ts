@@ -217,7 +217,7 @@ export function buildMakoMcpCandidateTools(
     createUniversalTools(workspaceId, [], undefined, userId);
   const consoleSearchTools = createConsoleSearchTools(workspaceId);
   const versionHistoryTools = createVersionHistoryTools(workspaceId);
-  const skillTools = createSkillTools(workspaceId, userId);
+  const skillTools = createSkillTools(workspaceId, userId, { source: "mcp" });
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId, userId);
   const webTools = createWebTools();
   const dbtTools = createDbtServerTools(workspaceId, userId, {

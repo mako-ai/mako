@@ -38,6 +38,11 @@ interface SkillSummary {
   suppressed: boolean;
   pinned: boolean;
   definitionInvalid: { reason: string; path: string } | null;
+  /** Problems that do not hide the skill (a cut description, a refused file). */
+  warnings?: string[];
+  /** Reads by the agent or an MCP client in the last 30 days. */
+  loads30d?: number;
+  lastLoadedAt?: string | null;
 }
 
 interface SkillDetail extends SkillSummary {
@@ -380,6 +385,18 @@ export function SkillsSection() {
                         variant="outlined"
                       />
                     )}
+                    {!!skill.warnings?.length && (
+                      <Chip
+                        label={
+                          skill.warnings.length === 1
+                            ? "1 warning"
+                            : `${skill.warnings.length} warnings`
+                        }
+                        size="small"
+                        color="warning"
+                        variant="outlined"
+                      />
+                    )}
                   </Stack>
                   <Typography
                     variant="body2"
@@ -438,6 +455,25 @@ export function SkillsSection() {
                       ? `${skill.path} — ${skill.definitionInvalid.reason}`
                       : skill.path}
                   </Typography>
+                  {skill.warnings?.map(warning => (
+                    <Typography
+                      key={warning}
+                      variant="caption"
+                      sx={{ display: "block", color: "warning.main" }}
+                    >
+                      {warning}
+                    </Typography>
+                  ))}
+                  {!skill.definitionInvalid && skill.loads30d !== undefined && (
+                    <Typography
+                      variant="caption"
+                      sx={{ display: "block", color: "text.secondary" }}
+                    >
+                      {skill.lastLoadedAt
+                        ? `${skill.loads30d} ${skill.loads30d === 1 ? "load" : "loads"} in 30 days, last ${skill.lastLoadedAt.slice(0, 10)}`
+                        : "Never loaded"}
+                    </Typography>
+                  )}
                 </Box>
                 <Stack
                   direction="row"
