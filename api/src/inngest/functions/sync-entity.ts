@@ -612,9 +612,11 @@ export const syncBackfillEntityFunction = inngest.createFunction(
               );
               // Retry-safe: a failed attempt may have loaded batches into
               // staging and deleted them from the buffer. Merge those first;
-              // dropping staging here would lose them.
+              // dropping staging here would lose them. Keyed (dedup) merges
+              // only — see performRescueAndPrepareStaging.
               const { rescued } = await performRescueAndPrepareStaging(
                 bulkSyncOptions as any,
+                { dedupOnly: true },
               );
               if (rescued > 0) {
                 logExec(
@@ -680,6 +682,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           // Retry-safe for the same reason as the flush-merge step above.
           const { rescued } = await performRescueAndPrepareStaging(
             bulkSyncOptions as any,
+            { dedupOnly: true },
           );
           if (rescued > 0) {
             logExec(

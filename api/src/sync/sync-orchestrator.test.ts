@@ -197,12 +197,52 @@ describe("Retry-safe staging prepare (lost flush batches)", () => {
     expect(live).toEqual(["a", "b"]);
   });
 
-  it("treats a missing staging table as nothing to rescue", async () => {
+  it("treats a missing destination dataset as nothing to rescue", async () => {
     mergeFromStaging.mockRejectedValueOnce(
-      new Error("Not found: Table p:d.users__backfill_staging"),
+      new Error("Not found: Dataset p:d was not found in location EU"),
     );
     const result = await performRescueAndPrepareStaging(rescueOptions);
     expect(result).toEqual({ rescued: 0 });
     expect(prepareStaging).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not swallow a missing-table MERGE failure (staging is kept)", async () => {
+    staging.push("a", "b");
+    mergeFromStaging.mockRejectedValueOnce(
+      new Error("Not found: Table p:d.users was not found"),
+    );
+    await expect(performRescueAndPrepareStaging(rescueOptions)).rejects.toThrow(
+      "Not found: Table",
+    );
+    expect(prepareStaging).not.toHaveBeenCalled();
+    expect(staging).toEqual(["a", "b"]);
+  });
+
+  it.each(["append", "overwrite"] as const)(
+    "per-flush steps never rescue in %s mode (plain INSERT would duplicate)",
+    async writeMode => {
+      // Staging may hold rows whose merge already committed, or rows still in
+      // the buffer; re-merging either would write them to live twice.
+      staging.push("a", "b");
+      const result = await performRescueAndPrepareStaging(
+        { ...rescueOptions, writeMode },
+        { dedupOnly: true },
+      );
+      expect(result).toEqual({ rescued: 0 });
+      expect(mergeFromStaging).not.toHaveBeenCalled();
+      expect(live).toEqual([]);
+      expect(prepareStaging).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("per-flush steps rescue in append_dedup mode, explicit or default", async () => {
+    staging.push("a");
+    await performRescueAndPrepareStaging(
+      { ...rescueOptions, writeMode: "append_dedup" },
+      { dedupOnly: true },
+    );
+    staging.push("b");
+    await performRescueAndPrepareStaging(rescueOptions, { dedupOnly: true });
+    expect(live).toEqual(["a", "b"]);
   });
 });

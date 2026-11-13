@@ -47,8 +47,9 @@ export async function performPrepareStaging(
 
 export async function performRescueAndPrepareStaging(
   options: SyncChunkOptions,
+  opts?: { dedupOnly?: boolean },
 ): Promise<{ rescued: number }> {
-  return performRescueAndPrepareStagingOrchestrated(options);
+  return performRescueAndPrepareStagingOrchestrated(options, opts);
 }
 
 export async function performOverwriteTruncate(
