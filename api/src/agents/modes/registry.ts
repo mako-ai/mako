@@ -181,6 +181,11 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "inspect_data_source",
   "query_duckdb",
   "capture_screenshot",
+  // Ontology: a binding that aggregates a business metric reads the
+  // canonical dbt model when one exists (dbt-ontology-tools.ts).
+  "lookup_term",
+  "find_models",
+  "describe_model",
   // Discovery for validating binding queries
   "search_consoles",
   "list_connections",

@@ -293,6 +293,11 @@ async function main() {
       /useDuckDB\(sql\)/,
       "initialize should ship the app performance rule",
     );
+    assert.match(
+      result.instructions ?? "",
+      /Before creating a dbt model or a binding that aggregates a business metric[\s\S]*lookup_term[\s\S]*find_models[\s\S]*extend it/,
+      "initialize should tell agents to check the ontology before writing SQL",
+    );
   }
 
   // 2b. ACP Desktop Chat: no headless preview workflow in instructions.
@@ -323,6 +328,10 @@ async function main() {
       const result = res.result as { instructions?: string };
       assert.match(result.instructions ?? "", /mako-desktop|Desktop Chat/i);
       assert.match(result.instructions ?? "", /useDuckDB\(sql\)/);
+      assert.match(
+        result.instructions ?? "",
+        /call lookup_term[\s\S]*find_models[\s\S]*extend it/,
+      );
       assert.doesNotMatch(
         result.instructions ?? "",
         /Verify with run_app|Verify with render_app/,
@@ -373,6 +382,10 @@ async function main() {
       "read_dbt_project_tree",
       "read_dbt_file",
       "dbt_get_run",
+      "find_models",
+      "describe_model",
+      "lookup_term",
+      "model_readers",
     ]) {
       assert.equal(
         byName.get(readOnlyTool)?.annotations?.readOnlyHint,
@@ -425,6 +438,11 @@ async function main() {
       "dbt_parse",
       "dbt_compile_model",
       "dbt_show",
+      // Ontology lookups: metadata only, bridged for every key.
+      "find_models",
+      "describe_model",
+      "lookup_term",
+      "model_readers",
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }
@@ -587,6 +605,15 @@ async function main() {
     const { tools } = res.result as { tools: { name: string }[] };
     const names = new Set(tools.map(tool => tool.name));
     assert.ok(names.has("read_dbt_file"));
+    // The ontology lookups carry the read tools' gate: a viewer has them.
+    for (const lookup of [
+      "find_models",
+      "describe_model",
+      "lookup_term",
+      "model_readers",
+    ]) {
+      assert.ok(names.has(lookup), `${lookup} must be open to a viewer`);
+    }
     assert.equal(names.has("create_dbt_file"), false);
     assert.equal(names.has("dbt_run_model"), false);
     assert.equal(names.has("dbt_create_job"), false);

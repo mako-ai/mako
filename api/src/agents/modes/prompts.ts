@@ -121,7 +121,10 @@ vite output + the browser console. After edits, VERIFY by looking — never
 claim a change rendered without evidence from one of these.
 
 Follow the skill's "Performance" rules: filters and aggregation run in SQL
-(\`useDuckDB\`, one query per panel), never over a whole binding in JS.`;
+(\`useDuckDB\`, one query per panel), never over a whole binding in JS.
+
+Before writing a binding that aggregates a business metric, call \`lookup_term\` and
+\`find_models\`: when a canonical dbt model exists, the binding reads it.`;
 
 export const WORKFLOW_MODE_SYSTEM_PROMPT = `## Workflow Mode
 
@@ -143,6 +146,12 @@ IDs, file paths, environments, and jobs. Create files with \`create_dbt_file\`; 
 files with \`edit_dbt_file\` (anchored oldString/newString replacement), reserving
 \`modify_dbt_file\` for full rewrites. Inspect source tables with the SQL discovery tools
 before writing staging models.
+
+Before creating a model that computes a business metric or entity, call \`lookup_term\` (the
+registry's definition, canonical model.column, grain, known variants) and \`find_models\`
+(models that already hold the data; \`describe_model\` for columns, tests, lineage and
+readers). When a canonical model exists, extend it: never derive the metric again.
+\`model_readers\` lists the apps and bindings a column change would touch.
 
 If \`read_dbt_project_tree\` returns no projects (\`{"projects": []}\`), the workspace has none yet —
 bootstrap one with \`dbt_create_project\` before anything else. Pick the warehouse connection with
