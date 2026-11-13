@@ -20,14 +20,11 @@ import { ZERO_OID } from "../apps/git";
 import { commitBranchFor } from "../apps/branch-policy";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import {
-  fetchFromCloud,
+  commitToWorkspace,
   freshenBeforeMainWrite,
-  freshenForServe,
-  mirrorPushDefaultBranchNow,
-  queueMirrorPush,
+  freshenBranchForRead,
   resolveMirrorTarget,
 } from "../apps/cloud-repo.service";
-import { loggers } from "../logging";
 import { repoForWorkspace } from "../apps/worktree.service";
 import {
   DEFAULT_BRANCH,
@@ -46,19 +43,11 @@ export const DBT_ROOT = "dbt";
 /** Per-file cap (matches the PUT /files content limit). */
 const MAX_FILE_BYTES = 1_000_000;
 
-const logger = loggers.api("dbt-working-tree");
-
-/** Thrown when a save committed here could not be pushed to the mirror. */
-export class DbtSaveNotMirroredError extends Error {
-  constructor(cause: unknown) {
-    super(
-      `The save could not be pushed to the workspace's GitHub repository (${
-        cause instanceof Error ? cause.message : String(cause)
-      }). It was not saved; retry.`,
-    );
-    this.name = "DbtSaveNotMirroredError";
-  }
-}
+/**
+ * Thrown when a save committed here could not be pushed to the mirror. The
+ * shared primitive's error, under the name dbt callers already catch.
+ */
+export { WorkspaceSaveNotPushedError as DbtSaveNotMirroredError } from "../apps/cloud-repo.service";
 
 export interface WorkingFileMeta {
   path: string;
@@ -114,37 +103,6 @@ async function repoDirIfExists(
 ): Promise<string | null> {
   const repoDir = await repoForWorkspace(project.workspaceId.toString());
   return (await repoExists(repoDir)) ? repoDir : null;
-}
-
-/**
- * Bring `branch` up to date with the mirror before a read.
- *
- * Every API instance has its own clone, and `ensureLocalRepo` never refreshes
- * one that exists, so without this a read shows whatever this instance last
- * fetched: a file another instance saved a moment ago is missing, and two
- * calls answered by two instances list different trees. Throttled like every
- * serve-side freshen; a failure serves local state.
- */
-const BRANCH_FRESHEN_INTERVAL_MS = 3_000;
-const lastBranchFreshenAt = new Map<string, number>();
-
-async function freshenBranchForRead(
-  workspaceId: string,
-  branch: string,
-): Promise<void> {
-  await freshenForServe(workspaceId);
-  if (branch === DEFAULT_BRANCH) return;
-  const key = `${workspaceId}#${branch}`;
-  if (
-    Date.now() - (lastBranchFreshenAt.get(key) ?? 0) <
-    BRANCH_FRESHEN_INTERVAL_MS
-  ) {
-    return;
-  }
-  lastBranchFreshenAt.set(key, Date.now());
-  // A session branch that was never pushed is absent on the mirror, and the
-  // fetch fails: that is the normal case, not an error.
-  await fetchFromCloud(workspaceId, branch).catch(() => undefined);
 }
 
 async function resolveBranchOrDefault(
@@ -203,15 +161,9 @@ export async function readWorkingFile(
 }
 
 /**
- * Commit a mutation to the dbt tree on the actor's session branch and push it
- * to the mirror. The one write path for saves, deletes and renames.
- *
- * The branch is freshened from the mirror first: a commit onto a tip this
- * instance had not caught up with cannot be pushed (non-fast-forward), and
- * the next fetch parks it under refs/mako/diverged/* — a save that reported
- * success and then vanished. On the default branch the push is awaited, and
- * a rejection is retried once against the mirror's tip; a save that still
- * cannot reach the mirror fails rather than reporting success.
+ * Commit a mutation to the dbt tree on the actor's session branch through
+ * `commitToWorkspace`: the save counts once GitHub has it, or it fails. The
+ * one write path for saves, deletes and renames.
  */
 async function commitDbtMutation(
   project: IDbtProject,
@@ -236,53 +188,25 @@ async function commitDbtMutation(
     deletes: (mutation.deletes ?? []).map(repoPath),
   };
 
-  const commit = async () => {
-    if (onDefault) {
-      await freshenBeforeMainWrite(workspaceId);
-    } else {
-      await fetchFromCloud(workspaceId, branch).catch(() => undefined);
-    }
-    // A remembered session branch whose ref is gone (deleted from another
-    // checkout) forks back off the default branch head, like ensureWorktree.
-    if (!(await resolveCommit(repoDir, `refs/heads/${branch}`))) {
-      if (!onDefault) await freshenBeforeMainWrite(workspaceId);
-      const mainHead = await resolveCommit(
-        repoDir,
-        `refs/heads/${DEFAULT_BRANCH}`,
-      );
-      if (!mainHead) throw new RepoRequiredError();
-      await updateRefCas(repoDir, `refs/heads/${branch}`, mainHead, ZERO_OID);
-    }
-    return commitBlobsOnBranch(repoDir, branch, files, { message, author });
-  };
-
-  let result = await commit();
-  if (result.unchanged) return { commitOid: undefined };
-  if (!onDefault) {
-    queueMirrorPush(workspaceId);
-    return { commitOid: result.commitOid };
-  }
-  try {
-    await mirrorPushDefaultBranchNow(workspaceId);
-  } catch (firstError) {
-    // Rejected: the mirror moved between the freshen and the push. The retry's
-    // freshen parks the rejected commit and resets main to the mirror, so the
-    // mutation is committed again on top of it.
-    logger.warn("dbt save push rejected; retrying on the mirror's tip", {
-      workspaceId,
-      error: firstError instanceof Error ? firstError.message : firstError,
-    });
-    // When the mirror did not move, the first commit is still the tip and
-    // this one is "unchanged": it still has to reach the mirror.
-    const retried = await commit();
-    if (!retried.unchanged) result = retried;
-    try {
-      await mirrorPushDefaultBranchNow(workspaceId);
-    } catch (error) {
-      throw new DbtSaveNotMirroredError(error);
-    }
-  }
-  return { commitOid: result.commitOid };
+  const result = await commitToWorkspace(
+    workspaceId,
+    async () => {
+      // A remembered session branch whose ref is gone (deleted from another
+      // checkout) forks back off the default branch head, like ensureWorktree.
+      if (!(await resolveCommit(repoDir, `refs/heads/${branch}`))) {
+        if (!onDefault) await freshenBeforeMainWrite(workspaceId);
+        const mainHead = await resolveCommit(
+          repoDir,
+          `refs/heads/${DEFAULT_BRANCH}`,
+        );
+        if (!mainHead) throw new RepoRequiredError();
+        await updateRefCas(repoDir, `refs/heads/${branch}`, mainHead, ZERO_OID);
+      }
+      return commitBlobsOnBranch(repoDir, branch, files, { message, author });
+    },
+    { branch },
+  );
+  return { commitOid: result.unchanged ? undefined : result.commitOid };
 }
 
 /** Commit a batch of files in one commit (scaffold, imports). */

@@ -19,7 +19,7 @@
 import { createHash } from "node:crypto";
 import { loggers } from "../logging";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
-import { freshenBeforeMainWrite, queueMirrorPush } from "./cloud-repo.service";
+import { commitToWorkspace } from "./cloud-repo.service";
 import {
   requireWorkspaceRepo,
   boundRepoDirIfExists,
@@ -286,20 +286,20 @@ export async function commitSkillSave(
   options: { author?: GitAuthor } = {},
 ): Promise<void> {
   const repoDir = await requireWorkspaceRepo(workspaceId);
-  await freshenBeforeMainWrite(workspaceId);
-  const writes: Record<string, string> = {};
-  if (!(await skillsAdopted(repoDir))) {
-    writes[SKILLS_README_PATH] = SKILLS_README;
-  }
-  writes[skillFilePath(skill.name)] = serializeSkillFile(skill);
-  await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    { writes },
-    { message: `Save skill "${skill.name}"`, author: options.author },
-  );
+  await commitToWorkspace(workspaceId, async () => {
+    const writes: Record<string, string> = {};
+    if (!(await skillsAdopted(repoDir))) {
+      writes[SKILLS_README_PATH] = SKILLS_README;
+    }
+    writes[skillFilePath(skill.name)] = serializeSkillFile(skill);
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes },
+      { message: `Save skill "${skill.name}"`, author: options.author },
+    );
+  });
   invalidateSkillCatalog(workspaceId);
-  queueMirrorPush(workspaceId);
 }
 
 async function skillFolderPaths(
@@ -323,17 +323,19 @@ export async function commitSkillDelete(
   if (!SKILL_NAME_RE.test(name)) return false;
   await requireWorkspaceRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  await freshenBeforeMainWrite(workspaceId);
-  const deletes = await skillFolderPaths(repoDir, name);
-  if (deletes.length === 0) return false;
-  await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    { deletes },
-    { message: `Delete skill "${name}"`, author },
-  );
+  const deleted = await commitToWorkspace(workspaceId, async () => {
+    const deletes = await skillFolderPaths(repoDir, name);
+    if (deletes.length === 0) return false;
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { deletes },
+      { message: `Delete skill "${name}"`, author },
+    );
+    return true;
+  });
+  if (!deleted) return false;
   invalidateSkillCatalog(workspaceId);
-  queueMirrorPush(workspaceId);
   return true;
 }
 
@@ -350,32 +352,39 @@ export async function commitSkillFlags(
   if (!SKILL_NAME_RE.test(name)) return false;
   await requireWorkspaceRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  await freshenBeforeMainWrite(workspaceId);
-  const path = skillFilePath(name);
-  const raw = await readRepoFile(repoDir, path);
-  const parsed = raw === null ? null : parseSkillFile(name, raw);
-  if (!parsed) return false;
-  const next: WorkspaceSkillFile = {
-    ...parsed,
-    suppressed: flags.suppressed ?? parsed.suppressed,
-    pinned: flags.pinned ?? parsed.pinned,
-  };
-  if (next.suppressed === parsed.suppressed && next.pinned === parsed.pinned) {
-    return true;
-  }
-  const verbs: string[] = [];
-  if (next.suppressed !== parsed.suppressed) {
-    verbs.push(next.suppressed ? "Suppress" : "Unsuppress");
-  }
-  if (next.pinned !== parsed.pinned) verbs.push(next.pinned ? "Pin" : "Unpin");
-  await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    { writes: { [path]: serializeSkillFile(next) } },
-    { message: `${verbs.join(" + ")} skill "${name}"`, author },
-  );
-  invalidateSkillCatalog(workspaceId);
-  queueMirrorPush(workspaceId);
+  const outcome = await commitToWorkspace(workspaceId, async () => {
+    const path = skillFilePath(name);
+    const raw = await readRepoFile(repoDir, path);
+    const parsed = raw === null ? null : parseSkillFile(name, raw);
+    if (!parsed) return "missing" as const;
+    const next: WorkspaceSkillFile = {
+      ...parsed,
+      suppressed: flags.suppressed ?? parsed.suppressed,
+      pinned: flags.pinned ?? parsed.pinned,
+    };
+    if (
+      next.suppressed === parsed.suppressed &&
+      next.pinned === parsed.pinned
+    ) {
+      return "unchanged" as const;
+    }
+    const verbs: string[] = [];
+    if (next.suppressed !== parsed.suppressed) {
+      verbs.push(next.suppressed ? "Suppress" : "Unsuppress");
+    }
+    if (next.pinned !== parsed.pinned) {
+      verbs.push(next.pinned ? "Pin" : "Unpin");
+    }
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { [path]: serializeSkillFile(next) } },
+      { message: `${verbs.join(" + ")} skill "${name}"`, author },
+    );
+    return "committed" as const;
+  });
+  if (outcome === "missing") return false;
+  if (outcome === "committed") invalidateSkillCatalog(workspaceId);
   return true;
 }
 

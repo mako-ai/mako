@@ -27,10 +27,10 @@ import {
 } from "../apps/workspace-repo-required";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import {
+  commitToWorkspace,
   ensureLocalRepo,
   freshenBeforeMainWrite,
   freshenForServe,
-  queueMirrorPush,
 } from "../apps/cloud-repo.service";
 import {
   DEFAULT_BRANCH,
@@ -570,12 +570,12 @@ async function commitConfig(
   author?: GitAuthor,
 ): Promise<boolean> {
   const repoDir = await requireWorkspaceRepo(workspaceId);
-  await freshenBeforeMainWrite(workspaceId);
-  const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
-    message,
-    author,
-  });
-  if (!result.unchanged) queueMirrorPush(workspaceId);
+  await commitToWorkspace(workspaceId, () =>
+    commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
+      message,
+      author,
+    }),
+  );
   return true;
 }
 
