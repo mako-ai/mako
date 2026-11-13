@@ -79,13 +79,15 @@ export interface DbtRunSummary {
 export interface DbtRunSkippedTicks {
   count: number;
   lastAt?: string;
+  /** Why the last tick was skipped (`DbtSkippedTickReason`). */
+  lastReason?: string;
 }
 
 export interface DbtRunHistoryPage {
   runs: DbtRunSummary[];
   /** `createdAt` of the last row, or null on the last page. */
   nextBefore: string | null;
-  /** Present when `jobId` is set: scheduled ticks dropped for that job. */
+  /** Present when `jobId` is set: scheduled ticks that started no run. */
   skipped?: DbtRunSkippedTicks;
 }
 
@@ -172,7 +174,7 @@ function toIso(value: Date | string): string {
   return new Date(value).toISOString();
 }
 
-/** Scheduled ticks dropped because a run of this job was still active. */
+/** Scheduled ticks of this job that started no run, and the last reason. */
 async function readSkippedTicks(
   params: ListDbtRunsParams,
 ): Promise<DbtRunSkippedTicks | undefined> {
@@ -182,19 +184,27 @@ async function readSkippedTicks(
     workspaceId: objectId(params.workspaceId, "workspace id"),
     projectId: objectId(params.projectId, "dbt project id"),
   })
-    .select("scheduledRun.skippedCount scheduledRun.lastSkippedAt")
+    .select(
+      "scheduledRun.skippedCount scheduledRun.lastSkippedAt scheduledRun.lastSkippedReason",
+    )
     .lean();
   const lastAt = job?.scheduledRun?.lastSkippedAt;
+  const lastReason = job?.scheduledRun?.lastSkippedReason;
   return {
     count: job?.scheduledRun?.skippedCount ?? 0,
     ...(lastAt ? { lastAt: toIso(lastAt) } : {}),
+    ...(lastReason ? { lastReason } : {}),
   };
 }
 
-async function loadJobNames(rows: RunRow[]): Promise<Map<string, string>> {
+async function loadJobNames(
+  workspaceId: string,
+  rows: RunRow[],
+): Promise<Map<string, string>> {
   const ids = [...new Set(rows.flatMap(row => row.jobId?.toString() ?? []))];
   if (ids.length === 0) return new Map();
   const jobs = await DbtJob.find({
+    workspaceId: objectId(workspaceId, "workspace id"),
     _id: { $in: ids.map(id => new Types.ObjectId(id)) },
   })
     .select("name")
@@ -272,7 +282,7 @@ export async function listDbtRuns(
     findRunPage(params, SUMMARY_PROJECTION, DBT_RUN_LIST_DEFAULT_LIMIT),
     readSkippedTicks(params),
   ]);
-  const jobNames = await loadJobNames(rows);
+  const jobNames = await loadJobNames(params.workspaceId, rows);
   return {
     runs: rows.map(row => summarize(row, jobNames)),
     nextBefore,

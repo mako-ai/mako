@@ -42,6 +42,7 @@ import {
   autoDisableDbtJob,
   DBT_AUTO_DISABLE_AFTER_FAILURES,
   DbtJobDefinitionMissingError,
+  DbtJobNotScheduledAtCommitError,
   finalizeCancelledDbtRun,
   promotesProdManifest,
   triggerDbtJobRun,
@@ -481,7 +482,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
                     // (the interactive lane, parallel jobs) never share a
                     // dir either: see dbtRunWarmDirOwner.
                     userId: dbtRunWarmDirOwner(
-                      runInfo,
+                      { ...runInfo, runId: data.runId },
                       DBT_PROJECT_RUN_CONCURRENCY,
                     ),
                   },
@@ -871,6 +872,12 @@ export const dbtSchedulerFunction = inngest.createFunction(
           // config sync removes the row.
           if (error instanceof DbtJobDefinitionMissingError) {
             return { skipped: "definition_missing", reason: error.message };
+          }
+          // The job file at that commit turned the schedule off (disabled,
+          // or no schedule) and the row has not caught up. Same handling:
+          // the tick is skipped and counted, and the sync fixes the row.
+          if (error instanceof DbtJobNotScheduledAtCommitError) {
+            return { skipped: error.reason, reason: error.message };
           }
           throw error;
         }

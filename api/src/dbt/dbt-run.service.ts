@@ -22,7 +22,11 @@ import {
 } from "./dbt-working-tree.service";
 import { parseDbtCommands } from "./commands";
 import { readJobDefinitionAtCommit } from "./dbt-job-at-commit";
-import { DbtJobDefinitionMissingError } from "./dbt-run-errors";
+import {
+  DbtJobDefinitionMissingError,
+  DbtJobNotScheduledAtCommitError,
+  type DbtSkippedTickReason,
+} from "./dbt-run-errors";
 import {
   applyFullRefresh,
   DbtRunOverridesError,
@@ -214,9 +218,6 @@ export interface DbtRunCiContext {
   installationId?: number;
 }
 
-/** A scheduled tick that started no run, and why. */
-type SkippedTickReason = "active_run" | "definition_missing";
-
 /**
  * Count a scheduled tick that started no run. Without this the tick leaves
  * no trace: an hourly job stuck behind a long build reads as "ran 87 times"
@@ -224,14 +225,17 @@ type SkippedTickReason = "active_run" | "definition_missing";
  */
 async function recordSkippedTick(
   jobId: Types.ObjectId,
-  reason: SkippedTickReason,
+  reason: DbtSkippedTickReason,
   details: Record<string, unknown> = {},
 ): Promise<void> {
   await DbtJob.updateOne(
     { _id: jobId },
     {
       $inc: { "scheduledRun.skippedCount": 1 },
-      $set: { "scheduledRun.lastSkippedAt": new Date() },
+      $set: {
+        "scheduledRun.lastSkippedAt": new Date(),
+        "scheduledRun.lastSkippedReason": reason,
+      },
     },
   ).catch(error => {
     logger.warn("Failed to count skipped dbt job tick", {
@@ -252,9 +256,11 @@ async function recordSkippedTick(
  * any. Counts the tick as skipped when it does.
  */
 async function collapseOntoActiveJobRun(
+  workspaceId: string | Types.ObjectId,
   jobId: Types.ObjectId,
 ): Promise<IDbtRun | null> {
   const active = await DbtRun.findOne({
+    workspaceId: new Types.ObjectId(workspaceId),
     jobId,
     status: { $in: ["queued", "running"] },
   }).sort({ createdAt: -1 });
@@ -361,6 +367,7 @@ export async function triggerDbtRun(params: {
 
   if (params.skipIfActive && params.jobId) {
     const active = await collapseOntoActiveJobRun(
+      params.workspaceId,
       new Types.ObjectId(params.jobId),
     );
     if (active) return active;
@@ -504,7 +511,7 @@ export async function recordCompletedAdhocDbtRun(params: {
   }
 }
 
-export { DbtJobDefinitionMissingError };
+export { DbtJobDefinitionMissingError, DbtJobNotScheduledAtCommitError };
 
 export async function triggerDbtJobRun(params: {
   workspaceId: string;
@@ -526,7 +533,7 @@ export async function triggerDbtJobRun(params: {
   // Scheduled ticks must not stack behind a still-active run of the job.
   // Checked before the commit is resolved: a collapsed tick costs no fetch.
   if (params.trigger === "schedule") {
-    const active = await collapseOntoActiveJobRun(job._id);
+    const active = await collapseOntoActiveJobRun(params.workspaceId, job._id);
     if (active) return active;
   }
 
@@ -539,6 +546,30 @@ export async function triggerDbtJobRun(params: {
       });
     }
     throw new DbtJobDefinitionMissingError(job, definition.sourceSha);
+  }
+
+  // The schedule lives in the file too. A tick fired by a row that is older
+  // than the commit must not run a job that commit disabled or unscheduled:
+  // the run would build that very commit. Manual and agent triggers are
+  // not ticks: `enabled` and `schedule` govern the schedule only, so they
+  // run the job as before.
+  if (params.trigger === "schedule" && definition.definitionSha) {
+    const reason = !definition.enabled
+      ? "disabled_in_file"
+      : !definition.scheduled
+        ? "unscheduled_in_file"
+        : null;
+    if (reason) {
+      await recordSkippedTick(job._id, reason, {
+        slug: job.slug,
+        sourceSha: definition.definitionSha,
+      });
+      throw new DbtJobNotScheduledAtCommitError(
+        job,
+        definition.definitionSha,
+        reason,
+      );
+    }
   }
 
   // Per-run inputs apply to this run only: nothing here writes to the job
@@ -572,6 +603,10 @@ type ResolvedJobDefinition =
       environment: string;
       commands: string[];
       deferToProduction: boolean;
+      /** The schedule switch: `enabled` of the file, or of the row. */
+      enabled: boolean;
+      /** True when the definition carries a cron schedule. */
+      scheduled: boolean;
       /** The commit the run builds. Null when there is no tree to pin. */
       sourceSha: string | null;
       /** Set only when the fields above came from the file at `sourceSha`. */
@@ -596,6 +631,8 @@ function requestDbtConfigSync(workspaceId: string): void {
  *
  * The commit is resolved ONCE and the job file is read at that commit, so
  * the commands and the code can never come from two different commits. The
+ * same holds for `enabled` and `schedule`: the caller refuses a scheduled
+ * tick the file at that commit no longer asks for. The
  * row is used only when there is no file to read (no repo, a pre-adoption
  * row) or the file at that commit is one the sync would refuse, in which
  * case the row is the last good definition.
@@ -609,6 +646,8 @@ async function resolveJobDefinition(
     environment: job.environment,
     commands: job.commands,
     deferToProduction: !!job.deferToProduction,
+    enabled: job.enabled !== false,
+    scheduled: Boolean(job.schedule?.cron),
     sourceSha,
   });
 
@@ -668,6 +707,8 @@ async function resolveJobDefinition(
     environment: atCommit.file.environment,
     commands: atCommit.file.commands,
     deferToProduction: atCommit.file.deferToProduction,
+    enabled: atCommit.file.enabled,
+    scheduled: Boolean(atCommit.file.schedule?.cron),
     sourceSha,
     definitionSha: sourceSha,
   };

@@ -1176,9 +1176,14 @@ export const createDbtServerTools = (
         "`fullRefresh` (adds --full-refresh to the job's run/build/seed " +
         "commands, which DROPS AND REBUILDS its incremental tables — state " +
         "that to the user before confirming). Invalid inputs come back as an " +
-        "error and queue nothing. Only call after the user explicitly " +
+        "error and queue nothing: that includes any field other than " +
+        "`projectId`, `jobId`, `vars` and `fullRefresh` (for example " +
+        "`full_refresh` or `overrides`), so a misspelt input never runs the " +
+        "job as saved. Only call after the user explicitly " +
         "confirms which job to run — never trigger prod jobs proactively.",
-      inputSchema: z.object({
+      // Strict: an unknown key is refused, never stripped. A stripped
+      // `full_refresh` would run the prod job with its defaults.
+      inputSchema: z.strictObject({
         projectId: projectIdField,
         jobId: z.string().describe("dbt job ID (from read_dbt_project_tree)"),
         vars: z
@@ -1495,8 +1500,11 @@ export const createDbtServerTools = (
         "`durationMs`, `queuedMs`, `stepCounts` by dbt status, the first " +
         "300 characters of its error, and, when set, `overrides` and " +
         "`definitionSha`. No step lists or logs. With `jobId` the result " +
-        "adds `skipped`: scheduled ticks dropped because a run of that job " +
-        "was still active. Returns " +
+        "adds `skipped`: scheduled ticks that started no run, with " +
+        "`lastReason`: `active_run` (a run of that job was still active), " +
+        "`definition_missing` (the job file was deleted), " +
+        "`disabled_in_file` or `unscheduled_in_file` (the job file on the " +
+        "default branch turned the schedule off). Returns " +
         `${DBT_RUN_LIST_DEFAULT_LIMIT} runs by default, at most ` +
         `${DBT_RUN_LIST_MAX_LIMIT}; pass the returned \`nextBefore\` as ` +
         "`before` for the next page (null means no older runs). History is " +

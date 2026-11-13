@@ -90,6 +90,7 @@ import {
 import { dbtRunQueueKeys } from "./dbt-run-queue";
 import {
   DbtJobDefinitionMissingError,
+  DbtJobNotScheduledAtCommitError,
   triggerDbtJobRun,
 } from "./dbt-run.service";
 import { runDbt, type DbtRunRequest } from "./runner.service";
@@ -767,6 +768,28 @@ describe("scheduler", () => {
 
     expect(result).toEqual({ checked: 1, triggered: 0 });
     expect(triggerJobMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Review B3: the file at the run's commit turned the schedule off.
+  it("treats a job its file disabled or unscheduled as a skipped tick, not a failure to retry", async () => {
+    const job = await seedDueJob();
+    for (const reason of ["disabled_in_file", "unscheduled_in_file"] as const) {
+      await DbtJob.updateOne(
+        { _id: job._id },
+        { $set: { "scheduledRun.nextAt": new Date(Date.now() - 60_000) } },
+      );
+      triggerJobMock.mockClear();
+      triggerJobMock.mockRejectedValueOnce(
+        new DbtJobNotScheduledAtCommitError(job, "a".repeat(40), reason),
+      );
+      const { step } = fakeStep();
+      const result = await handlerOf(dbtSchedulerFunction)({
+        event: { data: {} },
+        step,
+      });
+      expect(result).toEqual({ checked: 1, triggered: 0 });
+      expect(triggerJobMock).toHaveBeenCalledTimes(1);
+    }
   });
 
   it("still fails the step on any other trigger error", async () => {

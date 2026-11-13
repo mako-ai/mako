@@ -1088,13 +1088,30 @@ dbtRoutes.delete(
  * Per-run inputs of a manual trigger. Shape only: the limits (key pattern,
  * 50 keys, 4 KB, no clash with a command's own --vars) are enforced by
  * `validateRunOverrides` inside `triggerDbtJobRun`, shared with the agent tool.
+ *
+ * Strict: an unknown key is a 400. A stripped `full_refresh` or `overrides`
+ * would answer 200 and run the job with none of what the caller asked for.
  */
 const triggerJobBodySchema = z
   .object({
     vars: z.record(z.string(), z.unknown()).optional(),
     fullRefresh: z.boolean().optional(),
   })
+  .strict()
   .nullish();
+
+/** One line for a 400: the offending path, or the unknown keys by name. */
+function describeBodyIssue(issue: z.core.$ZodIssue | undefined): string {
+  if (!issue) return "Invalid body";
+  if (issue.code === "unrecognized_keys") {
+    return (
+      `Unknown field${issue.keys.length === 1 ? "" : "s"} ` +
+      `${issue.keys.map(key => `"${key}"`).join(", ")}: ` +
+      "the body accepts `vars` and `fullRefresh` only. No run started."
+    );
+  }
+  return `${issue.path.join(".") || "body"}: ${issue.message}`;
+}
 
 dbtRoutes.post(
   "/projects/:projectId/jobs/:jobId/trigger",
@@ -1121,13 +1138,7 @@ dbtRoutes.post(
         await c.req.json().catch(() => ({})),
       );
       if (!parsed.success) {
-        const issue = parsed.error.issues[0];
-        return badRequest(
-          c,
-          issue
-            ? `${issue.path.join(".") || "body"}: ${issue.message}`
-            : "Invalid body",
-        );
+        return badRequest(c, describeBodyIssue(parsed.error.issues[0]));
       }
       const { vars, fullRefresh } = parsed.data ?? {};
       const hasOverrides = vars !== undefined || fullRefresh !== undefined;

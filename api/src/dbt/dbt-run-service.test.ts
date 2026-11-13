@@ -93,6 +93,7 @@ import {
 import {
   autoDisableDbtJob,
   DbtJobDefinitionMissingError,
+  DbtJobNotScheduledAtCommitError,
   isStaleQueued,
   reconcileStaleQueuedRun,
   reenabledAfterAutoDisableFilter,
@@ -387,10 +388,125 @@ describe("triggerDbtJobRun: definition pinned to the run commit (#1237)", () => 
     const fresh = await DbtJob.findById(job._id);
     expect(fresh?.scheduledRun?.skippedCount).toBe(1);
     expect(fresh?.scheduledRun?.lastSkippedAt).toBeInstanceOf(Date);
+    expect(fresh?.scheduledRun?.lastSkippedReason).toBe("definition_missing");
     // The sync the trigger asked for removes the row, so the scheduler
     // stops finding the job.
     await settleConfigSync();
     expect(await DbtJob.findById(job._id)).toBeNull();
+  });
+
+  // Review B3. The trigger took commands, environment and defer from the
+  // file at the commit, and `enabled` and `schedule` from the stale row. A
+  // job disabled on main, whose row still said enabled, ran against prod.
+  it("skips a scheduled tick when the file at that commit says enabled: false", async () => {
+    const project = await seedProject();
+    // The row is what fired the tick: still enabled, still scheduled.
+    const job = await seedJobRow(project, jobFile());
+    const head = await pushJobFile(
+      serializeJobFile(jobFile({ enabled: false })),
+    );
+
+    const attempt = triggerDbtJobRun({
+      workspaceId: WS.toString(),
+      job,
+      trigger: "schedule",
+      triggeredBy: "scheduler",
+    });
+    await expect(attempt).rejects.toBeInstanceOf(
+      DbtJobNotScheduledAtCommitError,
+    );
+    await expect(attempt).rejects.toMatchObject({
+      reason: "disabled_in_file",
+      sourceSha: head,
+    });
+    await expect(attempt).rejects.toThrow(
+      /dbt\/jobs\/nightly\.yml at commit [0-9a-f]{7} of the default branch says enabled: false\. The scheduled tick was skipped\. No run started\./,
+    );
+
+    // Nothing ran and nothing was queued.
+    expect(await DbtRun.countDocuments({})).toBe(0);
+    expect(sendMock).not.toHaveBeenCalled();
+    // The tick is counted, with its reason.
+    const fresh = await DbtJob.findById(job._id);
+    expect(fresh?.scheduledRun?.skippedCount).toBe(1);
+    expect(fresh?.scheduledRun?.lastSkippedAt).toBeInstanceOf(Date);
+    expect(fresh?.scheduledRun?.lastSkippedReason).toBe("disabled_in_file");
+    // The sync the trigger asked for brings the row in line, so the
+    // scheduler stops picking the job.
+    await settleConfigSync();
+    expect((await DbtJob.findById(job._id))?.enabled).toBe(false);
+  });
+
+  it("skips a scheduled tick when the file at that commit has no schedule any more", async () => {
+    const project = await seedProject();
+    const job = await seedJobRow(project, jobFile());
+    await pushJobFile(serializeJobFile(jobFile({ schedule: null })));
+
+    await expect(
+      triggerDbtJobRun({
+        workspaceId: WS.toString(),
+        job,
+        trigger: "schedule",
+        triggeredBy: "scheduler",
+      }),
+    ).rejects.toMatchObject({
+      name: "DbtJobNotScheduledAtCommitError",
+      reason: "unscheduled_in_file",
+    });
+    expect(await DbtRun.countDocuments({})).toBe(0);
+    const fresh = await DbtJob.findById(job._id);
+    expect(fresh?.scheduledRun?.skippedCount).toBe(1);
+    expect(fresh?.scheduledRun?.lastSkippedReason).toBe("unscheduled_in_file");
+    await settleConfigSync();
+  });
+
+  // The decision for a manual trigger: `enabled` and `schedule` govern the
+  // schedule only. A person or an agent who triggers a disabled job gets a
+  // run, as before this change and as for a row that says enabled: false.
+  it("a manual or agent trigger still runs a job its file disables, and counts no skipped tick", async () => {
+    const project = await seedProject();
+    const job = await seedJobRow(project, jobFile());
+    const head = await pushJobFile(
+      serializeJobFile(jobFile({ enabled: false, schedule: null })),
+    );
+
+    for (const trigger of ["manual", "agent"] as const) {
+      const run = await triggerDbtJobRun({
+        workspaceId: WS.toString(),
+        job,
+        trigger,
+        triggeredBy: "u1",
+      });
+      expect(run.status).toBe("queued");
+      expect(run.definitionSha).toBe(head);
+    }
+    expect(await DbtRun.countDocuments({})).toBe(2);
+    expect(
+      (await DbtJob.findById(job._id))?.scheduledRun?.skippedCount,
+    ).toBeUndefined();
+    await settleConfigSync();
+  });
+
+  it("a scheduled tick still runs when the file at that commit keeps the job enabled and scheduled", async () => {
+    const project = await seedProject();
+    const job = await seedJobRow(project, jobFile());
+    // The cron moved. The job is still enabled and scheduled: it runs.
+    await pushJobFile(
+      serializeJobFile(
+        jobFile({ schedule: { cron: "0 7 * * *", timezone: "UTC" } }),
+      ),
+    );
+    const run = await triggerDbtJobRun({
+      workspaceId: WS.toString(),
+      job,
+      trigger: "schedule",
+      triggeredBy: "scheduler",
+    });
+    expect(run.status).toBe("queued");
+    expect(
+      (await DbtJob.findById(job._id))?.scheduledRun?.skippedCount,
+    ).toBeUndefined();
+    await settleConfigSync();
   });
 
   it("refuses a manual run of a deleted job without counting a skipped tick", async () => {

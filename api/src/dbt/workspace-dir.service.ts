@@ -23,9 +23,9 @@
  * that wait counts against the step's time budget. So runs the queue allows
  * to execute at once must not share a dir: the executor picks the dir owner
  * with `dbtRunWarmDirOwner` (dbt-run-queue.ts), which gives interactive runs
- * their own dir and, when `DBT_PROJECT_RUN_CONCURRENCY` > 1, each job its own.
- * At the default of 1, jobs of a project never overlap and keep the single
- * shared deploy dir.
+ * their own dir and, when `DBT_PROJECT_RUN_CONCURRENCY` > 1, each job its own
+ * and every other run a dir of its own. At the default of 1, jobs of a
+ * project never overlap and keep the single shared deploy dir.
  *
  * Cloud Run instances are ephemeral (their /tmp is cleared on recycle), so
  * warm dirs self-bound across deploys; a cold instance simply warms on first

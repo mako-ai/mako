@@ -4201,9 +4201,14 @@ export interface IDbtJob extends Document {
     lastDurationMs?: number;
     runCount: number;
     consecutiveFailures: number;
-    /** Scheduled ticks dropped because a run of this job was still active. */
+    /**
+     * Scheduled ticks that started no run: a run of this job was still
+     * active, or the job file at the commit said not to run it.
+     */
     skippedCount?: number;
     lastSkippedAt?: Date;
+    /** Why the last tick was skipped (`DbtSkippedTickReason`). */
+    lastSkippedReason?: string;
   };
   enabled: boolean;
   /** Reserved for Slim CI (--defer against the stored prod manifest). */
@@ -4249,6 +4254,7 @@ const DbtJobSchema = new Schema<IDbtJob>(
       consecutiveFailures: { type: Number, default: 0 },
       skippedCount: { type: Number },
       lastSkippedAt: { type: Date },
+      lastSkippedReason: { type: String },
     },
     enabled: { type: Boolean, default: true },
     deferToProduction: { type: Boolean, default: false },

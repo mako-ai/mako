@@ -793,6 +793,35 @@ describe("job trigger inputs", () => {
     expect(triggerJobMock).not.toHaveBeenCalled();
   });
 
+  // Review B5. The body schema stripped unknown keys, so each of these
+  // parsed to `{}`: the route answered 200 and the job ran as saved.
+  it("refuses an unknown key with a 400 and queues nothing", async () => {
+    const projectId = await createProjectAsOwner();
+    const jobId = await createJob(projectId);
+    triggerJobMock.mockClear();
+    const path = `/projects/${projectId}/jobs/${jobId}/trigger`;
+
+    const snakeCase = await req("POST", path, { full_refresh: true });
+    expect(snakeCase.status).toBe(400);
+    expect((await snakeCase.json()).error).toBe(
+      'Unknown field "full_refresh": the body accepts `vars` and ' +
+        "`fullRefresh` only. No run started.",
+    );
+
+    const nested = await req("POST", path, {
+      overrides: { vars: { start_date: "2026-01-01" } },
+    });
+    expect(nested.status).toBe(400);
+    expect((await nested.json()).error).toMatch(/^Unknown field "overrides"/);
+
+    // A known key beside an unknown one is refused whole.
+    const mixed = await req("POST", path, { fullRefresh: true, var: { a: 1 } });
+    expect(mixed.status).toBe(400);
+    expect((await mixed.json()).error).toMatch(/^Unknown field "var"/);
+
+    expect(triggerJobMock).not.toHaveBeenCalled();
+  });
+
   it("maps a rejected override to a 400 with its message", async () => {
     const projectId = await createProjectAsOwner();
     const jobId = await createJob(projectId);

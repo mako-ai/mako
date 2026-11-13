@@ -139,13 +139,24 @@ export function dbtRunFallbackQueueKeys(
  * wait on its in-process mutex inside a step, and that wait eats the step's
  * time budget.
  *
+ * With one slot per lane (N = 1, the default) the lanes alone keep runs
+ * apart, so every run keeps a directory that stays warm:
  *  - Interactive runs get their own directory, apart from any build.
  *  - Working-tree and laptop runs keep their per-user directory.
- *  - Job runs share the committed-deploy directory while the project runs
- *    one job at a time (N = 1, unchanged). With N > 1 each job gets its own.
+ *  - Job runs and other committed builds share the deploy directory.
+ *
+ * With N > 1 a lane runs several runs at once, and only the per-job lock
+ * still keeps two runs apart:
+ *  - A job run uses its job's directory (`job:<jobId>`): one job runs one
+ *    run at a time, so it is never shared and stays warm.
+ *  - Every other run gets a directory of its own (`run:<runId>`): two
+ *    validation runs of one user, two agent runs with no working tree, or
+ *    two ad-hoc builds would otherwise meet in one directory. It starts
+ *    cold (seeded from the artifact cache) and the sweep reaps it.
  */
 export function dbtRunWarmDirOwner(
   run: {
+    runId: string;
     lane: DbtRunLane;
     jobId?: string | null;
     workingTreeUserId?: string | null;
@@ -157,12 +168,20 @@ export function dbtRunWarmDirOwner(
   const treeOwner =
     run.workingTreeUserId ??
     (run.localOverlayKey ? `local:${run.triggeredBy}` : undefined);
+  if (projectConcurrency > 1) {
+    // A job run that carries a tree owner never builds in the job's
+    // committed dir: it gets one per (owner, job), still under the job lock.
+    if (run.jobId) {
+      return treeOwner ? `${treeOwner}:job:${run.jobId}` : `job:${run.jobId}`;
+    }
+    return run.lane === "interactive"
+      ? `interactive:run:${run.runId}`
+      : `run:${run.runId}`;
+  }
   if (run.lane === "interactive") {
     return treeOwner ? `interactive:${treeOwner}` : "interactive";
   }
-  if (treeOwner) return treeOwner;
-  if (run.jobId && projectConcurrency > 1) return `job:${run.jobId}`;
-  return undefined;
+  return treeOwner;
 }
 
 /** Runs listed in `queuedAhead`; the count stays exact past it. */
@@ -214,6 +233,8 @@ export interface DbtRunQueueInfo {
 
 type QueueRun = {
   _id: Types.ObjectId;
+  /** Scopes every lookup below to the run's own workspace. */
+  workspaceId?: Types.ObjectId;
   projectId?: Types.ObjectId;
   jobId?: Types.ObjectId;
   trigger?: string;
@@ -268,9 +289,13 @@ export async function describeQueuedRun(
   const lane: DbtRunLane = run.lane === "interactive" ? "interactive" : "job";
   const slots = dbtProjectRunConcurrency();
   const laneFilter = dbtRunLaneFilter(lane);
+  // Every read stays inside the run's workspace. It also lets the run
+  // lookups use the { workspaceId, projectId, createdAt } index.
+  const inWorkspace = run.workspaceId ? { workspaceId: run.workspaceId } : {};
 
   const [runningInLane, ahead] = await Promise.all([
     DbtRun.find({
+      ...inWorkspace,
       projectId: run.projectId,
       status: "running",
       _id: { $ne: run._id },
@@ -280,6 +305,7 @@ export async function describeQueuedRun(
       .select("_id jobId trigger commands createdAt startedAt")
       .lean(),
     DbtRun.find({
+      ...inWorkspace,
       projectId: run.projectId,
       status: "queued",
       _id: { $ne: run._id },
@@ -308,6 +334,7 @@ export async function describeQueuedRun(
   ];
   const jobs = jobIds.length
     ? await DbtJob.find({
+        ...inWorkspace,
         _id: { $in: jobIds.map(id => new Types.ObjectId(id)) },
       })
         .select("_id name")
@@ -348,6 +375,7 @@ export async function describeQueuedRun(
     };
     if (running.jobId) {
       const recent = await DbtRun.find({
+        ...inWorkspace,
         jobId: running.jobId,
         status: "success",
         durationMs: { $gt: 0 },

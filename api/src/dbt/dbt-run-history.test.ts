@@ -287,6 +287,48 @@ describe("listDbtRuns", () => {
     });
   });
 
+  it("returns why the last tick was skipped, when the job recorded it", async () => {
+    const lastSkippedAt = new Date(BASE - 30 * 60_000);
+    await jobs().insertOne({
+      _id: JOB,
+      workspaceId: WS,
+      projectId: PROJECT,
+      name: "Nightly",
+      environment: "prod",
+      commands: ["build"],
+      scheduledRun: {
+        runCount: 3,
+        consecutiveFailures: 0,
+        skippedCount: 1,
+        lastSkippedAt,
+        lastSkippedReason: "disabled_in_file",
+      },
+    });
+    const page = await listDbtRuns(params({ jobId: JOB.toString() }));
+    expect(page.skipped).toEqual({
+      count: 1,
+      lastAt: lastSkippedAt.toISOString(),
+      lastReason: "disabled_in_file",
+    });
+  });
+
+  it("names a job only inside the caller's workspace", async () => {
+    // A job row with the same id filed under another workspace.
+    await jobs().insertOne({
+      _id: JOB,
+      workspaceId: new Types.ObjectId(),
+      projectId: PROJECT,
+      name: "Another workspace's job",
+      environment: "prod",
+      commands: ["build"],
+    });
+    await insertRun(5, { jobId: JOB });
+    const page = await listDbtRuns(params());
+    expect(page.runs).toHaveLength(1);
+    expect(page.runs[0].jobId).toBe(JOB.toString());
+    expect(page.runs[0]).not.toHaveProperty("jobName");
+  });
+
   it("reports zero skipped ticks for a job that never skipped, or is gone", async () => {
     await jobs().insertOne({
       _id: JOB,

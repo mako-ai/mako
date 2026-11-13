@@ -200,6 +200,7 @@ describe("dbtRunLaneFilter", () => {
 
 describe("dbtRunWarmDirOwner", () => {
   const jobRun = {
+    runId: "r1",
     lane: "job" as const,
     jobId: "j1",
     triggeredBy: "scheduler",
@@ -208,50 +209,127 @@ describe("dbtRunWarmDirOwner", () => {
   it("at 1 slot, job runs keep the shared deploy directory (unchanged)", () => {
     expect(dbtRunWarmDirOwner(jobRun, 1)).toBeUndefined();
     expect(
-      dbtRunWarmDirOwner({ lane: "job", triggeredBy: "u1" }, 1),
+      dbtRunWarmDirOwner({ runId: "r1", lane: "job", triggeredBy: "u1" }, 1),
     ).toBeUndefined();
   });
 
-  it("above 1 slot, each job gets its own directory", () => {
-    expect(dbtRunWarmDirOwner(jobRun, 2)).toBe("job:j1");
-    expect(dbtRunWarmDirOwner({ ...jobRun, jobId: "j2" }, 2)).toBe("job:j2");
-    // A build without a job has no parallel twin to keep apart.
-    expect(
-      dbtRunWarmDirOwner({ lane: "job", triggeredBy: "u1" }, 2),
-    ).toBeUndefined();
-  });
-
-  it("working-tree and laptop builds keep their per-user directory", () => {
+  it("at 1 slot, working-tree and laptop builds keep their per-user directory", () => {
     expect(
       dbtRunWarmDirOwner(
-        { lane: "job", workingTreeUserId: "u1", triggeredBy: "agent" },
+        {
+          runId: "r1",
+          lane: "job",
+          workingTreeUserId: "u1",
+          triggeredBy: "agent",
+        },
         1,
       ),
     ).toBe("u1");
     expect(
       dbtRunWarmDirOwner(
-        { lane: "job", localOverlayKey: "overlay/k", triggeredBy: "u2" },
-        4,
+        {
+          runId: "r1",
+          lane: "job",
+          localOverlayKey: "overlay/k",
+          triggeredBy: "u2",
+        },
+        1,
       ),
     ).toBe("local:u2");
   });
 
-  it("an interactive run never shares a directory with a build, at any slot count", () => {
-    for (const slots of [1, 2]) {
+  it("at 1 slot, an interactive run has its own warm directory, apart from any build", () => {
+    expect(
+      dbtRunWarmDirOwner(
+        {
+          runId: "r1",
+          lane: "interactive",
+          workingTreeUserId: "u1",
+          triggeredBy: "agent",
+        },
+        1,
+      ),
+    ).toBe("interactive:u1");
+    expect(
+      dbtRunWarmDirOwner(
+        { runId: "r1", lane: "interactive", triggeredBy: "u1" },
+        1,
+      ),
+    ).toBe("interactive");
+  });
+
+  it("above 1 slot, each job gets its own directory", () => {
+    expect(dbtRunWarmDirOwner(jobRun, 2)).toBe("job:j1");
+    expect(dbtRunWarmDirOwner({ ...jobRun, jobId: "j2" }, 2)).toBe("job:j2");
+    // Two runs of one job never overlap (the job lock): one warm dir.
+    expect(dbtRunWarmDirOwner({ ...jobRun, runId: "r2" }, 2)).toBe("job:j1");
+  });
+
+  // Review A3. With 2 slots these pairs can execute at once. Each pair got
+  // one directory, so the second run waited on its mutex inside a step.
+  describe("above 1 slot, two runs that can execute at once never share a directory", () => {
+    const pairs: Array<
+      [string, Omit<Parameters<typeof dbtRunWarmDirOwner>[0], "runId">]
+    > = [
+      [
+        "two agent validation runs with no working tree",
+        { lane: "interactive", triggeredBy: "agent" },
+      ],
+      [
+        "two validation runs of one user's working tree",
+        { lane: "interactive", workingTreeUserId: "u1", triggeredBy: "agent" },
+      ],
+      [
+        "a CI run and an ad-hoc build, neither with a job",
+        { lane: "job", triggeredBy: "u1" },
+      ],
+      [
+        "two working-tree builds of one user",
+        { lane: "job", workingTreeUserId: "u1", triggeredBy: "agent" },
+      ],
+      [
+        "two laptop builds of one user",
+        { lane: "job", localOverlayKey: "overlay/k", triggeredBy: "u2" },
+      ],
+    ];
+    for (const [name, run] of pairs) {
+      it(name, () => {
+        for (const slots of [2, 16]) {
+          const first = dbtRunWarmDirOwner({ ...run, runId: "run-a" }, slots);
+          const second = dbtRunWarmDirOwner({ ...run, runId: "run-b" }, slots);
+          expect(first).toBeDefined();
+          expect(second).toBeDefined();
+          expect(first).not.toBe(second);
+          // Never the committed-deploy directory, and never a job's.
+          expect(first).toContain("run:run-a");
+          expect(second).toContain("run:run-b");
+        }
+      });
+    }
+
+    it("keeps an interactive run apart from a build of the same run id space", () => {
       expect(
         dbtRunWarmDirOwner(
-          {
-            lane: "interactive",
-            workingTreeUserId: "u1",
-            triggeredBy: "agent",
-          },
-          slots,
+          { runId: "r1", lane: "interactive", triggeredBy: "agent" },
+          2,
         ),
-      ).toBe("interactive:u1");
+      ).toBe("interactive:run:r1");
       expect(
-        dbtRunWarmDirOwner({ lane: "interactive", triggeredBy: "u1" }, slots),
-      ).toBe("interactive");
-    }
+        dbtRunWarmDirOwner({ runId: "r1", lane: "job", triggeredBy: "u1" }, 2),
+      ).toBe("run:r1");
+    });
+
+    it("a job run with a tree owner gets a directory per owner and job, never the job's committed one", () => {
+      expect(
+        dbtRunWarmDirOwner({ ...jobRun, workingTreeUserId: "u1" }, 2),
+      ).toBe("u1:job:j1");
+      expect(
+        dbtRunWarmDirOwner(
+          { ...jobRun, jobId: "j2", workingTreeUserId: "u1" },
+          2,
+        ),
+      ).toBe("u1:job:j2");
+    });
   });
 });
 
@@ -318,6 +396,45 @@ describe("describeQueuedRun", () => {
   it("returns null for a run that is not queued", async () => {
     const running = await seedRun({ status: "running" });
     expect(await describeQueuedRun(running, now)).toBeNull();
+  });
+
+  // Every lookup stays inside the queued run's workspace: a run or a job of
+  // another workspace is never named as what holds it back.
+  it("never reports a run or a job of another workspace", async () => {
+    const otherWorkspace = new Types.ObjectId();
+    const foreignJob = await DbtJob.create({
+      workspaceId: otherWorkspace,
+      projectId: PROJECT,
+      name: "Another workspace's job",
+      environment: "prod",
+      commands: ["build"],
+      createdBy: "u2",
+    });
+    await seedRun({
+      workspaceId: otherWorkspace,
+      jobId: foreignJob._id,
+      status: "running",
+      lane: "job",
+      startedAt: minutesAgo(5),
+    });
+    await seedRun({
+      workspaceId: otherWorkspace,
+      status: "queued",
+      lane: "job",
+      createdAt: minutesAgo(9),
+    });
+    const queued = await seedRun({
+      status: "queued",
+      lane: "job",
+      createdAt: minutesAgo(1),
+    });
+
+    const info = await describeQueuedRun(queued, now);
+
+    expect(info?.blockedBy).toBeNull();
+    expect(info?.runningCount).toBe(0);
+    expect(info?.queuedAheadCount).toBe(0);
+    expect(info?.reason).not.toContain("Another workspace");
   });
 
   it("1 slot: a queued build waits behind the running job, with an estimate", async () => {

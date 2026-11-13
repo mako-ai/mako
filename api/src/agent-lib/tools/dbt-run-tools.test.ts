@@ -596,6 +596,31 @@ describe("dbt_run_job inputs", () => {
     expect(accepts(tool, { ...ids, fullRefresh: "yes" })).toBe(false);
   });
 
+  // Review B5. The MCP server parses a call with this schema. A stripped
+  // unknown key would run the prod job with none of what the caller asked.
+  it("refuses an unknown input key instead of stripping it", () => {
+    const { dbt_run_job: tool } = createDbtServerTools(WS, "u1");
+    const ids = { projectId: "p", jobId: "j" };
+    expect(accepts(tool, { ...ids, full_refresh: true })).toBe(false);
+    expect(accepts(tool, { ...ids, overrides: { fullRefresh: true } })).toBe(
+      false,
+    );
+    expect(accepts(tool, { ...ids, fullRefresh: true, var: { a: 1 } })).toBe(
+      false,
+    );
+    const parsed = (
+      tool.inputSchema as unknown as {
+        safeParse: (input: unknown) => {
+          success: boolean;
+          error?: { message: string };
+        };
+      }
+    ).safeParse({ ...ids, full_refresh: true });
+    // The caller is told which key, so it can correct the call.
+    expect(parsed.error?.message).toContain("full_refresh");
+    expect(tool.description).toContain("a misspelt input never runs the");
+  });
+
   it("keeps the confirm-first safety text", () => {
     const { dbt_run_job: tool } = createDbtServerTools(WS, "u1");
     expect(tool.description).toContain(
