@@ -334,7 +334,12 @@ function shortestWalks(
         if (neighbour === node) continue;
         const cardinality = cardinalityOf(walk);
         if (trapped && cardinality === "one_to_many") continue;
-        const target = stateOf(neighbour, cardinality === "many_to_one");
+        // A one_to_one hop changes nothing: the walk is still "up a key".
+        const target = stateOf(
+          neighbour,
+          cardinality === "many_to_one" ||
+            (cardinality === "one_to_one" && state.endsWith("\u00001")),
+        );
         const known = distance.get(target);
         if (known === undefined) {
           distance.set(target, hop);
@@ -350,10 +355,15 @@ function shortestWalks(
     frontier = next;
   }
   if (reached.length === 0) return null;
+  const hops = distance.get(reached[0]) ?? 0;
   const walks: Walked[][] = [];
   let total = 0;
   const collect = (state: string, tail: Walked[]) => {
     if (state === start) {
+      // A node may be reached in two states: never keep a walk that passes
+      // through one node twice.
+      const nodes = [from, ...tail.map(rightOf)];
+      if (new Set(nodes).size !== nodes.length) return;
       total++;
       if (walks.length < MAX_RANKED_SEQUENCES) walks.push(tail);
       return;
@@ -365,7 +375,7 @@ function shortestWalks(
     }
   };
   for (const state of [...new Set(reached)].sort()) collect(state, []);
-  return { walks, total, hops: distance.get(reached[0]) ?? 0 };
+  return walks.length > 0 ? { walks, total, hops } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -523,18 +533,20 @@ function fanOutWarning(
 
 /**
  * The shared entity of a fan trap: a node the walk enters through
- * `many_to_one` and leaves through `one_to_many`. Two rows that meet there
+ * `many_to_one` and leaves through `one_to_many` (with any number of
+ * `one_to_one` hops in between). Two rows that meet there
  * have that node in common and nothing else (every enquiry of a broker
  * with every account the same broker closed).
  */
 function fanTrapOf(walks: Walked[]): string | undefined {
-  for (let i = 1; i < walks.length; i++) {
-    if (
-      cardinalityOf(walks[i - 1]) === "many_to_one" &&
-      cardinalityOf(walks[i]) === "one_to_many"
-    ) {
-      return leftOf(walks[i]);
-    }
+  // one_to_one hops are transparent: up a key, across an identity, then
+  // down another key is the same trap.
+  let up = false;
+  for (const walk of walks) {
+    const cardinality = cardinalityOf(walk);
+    if (cardinality === "many_to_one") up = true;
+    else if (cardinality === "one_to_many" && up) return leftOf(walk);
+    else if (cardinality !== "one_to_one") up = false;
   }
   return undefined;
 }

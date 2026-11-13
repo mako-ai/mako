@@ -753,6 +753,54 @@ relationships:
     }
   });
 
+  it("catches a pivot through a shared user: enquiry -> broker <- listing", () => {
+    // With no direct enquiry - listing relationship, the only way is the
+    // broker both name. The role-link flag is still in place: the two
+    // broker links are ordinary relationships.
+    const pivot = parseOntologyRegistry(
+      withoutPaths.replace(
+        / {2}- name: enquiry_about_listing[\s\S]*?source: hasura_fk\n/,
+        "",
+      ),
+    );
+    const result = findJoinPath(pivot, "enquiry", "listing");
+    expect(trail(result)).toEqual([
+      "enquiry -(enquiry_sent_to_crm_user)-> crm_user -(listing_managed_by_crm_user)-> listing",
+    ]);
+    expect(result.paths[0].suspect).toBe(true);
+    expect(result.paths[0].warning).toContain("only through a shared crm_user");
+    expect(result.message).toContain("No trustworthy declared path exists");
+  });
+
+  it("sees the trap through a one_to_one hop, and never walks a node twice", () => {
+    // listing -> crm_user -> crm_team -> organisation = account <- ...:
+    // up the keys to organisation, across the identity to account and back,
+    // then down to enquiry would hide the trap behind 2 one_to_one hops.
+    const result = findJoinPath(unflagged, "crm_team", "enquiry");
+    for (const path of result.paths) {
+      const nodes = [
+        path.steps[0].from.entity,
+        ...path.steps.map(step => step.to.entity),
+      ];
+      expect(new Set(nodes).size, nodes.join(">")).toBe(nodes.length);
+    }
+    const viaIdentity = parseOntologyRegistry(`
+entities:
+  - {name: team, canonical: {model: m_t}}
+  - {name: organisation, canonical: {model: m_o}}
+  - {name: account, canonical: {model: m_a}}
+  - {name: customer, canonical: {model: m_c}}
+relationships:
+  - {name: team_of_organisation, from: team, to: organisation, cardinality: many_to_one, join: [{from_column: org_id, to_column: id}]}
+  - {name: account_is_organisation, from: account, to: organisation, cardinality: one_to_one, join: [{from_column: org_id, to_column: id}]}
+  - {name: customer_of_account, from: customer, to: account, cardinality: many_to_one, join: [{from_column: account_id, to_column: id}]}
+`);
+    const trap = findJoinPath(viaIdentity, "team", "customer");
+    expect(trap.paths).toHaveLength(1);
+    expect(trap.paths[0].suspect).toBe(true);
+    expect(trap.paths[0].warning).toContain("only through a shared account");
+  });
+
   it("marks a raw-table path through a shared table too", () => {
     // activities - users - teams is up the keys; teams - users - activities
     // is down then up... the trap is activities.assigned_to with teams' users.

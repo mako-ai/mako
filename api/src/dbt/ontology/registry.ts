@@ -160,8 +160,9 @@ export function walkRelationships(
   const hops: WalkedRelationship[] = [];
   for (const name of via) {
     const relationship = byName.get(name.toLowerCase());
-    if (!relationship)
+    if (!relationship) {
       return { problem: `names an unknown relationship \`${name}\`` };
+    }
     const from = relationship.from.toLowerCase();
     const to = relationship.to.toLowerCase();
     if (from === at) {
