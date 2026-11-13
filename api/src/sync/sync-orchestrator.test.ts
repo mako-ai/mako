@@ -22,12 +22,31 @@ vi.mock("../database/workspace-schema", () => ({
   Flow: { db: { collection: vi.fn() } },
 }));
 
+vi.mock("./database-data-source-manager", () => ({
+  sourceConnectionManager: {
+    getSourceConnection: vi.fn().mockResolvedValue(null),
+  },
+}));
+
+// A tiny stateful destination: `staging` and `live` hold row ids, so a test
+// can assert where rows ended up, not just which methods were called.
+const staging: string[] = [];
+const live: string[] = [];
 const truncateLiveTable = vi.fn().mockResolvedValue(undefined);
-const prepareStaging = vi.fn().mockResolvedValue(undefined);
+const prepareStaging = vi.fn(async () => {
+  staging.length = 0;
+});
+const mergeFromStaging = vi.fn(async () => {
+  const written = staging.length;
+  live.push(...staging);
+  staging.length = 0;
+  return { written };
+});
 const fakeAdapter: Partial<CdcDestinationAdapter> = {
   destinationType: "bigquery",
   truncateLiveTable,
-  prepareStaging,
+  prepareStaging: prepareStaging as any,
+  mergeFromStaging: mergeFromStaging as any,
 };
 
 vi.mock("../sync-cdc/adapters/registry", async () => {
@@ -43,6 +62,7 @@ vi.mock("../sync-cdc/adapters/registry", async () => {
 import {
   performPrepareStaging,
   performOverwriteTruncate,
+  performRescueAndPrepareStaging,
 } from "./sync-orchestrator";
 
 const baseOptions = {
@@ -107,5 +127,82 @@ describe("Overwrite live-table truncation (bug B1)", () => {
 
     expect(truncateLiveTable).toHaveBeenCalledTimes(1);
     expect(prepareStaging).toHaveBeenCalledTimes(4);
+  });
+});
+
+/**
+ * Regression coverage for silent row loss in bulk backfills. A flush deletes
+ * each batch from the temp buffer once it is loaded into staging, so until
+ * the merge succeeds staging is the only copy. A retried flush step used to
+ * begin by dropping staging, losing every batch the failed attempt had
+ * loaded (seen as whole 2,000-row gaps in Close call backfills, with the run
+ * reporting "completed").
+ */
+// performStagingMerge builds an ObjectId from the flow id.
+const rescueOptions = { ...baseOptions, flowId: "69cf92622ebc493f45843489" };
+
+describe("Retry-safe staging prepare (lost flush batches)", () => {
+  beforeEach(() => {
+    staging.length = 0;
+    live.length = 0;
+    prepareStaging.mockClear();
+    mergeFromStaging.mockClear();
+    mergeFromStaging.mockImplementation(async () => {
+      const written = staging.length;
+      live.push(...staging);
+      staging.length = 0;
+      return { written };
+    });
+  });
+
+  it("a bare performPrepareStaging drops rows a failed attempt left in staging (the bug)", async () => {
+    staging.push("a", "b");
+    await performPrepareStaging(rescueOptions);
+    expect(live).toEqual([]);
+    expect(staging).toEqual([]);
+  });
+
+  it("merges rows left in staging into live before dropping it", async () => {
+    // Attempt 1 loaded two batches into staging (and deleted them from the
+    // buffer), then its merge failed. Attempt 2 starts here.
+    staging.push("a", "b");
+    const result = await performRescueAndPrepareStaging(rescueOptions);
+
+    expect(result).toEqual({ rescued: 2 });
+    expect(live).toEqual(["a", "b"]);
+    expect(staging).toEqual([]);
+    expect(mergeFromStaging.mock.invocationCallOrder[0]).toBeLessThan(
+      prepareStaging.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("is a no-op rescue when staging is empty, and still prepares staging", async () => {
+    const result = await performRescueAndPrepareStaging(rescueOptions);
+    expect(result).toEqual({ rescued: 0 });
+    expect(prepareStaging).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not drop staging when the rescue merge fails", async () => {
+    staging.push("a", "b");
+    mergeFromStaging.mockRejectedValueOnce(new Error("Job timed out"));
+
+    await expect(performRescueAndPrepareStaging(rescueOptions)).rejects.toThrow(
+      "Job timed out",
+    );
+    expect(prepareStaging).not.toHaveBeenCalled();
+    expect(staging).toEqual(["a", "b"]);
+
+    // The next retry merges them.
+    await performRescueAndPrepareStaging(rescueOptions);
+    expect(live).toEqual(["a", "b"]);
+  });
+
+  it("treats a missing staging table as nothing to rescue", async () => {
+    mergeFromStaging.mockRejectedValueOnce(
+      new Error("Not found: Table p:d.users__backfill_staging"),
+    );
+    const result = await performRescueAndPrepareStaging(rescueOptions);
+    expect(result).toEqual({ rescued: 0 });
+    expect(prepareStaging).toHaveBeenCalledTimes(1);
   });
 });

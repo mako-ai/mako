@@ -1140,6 +1140,44 @@ export async function performPrepareStaging(
   });
 }
 
+/**
+ * Merges whatever a previous attempt left in the backfill staging table into
+ * live, then drops the staging table for a fresh load.
+ *
+ * Use this instead of a bare `performPrepareStaging` wherever a flush follows.
+ * `performBulkFlush` deletes each batch from the temp buffer as soon as it is
+ * loaded into staging, so between that delete and a successful merge the
+ * staging table is the ONLY copy of those rows. An Inngest retry of the step
+ * (merge timeout, instance restart) used to start by dropping staging, which
+ * lost every batch the failed attempt had already loaded — whole
+ * FLUSH_BATCH_SIZE blocks, with the run still reporting "completed".
+ *
+ * A merge failure is rethrown, so the caller never goes on to drop staging
+ * rows it could not merge. Adapters return `{ written: 0 }` for a missing or
+ * empty staging table; a "not found" error is treated the same way.
+ */
+export async function performRescueAndPrepareStaging(
+  options: SyncChunkOptions,
+): Promise<{ rescued: number }> {
+  let rescued = 0;
+  try {
+    rescued = (await performStagingMerge(options)).written;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!/not found|does ?n[o']t exist|unknown table/i.test(message)) {
+      throw err;
+    }
+  }
+  if (rescued > 0) {
+    orchestratorLogger.warn(
+      "Rescued staging rows left by a previous attempt before dropping staging",
+      { entity: options.entity, flowId: options.flowId, rescued },
+    );
+  }
+  await performPrepareStaging(options);
+  return { rescued };
+}
+
 export function getTempCollectionCount(
   flowId: string,
   entity: string,
