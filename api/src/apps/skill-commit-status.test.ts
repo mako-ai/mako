@@ -12,6 +12,7 @@ const state = vi.hoisted(() => ({
     skills: [] as Array<{ name: string }>,
     invalid: [] as Array<{ name: string; path: string; reason: string }>,
     warnings: [] as Array<{ name: string; path: string; reason: string }>,
+    incomplete: undefined as boolean | undefined,
   },
   target: { kind: "connected", owner: "acme", repo: "workspace" } as null | {
     kind: "connected";
@@ -99,6 +100,7 @@ beforeEach(() => {
     skills: skills(139),
     invalid: [],
     warnings: [],
+    incomplete: undefined,
   };
   state.target = { kind: "connected", owner: "acme", repo: "workspace" };
   state.token = "ghs_token";
@@ -223,6 +225,21 @@ describe("reportSkillsCommitStatus", () => {
     state.token = undefined;
     expect((await reportSkillsCommitStatus(WS)).reason).toBe("no-token");
     expect(state.posts).toEqual([]);
+  });
+
+  it("posts nothing from a catalog git could not fully read", async () => {
+    state.catalog.incomplete = true;
+    state.catalog.invalid = [
+      { ...glossary, reason: "the file could not be read just now; retry" },
+    ];
+    expect(await reportSkillsCommitStatus(WS)).toEqual({
+      posted: false,
+      reason: "incomplete",
+    });
+    state.catalog.incomplete = undefined;
+    state.catalog.invalid = [];
+    expect(await reportSkillsCommitStatus(WS)).toEqual({ posted: true });
+    expect(state.posts.map(post => post.params.state)).toEqual(["success"]);
   });
 
   it("never throws: a GitHub error is swallowed and the next push retries", async () => {

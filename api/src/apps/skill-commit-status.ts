@@ -129,6 +129,9 @@ export async function reportSkillsCommitStatus(
     const catalog = await loadSkillCatalog(workspaceId);
     head = catalog.head;
     if (!head) return { posted: false, reason: "no-repo" };
+    // A file git could not read just now is not a hidden skill: say nothing
+    // and let the next push, or the next read, try again.
+    if (catalog.incomplete) return { posted: false, reason: "incomplete" };
     const status = describeSkillsStatus(catalog);
     if (!status) return { posted: false, reason: "no-skills" };
     if (catalog.invalid.length > 0 || catalog.warnings.length > 0) {

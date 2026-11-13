@@ -650,6 +650,84 @@ describe("skill tools: hidden files, resources, usage", () => {
     ).toMatchObject({ success: false });
   });
 
+  it("load_skill and read_skill_resource say why a hidden skill does not load", async () => {
+    const tools = createSkillTools(WS, "u1");
+    const why =
+      'skill "glossary" is hidden from the agent: skills/glossary/SKILL.md (body 24,713 chars over the 20,000 limit). Tell the user and name the fix.';
+    expect(await run(tools.load_skill, { name: "glossary" })).toEqual({
+      success: false,
+      error: why,
+    });
+    expect(
+      await run(tools.read_skill_resource, {
+        name: "glossary",
+        path: "references/terms.md",
+      }),
+    ).toEqual({ success: false, error: why });
+    expect(await run(tools.load_skill, { name: "no_such_skill" })).toEqual({
+      success: false,
+      error: 'skill "no_such_skill" not found',
+    });
+    expect(await SkillUsageDaily.countDocuments({})).toBe(0);
+  });
+
+  it("a hidden workspace override of a system skill is named beside the system body", async () => {
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: { [skillFilePath("apps")]: "---\nname: apps\n---\n\nOurs.\n" },
+      },
+      { message: "laptop" },
+    );
+    invalidateSkillCatalog(WS);
+    const tools = createSkillTools(WS, "u1");
+    const loaded = await run<{
+      success: boolean;
+      skill: { id: string };
+      notice?: string;
+    }>(tools.load_skill, { name: "apps" });
+    expect(loaded.success).toBe(true);
+    expect(loaded.skill.id).toBe("system:apps");
+    expect(loaded.notice).toBe(
+      "This is the system skill. The workspace's own skills/apps/SKILL.md is hidden from the agent (front matter has no `description`). Tell the user and name the fix.",
+    );
+    const plain = await run<{ notice?: string }>(tools.load_skill, {
+      name: "dbt",
+    });
+    expect(plain.notice).toBeUndefined();
+  });
+
+  it("the admin list leaves usage out when it cannot be read: no false 0", async () => {
+    const aggregate = vi
+      .spyOn(SkillUsageDaily, "aggregate")
+      .mockImplementation(() => {
+        throw new Error("mongo is down");
+      });
+    try {
+      const list = await listSkillsForAdmin(WS);
+      const recon = list.find(s => s.name === "recon");
+      expect(recon).toMatchObject({ name: "recon", definitionInvalid: null });
+      expect(recon).not.toHaveProperty("loads30d");
+      expect(recon).not.toHaveProperty("lastLoadedAt");
+      expect(list.find(s => s.name === "glossary")).not.toHaveProperty(
+        "loads30d",
+      );
+      const tools = createSkillTools(WS, "u1");
+      const listing = await run<{ skills: Array<Record<string, unknown>> }>(
+        tools.list_skills,
+        {},
+      );
+      expect(listing.skills.find(s => s.name === "recon")).toEqual({
+        name: "recon",
+        loadWhen: "when asked about recon",
+        scope: "workspace",
+      });
+    } finally {
+      aggregate.mockRestore();
+    }
+  });
+
   it("get_relevant_skills says when the query names a hidden skill", async () => {
     const tools = createSkillTools(WS, "u1");
     type Relevant = {
@@ -681,6 +759,26 @@ describe("skill tools: hidden files, resources, usage", () => {
       query: "glossary",
     });
     expect(searched.notice).toMatch(/skills\/glossary\/SKILL\.md/);
+
+    // A name inside a longer word is no match; the name as a word is.
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { [skillFilePath("sql")]: "no front matter\n" } },
+      { message: "laptop" },
+    );
+    invalidateSkillCatalog(WS);
+    for (const query of ["postgresql revenue", "nosql_store", "sqlite"]) {
+      const inside = await run<Relevant>(tools.get_relevant_skills, { query });
+      expect(inside.notice, query).toBeUndefined();
+    }
+    for (const query of ["sql tips", "our SQL", "which sql?"]) {
+      const word = await run<Relevant>(tools.get_relevant_skills, { query });
+      expect(
+        word.invalid?.map(file => file.name),
+        query,
+      ).toEqual(["sql"]);
+    }
   });
 
   it("the admin list carries warnings, resources and usage", async () => {

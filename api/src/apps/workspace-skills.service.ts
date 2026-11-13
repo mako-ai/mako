@@ -102,6 +102,12 @@ export interface SkillCatalog {
   invalid: InvalidSkillFile[];
   /** Loaded skills with a problem worth a line: a cut description, a refused resource. */
   warnings: SkillFileWarning[];
+  /**
+   * A skill file could not be read from git (a timeout, a spawn error): it
+   * sits in `invalid` for this read only. The catalog is not cached and no
+   * commit status is posted from it, so the next read tries again.
+   */
+  incomplete?: boolean;
 }
 
 /**
@@ -170,8 +176,9 @@ export async function loadSkillCatalog(
   catalogBuilds.set(workspaceId, build);
   try {
     const catalog = await build.catalog;
-    // An invalidation during the build means this result may be stale.
-    if (catalogBuilds.get(workspaceId) === build) {
+    // An invalidation during the build means this result may be stale; a
+    // read error means it is incomplete. Neither is kept.
+    if (catalogBuilds.get(workspaceId) === build && !catalog.incomplete) {
       cacheCatalog(workspaceId, catalog);
     }
     return catalog;
@@ -195,6 +202,7 @@ async function buildSkillCatalog(
   const skills: WorkspaceSkill[] = [];
   const invalid: InvalidSkillFile[] = [];
   const warnings: SkillFileWarning[] = [];
+  let incomplete = false;
   // One tree read serves both the skill files and their resource folders.
   const tree = (await listTree(repoDir, head)).filter(entry =>
     entry.path.startsWith(`${SKILLS_DIR}/`),
@@ -203,6 +211,7 @@ async function buildSkillCatalog(
     .map(entry => entry.path)
     .filter(path => /^skills\/[^/]+\/SKILL\.md$/.test(path))
     .slice(0, 1000);
+  const sizeOf = new Map(tree.map(entry => [entry.path, entry.size]));
   for (const path of paths.sort()) {
     const name = skillNameFromPath(path);
     if (!name) {
@@ -215,21 +224,29 @@ async function buildSkillCatalog(
     }
     let contents: string | null = null;
     let invalidReason: string | null = null;
-    try {
-      const blob = await readBlob(repoDir, head, path);
-      if (blob.isBinary) {
-        invalidReason = "binary file: SKILL.md must be text";
-      } else if (blob.size > MAX_SKILL_FILE_BYTES) {
-        invalidReason = `file ${formatCount(blob.size)} bytes over the ${formatCount(MAX_SKILL_FILE_BYTES)} limit`;
-      } else {
-        contents = blob.contents;
+    // The tree already knows the size: an oversized file is never read.
+    const treeSize = sizeOf.get(path) ?? 0;
+    if (treeSize > MAX_SKILL_FILE_BYTES) {
+      invalidReason = `file ${formatCount(treeSize)} bytes over the ${formatCount(MAX_SKILL_FILE_BYTES)} limit`;
+    } else {
+      try {
+        const blob = await readBlob(repoDir, head, path);
+        if (blob.isBinary) {
+          invalidReason = "binary file: SKILL.md must be text";
+        } else {
+          contents = blob.contents;
+        }
+      } catch (error) {
+        // The path came from this commit's tree, so the file exists: a
+        // failed read is the machine's problem, not the author's.
+        incomplete = true;
+        invalidReason = "the file could not be read just now; retry";
+        logger.warn("Unreadable skill file at main", {
+          workspaceId,
+          path,
+          error,
+        });
       }
-    } catch (error) {
-      logger.warn("Unreadable skill file at main", {
-        workspaceId,
-        path,
-        error,
-      });
     }
     const result =
       contents === null ? null : parseSkillFileDetailed(name, contents);
@@ -291,7 +308,14 @@ async function buildSkillCatalog(
       refusedResources: refused,
     });
   }
-  return { workspaceId, head, skills, invalid, warnings };
+  return {
+    workspaceId,
+    head,
+    skills,
+    invalid,
+    warnings,
+    ...(incomplete ? { incomplete: true } : {}),
+  };
 }
 
 /** Drop the cached catalog; the next read rebuilds from main. */

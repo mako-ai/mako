@@ -6,7 +6,15 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
@@ -22,6 +30,7 @@ import {
   serializeSkillFile,
   skillFilePath,
 } from "./skill-files";
+import * as repository from "./repository.service";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -328,6 +337,32 @@ describe("a hidden skill file says why", () => {
     // The old null-on-failure parser is unchanged for its callers.
     expect(parseSkillFile("pricing", "Just prose.\n")).toBeNull();
     expect(parseSkillFileDetailed("keeper", "Just prose.\n").ok).toBe(false);
+  });
+
+  it("a read git fails on is not a hidden skill: nothing is cached, the next read recovers", async () => {
+    await laptopCommit({
+      [skillFilePath("keeper")]: serializeSkillFile(skill("keeper")),
+    });
+    const read = vi
+      .spyOn(repository, "readBlob")
+      .mockRejectedValueOnce(new Error("git show timed out after 30000ms"));
+    try {
+      const flaky = await loadSkillCatalog(WS);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(flaky.incomplete).toBe(true);
+      expect(flaky.skills).toEqual([]);
+      expect(flaky.invalid.map(file => file.reason)).toEqual([
+        "the file could not be read just now; retry",
+      ]);
+      const next = await loadSkillCatalog(WS);
+      expect(next).not.toBe(flaky);
+      expect(next.incomplete).toBeUndefined();
+      expect(next.skills.map(s => s.name)).toEqual(["keeper"]);
+      expect(next.invalid).toEqual([]);
+      expect(await loadSkillCatalog(WS)).toBe(next);
+    } finally {
+      read.mockRestore();
+    }
   });
 
   it("warns on a description the index cuts, and keeps the skill", async () => {

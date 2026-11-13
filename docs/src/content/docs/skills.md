@@ -55,12 +55,15 @@ New skills proposed by the agent are committed with `suppressed: true`. Activate
 
 ## Hidden Skills
 
-A skill file that breaks a limit or does not parse is hidden: it stays out of the index, and `load_skill` does not find it. Mako reports each hidden file with its path and the reason in four places:
+A skill file that breaks a limit or does not parse is hidden: it stays out of the index, and `load_skill` does not find it. Mako reports each hidden file with its path and the reason in five places:
 
 1. **The commit.** Every push to main gets a `mako/skills` commit status on GitHub. One hidden file fails the commit and the status names it: `1 skill file hidden from the agent: skills/glossary/SKILL.md: body 24,713 chars over the 20,000 limit`. A warning passes the commit and shows in the status text. A workspace with no skill files gets no status.
 2. **`list_skills`.** Hidden files come back under `invalid`, warnings under `warnings`.
 3. **`get_relevant_skills` and `search_skills`.** A query that names a hidden skill returns a `notice` with the file and the reason.
-4. **Settings → Skills.** A hidden file shows "invalid file" with the reason. A warning shows under the skill.
+4. **`load_skill` and `read_skill_resource`.** A call that names a hidden skill returns an error with the file and the reason. When a system skill of the same name loads in its place, the result carries a `notice`.
+5. **Settings → Skills.** A hidden file shows "invalid file" with the reason. A warning shows under the skill.
+
+A file that git fails to read (a timeout) is reported as `the file could not be read just now; retry`. Mako posts no status for it and reads it again on the next call.
 
 The reasons:
 

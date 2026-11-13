@@ -267,6 +267,8 @@ export async function loadSkill(
         /** Files `read_skill_resource` serves for this skill: path and bytes. */
         resources: SkillResource[];
       };
+      /** Set when a hidden workspace file of this name was passed over. */
+      notice?: string;
     }
   | { success: false; error: string }
 > {
@@ -288,9 +290,14 @@ export async function loadSkill(
       },
     };
   }
+  // The name may be a workspace file that is hidden: say so, with the reason.
+  const hidden = await findInvalidSkillByName(workspaceId, name);
   const systemSkill = getSystemSkill(name.trim());
   if (!systemSkill) {
-    return { success: false, error: `skill "${name}" not found` };
+    return {
+      success: false,
+      error: hidden ? hiddenSkillError(hidden) : `skill "${name}" not found`,
+    };
   }
   return {
     success: true,
@@ -303,7 +310,32 @@ export async function loadSkill(
       pinned: false,
       resources: getSystemSkillResources(systemSkill.name),
     },
+    ...(hidden
+      ? {
+          notice: `This is the system skill. The workspace's own ${hidden.path} is hidden from the agent (${hidden.reason}). Tell the user and name the fix.`,
+        }
+      : {}),
   };
+}
+
+/** The hidden workspace file a name points at: its folder, `-` and `_` folded. */
+async function findInvalidSkillByName(
+  workspaceId: string,
+  name: string,
+): Promise<InvalidSkillFile | null> {
+  const invalid = (await loadSkillCatalog(workspaceId)).invalid;
+  const trimmed = name.trim();
+  return (
+    invalid.find(file => file.name === trimmed) ??
+    invalid.find(
+      file => canonicalSkillName(file.name) === canonicalSkillName(trimmed),
+    ) ??
+    null
+  );
+}
+
+function hiddenSkillError(file: InvalidSkillFile): string {
+  return `skill "${file.name}" is hidden from the agent: ${file.path} (${file.reason}). Tell the user and name the fix.`;
 }
 
 /**
@@ -345,7 +377,11 @@ export async function readSkillResource(
   const read = readSystemSkillResource(name, relPath);
   if (read.success) return { ...read, scope: "system" };
   if (!getSystemSkill(name.trim())) {
-    return { success: false, error: `skill "${name}" not found` };
+    const hidden = await findInvalidSkillByName(workspaceId, name);
+    return {
+      success: false,
+      error: hidden ? hiddenSkillError(hidden) : `skill "${name}" not found`,
+    };
   }
   return read;
 }
@@ -455,7 +491,8 @@ function nameWords(name: string): string[] {
 
 /**
  * Hidden skill files a query asked for by name: the query holds the whole
- * name (`-` and `_` folded), or every word of it. A search that would have
+ * name as a word (`-` and `_` folded), or every word of it. A name inside a
+ * longer word (`sql` in "postgresql") is no match. A search that would have
  * found the skill says so, instead of returning the next best match as if
  * nothing were missing.
  */
@@ -474,7 +511,15 @@ export async function findInvalidSkillsMatching(
   );
   return invalid.filter(file => {
     const whole = canonicalSkillName(file.name);
-    if (whole.length >= 3 && folded.includes(whole)) return true;
+    const at = whole.length >= 3 ? folded.indexOf(whole) : -1;
+    const wordChar = /[a-z0-9_]/;
+    if (
+      at >= 0 &&
+      !wordChar.test(folded[at - 1] ?? " ") &&
+      !wordChar.test(folded[at + whole.length] ?? " ")
+    ) {
+      return true;
+    }
     const wanted = nameWords(file.name);
     return wanted.length > 0 && wanted.every(word => words.has(word));
   });
@@ -625,10 +670,14 @@ export interface AdminSkillSummary {
   warnings: string[];
   /** Files `read_skill_resource` serves for this skill. */
   resources: SkillResource[];
-  /** Loads, resource reads and keyword-match bodies in the last 30 days. */
-  loads30d: number;
+  /**
+   * Loads, resource reads and keyword-match bodies in the last 30 days.
+   * Absent, with `lastLoadedAt`, when the usage numbers cannot be read: a
+   * listing never shows a false 0.
+   */
+  loads30d?: number;
   /** Last read of any kind (ISO time), null when never read. */
-  lastLoadedAt: string | null;
+  lastLoadedAt?: string | null;
 }
 
 export interface AdminSkillDetail extends AdminSkillSummary {
@@ -636,11 +685,11 @@ export interface AdminSkillDetail extends AdminSkillSummary {
 }
 
 function usageFields(
-  usage: Map<string, SkillUsageSummary> | null,
+  usage: Map<string, SkillUsageSummary>,
   scope: "workspace" | "system",
   name: string,
 ): { loads30d: number; lastLoadedAt: string | null } {
-  const entry = usage?.get(skillUsageKey(scope, name));
+  const entry = usage.get(skillUsageKey(scope, name));
   return {
     loads30d: entry?.loads30d ?? 0,
     lastLoadedAt: entry?.lastLoadedAt?.toISOString() ?? null,
@@ -694,7 +743,7 @@ function summaryOf(
     definitionInvalid: null,
     warnings,
     resources: skill.resources,
-    ...usageFields(usage, "workspace", skill.name),
+    ...(usage ? usageFields(usage, "workspace", skill.name) : {}),
   };
 }
 
@@ -720,8 +769,7 @@ export async function listSkillsForAdmin(
       definitionInvalid: { reason: file.reason, path: file.path },
       warnings: [],
       resources: [],
-      loads30d: 0,
-      lastLoadedAt: null,
+      ...(usage ? { loads30d: 0, lastLoadedAt: null } : {}),
     })),
   ];
 }
