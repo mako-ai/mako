@@ -65,7 +65,7 @@ A **Google service account** connection stores the service account's JSON key fi
 
 The connection's **Access** tab decides who may call it:
 
-- **Live reads**: off for every connection until a manager turns them on. Then anyone in the workspace (workflows and agents included) may read: GET and HEAD, a GraphQL query, a Close search or a Close POST read as GET.
+- **Allowed to read live**: a dropdown with **Off** (the default for every connection), **Everyone in the workspace** and **Only people listed**. With everyone, anyone in the workspace (workflows and agents included) may read: GET and HEAD, a GraphQL query, a Close search or a Close POST read as GET. With a list, only the people and single deployed workflows on it, and the connection's writers, read live (starting a list adds you; going back to everyone asks first). Reading an entity with `probe_connection` is a live read and follows the same rule, except for the connection's managers and the workspace owner; a credential-only probe (no entity) stays open. Over the API, the writers route takes `liveReads` and `liveReaders` (`null` means everyone).
 - **Writers**: who may write (POST, PUT, PATCH, DELETE). Add people, single deployed workflows, or **All deployed workflows**. Each deployed workflow acts as itself (its step's pass), so one can be allowed without the others. Viewers and agents never write, and a person who left the workspace can no longer call it at all.
 - **Refused attempts**: every write, allowed or not, is logged; refused ones are listed with who tried, so a manager can allow that person or the deployed workflows (an agent's attempt cannot be allowed).
 
