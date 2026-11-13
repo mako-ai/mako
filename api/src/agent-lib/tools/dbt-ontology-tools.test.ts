@@ -781,6 +781,30 @@ describe("model_readers", () => {
     });
   });
 
+  it("names the first 5 bindings of an app and counts the rest", async () => {
+    await seedProject();
+    await commit(
+      Object.fromEntries(
+        Array.from({ length: 8 }, (_, i) => [
+          `apps/finance/mrr/bindings/extra_${i}.sql`,
+          "-- connection: c1\nselect * from {{ dbt_schema }}.dim_account\n",
+        ]),
+      ),
+    );
+    const result = await run<{
+      bindings: number;
+      readers: Array<{
+        path: string;
+        bindings: string[];
+        bindingCount?: number;
+      }>;
+    }>(tools.model_readers, { name: "dim_account" });
+    const mrr = result.readers.find(r => r.path === "apps/finance/mrr");
+    expect(mrr?.bindings).toHaveLength(5);
+    expect(mrr?.bindingCount).toBe(9);
+    expect(result.bindings).toBe(11);
+  });
+
   it("hides a private app's readers from another user", async () => {
     await seedProject();
     const result = await run<{

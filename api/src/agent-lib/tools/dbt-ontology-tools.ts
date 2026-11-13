@@ -72,6 +72,10 @@ const DEFINITION_CHARS = 1200;
 const MAX_COLUMNS = 200;
 const MAX_LINEAGE = 50;
 const MAX_READERS = 50;
+/** Readers listed inside describe_model; model_readers lists MAX_READERS. */
+const MAX_DESCRIBE_READERS = 15;
+const MAX_BINDINGS_PER_READER = 5;
+const MAX_EXPOSURES = 10;
 const MAX_META_CHARS = 1500;
 const MAX_TERM_MATCHES = 5;
 const NO_MANIFEST =
@@ -151,11 +155,15 @@ function compactMeta(meta: Record<string, unknown>) {
 }
 
 function readerSummary(reader: ModelReader) {
+  // One app can read a model from dozens of bindings: name the first few
+  // and count the rest, so 40 readers stay a few kilobytes.
+  const bindings = capList(reader.bindings, MAX_BINDINGS_PER_READER);
   return {
     app: reader.appId,
     title: reader.title,
     path: reader.path,
-    bindings: reader.bindings,
+    bindings: bindings.items,
+    ...(bindings.truncated ? { bindingCount: bindings.total } : {}),
   };
 }
 
@@ -276,8 +284,9 @@ export const createDbtOntologyTools = (
     const upstream = capList(node.parents, MAX_LINEAGE);
     const downstream = capList(node.children, MAX_LINEAGE);
     const readers = apps
-      ? capList(readersOfNode(apps, node), MAX_READERS)
+      ? capList(readersOfNode(apps, node), MAX_DESCRIBE_READERS)
       : null;
+    const exposures = capList(node.exposures, MAX_EXPOSURES);
     const warnings = variantWarnings(roles);
     return {
       name: node.name,
@@ -325,14 +334,22 @@ export const createDbtOntologyTools = (
       ...(upstream.truncated ? { upstreamTotal: upstream.total } : {}),
       downstream: downstream.items,
       ...(downstream.truncated ? { downstreamTotal: downstream.total } : {}),
-      ...(node.exposures.length
-        ? { exposures: node.exposures.slice(0, 25) }
+      ...(exposures.total
+        ? {
+            exposures: exposures.items,
+            ...(exposures.truncated ? { exposuresTotal: exposures.total } : {}),
+          }
         : {}),
       readers: readers
         ? {
             apps: readers.total,
             items: readers.items.map(readerSummary),
-            ...(readers.truncated ? { truncated: true } : {}),
+            ...(readers.truncated
+              ? {
+                  truncated: true,
+                  note: "model_readers lists every reading app.",
+                }
+              : {}),
           }
         : { unavailable: true },
       ...(roles?.canonicalFor.length

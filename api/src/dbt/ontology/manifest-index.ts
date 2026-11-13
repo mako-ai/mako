@@ -210,9 +210,9 @@ export function statedGrain(
   }
   if (!description) return undefined;
   const labelled = /\bgrain\s*(?:is|:|=)\s*([^.\n]+)/i.exec(description);
-  if (labelled) return labelled[1].trim().slice(0, 160);
+  if (labelled) return truncateText(labelled[1], 160);
   const rowPer = /\b(one row per [^.\n]+)/i.exec(description);
-  return rowPer ? rowPer[1].trim().slice(0, 160) : undefined;
+  return rowPer ? truncateText(rowPer[1], 160) : undefined;
 }
 
 function testLabel(test: RawNode): string {
