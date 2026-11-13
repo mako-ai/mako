@@ -3,7 +3,7 @@ import { Flow } from "../../database/workspace-schema";
 import {
   performSyncChunk,
   performBulkFlush,
-  performPrepareStaging,
+  performRescueAndPrepareStaging,
   performOverwriteTruncate,
   getTempCollectionCount,
   performStagingMerge,
@@ -342,18 +342,17 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         await touchHeartbeat(executionId);
 
         // Rescue orphaned staging data from a previously crashed invocation
-        // before dropping the staging table.
-        try {
-          const rescued = await performStagingMerge(bulkSyncOptions as any);
-          if (rescued.written > 0) {
-            logExec(
-              "info",
-              `Rescued ${rescued.written} orphaned staging rows into live table before fresh start`,
-              { entity, rescued: rescued.written },
-            );
-          }
-        } catch {
-          // Staging table may not exist — that's fine
+        // before dropping the staging table. A merge failure fails the step:
+        // dropping rows we could not merge would lose them.
+        const { rescued } = await performRescueAndPrepareStaging(
+          bulkSyncOptions as any,
+        );
+        if (rescued > 0) {
+          logExec(
+            "info",
+            `Rescued ${rescued} orphaned staging rows into live table before fresh start`,
+            { entity, rescued },
+          );
         }
 
         // Overwrite mode: clear the live table exactly once, here, before
@@ -363,7 +362,6 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         // would wipe rows already written by earlier flushes (bug B1, see
         // docs/sync-modes-hardening-plan.md).
         await performOverwriteTruncate(bulkSyncOptions as any);
-        await performPrepareStaging(bulkSyncOptions as any);
       });
       stepsUsed++;
     }
@@ -612,7 +610,21 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                 `Flushing ${entity} buffer batch ${flushIndex} to live (${tempCount} rows in temp)`,
                 { entity, flushIndex, tempCount },
               );
-              await performPrepareStaging(bulkSyncOptions as any);
+              // Retry-safe: a failed attempt may have loaded batches into
+              // staging and deleted them from the buffer. Merge those first;
+              // dropping staging here would lose them. Keyed (dedup) merges
+              // only — see performRescueAndPrepareStaging.
+              const { rescued } = await performRescueAndPrepareStaging(
+                bulkSyncOptions as any,
+                { dedupOnly: true },
+              );
+              if (rescued > 0) {
+                logExec(
+                  "warn",
+                  `Rescued ${rescued} ${entity} staging rows left by a failed flush attempt`,
+                  { entity, flushIndex, rescued },
+                );
+              }
               await performBulkFlush(bulkSyncOptions as any, () =>
                 touchHeartbeat(executionId),
               );
@@ -667,7 +679,18 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             `Flushing ${entity} remaining buffer to staging (${finalRowsInTemp} rows)`,
             { entity, tempCount: finalRowsInTemp },
           );
-          await performPrepareStaging(bulkSyncOptions as any);
+          // Retry-safe for the same reason as the flush-merge step above.
+          const { rescued } = await performRescueAndPrepareStaging(
+            bulkSyncOptions as any,
+            { dedupOnly: true },
+          );
+          if (rescued > 0) {
+            logExec(
+              "warn",
+              `Rescued ${rescued} ${entity} staging rows left by a failed flush attempt`,
+              { entity, rescued },
+            );
+          }
           await performBulkFlush(bulkSyncOptions as any, () =>
             touchHeartbeat(executionId),
           );
