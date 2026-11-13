@@ -181,7 +181,21 @@ function entityGraph(entity: RegistryEntity, registry: OntologyRegistry) {
     relationshipsOfEntity(registry, entity.name),
     MAX_ENTITY_RELATIONSHIPS,
   );
+  // The curated joins that start or end at this entity (find_join_path
+  // expands them).
+  const name = entity.name.toLowerCase();
+  const curated = registry.paths
+    .filter(
+      path =>
+        path.from.toLowerCase() === name || path.to.toLowerCase() === name,
+    )
+    .map(path => ({
+      name: path.name,
+      with: path.from.toLowerCase() === name ? path.to : path.from,
+      ...(path.status ? { status: path.status } : {}),
+    }));
   return {
+    ...(curated.length ? { curatedPaths: curated.slice(0, 12) } : {}),
     ...(entity.identities.length
       ? { identities: entity.identities.slice(0, 12) }
       : {}),
@@ -795,7 +809,7 @@ export const createDbtOntologyTools = (
     }),
 
     find_join_path: tool({
-      description: `How two entities join: the shortest declared path between them in the ontology registry (${ONTOLOGY_REGISTRY_PATH}). \`from\` and \`to\` are entity names or synonyms, dbt models or raw tables. Each hop gives the two canonical models (or raw tables), the join columns, the join condition, the cardinality in the direction of the hop, the status and a fan-out warning when the hop multiplies rows. Governed relationships are preferred over draft ones, entity relationships over raw-table foreign keys. Call this BEFORE writing a join between two entities, and join on the columns it returns. With no path it says so and lists what each end joins to directly.`,
+      description: `How two entities join: the shortest declared path between them in the ontology registry (${ONTOLOGY_REGISTRY_PATH}). \`from\` and \`to\` are entity names or synonyms, dbt models or raw tables. Each hop gives the two canonical models (or raw tables), the join columns, the join condition, the cardinality in the direction of the hop, the status and a fan-out warning when the hop multiplies rows. A path the registry curates for the pair comes first, marked \`curated\`: its paths are ordered alternatives to coalesce, and \`alternatives\` then holds searched paths for reference only. Otherwise the path is searched: governed relationships before draft ones, entity relationships before raw-table foreign keys, never through a role link (closer, manager). A searched path marked \`suspect\` relates the two only through a shared third entity: do not write a join from it. Call this BEFORE writing a join between two entities, and join on the columns it returns. With no path it says so and lists what each end joins to directly.`,
       inputSchema: findJoinPathSchema,
       execute: async ({ from, to, maxHops }) => {
         try {

@@ -3,6 +3,7 @@ import {
   matchRegistry,
   parseOntologyRegistry,
   parseRawRelationships,
+  walkRelationships,
   phraseSimilarity,
   registryRolesByModel,
   registryStatusMessage,
@@ -10,6 +11,7 @@ import {
 } from "./registry";
 import {
   ONTOLOGY_GRAPH_YAML,
+  ONTOLOGY_PATHS_YAML,
   ONTOLOGY_RAW_RELATIONSHIPS_YAML,
   ONTOLOGY_REGISTRY_YAML,
 } from "../test-support/ontology-fixtures";
@@ -71,6 +73,7 @@ describe("parseOntologyRegistry", () => {
         terms: [],
         entities: [],
         relationships: [],
+        paths: [],
         rawRelationships: [],
         problems: [],
       });
@@ -437,5 +440,151 @@ describe("parseRawRelationships", () => {
     expect(registry.problems).toEqual([
       expect.stringContaining("could not be parsed"),
     ]);
+  });
+});
+
+describe("role links and curated paths", () => {
+  const registry = parseOntologyRegistry(ONTOLOGY_PATHS_YAML);
+
+  it("reads `traversal: explicit` and leaves the others default", () => {
+    expect(registry.problems).toEqual([]);
+    const flagged = registry.relationships.filter(r => r.explicit);
+    expect(flagged.map(r => r.name)).toEqual(["account_closed_by_crm_user"]);
+    expect(
+      registry.relationships.find(r => r.name === "account_is_organisation"),
+    ).not.toHaveProperty("explicit");
+    // The first two schemas carry neither field.
+    const graph = parseOntologyRegistry(ONTOLOGY_GRAPH_YAML);
+    expect(graph.paths).toEqual([]);
+    expect(graph.relationships.some(r => r.explicit)).toBe(false);
+  });
+
+  it("reads `traversal: default`, and an unknown value as default with a problem", () => {
+    const odd = parseOntologyRegistry(`
+entities:
+  - {name: a, canonical: {model: m_a}}
+  - {name: b, canonical: {model: m_b}}
+relationships:
+  - {name: r1, from: a, to: b, cardinality: many_to_one, traversal: default, join: [{from_column: b_id, to_column: id}]}
+  - {name: r2, from: a, to: b, cardinality: many_to_one, traversal: EXPLICIT, join: [{from_column: b2_id, to_column: id}]}
+  - {name: r3, from: a, to: b, cardinality: many_to_one, traversal: sometimes, join: [{from_column: b3_id, to_column: id}]}
+`);
+    expect(odd.relationships.map(r => r.explicit ?? false)).toEqual([
+      false,
+      true,
+      false,
+    ]);
+    expect(odd.problems).toEqual([
+      "relationship `r3` has an unknown traversal `sometimes`; it is read as `default`.",
+    ]);
+  });
+
+  it("reads a curated path with its ordered steps and caveats", () => {
+    expect(registry.paths).toEqual([
+      {
+        name: "enquiry_to_account",
+        from: "enquiry",
+        to: "account",
+        status: "draft",
+        description:
+          "The account an enquiry belongs to: the organisation of its tenant, else the organisation of the team of the listing's broker.",
+        steps: [
+          {
+            name: "linked_tenant",
+            via: [
+              "enquiry_in_linked_tenant_of_organisation",
+              "account_is_organisation",
+            ],
+            note: "Covers enquiries of a white-label tenant.",
+          },
+          {
+            name: "listing_broker",
+            via: [
+              "enquiry_about_listing",
+              "listing_managed_by_crm_user",
+              "crm_user_has_primary_crm_team",
+              "crm_team_belongs_to_organisation",
+              "account_is_organisation",
+            ],
+          },
+        ],
+        caveats: ["team_id is filled on 2.4% of enquiries"],
+      },
+    ]);
+  });
+
+  it("walks relationship names end to end, in either direction of each", () => {
+    const walk = walkRelationships(registry.relationships, "enquiry", [
+      "enquiry_in_linked_tenant_of_organisation",
+      "account_is_organisation",
+    ]);
+    expect("problem" in walk).toBe(false);
+    if ("problem" in walk) return;
+    expect(walk.end).toBe("account");
+    expect(walk.hops.map(hop => hop.forward)).toEqual([true, false]);
+  });
+
+  it("drops a step that names nothing, does not chain or ends elsewhere, and says why", () => {
+    const base = ONTOLOGY_PATHS_YAML.slice(
+      0,
+      ONTOLOGY_PATHS_YAML.indexOf("paths:"),
+    );
+    const broken = parseOntologyRegistry(`${base}paths:
+  - name: mixed
+    from: enquiry
+    to: account
+    steps:
+      - name: good
+        via: [enquiry_in_linked_tenant_of_organisation, account_is_organisation]
+      - name: unknown_name
+        via: [enquiry_in_linked_tenant_of_organisation, nope]
+      - name: gap
+        via: [enquiry_about_listing, crm_team_belongs_to_organisation]
+      - name: stops_short
+        via: [enquiry_about_listing, listing_managed_by_crm_user]
+      - name: empty
+        via: []
+      - just a string
+  - name: nothing_usable
+    from: enquiry
+    to: account
+    steps:
+      - via: [nope]
+  - name: no_ends
+    steps:
+      - via: [account_is_organisation]
+  - name: unknown_entity
+    from: enquiry
+    to: zebra
+    steps:
+      - via: [enquiry_about_listing]
+  - name: no_steps
+    from: enquiry
+    to: account
+  - from: enquiry
+    to: account
+`);
+    expect(broken.status).toBe("ok");
+    expect(broken.paths.map(path => path.name)).toEqual(["mixed"]);
+    expect(broken.paths[0].steps.map(step => step.name)).toEqual(["good"]);
+    expect(broken.problems).toEqual([
+      "path `mixed` step `unknown_name` names an unknown relationship `nope`; it was skipped.",
+      "path `mixed` step `gap` does not chain: `crm_team_belongs_to_organisation` joins `crm_team` and `organisation`, not `listing`; it was skipped.",
+      "path `mixed` step `stops_short` ends at `crm_user`, not at `account`; it was skipped.",
+      "path `mixed` step `empty` has no `via` relationships; it was skipped.",
+      "path `mixed` step 6 has no `via` relationships; it was skipped.",
+      "path `nothing_usable` step 1 names an unknown relationship `nope`; it was skipped.",
+      "path `nothing_usable` has no usable step; it was skipped.",
+      "path `no_ends` needs `from` and `to`; it was skipped.",
+      "path `unknown_entity` names an unknown entity `zebra`; it was skipped.",
+      "path `no_steps` has no usable step; it was skipped.",
+      "paths[5] has no `name`; it was skipped.",
+    ]);
+  });
+
+  it("ignores a `paths` key that is not a list", () => {
+    const odd = parseOntologyRegistry("paths: nope\n");
+    expect(odd.paths).toEqual([]);
+    expect(odd.problems).toEqual(["`paths` must be a list; it was ignored."]);
   });
 });

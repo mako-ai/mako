@@ -9,6 +9,7 @@ import {
 import { emptyRegistry, parseOntologyRegistry } from "./registry";
 import {
   ONTOLOGY_GRAPH_YAML,
+  ONTOLOGY_PATHS_YAML,
   ONTOLOGY_RAW_RELATIONSHIPS_YAML,
   ONTOLOGY_REGISTRY_YAML,
 } from "../test-support/ontology-fixtures";
@@ -593,5 +594,322 @@ describe("relationshipsOfEntity", () => {
       },
     ]);
     expect(relationshipsOfEntity(registry, "ad_campaign")).toEqual([]);
+  });
+});
+
+describe("findJoinPath: role links (traversal: explicit)", () => {
+  const withoutPaths = ONTOLOGY_PATHS_YAML.slice(
+    0,
+    ONTOLOGY_PATHS_YAML.indexOf("paths:"),
+  );
+  const flagged = parseOntologyRegistry(withoutPaths);
+
+  it("never passes through a role link on the way between two others", () => {
+    // Shortest by count: enquiry - crm_user - account, through the closer.
+    const result = findJoinPath(flagged, "enquiry", "account");
+    expect(trail(result)).toEqual([
+      "enquiry -(enquiry_in_linked_tenant_of_organisation)-> organisation -(account_is_organisation)-> account",
+    ]);
+    expect(result.paths[0].suspect).toBeUndefined();
+    expect(result.message).toBeUndefined();
+    for (const path of result.paths) {
+      expect(
+        path.steps.some(
+          step => step.relationship === "account_closed_by_crm_user",
+        ),
+      ).toBe(false);
+    }
+    // Nor as a first hop: account - crm_user - crm_team is not offered.
+    expect(trail(findJoinPath(flagged, "account", "crm_team"))).toEqual([
+      "account -(account_is_organisation)-> organisation -(crm_team_belongs_to_organisation)-> crm_team",
+    ]);
+  });
+
+  it("returns a role link between exactly its own two ends", () => {
+    for (const [from, to, cardinality] of [
+      ["account", "crm_user", "many_to_one"],
+      ["broker", "customer", "one_to_many"],
+    ]) {
+      const result = findJoinPath(flagged, from, to);
+      expect(result.paths).toHaveLength(1);
+      expect(result.paths[0].steps).toHaveLength(1);
+      expect(result.paths[0].steps[0]).toMatchObject({
+        relationship: "account_closed_by_crm_user",
+        cardinality,
+      });
+    }
+  });
+
+  it("finds nothing when a role link is the only way through", () => {
+    const only = parseOntologyRegistry(`
+entities:
+  - {name: enquiry, canonical: {model: m_e}}
+  - {name: crm_user, canonical: {model: m_u}}
+  - {name: account, canonical: {model: m_a}}
+relationships:
+  - {name: enquiry_sent_to_crm_user, from: enquiry, to: crm_user, cardinality: many_to_one, join: [{from_column: broker_id, to_column: id}]}
+  - {name: account_closed_by_crm_user, from: account, to: crm_user, cardinality: many_to_one, traversal: explicit, join: [{from_column: closer_id, to_column: id}]}
+`);
+    const result = findJoinPath(only, "enquiry", "account");
+    expect(result.level).toBe("none");
+    expect(result.paths).toEqual([]);
+    expect(result.message).toContain("No declared path connects these two");
+  });
+
+  it("lists a role link among an entity's relationships, flagged", () => {
+    const closer = relationshipsOfEntity(flagged, "account").find(
+      r => r.relationship === "account_closed_by_crm_user",
+    );
+    expect(closer?.traversal).toBe("explicit");
+    expect(
+      relationshipsOfEntity(flagged, "account").find(
+        r => r.relationship === "account_is_organisation",
+      ),
+    ).not.toHaveProperty("traversal");
+  });
+});
+
+describe("findJoinPath: fan traps in a registry without the flag", () => {
+  const withoutPaths = ONTOLOGY_PATHS_YAML.slice(
+    0,
+    ONTOLOGY_PATHS_YAML.indexOf("paths:"),
+  );
+  const unflagged = parseOntologyRegistry(
+    withoutPaths.replace("    traversal: explicit\n", ""),
+  );
+
+  it("marks a path through a shared entity suspect and ranks it last", () => {
+    const result = findJoinPath(unflagged, "enquiry", "account");
+    expect(trail(result)).toEqual([
+      "enquiry -(enquiry_in_linked_tenant_of_organisation)-> organisation -(account_is_organisation)-> account",
+      "enquiry -(enquiry_sent_to_crm_user)-> crm_user -(account_closed_by_crm_user)-> account",
+    ]);
+    expect(result.paths.map(path => path.suspect ?? false)).toEqual([
+      false,
+      true,
+    ]);
+    expect(result.paths[1].warning).toBe(
+      "This path relates enquiry and account only through a shared crm_user: it pairs every enquiry row of a crm_user with every account row of the same crm_user. That is rarely the join you mean.",
+    );
+    expect(result.message).toBe(
+      "1 of 2 paths is marked suspect and ranks last: it relates the two only through a shared third entity. Use a path that is not suspect.",
+    );
+  });
+
+  it("ranks a longer path that avoids the trap above a shorter suspect one", () => {
+    // Without the tenant link, the only 2-hop path is the trap.
+    const longer = parseOntologyRegistry(
+      withoutPaths
+        .replace("    traversal: explicit\n", "")
+        .replace(
+          / {2}- name: enquiry_in_linked_tenant_of_organisation[\s\S]*?source: declared\n/,
+          "",
+        ),
+    );
+    const result = findJoinPath(longer, "enquiry", "account");
+    expect(
+      result.paths.map(path => [path.hops, path.suspect ?? false]),
+    ).toEqual([
+      [4, false],
+      [2, true],
+    ]);
+    expect(trail(result)[0]).toBe(
+      "enquiry -(enquiry_sent_to_crm_user)-> crm_user -(crm_user_has_primary_crm_team)-> crm_team -(crm_team_belongs_to_organisation)-> organisation -(account_is_organisation)-> account",
+    );
+    // The trap-free path is bounded by maxHops like any other.
+    const capped = findJoinPath(longer, "enquiry", "account", { maxHops: 3 });
+    expect(capped.paths.map(path => path.suspect ?? false)).toEqual([true]);
+  });
+
+  it("says no trustworthy path exists when the only one is suspect", () => {
+    const trap = parseOntologyRegistry(`
+entities:
+  - {name: enquiry, canonical: {model: m_e}}
+  - {name: crm_user, canonical: {model: m_u}}
+  - {name: account, canonical: {model: m_a}}
+relationships:
+  - {name: enquiry_sent_to_crm_user, from: enquiry, to: crm_user, cardinality: many_to_one, join: [{from_column: broker_id, to_column: id}]}
+  - {name: account_closed_by_crm_user, from: account, to: crm_user, cardinality: many_to_one, join: [{from_column: closer_id, to_column: id}]}
+`);
+    const result = findJoinPath(trap, "enquiry", "account");
+    expect(result.paths).toHaveLength(1);
+    expect(result.paths[0].suspect).toBe(true);
+    expect(result.message).toBe(
+      "No trustworthy declared path exists between enquiry and account. The path below is marked suspect: it relates the two only through a shared third entity. Do not write this join from it. Declare a curated path in the registry (`paths:`) that says how enquiry reaches account.",
+    );
+  });
+
+  it("does not suspect a chain up or down the keys, or a single hop", () => {
+    // many_to_one then many_to_one, one_to_many then one_to_many,
+    // one_to_many then many_to_one (a bridge): none is the trap.
+    for (const [from, to] of [
+      ["subscription", "account"],
+      ["account", "subscription"],
+      ["stripe_customer", "crm_user"],
+      ["account", "tag"],
+    ]) {
+      const result = findJoinPath(registry, from, to);
+      expect(result.paths[0].suspect, `${from} -> ${to}`).toBeUndefined();
+    }
+  });
+
+  it("marks a raw-table path through a shared table too", () => {
+    // activities - users - teams is up the keys; teams - users - activities
+    // is down then up... the trap is activities.assigned_to with teams' users.
+    const raw = parseOntologyRegistry(
+      "entities: []\n",
+      `
+- {from_table: enquiries, from_columns: [broker_id], to_table: users, to_columns: [id], cardinality: many_to_one, name: broker}
+- {from_table: organisations, from_columns: [csm_user_id], to_table: users, to_columns: [id], cardinality: many_to_one, name: csm}
+`,
+    );
+    const result = findJoinPath(
+      raw,
+      "crm_public.enquiries",
+      "crm_public.organisations",
+    );
+    expect(result.level).toBe("raw");
+    expect(result.paths[0].suspect).toBe(true);
+    expect(result.message).toContain("No trustworthy declared path exists");
+  });
+});
+
+describe("findJoinPath: curated paths", () => {
+  const curated = parseOntologyRegistry(ONTOLOGY_PATHS_YAML);
+
+  it("returns the curated path first, every alternative step expanded", () => {
+    const result = findJoinPath(curated, "enquiry", "customer");
+    expect(result.level).toBe("entity");
+    expect(result.curated).toEqual({
+      name: "enquiry_to_account",
+      status: "draft",
+      description:
+        "The account an enquiry belongs to: the organisation of its tenant, else the organisation of the team of the listing's broker.",
+      direction: "declared",
+      caveats: ["team_id is filled on 2.4% of enquiries"],
+      use: "The 2 paths are ordered alternatives, not a choice: join each one and coalesce the result in this order (the first that finds a row wins).",
+    });
+    expect(result.paths).toHaveLength(2);
+    expect(result.paths[0]).toEqual({
+      curated: true,
+      path: "enquiry_to_account",
+      step: "linked_tenant",
+      order: 1,
+      note: "Covers enquiries of a white-label tenant.",
+      hops: 2,
+      governed: false,
+      fanOut: false,
+      steps: [
+        {
+          relationship: "enquiry_in_linked_tenant_of_organisation",
+          from: { entity: "enquiry", model: "stg_crm__enquiries" },
+          to: { entity: "organisation", model: "stg_crm__organisations" },
+          join: [{ fromColumn: "tenant_id", toColumn: "linked_tenant_id" }],
+          on: "stg_crm__enquiries.tenant_id = stg_crm__organisations.linked_tenant_id",
+          cardinality: "many_to_one",
+          status: "draft",
+          source: "declared",
+        },
+        {
+          relationship: "account_is_organisation",
+          from: { entity: "organisation", model: "stg_crm__organisations" },
+          to: { entity: "account", model: "dim_account" },
+          join: [
+            { fromColumn: "organisation_id", toColumn: "organisation_id" },
+          ],
+          on: "stg_crm__organisations.organisation_id = dim_account.organisation_id",
+          cardinality: "one_to_one",
+          status: "governed",
+          source: "declared",
+        },
+      ],
+    });
+    expect(result.paths[1]).toMatchObject({
+      curated: true,
+      step: "listing_broker",
+      order: 2,
+      hops: 5,
+      fanOut: false,
+    });
+    expect(result.paths[1].steps.map(step => step.on)).toEqual([
+      "stg_crm__enquiries.lot_id = stg_crm__lots.lot_id",
+      "stg_crm__lots.broker_user_id = int_crm__users.user_id",
+      "int_crm__users.team_id = stg_crm__teams.team_id",
+      "stg_crm__teams.organisation_id = stg_crm__organisations.organisation_id",
+      "stg_crm__organisations.organisation_id = dim_account.organisation_id",
+    ]);
+    // A curated path is longer than maxHops allows a search: it still wins.
+    expect(
+      findJoinPath(curated, "enquiry", "account", { maxHops: 1 }).paths,
+    ).toHaveLength(2);
+  });
+
+  it("lists searched paths apart, as reference, never among the curated ones", () => {
+    const result = findJoinPath(curated, "enquiry", "account");
+    expect(result.paths.every(path => path.curated)).toBe(true);
+    expect(result.alternatives?.map(path => path.curated ?? false)).toEqual([
+      false,
+    ]);
+    expect(result.message).toBe(
+      "The registry curates this join as `enquiry_to_account`: use `paths`. `alternatives` lists what a search of the relationships finds: reference only, never a replacement for the curated path.",
+    );
+    // The closer link is a role link: not even an alternative.
+    expect(JSON.stringify(result)).not.toContain("account_closed_by_crm_user");
+  });
+
+  it("serves the curated path in the other direction, hops turned around", () => {
+    const result = findJoinPath(curated, "dim_account", "enquiry");
+    expect(result.curated?.direction).toBe("reversed");
+    const [first] = result.paths;
+    expect(first).toMatchObject({ curated: true, order: 1, fanOut: true });
+    expect(
+      first.steps.map(step => [step.relationship, step.cardinality]),
+    ).toEqual([
+      ["account_is_organisation", "one_to_one"],
+      ["enquiry_in_linked_tenant_of_organisation", "one_to_many"],
+    ]);
+    expect(first.steps[1].on).toBe(
+      "stg_crm__organisations.linked_tenant_id = stg_crm__enquiries.tenant_id",
+    );
+    expect(first.steps[1].fanOut).toContain(
+      "One organisation row matches many",
+    );
+    expect(result.paths[1].steps).toHaveLength(5);
+  });
+
+  it("never marks a curated step suspect, whatever its shape", () => {
+    const shaped = parseOntologyRegistry(`
+entities:
+  - {name: enquiry, canonical: {model: m_e}}
+  - {name: crm_user, canonical: {model: m_u}}
+  - {name: account, canonical: {model: m_a}}
+relationships:
+  - {name: enquiry_sent_to_crm_user, from: enquiry, to: crm_user, cardinality: many_to_one, join: [{from_column: broker_id, to_column: id}]}
+  - {name: account_owned_by_crm_user, from: account, to: crm_user, cardinality: many_to_one, traversal: explicit, join: [{from_column: owner_id, to_column: id}]}
+paths:
+  - name: enquiry_to_owned_accounts
+    from: enquiry
+    to: account
+    status: governed
+    steps:
+      - via: [enquiry_sent_to_crm_user, account_owned_by_crm_user]
+`);
+    const result = findJoinPath(shaped, "enquiry", "account");
+    expect(result.paths).toHaveLength(1);
+    expect(result.paths[0]).toMatchObject({ curated: true, order: 1, hops: 2 });
+    expect(result.paths[0].suspect).toBeUndefined();
+    // The fan-out is still said.
+    expect(result.paths[0].steps[1].fanOut).toBeDefined();
+    expect(result.curated?.use).toBe("Join on these hops, in order.");
+    expect(result.alternatives).toBeUndefined();
+  });
+
+  it("leaves other pairs to the search", () => {
+    const result = findJoinPath(curated, "enquiry", "organisation");
+    expect(result.curated).toBeUndefined();
+    expect(result.paths[0].curated).toBeUndefined();
+    expect(trail(result)).toEqual([
+      "enquiry -(enquiry_in_linked_tenant_of_organisation)-> organisation",
+    ]);
   });
 });

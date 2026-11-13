@@ -502,3 +502,92 @@ relationships:
     hasura_name: broken_columns
     kind: fk
 `;
+
+/**
+ * A registry with a role link (`traversal: explicit`) and a curated path
+ * (`paths`), around the join that a plain search gets wrong: an enquiry to
+ * the account it belongs to. Searched, the shortest way is enquiry ->
+ * broker -> accounts that broker closed, which pairs unrelated rows.
+ */
+export const ONTOLOGY_PATHS_YAML = `version: 1
+entities:
+  - {name: enquiry, label: Enquiry, status: draft, canonical: {model: stg_crm__enquiries, primary_key: enquiry_id}, synonyms: [contact request]}
+  - {name: listing, label: Listing, status: governed, canonical: {model: stg_crm__lots, primary_key: lot_id}, synonyms: [lot]}
+  - {name: crm_user, label: CRM user, status: governed, canonical: {model: int_crm__users, primary_key: user_id}, synonyms: [user, broker]}
+  - {name: crm_team, label: Team, status: draft, canonical: {model: stg_crm__teams, primary_key: team_id}, synonyms: [agency]}
+  - {name: organisation, label: Organisation, status: governed, canonical: {model: stg_crm__organisations, primary_key: organisation_id}, synonyms: [org]}
+  - {name: account, label: Account, status: governed, canonical: {model: dim_account, primary_key: account_key}, synonyms: [customer]}
+relationships:
+  - name: enquiry_sent_to_crm_user
+    from: enquiry
+    to: crm_user
+    cardinality: many_to_one
+    join: [{from_column: broker_id, to_column: user_id}]
+    status: draft
+    source: hasura_fk
+  - name: enquiry_in_linked_tenant_of_organisation
+    from: enquiry
+    to: organisation
+    cardinality: many_to_one
+    join: [{from_column: tenant_id, to_column: linked_tenant_id}]
+    status: draft
+    source: declared
+  - name: enquiry_about_listing
+    from: enquiry
+    to: listing
+    cardinality: many_to_one
+    join: [{from_column: lot_id, to_column: lot_id}]
+    status: draft
+    source: hasura_fk
+  - name: listing_managed_by_crm_user
+    from: listing
+    to: crm_user
+    cardinality: many_to_one
+    join: [{from_column: broker_user_id, to_column: user_id}]
+    status: draft
+    source: hasura_fk
+  - name: crm_user_has_primary_crm_team
+    from: crm_user
+    to: crm_team
+    cardinality: many_to_one
+    join: [{from_column: team_id, to_column: team_id}]
+    status: draft
+    source: hasura_fk
+  - name: crm_team_belongs_to_organisation
+    from: crm_team
+    to: organisation
+    cardinality: many_to_one
+    join: [{from_column: organisation_id, to_column: organisation_id}]
+    status: governed
+    source: hasura_fk
+  - name: account_is_organisation
+    from: account
+    to: organisation
+    cardinality: one_to_one
+    join: [{from_column: organisation_id, to_column: organisation_id}]
+    status: governed
+    source: declared
+  - name: account_closed_by_crm_user
+    from: account
+    to: crm_user
+    cardinality: many_to_one
+    join: [{from_column: closer_user_id, to_column: user_id}]
+    status: governed
+    source: hasura_fk
+    traversal: explicit
+paths:
+  - name: enquiry_to_account
+    from: enquiry
+    to: account
+    status: draft
+    description: >-
+      The account an enquiry belongs to: the organisation of its tenant,
+      else the organisation of the team of the listing's broker.
+    steps:
+      - name: linked_tenant
+        via: [enquiry_in_linked_tenant_of_organisation, account_is_organisation]
+        note: 'Covers enquiries of a white-label tenant.'
+      - name: listing_broker
+        via: [enquiry_about_listing, listing_managed_by_crm_user, crm_user_has_primary_crm_team, crm_team_belongs_to_organisation, account_is_organisation]
+    caveats: ['team_id is filled on 2.4% of enquiries']
+`;

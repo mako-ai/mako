@@ -14,6 +14,16 @@
  *
  * A hop that goes from the "one" side to the "many" side multiplies rows.
  * It is reported with a fan-out warning, never hidden.
+ *
+ * A shortest path is not always the join one means. Three guards:
+ *
+ * - A curated path of the registry (`paths`) wins over any search. What a
+ *   search finds is then listed apart, as reference.
+ * - A role link (`traversal: explicit`: closer, manager, creator) joins
+ *   its own two ends and is never a step between two other entities.
+ * - A searched path that enters an entity through `many_to_one` and leaves
+ *   it through `one_to_many` relates its ends only through that shared
+ *   entity. It is marked suspect and ranks below every path that is not.
  */
 import {
   RAW_RELATIONSHIPS_SCHEMA,
@@ -26,6 +36,7 @@ import {
   type RegistryEntity,
   type RegistryRelationship,
   type RelationshipCardinality,
+  walkRelationships,
 } from "./registry";
 
 export const DEFAULT_MAX_HOPS = 4;
@@ -170,7 +181,16 @@ interface Edge {
   status: string;
   source?: string;
   preferred: boolean;
+  /** A role link: joins its own two ends, never a step between two others. */
+  explicit: boolean;
   notes: string[];
+}
+
+/** An edge walked in one direction. */
+interface Walked {
+  edge: Edge;
+  /** True when walked from `a` to `b`. */
+  forward: boolean;
 }
 
 function invert(cardinality: RelationshipCardinality): RelationshipCardinality {
@@ -179,23 +199,31 @@ function invert(cardinality: RelationshipCardinality): RelationshipCardinality {
   return cardinality;
 }
 
+const leftOf = (walk: Walked) => (walk.forward ? walk.edge.a : walk.edge.b);
+const rightOf = (walk: Walked) => (walk.forward ? walk.edge.b : walk.edge.a);
+const cardinalityOf = (walk: Walked) =>
+  walk.forward ? walk.edge.cardinality : invert(walk.edge.cardinality);
+
+function entityEdge(relationship: RegistryRelationship): Edge {
+  const governed = relationship.status?.toLowerCase() === "governed";
+  return {
+    name: relationship.name,
+    a: relationship.from.toLowerCase(),
+    b: relationship.to.toLowerCase(),
+    cardinality: relationship.cardinality,
+    join: relationship.join,
+    status: relationship.status ?? "draft",
+    ...(relationship.source ? { source: relationship.source } : {}),
+    preferred: governed,
+    explicit: relationship.explicit === true,
+    notes: relationship.openPoint
+      ? [`Open point: ${relationship.openPoint}`]
+      : [],
+  };
+}
+
 function entityEdges(registry: OntologyRegistry): Edge[] {
-  return registry.relationships.map((relationship: RegistryRelationship) => {
-    const governed = relationship.status?.toLowerCase() === "governed";
-    return {
-      name: relationship.name,
-      a: relationship.from.toLowerCase(),
-      b: relationship.to.toLowerCase(),
-      cardinality: relationship.cardinality,
-      join: relationship.join,
-      status: relationship.status ?? "draft",
-      ...(relationship.source ? { source: relationship.source } : {}),
-      preferred: governed,
-      notes: relationship.openPoint
-        ? [`Open point: ${relationship.openPoint}`]
-        : [],
-    };
-  });
+  return registry.relationships.map(entityEdge);
 }
 
 function rawEdges(registry: OntologyRegistry): Edge[] {
@@ -228,6 +256,7 @@ function rawEdges(registry: OntologyRegistry): Edge[] {
       status: "raw",
       ...(raw.kind ? { source: raw.kind } : {}),
       preferred: raw.inWarehouse !== false,
+      explicit: false,
       notes: [
         ...(raw.inWarehouse === false
           ? ["The warehouse does not hold both tables."]
@@ -243,93 +272,100 @@ function rawEdges(registry: OntologyRegistry): Edge[] {
   return [...byKey.values()];
 }
 
-type Adjacency = Map<string, Map<string, Edge[]>>;
+/** Node → the walks that leave it. */
+type Adjacency = Map<string, Walked[]>;
 
-function adjacencyOf(edges: Edge[], allow: (edge: Edge) => boolean): Adjacency {
+function adjacencyOf(edges: Edge[]): Adjacency {
   const adjacency: Adjacency = new Map();
-  const link = (from: string, to: string, edge: Edge) => {
-    let neighbours = adjacency.get(from);
-    if (!neighbours) adjacency.set(from, (neighbours = new Map()));
-    const list = neighbours.get(to);
-    if (list) list.push(edge);
-    else neighbours.set(to, [edge]);
+  const add = (node: string, walk: Walked) => {
+    const list = adjacency.get(node);
+    if (list) list.push(walk);
+    else adjacency.set(node, [walk]);
   };
   for (const edge of edges) {
-    if (!allow(edge)) continue;
-    link(edge.a, edge.b, edge);
-    if (edge.a !== edge.b) link(edge.b, edge.a, edge);
+    add(edge.a, { edge, forward: true });
+    if (edge.a !== edge.b) add(edge.b, { edge, forward: false });
   }
   return adjacency;
 }
 
 /**
- * Every shortest node sequence from `from` to `to`, at most `maxHops` long
- * (breadth first, so a cycle is never walked twice). `total` counts them
- * all; `sequences` holds the first `MAX_RANKED_SEQUENCES`.
+ * Every shortest walk from `from` to `to`, at most `maxHops` long (breadth
+ * first, so a cycle is never walked twice).
+ *
+ * With `avoidFanTrap`, a walk never leaves a node through `one_to_many`
+ * after entering it through `many_to_one`: the search state is the node
+ * plus how it was entered, so the shortest walk that respects the rule is
+ * found even when a shorter one breaks it.
+ *
+ * `walks` holds the first `MAX_RANKED_SEQUENCES`; `total` counts them all.
  */
-function shortestSequences(
+function shortestWalks(
   adjacency: Adjacency,
   from: string,
   to: string,
   maxHops: number,
-): { sequences: string[][]; total: number; hops: number } | null {
+  avoidFanTrap = false,
+): { walks: Walked[][]; total: number; hops: number } | null {
   if (from === to) {
     // The same node: a relationship of an entity with itself, one hop.
-    return adjacency.get(from)?.has(from)
-      ? { sequences: [[from, from]], total: 1, hops: 1 }
+    const loops = (adjacency.get(from) ?? []).filter(
+      walk => rightOf(walk) === from,
+    );
+    return loops.length > 0
+      ? { walks: loops.map(walk => [walk]), total: loops.length, hops: 1 }
       : null;
   }
-  const distance = new Map<string, number>([[from, 0]]);
-  const parents = new Map<string, string[]>();
-  let frontier = [from];
+  const stateOf = (node: string, viaManyToOne: boolean) =>
+    avoidFanTrap ? `${node}\u0000${viaManyToOne ? 1 : 0}` : node;
+  const nodeOf = (state: string) => state.split("\u0000")[0];
+  const start = stateOf(from, false);
+  const distance = new Map<string, number>([[start, 0]]);
+  const parents = new Map<string, Array<{ state: string; walk: Walked }>>();
+  let frontier = [start];
+  let reached: string[] = [];
   for (let hop = 1; hop <= maxHops && frontier.length > 0; hop++) {
     const next: string[] = [];
-    for (const node of frontier) {
-      for (const neighbour of adjacency.get(node)?.keys() ?? []) {
+    for (const state of frontier) {
+      const node = nodeOf(state);
+      const trapped = avoidFanTrap && state.endsWith("\u00001");
+      for (const walk of adjacency.get(node) ?? []) {
+        const neighbour = rightOf(walk);
         if (neighbour === node) continue;
-        const known = distance.get(neighbour);
+        const cardinality = cardinalityOf(walk);
+        if (trapped && cardinality === "one_to_many") continue;
+        const target = stateOf(neighbour, cardinality === "many_to_one");
+        const known = distance.get(target);
         if (known === undefined) {
-          distance.set(neighbour, hop);
-          parents.set(neighbour, [node]);
-          next.push(neighbour);
+          distance.set(target, hop);
+          parents.set(target, [{ state, walk }]);
+          next.push(target);
         } else if (known === hop) {
-          parents.get(neighbour)?.push(node);
+          parents.get(target)?.push({ state, walk });
         }
       }
     }
-    if (distance.has(to)) break;
+    reached = next.filter(state => nodeOf(state) === to);
+    if (reached.length > 0) break;
     frontier = next;
   }
-  const hops = distance.get(to);
-  if (hops === undefined) return null;
-  const sequences: string[][] = [];
+  if (reached.length === 0) return null;
+  const walks: Walked[][] = [];
   let total = 0;
-  const walk = (node: string, tail: string[]) => {
-    if (node === from) {
+  const collect = (state: string, tail: Walked[]) => {
+    if (state === start) {
       total++;
-      if (sequences.length < MAX_RANKED_SEQUENCES) {
-        sequences.push([from, ...tail]);
-      }
+      if (walks.length < MAX_RANKED_SEQUENCES) walks.push(tail);
       return;
     }
-    for (const parent of [...(parents.get(node) ?? [])].sort()) {
-      walk(parent, [node, ...tail]);
+    for (const parent of parents.get(state) ?? []) {
+      // Counting stops being useful long before it stops being possible.
+      if (total >= MAX_RANKED_SEQUENCES * 20) return;
+      collect(parent.state, [parent.walk, ...tail]);
     }
   };
-  walk(to, []);
-  return { sequences, total, hops };
-}
-
-/** Hops between two nodes with no limit, to say "raise maxHops". */
-function unboundedHops(
-  adjacency: Adjacency,
-  from: string,
-  to: string,
-): number | null {
-  return (
-    shortestSequences(adjacency, from, to, Number.MAX_SAFE_INTEGER)?.hops ??
-    null
-  );
+  for (const state of [...new Set(reached)].sort()) collect(state, []);
+  return { walks, total, hops: distance.get(reached[0]) ?? 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -368,11 +404,25 @@ export interface JoinHop {
 }
 
 export interface JoinPath {
+  /** Set on a step of a curated path of the registry. */
+  curated?: true;
+  /** The curated path's name. */
+  path?: string;
+  /** The alternative's name and its place in the ladder (1 = tried first). */
+  step?: string;
+  order?: number;
+  note?: string;
   hops: number;
   /** True when every hop is a governed relationship. */
   governed: boolean;
   /** True when a hop multiplies rows. */
   fanOut: boolean;
+  /**
+   * Set on a searched path that relates the two ends only through a shared
+   * third entity (it enters it many_to_one and leaves it one_to_many).
+   */
+  suspect?: true;
+  warning?: string;
   steps: JoinHop[];
 }
 
@@ -395,9 +445,21 @@ export interface JoinPathResult {
   to: JoinEndSummary;
   /** Which graph answered. */
   level: "entity" | "raw" | "none";
+  /** The curated path of the registry that `paths` comes from, when one does. */
+  curated?: {
+    name: string;
+    status?: string;
+    description?: string;
+    /** `reversed` when the path is declared from `to` to `from`. */
+    direction: "declared" | "reversed";
+    caveats: string[];
+    use: string;
+  };
   paths: JoinPath[];
   /** Shortest paths found, when more than the ones listed. */
   pathsTotal?: number;
+  /** With a curated path: what a search would have found. Reference only. */
+  alternatives?: JoinPath[];
   message?: string;
   /** With no path: what each end does join to, directly. */
   nearest?: { from: string[]; to: string[] };
@@ -459,43 +521,52 @@ function fanOutWarning(
   return undefined;
 }
 
+/**
+ * The shared entity of a fan trap: a node the walk enters through
+ * `many_to_one` and leaves through `one_to_many`. Two rows that meet there
+ * have that node in common and nothing else (every enquiry of a broker
+ * with every account the same broker closed).
+ */
+function fanTrapOf(walks: Walked[]): string | undefined {
+  for (let i = 1; i < walks.length; i++) {
+    if (
+      cardinalityOf(walks[i - 1]) === "many_to_one" &&
+      cardinalityOf(walks[i]) === "one_to_many"
+    ) {
+      return leftOf(walks[i]);
+    }
+  }
+  return undefined;
+}
+
 function buildPath(
-  sequence: string[],
-  adjacency: Adjacency,
+  walks: Walked[],
   side: (node: string) => JoinSide,
+  /** The other declared ways across one hop's two nodes. */
+  othersOf: (walk: Walked) => Walked[] = () => [],
+  /** A curated path is the registry's word: never marked suspect. */
+  judge = true,
 ): JoinPath {
-  const steps: JoinHop[] = [];
-  for (let i = 0; i < sequence.length - 1; i++) {
-    const left = sequence[i];
-    const right = sequence[i + 1];
-    const edges = [...(adjacency.get(left)?.get(right) ?? [])].sort(
-      (x, y) =>
-        Number(y.preferred) - Number(x.preferred) ||
-        (x.name ?? "").localeCompare(y.name ?? ""),
-    );
-    const oriented = (edge: Edge) => {
-      // A self relationship is walked as declared.
-      const forward = edge.a === left;
-      return {
-        cardinality: forward ? edge.cardinality : invert(edge.cardinality),
-        join: forward
-          ? edge.join
-          : edge.join.map(pair => ({
-              fromColumn: pair.toColumn,
-              toColumn: pair.fromColumn,
-            })),
-      };
-    };
-    const [edge, ...others] = edges;
-    const { cardinality, join } = oriented(edge);
-    const from = side(left);
-    const to = side(right);
+  const orient = (walk: Walked) =>
+    walk.forward
+      ? walk.edge.join
+      : walk.edge.join.map(pair => ({
+          fromColumn: pair.toColumn,
+          toColumn: pair.fromColumn,
+        }));
+  const steps: JoinHop[] = walks.map(walk => {
+    const { edge } = walk;
+    const cardinality = cardinalityOf(walk);
+    const join = orient(walk);
+    const from = side(leftOf(walk));
+    const to = side(rightOf(walk));
     const fanOut = fanOutWarning(
       cardinality,
       from.entity ?? from.model,
       to.entity ?? to.model,
     );
-    steps.push({
+    const others = othersOf(walk);
+    return {
       ...(edge.name ? { relationship: edge.name } : {}),
       from,
       to,
@@ -514,18 +585,28 @@ function buildPath(
       ...(others.length
         ? {
             alternatives: others.map(other => ({
-              ...(other.name ? { relationship: other.name } : {}),
-              join: oriented(other).join,
-              status: other.status,
+              ...(other.edge.name ? { relationship: other.edge.name } : {}),
+              join: orient(other),
+              status: other.edge.status,
             })),
           }
         : {}),
-    });
-  }
+    };
+  });
+  const trap = judge ? fanTrapOf(walks) : undefined;
+  const shared = trap ? (side(trap).entity ?? side(trap).model) : undefined;
+  const first = steps[0]?.from;
+  const last = steps[steps.length - 1]?.to;
   return {
     hops: steps.length,
     governed: steps.every(step => step.status.toLowerCase() === "governed"),
     fanOut: steps.some(step => step.fanOut !== undefined),
+    ...(shared && first && last
+      ? {
+          suspect: true as const,
+          warning: `This path relates ${first.entity ?? first.model} and ${last.entity ?? last.model} only through a shared ${shared}: it pairs every ${first.entity ?? first.model} row of a ${shared} with every ${last.entity ?? last.model} row of the same ${shared}. That is rarely the join you mean.`,
+        }
+      : {}),
     steps,
   };
 }
@@ -538,10 +619,16 @@ interface Search {
 }
 
 /**
- * The shortest paths, best first: more preferred (governed) hops, then
- * fewer fan-out hops. When the shortest way needs a non-preferred hop and
- * an all-preferred way is one hop longer, that one is listed after it; a
- * longer detour is not a better join and is left out.
+ * The declared paths between two nodes, best first.
+ *
+ * - A role link (`explicit`) is used only between its own two ends.
+ * - The shortest paths come first, ordered by more preferred (governed)
+ *   hops, then fewer fan-out hops.
+ * - A path through a fan trap is marked suspect and ranks below every path
+ *   that is not. When all the shortest ones are suspect, the shortest path
+ *   that avoids the trap is searched for and listed first, however long.
+ * - When the best path needs a non-preferred hop and an all-preferred way
+ *   is one hop longer, that one is listed after it.
  */
 function search(
   edges: Edge[],
@@ -550,59 +637,176 @@ function search(
   maxHops: number,
   side: (node: string) => JoinSide,
 ): Search {
-  const all = adjacencyOf(edges, () => true);
-  const loose = shortestSequences(all, from, to, maxHops);
+  const joinsTheEnds = (edge: Edge) =>
+    (edge.a === from && edge.b === to) || (edge.a === to && edge.b === from);
+  const usable = edges.filter(edge => !edge.explicit || joinsTheEnds(edge));
+  const all = adjacencyOf(usable);
+  const loose = shortestWalks(all, from, to, maxHops);
   if (!loose) {
-    return { paths: [], total: 0, beyond: unboundedHops(all, from, to) };
+    return {
+      paths: [],
+      total: 0,
+      beyond:
+        shortestWalks(all, from, to, Number.MAX_SAFE_INTEGER)?.hops ?? null,
+    };
   }
-  // How many hops of a sequence have a preferred relationship to walk.
-  const preferredHops = new Map<JoinPath, number>();
-  const keyOf = new Map<JoinPath, string>();
-  const build = (sequence: string[], adjacency: Adjacency) => {
-    const path = buildPath(sequence, adjacency, side);
-    preferredHops.set(
-      path,
-      sequence
-        .slice(0, -1)
-        .filter((node, i) =>
-          (adjacency.get(node)?.get(sequence[i + 1]) ?? []).some(
-            edge => edge.preferred,
-          ),
-        ).length,
+  const keyOf = (walks: Walked[]) =>
+    [leftOf(walks[0]), ...walks.map(rightOf)].join(">");
+  const preferredCount = (walks: Walked[]) =>
+    walks.filter(walk => walk.edge.preferred).length;
+  const othersOf = (walk: Walked) =>
+    (all.get(leftOf(walk)) ?? [])
+      .filter(
+        other => rightOf(other) === rightOf(walk) && other.edge !== walk.edge,
+      )
+      .sort(
+        (x, y) =>
+          Number(y.edge.preferred) - Number(x.edge.preferred) ||
+          (x.edge.name ?? "").localeCompare(y.edge.name ?? ""),
+      );
+  // Two relationships between one pair are one path with an alternative:
+  // keep, per node sequence, the walk with the most preferred hops.
+  const ranked = new Map<JoinPath, { key: string; preferred: number }>();
+  const pathsOf = (walkList: Walked[][]) => {
+    const best = new Map<string, Walked[]>();
+    const ordered = [...walkList].sort(
+      (x, y) =>
+        preferredCount(y) - preferredCount(x) ||
+        x
+          .map(walk => walk.edge.name ?? "")
+          .join(">")
+          .localeCompare(y.map(walk => walk.edge.name ?? "").join(">")),
     );
-    keyOf.set(path, sequence.join(">"));
-    return path;
+    for (const walks of ordered) {
+      if (!best.has(keyOf(walks))) best.set(keyOf(walks), walks);
+    }
+    return [...best].map(([key, walks]) => {
+      const path = buildPath(walks, side, othersOf);
+      ranked.set(path, { key, preferred: preferredCount(walks) });
+      return path;
+    });
   };
   const fanOuts = (path: JoinPath) =>
     path.steps.filter(step => step.fanOut !== undefined).length;
-  const paths = loose.sequences
-    .map(sequence => build(sequence, all))
-    .sort(
-      (a, b) =>
-        (preferredHops.get(b) ?? 0) - (preferredHops.get(a) ?? 0) ||
-        fanOuts(a) - fanOuts(b) ||
-        (keyOf.get(a) ?? "").localeCompare(keyOf.get(b) ?? ""),
-    );
-  let total = loose.total;
+  const byRank = (a: JoinPath, b: JoinPath) =>
+    Number(a.suspect ?? false) - Number(b.suspect ?? false) ||
+    a.hops - b.hops ||
+    (ranked.get(b)?.preferred ?? 0) - (ranked.get(a)?.preferred ?? 0) ||
+    fanOuts(a) - fanOuts(b) ||
+    (ranked.get(a)?.key ?? "").localeCompare(ranked.get(b)?.key ?? "");
+
+  const paths = pathsOf(loose.walks);
+  if (paths.every(path => path.suspect)) {
+    const safe = shortestWalks(all, from, to, maxHops, true);
+    if (safe) paths.push(...pathsOf(safe.walks));
+  }
+  paths.sort(byRank);
   const best = paths[0];
-  if ((preferredHops.get(best) ?? 0) < best.hops) {
-    const preferred = adjacencyOf(edges, edge => edge.preferred);
-    const strict = shortestSequences(
-      preferred,
+  if (!best.suspect && (ranked.get(best)?.preferred ?? 0) < best.hops) {
+    const strict = shortestWalks(
+      adjacencyOf(usable.filter(edge => edge.preferred)),
       from,
       to,
-      Math.min(maxHops, loose.hops + 1),
+      Math.min(maxHops, best.hops + 1),
+      true,
     );
-    if (strict && strict.hops > loose.hops) {
-      total += strict.total;
-      paths.splice(
-        1,
-        0,
-        ...strict.sequences.slice(0, 1).map(seq => build(seq, preferred)),
-      );
+    if (strict && strict.hops > best.hops) {
+      paths.splice(1, 0, ...pathsOf(strict.walks).slice(0, 1));
     }
   }
-  return { paths: paths.slice(0, MAX_PATHS), total, beyond: null };
+  return {
+    paths: paths.slice(0, MAX_PATHS),
+    total: paths.length,
+    beyond: null,
+  };
+}
+
+/**
+ * The curated path of the registry between two entities, in either
+ * direction, as one path per ladder step. Governed before draft, then file
+ * order. Null when the registry curates none for this pair.
+ */
+function curatedPath(
+  registry: OntologyRegistry,
+  from: string,
+  to: string,
+  side: (node: string) => JoinSide,
+): { meta: NonNullable<JoinPathResult["curated"]>; paths: JoinPath[] } | null {
+  const matches = registry.paths
+    .map(path => ({
+      path,
+      direction:
+        path.from.toLowerCase() === from && path.to.toLowerCase() === to
+          ? ("declared" as const)
+          : path.from.toLowerCase() === to && path.to.toLowerCase() === from
+            ? ("reversed" as const)
+            : null,
+    }))
+    .filter(match => match.direction !== null)
+    .sort(
+      (a, b) =>
+        Number(b.path.status?.toLowerCase() === "governed") -
+        Number(a.path.status?.toLowerCase() === "governed"),
+    );
+  for (const { path, direction } of matches) {
+    const paths: JoinPath[] = [];
+    path.steps.forEach((step, i) => {
+      const via = direction === "reversed" ? [...step.via].reverse() : step.via;
+      const walk = walkRelationships(registry.relationships, from, via);
+      if ("problem" in walk) return;
+      const built = buildPath(
+        walk.hops.map(hop => ({
+          edge: entityEdge(hop.relationship),
+          forward: hop.forward,
+        })),
+        side,
+        undefined,
+        false,
+      );
+      paths.push({
+        curated: true,
+        path: path.name,
+        ...(step.name ? { step: step.name } : {}),
+        order: i + 1,
+        ...(step.note ? { note: step.note } : {}),
+        ...built,
+      });
+    });
+    if (paths.length === 0) continue;
+    return {
+      meta: {
+        name: path.name,
+        ...(path.status ? { status: path.status } : {}),
+        ...(path.description ? { description: path.description } : {}),
+        direction: direction ?? "declared",
+        caveats: path.caveats,
+        use:
+          paths.length > 1
+            ? `The ${paths.length} paths are ordered alternatives, not a choice: join each one and coalesce the result in this order (the first that finds a row wins).`
+            : "Join on these hops, in order.",
+      },
+      paths,
+    };
+  }
+  return null;
+}
+
+/** What to say when searched paths go through a shared third entity. */
+function suspectMessage(
+  paths: JoinPath[],
+  from: string,
+  to: string,
+): { message?: string } {
+  const suspects = paths.filter(path => path.suspect).length;
+  if (suspects === 0) return {};
+  if (suspects === paths.length) {
+    return {
+      message: `No trustworthy declared path exists between ${from} and ${to}. ${suspects === 1 ? "The path below is" : `The ${suspects} paths below are`} marked suspect: ${suspects === 1 ? "it relates" : "they relate"} the two only through a shared third entity. Do not write this join from it. Declare a curated path in the registry (\`paths:\`) that says how ${from} reaches ${to}.`,
+    };
+  }
+  return {
+    message: `${suspects} of ${paths.length} paths ${suspects === 1 ? "is" : "are"} marked suspect and ${suspects === 1 ? "ranks" : "rank"} last: ${suspects === 1 ? "it relates" : "they relate"} the two only through a shared third entity. Use a path that is not suspect.`,
+  };
 }
 
 function beyondMessage(maxHops: number, hops: number): string {
@@ -689,13 +893,25 @@ export function findJoinPath(
 
   let beyond: number | null = null;
   if (fromEnd.kind === "entity" && toEnd.kind === "entity") {
-    const found = search(
-      eEdges,
-      fromEnd.entity.name.toLowerCase(),
-      toEnd.entity.name.toLowerCase(),
-      maxHops,
-      entitySide,
-    );
+    const fromName = fromEnd.entity.name.toLowerCase();
+    const toName = toEnd.entity.name.toLowerCase();
+    const found = search(eEdges, fromName, toName, maxHops, entitySide);
+    // A curated path is the registry's answer: it wins over any search.
+    const curated = curatedPath(registry, fromName, toName, entitySide);
+    if (curated) {
+      return {
+        ...base,
+        level: "entity",
+        curated: curated.meta,
+        paths: curated.paths,
+        ...(found.paths.length ? { alternatives: found.paths } : {}),
+        message:
+          `The registry curates this join as \`${curated.meta.name}\`: use \`paths\`.` +
+          (found.paths.length
+            ? " `alternatives` lists what a search of the relationships finds: reference only, never a replacement for the curated path."
+            : ""),
+      };
+    }
     if (found.paths.length > 0) {
       return {
         ...base,
@@ -704,6 +920,7 @@ export function findJoinPath(
         ...(found.total > found.paths.length
           ? { pathsTotal: found.total }
           : {}),
+        ...suspectMessage(found.paths, fromEnd.entity.name, toEnd.entity.name),
       };
     }
     // A declared entity path that is only too long is the answer: a
@@ -751,9 +968,12 @@ export function findJoinPath(
       paths: best.paths,
       ...(best.total > best.paths.length ? { pathsTotal: best.total } : {}),
       message:
-        fromEnd.kind === "entity" || toEnd.kind === "entity"
+        (fromEnd.kind === "entity" || toEnd.kind === "entity"
           ? "No entity relationship is declared for this pair. This path joins raw tables on foreign keys; an entity end is replaced by the raw table it is built from, so check that its canonical model carries these columns."
-          : "This path joins raw tables on foreign keys. Entities that cover these tables join on their canonical models instead.",
+          : "This path joins raw tables on foreign keys. Entities that cover these tables join on their canonical models instead.") +
+        (suspectMessage(best.paths, fromText, toText).message
+          ? ` ${suspectMessage(best.paths, fromText, toText).message}`
+          : ""),
     };
   }
 
@@ -786,6 +1006,8 @@ export interface EntityRelationship {
   /** `fromColumn` is on this entity's canonical model. */
   join: JoinColumnPair[];
   status: string;
+  /** `explicit` for a role link: joins these two, never a step between others. */
+  traversal?: "explicit";
 }
 
 /** Every declared relationship of an entity, seen from that entity. */
@@ -821,6 +1043,7 @@ export function relationshipsOfEntity(
             toColumn: pair.fromColumn,
           })),
       status: relationship.status ?? "draft",
+      ...(relationship.explicit ? { traversal: "explicit" as const } : {}),
     });
   }
   return out.sort(

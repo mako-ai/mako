@@ -103,6 +103,80 @@ export interface RegistryRelationship {
   source?: string;
   evidence?: string;
   openPoint?: string;
+  /**
+   * True for `traversal: explicit`: a role link (closer, manager, creator,
+   * assignee). It joins its own two ends and is never a step on the way
+   * between two other entities.
+   */
+  explicit?: boolean;
+}
+
+/** One alternative of a curated path: relationship names, in order. */
+export interface RegistryPathStep {
+  name?: string;
+  via: string[];
+  note?: string;
+}
+
+/**
+ * A curated multi-hop join between two entities. Its `steps` are ordered
+ * alternatives (a coalesce ladder): the first whose keys are filled wins.
+ */
+export interface RegistryPath {
+  name: string;
+  from: string;
+  to: string;
+  /** `governed` or `draft`, as written. */
+  status?: string;
+  description?: string;
+  steps: RegistryPathStep[];
+  caveats: string[];
+}
+
+/** One relationship of a walk, and whether it is walked as declared. */
+export interface WalkedRelationship {
+  relationship: RegistryRelationship;
+  /** True when the walk goes from the relationship's `from` to its `to`. */
+  forward: boolean;
+}
+
+/**
+ * Walk relationship names from an entity, hop by hop. Each relationship
+ * must have the entity reached so far as one of its two ends. Returns the
+ * walk and where it ends, or the reason it breaks.
+ */
+export function walkRelationships(
+  relationships: readonly RegistryRelationship[],
+  start: string,
+  via: readonly string[],
+): { hops: WalkedRelationship[]; end: string } | { problem: string } {
+  const byName = new Map(
+    relationships.map(relationship => [
+      relationship.name.toLowerCase(),
+      relationship,
+    ]),
+  );
+  let at = start.toLowerCase();
+  const hops: WalkedRelationship[] = [];
+  for (const name of via) {
+    const relationship = byName.get(name.toLowerCase());
+    if (!relationship)
+      return { problem: `names an unknown relationship \`${name}\`` };
+    const from = relationship.from.toLowerCase();
+    const to = relationship.to.toLowerCase();
+    if (from === at) {
+      hops.push({ relationship, forward: true });
+      at = to;
+    } else if (to === at) {
+      hops.push({ relationship, forward: false });
+      at = from;
+    } else {
+      return {
+        problem: `does not chain: \`${name}\` joins \`${relationship.from}\` and \`${relationship.to}\`, not \`${at}\``,
+      };
+    }
+  }
+  return { hops, end: at };
 }
 
 /** A foreign key between two raw tables (the generated file). */
@@ -139,6 +213,8 @@ export interface OntologyRegistry {
   entities: RegistryEntity[];
   /** How entities join. Empty when the file declares none. */
   relationships: RegistryRelationship[];
+  /** Curated multi-hop joins. Empty when the file declares none. */
+  paths: RegistryPath[];
   /** Raw-table foreign keys from the generated file. Empty when absent. */
   rawRelationships: RawRelationship[];
   /** What was skipped or wrong, for the agent to relay. */
@@ -154,6 +230,7 @@ export function emptyRegistry(
     terms: [],
     entities: [],
     relationships: [],
+    paths: [],
     rawRelationships: [],
     problems,
   };
@@ -320,6 +397,84 @@ function parseRelationship(
     ...(str(raw.source) ? { source: str(raw.source) } : {}),
     ...(str(raw.evidence) ? { evidence: str(raw.evidence) } : {}),
     ...(str(raw.open_point) ? { openPoint: str(raw.open_point) } : {}),
+    ...(str(raw.traversal)?.toLowerCase() === "explicit"
+      ? { explicit: true }
+      : {}),
+  };
+}
+
+/**
+ * One curated path, or why it cannot be used. Each step must name known
+ * relationships that chain from the path's `from` entity to its `to`. A
+ * step that does not is dropped and reported; a path with no usable step
+ * is dropped.
+ */
+function parsePath(
+  raw: Record<string, unknown>,
+  name: string,
+  relationships: readonly RegistryRelationship[],
+  entityNames: ReadonlySet<string>,
+): { path?: RegistryPath; problems: string[] } {
+  const from = str(raw.from);
+  const to = str(raw.to);
+  if (!from || !to) {
+    return {
+      problems: [`path \`${name}\` needs \`from\` and \`to\`; it was skipped.`],
+    };
+  }
+  const unknown = [from, to].find(
+    entity => !entityNames.has(entity.toLowerCase()),
+  );
+  if (unknown) {
+    return {
+      problems: [
+        `path \`${name}\` names an unknown entity \`${unknown}\`; it was skipped.`,
+      ],
+    };
+  }
+  const problems: string[] = [];
+  const steps: RegistryPathStep[] = [];
+  (Array.isArray(raw.steps) ? raw.steps : []).forEach((item, i) => {
+    const stepName = isRecord(item) ? str(item.name) : undefined;
+    const label = `path \`${name}\` step ${stepName ? `\`${stepName}\`` : i + 1}`;
+    const via = isRecord(item) ? strList(item.via) : [];
+    if (via.length === 0) {
+      problems.push(`${label} has no \`via\` relationships; it was skipped.`);
+      return;
+    }
+    const walk = walkRelationships(relationships, from, via);
+    if ("problem" in walk) {
+      problems.push(`${label} ${walk.problem}; it was skipped.`);
+      return;
+    }
+    if (walk.end !== to.toLowerCase()) {
+      problems.push(
+        `${label} ends at \`${walk.end}\`, not at \`${to}\`; it was skipped.`,
+      );
+      return;
+    }
+    const note = isRecord(item) ? str(item.note) : undefined;
+    steps.push({
+      ...(stepName ? { name: stepName } : {}),
+      via,
+      ...(note ? { note } : {}),
+    });
+  });
+  if (steps.length === 0) {
+    problems.push(`path \`${name}\` has no usable step; it was skipped.`);
+    return { problems };
+  }
+  return {
+    path: {
+      name,
+      from,
+      to,
+      ...(str(raw.status) ? { status: str(raw.status) } : {}),
+      ...(str(raw.description) ? { description: str(raw.description) } : {}),
+      steps,
+      caveats: strList(raw.caveats),
+    },
+    problems,
   };
 }
 
@@ -489,7 +644,7 @@ function parseRegistryFile(text: string | null | undefined): OntologyRegistry {
   const relationships: RegistryRelationship[] = [];
   const seen = new Set<string>();
   const readList = (
-    key: "terms" | "entities" | "relationships",
+    key: "terms" | "entities" | "relationships" | "paths",
     add: (raw: Record<string, unknown>, name: string) => void,
   ) => {
     const list = doc[key];
@@ -533,7 +688,21 @@ function parseRegistryFile(text: string | null | undefined): OntologyRegistry {
       );
       return;
     }
+    if (
+      str(raw.traversal) &&
+      !["default", "explicit"].includes(str(raw.traversal)?.toLowerCase() ?? "")
+    ) {
+      problems.push(
+        `relationship \`${name}\` has an unknown traversal \`${str(raw.traversal)}\`; it is read as \`default\`.`,
+      );
+    }
     relationships.push(parsed);
+  });
+  const paths: RegistryPath[] = [];
+  readList("paths", (raw, name) => {
+    const parsed = parsePath(raw, name, relationships, entityNames);
+    problems.push(...parsed.problems);
+    if (parsed.path) paths.push(parsed.path);
   });
 
   const version = typeof doc.version === "number" ? doc.version : undefined;
@@ -543,6 +712,7 @@ function parseRegistryFile(text: string | null | undefined): OntologyRegistry {
     terms,
     entities,
     relationships,
+    paths,
     rawRelationships: [],
     problems,
   };

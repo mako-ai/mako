@@ -78,6 +78,7 @@ import {
 } from "../../dbt/ontology/registry";
 import {
   ONTOLOGY_GRAPH_YAML,
+  ONTOLOGY_PATHS_YAML,
   ONTOLOGY_RAW_RELATIONSHIPS_YAML,
   ONTOLOGY_CATALOG,
   ONTOLOGY_MANIFEST,
@@ -1146,5 +1147,81 @@ describe("entities in lookup_term and describe_model", () => {
     });
     expect(result.entities).toBeUndefined();
     expect(result.identityResolverFor).toBeUndefined();
+  });
+});
+
+describe("find_join_path: curated paths and role links", () => {
+  it("returns the curated path, with the searched one apart", async () => {
+    await commit({ [ONTOLOGY_REGISTRY_PATH]: ONTOLOGY_PATHS_YAML });
+    const result = await run<{
+      success: boolean;
+      curated: { name: string; caveats: string[] };
+      paths: Array<{
+        curated?: boolean;
+        step: string;
+        order: number;
+        hops: number;
+      }>;
+      alternatives: Array<{ curated?: boolean; hops: number }>;
+      message: string;
+      registry?: unknown;
+    }>(tools.find_join_path, { from: "enquiry", to: "account" });
+    expect(result.success).toBe(true);
+    expect(result.curated).toMatchObject({
+      name: "enquiry_to_account",
+      caveats: ["team_id is filled on 2.4% of enquiries"],
+    });
+    expect(
+      result.paths.map(path => [
+        path.curated,
+        path.step,
+        path.order,
+        path.hops,
+      ]),
+    ).toEqual([
+      [true, "linked_tenant", 1, 2],
+      [true, "listing_broker", 2, 5],
+    ]);
+    expect(result.alternatives).toHaveLength(1);
+    expect(result.alternatives[0].curated).toBeUndefined();
+    expect(result.message).toContain("reference only");
+    expect(JSON.stringify(result)).not.toContain("account_closed_by_crm_user");
+    expect(result.registry).toBeUndefined();
+  });
+
+  it("reports a curated step that does not chain, and still answers", async () => {
+    await commit({
+      [ONTOLOGY_REGISTRY_PATH]: ONTOLOGY_PATHS_YAML.replace(
+        "via: [enquiry_in_linked_tenant_of_organisation, account_is_organisation]",
+        "via: [enquiry_in_linked_tenant_of_organisation, crm_user_has_primary_crm_team]",
+      ),
+    });
+    const result = await run<{
+      paths: Array<{ step: string; order: number }>;
+      registry: { status: string; problems: string[] };
+    }>(tools.find_join_path, { from: "enquiry", to: "account" });
+    expect(result.paths.map(path => path.step)).toEqual(["listing_broker"]);
+    expect(result.registry.problems).toEqual([
+      "path `enquiry_to_account` step `linked_tenant` does not chain: `crm_user_has_primary_crm_team` joins `crm_user` and `crm_team`, not `organisation`; it was skipped.",
+    ]);
+  });
+
+  it("lookup_term shows an entity's curated paths and flags role links", async () => {
+    await commit({ [ONTOLOGY_REGISTRY_PATH]: ONTOLOGY_PATHS_YAML });
+    const result = await run<{ matches: Array<Record<string, unknown>> }>(
+      tools.lookup_term,
+      { query: "account" },
+    );
+    expect(result.matches[0].curatedPaths).toEqual([
+      { name: "enquiry_to_account", with: "enquiry", status: "draft" },
+    ]);
+    const relationships = result.matches[0].relationships as Array<{
+      relationship: string;
+      traversal?: string;
+    }>;
+    expect(
+      relationships.find(r => r.relationship === "account_closed_by_crm_user")
+        ?.traversal,
+    ).toBe("explicit");
   });
 });
