@@ -4,6 +4,7 @@ import {
   DatabaseConnection,
   DbtJob,
   DbtProject,
+  DbtRun,
   Flow,
   SavedConsole,
   NotificationRule,
@@ -26,6 +27,7 @@ import {
   buildIdempotencyKey,
   dbtRunDeepLink,
   deliveryRunKey,
+  isAutoDisabledDeliveryKey,
   isDbtResourceType,
   ruleTargetsForEvent,
   shouldDeliverForRule,
@@ -51,18 +53,26 @@ function clientUrl(): string {
 export async function resolveResourceDisplayName(params: {
   resourceType: NotificationResourceType;
   resourceId: string;
+  /** dbt resources are read inside this workspace only. */
+  workspaceId?: string;
 }): Promise<string> {
   const id = params.resourceId;
+  const inWorkspace =
+    params.workspaceId && Types.ObjectId.isValid(params.workspaceId)
+      ? { workspaceId: new Types.ObjectId(params.workspaceId) }
+      : null;
   if (params.resourceType === "scheduled_query") {
     const doc = await SavedConsole.findById(id).select("name").lean();
     return doc?.name || id;
   }
-  if (params.resourceType === "dbt_job") {
-    const doc = await DbtJob.findById(id).select("name").lean();
-    return doc?.name || id;
-  }
-  if (params.resourceType === "dbt_project") {
-    const doc = await DbtProject.findById(id).select("name").lean();
+  if (isDbtResourceType(params.resourceType)) {
+    // Never a name from another workspace: no workspace, no lookup.
+    if (!inWorkspace || !Types.ObjectId.isValid(id)) return id;
+    const filter = { _id: new Types.ObjectId(id), ...inWorkspace };
+    const doc =
+      params.resourceType === "dbt_job"
+        ? await DbtJob.findOne(filter).select("name").lean()
+        : await DbtProject.findOne(filter).select("name").lean();
     return doc?.name || id;
   }
   const flowDoc = await Flow.findById(id);
@@ -194,6 +204,93 @@ function buildDbtOutboundPayload(
   };
 }
 
+/**
+ * A delivery still "pending" this long after its claim is being retried by
+ * the deliver function, so it counts as posted. Older than this, the send
+ * was lost: the next failed run posts again.
+ */
+const PENDING_DELIVERY_COVERS_MS = 30 * 60 * 1000;
+
+/** MongoDB's duplicate-key error: another writer inserted this key first. */
+function isDuplicateKeyError(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === 11000;
+}
+
+/**
+ * The rules (ids) that already posted a failure of the job's CURRENT failure
+ * streak: a delivery, sent or still on its way, for a failed run of this job
+ * completed after the job's last success and no later than this run.
+ *
+ * Read from what each rule received, never from the previous run's status,
+ * so a rule added mid-streak and a rule whose post never got out are not
+ * taken for notified. The run's own delivery and the "job auto-disabled"
+ * announcement do not count: neither is a failure post of an earlier run.
+ */
+async function rulesWithFailurePostInStreak(
+  event: FlowRunTerminalEventData,
+  workspaceId: Types.ObjectId,
+  ruleIds: Types.ObjectId[],
+): Promise<Set<string>> {
+  const posted = new Set<string>();
+  if (ruleIds.length === 0 || !Types.ObjectId.isValid(event.resourceId)) {
+    return posted;
+  }
+  const jobId = new Types.ObjectId(event.resourceId);
+  const streakStart = event.lastSuccessAt
+    ? new Date(event.lastSuccessAt)
+    : undefined;
+  const runCompletedAt = new Date(event.completedAt);
+
+  const deliveries = await NotificationDelivery.find({
+    workspaceId,
+    resourceType: "dbt_job",
+    resourceId: jobId,
+    trigger: "failure",
+    ruleId: { $in: ruleIds },
+    runId: { $ne: event.runId },
+    $or: [
+      { status: "sent" },
+      {
+        status: "pending",
+        createdAt: { $gte: new Date(Date.now() - PENDING_DELIVERY_COVERS_MS) },
+      },
+    ],
+    // A delivery is created after its run completed, so one older than the
+    // last success belongs to an earlier streak.
+    ...(streakStart ? { createdAt: { $gt: streakStart } } : {}),
+  })
+    .select("ruleId runId idempotencyKey")
+    .lean();
+  const candidates = deliveries.filter(
+    delivery =>
+      !isAutoDisabledDeliveryKey(delivery.idempotencyKey) &&
+      Types.ObjectId.isValid(delivery.runId),
+  );
+  if (candidates.length === 0) return posted;
+
+  // The delivery's own date is not proof: a late delivery of an older streak
+  // is created after the success that ended it. The run's date is.
+  const streakRuns = await DbtRun.find({
+    _id: { $in: candidates.map(c => new Types.ObjectId(c.runId)) },
+    workspaceId,
+    jobId,
+    status: "error",
+    completedAt: {
+      ...(streakStart ? { $gt: streakStart } : {}),
+      ...(Number.isNaN(runCompletedAt.getTime())
+        ? {}
+        : { $lte: runCompletedAt }),
+    },
+  })
+    .select("_id")
+    .lean();
+  const inStreak = new Set(streakRuns.map(run => run._id.toString()));
+  for (const delivery of candidates) {
+    if (inStreak.has(delivery.runId)) posted.add(delivery.ruleId.toString());
+  }
+  return posted;
+}
+
 export async function fanOutTerminalRunNotifications(
   event: FlowRunTerminalEventData,
 ): Promise<{ deliveriesQueued: number }> {
@@ -215,8 +312,27 @@ export async function fanOutTerminalRunNotifications(
       resourceId: new Types.ObjectId(target.resourceId),
     })),
   }).lean();
+  // Default cadence of a dbt failure: once per rule and failure streak.
+  const judgedByStreak =
+    event.resourceType === "dbt_job" &&
+    trigger === "failure" &&
+    !event.jobDisabled;
+  const postedInStreak = judgedByStreak
+    ? await rulesWithFailurePostInStreak(
+        event,
+        workspaceId,
+        matched
+          .filter(rule => rule.everyFailure !== true)
+          .map(rule => rule._id),
+      )
+    : new Set<string>();
   const rules = matched.filter(rule =>
-    shouldDeliverForRule({ event, trigger, rule }),
+    shouldDeliverForRule({
+      event,
+      trigger,
+      rule,
+      failurePostedInStreak: postedInStreak.has(rule._id.toString()),
+    }),
   );
 
   if (rules.length === 0) {
@@ -228,6 +344,7 @@ export async function fanOutTerminalRunNotifications(
     (await resolveResourceDisplayName({
       resourceType: event.resourceType,
       resourceId: event.resourceId,
+      workspaceId: event.workspaceId,
     }));
   const payload = buildOutboundPayload({ event, resourceName, trigger });
 
@@ -247,27 +364,38 @@ export async function fanOutTerminalRunNotifications(
       ruleId,
     });
 
-    // Upsert, so two fan-outs of one run race to a single row.
-    const claim = await NotificationDelivery.updateOne(
-      { idempotencyKey },
-      {
-        $setOnInsert: {
-          workspaceId,
-          ruleId: new Types.ObjectId(ruleId),
-          resourceType: event.resourceType,
-          resourceId: new Types.ObjectId(event.resourceId),
-          runId: event.runId,
-          trigger,
-          channelType,
-          idempotencyKey,
-          status: "pending",
-          attempts: 0,
+    // Upsert on the unique `idempotencyKey` index, so two fan-outs of one
+    // run end in a single row. The loser of a true race gets a duplicate-key
+    // error from that index: the row exists, which is "already claimed".
+    let claimed = false;
+    try {
+      const claim = await NotificationDelivery.updateOne(
+        { workspaceId, idempotencyKey },
+        {
+          $setOnInsert: {
+            workspaceId,
+            ruleId: new Types.ObjectId(ruleId),
+            resourceType: event.resourceType,
+            resourceId: new Types.ObjectId(event.resourceId),
+            runId: event.runId,
+            trigger,
+            channelType,
+            idempotencyKey,
+            status: "pending",
+            attempts: 0,
+          },
         },
-      },
-      { upsert: true },
-    );
-    if (claim.upsertedCount === 0) {
-      const existing = await NotificationDelivery.findOne({ idempotencyKey })
+        { upsert: true },
+      );
+      claimed = claim.upsertedCount > 0;
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) throw error;
+    }
+    if (!claimed) {
+      const existing = await NotificationDelivery.findOne({
+        workspaceId,
+        idempotencyKey,
+      })
         .select("status")
         .lean();
       // A row still pending means an earlier attempt stopped before its send.
@@ -323,19 +451,22 @@ export async function deliverNotificationJob(
   job: NotificationDeliverJobData,
 ): Promise<void> {
   const isTestDelivery = job.idempotencyKey.startsWith("test:");
-  const rule = await NotificationRule.findById(job.ruleId).lean();
+  // Rule and delivery are read and written inside the job's workspace only.
+  const workspaceId = new Types.ObjectId(job.workspaceId);
+  const deliveryFilter = { workspaceId, idempotencyKey: job.idempotencyKey };
+  const rule = await NotificationRule.findOne({
+    _id: job.ruleId,
+    workspaceId,
+  }).lean();
   if (!rule || !rule.enabled) {
     if (!isTestDelivery) {
-      await NotificationDelivery.updateOne(
-        { idempotencyKey: job.idempotencyKey },
-        {
-          $set: {
-            status: "skipped",
-            completedAt: new Date(),
-            lastError: "Rule disabled or deleted",
-          },
+      await NotificationDelivery.updateOne(deliveryFilter, {
+        $set: {
+          status: "skipped",
+          completedAt: new Date(),
+          lastError: "Rule disabled or deleted",
         },
-      );
+      });
     }
     return;
   }
@@ -345,17 +476,14 @@ export async function deliverNotificationJob(
     await deliverToChannel(channel, job.payload);
 
     if (!isTestDelivery) {
-      await NotificationDelivery.updateOne(
-        { idempotencyKey: job.idempotencyKey },
-        {
-          $set: {
-            status: "sent",
-            sentAt: new Date(),
-            completedAt: new Date(),
-          },
-          $inc: { attempts: 1 },
+      await NotificationDelivery.updateOne(deliveryFilter, {
+        $set: {
+          status: "sent",
+          sentAt: new Date(),
+          completedAt: new Date(),
         },
-      );
+        $inc: { attempts: 1 },
+      });
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -365,17 +493,14 @@ export async function deliverNotificationJob(
       error: message,
     });
     if (!isTestDelivery) {
-      await NotificationDelivery.updateOne(
-        { idempotencyKey: job.idempotencyKey },
-        {
-          $set: {
-            status: "failed",
-            lastError: message,
-            completedAt: new Date(),
-          },
-          $inc: { attempts: 1 },
+      await NotificationDelivery.updateOne(deliveryFilter, {
+        $set: {
+          status: "failed",
+          lastError: message,
+          completedAt: new Date(),
         },
-      );
+        $inc: { attempts: 1 },
+      });
     }
     throw err;
   }

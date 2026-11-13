@@ -34,6 +34,7 @@ import {
 } from "../database/workspace-schema";
 import {
   buildOutboundPayload,
+  deliverNotificationJob,
   fanOutTerminalRunNotifications,
   sanitizeRuleForClient,
 } from "../services/flow-run-notification.service";
@@ -89,12 +90,17 @@ async function seedRun(
     stepResults?: IDbtRunStepResult[];
     error?: string;
     trigger?: "schedule" | "manual" | "agent";
+    /** When the run was queued. Default: one minute after the last seeded run. */
+    createdAt?: Date;
+    /** When it finished. Default: 30 seconds after it was queued. */
+    completedAt?: Date;
+    workspaceId?: Types.ObjectId;
   } = {},
 ): Promise<string> {
   clock += 60_000;
-  const createdAt = new Date(clock);
+  const createdAt = options.createdAt ?? new Date(clock);
   const run = await DbtRun.create({
-    workspaceId: WS,
+    workspaceId: options.workspaceId ?? WS,
     projectId,
     ...(options.job === null ? {} : { jobId: options.job ?? jobId }),
     environment: "prod",
@@ -104,12 +110,30 @@ async function seedRun(
     triggeredBy: "scheduler",
     stepResults: options.stepResults ?? [],
     error: options.error,
-    completedAt: new Date(clock + 30_000),
+    completedAt: options.completedAt ?? new Date(clock + 30_000),
     durationMs: 30_000,
     createdAt,
   });
   return run._id.toString();
 }
+
+/** Fan a seeded run out, as the executor's emit step leads to. */
+async function fanOut(runId: string): Promise<number> {
+  const event = await buildDbtRunTerminalEvent(runId);
+  if (!event) return 0;
+  return (await fanOutTerminalRunNotifications(event)).deliveriesQueued;
+}
+
+/** The deliver function ran and the channel accepted every pending post. */
+async function markDelivered(): Promise<void> {
+  await NotificationDelivery.updateMany(
+    { status: "pending" },
+    { $set: { status: "sent", sentAt: new Date() } },
+  );
+}
+
+const T0 = Date.parse("2026-03-01T00:00:00.000Z");
+const at = (minutes: number) => new Date(T0 + minutes * 60_000);
 
 async function seedRule(
   resourceType: NotificationResourceType,
@@ -157,6 +181,8 @@ const FAILED_MODEL: IDbtRunStepResult = {
 beforeAll(async () => {
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  // The schema's indexes, the unique `idempotencyKey` one included.
+  await Promise.all([NotificationDelivery.init(), DbtRun.init()]);
 });
 
 afterAll(async () => {
@@ -304,6 +330,77 @@ describe("buildDbtRunTerminalEvent", () => {
     );
   });
 
+  // Review A1. Inngest gives no FIFO inside a concurrency key, so of two
+  // queued runs of one job the one created later can run, and finish, first.
+  it("takes the previous run in completion order, never in creation order", async () => {
+    await seedRun("success", { createdAt: at(0), completedAt: at(1) });
+    // A was queued first and ran last. B was queued second and ran first.
+    const a = await seedRun("error", {
+      createdAt: at(10),
+      completedAt: at(40),
+      trigger: "manual",
+    });
+    const b = await seedRun("error", {
+      createdAt: at(11),
+      completedAt: at(20),
+    });
+
+    const eventB = await buildDbtRunTerminalEvent(b);
+    const eventA = await buildDbtRunTerminalEvent(a);
+
+    // B finished right after the success. A finished right after B.
+    expect(eventB?.previousStatus).toBe("success");
+    expect(eventA?.previousStatus).toBe("error");
+    // Both belong to the streak that started after that success.
+    expect(eventB?.lastSuccessAt).toBe(at(1).toISOString());
+    expect(eventA?.lastSuccessAt).toBe(at(1).toISOString());
+  });
+
+  it("reports where the failure streak starts: the last success before the run", async () => {
+    const first = await seedRun("error", {
+      createdAt: at(0),
+      completedAt: at(1),
+    });
+    await seedRun("success", { createdAt: at(2), completedAt: at(3) });
+    await seedRun("cancelled", { createdAt: at(4), completedAt: at(5) });
+    const second = await seedRun("error", {
+      createdAt: at(6),
+      completedAt: at(7),
+    });
+    const recovered = await seedRun("success", {
+      createdAt: at(8),
+      completedAt: at(9),
+    });
+
+    // No success on record before the job's first run.
+    expect((await buildDbtRunTerminalEvent(first))?.lastSuccessAt).toBe(
+      undefined,
+    );
+    expect((await buildDbtRunTerminalEvent(second))?.lastSuccessAt).toBe(
+      at(3).toISOString(),
+    );
+    // A success carries no streak.
+    expect((await buildDbtRunTerminalEvent(recovered))?.lastSuccessAt).toBe(
+      undefined,
+    );
+  });
+
+  it("never reads a run of another workspace as the previous one", async () => {
+    // Same job id under another workspace: not this job's history.
+    await seedRun("error", {
+      workspaceId: new Types.ObjectId(),
+      createdAt: at(0),
+      completedAt: at(1),
+    });
+    const runId = await seedRun("success", {
+      createdAt: at(2),
+      completedAt: at(3),
+    });
+    expect((await buildDbtRunTerminalEvent(runId))?.previousStatus).toBe(
+      undefined,
+    );
+  });
+
   it("returns null for runs that notify nobody", async () => {
     expect(
       await buildDbtRunTerminalEvent(await seedRun("cancelled")),
@@ -356,10 +453,12 @@ describe("emitDbtRunTerminalEvent", () => {
     expect(sendMock).not.toHaveBeenCalled();
   });
 
+  const FAST = { baseDelayMs: 1 };
+
   it("never throws", async () => {
     const runId = await seedRun("error");
     sendMock.mockRejectedValue(new Error("inngest is down"));
-    await expect(emitDbtRunTerminalEvent(runId)).resolves.toBeUndefined();
+    await expect(emitDbtRunTerminalEvent(runId, FAST)).resolves.toBeUndefined();
 
     await expect(emitDbtRunTerminalEvent("not-an-id")).resolves.toBeUndefined();
     await expect(
@@ -370,10 +469,80 @@ describe("emitDbtRunTerminalEvent", () => {
       throw new Error("mongo is down");
     });
     try {
-      await expect(emitDbtRunTerminalEvent(runId)).resolves.toBeUndefined();
+      await expect(
+        emitDbtRunTerminalEvent(runId, FAST),
+      ).resolves.toBeUndefined();
     } finally {
       findSpy.mockRestore();
     }
+  });
+
+  // Review A4. The executor runs with retries 0, and one failed send was
+  // caught and logged: the alert was lost with no second try.
+  it("retries a failed send with backoff, and the alert goes out", async () => {
+    const runId = await seedRun("error");
+    sendMock
+      .mockRejectedValueOnce(new Error("socket hang up"))
+      .mockRejectedValueOnce(new Error("inngest 503"));
+
+    const started = Date.now();
+    await emitDbtRunTerminalEvent(runId, { baseDelayMs: 20 });
+    const waited = Date.now() - started;
+
+    // 2 failures, then the send that got through: the event is out.
+    expect(sendMock).toHaveBeenCalledTimes(3);
+    const events = sentEvents("flow.run.terminal");
+    // The same id every time, so a send that did reach Inngest posts once.
+    expect(new Set(events.map(event => event.id))).toEqual(
+      new Set([dbtRunTerminalEventId(runId)]),
+    );
+    // 20 ms, then 40 ms: the wait doubles.
+    expect(waited).toBeGreaterThanOrEqual(55);
+  });
+
+  it("retries a failed read of the run too", async () => {
+    const runId = await seedRun("error");
+    const findSpy = vi.spyOn(DbtRun, "findById").mockImplementationOnce(() => {
+      throw new Error("mongo blip");
+    });
+    try {
+      await emitDbtRunTerminalEvent(runId, FAST);
+    } finally {
+      findSpy.mockRestore();
+    }
+    expect(sentEvents("flow.run.terminal")).toHaveLength(1);
+  });
+
+  it("stops after 4 attempts by default and at the configured number", async () => {
+    const runId = await seedRun("error");
+    sendMock.mockRejectedValue(new Error("inngest is down"));
+
+    await emitDbtRunTerminalEvent(runId, FAST);
+    expect(sendMock).toHaveBeenCalledTimes(4);
+
+    sendMock.mockClear();
+    await emitDbtRunTerminalEvent(runId, { attempts: 2, baseDelayMs: 1 });
+    expect(sendMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends once when nothing fails, and never retries a run that notifies nobody", async () => {
+    await emitDbtRunTerminalEvent(await seedRun("error"), FAST);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    sendMock.mockClear();
+    await emitDbtRunTerminalEvent(await seedRun("cancelled"), FAST);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("retries the auto-disabled announcement the same way", async () => {
+    const runId = await seedRun("error");
+    sendMock.mockRejectedValueOnce(new Error("inngest 503"));
+
+    await emitDbtJobAutoDisabledEvent(runId, 10, FAST);
+
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    expect(sentEvents("flow.run.terminal")[1].id).toBe(
+      dbtJobAutoDisabledEventId(runId),
+    );
   });
 });
 
@@ -503,6 +672,202 @@ describe("cadence", () => {
     sendMock.mockClear();
     expect((await finishRun("error")).queued).toBe(1);
     expect(deliveries()[0].ruleId).toBe(loud);
+  });
+
+  // Review A1: out-of-order completion, seen through the cadence.
+  it("posts 1 failure for 2 failed runs that finish out of creation order", async () => {
+    await seedRule("dbt_job", jobId, { triggers: ["failure"] });
+    await seedRun("success", { createdAt: at(0), completedAt: at(1) });
+    // A manual run A and a scheduled run B were both queued. B ran first.
+    const a = await seedRun("error", {
+      createdAt: at(10),
+      completedAt: at(40),
+      trigger: "manual",
+    });
+    const b = await seedRun("error", {
+      createdAt: at(11),
+      completedAt: at(20),
+    });
+
+    expect(await fanOut(b)).toBe(1); // the streak's first failure
+    await markDelivered();
+    // By creation order A's previous run was the old success: a 2nd post.
+    expect(await fanOut(a)).toBe(0);
+  });
+
+  it("posts the recovery when the run that recovers was queued before the failed one", async () => {
+    await seedRule("dbt_job", jobId);
+    await seedRun("success", { createdAt: at(0), completedAt: at(1) });
+    // A was queued first and succeeds last. B was queued second, fails first.
+    const a = await seedRun("success", {
+      createdAt: at(10),
+      completedAt: at(40),
+      trigger: "manual",
+    });
+    const b = await seedRun("error", {
+      createdAt: at(11),
+      completedAt: at(20),
+    });
+
+    expect(await fanOut(b)).toBe(1);
+    await markDelivered();
+    sendMock.mockClear();
+    // By creation order A followed a success: the recovery was missed.
+    expect(await fanOut(a)).toBe(1);
+    expect(deliveries()[0].trigger).toBe("success");
+    expect(deliveries()[0].payload.recovered).toBe(true);
+  });
+
+  // Review B4. The decision read the previous run's status. It now reads
+  // what each rule received for the current failure streak.
+  describe("per rule: one failure post per failure streak", () => {
+    it("a rule added while the job is already failing hears the next failed run", async () => {
+      // 2 failed runs before any rule exists.
+      await finishRun("error");
+      await finishRun("error");
+      const ruleId = await seedRule("dbt_job", jobId, {
+        triggers: ["failure"],
+      });
+
+      const next = await finishRun("error");
+
+      expect(next.queued).toBe(1);
+      expect(deliveries()[0].ruleId).toBe(ruleId);
+      await markDelivered();
+      // Heard once: the rest of the streak stays quiet.
+      expect((await finishRun("error")).queued).toBe(0);
+    });
+
+    it("a job already failing when this ships posts on its next failed run", async () => {
+      // The rule exists, the job has failed 3 times, and no delivery was
+      // ever recorded for it: the state of every failing job on ship day.
+      await seedRule("dbt_project", projectId, { triggers: ["failure"] });
+      await seedRun("success");
+      await seedRun("error");
+      await seedRun("error");
+      await seedRun("error");
+      expect(await NotificationDelivery.countDocuments({})).toBe(0);
+
+      expect((await finishRun("error")).queued).toBe(1);
+    });
+
+    it("a streak whose first post exhausted its delivery retries posts again on the next failed run", async () => {
+      await seedRule("dbt_job", jobId, { triggers: ["failure"] });
+      expect((await finishRun("error")).queued).toBe(1);
+      // The channel refused every attempt.
+      await NotificationDelivery.updateMany(
+        {},
+        { $set: { status: "failed", lastError: "Slack webhook HTTP 500" } },
+      );
+
+      expect((await finishRun("error")).queued).toBe(1);
+      await markDelivered();
+      // This one got through: quiet from here on.
+      expect((await finishRun("error")).queued).toBe(0);
+    });
+
+    it("a post skipped because its rule was disabled does not count either", async () => {
+      await seedRule("dbt_job", jobId, { triggers: ["failure"] });
+      expect((await finishRun("error")).queued).toBe(1);
+      await NotificationDelivery.updateMany(
+        {},
+        { $set: { status: "skipped" } },
+      );
+
+      expect((await finishRun("error")).queued).toBe(1);
+    });
+
+    it("a post still on its way counts, so 2 quick failures post once", async () => {
+      await seedRule("dbt_job", jobId, { triggers: ["failure"] });
+      expect((await finishRun("error")).queued).toBe(1);
+      // Still "pending": the deliver function has not finished.
+      expect((await finishRun("error")).queued).toBe(0);
+    });
+
+    it("a post pending for more than 30 minutes was lost: the next failed run posts", async () => {
+      await seedRule("dbt_job", jobId, { triggers: ["failure"] });
+      expect((await finishRun("error")).queued).toBe(1);
+      await NotificationDelivery.collection.updateMany(
+        {},
+        { $set: { createdAt: new Date(Date.now() - 31 * 60_000) } },
+      );
+
+      expect((await finishRun("error")).queued).toBe(1);
+    });
+
+    it("judges each rule on its own deliveries", async () => {
+      const early = await seedRule("dbt_job", jobId, { triggers: ["failure"] });
+      expect((await finishRun("error")).queued).toBe(1);
+      await markDelivered();
+      const late = await seedRule("dbt_project", projectId, {
+        triggers: ["failure"],
+      });
+      sendMock.mockClear();
+
+      const next = await finishRun("error");
+
+      // The early rule already posted for this streak. The late one has not.
+      expect(next.queued).toBe(1);
+      expect(deliveries().map(delivery => delivery.ruleId)).toEqual([late]);
+      expect(deliveries()[0].ruleId).not.toBe(early);
+    });
+
+    it("a post of an earlier streak never silences a new streak", async () => {
+      await seedRule("dbt_job", jobId, { triggers: ["failure"] });
+      expect((await finishRun("error")).queued).toBe(1);
+      await markDelivered();
+      await finishRun("success");
+      // The earlier delivery row is still there, and it is "sent". It names
+      // a run from before the success, so it is not of this streak.
+      expect((await finishRun("error")).queued).toBe(1);
+    });
+
+    it("the auto-disabled announcement is not a failure post of the streak", async () => {
+      // 2 failed runs, then a rule is added, then the job is auto-disabled.
+      await finishRun("error");
+      const disabling = await finishRun("error");
+      await seedRule("dbt_job", jobId, { triggers: ["failure"] });
+      await emitDbtJobAutoDisabledEvent(disabling.runId, 2);
+      const announcement = sentEvents("flow.run.terminal").find(
+        event => event.id === dbtJobAutoDisabledEventId(disabling.runId),
+      );
+      if (!announcement) throw new Error("expected the announcement");
+      expect(
+        (
+          await fanOutTerminalRunNotifications(
+            announcement.data as FlowRunTerminalEventData,
+          )
+        ).deliveriesQueued,
+      ).toBe(1);
+      await markDelivered();
+
+      // Someone enables the job again and it fails again: the rule has not
+      // had a failure post for this streak yet.
+      expect((await finishRun("error")).queued).toBe(1);
+    });
+
+    it("never counts another workspace's delivery or run", async () => {
+      const ruleId = await seedRule("dbt_job", jobId, {
+        triggers: ["failure"],
+      });
+      const other = new Types.ObjectId();
+      // A "sent" failure delivery for this job and rule, filed under
+      // another workspace, for a failed run of that other workspace.
+      const foreignRun = await seedRun("error", { workspaceId: other });
+      await NotificationDelivery.create({
+        workspaceId: other,
+        ruleId: new Types.ObjectId(ruleId),
+        resourceType: "dbt_job",
+        resourceId: jobId,
+        runId: foreignRun,
+        trigger: "failure",
+        channelType: "email",
+        idempotencyKey: `dbt_job:${jobId}:${foreignRun}:failure:email:${ruleId}`,
+        status: "sent",
+      });
+
+      expect((await finishRun("error")).queued).toBe(1);
+    });
   });
 
   it("leaves flows and scheduled queries on every run", async () => {
@@ -746,6 +1111,135 @@ describe("idempotency", () => {
 
     expect(retry.deliveriesQueued).toBe(1);
     expect(await NotificationDelivery.countDocuments({})).toBe(1);
+  });
+
+  // Review A5. The upsert on `idempotencyKey` is race-safe only with a
+  // unique index on that field. Migration 2026-05-01-140000 builds one in
+  // every migrated database; the schema declared none, so a database built
+  // by autoIndex had none, and the loser of the race was not handled.
+  it("declares the unique index the upsert relies on, under the migration's name", async () => {
+    const declared = NotificationDelivery.schema
+      .indexes()
+      .find(([keys]) => JSON.stringify(keys) === '{"idempotencyKey":1}');
+    expect(declared?.[1]).toMatchObject({
+      unique: true,
+      name: "idempotency_key_unique_idx",
+    });
+    const built = (await NotificationDelivery.collection.indexes()).find(
+      index => JSON.stringify(index.key) === '{"idempotencyKey":1}',
+    );
+    expect(built).toMatchObject({
+      unique: true,
+      name: "idempotency_key_unique_idx",
+    });
+  });
+
+  it("the database refuses a second row for one idempotency key", async () => {
+    const row = {
+      workspaceId: WS,
+      ruleId: new Types.ObjectId(),
+      resourceType: "dbt_job" as const,
+      resourceId: jobId,
+      runId: "r1",
+      trigger: "failure" as const,
+      channelType: "email" as const,
+      idempotencyKey: "dbt_job:x:r1:failure:email:y",
+      status: "pending" as const,
+    };
+    await NotificationDelivery.create(row);
+    await expect(NotificationDelivery.create(row)).rejects.toMatchObject({
+      code: 11000,
+    });
+  });
+
+  it("keeps one row when fan-outs of one run race", async () => {
+    await seedRule("dbt_job", jobId);
+    await seedRule("dbt_project", projectId);
+    const runId = await seedRun("error");
+    const event = await buildDbtRunTerminalEvent(runId);
+    if (!event) throw new Error("expected an event");
+
+    // 8 at once: no per-run concurrency key in front of them here.
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => fanOutTerminalRunNotifications(event)),
+    );
+
+    expect(results).toHaveLength(8);
+    expect(await NotificationDelivery.countDocuments({})).toBe(2);
+    // Every send carries one of 2 ids: Inngest keeps one of each.
+    const ids = sentEvents("notification/deliver").map(sent => sent.id);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it("reads a duplicate-key error on the claim as already claimed, never as a failure", async () => {
+    const ruleId = await seedRule("dbt_job", jobId);
+    const runId = await seedRun("error");
+    const event = await buildDbtRunTerminalEvent(runId);
+    if (!event) throw new Error("expected an event");
+    const duplicate = Object.assign(new Error("E11000 duplicate key error"), {
+      code: 11000,
+    });
+    const key = `dbt_job:${jobId}:${runId}:failure:email:${ruleId}`;
+    const existing = {
+      workspaceId: WS,
+      ruleId: new Types.ObjectId(ruleId),
+      resourceType: "dbt_job" as const,
+      resourceId: jobId,
+      runId,
+      trigger: "failure" as const,
+      channelType: "email" as const,
+      idempotencyKey: key,
+    };
+
+    // The winner's row is still pending: the send is repeated under the
+    // same event id, which Inngest deduplicates.
+    await NotificationDelivery.create({ ...existing, status: "pending" });
+    const spy = vi
+      .spyOn(NotificationDelivery, "updateOne")
+      .mockRejectedValueOnce(duplicate);
+    try {
+      const raced = await fanOutTerminalRunNotifications(event);
+      expect(raced.deliveriesQueued).toBe(1);
+      expect(sentEvents("notification/deliver")[0].id).toBe(
+        `notification-deliver:${key}`,
+      );
+
+      // The winner already delivered: nothing is sent again.
+      await NotificationDelivery.updateMany({}, { $set: { status: "sent" } });
+      sendMock.mockClear();
+      spy.mockRejectedValueOnce(duplicate);
+      const late = await fanOutTerminalRunNotifications(event);
+      expect(late.deliveriesQueued).toBe(0);
+      expect(sendMock).not.toHaveBeenCalled();
+
+      // Any other write error still fails the step, so Inngest retries it.
+      spy.mockRejectedValueOnce(new Error("mongo unavailable"));
+      await expect(fanOutTerminalRunNotifications(event)).rejects.toThrow(
+        "mongo unavailable",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await NotificationDelivery.countDocuments({})).toBe(1);
+  });
+
+  it("delivers inside the job's workspace only", async () => {
+    const ruleId = await seedRule("dbt_job", jobId);
+    const { runId } = await finishRun("error");
+    const [job] = deliveries();
+    expect(job.runId).toBe(runId);
+
+    // The same job data under another workspace finds no rule and touches
+    // no delivery row.
+    await deliverNotificationJob({
+      ...job,
+      workspaceId: new Types.ObjectId().toString(),
+    });
+    const untouched = await NotificationDelivery.findOne({
+      idempotencyKey: job.idempotencyKey,
+    }).lean();
+    expect(untouched?.status).toBe("pending");
+    expect(untouched?.ruleId.toString()).toBe(ruleId);
   });
 
   it("keys a delivery on the run and the rule", async () => {

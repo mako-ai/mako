@@ -713,8 +713,9 @@ export interface INotificationRule extends Document {
   enabled: boolean;
   triggers: NotificationTrigger[];
   /**
-   * dbt rules only. Default (unset): "failure" posts when a job run fails
-   * and the previous run of that job had not failed; "success" posts once on
+   * dbt rules only. Default (unset): "failure" posts once per failure
+   * streak of a job (its failed runs since its last success), judged per
+   * rule on what the rule already delivered; "success" posts once on
    * recovery. True: "failure" posts on every failed run.
    */
   everyFailure?: boolean;
@@ -3518,6 +3519,15 @@ NotificationDeliverySchema.index({
   completedAt: -1,
 });
 
+// One delivery per idempotency key: the claim in the fan-out is an upsert on
+// this key, and only a unique index makes two racing upserts end in one row.
+// Named as migration 2026-05-01-140000 created it, so autoIndex and the
+// migration converge on one index.
+NotificationDeliverySchema.index(
+  { idempotencyKey: 1 },
+  { unique: true, name: "idempotency_key_unique_idx" },
+);
+
 NotificationDeliverySchema.index(
   { createdAt: 1 },
   { expireAfterSeconds: 7776000 },
@@ -4554,6 +4564,10 @@ const DbtRunSchema = new Schema<IDbtRun>(
 
 DbtRunSchema.index({ workspaceId: 1, projectId: 1, createdAt: -1 });
 DbtRunSchema.index({ jobId: 1, createdAt: -1 }, { sparse: true });
+// A job's runs in completion order: the previous run and the last success
+// before a run (dbt-run-notify.ts) are each one index seek, never a scan of
+// run documents that carry their logs.
+DbtRunSchema.index({ jobId: 1, status: 1, completedAt: -1 });
 
 export const DbtRun = mongoose.model<IDbtRun>("DbtRun", DbtRunSchema);
 

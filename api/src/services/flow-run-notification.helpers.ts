@@ -71,9 +71,16 @@ export function ruleTargetsForEvent(
 }
 
 /**
- * Cadence. Scheduled queries and flows deliver on every matching run. A dbt
- * job run delivers "failure" when the previous run had not failed (or always
- * with `everyFailure`), and "success" only as the recovery after a failure.
+ * Cadence. Scheduled queries and flows deliver on every matching run.
+ *
+ * A dbt job run is judged per rule. A failure streak is the failed runs of
+ * the job since its last success, in completion order.
+ *  - "failure": deliver when THIS rule has not yet posted a failure of the
+ *    current streak (`failurePostedInStreak`), or always with
+ *    `everyFailure`. So a rule added while the job is already failing, and
+ *    a rule whose first post never got out, hear the next failed run.
+ *  - "success": deliver only as the recovery, when the previous run in
+ *    completion order had failed.
  */
 export function shouldDeliverForRule(params: {
   event: Pick<
@@ -82,15 +89,29 @@ export function shouldDeliverForRule(params: {
   >;
   trigger: NotificationTrigger;
   rule: { everyFailure?: boolean };
+  /**
+   * dbt "failure" only: this rule already posted (or is posting) a failure
+   * of the current streak. Unset reads as false.
+   */
+  failurePostedInStreak?: boolean;
 }): boolean {
   if (params.event.resourceType !== "dbt_job") return true;
   // The job is off from here on: every failure rule hears it, once.
   if (params.event.jobDisabled) return params.trigger === "failure";
-  const previousFailed = params.event.previousStatus === "error";
   if (params.trigger === "failure") {
-    return params.rule.everyFailure === true || !previousFailed;
+    return (
+      params.rule.everyFailure === true || params.failurePostedInStreak !== true
+    );
   }
-  return previousFailed;
+  return params.event.previousStatus === "error";
+}
+
+/** The marker `deliveryRunKey` puts in an auto-disabled delivery's key. */
+const AUTO_DISABLED_KEY_PART = ":auto-disabled:";
+
+/** True for the delivery of a "job auto-disabled" announcement. */
+export function isAutoDisabledDeliveryKey(idempotencyKey: string): boolean {
+  return idempotencyKey.includes(AUTO_DISABLED_KEY_PART);
 }
 
 export function hashForIdempotencySecret(input: string): string {

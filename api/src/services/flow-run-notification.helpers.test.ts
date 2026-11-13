@@ -6,7 +6,9 @@ import {
   boundFailedSteps,
   buildDbtSlackText,
   buildIdempotencyKey,
+  deliveryRunKey,
   dbtRunDeepLink,
+  isAutoDisabledDeliveryKey,
   isNotificationResourceType,
   ruleTargetsForEvent,
   scrubSecrets,
@@ -102,29 +104,88 @@ function testCadence() {
   const deliver = (
     trigger: "success" | "failure",
     previousStatus: "success" | "error" | undefined,
-    everyFailure?: boolean,
+    options: { everyFailure?: boolean; failurePostedInStreak?: boolean } = {},
   ) =>
     shouldDeliverForRule({
       event: { resourceType: "dbt_job", previousStatus },
       trigger,
-      rule: { everyFailure },
+      rule: { everyFailure: options.everyFailure },
+      failurePostedInStreak: options.failurePostedInStreak,
     });
 
-  // First failure: no earlier run, or the earlier run succeeded.
+  // A failure is judged on what THIS rule already posted for the streak,
+  // never on the previous run's status (review B4).
+  // The rule has not posted for the streak: it posts, whatever came before.
   assert.equal(deliver("failure", undefined), true);
   assert.equal(deliver("failure", "success"), true);
-  // Repeated failure stays quiet by default.
-  assert.equal(deliver("failure", "error"), false);
-  assert.equal(deliver("failure", "error", false), false);
+  assert.equal(deliver("failure", "error"), true);
+  assert.equal(
+    deliver("failure", "error", { failurePostedInStreak: false }),
+    true,
+  );
+  // The rule already posted for the streak: quiet.
+  assert.equal(
+    deliver("failure", "error", { failurePostedInStreak: true }),
+    false,
+  );
+  assert.equal(
+    deliver("failure", "error", {
+      everyFailure: false,
+      failurePostedInStreak: true,
+    }),
+    false,
+  );
   // everyFailure posts every failed run.
-  assert.equal(deliver("failure", "error", true), true);
-  assert.equal(deliver("failure", "success", true), true);
-  // Recovery posts once: only the success right after a failure.
+  assert.equal(
+    deliver("failure", "error", {
+      everyFailure: true,
+      failurePostedInStreak: true,
+    }),
+    true,
+  );
+  assert.equal(deliver("failure", "success", { everyFailure: true }), true);
+  // Recovery posts once: only the success right after a failure, in
+  // completion order.
   assert.equal(deliver("success", "error"), true);
   assert.equal(deliver("success", "success"), false);
   assert.equal(deliver("success", undefined), false);
-  // everyFailure changes nothing for successes.
-  assert.equal(deliver("success", "success", true), false);
+  // Neither option changes anything for successes.
+  assert.equal(deliver("success", "success", { everyFailure: true }), false);
+  assert.equal(
+    deliver("success", "error", { failurePostedInStreak: true }),
+    true,
+  );
+
+  // The auto-disabled announcement tells keys apart from failure posts.
+  assert.equal(
+    isAutoDisabledDeliveryKey(
+      buildIdempotencyKey({
+        resourceType: "dbt_job",
+        resourceId: "job1",
+        runId: deliveryRunKey({
+          runId: "run1",
+          jobDisabled: { consecutiveFailures: 10 },
+        }),
+        trigger: "failure",
+        channelType: "slack",
+        ruleId: "rule1",
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    isAutoDisabledDeliveryKey(
+      buildIdempotencyKey({
+        resourceType: "dbt_job",
+        resourceId: "job1",
+        runId: deliveryRunKey({ runId: "run1" }),
+        trigger: "failure",
+        channelType: "slack",
+        ruleId: "rule1",
+      }),
+    ),
+    false,
+  );
 
   // Scheduled queries and flows deliver every matching run, as before.
   for (const resourceType of ["flow", "scheduled_query"] as const) {

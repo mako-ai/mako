@@ -37,10 +37,19 @@ export interface FlowRunTerminalEventData {
   /** dbt job runs: environment name the run built into. */
   environment?: string;
   /**
-   * dbt job runs: status of the previous terminal run of the same job,
-   * cancelled runs ignored. Unset when this is the job's first run.
+   * dbt job runs: status of the previous terminal run of the same job, in
+   * completion order (`completedAt`), cancelled runs ignored. Unset when
+   * this is the job's first run. Runs of one job can start out of creation
+   * order, so creation order is never used.
    */
   previousStatus?: "success" | "error";
+  /**
+   * dbt job runs: `completedAt` of the job's last successful run before
+   * this one. A failure streak is every failed run completed after it, up
+   * to this run. Unset when no earlier success is on record: the streak
+   * then reaches back to the job's first run.
+   */
+  lastSuccessAt?: string;
   /** dbt job runs: the first failed steps, bounded in count and length. */
   failedSteps?: RunFailedStep[];
   /** dbt job runs: every failed step, including those cut from the list. */

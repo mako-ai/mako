@@ -132,13 +132,19 @@ const EVERY_FAILURE_DBT_ONLY =
   "everyFailure applies to dbt job and dbt project rules only";
 
 async function dbtTestEventFields(
+  workspaceId: string,
   resourceType: "dbt_job" | "dbt_project",
   resourceId: string,
   trigger: NotificationTrigger,
 ): Promise<Partial<FlowRunTerminalEventData>> {
   const job =
     resourceType === "dbt_job"
-      ? await DbtJob.findById(resourceId).select("projectId environment").lean()
+      ? await DbtJob.findOne({
+          _id: new Types.ObjectId(resourceId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        })
+          .select("projectId environment")
+          .lean()
       : null;
   return {
     projectId: job?.projectId.toString(),
@@ -783,12 +789,21 @@ notificationRulesRoutes.openapi(
       const resourceName =
         resourceType === "dbt_project"
           ? "Example job"
-          : await resolveResourceDisplayName({ resourceType, resourceId });
+          : await resolveResourceDisplayName({
+              resourceType,
+              resourceId,
+              workspaceId,
+            });
 
       // A dbt test shows the real message shape: a failing step on failure,
       // a recovery on success, and the job's own link.
       const dbtSample = isDbtResourceType(resourceType)
-        ? await dbtTestEventFields(resourceType, resourceId, trigger)
+        ? await dbtTestEventFields(
+            workspaceId,
+            resourceType,
+            resourceId,
+            trigger,
+          )
         : {};
 
       const payload = buildOutboundPayload({
