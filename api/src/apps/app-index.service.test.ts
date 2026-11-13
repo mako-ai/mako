@@ -352,6 +352,10 @@ describe("discovery facts", () => {
     const snapshot = await loadAppsIndex(WS);
     const b = snapshot.apps.find(a => a.path === "apps/Sales/CH/b");
     expect(b?.tables).toEqual(["analytics.fct_leads", "dim_agents"]);
+    // Which binding reads which table (model_readers); `rows` reads none.
+    expect(b?.bindingTables).toEqual([
+      { binding: "leads", tables: ["analytics.fct_leads", "dim_agents"] },
+    ]);
     expect(b?.bindings).toEqual(["leads", "rows"]);
     const d = snapshot.apps.find(a => a.path === "apps/d");
     expect(d?.authorEmail).toBe("laptop@example.com");
