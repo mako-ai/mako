@@ -31,8 +31,11 @@ function labelValue(raw: string | undefined): string {
  * Non-secret env for the dbt child, values sanitized as BigQuery labels
  * (lowercase, `[a-z0-9_-]`, at most 63 characters, never empty):
  *
- *  - `MAKO_DBT_JOB`: the job's slug, or its id when it has no slug. Job runs
- *    only: an ad-hoc run has no job, so the variable is absent.
+ *  - `MAKO_DBT_JOB`: the job's id. Never the slug: a slug is unique inside
+ *    one project only, so two projects or workspaces on one warehouse
+ *    project would share a label value and their costs would add up. Job
+ *    runs only: an ad-hoc run has no job, so the variable is absent.
+ *  - `MAKO_DBT_JOB_SLUG`: the job's slug, for reading. Not an identifier.
  *  - `MAKO_DBT_RUN`: the run id.
  *  - `MAKO_TRIGGER`: schedule, manual, agent or ci.
  *
@@ -44,7 +47,9 @@ export function dbtRunLabelEnv(
   input: DbtRunLabelInput,
 ): Record<string, string> {
   const values: Record<string, string> = {
-    MAKO_DBT_JOB: labelValue(input.jobSlug) || labelValue(input.jobId),
+    MAKO_DBT_JOB: labelValue(input.jobId),
+    // Display only, and only beside the id it names.
+    MAKO_DBT_JOB_SLUG: input.jobId ? labelValue(input.jobSlug) : "",
     MAKO_DBT_RUN: labelValue(input.runId),
     MAKO_TRIGGER: labelValue(input.trigger),
   };
@@ -76,7 +81,8 @@ export const DBT_QUERY_COMMENT_PROJECT_CONFIG = `query-comment:
  * `dbt_project.yml`) to turn the run env into query comment fields and
  * BigQuery job labels. It keeps dbt's default fields (app, dbt_version,
  * profile_name, target_name, node_id) and adds, only when dbt runs inside
- * Mako: mako_source, mako_dbt_job, mako_dbt_run, mako_trigger.
+ * Mako: mako_source, mako_dbt_job, mako_dbt_job_slug, mako_dbt_run,
+ * mako_trigger.
  *
  * Verified against dbt-bigquery 1.9.2 `connections.py`: with `job-label:
  * true` the comment is parsed as JSON and every key/value becomes a label
@@ -95,6 +101,7 @@ export const DBT_QUERY_COMMENT_MACRO: string = `{% macro mako_query_comment(node
   {#- Set by Mako on every run it starts. Empty outside Mako: no mako_* fields. -#}
   {%- set mako_fields = {
     "mako_dbt_job": env_var("MAKO_DBT_JOB", ""),
+    "mako_dbt_job_slug": env_var("MAKO_DBT_JOB_SLUG", ""),
     "mako_dbt_run": env_var("MAKO_DBT_RUN", ""),
     "mako_trigger": env_var("MAKO_TRIGGER", ""),
   } -%}

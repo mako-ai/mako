@@ -12,6 +12,7 @@ import {
   WarehouseRelation,
   JobHistoryQueryKind,
   JobHistoryQueryParams,
+  JobHistoryRegion,
   JOB_HISTORY_MAX_DAYS,
   JOB_HISTORY_MAX_LIMIT,
   JOB_HISTORY_DEFAULT_LIMIT,
@@ -25,6 +26,7 @@ import {
   isBigQueryJobsAccessDenied,
 } from "../../../services/database-connection.service";
 import { loggers } from "../../../logging";
+import { sanitizeBigQueryLabelValue } from "../../../services/bigquery-labels";
 import { BIGQUERY_WORKING_DATASET } from "../../../utils/bigquery-working-dataset";
 import { escapeSqlLiteral } from "../../sql-utils";
 
@@ -295,9 +297,25 @@ function formatBigQueryValue(
 // The REST path sends no query parameters, so every value that reaches these
 // queries is either an integer checked against its bounds or a name checked
 // against one of the patterns below. Anything else throws before SQL exists.
+//
+// A checked name only ever lands inside backticks, inside a single-quoted
+// string or inside a raw-string regex (escaped first). No pattern admits a
+// backtick, a quote, a backslash or a control character, so no name can
+// close what it sits in.
 
-const SAFE_BQ_PROJECT = /^[A-Za-z0-9_-]{1,64}$/;
+/**
+ * A project id, with the optional domain of a domain-scoped project
+ * (`example.com:my-project`). A dot is legal in the domain only.
+ */
+const SAFE_BQ_PROJECT =
+  /^(?:[A-Za-z0-9][A-Za-z0-9.-]{0,62}:)?[A-Za-z0-9_-]{1,64}$/;
+/** A dataset name: letters, digits and underscores. */
 const SAFE_BQ_NAME = /^[A-Za-z0-9_]{1,1024}$/;
+/**
+ * A table name. BigQuery allows Unicode letters, marks and numbers,
+ * connectors (`_`), dashes and spaces.
+ */
+const SAFE_BQ_TABLE = /^[\p{L}\p{M}\p{N}\p{Pc}\p{Pd}\p{Zs}]{1,1024}$/u;
 const SAFE_BQ_REGION = /^[a-z0-9-]{1,40}$/;
 /** A BigQuery label value: what dbt and Mako both write. */
 const SAFE_BQ_LABEL_VALUE = /^[a-z0-9_-]{1,63}$/;
@@ -317,6 +335,9 @@ const NON_READ_STATEMENT_TYPES = [
   "DROP_TABLE",
   "TRUNCATE_TABLE",
 ];
+
+/** Where BigQuery runs a job when nothing says otherwise. */
+const DEFAULT_BQ_REGION = "us";
 
 /** Most relations one schema listing returns. */
 const LIST_RELATIONS_MAX_ROWS = 50_000;
@@ -358,12 +379,15 @@ function labelValueList(values: string[] | undefined, name: string) {
     .join(", ");
 }
 
-/** dbt's label sanitizer: lowercase, `_` for anything else, 63 characters. */
-function asLabelValue(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, "_")
-    .slice(0, 63);
+/** A literal for an RE2 pattern: every metacharacter escaped. */
+function escapeRe2(literal: string): string {
+  return literal.replace(/[\\^$.*+?()[\]{}|-]/g, "\\$&");
+}
+
+/** A BigQuery location as the `region-<x>` qualifier spells it. */
+function regionOf(location: unknown): string | null {
+  if (typeof location !== "string" || !location.trim()) return null;
+  return location.trim().toLowerCase();
 }
 
 function mapBigQueryTableType(raw: unknown): WarehouseRelation["type"] {
@@ -557,11 +581,16 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       "connection project_id",
       SAFE_BQ_PROJECT,
     );
-    const region = checkedName(
-      String(connection.location || "US").toLowerCase(),
-      "connection location",
-      SAFE_BQ_REGION,
-    );
+    // The service passes the region it resolved from the dataset. Without
+    // one, the connection's own location, then BigQuery's default.
+    const region =
+      params.region !== undefined
+        ? checkedName(params.region, "region", SAFE_BQ_REGION)
+        : checkedName(
+            regionOf(connection.location) ?? DEFAULT_BQ_REGION,
+            "connection location",
+            SAFE_BQ_REGION,
+          );
     const days = boundedInteger(params.days, "days", 1, JOB_HISTORY_MAX_DAYS);
     const limit = boundedInteger(
       params.limit ?? JOB_HISTORY_DEFAULT_LIMIT,
@@ -592,6 +621,55 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     return null;
   }
 
+  /**
+   * Job history is per region, and a query against the wrong region returns
+   * no rows instead of failing. So the region comes from the dataset the
+   * question is about (its metadata, one REST read), then from the
+   * connection's `location`. With neither, BigQuery's default is returned
+   * and marked "default": the caller must not trust an empty answer.
+   */
+  async resolveJobHistoryRegion(
+    database: IDatabaseConnection,
+    datasets: Array<{ database?: string; schema: string }>,
+    options?: { signal?: AbortSignal },
+  ): Promise<JobHistoryRegion> {
+    for (const dataset of datasets) {
+      if (!SAFE_BQ_NAME.test(dataset.schema)) continue;
+      if (
+        dataset.database !== undefined &&
+        !SAFE_BQ_PROJECT.test(dataset.database)
+      ) {
+        continue;
+      }
+      let location: string | null = null;
+      try {
+        location = await databaseConnectionService.getBigQueryDatasetLocation(
+          database,
+          dataset.schema,
+          { projectId: dataset.database, signal: options?.signal },
+        );
+      } catch (error) {
+        if (options?.signal?.aborted) throw error;
+        // Unreadable metadata is not a region: try the next source.
+        this.logger.warn("Could not read a BigQuery dataset location", {
+          dataset: dataset.schema,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      const region = regionOf(location);
+      if (region && SAFE_BQ_REGION.test(region)) {
+        return { region, source: "dataset" };
+      }
+    }
+    const configured = regionOf(
+      (database.connection as { location?: unknown } | undefined)?.location,
+    );
+    if (configured && SAFE_BQ_REGION.test(configured)) {
+      return { region: configured, source: "connection" };
+    }
+    return { region: DEFAULT_BQ_REGION, source: "default" };
+  }
+
   isJobHistoryAccessDenied(error: string): boolean {
     return isBigQueryJobsAccessDenied(error);
   }
@@ -609,31 +687,29 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     const { jobs, window, limit, params } = input;
     const invocations = labelValueList(params.invocationIds, "invocationIds");
     const runs = labelValueList(params.makoRunIds, "makoRunIds");
-    const jobLabels = labelValueList(params.makoJobLabels, "makoJobLabels");
     const labelMatches = [
       invocations &&
         `(l.key = 'dbt_invocation_id' AND l.value IN (${invocations}))`,
       runs && `(l.key = 'mako_dbt_run' AND l.value IN (${runs}))`,
-      jobLabels && `(l.key = 'mako_dbt_job' AND l.value IN (${jobLabels}))`,
     ].filter((clause): clause is string => Boolean(clause));
     if (labelMatches.length === 0) {
       // Without a run set the query would price every job of the project.
-      throw new RangeError(
-        "model_cost needs invocationIds, makoRunIds or makoJobLabels",
-      );
+      throw new RangeError("model_cost needs invocationIds or makoRunIds");
     }
 
     let modelFilter = "";
     if (params.model !== undefined) {
       const model = checkedName(params.model, "model", SAFE_DBT_NODE);
       modelFilter =
-        `\nWHERE node_id = '${model}'` +
-        `\n  OR ENDS_WITH(node_id, '.${model}')` +
-        `\n  OR node_id = '${asLabelValue(model)}'`;
+        `\n  WHERE node_id = '${model}'` +
+        `\n    OR ENDS_WITH(node_id, '.${model}')` +
+        `\n    OR node_id = '${sanitizeBigQueryLabelValue(model)}'`;
     }
 
     // Script children repeat their parent's cost, so only top-level jobs are
     // summed. The node id comes from dbt's query comment, else its job label.
+    // The totals are window sums over every group, taken before LIMIT cuts
+    // the list, so they hold for the whole window whatever the row cap.
     return `WITH dbt_jobs AS (
   SELECT
     DATE(creation_time) AS day,
@@ -659,19 +735,35 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       SELECT 1 FROM UNNEST(labels) AS l
       WHERE ${labelMatches.join("\n        OR ")}
     )
+),
+per_model_day AS (
+  SELECT
+    day,
+    node_id,
+    MAX(relation) AS relation,
+    COUNT(*) AS jobs,
+    IFNULL(SUM(total_bytes_billed), 0) AS bytes_billed,
+    IFNULL(SUM(total_slot_ms), 0) AS slot_ms,
+    COUNT(DISTINCT invocation_id) AS invocations,
+    CAST(ROUND(AVG(duration_ms)) AS INT64) AS avg_duration_ms
+  FROM dbt_jobs${modelFilter}
+  GROUP BY day, node_id
 )
 SELECT
   day,
   node_id,
-  MAX(relation) AS relation,
-  COUNT(*) AS jobs,
-  IFNULL(SUM(total_bytes_billed), 0) AS bytes_billed,
-  IFNULL(SUM(total_slot_ms), 0) AS slot_ms,
-  COUNT(DISTINCT invocation_id) AS invocations,
-  CAST(ROUND(AVG(duration_ms)) AS INT64) AS avg_duration_ms
-FROM dbt_jobs${modelFilter}
-GROUP BY day, node_id
-ORDER BY day DESC, slot_ms DESC
+  relation,
+  jobs,
+  bytes_billed,
+  slot_ms,
+  invocations,
+  avg_duration_ms,
+  COUNT(*) OVER () AS total_rows,
+  SUM(jobs) OVER () AS total_jobs,
+  SUM(bytes_billed) OVER () AS total_bytes_billed,
+  SUM(slot_ms) OVER () AS total_slot_ms
+FROM per_model_day
+ORDER BY bytes_billed DESC, slot_ms DESC, day DESC, node_id
 LIMIT ${limit}`;
   }
 
@@ -699,8 +791,11 @@ LIMIT ${limit}`;
     const table = checkedName(
       input.relation.name,
       "relation name",
-      SAFE_BQ_NAME,
+      SAFE_BQ_TABLE,
     );
+    // The table name is text inside a regex below: a dash must not read as
+    // a range, whatever else the table pattern admits later.
+    const tablePattern = escapeRe2(table);
     const isRelation = (alias: string) =>
       `${alias}.project_id = '${project}' AND ${alias}.dataset_id = '${dataset}' AND ${alias}.table_id = '${table}'`;
     const excluded = NON_READ_STATEMENT_TYPES.map(type => `'${type}'`).join(
@@ -733,7 +828,7 @@ LIMIT ${limit}`;
       )
       OR (
         STRPOS(query, '${table}') > 0
-        AND REGEXP_CONTAINS(query, r'(?i)(^|[^a-z0-9_])\`?${dataset}\`?\\s*\\.\\s*\`?${table}\`?([^a-z0-9_]|$)')
+        AND REGEXP_CONTAINS(query, r'(?i)(^|[^a-z0-9_])\`?${dataset}\`?\\s*\\.\\s*\`?${tablePattern}\`?([^a-z0-9_]|$)')
       )
     )
     AND NOT IFNULL(REGEXP_CONTAINS(query, r'(?i)information_schema|__tables__'), FALSE)
@@ -764,7 +859,7 @@ LIMIT ${limit}`;
   async listRelations(
     database: IDatabaseConnection,
     schema: string,
-    options?: { projectId?: string },
+    options?: { projectId?: string; signal?: AbortSignal },
   ): Promise<WarehouseRelation[] | null> {
     const project = checkedName(
       options?.projectId ?? this.getProjectId(database),
@@ -779,9 +874,15 @@ LIMIT ${limit}`;
         `FROM \`${qualified}\`.INFORMATION_SCHEMA.TABLES AS t ` +
         `LEFT JOIN \`${qualified}.__TABLES__\` AS s ON s.table_id = t.table_name ` +
         `ORDER BY t.table_name LIMIT ${LIST_RELATIONS_MAX_ROWS}`,
-      { readOnly: true, labels: { mako_source: "metadata" } },
+      {
+        readOnly: true,
+        labels: { mako_source: "metadata" },
+        ...(options?.signal ? { signal: options.signal } : {}),
+      },
     );
     if (!result.success) {
+      // A stopped caller is not a missing dataset and not a warehouse fault.
+      options?.signal?.throwIfAborted();
       if (/not found: dataset/i.test(result.error ?? "")) return null;
       throw new Error(
         `Could not list relations of ${qualified}: ${result.error ?? "unknown error"}`,

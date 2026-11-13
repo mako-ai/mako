@@ -1598,6 +1598,46 @@ export class DatabaseConnectionService {
     return datasets.sort((a, b) => a.localeCompare(b));
   }
 
+  /**
+   * The location of one BigQuery dataset, from its metadata (`datasets.get`,
+   * a global read that needs no region). Null when the dataset does not
+   * exist. `projectId` reads a dataset of another project.
+   */
+  async getBigQueryDatasetLocation(
+    database: IDatabaseConnection,
+    datasetId: string,
+    options?: { projectId?: string; signal?: AbortSignal },
+  ): Promise<string | null> {
+    const { project_id, service_account_json, api_base_url } =
+      (database.connection as any) || {};
+    const projectId = options?.projectId ?? project_id;
+    if (!projectId || !service_account_json) {
+      throw new Error(
+        "BigQuery requires 'project_id' and 'service_account_json' in connection",
+      );
+    }
+    const client = await this.getBigQueryHttpClient(
+      service_account_json,
+      api_base_url,
+    );
+    try {
+      const res = await client.get(
+        `/projects/${encodeURIComponent(projectId)}/datasets/${encodeURIComponent(
+          datasetId,
+        )}`,
+        { params: { fields: "location" }, signal: options?.signal },
+      );
+      const location = res?.data?.location;
+      return typeof location === "string" && location ? location : null;
+    } catch (error: any) {
+      if (error?.response?.status === 404) return null;
+      throw new Error(
+        describeGoogleApiError(error, "Failed to read the dataset location"),
+        { cause: error },
+      );
+    }
+  }
+
   // Public: get columns for a single BigQuery table (for incremental autocomplete)
   async getBigQueryTableColumns(
     database: IDatabaseConnection,
@@ -1899,6 +1939,8 @@ export class DatabaseConnectionService {
     const checkAborted = () => {
       if (signal?.aborted) throw new Error("Query cancelled");
     };
+    // Set once the job exists: stops it when the caller aborts mid-flight.
+    let cancelStartedJob: (() => Promise<boolean>) | undefined;
 
     try {
       checkAborted();
@@ -1960,6 +2002,16 @@ export class DatabaseConnectionService {
           location: jobLocation,
           client,
         });
+      }
+      if (jobId) {
+        cancelStartedJob = () =>
+          this.cancelAbandonedBigQueryJob({
+            client,
+            projectId: project_id,
+            jobId,
+            location: jobLocation,
+            executionId,
+          });
       }
 
       // Wait for job completion (interactive default 5m; sync MERGE etc. pass bigQueryJobMaxWaitMs)
@@ -2073,6 +2125,9 @@ export class DatabaseConnectionService {
       };
     } catch (error: any) {
       if (error?.message === "Query cancelled") {
+        // The caller walked away (AbortSignal): BigQuery would otherwise run
+        // the job to the end and bill it. Best effort, never throws.
+        if (cancelStartedJob) await cancelStartedJob();
         return { success: false, error: "Query cancelled" };
       }
       return {

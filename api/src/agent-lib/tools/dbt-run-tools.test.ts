@@ -113,8 +113,11 @@ const accepts = (tool: { inputSchema?: unknown }, input: unknown): boolean =>
   (tool.inputSchema as SafeParse).safeParse(input).success;
 
 type Exec<I, O> = (i: I, ctx: { abortSignal?: AbortSignal }) => Promise<O>;
-const run = <I, O>(tool: { execute?: unknown }, input: I): Promise<O> =>
-  (tool.execute as Exec<I, O>)(input, {});
+const run = <I, O>(
+  tool: { execute?: unknown },
+  input: I,
+  ctx: { abortSignal?: AbortSignal } = {},
+): Promise<O> => (tool.execute as Exec<I, O>)(input, ctx);
 
 type RunResult = {
   success: boolean;
@@ -612,6 +615,10 @@ type IntrospectionResult = {
   rowCount?: number;
   rows?: unknown[];
   totals?: { jobs: number; bytesBilled: number; slotMs: number };
+  totalRows?: number;
+  region?: string;
+  regionSource?: string;
+  conclusive?: boolean;
   relation?: string;
   orphanCount?: number;
   orphanBytes?: number;
@@ -677,6 +684,9 @@ describe("dbt_model_cost", () => {
           slotMs: 10,
         },
       ],
+      totalRows: 2,
+      totals: { jobs: 3, bytesBilled: 1500, slotMs: 50 },
+      truncated: false,
     });
     const result = await run<object, IntrospectionResult>(
       tools.dbt_model_cost,
@@ -698,9 +708,80 @@ describe("dbt_model_cost", () => {
     expect(result.scope).toBe("project");
     expect(result.rowCount).toBe(2);
     expect(result.totals).toEqual({ jobs: 3, bytesBilled: 1500, slotMs: 50 });
-    expect(result.message).toMatch(/every job in the warehouse project/);
+    expect(result.totalRows).toBe(2);
+    expect(result.truncated).toBe(false);
+    expect(result.message).toMatch(/every job of the warehouse project/);
     expect(result.message).not.toMatch(/PARTIAL/);
     expect(result).not.toHaveProperty("warning");
+  });
+
+  // Review B2. The tool summed `rows`, which the SQL LIMIT had already cut.
+  it("reports the window totals and flags a cut list, never a sum of the rows", async () => {
+    const tools = createDbtServerTools(WS, "u1");
+    const { project } = await seed();
+    modelCostMock.mockResolvedValue({
+      supported: true,
+      scope: "project",
+      days: 7,
+      region: "eu",
+      regionSource: "dataset",
+      // 1 of 240 model-days listed.
+      rows: [
+        {
+          day: "2026-01-14",
+          nodeId: "model.analytics.fct_orders",
+          jobs: 2,
+          bytesBilled: 1000,
+          slotMs: 40,
+        },
+      ],
+      totalRows: 240,
+      totals: { jobs: 900, bytesBilled: 5_000_000, slotMs: 70_000 },
+      truncated: true,
+    });
+    const result = await run<object, IntrospectionResult>(
+      tools.dbt_model_cost,
+      { projectId: project._id.toString(), limit: 1 },
+    );
+    expect(result.rowCount).toBe(1);
+    expect(result.totalRows).toBe(240);
+    expect(result.truncated).toBe(true);
+    expect(result.totals).toEqual({
+      jobs: 900,
+      bytesBilled: 5_000_000,
+      slotMs: 70_000,
+    });
+    expect(result.message).toMatch(/Listing 1 of 240 model-days/);
+    expect(result.region).toBe("eu");
+    expect(result.regionSource).toBe("dataset");
+    expect(tools.dbt_model_cost.description).toMatch(
+      /most expensive first \(bytes billed, then slot milliseconds\)/,
+    );
+    expect(tools.dbt_model_cost.description).toMatch(
+      /`totals` and `totalRows` cover the WHOLE window/,
+    );
+  });
+
+  // Review B10.
+  it("hands the turn's abort signal to the service", async () => {
+    const tools = createDbtServerTools(WS, "u1");
+    const { project } = await seed();
+    modelCostMock.mockResolvedValue({
+      supported: true,
+      scope: "project",
+      days: 7,
+      rows: [],
+      totalRows: 0,
+      totals: { jobs: 0, bytesBilled: 0, slotMs: 0 },
+      truncated: false,
+    });
+    const controller = new AbortController();
+    await run<object, IntrospectionResult>(
+      tools.dbt_model_cost,
+      { projectId: project._id.toString() },
+      { abortSignal: controller.signal },
+    );
+    expect(modelCostMock.mock.calls[0][0].signal).toBe(controller.signal);
   });
 
   it("says the answer is partial on the fallback scope and quotes the grant", async () => {
@@ -712,6 +793,9 @@ describe("dbt_model_cost", () => {
       days: 30,
       warning: GRANT_WARNING,
       rows: [],
+      totalRows: 0,
+      totals: { jobs: 0, bytesBilled: 0, slotMs: 0 },
+      truncated: false,
     });
     const result = await run<object, IntrospectionResult>(
       tools.dbt_model_cost,
@@ -746,6 +830,9 @@ describe("dbt_model_cost", () => {
       days: 7,
       notes: ["Only the 1000 most recent runs of the window are matched."],
       rows: [row],
+      totalRows: 1,
+      totals: { jobs: 4, bytesBilled: 2048, slotMs: 80 },
+      truncated: false,
     });
     const result = await run<object, IntrospectionResult>(
       tools.dbt_model_cost,
@@ -888,6 +975,95 @@ describe("dbt_table_readers", () => {
     expect(result.message).not.toMatch(/PARTIAL/);
   });
 
+  // Review B1. With no location on the connection the tool read region-us,
+  // found 0 rows for a table in the EU and answered "No job in that scope
+  // read X" on the project scope: the answer a user trusts before a drop.
+  it("never presents an empty answer from a guessed region as a finding", async () => {
+    const tools = createDbtServerTools(WS, "u1");
+    const { project } = await seed();
+    const guessWarning =
+      "The region of the job history is a guess (us): the location of " +
+      "dbt_prod could not be read and the connection sets no location.";
+    tableReadersMock.mockResolvedValue({
+      supported: true,
+      scope: "project",
+      days: 7,
+      region: "us",
+      regionSource: "default",
+      warning: guessWarning,
+      rows: [],
+    });
+    const result = await run<object, IntrospectionResult>(
+      tools.dbt_table_readers,
+      { projectId: project._id.toString(), relation },
+    );
+    expect(result.scope).toBe("project");
+    expect(result.region).toBe("us");
+    expect(result.regionSource).toBe("default");
+    expect(result.conclusive).toBe(false);
+    expect(result.warning).toBe(guessWarning);
+    expect(result.message).not.toMatch(/No job in that scope read/);
+    expect(result.message).toMatch(/UNVERIFIED REGION/);
+    expect(result.message).toMatch(/NOT evidence that nothing ran/);
+
+    // The region read from the dataset: the same empty answer is a finding.
+    tableReadersMock.mockResolvedValue({
+      supported: true,
+      scope: "project",
+      days: 7,
+      region: "eu",
+      regionSource: "dataset",
+      rows: [],
+    });
+    const known = await run<object, IntrospectionResult>(
+      tools.dbt_table_readers,
+      { projectId: project._id.toString(), relation },
+    );
+    expect(known.conclusive).toBe(true);
+    expect(known.message).toBe(
+      "Covers every job of the warehouse project in region eu over the " +
+        "last 7 days. No job in that scope read dbt_prod.fct_orders.",
+    );
+
+    // One account only: never conclusive, whatever the region.
+    tableReadersMock.mockResolvedValue({
+      supported: true,
+      scope: "user",
+      days: 7,
+      region: "eu",
+      regionSource: "dataset",
+      warning: GRANT_WARNING,
+      rows: [],
+    });
+    const partial = await run<object, IntrospectionResult>(
+      tools.dbt_table_readers,
+      { projectId: project._id.toString(), relation },
+    );
+    expect(partial.conclusive).toBe(false);
+    expect(tools.dbt_table_readers.description).toMatch(
+      /Never tell the user a table is unused when `conclusive` is false/,
+    );
+  });
+
+  // Review B10.
+  it("hands the turn's abort signal to the service", async () => {
+    const tools = createDbtServerTools(WS, "u1");
+    const { project } = await seed();
+    tableReadersMock.mockResolvedValue({
+      supported: true,
+      scope: "project",
+      days: 7,
+      rows: [],
+    });
+    const controller = new AbortController();
+    await run<object, IntrospectionResult>(
+      tools.dbt_table_readers,
+      { projectId: project._id.toString(), relation },
+      { abortSignal: controller.signal },
+    );
+    expect(tableReadersMock.mock.calls[0][0].signal).toBe(controller.signal);
+  });
+
   it("returns notes, the warning and the text-only match count", async () => {
     const tools = createDbtServerTools(WS, "u1");
     const { project } = await seed();
@@ -961,6 +1137,28 @@ describe("dbt_table_readers", () => {
       }),
     ).toBe(false);
     expect(accepts(tool, { projectId: "p", relation, days: 90 })).toBe(false);
+    // Review A6: legal BigQuery names. A domain-scoped project; table names
+    // with a hyphen, a space and Unicode letters.
+    for (const name of ["daily-orders", "order lines 2026", "commandes_été"]) {
+      expect(
+        accepts(tool, {
+          projectId: "p",
+          relation: {
+            database: "example.com:my-project",
+            schema: "dbt_prod",
+            name,
+          },
+        }),
+      ).toBe(true);
+    }
+    for (const name of ["t\\", "t'", 't"', "t\n", "t\u0000", ""]) {
+      expect(
+        accepts(tool, {
+          projectId: "p",
+          relation: { schema: "dbt_prod", name },
+        }),
+      ).toBe(false);
+    }
   });
 });
 
@@ -992,7 +1190,10 @@ describe("dbt_list_orphans", () => {
     });
   });
 
-  it("lists orphans largest first with the full count and total bytes", async () => {
+  // Review B7. The tool counted and summed the list the service had cut to
+  // 1,000 and re-sorted it by size. The service now counts everything and
+  // cuts in its own order; the tool reports both as given.
+  it("reports the service's true totals and its listed subset, unchanged", async () => {
     const tools = createDbtServerTools(WS, "u1");
     const { project } = await seed();
     orphansMock.mockResolvedValue({
@@ -1002,27 +1203,73 @@ describe("dbt_list_orphans", () => {
       manifestGeneratedAt: "2026-01-14T02:00:00.000Z",
       schemasScanned: ["dbt_prod"],
       expectedCount: 120,
+      // 1,500 orphans exist; the service listed 2 of them.
+      orphanCount: 1500,
+      orphanBytes: 9_000_000,
+      confidenceCounts: { high: 700, medium: 300, low: 500 },
+      truncated: true,
       orphans: [
-        relationOf("small", 10),
-        relationOf("big", 3000),
-        relationOf("mid", 200),
+        { ...relationOf("small_sure", 10), confidence: "high", reasons: [] },
+        {
+          ...relationOf("big_unsure", 3000),
+          confidence: "low",
+          reasons: ["written_after_manifest"],
+        },
       ],
     });
+    const controller = new AbortController();
     const result = await run<object, IntrospectionResult>(
       tools.dbt_list_orphans,
       { projectId: project._id.toString(), environment: "prod", limit: 2 },
+      { abortSignal: controller.signal },
     );
+    // The limit and the abort signal (review B10) reach the service.
     expect(orphansMock).toHaveBeenCalledWith({
       workspaceId: WS,
       projectId: project._id.toString(),
       environment: "prod",
+      limit: 2,
+      signal: controller.signal,
     });
-    expect(result.orphanCount).toBe(3);
-    expect(result.orphanBytes).toBe(3210);
-    expect(result.orphans?.map(orphan => orphan.name)).toEqual(["big", "mid"]);
+    expect(result.orphanCount).toBe(1500);
+    expect(result.orphanBytes).toBe(9_000_000);
+    expect(result.confidenceCounts).toEqual({
+      high: 700,
+      medium: 300,
+      low: 500,
+    });
+    // The service's order stands: confidence first, not size.
+    expect(result.orphans?.map(orphan => orphan.name)).toEqual([
+      "small_sure",
+      "big_unsure",
+    ]);
     expect(result.truncated).toBe(true);
     expect(result.listed).toBe(2);
+    expect(result.message).toMatch(/^1500 relation\(s\)/);
     expect(result.message).toMatch(/Nothing was dropped/);
+    expect(tools.dbt_list_orphans.description).toMatch(
+      /ordered by confidence \(high first\), then size/,
+    );
+  });
+
+  it("asks the service for the default number of orphans", async () => {
+    const tools = createDbtServerTools(WS, "u1");
+    const { project } = await seed();
+    orphansMock.mockResolvedValue({
+      supported: true,
+      environment: "prod",
+      schemasScanned: ["dbt_prod"],
+      expectedCount: 1,
+      orphanCount: 0,
+      orphanBytes: 0,
+      confidenceCounts: { high: 0, medium: 0, low: 0 },
+      truncated: false,
+      orphans: [],
+    });
+    await run<object, IntrospectionResult>(tools.dbt_list_orphans, {
+      projectId: project._id.toString(),
+    });
+    expect(orphansMock.mock.calls[0][0].limit).toBe(200);
   });
 
   it("returns confidence, reasons and the manifest's age and limits", async () => {
@@ -1041,6 +1288,9 @@ describe("dbt_list_orphans", () => {
       expectedCount: 40,
       relationsScanned: 44,
       skipped: { sources: 2, testFailureTables: 1 },
+      orphanCount: 2,
+      orphanBytes: 950,
+      confidenceCounts: { high: 1, medium: 0, low: 1 },
       truncated: false,
       orphans: [
         { ...relationOf("old_orders", 900), confidence: "high", reasons: [] },
@@ -1093,6 +1343,10 @@ describe("dbt_list_orphans", () => {
       environment: "prod",
       schemasScanned: ["dbt_prod"],
       expectedCount: 12,
+      orphanCount: 0,
+      orphanBytes: 0,
+      confidenceCounts: { high: 0, medium: 0, low: 0 },
+      truncated: false,
       orphans: [],
     });
     const result = await run<object, IntrospectionResult>(

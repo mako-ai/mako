@@ -12,7 +12,7 @@ import { buildStarterScaffold, DBT_PROJECT_FILE } from "./scaffold";
 const LABEL_VALUE = /^[a-z0-9_-]{1,63}$/;
 
 describe("dbtRunLabelEnv", () => {
-  it("returns the three values, bare and under DBT_ENV_CUSTOM_ENV_", () => {
+  it("returns the four values, bare and under DBT_ENV_CUSTOM_ENV_", () => {
     expect(
       dbtRunLabelEnv({
         runId: "6650f0c2a1b2c3d4e5f60718",
@@ -21,13 +21,38 @@ describe("dbtRunLabelEnv", () => {
         jobSlug: "nightly-build",
       }),
     ).toEqual({
-      MAKO_DBT_JOB: "nightly-build",
+      MAKO_DBT_JOB: "6650f0c2a1b2c3d4e5f60700",
+      MAKO_DBT_JOB_SLUG: "nightly-build",
       MAKO_DBT_RUN: "6650f0c2a1b2c3d4e5f60718",
       MAKO_TRIGGER: "schedule",
-      DBT_ENV_CUSTOM_ENV_MAKO_DBT_JOB: "nightly-build",
+      DBT_ENV_CUSTOM_ENV_MAKO_DBT_JOB: "6650f0c2a1b2c3d4e5f60700",
+      DBT_ENV_CUSTOM_ENV_MAKO_DBT_JOB_SLUG: "nightly-build",
       DBT_ENV_CUSTOM_ENV_MAKO_DBT_RUN: "6650f0c2a1b2c3d4e5f60718",
       DBT_ENV_CUSTOM_ENV_MAKO_TRIGGER: "schedule",
     });
+  });
+
+  // Review A2/B6: a slug is unique inside one project only. Two projects (or
+  // two workspaces) on one warehouse project must never share a job label.
+  it("labels two jobs that share a slug with two different values", () => {
+    const first = dbtRunLabelEnv({
+      runId: "r1",
+      trigger: "schedule",
+      jobId: "6650f0c2a1b2c3d4e5f60700",
+      jobSlug: "nightly",
+    });
+    const second = dbtRunLabelEnv({
+      runId: "r2",
+      trigger: "schedule",
+      jobId: "6650f0c2a1b2c3d4e5f60711",
+      jobSlug: "nightly",
+    });
+    expect(first.MAKO_DBT_JOB).not.toBe(second.MAKO_DBT_JOB);
+    expect(first.MAKO_DBT_JOB).toBe("6650f0c2a1b2c3d4e5f60700");
+    expect(second.MAKO_DBT_JOB).toBe("6650f0c2a1b2c3d4e5f60711");
+    // The slug is carried beside the id, for reading only.
+    expect(first.MAKO_DBT_JOB_SLUG).toBe("nightly");
+    expect(second.MAKO_DBT_JOB_SLUG).toBe("nightly");
   });
 
   it("omits the job for a run without one", () => {
@@ -39,30 +64,41 @@ describe("dbtRunLabelEnv", () => {
       DBT_ENV_CUSTOM_ENV_MAKO_TRIGGER: "manual",
     });
     expect(env).not.toHaveProperty("MAKO_DBT_JOB");
+    expect(env).not.toHaveProperty("MAKO_DBT_JOB_SLUG");
   });
 
-  it("falls back to the job id when the slug is missing or sanitizes to nothing", () => {
+  it("never sends a slug without the job id it names", () => {
+    const env = dbtRunLabelEnv({
+      runId: "r1",
+      trigger: "agent",
+      jobSlug: "nightly",
+    });
+    expect(env).not.toHaveProperty("MAKO_DBT_JOB");
+    expect(env).not.toHaveProperty("MAKO_DBT_JOB_SLUG");
+  });
+
+  it("leaves the slug out when it is missing or sanitizes to nothing", () => {
     expect(
-      dbtRunLabelEnv({ runId: "r1", trigger: "agent", jobId: "JOB42" })
-        .MAKO_DBT_JOB,
-    ).toBe("job42");
-    expect(
-      dbtRunLabelEnv({
-        runId: "r1",
-        trigger: "agent",
-        jobId: "job42",
-        jobSlug: "   ",
-      }).MAKO_DBT_JOB,
-    ).toBe("job42");
+      dbtRunLabelEnv({ runId: "r1", trigger: "agent", jobId: "JOB42" }),
+    ).toMatchObject({ MAKO_DBT_JOB: "job42" });
+    const blank = dbtRunLabelEnv({
+      runId: "r1",
+      trigger: "agent",
+      jobId: "job42",
+      jobSlug: "   ",
+    });
+    expect(blank.MAKO_DBT_JOB).toBe("job42");
+    expect(blank).not.toHaveProperty("MAKO_DBT_JOB_SLUG");
   });
 
   it("lowercases and replaces characters outside [a-z0-9_-]", () => {
     const env = dbtRunLabelEnv({
       runId: "Run/42.B",
       trigger: "manual",
+      jobId: "j1",
       jobSlug: "Nightly Build (EU) v2!",
     });
-    expect(env.MAKO_DBT_JOB).toBe("nightly_build__eu__v2_");
+    expect(env.MAKO_DBT_JOB_SLUG).toBe("nightly_build__eu__v2_");
     expect(env.MAKO_DBT_RUN).toBe("run_42_b");
   });
 
@@ -71,8 +107,9 @@ describe("dbtRunLabelEnv", () => {
       dbtRunLabelEnv({
         runId: "r1",
         trigger: "manual",
+        jobId: "j1",
         jobSlug: "  nightly \n",
-      }).MAKO_DBT_JOB,
+      }).MAKO_DBT_JOB_SLUG,
     ).toBe("nightly");
   });
 
@@ -80,13 +117,18 @@ describe("dbtRunLabelEnv", () => {
     const env = dbtRunLabelEnv({
       runId: "r1",
       trigger: "manual",
+      jobId: "j1",
       jobSlug: "Übersicht-日次-🚀",
     });
-    expect(env.MAKO_DBT_JOB).toMatch(LABEL_VALUE);
-    expect(env.MAKO_DBT_JOB.startsWith("_bersicht-__-")).toBe(true);
+    expect(env.MAKO_DBT_JOB_SLUG).toMatch(LABEL_VALUE);
+    expect(env.MAKO_DBT_JOB_SLUG.startsWith("_bersicht-__-")).toBe(true);
     expect(
-      dbtRunLabelEnv({ runId: "r1", trigger: "manual", jobSlug: "日本語" })
-        .MAKO_DBT_JOB,
+      dbtRunLabelEnv({
+        runId: "r1",
+        trigger: "manual",
+        jobId: "j1",
+        jobSlug: "日本語",
+      }).MAKO_DBT_JOB_SLUG,
     ).toBe("___");
   });
 
@@ -94,10 +136,11 @@ describe("dbtRunLabelEnv", () => {
     const env = dbtRunLabelEnv({
       runId: "r".repeat(200),
       trigger: "schedule",
+      jobId: "j1",
       jobSlug: `${"a".repeat(62)}bcdefgh`,
     });
-    expect(env.MAKO_DBT_JOB).toBe(`${"a".repeat(62)}b`);
-    expect(env.MAKO_DBT_JOB).toHaveLength(63);
+    expect(env.MAKO_DBT_JOB_SLUG).toBe(`${"a".repeat(62)}b`);
+    expect(env.MAKO_DBT_JOB_SLUG).toHaveLength(63);
     expect(env.MAKO_DBT_RUN).toHaveLength(63);
     expect(env.DBT_ENV_CUSTOM_ENV_MAKO_DBT_RUN).toHaveLength(63);
   });
@@ -126,6 +169,7 @@ describe("dbtRunLabelEnv", () => {
     const env = dbtRunLabelEnv({
       runId: "r1\n*/ drop table x; --",
       trigger: "manual",
+      jobId: "j1`; drop",
       jobSlug: '"}{{ env_var("SECRET") }}',
     });
     for (const value of Object.values(env)) expect(value).toMatch(LABEL_VALUE);
@@ -143,8 +187,13 @@ describe("dbtRunLabelEnv", () => {
 });
 
 describe("DBT_QUERY_COMMENT_MACRO", () => {
-  it("reads the three env vars with an empty default", () => {
-    for (const name of ["MAKO_DBT_JOB", "MAKO_DBT_RUN", "MAKO_TRIGGER"]) {
+  it("reads the four env vars with an empty default", () => {
+    for (const name of [
+      "MAKO_DBT_JOB",
+      "MAKO_DBT_JOB_SLUG",
+      "MAKO_DBT_RUN",
+      "MAKO_TRIGGER",
+    ]) {
       expect(DBT_QUERY_COMMENT_MACRO).toContain(`env_var("${name}", "")`);
     }
   });
@@ -152,6 +201,7 @@ describe("DBT_QUERY_COMMENT_MACRO", () => {
   it("emits the mako_* fields and keeps dbt's default fields", () => {
     for (const field of [
       "mako_dbt_job",
+      "mako_dbt_job_slug",
       "mako_dbt_run",
       "mako_trigger",
       "mako_source",

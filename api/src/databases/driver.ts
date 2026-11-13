@@ -112,18 +112,36 @@ export interface JobHistoryQueryParams {
   scope: "project" | "user";
   /** Look-back window, 1 to 30 days. */
   days: number;
+  /**
+   * The region whose job history is read, as `resolveJobHistoryRegion`
+   * returned it. Unset: the connection's own location.
+   */
+  region?: string;
   /** model_cost: restrict to these dbt invocations. */
   invocationIds?: string[];
   /** model_cost: also match jobs labelled `mako_dbt_run` with these ids. */
   makoRunIds?: string[];
-  /** model_cost: also match jobs labelled `mako_dbt_job` with these values. */
-  makoJobLabels?: string[];
   /** model_cost: keep one model, by dbt unique_id or bare model name. */
   model?: string;
   /** table_readers: the relation whose readers are listed (required). */
   relation?: { database?: string; schema: string; name: string };
   /** Row cap, 1 to 500. Default 100. */
   limit?: number;
+}
+
+/** Where a job-history region came from. Only "default" is a guess. */
+export type JobHistoryRegionSource = "dataset" | "connection" | "default";
+
+export interface JobHistoryRegion {
+  /** Lowercase location, e.g. `eu`, `us`, `europe-west6`. */
+  region: string;
+  /**
+   * "dataset": the location of a dataset the question is about.
+   * "connection": the location configured on the connection.
+   * "default": neither was known, so the engine's default was assumed. An
+   * empty answer from such a region proves nothing.
+   */
+  source: JobHistoryRegionSource;
 }
 
 /** Hard bounds every job-history query is built within. */
@@ -266,14 +284,26 @@ export interface DatabaseDriver {
   describeJobHistoryGrant?(database: IDatabaseConnection): string;
 
   /**
+   * The region whose job history covers these datasets: the location of the
+   * first one the engine can read, else the connection's, else the engine
+   * default (marked "default", a guess). Engines whose job history has no
+   * region omit the hook.
+   */
+  resolveJobHistoryRegion?(
+    database: IDatabaseConnection,
+    datasets: Array<{ database?: string; schema: string }>,
+    options?: { signal?: AbortSignal },
+  ): Promise<JobHistoryRegion>;
+
+  /**
    * List every table and view in one schema with size and last-modified
    * metadata. Null when the schema does not exist. Throws on any other
-   * failed listing.
+   * failed listing, and when `signal` aborts.
    */
   listRelations?(
     database: IDatabaseConnection,
     schema: string,
-    options?: { projectId?: string },
+    options?: { projectId?: string; signal?: AbortSignal },
   ): Promise<WarehouseRelation[] | null>;
 
   // ============ WRITE CAPABILITIES (for db-to-db sync) ============

@@ -473,6 +473,9 @@ describe("listDbtOrphans", () => {
       expectedCount: 6,
       relationsScanned: 3,
       skipped: { sources: 0, testFailureTables: 0 },
+      orphanCount: 1,
+      orphanBytes: relation("old_report").sizeBytes ?? 0,
+      confidenceCounts: { high: 1, medium: 0, low: 0 },
       orphans: [
         {
           ...relation("old_report"),
@@ -575,5 +578,150 @@ describe("listDbtOrphans", () => {
     expect(report.orphans).toHaveLength(1000);
     expect(report.truncated).toBe(true);
     expect(report.relationsScanned).toBe(1001);
+    // The count is the count, not the length of the cut list.
+    expect(report.orphanCount).toBe(1001);
+  });
+
+  // Review B7. The tool counted and summed a list the service had already
+  // cut, then re-sorted it by size, so which rows were listed was undefined.
+  it("returns true totals whatever the limit, and a fixed listed subset", async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const old = new Date(NOW.getTime() - 30 * DAY);
+    // 3 high-confidence leftovers (1, 2 and 3 KB), 1 medium (no last write,
+    // 50 KB) and 1 low (written after the manifest, 90 KB).
+    const leftovers: WarehouseRelation[] = [
+      relation("small", { sizeBytes: 1_000, lastModified: old }),
+      relation("large", { sizeBytes: 3_000, lastModified: old }),
+      relation("middle", { sizeBytes: 2_000, lastModified: old }),
+      relation("undated", { sizeBytes: 50_000, lastModified: undefined }),
+      relation("fresh", { sizeBytes: 90_000, lastModified: NOW }),
+    ];
+    const schemas = {
+      analytics: leftovers,
+      analytics_finance: [],
+      snapshots: [],
+    };
+    const report = await listDbtOrphans(
+      { ...params, limit: 2 },
+      makeDeps({ schemas }),
+    );
+    if (!report.supported) throw new Error("expected a report");
+    // Totals over all 5, not over the 2 listed.
+    expect(report.orphanCount).toBe(5);
+    expect(report.orphanBytes).toBe(146_000);
+    expect(report.confidenceCounts).toEqual({ high: 3, medium: 1, low: 1 });
+    expect(report.truncated).toBe(true);
+    // The subset: confidence first, then size. Never the 2 largest overall
+    // ("fresh" and "undated"), which are the 2 least certain.
+    expect(report.orphans.map(o => o.name)).toEqual(["large", "middle"]);
+    expect(report.orphans.map(o => o.confidence)).toEqual(["high", "high"]);
+
+    // Same data, no limit: the same order, nothing cut.
+    const whole = await listDbtOrphans(params, makeDeps({ schemas }));
+    if (!whole.supported) throw new Error("expected a report");
+    expect(whole.orphans.map(o => o.name)).toEqual([
+      "large",
+      "middle",
+      "small",
+      "undated",
+      "fresh",
+    ]);
+    expect(whole.truncated).toBe(false);
+    expect(whole.orphanCount).toBe(5);
+    expect(whole.orphanBytes).toBe(146_000);
+  });
+
+  // Review B8. Up to 50 schemas were listed one after another, each one a
+  // warehouse job.
+  it("lists schemas at most 6 at once, and keeps manifest order", async () => {
+    const names = Array.from(
+      { length: 20 },
+      (_, i) => `mart_${String(i).padStart(2, "0")}`,
+    );
+    const wide: DbtManifestLike = {
+      metadata: manifest.metadata,
+      nodes: Object.fromEntries(
+        names.map(schema => [
+          `model.shop.${schema}`,
+          {
+            resource_type: "model",
+            database: "fake-project",
+            schema,
+            name: "kept",
+            config: { materialized: "table" },
+          },
+        ]),
+      ),
+    };
+    let active = 0;
+    let peak = 0;
+    const started: string[] = [];
+    const driver = {
+      listRelations: async (_connection: unknown, schema: string) => {
+        started.push(schema);
+        active++;
+        peak = Math.max(peak, active);
+        // Later schemas answer first: order must not depend on timing.
+        const index = names.indexOf(schema);
+        await new Promise(resolve => setTimeout(resolve, (20 - index) * 2));
+        active--;
+        return index % 5 === 4 ? null : [relation("kept", { schema })];
+      },
+    } as unknown as DatabaseDriver;
+    const report = await listDbtOrphans(
+      params,
+      makeDeps({
+        getDriver: () => driver,
+        loadManifest: async () => ({ manifest: wide, otherRuns: [] }),
+      }),
+    );
+    if (!report.supported) throw new Error("expected a report");
+    expect(started).toHaveLength(20);
+    expect(peak).toBe(6);
+    expect(report.schemasScanned).toEqual(
+      names.filter((_, i) => i % 5 !== 4).map(name => `fake-project.${name}`),
+    );
+    expect(report.schemasMissing).toEqual(
+      names.filter((_, i) => i % 5 === 4).map(name => `fake-project.${name}`),
+    );
+    expect(report.orphanCount).toBe(0);
+  });
+
+  // Review B10. A stopped chat turn or a timed-out MCP call must stop the
+  // listings.
+  it("hands the caller's signal to every listing and stops when it aborts", async () => {
+    const controller = new AbortController();
+    const signals: Array<AbortSignal | undefined> = [];
+    const driver = {
+      listRelations: async (
+        _connection: unknown,
+        _schema: string,
+        options?: { signal?: AbortSignal },
+      ) => {
+        signals.push(options?.signal);
+        return [];
+      },
+    } as unknown as DatabaseDriver;
+    await listDbtOrphans(
+      { ...params, signal: controller.signal },
+      makeDeps({ getDriver: () => driver }),
+    );
+    expect(signals).toEqual([
+      controller.signal,
+      controller.signal,
+      controller.signal,
+    ]);
+
+    // Aborted before the first listing: no warehouse job is started.
+    const stopped = new AbortController();
+    stopped.abort();
+    signals.length = 0;
+    await expect(
+      listDbtOrphans(
+        { ...params, signal: stopped.signal },
+        makeDeps({ getDriver: () => driver }),
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(signals).toEqual([]);
   });
 });

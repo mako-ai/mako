@@ -331,10 +331,14 @@ describe("runDbt: extraEnv passthrough and invocation ids", () => {
 
     expect(result.success).toBe(true);
     const env = await childEnv(0);
-    expect(env.MAKO_DBT_JOB).toBe("nightly_build");
+    expect(env.MAKO_DBT_JOB).toBe("6650f0c2a1b2c3d4e5f60700");
+    expect(env.MAKO_DBT_JOB_SLUG).toBe("nightly_build");
     expect(env.MAKO_DBT_RUN).toBe("6650f0c2a1b2c3d4e5f60718");
     expect(env.MAKO_TRIGGER).toBe("schedule");
-    expect(env.DBT_ENV_CUSTOM_ENV_MAKO_DBT_JOB).toBe("nightly_build");
+    expect(env.DBT_ENV_CUSTOM_ENV_MAKO_DBT_JOB).toBe(
+      "6650f0c2a1b2c3d4e5f60700",
+    );
+    expect(env.DBT_ENV_CUSTOM_ENV_MAKO_DBT_JOB_SLUG).toBe("nightly_build");
     expect(env.DBT_ENV_CUSTOM_ENV_MAKO_DBT_RUN).toBe(
       "6650f0c2a1b2c3d4e5f60718",
     );

@@ -8,7 +8,6 @@
 import { Types } from "mongoose";
 import {
   DatabaseConnection,
-  DbtJob,
   DbtProject,
   DbtRun,
   type IDatabaseConnection,
@@ -21,11 +20,13 @@ import {
   type DatabaseDriver,
   type JobHistoryQueryKind,
   type JobHistoryQueryParams,
+  type JobHistoryRegion,
+  type JobHistoryRegionSource,
 } from "../databases/driver";
 import { databaseRegistry } from "../databases/registry";
 import { resolveProdLikeEnvironmentName } from "../dbt/dbt-environments.service";
 import { loggers } from "../logging";
-import { withQueryLabels } from "./bigquery-labels";
+import { sanitizeBigQueryLabelValue, withQueryLabels } from "./bigquery-labels";
 import { databaseConnectionService } from "./database-connection.service";
 
 const logger = loggers.api("warehouse-job-history");
@@ -43,16 +44,46 @@ interface JobHistoryTarget {
   days?: number;
   /** Default 100, max 500. */
   limit?: number;
+  /** Stops the warehouse work when the caller goes away. */
+  signal?: AbortSignal;
 }
 
 export interface JobHistoryMeta {
   /** "user" = fell back to jobs of the connection's own account. */
   scope: "project" | "user";
   days: number;
-  /** Set on fallback: the missing permission and the grant command. */
+  /**
+   * Set when the answer is partial: the missing permission and the grant
+   * command on fallback, or a region that was guessed.
+   */
   warning?: string;
   /** Limits of the answer that hold whatever the scope. */
   notes?: string[];
+  /** The region whose job history was read, when the engine has regions. */
+  region?: string;
+  /**
+   * Where `region` came from. "default" is a guess: the dataset's location
+   * could not be read and the connection sets none, so an empty answer
+   * proves nothing.
+   */
+  regionSource?: JobHistoryRegionSource;
+}
+
+/** Sums over the whole window, before the row cap. */
+export interface ModelCostTotals {
+  jobs: number;
+  bytesBilled: number;
+  slotMs: number;
+}
+
+export interface ModelCostResult extends JobHistoryMeta {
+  /** Most expensive first: bytes billed, then slot milliseconds. */
+  rows: ModelCostRow[];
+  /** Model-day groups in the window. `rows` holds at most `limit` of them. */
+  totalRows: number;
+  totals: ModelCostTotals;
+  /** True when `rows` is cut by `limit`. `totals` still cover everything. */
+  truncated: boolean;
 }
 
 export interface ModelCostRow {
@@ -90,6 +121,8 @@ export interface DbtWarehouseTarget {
   environment: string;
   /** True when it is the project's production-like environment. */
   prodLike: boolean;
+  /** The schema (dataset) the environment builds into. */
+  targetSchema?: string;
   lastProdManifestKey?: string;
 }
 
@@ -112,14 +145,12 @@ export interface JobHistoryDeps {
     runId?: string;
     limit: number;
   }): Promise<Array<{ id: string; invocationIds: string[] }>>;
-  /** Values the `mako_dbt_job` label may hold for this job. */
-  jobLabelValues(params: {
-    workspaceId: string;
-    projectId: string;
-    jobId: string;
-  }): Promise<string[]>;
   getDriver(type: string): DatabaseDriver | undefined;
-  runQuery(connection: IDatabaseConnection, sql: string): Promise<QueryOutcome>;
+  runQuery(
+    connection: IDatabaseConnection,
+    sql: string,
+    signal?: AbortSignal,
+  ): Promise<QueryOutcome>;
   now(): Date;
 }
 
@@ -169,6 +200,7 @@ export async function resolveDbtWarehouseTarget(params: {
     connection,
     environment: name,
     prodLike: name === prodLikeName,
+    targetSchema: environment.targetSchema,
     lastProdManifestKey: project.lastProdManifestKey,
   };
 }
@@ -194,25 +226,13 @@ export const defaultJobHistoryDeps: JobHistoryDeps = {
       invocationIds: run.invocationIds ?? [],
     }));
   },
-  async jobLabelValues(params) {
-    const job = await DbtJob.findOne({
-      _id: objectId(params.jobId, "jobId"),
-      workspaceId: objectId(params.workspaceId, "workspaceId"),
-      projectId: objectId(params.projectId, "projectId"),
-    })
-      .select("slug")
-      .lean();
-    if (!job) throw new Error("dbt job not found");
-    return [job.slug, String(job._id)].filter(
-      (value): value is string => typeof value === "string" && value !== "",
-    );
-  },
   getDriver: type => databaseRegistry.getDriver(type),
-  runQuery: (connection, sql) =>
+  runQuery: (connection, sql, signal) =>
     // Labelled "metadata" so these lookups never count as readers themselves.
     withQueryLabels({ mako_source: "metadata" }, () =>
       databaseConnectionService.executeQuery(connection, sql, {
         readOnly: true,
+        ...(signal ? { signal } : {}),
       }),
     ),
   now: () => new Date(),
@@ -227,18 +247,65 @@ function clampInteger(
   return Math.min(max, Math.max(1, Math.trunc(value)));
 }
 
-/** A BigQuery label value, the form dbt and Mako both write. */
-function asLabelValue(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, "_")
-    .slice(0, 63);
+/**
+ * Ids as the label values the writer stored (`dbtRunLabelEnv` sanitizes
+ * with the same function), deduplicated. `dropped` counts the ids past the
+ * most one query filters on.
+ */
+function uniqueLabelValues(values: string[]): {
+  values: string[];
+  dropped: number;
+} {
+  const unique = [...new Set(values.map(sanitizeBigQueryLabelValue))].filter(
+    value => LABEL_VALUE.test(value),
+  );
+  return {
+    values: unique.slice(0, JOB_HISTORY_MAX_IDS),
+    dropped: Math.max(0, unique.length - JOB_HISTORY_MAX_IDS),
+  };
 }
 
-function uniqueLabelValues(values: string[]): string[] {
-  return [...new Set(values.map(asLabelValue))]
-    .filter(value => LABEL_VALUE.test(value))
-    .slice(0, JOB_HISTORY_MAX_IDS);
+/**
+ * The region to read job history from, and what to say when it is a guess.
+ * `datasets` are the datasets the question is about, most telling first.
+ */
+async function resolveRegion(
+  driver: DatabaseDriver,
+  connection: IDatabaseConnection,
+  datasets: Array<{ database?: string; schema: string }>,
+  signal?: AbortSignal,
+): Promise<(JobHistoryRegion & { warning?: string }) | undefined> {
+  if (!driver.resolveJobHistoryRegion) return undefined;
+  const resolved = await driver.resolveJobHistoryRegion(connection, datasets, {
+    signal,
+  });
+  if (resolved.source !== "default") return resolved;
+  const asked = datasets
+    .map(dataset =>
+      dataset.database
+        ? `${dataset.database}.${dataset.schema}`
+        : dataset.schema,
+    )
+    .join(", ");
+  return {
+    ...resolved,
+    warning:
+      `The region of the job history is a guess (${resolved.region}): ` +
+      (asked
+        ? `the location of ${asked} could not be read`
+        : "no dataset was given") +
+      " and the connection sets no location. Jobs of another region are " +
+      "invisible, so an empty answer proves nothing. Set the location on " +
+      "the connection.",
+  };
+}
+
+/** Both warnings in one string, the region one first. */
+function joinWarnings(
+  ...warnings: Array<string | undefined>
+): string | undefined {
+  const present = warnings.filter((warning): warning is string => !!warning);
+  return present.length > 0 ? present.join(" ") : undefined;
 }
 
 function unsupported(connection: IDatabaseConnection): {
@@ -276,6 +343,7 @@ async function runWithScopeFallback(
   connection: IDatabaseConnection,
   kind: JobHistoryQueryKind,
   params: Omit<JobHistoryQueryParams, "scope">,
+  signal?: AbortSignal,
 ): Promise<{
   scope: "project" | "user";
   warning?: string;
@@ -292,7 +360,9 @@ async function runWithScopeFallback(
 
   const projectSql = build("project");
   if (projectSql === null) return null;
-  const projectWide = await deps.runQuery(connection, projectSql);
+  const projectWide = await deps.runQuery(connection, projectSql, signal);
+  // A stopped caller is not a denial: never start the second query.
+  signal?.throwIfAborted();
   if (projectWide.success) {
     return { scope: "project", rows: rowsOf(projectWide) };
   }
@@ -306,7 +376,8 @@ async function runWithScopeFallback(
   if (userSql === null) {
     throw new Error(projectWide.error ?? "Job history query failed");
   }
-  const own = await deps.runQuery(connection, userSql);
+  const own = await deps.runQuery(connection, userSql, signal);
+  signal?.throwIfAborted();
   if (!own.success) throw new Error(own.error ?? "Job history query failed");
   logger.info("Job history fell back to the connection's own jobs", {
     kind,
@@ -325,9 +396,12 @@ async function runWithScopeFallback(
 }
 
 /**
- * Cost per model per day for Mako dbt runs, matched through the runs'
- * `invocationIds`. `runId` narrows to one run, `jobId` to one job. Throws on
- * a failed warehouse query.
+ * Cost per model per day for Mako dbt runs of one environment. A warehouse
+ * job counts when it carries the invocation id or the run id of one of that
+ * environment's runs: both ids are unique across projects and workspaces,
+ * so no other job, project or environment can add to the sum. `runId`
+ * narrows to one run, `jobId` to one job. Throws on a failed warehouse
+ * query.
  */
 export async function modelCost(
   params: JobHistoryTarget & {
@@ -337,7 +411,7 @@ export async function modelCost(
     model?: string;
   },
   deps: JobHistoryDeps = defaultJobHistoryDeps,
-): Promise<WarehouseIntrospection<JobHistoryMeta & { rows: ModelCostRow[] }>> {
+): Promise<WarehouseIntrospection<ModelCostResult>> {
   const target = await deps.resolveTarget(params);
   const driver = deps.getDriver(target.connection.type);
   if (!driver?.buildJobHistoryQuery) return unsupported(target.connection);
@@ -358,18 +432,6 @@ export async function modelCost(
     runId: params.runId,
     limit: MAX_RUNS,
   });
-  // A job's label also finds the runs past the cap. Not with `runId`: the
-  // job label would widen one run to every run of its job.
-  const makoJobLabels =
-    params.jobId && !params.runId
-      ? uniqueLabelValues(
-          await deps.jobLabelValues({
-            workspaceId: params.workspaceId,
-            projectId: params.projectId,
-            jobId: params.jobId,
-          }),
-        )
-      : [];
   const makoRunIds = uniqueLabelValues(runs.map(run => run.id));
   const invocationIds = uniqueLabelValues(
     runs.flatMap(run => run.invocationIds),
@@ -381,18 +443,38 @@ export async function modelCost(
       `Only the ${MAX_RUNS} most recent runs of the window are matched.`,
     );
   }
-  if (makoRunIds.length === 0 && makoJobLabels.length === 0) {
+  if (invocationIds.dropped > 0) {
+    notes.push(
+      `${invocationIds.dropped} invocation ids are past the ` +
+        `${JOB_HISTORY_MAX_IDS} one query matches. Their jobs count only ` +
+        "when the project's query comment sets the mako_dbt_run label.",
+    );
+  }
+  const empty = {
+    rows: [],
+    totalRows: 0,
+    totals: zeroTotals(),
+    truncated: false,
+  };
+  if (makoRunIds.values.length === 0) {
     return {
       supported: true,
       scope: "project",
       days,
-      rows: [],
+      ...empty,
       notes: [
         `No Mako dbt run in environment "${target.environment}" in the last ${days} days.`,
       ],
     };
   }
 
+  // dbt runs its jobs where the environment's dataset lives.
+  const region = await resolveRegion(
+    driver,
+    target.connection,
+    target.targetSchema ? [{ schema: target.targetSchema }] : [],
+    params.signal,
+  );
   const result = await runWithScopeFallback(
     deps,
     driver,
@@ -401,11 +483,12 @@ export async function modelCost(
     {
       days,
       limit,
-      invocationIds,
-      makoRunIds,
-      makoJobLabels,
+      ...(region ? { region: region.region } : {}),
+      invocationIds: invocationIds.values,
+      makoRunIds: makoRunIds.values,
       model: params.model,
     },
+    params.signal,
   );
   if (result === null) return unsupported(target.connection);
 
@@ -419,14 +502,32 @@ export async function modelCost(
     invocations: optionalCount(row.invocations),
     avgDurationMs: optionalCount(row.avg_duration_ms),
   }));
+  // Every row repeats the window totals, computed before the row cap.
+  const first = result.rows[0];
+  const totalRows = first ? count(first.total_rows) : 0;
+  const warning = joinWarnings(region?.warning, result.warning);
   return {
     supported: true,
     scope: result.scope,
     days,
-    ...(result.warning ? { warning: result.warning } : {}),
+    ...(region ? { region: region.region, regionSource: region.source } : {}),
+    ...(warning ? { warning } : {}),
     ...(notes.length > 0 ? { notes } : {}),
     rows,
+    totalRows,
+    totals: first
+      ? {
+          jobs: count(first.total_jobs),
+          bytesBilled: count(first.total_bytes_billed),
+          slotMs: count(first.total_slot_ms),
+        }
+      : zeroTotals(),
+    truncated: totalRows > rows.length,
   };
+}
+
+function zeroTotals(): ModelCostTotals {
+  return { jobs: 0, bytesBilled: 0, slotMs: 0 };
 }
 
 /** Who read one relation. Throws on a failed warehouse query. */
@@ -448,14 +549,30 @@ export async function tableReaders(
     JOB_HISTORY_DEFAULT_LIMIT,
     JOB_HISTORY_MAX_LIMIT,
   );
+  // A job that reads the relation runs where the relation's dataset lives.
+  // Only that dataset is asked: the region of another one would be a guess
+  // presented as a fact.
+  const region = await resolveRegion(
+    driver,
+    target.connection,
+    [{ database: params.relation.database, schema: params.relation.schema }],
+    params.signal,
+  );
   const result = await runWithScopeFallback(
     deps,
     driver,
     target.connection,
     "table_readers",
-    { days, limit, relation: params.relation },
+    {
+      days,
+      limit,
+      ...(region ? { region: region.region } : {}),
+      relation: params.relation,
+    },
+    params.signal,
   );
   if (result === null) return unsupported(target.connection);
+  const warning = joinWarnings(region?.warning, result.warning);
 
   const rows: TableReaderRow[] = result.rows.map(row => ({
     makoSource: text(row.mako_source),
@@ -470,7 +587,8 @@ export async function tableReaders(
     supported: true,
     scope: result.scope,
     days,
-    ...(result.warning ? { warning: result.warning } : {}),
+    ...(region ? { region: region.region, regionSource: region.source } : {}),
+    ...(warning ? { warning } : {}),
     notes: [
       "If this relation is a view, a read through another view is " +
         "invisible: the job names that other view. Check the readers of " +

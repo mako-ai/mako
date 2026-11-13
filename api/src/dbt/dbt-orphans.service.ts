@@ -62,16 +62,28 @@ export interface DbtOrphansReport {
   relationsScanned: number;
   /** Relations matched to something that is not a model, and left out. */
   skipped: { sources: number; testFailureTables: number };
-  /** Relations in the scanned schemas that no model, seed or snapshot owns. */
+  /** Every orphan found in the scanned schemas, listed or not. */
+  orphanCount: number;
+  /** Stored bytes of every orphan found, listed or not. */
+  orphanBytes: number;
+  /** Every orphan found, by confidence. */
+  confidenceCounts: Record<DbtOrphanRelation["confidence"], number>;
+  /**
+   * The first `limit` orphans in a fixed order: confidence (high, medium,
+   * low), then size (largest first), then schema and name.
+   */
   orphans: DbtOrphanRelation[];
-  /** True when more orphans exist than `orphans` holds. */
+  /** True when `orphanCount` is larger than `orphans.length`. */
   truncated: boolean;
 }
 
 /** A manifest older than this is reported stale: 7 days. */
 export const DBT_ORPHANS_STALE_HOURS = 7 * 24;
 const MAX_SCHEMAS = 50;
-const MAX_ORPHANS = 1000;
+/** Most orphans one report lists. The counts and bytes are never cut. */
+export const DBT_ORPHANS_MAX_LISTED = 1000;
+/** Schemas listed at once: each listing is one warehouse job. */
+const SCHEMA_LIST_CONCURRENCY = 6;
 const MAX_OTHER_RUNS = 200;
 
 interface ManifestNode {
@@ -411,6 +423,37 @@ const schemaLabel = (entry: { database?: string; schema: string }) =>
   entry.database ? `${entry.database}.${entry.schema}` : entry.schema;
 
 /**
+ * `fn` over every item, at most `concurrency` at once, results in input
+ * order. Stops starting new work once `signal` aborts or one call throws.
+ */
+async function mapBounded<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  signal: AbortSignal | undefined,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  let failed = false;
+  const worker = async () => {
+    while (!failed && next < items.length) {
+      signal?.throwIfAborted();
+      const index = next++;
+      try {
+        results[index] = await fn(items[index]);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, worker),
+  );
+  return results;
+}
+
+/**
  * Read-only: relations left behind by deleted models. Nothing is dropped.
  * `supported: false` when the engine cannot list relations or no manifest
  * exists yet. Throws on a failed warehouse query.
@@ -424,6 +467,10 @@ export async function listDbtOrphans(
     projectId: string;
     /** Default: the project's production environment. */
     environment?: string;
+    /** Orphans to list. Default and maximum: `DBT_ORPHANS_MAX_LISTED`. */
+    limit?: number;
+    /** Stops the schema listings when the caller goes away. */
+    signal?: AbortSignal;
   },
   deps: DbtOrphansDeps = defaultDbtOrphansDeps,
 ): Promise<WarehouseIntrospection<DbtOrphansReport>> {
@@ -459,19 +506,28 @@ export async function listDbtOrphans(
   const relations: WarehouseRelation[] = [];
   const schemasScanned: string[] = [];
   const schemasMissing: string[] = [];
-  for (const entry of schemas.slice(0, MAX_SCHEMAS)) {
-    const listed = await driver.listRelations(
-      target.connection,
-      entry.schema,
-      entry.database ? { projectId: entry.database } : undefined,
-    );
+  const scanned = schemas.slice(0, MAX_SCHEMAS);
+  const listRelations = driver.listRelations.bind(driver);
+  const listings = await mapBounded(
+    scanned,
+    SCHEMA_LIST_CONCURRENCY,
+    params.signal,
+    entry =>
+      listRelations(target.connection, entry.schema, {
+        ...(entry.database ? { projectId: entry.database } : {}),
+        ...(params.signal ? { signal: params.signal } : {}),
+      }),
+  );
+  // Manifest order, whatever order the listings finished in.
+  scanned.forEach((entry, index) => {
+    const listed = listings[index];
     if (listed === null) {
       schemasMissing.push(schemaLabel(entry));
-      continue;
+      return;
     }
     schemasScanned.push(schemaLabel(entry));
     relations.push(...listed);
-  }
+  });
 
   const found = findDbtOrphans({
     manifest: loaded.manifest,
@@ -479,6 +535,10 @@ export async function listDbtOrphans(
     otherRuns: loaded.otherRuns,
     now: deps.now(),
   });
+  const listed =
+    params.limit === undefined || !Number.isFinite(params.limit)
+      ? DBT_ORPHANS_MAX_LISTED
+      : Math.min(DBT_ORPHANS_MAX_LISTED, Math.max(1, Math.trunc(params.limit)));
   if (found.stale) {
     warnings.push(
       found.manifestAgeHours === undefined
@@ -515,7 +575,18 @@ export async function listDbtOrphans(
     expectedCount: found.expectedCount,
     relationsScanned: relations.length,
     skipped: found.skipped,
-    orphans: found.orphans.slice(0, MAX_ORPHANS),
-    truncated: found.orphans.length > MAX_ORPHANS,
+    orphanCount: found.orphans.length,
+    orphanBytes: found.orphans.reduce(
+      (sum, relation) => sum + (relation.sizeBytes ?? 0),
+      0,
+    ),
+    confidenceCounts: {
+      high: found.orphans.filter(o => o.confidence === "high").length,
+      medium: found.orphans.filter(o => o.confidence === "medium").length,
+      low: found.orphans.filter(o => o.confidence === "low").length,
+    },
+    // `findDbtOrphans` sorted them: the cut keeps the same rows every call.
+    orphans: found.orphans.slice(0, listed),
+    truncated: found.orphans.length > listed,
   };
 }

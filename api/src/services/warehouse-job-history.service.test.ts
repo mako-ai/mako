@@ -10,7 +10,11 @@
  * - the IAM hint a JOBS denial carries, with the service account and project
  *   filled in;
  * - the relation lister the orphan report reads;
- * - engines without the hooks answer `supported: false`.
+ * - engines without the hooks answer `supported: false`;
+ * - the region comes from the dataset, and a guessed region is said so;
+ * - totals cover the whole window, whatever the row cap;
+ * - a job filter matches run and invocation ids only, never a slug;
+ * - the caller's AbortSignal reaches every warehouse call.
  *
  * Run: tsx src/services/warehouse-job-history.service.test.ts
  */
@@ -31,8 +35,11 @@ import {
   isBigQueryJobsAccessDenied,
   withBigQueryJobsAccessHint,
 } from "./database-connection.service";
+import { sanitizeBigQueryLabelValue } from "./bigquery-labels";
 import { checkPreviewQuerySafety } from "./query-pagination.service";
+import { dbtRunLabelEnv } from "../dbt/dbt-run-labels";
 import {
+  defaultJobHistoryDeps,
   modelCost,
   tableReaders,
   type JobHistoryDeps,
@@ -68,6 +75,24 @@ function build(
 
 // ── SQL snapshots ─────────────────────────────────────────────────
 
+// The totals are window sums over every model-day, so LIMIT cannot cut them;
+// the order is the "most expensive first" the tool promises.
+const MODEL_COST_TAIL = `SELECT
+  day,
+  node_id,
+  relation,
+  jobs,
+  bytes_billed,
+  slot_ms,
+  invocations,
+  avg_duration_ms,
+  COUNT(*) OVER () AS total_rows,
+  SUM(jobs) OVER () AS total_jobs,
+  SUM(bytes_billed) OVER () AS total_bytes_billed,
+  SUM(slot_ms) OVER () AS total_slot_ms
+FROM per_model_day
+ORDER BY bytes_billed DESC, slot_ms DESC, day DESC, node_id`;
+
 const MODEL_COST_SQL = `WITH dbt_jobs AS (
   SELECT
     DATE(creation_time) AS day,
@@ -93,24 +118,25 @@ const MODEL_COST_SQL = `WITH dbt_jobs AS (
       SELECT 1 FROM UNNEST(labels) AS l
       WHERE (l.key = 'dbt_invocation_id' AND l.value IN ('${INVOCATION}'))
         OR (l.key = 'mako_dbt_run' AND l.value IN ('${RUN_ID}'))
-        OR (l.key = 'mako_dbt_job' AND l.value IN ('nightly'))
     )
+),
+per_model_day AS (
+  SELECT
+    day,
+    node_id,
+    MAX(relation) AS relation,
+    COUNT(*) AS jobs,
+    IFNULL(SUM(total_bytes_billed), 0) AS bytes_billed,
+    IFNULL(SUM(total_slot_ms), 0) AS slot_ms,
+    COUNT(DISTINCT invocation_id) AS invocations,
+    CAST(ROUND(AVG(duration_ms)) AS INT64) AS avg_duration_ms
+  FROM dbt_jobs
+  WHERE node_id = 'model.shop.orders'
+    OR ENDS_WITH(node_id, '.model.shop.orders')
+    OR node_id = 'model_shop_orders'
+  GROUP BY day, node_id
 )
-SELECT
-  day,
-  node_id,
-  MAX(relation) AS relation,
-  COUNT(*) AS jobs,
-  IFNULL(SUM(total_bytes_billed), 0) AS bytes_billed,
-  IFNULL(SUM(total_slot_ms), 0) AS slot_ms,
-  COUNT(DISTINCT invocation_id) AS invocations,
-  CAST(ROUND(AVG(duration_ms)) AS INT64) AS avg_duration_ms
-FROM dbt_jobs
-WHERE node_id = 'model.shop.orders'
-  OR ENDS_WITH(node_id, '.model.shop.orders')
-  OR node_id = 'model_shop_orders'
-GROUP BY day, node_id
-ORDER BY day DESC, slot_ms DESC
+${MODEL_COST_TAIL}
 LIMIT 100`;
 
 const MODEL_COST_MINIMAL_SQL = `WITH dbt_jobs AS (
@@ -138,19 +164,21 @@ const MODEL_COST_MINIMAL_SQL = `WITH dbt_jobs AS (
       SELECT 1 FROM UNNEST(labels) AS l
       WHERE (l.key = 'dbt_invocation_id' AND l.value IN ('${INVOCATION}', 'second-invocation'))
     )
+),
+per_model_day AS (
+  SELECT
+    day,
+    node_id,
+    MAX(relation) AS relation,
+    COUNT(*) AS jobs,
+    IFNULL(SUM(total_bytes_billed), 0) AS bytes_billed,
+    IFNULL(SUM(total_slot_ms), 0) AS slot_ms,
+    COUNT(DISTINCT invocation_id) AS invocations,
+    CAST(ROUND(AVG(duration_ms)) AS INT64) AS avg_duration_ms
+  FROM dbt_jobs
+  GROUP BY day, node_id
 )
-SELECT
-  day,
-  node_id,
-  MAX(relation) AS relation,
-  COUNT(*) AS jobs,
-  IFNULL(SUM(total_bytes_billed), 0) AS bytes_billed,
-  IFNULL(SUM(total_slot_ms), 0) AS slot_ms,
-  COUNT(DISTINCT invocation_id) AS invocations,
-  CAST(ROUND(AVG(duration_ms)) AS INT64) AS avg_duration_ms
-FROM dbt_jobs
-GROUP BY day, node_id
-ORDER BY day DESC, slot_ms DESC
+${MODEL_COST_TAIL}
 LIMIT 500`;
 
 const readersSql = (
@@ -210,7 +238,6 @@ function testSqlSnapshots(): void {
       days: 7,
       invocationIds: [INVOCATION],
       makoRunIds: [RUN_ID],
-      makoJobLabels: ["nightly"],
       model: "model.shop.orders",
     }),
     MODEL_COST_SQL,
@@ -269,7 +296,8 @@ function testEveryQueryIsBoundedAndReadOnly(): void {
     assert.deepEqual(checkPreviewQuerySafety(sql).errors, []);
   }
 
-  // Region: from the connection, lowercased; US when the connection has none.
+  // Region without one from the caller: the connection's, lowercased; US
+  // when the connection has none.
   const noLocation = makeFakeConnection("bigquery", {
     project_id: "fake-project",
   });
@@ -291,6 +319,33 @@ function testEveryQueryIsBoundedAndReadOnly(): void {
       zurich,
     ).includes("`region-europe-west6`.INFORMATION_SCHEMA.JOBS_BY_USER"),
   );
+
+  // The region the service resolved wins over the connection's.
+  assert.ok(
+    build(
+      "table_readers",
+      {
+        scope: "project",
+        days: 1,
+        region: "eu",
+        relation: { schema: "analytics", name: "orders" },
+      },
+      noLocation,
+    ).includes("`fake-project`.`region-eu`.INFORMATION_SCHEMA.JOBS_BY_PROJECT"),
+  );
+  for (const region of ["EU", "eu`; --", "", "region eu"]) {
+    assert.throws(
+      () =>
+        build("model_cost", {
+          scope: "project",
+          days: 1,
+          makoRunIds: [RUN_ID],
+          region,
+        }),
+      RangeError,
+      `region ${JSON.stringify(region)}`,
+    );
+  }
 
   // An unknown kind is not a query.
   assert.equal(
@@ -335,7 +390,7 @@ function testBounds(): void {
   // No run set: the query would price every job of the project.
   assert.throws(
     () => build("model_cost", { scope: "project", days: 7 }),
-    /needs invocationIds, makoRunIds or makoJobLabels/,
+    /needs invocationIds or makoRunIds/,
   );
   assert.throws(
     () => build("model_cost", { scope: "project", days: 7, invocationIds: [] }),
@@ -352,54 +407,43 @@ function testBounds(): void {
 }
 
 function testIdentifierValidation(): void {
+  const readers = (relation: {
+    database?: string;
+    schema: string;
+    name: string;
+  }) => build("table_readers", { scope: "project", days: 7, relation });
+
+  // Nothing here can sit inside backticks, single quotes or a raw-string
+  // regex without closing it. Refused in every position.
   const hostile = [
     "orders'; DROP TABLE x; --",
     "orders`",
-    "orders v",
     'orders"',
     "orders\\",
     "orders)",
     "orders\n",
+    "orders\u0000",
+    "orders\t",
     "",
-    "a.b",
   ];
   for (const value of hostile) {
     const label = JSON.stringify(value);
     assert.throws(
-      () =>
-        build("table_readers", {
-          scope: "project",
-          days: 7,
-          relation: { schema: "analytics", name: value },
-        }),
+      () => readers({ schema: "analytics", name: value }),
       RangeError,
       `relation name ${label}`,
     );
     assert.throws(
-      () =>
-        build("table_readers", {
-          scope: "project",
-          days: 7,
-          relation: { schema: value, name: "orders" },
-        }),
+      () => readers({ schema: value, name: "orders" }),
       RangeError,
       `relation schema ${label}`,
     );
     assert.throws(
-      () =>
-        build("table_readers", {
-          scope: "project",
-          days: 7,
-          relation: { database: value, schema: "analytics", name: "orders" },
-        }),
+      () => readers({ database: value, schema: "analytics", name: "orders" }),
       RangeError,
       `relation database ${label}`,
     );
-    for (const key of [
-      "invocationIds",
-      "makoRunIds",
-      "makoJobLabels",
-    ] as const) {
+    for (const key of ["invocationIds", "makoRunIds"] as const) {
       assert.throws(
         () =>
           build("model_cost", { scope: "project", days: 7, [key]: [value] }),
@@ -408,6 +452,68 @@ function testIdentifierValidation(): void {
       );
     }
   }
+  // A dataset name takes letters, digits and underscores only; a project
+  // id takes a dot only inside its domain.
+  for (const schema of ["orders v", "a.b", "a-b", "été"]) {
+    assert.throws(
+      () => readers({ schema, name: "orders" }),
+      RangeError,
+      `schema ${schema}`,
+    );
+  }
+  for (const database of ["orders v", "a.b", "a:b:c", ":p", "example.com:"]) {
+    assert.throws(
+      () => readers({ database, schema: "analytics", name: "orders" }),
+      RangeError,
+      `database ${database}`,
+    );
+  }
+
+  // Review A6: legal BigQuery names the first patterns refused.
+  // A domain-scoped project id, on the relation and on the connection.
+  const scoped = readers({
+    database: "example.com:my-project",
+    schema: "analytics",
+    name: "orders",
+  });
+  assert.ok(
+    scoped.includes(
+      "r.project_id = 'example.com:my-project' AND r.dataset_id = 'analytics' AND r.table_id = 'orders'",
+    ),
+  );
+  const scopedConnection = makeFakeConnection("bigquery", {
+    project_id: "example.com:my-project",
+    location: "EU",
+  });
+  assert.ok(
+    build(
+      "model_cost",
+      { scope: "project", days: 7, makoRunIds: [RUN_ID] },
+      scopedConnection,
+    ).includes(
+      "FROM `example.com:my-project`.`region-eu`.INFORMATION_SCHEMA.JOBS_BY_PROJECT",
+    ),
+  );
+  // Table names with a hyphen, a space and Unicode letters. Each is quoted
+  // as a literal, and escaped where it is regex text.
+  const legalTables: Array<[string, string]> = [
+    ["daily-orders", "daily\\-orders"],
+    ["order lines 2026", "order lines 2026"],
+    ["commandes_été", "commandes_été"],
+    ["注文", "注文"],
+  ];
+  for (const [name, pattern] of legalTables) {
+    const sql = readers({ schema: "analytics", name });
+    assert.ok(sql.includes(`r.table_id = '${name}'`), `literal ${name}`);
+    assert.ok(sql.includes(`STRPOS(query, '${name}') > 0`), `strpos ${name}`);
+    assert.ok(
+      sql.includes(`\\s*\\.\\s*\`?${pattern}\`?([^a-z0-9_]|$)')`),
+      `regex ${name}`,
+    );
+    // Still one read-only statement: the name closed nothing.
+    assert.deepEqual(checkPreviewQuerySafety(sql).errors, [], name);
+  }
+
   for (const model of ["orders' OR 1=1 --", "orders`", "a b", "", "x/y"]) {
     assert.throws(
       () =>
@@ -570,33 +676,68 @@ async function testAccessHint(): Promise<void> {
 
 type Outcome = { success: boolean; data?: unknown; error?: string };
 
+/**
+ * What `datasets.get` answers per dataset: a location, null for a dataset
+ * that does not exist, or an error. Unlisted datasets are in the EU, like
+ * the fake connection.
+ */
+const datasetLocations = new Map<string, string | null | Error>();
+const datasetLookups: Array<{
+  dataset: string;
+  projectId?: string;
+  signal?: AbortSignal;
+}> = [];
+
+function stubDatasetLocations(): () => void {
+  const service = databaseConnectionService as unknown as {
+    getBigQueryDatasetLocation(
+      database: IDatabaseConnection,
+      datasetId: string,
+      options?: { projectId?: string; signal?: AbortSignal },
+    ): Promise<string | null>;
+  };
+  const original = service.getBigQueryDatasetLocation;
+  service.getBigQueryDatasetLocation = async (_database, dataset, options) => {
+    datasetLookups.push({
+      dataset,
+      projectId: options?.projectId,
+      signal: options?.signal,
+    });
+    const answer = datasetLocations.has(dataset)
+      ? datasetLocations.get(dataset)
+      : "EU";
+    if (answer instanceof Error) throw answer;
+    return answer ?? null;
+  };
+  return () => {
+    service.getBigQueryDatasetLocation = original;
+  };
+}
+
 function makeDeps(
   overrides: Partial<JobHistoryDeps> & {
     respond?: (sql: string, call: number) => Outcome;
     target?: IDatabaseConnection;
+    targetSchema?: string;
   } = {},
-): JobHistoryDeps & { queries: string[]; jobLabelCalls: number } {
+): JobHistoryDeps & { queries: string[]; signals: unknown[] } {
   const queries: string[] = [];
-  const state = { jobLabelCalls: 0 };
-  const { respond, target, ...rest } = overrides;
+  const signals: unknown[] = [];
+  const { respond, target, targetSchema, ...rest } = overrides;
   return {
     queries,
-    get jobLabelCalls() {
-      return state.jobLabelCalls;
-    },
+    signals,
     resolveTarget: async params => ({
       connection: target ?? connection,
       environment: params.environment ?? "prod",
       prodLike: true,
+      targetSchema: targetSchema ?? "dbt_prod",
     }),
     listRuns: async () => [{ id: RUN_ID, invocationIds: [INVOCATION] }],
-    jobLabelValues: async () => {
-      state.jobLabelCalls++;
-      return ["Nightly Build", "64b0c0ffee0123456789beef"];
-    },
     getDriver: () => driver,
-    runQuery: async (_connection, sql) => {
+    runQuery: async (_connection, sql, signal) => {
       queries.push(sql);
+      signals.push(signal);
       return respond?.(sql, queries.length) ?? { success: true, data: [] };
     },
     now: () => new Date("2026-06-15T12:00:00Z"),
@@ -623,6 +764,10 @@ async function testProjectScope(): Promise<void> {
           slot_ms: 9000,
           invocations: 2,
           avg_duration_ms: "1500",
+          total_rows: "2",
+          total_jobs: "4",
+          total_bytes_billed: "1048576",
+          total_slot_ms: "9012",
         },
         {
           day: "2026-06-14",
@@ -633,6 +778,10 @@ async function testProjectScope(): Promise<void> {
           slot_ms: 12,
           invocations: 1,
           avg_duration_ms: null,
+          total_rows: "2",
+          total_jobs: "4",
+          total_bytes_billed: "1048576",
+          total_slot_ms: "9012",
         },
       ],
     }),
@@ -642,6 +791,11 @@ async function testProjectScope(): Promise<void> {
     supported: true,
     scope: "project",
     days: 7,
+    region: "eu",
+    regionSource: "dataset",
+    totalRows: 2,
+    totals: { jobs: 4, bytesBilled: 1048576, slotMs: 9012 },
+    truncated: false,
     rows: [
       {
         day: "2026-06-14",
@@ -669,9 +823,7 @@ async function testProjectScope(): Promise<void> {
   assert.ok(deps.queries[0].includes("JOBS_BY_PROJECT"));
   assert.ok(deps.queries[0].includes(`'${INVOCATION}'`));
   assert.ok(deps.queries[0].includes(`'${RUN_ID}'`));
-  // No job asked for: no job label in the filter, no job lookup.
   assert.ok(!deps.queries[0].includes("mako_dbt_job"));
-  assert.equal(deps.jobLabelCalls, 0);
 }
 
 async function testFallbackToOwnJobs(): Promise<void> {
@@ -802,6 +954,9 @@ async function testModelCostRunSet(): Promise<void> {
     scope: "project",
     days: 3,
     rows: [],
+    totalRows: 0,
+    totals: { jobs: 0, bytesBilled: 0, slotMs: 0 },
+    truncated: false,
     notes: ['No Mako dbt run in environment "prod" in the last 3 days.'],
   });
   assert.equal(empty.queries.length, 0);
@@ -815,7 +970,7 @@ async function testModelCostRunSet(): Promise<void> {
   assert.ok(!unlabelled.queries[0].includes("dbt_invocation_id' AND"));
   assert.ok(unlabelled.queries[0].includes("l.key = 'mako_dbt_run'"));
 
-  // A job narrows the run list and adds its label, sanitized like a label.
+  // A job narrows the run list. It adds no label of its own to the filter.
   const seen: Array<Record<string, unknown>> = [];
   const forJob = makeDeps({
     listRuns: async params => {
@@ -841,22 +996,17 @@ async function testModelCostRunSet(): Promise<void> {
     (seen[0].since as Date).toISOString(),
     "2026-05-16T12:00:00.000Z",
   );
-  assert.ok(
-    forJob.queries[0].includes(
-      "(l.key = 'mako_dbt_job' AND l.value IN ('nightly_build', '64b0c0ffee0123456789beef'))",
-    ),
-  );
+  assert.ok(!forJob.queries[0].includes("mako_dbt_job"));
   assert.ok(forJob.queries[0].includes("INTERVAL 30 DAY"));
   assert.ok(forJob.queries[0].endsWith("LIMIT 500"));
   assert.ok(forJob.queries[0].includes("ENDS_WITH(node_id, '.orders')"));
 
-  // One run: the job label would widen it to every run of the job.
+  // One run of a job: the same rule, one run id.
   const forRun = makeDeps();
   await modelCost(
     { ...TARGET, jobId: "64b0c0ffee0123456789beef", runId: RUN_ID },
     forRun,
   );
-  assert.equal(forRun.jobLabelCalls, 0);
   assert.ok(!forRun.queries[0].includes("mako_dbt_job"));
 
   // Ids that are not label values are dropped, never sent.
@@ -869,6 +1019,327 @@ async function testModelCostRunSet(): Promise<void> {
   assert.ok(odd.queries[0].includes(`'${INVOCATION}'`));
   assert.ok(odd.queries[0].includes("'x___drop'"));
   assert.ok(!odd.queries[0].includes("DROP"));
+}
+
+// Review A2 and B6. A job filter used to add `mako_dbt_job IN (slug, id)`.
+// The slug is shared by every project and workspace with a job of that
+// name, and the label ignores the environment asked for.
+async function testJobFilterStaysInsideItsEnvironment(): Promise<void> {
+  const JOB = "64b0c0ffee0123456789beef";
+
+  // The job has runs in prod only. Asked about dev, the answer is "no run
+  // in dev": no warehouse query, so no prod cost under a dev question.
+  const asked: Array<Record<string, unknown>> = [];
+  const dev = makeDeps({
+    listRuns: async params => {
+      asked.push(params);
+      return params.environment === "prod"
+        ? [{ id: RUN_ID, invocationIds: [INVOCATION] }]
+        : [];
+    },
+  });
+  const devCost = await modelCost(
+    { ...TARGET, environment: "dev", jobId: JOB },
+    dev,
+  );
+  assert.ok(devCost.supported);
+  assert.equal(asked[0].environment, "dev");
+  assert.equal(asked[0].jobId, JOB);
+  assert.equal(dev.queries.length, 0);
+  assert.deepEqual(devCost.rows, []);
+  assert.deepEqual(devCost.totals, { jobs: 0, bytesBilled: 0, slotMs: 0 });
+  assert.deepEqual(devCost.notes, [
+    'No Mako dbt run in environment "dev" in the last 7 days.',
+  ]);
+
+  // With runs, the only label matches are ids of those runs. Every value is
+  // a run id or an invocation id, both unique across workspaces, so a job
+  // of the same slug elsewhere on the warehouse project cannot match.
+  const prod = makeDeps();
+  await modelCost({ ...TARGET, jobId: JOB }, prod);
+  const matches = [...prod.queries[0].matchAll(/l\.key = '([a-z_]+)' AND/g)]
+    .map(match => match[1])
+    .sort();
+  assert.deepEqual(matches, ["dbt_invocation_id", "mako_dbt_run"]);
+  assert.ok(!prod.queries[0].includes(JOB));
+
+  // Writer and reader agree: the reader matches the exact value
+  // `dbtRunLabelEnv` hands to dbt for the run.
+  const written = dbtRunLabelEnv({ runId: RUN_ID, trigger: "schedule" });
+  assert.ok(
+    prod.queries[0].includes(
+      `(l.key = 'mako_dbt_run' AND l.value IN ('${written.MAKO_DBT_RUN}'))`,
+    ),
+  );
+  // One sanitizer for both sides (review B9): an odd id reads as it was
+  // written.
+  const oddRun = "Run/42.B";
+  const odd = makeDeps({
+    listRuns: async () => [{ id: oddRun, invocationIds: [] }],
+  });
+  await modelCost(TARGET, odd);
+  assert.equal(
+    dbtRunLabelEnv({ runId: oddRun, trigger: "manual" }).MAKO_DBT_RUN,
+    sanitizeBigQueryLabelValue(oddRun),
+  );
+  assert.ok(odd.queries[0].includes(`'${sanitizeBigQueryLabelValue(oddRun)}'`));
+
+  // Invocation ids past the per-query cap are said, never dropped silently.
+  const many = makeDeps({
+    listRuns: async () => [
+      {
+        id: RUN_ID,
+        invocationIds: Array.from({ length: 2003 }, (_, i) => `inv-${i}`),
+      },
+    ],
+  });
+  const capped = await modelCost(TARGET, many);
+  assert.ok(capped.supported);
+  assert.ok(capped.notes?.some(note => note.startsWith("3 invocation ids")));
+}
+
+// Review B2. Totals were summed over the rows the LIMIT had already cut.
+async function testModelCostTotalsCoverTheWindow(): Promise<void> {
+  // 3 model-days exist; the caller asked for 2. The warehouse still sums 3.
+  const totals = {
+    total_rows: 3,
+    total_jobs: 60,
+    total_bytes_billed: "6000",
+    total_slot_ms: "900",
+  };
+  const deps = makeDeps({
+    respond: () => ({
+      success: true,
+      data: [
+        {
+          day: "2026-06-13",
+          node_id: "model.shop.big",
+          jobs: 10,
+          bytes_billed: "5000",
+          slot_ms: "500",
+          ...totals,
+        },
+        {
+          day: "2026-06-14",
+          node_id: "model.shop.mid",
+          jobs: 20,
+          bytes_billed: "900",
+          slot_ms: "300",
+          ...totals,
+        },
+      ],
+    }),
+  });
+  const result = await modelCost({ ...TARGET, limit: 2 }, deps);
+  assert.ok(result.supported);
+  assert.equal(result.rows.length, 2);
+  assert.equal(result.totalRows, 3);
+  assert.equal(result.truncated, true);
+  // Not 30 jobs, 5900 bytes, 800 slot ms: those are the listed rows only.
+  assert.deepEqual(result.totals, { jobs: 60, bytesBilled: 6000, slotMs: 900 });
+  // The cap reaches the SQL, and the totals are taken before it.
+  const sql = deps.queries[0];
+  assert.ok(sql.endsWith("LIMIT 2"));
+  assert.ok(sql.includes("SUM(bytes_billed) OVER () AS total_bytes_billed"));
+  assert.ok(sql.indexOf("OVER ()") < sql.lastIndexOf("LIMIT"));
+  // Most expensive first, as the tool says. Never newest first.
+  assert.ok(
+    sql.includes(
+      "ORDER BY bytes_billed DESC, slot_ms DESC, day DESC, node_id\nLIMIT 2",
+    ),
+  );
+
+  // Every group listed: not truncated.
+  const all = makeDeps({
+    respond: () => ({
+      success: true,
+      data: [
+        {
+          day: "2026-06-13",
+          node_id: "model.shop.big",
+          jobs: 1,
+          bytes_billed: 5,
+          slot_ms: 7,
+          total_rows: 1,
+          total_jobs: 1,
+          total_bytes_billed: 5,
+          total_slot_ms: 7,
+        },
+      ],
+    }),
+  });
+  const whole = await modelCost(TARGET, all);
+  assert.ok(whole.supported);
+  assert.equal(whole.truncated, false);
+  assert.deepEqual(whole.totals, { jobs: 1, bytesBilled: 5, slotMs: 7 });
+}
+
+// Review B1. The region was the connection's `location`, else `region-us`.
+// A connection with no location whose datasets live in the EU read the
+// wrong region, got 0 rows and answered "no job read X" as a fact.
+async function testRegionComesFromTheDataset(): Promise<void> {
+  const noLocation = makeFakeConnection("bigquery", {
+    project_id: "fake-project",
+    service_account_json: FAKE_BIGQUERY_SERVICE_ACCOUNT,
+  });
+  const relation = { schema: "analytics", name: "orders" };
+
+  // The relation's dataset is in the EU: the EU history is read.
+  datasetLookups.length = 0;
+  datasetLocations.set("analytics", "EU");
+  const eu = makeDeps({ target: noLocation });
+  const fromDataset = await tableReaders({ ...TARGET, relation }, eu);
+  assert.ok(fromDataset.supported);
+  assert.ok(
+    eu.queries[0].includes(
+      "`fake-project`.`region-eu`.INFORMATION_SCHEMA.JOBS_BY_PROJECT",
+    ),
+  );
+  assert.ok(!eu.queries[0].includes("region-us"));
+  assert.equal(fromDataset.region, "eu");
+  assert.equal(fromDataset.regionSource, "dataset");
+  assert.equal(fromDataset.warning, undefined);
+  assert.equal(datasetLookups[0].dataset, "analytics");
+
+  // A relation of another project: its dataset is read in that project.
+  datasetLookups.length = 0;
+  await tableReaders(
+    { ...TARGET, relation: { ...relation, database: "other-project" } },
+    makeDeps({ target: noLocation }),
+  );
+  assert.equal(datasetLookups[0].projectId, "other-project");
+
+  // The dataset wins over a connection that says something else.
+  datasetLocations.set("analytics", "europe-west6");
+  const mismatch = makeDeps();
+  const zurich = await tableReaders({ ...TARGET, relation }, mismatch);
+  assert.ok(zurich.supported);
+  assert.ok(mismatch.queries[0].includes("`region-europe-west6`"));
+  assert.equal(zurich.regionSource, "dataset");
+
+  // Model cost reads the region of the environment's target schema.
+  datasetLocations.set("dbt_prod", "EU");
+  const cost = makeDeps({ target: noLocation, targetSchema: "dbt_prod" });
+  const costResult = await modelCost(TARGET, cost);
+  assert.ok(costResult.supported);
+  assert.ok(cost.queries[0].includes("`region-eu`"));
+  assert.equal(costResult.regionSource, "dataset");
+
+  // The dataset's location is unreadable (missing, or no metadata access):
+  // the connection's own location is the next source, and it is not a guess.
+  datasetLocations.set("analytics", new Error("Access Denied (HTTP 403)"));
+  const configured = makeDeps();
+  const fromConnection = await tableReaders(
+    { ...TARGET, relation },
+    configured,
+  );
+  assert.ok(fromConnection.supported);
+  assert.ok(configured.queries[0].includes("`region-eu`"));
+  assert.equal(fromConnection.regionSource, "connection");
+  assert.equal(fromConnection.warning, undefined);
+
+  // Neither is known. The default region is read, and the answer says it is
+  // a guess: an empty result must never pass for "no reader".
+  const blind = makeDeps({ target: noLocation });
+  const guessed = await tableReaders({ ...TARGET, relation }, blind);
+  assert.ok(guessed.supported);
+  assert.ok(blind.queries[0].includes("`region-us`"));
+  assert.equal(guessed.scope, "project");
+  assert.equal(guessed.region, "us");
+  assert.equal(guessed.regionSource, "default");
+  assert.deepEqual(guessed.rows, []);
+  assert.equal(
+    guessed.warning,
+    "The region of the job history is a guess (us): the location of " +
+      "analytics could not be read and the connection sets no location. " +
+      "Jobs of another region are invisible, so an empty answer proves " +
+      "nothing. Set the location on the connection.",
+  );
+  // A dataset that does not exist reads the same way: never the region of
+  // some other dataset passed off as this relation's.
+  datasetLocations.set("analytics", null);
+  datasetLocations.set("dbt_prod", "EU");
+  const missing = await tableReaders(
+    { ...TARGET, relation },
+    makeDeps({ target: noLocation }),
+  );
+  assert.ok(missing.supported);
+  assert.equal(missing.regionSource, "default");
+  datasetLocations.set("analytics", new Error("Access Denied (HTTP 403)"));
+
+  // A guessed region and a denied project view: both are said.
+  const blindAndDenied = makeDeps({
+    target: noLocation,
+    respond: sql =>
+      sql.includes("JOBS_BY_PROJECT")
+        ? {
+            success: false,
+            error: DENIED.replaceAll("region-eu", "region-us"),
+          }
+        : { success: true, data: [] },
+  });
+  const both = await tableReaders({ ...TARGET, relation }, blindAndDenied);
+  assert.ok(both.supported);
+  assert.equal(both.scope, "user");
+  assert.ok(
+    both.warning?.startsWith("The region of the job history is a guess"),
+  );
+  assert.ok(both.warning?.includes("bigquery.jobs.listAll"));
+
+  datasetLocations.clear();
+}
+
+// Review B10. A stopped chat turn or a timed-out MCP call must stop the
+// warehouse work.
+async function testAbortSignalReachesTheWarehouse(): Promise<void> {
+  const relation = { schema: "analytics", name: "orders" };
+
+  // The caller's signal is the one every call gets.
+  const live = new AbortController();
+  datasetLookups.length = 0;
+  const deps = makeDeps();
+  await tableReaders({ ...TARGET, relation, signal: live.signal }, deps);
+  assert.equal(deps.signals[0], live.signal);
+  assert.equal(datasetLookups[0].signal, live.signal);
+  const costDeps = makeDeps();
+  await modelCost({ ...TARGET, signal: live.signal }, costDeps);
+  assert.equal(costDeps.signals[0], live.signal);
+
+  // Aborted while the project-wide query ran: the call rejects, and the
+  // fallback query is never started.
+  const stopping = new AbortController();
+  const stopped = makeDeps({
+    respond: () => {
+      stopping.abort();
+      return { success: false, error: "Query cancelled" };
+    },
+  });
+  await assert.rejects(
+    tableReaders({ ...TARGET, relation, signal: stopping.signal }, stopped),
+    (error: Error) => error.name === "AbortError",
+  );
+  assert.equal(stopped.queries.length, 1);
+
+  // The production `runQuery` hands the signal to the connection service.
+  const service = databaseConnectionService as unknown as {
+    executeBigQueryQuery(
+      database: unknown,
+      query: string,
+      options?: { signal?: AbortSignal },
+    ): Promise<{ success: boolean; data?: unknown }>;
+  };
+  const original = service.executeBigQueryQuery;
+  const seen: Array<AbortSignal | undefined> = [];
+  try {
+    service.executeBigQueryQuery = async (_database, _query, options) => {
+      seen.push(options?.signal);
+      return { success: true, data: [] };
+    };
+    await defaultJobHistoryDeps.runQuery(connection, "SELECT 1", live.signal);
+  } finally {
+    service.executeBigQueryQuery = original;
+  }
+  assert.deepEqual(seen, [live.signal]);
 }
 
 async function testUnsupportedEngines(): Promise<void> {
@@ -964,6 +1435,29 @@ async function testListRelations(): Promise<void> {
       readOnly: true,
       labels: { mako_source: "metadata" },
     });
+
+    // Review B10: the caller's signal reaches the query.
+    const controller = new AbortController();
+    await capturing.driver.listRelations(connection, "analytics", {
+      signal: controller.signal,
+    });
+    assert.deepEqual(capturing.calls[1].options, {
+      readOnly: true,
+      labels: { mako_source: "metadata" },
+      signal: controller.signal,
+    });
+
+    // Review A6: a domain-scoped project is a legal dataset path.
+    await capturing.driver.listRelations(connection, "analytics", {
+      projectId: "example.com:my-project",
+    });
+    assert.ok(
+      capturing
+        .lastSql()
+        ?.includes(
+          "FROM `example.com:my-project.analytics`.INFORMATION_SCHEMA.TABLES",
+        ),
+    );
     assert.deepEqual(relations, [
       {
         database: "fake-project",
@@ -1054,6 +1548,19 @@ async function testListRelations(): Promise<void> {
     denied.driver.listRelations(connection, "analytics"),
     /Could not list relations of fake-project\.analytics: Access Denied/,
   );
+  // A listing stopped by the caller is an abort, not a missing dataset.
+  const aborted = new AbortController();
+  aborted.abort();
+  const cancelled = makeCapturingDriver(new BigQueryDatabaseDriver(), () => ({
+    success: false,
+    error: "Query cancelled",
+  }));
+  await assert.rejects(
+    cancelled.driver.listRelations(connection, "analytics", {
+      signal: aborted.signal,
+    }),
+    (error: Error) => error.name === "AbortError",
+  );
 }
 
 async function main(): Promise<void> {
@@ -1062,11 +1569,20 @@ async function main(): Promise<void> {
   testBounds();
   testIdentifierValidation();
   await testAccessHint();
-  await testProjectScope();
-  await testFallbackToOwnJobs();
-  await testFailedQueriesThrow();
-  await testModelCostRunSet();
-  await testUnsupportedEngines();
+  const restoreDatasetLocations = stubDatasetLocations();
+  try {
+    await testProjectScope();
+    await testFallbackToOwnJobs();
+    await testFailedQueriesThrow();
+    await testModelCostRunSet();
+    await testJobFilterStaysInsideItsEnvironment();
+    await testModelCostTotalsCoverTheWindow();
+    await testRegionComesFromTheDataset();
+    await testAbortSignalReachesTheWarehouse();
+    await testUnsupportedEngines();
+  } finally {
+    restoreDatasetLocations();
+  }
   await testListRelations();
   process.stdout.write("warehouse-job-history.service.test.ts: ok\n");
 }

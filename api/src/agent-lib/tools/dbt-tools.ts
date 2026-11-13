@@ -122,8 +122,15 @@ const projectIdField = z
   .string()
   .describe("dbt project ID (from read_dbt_project_tree)");
 
-/** A warehouse identifier part: no quotes, whitespace or statement breaks. */
+/** A schema (dataset) name: no quotes, whitespace or statement breaks. */
 const RELATION_PART_PATTERN = /^[\w$-]+$/;
+/**
+ * A table or view name. BigQuery allows Unicode letters, marks, numbers,
+ * underscores, dashes and spaces; `$` is legal on other engines. No quote,
+ * backtick, backslash or control character passes. The driver checks again
+ * against its own engine's rules before any SQL exists.
+ */
+const RELATION_NAME_PATTERN = /^[\p{L}\p{M}\p{N}\p{Pc}\p{Pd}\p{Zs}$]{1,1024}$/u;
 /** Warehouse project/catalog: also allows the dots and colons of legacy ids. */
 const RELATION_DATABASE_PATTERN = /^[\w$.:-]+$/;
 /** A dbt unique_id (`model.project.name`) or a bare model name. */
@@ -148,19 +155,57 @@ const historyDaysField = z
 
 /**
  * What a job-history answer covers. A "project" scope sees every account's
- * jobs; anything else is the fallback to the connection's own account, which
- * the caller must not read as the whole project.
+ * jobs of one region; anything else is the fallback to the connection's own
+ * account, which the caller must not read as the whole project. A guessed
+ * region is said first: it limits whatever the scope is.
  */
 function describeJobHistoryScope(meta: JobHistoryMeta): string {
+  const where = meta.region ? ` in region ${meta.region}` : "";
+  const guessed = meta.regionSource === "default";
   if (meta.scope === "project") {
-    return `Covers every job in the warehouse project over the last ${meta.days} days.`;
+    return (
+      `Covers every job of the warehouse project${where} over the last ` +
+      `${meta.days} days.` +
+      (guessed && meta.warning ? ` UNVERIFIED REGION: ${meta.warning}` : "")
+    );
   }
   return (
-    `PARTIAL: covers only jobs run by this connection's own account over ` +
-    `the last ${meta.days} days. Jobs from other accounts (BI tools, ` +
+    `PARTIAL: covers only jobs run by this connection's own account${where} ` +
+    `over the last ${meta.days} days. Jobs from other accounts (BI tools, ` +
     `analysts, other service accounts) are NOT included.` +
     (meta.warning ? ` ${meta.warning}` : "")
   );
+}
+
+/** `region` and `regionSource`, present only on engines with regions. */
+function jobHistoryRegionFields(meta: JobHistoryMeta) {
+  return {
+    ...(meta.region ? { region: meta.region } : {}),
+    ...(meta.regionSource ? { regionSource: meta.regionSource } : {}),
+  };
+}
+
+/**
+ * True when an empty answer means "nothing ran": every account's jobs were
+ * visible and the region is known, not guessed.
+ */
+function isConclusiveJobHistory(meta: JobHistoryMeta): boolean {
+  return meta.scope === "project" && meta.regionSource !== "default";
+}
+
+/** The sentence for zero rows: a finding, or an explicit non-finding. */
+function describeEmptyJobHistory(
+  meta: JobHistoryMeta,
+  finding: string,
+): string {
+  if (meta.regionSource === "default") {
+    return (
+      `No matching job was found in region ${meta.region}, but that region ` +
+      "was guessed. This is NOT evidence that nothing ran: do not report " +
+      "it as unused or free."
+    );
+  }
+  return finding;
 }
 
 function toolError(error: unknown, fallback: string) {
@@ -1543,10 +1588,20 @@ export const createDbtServerTools = (
         "that ran the model that day) and `avgDurationMs` (mean wall-clock " +
         "time of one warehouse job). Only runs " +
         "started by Mako count, matched through the invocation ids stored " +
-        "on each run, so runs older than that record are missing. Read the " +
-        "`scope`, `message` and `notes` of the result before quoting a " +
-        'total: `scope` is "project" (every job of the warehouse project) ' +
-        'or "user" (only this connection\'s own account). Looks ' +
+        "on each run, so runs older than that record are missing. A job " +
+        "counts only when it carries the invocation id or the run id of a " +
+        "run of the chosen environment, so another project, workspace or " +
+        "environment never adds to the sum. `rows` come most expensive " +
+        "first (bytes billed, then slot milliseconds) and hold at most " +
+        "`limit` model-days. `totals` and `totalRows` cover the WHOLE " +
+        "window, listed or not; `truncated: true` means `rows` is cut, so " +
+        "quote `totals`, never a sum of `rows`. Read the " +
+        "`scope`, `message`, `warning` and `notes` of the result before " +
+        'quoting a total: `scope` is "project" (every job of the ' +
+        'warehouse project) or "user" (only this connection\'s own ' +
+        "account). `region` is the region whose job history was read and " +
+        '`regionSource` says where it came from; "default" is a guess, ' +
+        "and an empty answer from a guessed region proves nothing. Looks " +
         "back 7 days by default, 30 at most. Engines without a job history " +
         "return `supported: false` with the reason — report it, do not " +
         "retry. Runs one bounded metadata query on the warehouse.",
@@ -1560,7 +1615,10 @@ export const createDbtServerTools = (
           .min(1)
           .max(500)
           .optional()
-          .describe("Rows to return, most expensive first (default 100)."),
+          .describe(
+            "Model-days to list, most expensive first (default 100). " +
+              "`totals` cover every model-day whatever this is.",
+          ),
         jobId: z.string().optional().describe("Only the runs of this dbt job."),
         runId: z.string().optional().describe("Only this dbt run."),
         model: z
@@ -1573,15 +1631,10 @@ export const createDbtServerTools = (
               "fct_orders.",
           ),
       }),
-      execute: async ({
-        projectId,
-        environment,
-        days,
-        limit,
-        jobId,
-        runId,
-        model,
-      }) => {
+      execute: async (
+        { projectId, environment, days, limit, jobId, runId, model },
+        { abortSignal },
+      ) => {
         try {
           const project = await assertProject(projectId);
           if (jobId !== undefined && !Types.ObjectId.isValid(jobId)) {
@@ -1599,6 +1652,7 @@ export const createDbtServerTools = (
             jobId,
             runId,
             model,
+            signal: abortSignal,
           });
           if (!result.supported) {
             return {
@@ -1607,29 +1661,29 @@ export const createDbtServerTools = (
               message: `Model cost is not available: ${result.reason}`,
             };
           }
-          const totals = result.rows.reduce(
-            (sum, row) => ({
-              jobs: sum.jobs + row.jobs,
-              bytesBilled: sum.bytesBilled + row.bytesBilled,
-              slotMs: sum.slotMs + row.slotMs,
-            }),
-            { jobs: 0, bytesBilled: 0, slotMs: 0 },
-          );
           return {
             success: true,
             supported: true,
             scope: result.scope,
             days: result.days,
+            ...jobHistoryRegionFields(result),
             ...(result.warning ? { warning: result.warning } : {}),
             ...(result.notes?.length ? { notes: result.notes } : {}),
             ...(model ? { model } : {}),
             message:
               describeJobHistoryScope(result) +
               (result.rows.length === 0
-                ? " No warehouse job matched a Mako dbt run in this window."
+                ? ` ${describeEmptyJobHistory(result, "No warehouse job matched a Mako dbt run in this window.")}`
+                : "") +
+              (result.truncated
+                ? ` Listing ${result.rows.length} of ${result.totalRows} ` +
+                  "model-days; `totals` cover all of them."
                 : ""),
             rowCount: result.rows.length,
-            totals,
+            totalRows: result.totalRows,
+            truncated: result.truncated,
+            // Summed by the warehouse over the whole window, not over `rows`.
+            totals: result.totals,
             rows: result.rows,
           };
         } catch (error) {
@@ -1651,10 +1705,17 @@ export const createDbtServerTools = (
         "tool is for workspace admins. Use " +
         "it BEFORE dropping, renaming or changing a model or table, and to " +
         "answer 'is this table still used'. An empty answer proves nothing " +
-        'unless `scope` is "project": on the "user" scope only this ' +
+        'unless `scope` is "project" AND `regionSource` is not "default": ' +
+        'on the "user" scope only this ' +
         "connection's own account is visible, so readers outside Mako " +
         "(BI tools, analysts) are missing — say so, and quote the grant in " +
-        "`warning`. Looks back 7 days by default, 30 at most. Engines " +
+        "`warning`. Job history is per region: `region` is the one that was " +
+        "read, taken from the relation's own dataset (`regionSource: " +
+        '"dataset"`) or the connection (`"connection"`); `"default"` ' +
+        "means it was guessed, and then `conclusive` is false and no " +
+        "reader found says nothing about use. Never tell the user a table " +
+        "is unused when `conclusive` is false. Looks back 7 days by " +
+        "default, 30 at most. Engines " +
         "without a job history return `supported: false` with the reason. " +
         "Runs one bounded metadata query on the warehouse.",
       inputSchema: z.object({
@@ -1674,7 +1735,7 @@ export const createDbtServerTools = (
               .describe("Schema / dataset, e.g. dbt_prod"),
             name: z
               .string()
-              .regex(RELATION_PART_PATTERN, "Invalid relation name")
+              .regex(RELATION_NAME_PATTERN, "Invalid relation name")
               .describe("Table or view name, e.g. fct_orders"),
           })
           .describe("The relation whose readers are listed."),
@@ -1688,7 +1749,10 @@ export const createDbtServerTools = (
           .optional()
           .describe("Reader groups to return (default 100)."),
       }),
-      execute: async ({ projectId, relation, environment, days, limit }) => {
+      execute: async (
+        { projectId, relation, environment, days, limit },
+        { abortSignal },
+      ) => {
         try {
           const project = await assertProject(projectId);
           const result = await tableReaders({
@@ -1698,6 +1762,7 @@ export const createDbtServerTools = (
             days,
             limit,
             relation,
+            signal: abortSignal,
           });
           if (!result.supported) {
             return {
@@ -1719,12 +1784,16 @@ export const createDbtServerTools = (
             relation: relationName,
             scope: result.scope,
             days: result.days,
+            ...jobHistoryRegionFields(result),
+            // False when "no reader" cannot be read as "unused": the scope
+            // is one account, or the region was guessed.
+            conclusive: isConclusiveJobHistory(result),
             ...(result.warning ? { warning: result.warning } : {}),
             ...(result.notes?.length ? { notes: result.notes } : {}),
             message:
               describeJobHistoryScope(result) +
               (result.rows.length === 0
-                ? ` No job in that scope read ${relationName}.`
+                ? ` ${describeEmptyJobHistory(result, `No job in that scope read ${relationName}.`)}`
                 : ""),
             rowCount: result.rows.length,
             jobsByTextOnly: result.rows.reduce(
@@ -1745,7 +1814,11 @@ export const createDbtServerTools = (
         "any more — what deleted or renamed models left behind. Compares " +
         "the environment's last successful manifest with the relations in " +
         "the schemas that manifest builds into, and returns each orphan's " +
-        "type, size, row count and last-modified time, largest first. " +
+        "type, size, row count and last-modified time, ordered by " +
+        "confidence (high first), then size (largest first). " +
+        "`orphanCount`, `orphanBytes` and `confidenceCounts` cover EVERY " +
+        "orphan found; `orphans` holds the first `limit` of that order, and " +
+        "`truncated: true` with `listed` says the list is cut. " +
         "READ-ONLY: it drops nothing. Treat the list as candidates, not as " +
         "a verdict: it includes tables other tools wrote into the same " +
         "schema, dbt test-audit tables and relations from branch or CI " +
@@ -1772,16 +1845,18 @@ export const createDbtServerTools = (
           .optional()
           .describe(
             `Orphans to list (default ${DEFAULT_ORPHAN_LIMIT}). ` +
-              "`orphanCount` is always the full count.",
+              "`orphanCount` and `orphanBytes` are always the full totals.",
           ),
       }),
-      execute: async ({ projectId, environment, limit }) => {
+      execute: async ({ projectId, environment, limit }, { abortSignal }) => {
         try {
           const project = await assertProject(projectId);
           const result = await listDbtOrphans({
             workspaceId,
             projectId: project._id.toString(),
             environment,
+            limit: limit ?? DEFAULT_ORPHAN_LIMIT,
+            signal: abortSignal,
           });
           if (!result.supported) {
             return {
@@ -1790,11 +1865,9 @@ export const createDbtServerTools = (
               message: `Orphan listing is not available: ${result.reason}`,
             };
           }
-          const cap = limit ?? DEFAULT_ORPHAN_LIMIT;
-          const orphans = [...result.orphans].sort(
-            (a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0),
-          );
-          const listed = orphans.slice(0, cap);
+          // The service counted every orphan and cut the list in its own
+          // fixed order: nothing is recounted or re-sorted here.
+          const listed = result.orphans;
           return {
             success: true,
             supported: true,
@@ -1814,23 +1887,16 @@ export const createDbtServerTools = (
             schemasMissing: result.schemasMissing,
             skipped: result.skipped,
             expectedCount: result.expectedCount,
-            orphanCount: orphans.length,
-            orphanBytes: orphans.reduce(
-              (sum, relation) => sum + (relation.sizeBytes ?? 0),
-              0,
-            ),
-            ...(listed.length < orphans.length || result.truncated
+            orphanCount: result.orphanCount,
+            orphanBytes: result.orphanBytes,
+            ...(result.truncated
               ? { truncated: true, listed: listed.length }
               : {}),
-            confidenceCounts: {
-              high: orphans.filter(o => o.confidence === "high").length,
-              medium: orphans.filter(o => o.confidence === "medium").length,
-              low: orphans.filter(o => o.confidence === "low").length,
-            },
+            confidenceCounts: result.confidenceCounts,
             message:
-              orphans.length === 0
+              result.orphanCount === 0
                 ? "No orphan relation in the scanned schemas."
-                : `${orphans.length} relation(s) in the scanned schemas ` +
+                : `${result.orphanCount} relation(s) in the scanned schemas ` +
                   "belong to no model, seed or snapshot. Nothing was " +
                   "dropped. Candidates only: confirm each with the user." +
                   (result.stale
