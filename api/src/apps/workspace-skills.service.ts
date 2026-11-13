@@ -159,7 +159,39 @@ export async function loadSkillCatalog(
   if (!head) return emptyCatalog(workspaceId);
   const cached = getCachedCatalog(workspaceId, head);
   if (cached) return cached;
+  // Two readers of a new head share one build (and one catalog object): a
+  // save is followed at once by its own status report and the caller's read.
+  const building = catalogBuilds.get(workspaceId);
+  if (building && building.head === head) return building.catalog;
+  const build = {
+    head,
+    catalog: buildSkillCatalog(workspaceId, repoDir, head),
+  };
+  catalogBuilds.set(workspaceId, build);
+  try {
+    const catalog = await build.catalog;
+    // An invalidation during the build means this result may be stale.
+    if (catalogBuilds.get(workspaceId) === build) {
+      cacheCatalog(workspaceId, catalog);
+    }
+    return catalog;
+  } finally {
+    if (catalogBuilds.get(workspaceId) === build) {
+      catalogBuilds.delete(workspaceId);
+    }
+  }
+}
 
+const catalogBuilds = new Map<
+  string,
+  { head: string; catalog: Promise<SkillCatalog> }
+>();
+
+async function buildSkillCatalog(
+  workspaceId: string,
+  repoDir: string,
+  head: string,
+): Promise<SkillCatalog> {
   const skills: WorkspaceSkill[] = [];
   const invalid: InvalidSkillFile[] = [];
   const warnings: SkillFileWarning[] = [];
@@ -259,20 +291,13 @@ export async function loadSkillCatalog(
       refusedResources: refused,
     });
   }
-  const catalog: SkillCatalog = {
-    workspaceId,
-    head,
-    skills,
-    invalid,
-    warnings,
-  };
-  cacheCatalog(workspaceId, catalog);
-  return catalog;
+  return { workspaceId, head, skills, invalid, warnings };
 }
 
 /** Drop the cached catalog; the next read rebuilds from main. */
 export function invalidateSkillCatalog(workspaceId: string): void {
   catalogCache.delete(workspaceId);
+  catalogBuilds.delete(workspaceId);
 }
 
 /** The skill whose folder is exactly `name`. Writes key on this. */
