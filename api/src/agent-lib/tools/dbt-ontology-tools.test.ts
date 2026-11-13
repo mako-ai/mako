@@ -72,8 +72,13 @@ import { invalidateAppsIndexCache } from "../../apps/app-index.service";
 import { invalidateOwnerDirectory } from "../../apps/user-handles.service";
 import { clearManifestIndexCache } from "../../dbt/ontology/manifest-index.service";
 import { clearOntologyRegistryCache } from "../../dbt/ontology/registry.service";
-import { ONTOLOGY_REGISTRY_PATH } from "../../dbt/ontology/registry";
 import {
+  ONTOLOGY_RAW_RELATIONSHIPS_PATH,
+  ONTOLOGY_REGISTRY_PATH,
+} from "../../dbt/ontology/registry";
+import {
+  ONTOLOGY_GRAPH_YAML,
+  ONTOLOGY_RAW_RELATIONSHIPS_YAML,
   ONTOLOGY_CATALOG,
   ONTOLOGY_MANIFEST,
   ONTOLOGY_REGISTRY_YAML,
@@ -218,6 +223,7 @@ describe("wiring", () => {
         "describe_model",
         "lookup_term",
         "model_readers",
+        "find_join_path",
       ]),
     );
   });
@@ -901,5 +907,244 @@ describe("model_readers", () => {
     }>(tools.model_readers, { name: "country_codes" });
     expect(result.apps).toBe(1);
     expect(result.readers[0].path).toBe("apps/ops/codes");
+  });
+});
+
+describe("find_join_path", () => {
+  const withGraph = () =>
+    commit({
+      [ONTOLOGY_REGISTRY_PATH]: ONTOLOGY_GRAPH_YAML,
+      [ONTOLOGY_RAW_RELATIONSHIPS_PATH]: ONTOLOGY_RAW_RELATIONSHIPS_YAML,
+    });
+
+  it("returns the declared path between two entities, hop by hop", async () => {
+    await withGraph();
+    const result = await run<{
+      success: boolean;
+      level: string;
+      paths: Array<{
+        hops: number;
+        governed: boolean;
+        fanOut: boolean;
+        steps: Array<Record<string, unknown>>;
+      }>;
+      registry?: unknown;
+    }>(tools.find_join_path, { from: "subscription", to: "customer" });
+    expect(result.success).toBe(true);
+    expect(result.level).toBe("entity");
+    expect(result.paths).toHaveLength(1);
+    expect(result.paths[0]).toMatchObject({
+      hops: 2,
+      governed: true,
+      fanOut: false,
+    });
+    expect(result.paths[0].steps.map(step => step.on)).toEqual([
+      "stg_stripe__subscriptions.customer_id = int_crm__customer_account.customer_id",
+      "int_crm__customer_account.account_key = dim_account.account_key",
+    ]);
+    // The generated file skipped 1 record: said, not hidden.
+    expect(result.registry).toEqual({
+      status: "ok",
+      problems: [expect.stringContaining("1 of 7 records were skipped")],
+    });
+  });
+
+  it("resolves a warehouse relation through the manifest", async () => {
+    await withGraph();
+    await seedProject();
+    const result = await run<{
+      from: Record<string, unknown>;
+      paths: Array<{ steps: Array<{ fanOut?: string }> }>;
+    }>(tools.find_join_path, {
+      from: "`acme-prod`.`dbt_prod`.`dim_account`",
+      to: "stripe_customer",
+    });
+    expect(result.from).toMatchObject({
+      kind: "entity",
+      entity: "account",
+      matchedOn: "model",
+    });
+    expect(result.paths[0].steps[0].fanOut).toContain(
+      "One account row matches many stripe_customer rows",
+    );
+  });
+
+  it("falls back to raw tables, and works without the generated file", async () => {
+    await withGraph();
+    const raw = await run<{ level: string; paths: unknown[] }>(
+      tools.find_join_path,
+      { from: "crm_public.users", to: "crm_public.organisations", maxHops: 3 },
+    );
+    expect(raw.level).toBe("raw");
+    expect(raw.paths).toHaveLength(1);
+
+    await commit({}, [ONTOLOGY_RAW_RELATIONSHIPS_PATH]);
+    const without = await run<{
+      success: boolean;
+      level: string;
+      from: { kind: string };
+    }>(tools.find_join_path, {
+      from: "crm_public.users",
+      to: "crm_public.organisations",
+    });
+    expect(without.success).toBe(true);
+    expect(without.level).toBe("none");
+    expect(without.from.kind).toBe("unknown");
+    const entity = await run<{ level: string }>(tools.find_join_path, {
+      from: "subscription",
+      to: "account",
+    });
+    expect(entity.level).toBe("entity");
+  });
+
+  it("says when there is no path, with the nearest entities", async () => {
+    await withGraph();
+    const result = await run<{
+      success: boolean;
+      paths: unknown[];
+      message: string;
+      nearest: { from: string[]; to: string[] };
+    }>(tools.find_join_path, { from: "ad_campaign", to: "account" });
+    expect(result.success).toBe(true);
+    expect(result.paths).toEqual([]);
+    expect(result.message).toContain("No declared path connects these two");
+    expect(result.nearest.to).toContain("stripe_customer");
+  });
+
+  it("answers on a registry without relationships, absent or malformed", async () => {
+    // The first schema: entities, no relationships.
+    const first = await run<{ success: boolean; level: string }>(
+      tools.find_join_path,
+      { from: "account", to: "mrr" },
+    );
+    expect(first).toMatchObject({ success: true, level: "none" });
+
+    await commit({ [ONTOLOGY_REGISTRY_PATH]: "relationships: [unclosed\n" });
+    const malformed = await run<{
+      success: boolean;
+      paths: unknown[];
+      registry: { status: string };
+    }>(tools.find_join_path, { from: "account", to: "subscription" });
+    expect(malformed.success).toBe(true);
+    expect(malformed.paths).toEqual([]);
+    expect(malformed.registry.status).toBe("malformed");
+
+    await commit({}, [ONTOLOGY_REGISTRY_PATH]);
+    const absent = await run<{
+      success: boolean;
+      message: string;
+      registry: { status: string };
+    }>(tools.find_join_path, { from: "account", to: "subscription" });
+    expect(absent.success).toBe(true);
+    expect(absent.message).toContain("declares no entities");
+    expect(absent.registry.status).toBe("absent");
+  });
+});
+
+describe("entities in lookup_term and describe_model", () => {
+  const withGraph = () =>
+    commit({ [ONTOLOGY_REGISTRY_PATH]: ONTOLOGY_GRAPH_YAML });
+
+  it("lookup_term shows an entity's key, identities and relationships", async () => {
+    await withGraph();
+    const result = await run<{ matches: Array<Record<string, unknown>> }>(
+      tools.lookup_term,
+      { query: "account" },
+    );
+    expect(result.matches[0]).toMatchObject({
+      kind: "entity",
+      name: "account",
+      status: "governed",
+      canonical: { model: "dim_account", primaryKey: "account_key" },
+      grain: "one row per CRM organisation with at least one Stripe customer",
+      identities: [
+        { system: "crm", column: "organisation_id", resolver: "dim_account" },
+        {
+          system: "stripe",
+          column: "customer_id",
+          resolver: "int_crm__customer_account",
+        },
+        { system: "close", column: "close_lead_id" },
+      ],
+      knownVariants: [
+        {
+          model: "int_fr_renewals__identity",
+          difference: "FR only. Maps a Stripe customer to a Close lead.",
+        },
+      ],
+    });
+    const relationships = result.matches[0].relationships as Array<{
+      relationship: string;
+      with: string;
+      cardinality: string;
+    }>;
+    expect(relationships.map(r => `${r.with}:${r.cardinality}`)).toEqual([
+      "crm_user:many_to_one",
+      "organisation:one_to_one",
+      "stripe_customer:one_to_many",
+      "close_lead:many_to_one",
+      "tag:many_to_many",
+    ]);
+  });
+
+  it("lookup_term shows a draft entity's open point and composite key", async () => {
+    await withGraph();
+    const result = await run<{ matches: Array<Record<string, unknown>> }>(
+      tools.lookup_term,
+      { query: "demo" },
+    );
+    expect(result.matches[0]).toMatchObject({
+      name: "demo",
+      status: "draft",
+      canonical: {
+        model: "fct_intl_sales_demos",
+        primaryKey: ["country", "demo_key"],
+      },
+      openPoint: "The demo key is per country.",
+    });
+  });
+
+  it("describe_model shows the entity a model is canonical for, and how it joins", async () => {
+    await withGraph();
+    await seedProject();
+    const result = await run<{
+      canonicalFor: unknown[];
+      entities: Array<{
+        name: string;
+        primaryKey: string;
+        identities: unknown[];
+        relationships: Array<{ with: string }>;
+      }>;
+      identityResolverFor: unknown[];
+    }>(tools.describe_model, { name: "dim_account" });
+    expect(result.canonicalFor).toEqual([
+      { kind: "entity", name: "account", primaryKey: "account_key" },
+    ]);
+    expect(result.entities).toHaveLength(1);
+    expect(result.entities[0]).toMatchObject({
+      name: "account",
+      status: "governed",
+      primaryKey: "account_key",
+    });
+    expect(result.entities[0].identities).toHaveLength(3);
+    expect(result.entities[0].relationships.map(r => r.with)).toEqual([
+      "crm_user",
+      "organisation",
+      "stripe_customer",
+      "close_lead",
+      "tag",
+    ]);
+    expect(result.identityResolverFor).toEqual([
+      { entity: "account", system: "crm", column: "organisation_id" },
+    ]);
+  });
+
+  it("describe_model leaves the entity blocks out on the first schema", async () => {
+    await seedProject();
+    const result = await run<Record<string, unknown>>(tools.describe_model, {
+      name: "fct_account_product_month",
+    });
+    expect(result.entities).toBeUndefined();
+    expect(result.identityResolverFor).toBeUndefined();
   });
 });

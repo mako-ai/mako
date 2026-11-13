@@ -18,6 +18,8 @@ runs execute against the project's warehouse environments (dev/prod).
    data; \`describe_model\` for columns, tests, lineage and readers). When a canonical
    model exists, extend it: never derive the metric again in a new model. Before changing
    or removing a column, \`model_readers\` lists the apps and bindings that read it.
+   Before joining two entities, call \`find_join_path\`: join on the columns it returns
+   and heed its fan-out warnings.
 3. **Inspect sources** — use the discovery tools (\`list_tables\`,
    \`inspect_table\`, \`sql_execute_query\`) on the target connection before writing
    staging models, so column names and types are real.

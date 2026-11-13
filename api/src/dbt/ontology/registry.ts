@@ -12,6 +12,14 @@ import { loadYaml } from "../../utils/yaml";
 
 /** Where the registry lives in the workspace repo. */
 export const ONTOLOGY_REGISTRY_PATH = "dbt/ontology/terms.yml";
+/**
+ * A generated companion file: the foreign keys of the raw CRM tables, for
+ * joins the registry does not declare between entities yet.
+ */
+export const ONTOLOGY_RAW_RELATIONSHIPS_PATH =
+  "dbt/ontology/generated/crm_relationships.yml";
+/** The schema a bare table name in that file belongs to. */
+export const RAW_RELATIONSHIPS_SCHEMA = "crm_public";
 
 export interface RegistryForbiddenPattern {
   regex: string;
@@ -39,15 +47,79 @@ export interface RegistryTerm {
   knownVariants: RegistryKnownVariant[];
 }
 
+/** A key that identifies the same entity in another system. */
+export interface RegistryIdentity {
+  system: string;
+  column: string;
+  /** The model that holds the column; absent means the canonical model. */
+  resolver?: string;
+}
+
 export interface RegistryEntity {
   kind: "entity";
   name: string;
   label?: string;
   definition?: string;
   owner?: string;
-  canonical?: { model: string; primaryKey?: string };
+  /** `governed` or `draft`, as written. */
+  status?: string;
+  /** One column, or a list of columns for a composite key. */
+  canonical?: { model: string; primaryKey?: string | string[] };
+  grain?: string;
   sources: string[];
+  identities: RegistryIdentity[];
   synonyms: string[];
+  knownVariants: RegistryKnownVariant[];
+  /** On a draft entity: what blocks `governed`. */
+  openPoint?: string;
+}
+
+export type RelationshipCardinality =
+  "many_to_one" | "one_to_many" | "one_to_one" | "many_to_many";
+
+export const RELATIONSHIP_CARDINALITIES: readonly RelationshipCardinality[] = [
+  "many_to_one",
+  "one_to_many",
+  "one_to_one",
+  "many_to_many",
+];
+
+export interface JoinColumnPair {
+  fromColumn: string;
+  toColumn: string;
+}
+
+/** How two entities join: columns on their canonical models. */
+export interface RegistryRelationship {
+  name: string;
+  /** Entity names. `from` holds the foreign key. */
+  from: string;
+  to: string;
+  cardinality: RelationshipCardinality;
+  join: JoinColumnPair[];
+  /** `governed` or `draft`, as written. */
+  status?: string;
+  /** `declared`, `hasura_fk` or `mined`, as written. */
+  source?: string;
+  evidence?: string;
+  openPoint?: string;
+}
+
+/** A foreign key between two raw tables (the generated file). */
+export interface RawRelationship {
+  name?: string;
+  /** `schema.table`, lowercased. */
+  fromTable: string;
+  fromColumns: string[];
+  toTable: string;
+  toColumns: string[];
+  cardinality: RelationshipCardinality;
+  /** `fk` or `manual`, as written. */
+  kind?: string;
+  /** False when the warehouse does not hold both tables. */
+  inWarehouse?: boolean;
+  /** True when the referenced columns were inferred, not read from a constraint. */
+  inferred?: boolean;
 }
 
 export type RegistryEntry = RegistryTerm | RegistryEntity;
@@ -65,6 +137,10 @@ export interface OntologyRegistry {
   version?: number;
   terms: RegistryTerm[];
   entities: RegistryEntity[];
+  /** How entities join. Empty when the file declares none. */
+  relationships: RegistryRelationship[];
+  /** Raw-table foreign keys from the generated file. Empty when absent. */
+  rawRelationships: RawRelationship[];
   /** What was skipped or wrong, for the agent to relay. */
   problems: string[];
 }
@@ -73,7 +149,14 @@ export function emptyRegistry(
   status: RegistryStatus,
   problems: string[] = [],
 ): OntologyRegistry {
-  return { status, terms: [], entities: [], problems };
+  return {
+    status,
+    terms: [],
+    entities: [],
+    relationships: [],
+    rawRelationships: [],
+    problems,
+  };
 }
 
 /** One line an agent can act on when the registry is not `ok`. */
@@ -113,14 +196,23 @@ function strList(value: unknown): string[] {
   return value.map(str).filter((v): v is string => v !== undefined);
 }
 
-function parseCanonical(
-  value: unknown,
-): { model: string; column?: string; primaryKey?: string } | undefined {
+function parseCanonical(value: unknown):
+  | {
+      model: string;
+      column?: string;
+      primaryKey?: string | string[];
+    }
+  | undefined {
   if (!isRecord(value)) return undefined;
   const model = str(value.model);
   if (!model) return undefined;
   const column = str(value.column);
-  const primaryKey = str(value.primary_key);
+  // One column stays a string; a composite key stays a list.
+  const keyList = Array.isArray(value.primary_key)
+    ? strList(value.primary_key)
+    : [];
+  const primaryKey =
+    keyList.length > 1 ? keyList : (keyList[0] ?? str(value.primary_key));
   return {
     model,
     ...(column ? { column } : {}),
@@ -133,7 +225,7 @@ function parseTerm(raw: Record<string, unknown>, name: string): RegistryTerm {
   const forbidden = Array.isArray(raw.forbidden_patterns)
     ? raw.forbidden_patterns
     : [];
-  const variants = Array.isArray(raw.known_variants) ? raw.known_variants : [];
+
   return {
     kind: "term",
     name,
@@ -162,17 +254,166 @@ function parseTerm(raw: Record<string, unknown>, name: string): RegistryTerm {
         },
       ];
     }),
-    knownVariants: variants.flatMap(item => {
-      if (!isRecord(item)) return [];
-      const model = str(item.model);
-      if (!model) return [];
-      return [
-        {
-          model,
-          ...(str(item.difference) ? { difference: str(item.difference) } : {}),
-        },
-      ];
-    }),
+    knownVariants: parseKnownVariants(raw.known_variants),
+  };
+}
+
+function parseKnownVariants(value: unknown): RegistryKnownVariant[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(item => {
+    if (!isRecord(item)) return [];
+    const model = str(item.model);
+    if (!model) return [];
+    const difference = str(item.difference);
+    return [{ model, ...(difference ? { difference } : {}) }];
+  });
+}
+
+function parseIdentities(value: unknown): RegistryIdentity[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(item => {
+    if (!isRecord(item)) return [];
+    const system = str(item.system);
+    const column = str(item.column);
+    if (!system || !column) return [];
+    const resolver = str(item.resolver);
+    return [{ system, column, ...(resolver ? { resolver } : {}) }];
+  });
+}
+
+function parseCardinality(value: unknown): RelationshipCardinality | undefined {
+  const text = str(value)
+    ?.toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  return RELATIONSHIP_CARDINALITIES.find(known => known === text);
+}
+
+/**
+ * One declared relationship, or why it cannot be used. A relationship needs
+ * a name, two entities, a known cardinality and at least one column pair.
+ */
+function parseRelationship(
+  raw: Record<string, unknown>,
+  name: string,
+): RegistryRelationship | string {
+  const from = str(raw.from);
+  const to = str(raw.to);
+  if (!from || !to) return "needs `from` and `to`";
+  const cardinality = parseCardinality(raw.cardinality);
+  if (!cardinality) {
+    return `has an unknown cardinality \`${str(raw.cardinality) ?? ""}\``;
+  }
+  const join = (Array.isArray(raw.join) ? raw.join : []).flatMap(pair => {
+    if (!isRecord(pair)) return [];
+    const fromColumn = str(pair.from_column);
+    const toColumn = str(pair.to_column);
+    return fromColumn && toColumn ? [{ fromColumn, toColumn }] : [];
+  });
+  if (join.length === 0) return "has no `join` column pair";
+  return {
+    name,
+    from,
+    to,
+    cardinality,
+    join,
+    ...(str(raw.status) ? { status: str(raw.status) } : {}),
+    ...(str(raw.source) ? { source: str(raw.source) } : {}),
+    ...(str(raw.evidence) ? { evidence: str(raw.evidence) } : {}),
+    ...(str(raw.open_point) ? { openPoint: str(raw.open_point) } : {}),
+  };
+}
+
+function qualifyRawTable(table: string): string {
+  const clean = table.replace(/[`"\s]/g, "").toLowerCase();
+  return clean.includes(".") ? clean : `${RAW_RELATIONSHIPS_SCHEMA}.${clean}`;
+}
+
+/**
+ * The generated raw-relationships file: a bare list of records, or a
+ * mapping with a `relationships` list. A bare table name is a table of
+ * `crm_public`. A record without both tables, a known cardinality and
+ * matching column lists is skipped and counted.
+ */
+export function parseRawRelationships(text: string | null | undefined): {
+  relationships: RawRelationship[];
+  problems: string[];
+} {
+  if (text === null || text === undefined) {
+    return { relationships: [], problems: [] };
+  }
+  let doc: unknown;
+  try {
+    doc = loadYaml(text);
+  } catch (error) {
+    return {
+      relationships: [],
+      problems: [
+        `${ONTOLOGY_RAW_RELATIONSHIPS_PATH} could not be parsed: ${
+          error instanceof Error ? error.message.split("\n")[0] : String(error)
+        }`,
+      ],
+    };
+  }
+  const list = Array.isArray(doc)
+    ? doc
+    : isRecord(doc) && Array.isArray(doc.relationships)
+      ? doc.relationships
+      : null;
+  if (list === null) {
+    return {
+      relationships: [],
+      problems:
+        doc === null || doc === undefined
+          ? []
+          : [
+              `${ONTOLOGY_RAW_RELATIONSHIPS_PATH} must be a list, or a mapping with a \`relationships\` list; it was ignored.`,
+            ],
+    };
+  }
+  const relationships: RawRelationship[] = [];
+  let skipped = 0;
+  for (const raw of list) {
+    const fromTable = isRecord(raw) ? str(raw.from_table) : undefined;
+    const toTable = isRecord(raw) ? str(raw.to_table) : undefined;
+    const cardinality = isRecord(raw)
+      ? parseCardinality(raw.cardinality)
+      : undefined;
+    const fromColumns = isRecord(raw) ? strList(raw.from_columns) : [];
+    const toColumns = isRecord(raw) ? strList(raw.to_columns) : [];
+    if (
+      !isRecord(raw) ||
+      !fromTable ||
+      !toTable ||
+      !cardinality ||
+      fromColumns.length === 0 ||
+      fromColumns.length !== toColumns.length
+    ) {
+      skipped++;
+      continue;
+    }
+    const name = str(raw.name) ?? str(raw.hasura_name);
+    relationships.push({
+      ...(name ? { name } : {}),
+      fromTable: qualifyRawTable(fromTable),
+      fromColumns,
+      toTable: qualifyRawTable(toTable),
+      toColumns,
+      cardinality,
+      ...(str(raw.kind) ? { kind: str(raw.kind) } : {}),
+      ...(typeof raw.in_bigquery === "boolean"
+        ? { inWarehouse: raw.in_bigquery }
+        : {}),
+      ...(raw.inferred === true ? { inferred: true } : {}),
+    });
+  }
+  return {
+    relationships,
+    problems:
+      skipped > 0
+        ? [
+            `${ONTOLOGY_RAW_RELATIONSHIPS_PATH}: ${skipped} of ${list.length} records were skipped (tables, cardinality or columns missing).`,
+          ]
+        : [],
   };
 }
 
@@ -187,14 +428,19 @@ function parseEntity(
     label: str(raw.label),
     definition: str(raw.definition),
     owner: str(raw.owner),
+    status: str(raw.status),
     canonical: canonical
       ? {
           model: canonical.model,
           ...(canonical.primaryKey ? { primaryKey: canonical.primaryKey } : {}),
         }
       : undefined,
+    grain: str(raw.grain),
     sources: strList(raw.sources),
+    identities: parseIdentities(raw.identities),
     synonyms: strList(raw.synonyms),
+    knownVariants: parseKnownVariants(raw.known_variants),
+    openPoint: str(raw.open_point),
   };
 }
 
@@ -206,7 +452,20 @@ function parseEntity(
  */
 export function parseOntologyRegistry(
   text: string | null | undefined,
+  /** The generated raw-relationships file, when the repo has one. */
+  rawRelationshipsText?: string | null,
 ): OntologyRegistry {
+  const registry = parseRegistryFile(text);
+  if (registry.status !== "ok") return registry;
+  const raw = parseRawRelationships(rawRelationshipsText);
+  return {
+    ...registry,
+    rawRelationships: raw.relationships,
+    problems: [...registry.problems, ...raw.problems],
+  };
+}
+
+function parseRegistryFile(text: string | null | undefined): OntologyRegistry {
   if (text === null || text === undefined) return emptyRegistry("absent");
   let doc: unknown;
   try {
@@ -227,9 +486,10 @@ export function parseOntologyRegistry(
   const problems: string[] = [];
   const terms: RegistryTerm[] = [];
   const entities: RegistryEntity[] = [];
+  const relationships: RegistryRelationship[] = [];
   const seen = new Set<string>();
   const readList = (
-    key: "terms" | "entities",
+    key: "terms" | "entities" | "relationships",
     add: (raw: Record<string, unknown>, name: string) => void,
   ) => {
     const list = doc[key];
@@ -255,12 +515,35 @@ export function parseOntologyRegistry(
   };
   readList("terms", (raw, name) => terms.push(parseTerm(raw, name)));
   readList("entities", (raw, name) => entities.push(parseEntity(raw, name)));
+  const entityNames = new Set(
+    entities.map(entity => entity.name.toLowerCase()),
+  );
+  readList("relationships", (raw, name) => {
+    const parsed = parseRelationship(raw, name);
+    if (typeof parsed === "string") {
+      problems.push(`relationship \`${name}\` ${parsed}; it was skipped.`);
+      return;
+    }
+    const unknown = [parsed.from, parsed.to].filter(
+      entity => !entityNames.has(entity.toLowerCase()),
+    );
+    if (unknown.length > 0) {
+      problems.push(
+        `relationship \`${name}\` names an unknown entity \`${unknown[0]}\`; it was skipped.`,
+      );
+      return;
+    }
+    relationships.push(parsed);
+  });
+
   const version = typeof doc.version === "number" ? doc.version : undefined;
   return {
     status: "ok",
     ...(version !== undefined ? { version } : {}),
     terms,
     entities,
+    relationships,
+    rawRelationships: [],
     problems,
   };
 }
@@ -398,10 +681,14 @@ export interface ModelRegistryRoles {
     kind: "term" | "entity";
     name: string;
     column?: string;
-    primaryKey?: string;
+    primaryKey?: string | string[];
   }>;
-  /** Terms that list the model as a known variant of their canonical one. */
+  /**
+   * Terms and entities that list the model as a known variant of their
+   * canonical one. `kind` is absent for a term (the first registry schema).
+   */
   variantOf: Array<{
+    kind?: "entity";
     term: string;
     canonicalModel?: string;
     canonicalColumn?: string;
@@ -443,6 +730,14 @@ export function registryRolesByModel(
     }
   }
   for (const entity of registry.entities) {
+    for (const variant of entity.knownVariants) {
+      rolesOf(variant.model).variantOf.push({
+        kind: "entity",
+        term: entity.name,
+        ...(entity.canonical ? { canonicalModel: entity.canonical.model } : {}),
+        ...(variant.difference ? { difference: variant.difference } : {}),
+      });
+    }
     if (!entity.canonical) continue;
     rolesOf(entity.canonical.model).canonicalFor.push({
       kind: "entity",

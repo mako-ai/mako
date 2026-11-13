@@ -1,5 +1,6 @@
 /**
- * Reads the ontology registry (`dbt/ontology/terms.yml`) from the main
+ * Reads the ontology registry (`dbt/ontology/terms.yml`, plus the generated
+ * `dbt/ontology/generated/crm_relationships.yml` when present) from the main
  * branch of the workspace repo, through the same git layer the apps index
  * uses. Parsed once per commit of main.
  *
@@ -16,6 +17,7 @@ import {
 import { boundRepoDirIfExists } from "../../apps/workspace-repo-required";
 import { loggers } from "../../logging";
 import {
+  ONTOLOGY_RAW_RELATIONSHIPS_PATH,
   ONTOLOGY_REGISTRY_PATH,
   emptyRegistry,
   parseOntologyRegistry,
@@ -46,9 +48,18 @@ export async function loadOntologyRegistry(
     if (!sha) return emptyRegistry("absent");
     const cached = cache.get(workspaceId);
     if (cached?.sha === sha) return cached.registry;
-    const blobs = await readBlobsBatch(repoDir, sha, [ONTOLOGY_REGISTRY_PATH]);
+    // The registry and its generated companion (raw-table foreign keys),
+    // in one git process. Either may be absent.
+    const blobs = await readBlobsBatch(repoDir, sha, [
+      ONTOLOGY_REGISTRY_PATH,
+      ONTOLOGY_RAW_RELATIONSHIPS_PATH,
+    ]);
     const blob = blobs.get(ONTOLOGY_REGISTRY_PATH);
-    const registry = parseOntologyRegistry(blob ? blob.toString("utf8") : null);
+    const raw = blobs.get(ONTOLOGY_RAW_RELATIONSHIPS_PATH);
+    const registry = parseOntologyRegistry(
+      blob ? blob.toString("utf8") : null,
+      raw ? raw.toString("utf8") : null,
+    );
     cache.set(workspaceId, { sha, registry });
     return registry;
   } catch (error) {

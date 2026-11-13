@@ -165,6 +165,29 @@ export const modelReadersSchema = z.object({
   projectId: ontologyProjectIdField,
 });
 
+export const findJoinPathSchema = z.object({
+  from: z
+    .string()
+    .min(1)
+    .max(300)
+    .describe(
+      'Where the join starts: an entity name or synonym ("subscription", "customer"), a dbt model ("dim_account") or a raw table ("crm_public.users").',
+    ),
+  to: z
+    .string()
+    .min(1)
+    .max(300)
+    .describe("Where the join ends: same forms as `from`."),
+  maxHops: z
+    .number()
+    .int()
+    .positive()
+    .max(6)
+    .optional()
+    .describe("Longest path to search, in joins (default 4, at most 6)."),
+});
+
+export type FindJoinPathInput = z.infer<typeof findJoinPathSchema>;
 export type FindModelsInput = z.infer<typeof findModelsSchema>;
 export type DescribeModelInput = z.infer<typeof describeModelSchema>;
 export type LookupTermInput = z.infer<typeof lookupTermSchema>;

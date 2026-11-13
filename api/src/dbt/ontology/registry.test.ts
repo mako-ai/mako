@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   matchRegistry,
   parseOntologyRegistry,
+  parseRawRelationships,
   phraseSimilarity,
   registryRolesByModel,
   registryStatusMessage,
   scoreRegistry,
 } from "./registry";
-import { ONTOLOGY_REGISTRY_YAML } from "../test-support/ontology-fixtures";
+import {
+  ONTOLOGY_GRAPH_YAML,
+  ONTOLOGY_RAW_RELATIONSHIPS_YAML,
+  ONTOLOGY_REGISTRY_YAML,
+} from "../test-support/ontology-fixtures";
 
 describe("parseOntologyRegistry", () => {
   it("reads terms and entities in the workspace schema", () => {
@@ -48,9 +53,14 @@ describe("parseOntologyRegistry", () => {
         owner: "sales-ops",
         canonical: { model: "dim_account", primaryKey: "account_id" },
         sources: ["crm_public.organisations"],
+        identities: [],
         synonyms: ["organisation", "customer organisation"],
+        knownVariants: [],
       },
     ]);
+    // The first schema declared no relationships: none, and no problem.
+    expect(registry.relationships).toEqual([]);
+    expect(registry.rawRelationships).toEqual([]);
   });
 
   it("treats a missing file as an absent, empty registry", () => {
@@ -60,6 +70,8 @@ describe("parseOntologyRegistry", () => {
         status: "absent",
         terms: [],
         entities: [],
+        relationships: [],
+        rawRelationships: [],
         problems: [],
       });
       expect(registryStatusMessage(registry)).toContain("no ontology registry");
@@ -179,6 +191,251 @@ describe("registry lookup", () => {
         canonicalColumn: "mrr_eur",
         difference: "Contract MRR, VAT included, France only.",
       },
+    ]);
+  });
+});
+
+describe("entities and relationships", () => {
+  const registry = parseOntologyRegistry(
+    ONTOLOGY_GRAPH_YAML,
+    ONTOLOGY_RAW_RELATIONSHIPS_YAML,
+  );
+
+  it("reads the entity fields of the graph schema", () => {
+    expect(registry.status).toBe("ok");
+    expect(registry.entities).toHaveLength(10);
+    expect(registry.entities[0]).toEqual({
+      kind: "entity",
+      name: "account",
+      label: "Account",
+      definition:
+        "A CRM organisation that links to at least one Stripe customer.",
+      owner: "data",
+      status: "governed",
+      canonical: { model: "dim_account", primaryKey: "account_key" },
+      grain: "one row per CRM organisation with at least one Stripe customer",
+      sources: ["crm_public.organisations", "int_crm__customer_account"],
+      identities: [
+        { system: "crm", column: "organisation_id", resolver: "dim_account" },
+        {
+          system: "stripe",
+          column: "customer_id",
+          resolver: "int_crm__customer_account",
+        },
+        { system: "close", column: "close_lead_id" },
+      ],
+      synonyms: ["customer account", "customer", "client"],
+      knownVariants: [
+        {
+          model: "int_fr_renewals__identity",
+          difference: "FR only. Maps a Stripe customer to a Close lead.",
+        },
+      ],
+    });
+    const demo = registry.entities.find(e => e.name === "demo");
+    expect(demo?.canonical?.primaryKey).toEqual(["country", "demo_key"]);
+    expect(demo?.openPoint).toBe("The demo key is per country.");
+  });
+
+  it("reads relationships with their columns, status and source", () => {
+    expect(registry.relationships).toHaveLength(12);
+    expect(registry.relationships[0]).toEqual({
+      name: "account_is_organisation",
+      from: "account",
+      to: "organisation",
+      cardinality: "one_to_one",
+      join: [{ fromColumn: "organisation_id", toColumn: "organisation_id" }],
+      status: "governed",
+      source: "declared",
+      evidence: "0 orphans in 10,315 rows.",
+    });
+    const demo = registry.relationships.find(
+      r => r.name === "demo_belongs_to_close_lead",
+    );
+    expect(demo?.join).toEqual([
+      { fromColumn: "lead_id", toColumn: "lead_id" },
+      { fromColumn: "country", toColumn: "country" },
+    ]);
+    expect(
+      registry.relationships.find(
+        r => r.name === "crm_team_billed_to_organisation",
+      )?.openPoint,
+    ).toBe("The column is null on two-thirds of teams.");
+  });
+
+  it("lists an entity's known variants among a model's roles", () => {
+    expect(
+      registryRolesByModel(registry).get("int_fr_renewals__identity")
+        ?.variantOf,
+    ).toEqual([
+      {
+        kind: "entity",
+        term: "account",
+        canonicalModel: "dim_account",
+        difference: "FR only. Maps a Stripe customer to a Close lead.",
+      },
+    ]);
+  });
+
+  it("skips malformed relationships and says which", () => {
+    const broken = parseOntologyRegistry(`
+entities:
+  - name: a
+    canonical: {model: m_a, primary_key: id}
+  - name: b
+    canonical: {model: m_b, primary_key: id}
+relationships:
+  - name: ok
+    from: a
+    to: b
+    cardinality: Many-To-One
+    join: [{from_column: b_id, to_column: id}]
+  - from: a
+    to: b
+  - name: no_ends
+    cardinality: many_to_one
+    join: [{from_column: x, to_column: y}]
+  - name: bad_cardinality
+    from: a
+    to: b
+    cardinality: sometimes
+    join: [{from_column: x, to_column: y}]
+  - name: no_join
+    from: a
+    to: b
+    cardinality: many_to_one
+    join: [{from_column: x}]
+  - name: unknown_entity
+    from: a
+    to: zebra
+    cardinality: many_to_one
+    join: [{from_column: x, to_column: y}]
+  - name: ok
+    from: b
+    to: a
+    cardinality: one_to_one
+    join: [{from_column: id, to_column: id}]
+  - just a string
+`);
+    expect(broken.status).toBe("ok");
+    expect(broken.relationships).toEqual([
+      {
+        name: "ok",
+        from: "a",
+        to: "b",
+        cardinality: "many_to_one",
+        join: [{ fromColumn: "b_id", toColumn: "id" }],
+      },
+    ]);
+    expect(broken.problems).toEqual([
+      "relationships[1] has no `name`; it was skipped.",
+      "relationship `no_ends` needs `from` and `to`; it was skipped.",
+      "relationship `bad_cardinality` has an unknown cardinality `sometimes`; it was skipped.",
+      "relationship `no_join` has no `join` column pair; it was skipped.",
+      "relationship `unknown_entity` names an unknown entity `zebra`; it was skipped.",
+      "relationships[6] repeats `ok`; the first one wins.",
+      "relationships[7] has no `name`; it was skipped.",
+    ]);
+  });
+
+  it("ignores a `relationships` key that is not a list", () => {
+    const odd = parseOntologyRegistry("relationships: {a: b}\n");
+    expect(odd.relationships).toEqual([]);
+    expect(odd.problems).toEqual([
+      "`relationships` must be a list; it was ignored.",
+    ]);
+  });
+});
+
+describe("parseRawRelationships", () => {
+  it("reads the generated mapping: bare tables, hasura_name, one_to_many", () => {
+    const { relationships, problems } = parseRawRelationships(
+      ONTOLOGY_RAW_RELATIONSHIPS_YAML,
+    );
+    expect(relationships).toHaveLength(6);
+    expect(relationships[0]).toEqual({
+      name: "default_team",
+      fromTable: "crm_public.users",
+      fromColumns: ["default_team_id"],
+      toTable: "crm_public.teams",
+      toColumns: ["id"],
+      cardinality: "many_to_one",
+      kind: "fk",
+      inWarehouse: true,
+    });
+    expect(relationships[1].cardinality).toBe("one_to_many");
+    expect(relationships[4]).toMatchObject({
+      name: "activities_participants",
+      kind: "manual",
+      inWarehouse: false,
+      inferred: true,
+    });
+    expect(relationships[5]).toMatchObject({
+      fromColumns: ["tenant_id", "property_id"],
+      toColumns: ["tenant_id", "id"],
+    });
+    // 2 from-columns against 1 to-column: not a usable key.
+    expect(problems).toEqual([
+      "dbt/ontology/generated/crm_relationships.yml: 1 of 7 records were skipped (tables, cardinality or columns missing).",
+    ]);
+  });
+
+  it("reads a bare list, `name`, and qualified tables", () => {
+    const { relationships, problems } = parseRawRelationships(`
+- from_table: stripe.Invoices
+  from_columns: customer
+  to_table: "stripe.customers"
+  to_columns: [id]
+  cardinality: many_to_one
+  name: customer
+  kind: fk
+`);
+    expect(problems).toEqual([]);
+    expect(relationships).toEqual([
+      {
+        name: "customer",
+        fromTable: "stripe.invoices",
+        fromColumns: ["customer"],
+        toTable: "stripe.customers",
+        toColumns: ["id"],
+        cardinality: "many_to_one",
+        kind: "fk",
+      },
+    ]);
+  });
+
+  it("is empty for an absent, empty, malformed or misshapen file", () => {
+    expect(parseRawRelationships(null)).toEqual({
+      relationships: [],
+      problems: [],
+    });
+    expect(parseRawRelationships("# nothing\n")).toEqual({
+      relationships: [],
+      problems: [],
+    });
+    expect(parseRawRelationships("relationships: [")).toMatchObject({
+      relationships: [],
+      problems: [expect.stringContaining("could not be parsed")],
+    });
+    expect(parseRawRelationships("counts: {tables: 1}\n")).toMatchObject({
+      relationships: [],
+      problems: [expect.stringContaining("must be a list")],
+    });
+    expect(
+      parseRawRelationships("- 1\n- {from_table: a}\n").relationships,
+    ).toEqual([]);
+  });
+
+  it("keeps the registry when the generated file is broken", () => {
+    const registry = parseOntologyRegistry(
+      ONTOLOGY_GRAPH_YAML,
+      "relationships: [",
+    );
+    expect(registry.status).toBe("ok");
+    expect(registry.relationships).toHaveLength(12);
+    expect(registry.rawRelationships).toEqual([]);
+    expect(registry.problems).toEqual([
+      expect.stringContaining("could not be parsed"),
     ]);
   });
 });

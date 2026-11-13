@@ -599,6 +599,17 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "search",
   },
+  find_join_path: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const { from, to } = (input ?? {}) as Record<string, unknown>;
+      return from && to
+        ? `Finding the join from ${from} to ${to}`
+        : "Finding a join path";
+    },
+    icon: "link",
+  },
   // dbt file mutation tools execute SERVER-SIDE (issue #475 pattern; see
   // createDbtServerTools in api/src/agent-lib/tools/dbt-tools.ts). Open editor
   // tabs follow along via the realtime channel (dbt.file.updated).
