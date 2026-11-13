@@ -2,9 +2,14 @@ name: Claude Code
 
 # Three jobs:
 #   claude       answers @claude mentions in issues, PR comments and reviews.
-#   auto-review  first pass: reviews a non-draft pull request when it opens,
-#                with Anthropic's official code-review plugin, and posts the
-#                findings on the PR.
+#   auto-review  first pass, when a non-draft pull request opens. Two steps:
+#                1. Anthropic's official code-review plugin: compile and logic
+#                   errors, CLAUDE.md violations. High bar, little noise.
+#                2. A deep review, only on large or risky changes: races,
+#                   idempotency, tenant scoping, SQL built from input, silent
+#                   failure. The plugin's bar drops these: on a 13,449-line
+#                   pull request it posted "No issues found" while two other
+#                   reviews found 15 defects.
 #   re-review    second pass: on every later push, reviews only the new
 #                commits and posts only findings that are new.
 #
@@ -92,7 +97,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 1
+          fetch-depth: 0
       - name: Note the start time
         id: start
         run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
@@ -173,6 +178,191 @@ jobs:
               echo "[Run log]($RUN_URL). Ask for a review with an \`@claude review this pull request\` comment."
             } > "$RUNNER_TEMP/silent.md"
             gh pr comment "$PR_NUMBER" -R "$REPO" --body-file "$RUNNER_TEMP/silent.md"
+          fi
+      # ----- Deep review: large or risky changes only -----
+      - name: Decide whether the change needs the deep review
+        id: risk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
+            -q '.[] | [.filename, (.additions + .deletions)] | @tsv' > "$RUNNER_TEMP/files.tsv"
+          # Generated files and lockfiles do not count toward size.
+          lines=$(grep -v -E '(^|/)(pnpm-lock\.yaml|package-lock\.json|schema\.d\.ts|mako-api\.json)$' "$RUNNER_TEMP/files.tsv" \
+            | awk -F'\t' '{s+=$2} END {print s+0}')
+          # Code where a defect costs data, money or access.
+          risky=$(cut -f1 "$RUNNER_TEMP/files.tsv" | grep -v -E '\.test\.tsx?$' | grep -c -E \
+            '^api/src/(auth|access|billing|inngest|database|databases|migrations|sync|sync-cdc|dbt|mcp|middleware|routes|connections|connectors|workflows)/|^api/src/services/|^deploy/|^cloudflare/|^Dockerfile|^\.github/workflows/' \
+            || true)
+          if [ "$lines" -ge 400 ] || [ "${risky:-0}" -ge 1 ]; then deep=true; else deep=false; fi
+          echo "lines=$lines" >> "$GITHUB_OUTPUT"
+          echo "risky=${risky:-0}" >> "$GITHUB_OUTPUT"
+          echo "deep=$deep" >> "$GITHUB_OUTPUT"
+          echo "Deep review: $deep ($lines changed lines, ${risky:-0} risky files)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Collect existing review threads
+        if: steps.risk.outputs.deep == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api graphql --paginate \
+            -f owner="$OWNER" -f name="$NAME" -F number="$PR_NUMBER" \
+            -f query='
+              query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+                repository(owner: $owner, name: $name) {
+                  pullRequest(number: $number) {
+                    reviewThreads(first: 100, after: $endCursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        isResolved
+                        isOutdated
+                        path
+                        line
+                        comments(first: 20) { nodes { author { login } body } }
+                      }
+                    }
+                  }
+                }
+              }' \
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+                  | {resolved: .isResolved, outdated: .isOutdated, path, line,
+                     comments: [.comments.nodes[] | {author: .author.login, body}]}' \
+            > .claude-review-threads.jsonl
+      - uses: anthropics/claude-code-action@v1
+        id: deep
+        if: steps.risk.outputs.deep == 'true'
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          settings: '{"env": {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}}'
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            BASE: origin/${{ github.event.pull_request.base.ref }}
+
+            Do a deep review of this pull request. The branch is checked out
+            in the current directory with full history: `git diff BASE...HEAD`
+            is the change, `git diff --stat BASE...HEAD` its shape. CLAUDE.md
+            and `.cursor/rules/*.mdc` hold the house rules. A first reviewer
+            already checked compile errors, plain logic slips and CLAUDE.md
+            wording. Your job is what that pass misses: defects that need
+            reasoning across files, time or tenants.
+
+            How to work:
+            1. Read the pull request body (`gh pr view`) and the diff stat.
+               Group the changed production files by area. Skip generated
+               files, lockfiles, docs and tests as review targets, but read
+               tests to learn intended behaviour.
+            2. Start one reviewer subagent per area, in one message so they
+               run in parallel, and wait for all of them. Give each its file
+               list and the checklist below. A reviewer must read each
+               changed file in full and the callers and callees it needs. A
+               diff hunk alone is not enough.
+            3. Verify every candidate yourself against the code before you
+               keep it. Write the concrete failure: which inputs or which
+               order of events lead to which wrong result. Drop anything you
+               cannot make concrete, anything a linter or the type checker
+               reports, and style.
+
+            Checklist, in order of cost when wrong:
+            - Tenant and access scoping: every database filter, route and
+              tool must carry the workspace or owner it is allowed to see.
+              New tools and routes need the right role and auth middleware.
+            - Concurrency and ordering: two runs, events or requests that
+              interleave; assumptions of FIFO order; check-then-write without
+              a guard; shared directories, locks or caches; retries that
+              repeat a side effect.
+            - Idempotency and exactly-once effects: Inngest steps and events,
+              webhooks, notifications, billing, sync writes. What happens on
+              a retry, a duplicate event, a crash between two writes?
+              Uniqueness claimed without a unique index.
+            - Silent failure: errors caught and dropped, a fallback that
+              hides a wrong answer, a default that turns "unknown" into an
+              authoritative "none" (an empty result from a guessed region or
+              a truncated list reported as complete).
+            - SQL and commands built from input: injection, identifier
+              quoting, limits applied before totals, ordering that contradicts
+              the documented contract, missing cancellation (AbortSignal) on
+              warehouse queries.
+            - Input validation at the edge: schemas that strip unknown keys so
+              a mistyped option is ignored and the call "succeeds".
+            - Data model and migrations: optional fields read as required,
+              backfill and deploy-window behaviour, old events or documents
+              that lack new fields, index needs.
+            - Secrets and privacy: credentials or personal data in logs,
+              error messages, notifications or public files.
+            - Contract drift: tool descriptions, docs and OpenAPI that promise
+              something the code does not do.
+
+            Never repeat a finding. `.claude-review-threads.jsonl` lists every
+            existing review thread on this pull request (one JSON object per
+            line). Skip anything a thread already covers.
+
+            Output:
+            - Post each verified defect as one inline comment on the line that
+              causes it, with `mcp__github_inline_comment__create_inline_comment`
+              and `confirmed: true`: a bold one-line title, the failure
+              scenario, and the fix in one or two sentences. Add a suggestion
+              block only when the fix is small and complete.
+            - End with your final message, which is posted on the pull request
+              as the review summary: one table with severity (high, medium,
+              low), file and line, and the finding in one sentence, most
+              severe first; then one short list "Checked and found sound"
+              naming the areas you verified; then one line with what you did
+              not review. If you found nothing, say so in one sentence and
+              still give the two lists. Write plainly: one idea per sentence.
+          claude_args: |
+            --max-turns 80
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git blame:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*)"
+      # The action keeps the deep review's final message in its run log: post
+      # it on the pull request as one summary comment, updated in place.
+      - name: Post the deep review summary
+        if: always() && steps.risk.outputs.deep == 'true' && steps.deep.conclusion != 'skipped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EXEC_FILE: ${{ steps.deep.outputs.execution_file }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          MARKER='<!-- deep-review-summary -->'
+          final=''
+          if [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]; then
+            final=$(jq -rs '
+              (flatten) as $m
+              | ( [ $m[] | select(.type=="result") | .result ] | last )
+                // ( [ $m[] | select(.type=="assistant")
+                      | .message.content[]? | select(.type=="text") | .text ] | last )
+                // ""
+            ' "$EXEC_FILE" 2>/dev/null || true)
+          fi
+          if [ -z "$final" ]; then
+            final='The deep review left no final message. This is not a pass: read the run log.'
+          fi
+          {
+            printf '%s\n' "$MARKER"
+            echo "## Deep review of \`${HEAD_SHA:0:8}\`"
+            echo
+            printf '%s\n' "$final" | head -c 30000
+            echo
+            echo
+            echo "[Run log]($RUN_URL)"
+          } > "$RUNNER_TEMP/deep.md"
+          cat "$RUNNER_TEMP/deep.md" >> "$GITHUB_STEP_SUMMARY"
+          jq -Rs '{body: .}' "$RUNNER_TEMP/deep.md" > "$RUNNER_TEMP/deep.json"
+          cid=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+            -q '.[] | select((.body // "") | startswith("'"$MARKER"'")) | .id' | head -1)
+          if [ -n "$cid" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$cid" --input "$RUNNER_TEMP/deep.json" --silent
+          else
+            gh api "repos/$REPO/issues/$PR_NUMBER/comments" --input "$RUNNER_TEMP/deep.json" --silent
           fi
 
   re-review:
