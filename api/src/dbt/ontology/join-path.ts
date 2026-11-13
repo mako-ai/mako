@@ -605,6 +605,12 @@ function search(
   return { paths: paths.slice(0, MAX_PATHS), total, beyond: null };
 }
 
+function beyondMessage(maxHops: number, hops: number): string {
+  return hops <= MAX_MAX_HOPS
+    ? `No declared path within ${maxHops} hops. A path of ${hops} hops exists: pass maxHops: ${hops}.`
+    : `No declared path within ${maxHops} hops. The shortest one has ${hops} hops, past the limit of ${MAX_MAX_HOPS}: a join that long is not one to write. Declare a direct relationship in the registry.`;
+}
+
 /** The raw tables an entity is built from, among those the file knows. */
 function rawTablesOf(entity: RegistryEntity, tables: Set<string>): string[] {
   const candidates = [
@@ -700,7 +706,14 @@ export function findJoinPath(
           : {}),
       };
     }
-    beyond = found.beyond;
+    // A declared entity path that is only too long is the answer: a
+    // shorter raw-table path must not stand in for it.
+    if (found.beyond !== null) {
+      return none(beyondMessage(maxHops, found.beyond), {
+        from: neighbours(fromEnd.entity.name.toLowerCase(), eEdges),
+        to: neighbours(toEnd.entity.name.toLowerCase(), eEdges),
+      });
+    }
   }
 
   // Raw tables: an end given as a table, or entities nothing declares a
@@ -752,7 +765,7 @@ export function findJoinPath(
         : [];
   return none(
     beyond !== null
-      ? `No declared path within ${maxHops} hops. A path of ${beyond} hops exists: pass maxHops: ${beyond}.`
+      ? beyondMessage(maxHops, beyond)
       : "No declared path connects these two. `nearest` lists what each one joins to directly. Declare the relationship in the registry before writing the join.",
     { from: nearestOf(fromEnd), to: nearestOf(toEnd) },
   );

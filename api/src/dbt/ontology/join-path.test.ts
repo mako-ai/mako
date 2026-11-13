@@ -455,6 +455,50 @@ describe("findJoinPath: raw tables", () => {
     expect(result.message).toContain("No entity relationship is declared");
   });
 
+  it("never hides an entity path that is only too long behind a raw one", () => {
+    // crm_user - crm_team: 1 raw foreign key. As entities, with the direct
+    // relationship gone, the declared path is 3 hops (via account, organisation).
+    const long = parseOntologyRegistry(
+      ONTOLOGY_GRAPH_YAML.replace(
+        / {2}- name: crm_user_has_primary_crm_team[\s\S]*?source: hasura_fk\n/,
+        "",
+      ),
+      ONTOLOGY_RAW_RELATIONSHIPS_YAML,
+    );
+    const capped = findJoinPath(long, "crm_user", "crm_team", { maxHops: 2 });
+    expect(capped.level).toBe("none");
+    expect(capped.paths).toEqual([]);
+    expect(capped.message).toBe(
+      "No declared path within 2 hops. A path of 3 hops exists: pass maxHops: 3.",
+    );
+    expect(capped.nearest?.from).toEqual(["account"]);
+    const full = findJoinPath(long, "crm_user", "crm_team", { maxHops: 3 });
+    expect(full.level).toBe("entity");
+    expect(full.paths[0].hops).toBe(3);
+  });
+
+  it("does not suggest a maxHops past the limit", () => {
+    const names = ["n0", "n1", "n2", "n3", "n4", "n5", "n6", "n7"];
+    const chain = parseOntologyRegistry(`
+entities:
+${names.map(n => `  - {name: ${n}, canonical: {model: m_${n}, primary_key: id}}`).join("\n")}
+relationships:
+${names
+  .slice(1)
+  .map(
+    (n, i) =>
+      `  - {name: ${names[i]}_${n}, from: ${names[i]}, to: ${n}, cardinality: many_to_one, status: governed, join: [{from_column: next_id, to_column: id}]}`,
+  )
+  .join("\n")}
+`);
+    expect(findJoinPath(chain, "n0", "n6", { maxHops: 6 }).paths[0].hops).toBe(
+      6,
+    );
+    const tooFar = findJoinPath(chain, "n0", "n7", { maxHops: 6 });
+    expect(tooFar.paths).toEqual([]);
+    expect(tooFar.message).toContain("7 hops, past the limit of 6");
+  });
+
   it("says when no foreign key connects two raw tables", () => {
     const result = findJoinPath(
       registry,
