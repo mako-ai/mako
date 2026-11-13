@@ -6,8 +6,8 @@
  * Which manifest: the project's last successful PRODUCTION manifest
  * (`lastProdManifestKey`, what `--defer` resolves against). A project that
  * has never built prod falls back to its latest run with a manifest, and the
- * result says so. Column types come from a catalog.json when a run stored
- * one (`dbt docs generate`).
+ * result says so. Column types come from the catalog.json of that same run,
+ * when it stored one (`dbt docs generate`).
  *
  * A manifest is parsed once per version: the cache holds one index per
  * project, keyed by the artifact keys it was built from, so a new prod build
@@ -79,11 +79,14 @@ async function buildIndex(
 
 /**
  * The manifest (and catalog, when there is one) to describe a project by.
- * The catalog of the run that wrote the manifest wins; otherwise the
- * project's newest one.
+ * Only the catalog of the run that wrote the manifest is used: another
+ * run's (a dev build, a working tree) could list columns prod does not
+ * have. Every lookup names the workspace, so it walks the
+ * `{workspaceId, projectId, createdAt}` index.
  */
 async function artifactKeysFor(project: {
   _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
   lastProdManifestKey?: string;
 }): Promise<{
   manifestKey: string;
@@ -95,14 +98,17 @@ async function artifactKeysFor(project: {
   let catalogKey: string | null;
   if (manifestKey) {
     const owner = await DbtRun.findOne({
+      workspaceId: project.workspaceId,
       projectId: project._id,
       "artifactKeys.manifest": manifestKey,
     })
       .select("artifactKeys")
+      .sort({ createdAt: -1 })
       .lean();
     catalogKey = owner?.artifactKeys?.catalog ?? null;
   } else {
     const latest = await DbtRun.findOne({
+      workspaceId: project.workspaceId,
       projectId: project._id,
       "artifactKeys.manifest": { $exists: true, $ne: null },
     })
@@ -113,16 +119,6 @@ async function artifactKeysFor(project: {
     if (!manifestKey) return null;
     source = "latest-run";
     catalogKey = latest?.artifactKeys?.catalog ?? null;
-  }
-  if (!catalogKey) {
-    const withCatalog = await DbtRun.findOne({
-      projectId: project._id,
-      "artifactKeys.catalog": { $exists: true, $ne: null },
-    })
-      .select("artifactKeys")
-      .sort({ createdAt: -1 })
-      .lean();
-    catalogKey = withCatalog?.artifactKeys?.catalog ?? null;
   }
   return { manifestKey, catalogKey, source };
 }
@@ -146,7 +142,7 @@ export async function loadManifestIndexes(
       ? { _id: new Types.ObjectId(options.projectId) }
       : {}),
   })
-    .select("_id name lastProdManifestKey")
+    .select("_id workspaceId name lastProdManifestKey")
     .sort({ updatedAt: -1 })
     .lean();
 

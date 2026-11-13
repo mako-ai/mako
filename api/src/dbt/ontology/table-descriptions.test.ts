@@ -16,9 +16,9 @@ describe("nodeForRelation", () => {
     expect(
       nodeForRelation([index], ["acme-prod", "dbt_prod", "dim_account"])?.name,
     ).toBe("dim_account");
-    // The connection's project differs from the one dbt recorded.
     expect(
-      nodeForRelation([index], ["other", "crm_public", "organisations"])?.name,
+      nodeForRelation([index], ["acme-prod", "crm_public", "organisations"])
+        ?.name,
     ).toBe("crm.organisations");
     expect(nodeForRelation([index], ["dbt_prod", "DIM_ACCOUNT"])?.name).toBe(
       "dim_account",
@@ -28,6 +28,10 @@ describe("nodeForRelation", () => {
   it("maps nothing for another schema, a bare table or no manifest", () => {
     expect(
       nodeForRelation([index], ["acme-prod", "dbt_dev", "dim_account"]),
+    ).toBeUndefined();
+    // The same schema and table on another database is another table.
+    expect(
+      nodeForRelation([index], ["appdb", "crm_public", "organisations"]),
     ).toBeUndefined();
     expect(nodeForRelation([index], ["dim_account"])).toBeUndefined();
     expect(nodeForRelation([], ["a", "b", "c"])).toBeUndefined();

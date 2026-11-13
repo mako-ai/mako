@@ -114,13 +114,40 @@ export function readersOfNode(
   return readersWhere(apps, reference => referenceReadsNode(reference, node));
 }
 
-/** The apps (and binding files) that read a table no dbt node describes. */
+/**
+ * Does a reference name this model through the templated dbt schema?
+ * `{{ dbt_schema }}.fct_orders` reads the model `fct_orders` whether or not
+ * a manifest knows it yet.
+ */
+export function referenceReadsModelName(
+  reference: string,
+  name: string,
+): boolean {
+  const parts = normalizeRelation(reference).split(".");
+  const model = normalizeRelation(name).split(".").pop();
+  return (
+    !!model &&
+    parts.length >= 2 &&
+    parts.includes(DBT_SCHEMA) &&
+    parts[parts.length - 1] === model
+  );
+}
+
+/**
+ * The apps (and binding files) that read a name no dbt node resolves: a raw
+ * table, or a model the stored manifest does not hold (newer than the last
+ * build, or the manifest could not be read). Templated references count by
+ * model name, so such a model is never reported as unread.
+ */
 export function readersOfRelation(
   apps: readonly AppBindingReads[],
   relation: string,
 ): ModelReader[] {
-  return readersWhere(apps, reference =>
-    referenceReadsRelation(reference, relation),
+  return readersWhere(
+    apps,
+    reference =>
+      referenceReadsRelation(reference, relation) ||
+      referenceReadsModelName(reference, relation),
   );
 }
 

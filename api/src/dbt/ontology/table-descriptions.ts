@@ -34,8 +34,9 @@ export interface TableDescriptions {
  * The dbt node whose warehouse relation is this table. `parts` is the
  * table's address, outermost first (`[project, dataset, table]`,
  * `[database, schema, table]`, `[database, table]`). The whole address is
- * tried first, then `schema.table`; a single part, or an address two nodes
- * share, matches nothing.
+ * tried first. `schema.table` is tried only when the address or the dbt
+ * relation has two parts. A single part, or an address two nodes share,
+ * matches nothing.
  */
 export function nodeForRelation(
   indexes: readonly ManifestIndex[],
@@ -48,12 +49,16 @@ export function nodeForRelation(
   const exact = nodes.filter(node => node.relationKey === full);
   if (exact.length === 1) return exact[0];
   if (exact.length > 1) return undefined;
+  // `schema.table` alone is accepted only when one side has no outer part
+  // to compare. `appdb.public.users` is not `analytics.public.users`: the
+  // same schema and table on another database is another table.
   const tail = clean.slice(-2).join(".");
-  const bySuffix = nodes.filter(
-    node =>
-      node.relationKey !== undefined &&
-      (node.relationKey === tail || node.relationKey.endsWith(`.${tail}`)),
-  );
+  const bySuffix = nodes.filter(node => {
+    if (node.relationKey === undefined) return false;
+    const depth = node.relationKey.split(".").length;
+    if (depth >= 3 && clean.length >= 3) return false;
+    return node.relationKey === tail || node.relationKey.endsWith(`.${tail}`);
+  });
   return bySuffix.length === 1 ? bySuffix[0] : undefined;
 }
 

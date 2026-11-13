@@ -377,7 +377,13 @@ describe("find_models", () => {
     );
     expect(after.results).toEqual([]);
     await run(tools.find_models, { query: "account" });
-    expect(reads.count).toBe(4);
+    // The new run stored no catalog, and another run's is never borrowed.
+    expect(reads.count).toBe(3);
+    const described = await run<{ columnTypesFrom: string }>(
+      tools.describe_model,
+      { name: "fct_account_product_month" },
+    );
+    expect(described.columnTypesFrom).toBe("manifest");
   });
 });
 
@@ -830,6 +836,20 @@ describe("model_readers", () => {
     }
   });
 
+  it("still finds templated readers when no manifest holds the model", async () => {
+    // No dbt project at all: the manifest cannot say what `dim_account` is.
+    const result = await run<{
+      apps: number;
+      readers: Array<{ path: string }>;
+      note: string;
+    }>(tools.model_readers, { name: "dim_account" });
+    expect(result.readers.map(r => r.path)).toEqual([
+      "apps/finance/mrr",
+      "users/ana/apps/scratch",
+    ]);
+    expect(result.note).toContain("no dbt manifest could be read");
+  });
+
   it("reports no readers for a model nothing reads, and for a bare unknown name", async () => {
     await seedProject();
     const seed = await run<Record<string, unknown>>(tools.model_readers, {
@@ -841,6 +861,7 @@ describe("model_readers", () => {
     });
     expect(bare).toMatchObject({ success: true, apps: 0, readers: [] });
     expect(bare.note).toContain('pass "dataset.table"');
+    expect(bare.note).toContain("None found");
   });
 
   it("follows main: a new binding is a new reader", async () => {

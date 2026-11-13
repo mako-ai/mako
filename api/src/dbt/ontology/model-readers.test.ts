@@ -154,6 +154,19 @@ describe("readers", () => {
     ]);
   });
 
+  it("finds templated readers of a model no manifest holds", () => {
+    // No node to resolve: the name alone still matches `{{ dbt_schema }}`.
+    expect(
+      readersOfRelation(APPS, "fct_account_product_month").map(r => r.bindings),
+    ).toEqual([["apps/finance/mrr/bindings/mrr.sql"]]);
+    // The templated read, and the scratch app's bare `dim_account`.
+    expect(readersOfRelation(APPS, "dim_account").map(r => r.path)).toEqual([
+      "apps/finance/mrr",
+      "users/ana/apps/scratch",
+    ]);
+    expect(readersOfRelation(APPS, "fct_nope")).toEqual([]);
+  });
+
   it("counts reading apps per node in one pass, agreeing with the lists", () => {
     const counts = readerCountsByNode(index, APPS);
     for (const n of index.nodes) {

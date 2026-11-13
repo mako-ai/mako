@@ -1083,6 +1083,28 @@ describe("identity across laptop moves", () => {
   });
 });
 
+describe("schema bump during a rolling deploy", () => {
+  it("rebuilds at the indexed commit, not backwards, when this clone is behind", async () => {
+    const before = (await resolveCommit(repoDirFor(WS), MAIN))!;
+    await externalCommit({ "apps/new/mako.json": manifest("New") });
+    const fresh = await loadAppsIndex(WS);
+    // An older revision wrote the head: its schema version is not ours.
+    await AppIndexHead.updateOne(
+      { workspaceId: WS },
+      { $set: { schemaVersion: 3 } },
+    );
+    // This instance's clone is still on the older commit.
+    await runGit(["-C", repoDirFor(WS), "update-ref", MAIN, before]);
+    invalidateAppsIndexCache(WS);
+    const rebuilt = await loadAppsIndex(WS);
+    expect(rebuilt.sha).toBe(fresh.sha);
+    expect(rebuilt.apps.some(a => a.path === "apps/new")).toBe(true);
+    const head = await AppIndexHead.findOne({ workspaceId: WS });
+    expect(head?.sha).toBe(fresh.sha);
+    expect(head?.schemaVersion).not.toBe(3);
+  });
+});
+
 describe("identity across laptop moves, second round", () => {
   it("follows an unstamped legacy app that was moved AND edited in one push (git rename detection)", async () => {
     const aId = derivedAppId(WS, "a").toHexString();

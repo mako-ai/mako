@@ -649,15 +649,29 @@ export const createDbtOntologyTools = (
             };
           };
           if (found.length === 0) {
+            const readers = readersOfRelation(apps, name);
             const bare = !name.includes(".");
             return {
               success: true as const,
               name,
               resolvedAs: { kind: "table" as const, relation: name },
-              ...summarize(readersOfRelation(apps, name)),
-              note: bare
-                ? `"${name}" is not a dbt node in the last build, and a bare table name cannot be matched to bindings: pass "dataset.table".`
-                : `"${name}" is not a dbt node in the last build: matched as a raw table.`,
+              ...summarize(readers),
+              // Not "nothing reads it": the stored build does not hold the
+              // name, so only what the bindings themselves say is known.
+              note:
+                `"${name}" is not a dbt node in the last stored build${
+                  projects.length === 0
+                    ? " (no dbt manifest could be read)"
+                    : ""
+                }. Readers are bindings that name it as \`{{ dbt_schema }}.${
+                  name.split(".").pop() ?? name
+                }\`` +
+                (bare
+                  ? '. For a raw table pass "dataset.table".'
+                  : " or as this table.") +
+                (readers.length === 0
+                  ? " None found: for a model newer than the last build, readers that name its full relation are missed."
+                  : ""),
             };
           }
           const nodes = capList(found, 5);

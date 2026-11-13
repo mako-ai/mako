@@ -680,7 +680,9 @@ async function inspectTableInner(
     // Get columns
     const safeProject = escapeBigQueryIdentifier(projectId);
     const safeDataset = escapeBigQueryIdentifier(dataset);
-    const safeTableForQuery = table.replace(/'/g, "\\'");
+    // Backslashes first: `x\'` must not turn into an escaped backslash
+    // followed by a quote that closes the literal.
+    const safeTableForQuery = table.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     relationParts = [projectId, dataset, table];
     // One metadata query: the table's `description` option (the row with
     // an empty column name) and each top-level column's description.

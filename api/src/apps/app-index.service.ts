@@ -785,7 +785,7 @@ async function syncNow(
 ): Promise<AppsIndexSnapshot | null> {
   const repoDir = await boundRepoDirIfExists(workspaceId);
   if (repoDir == null) return null;
-  const sha = await resolveCommit(repoDir, MAIN);
+  let sha = await resolveCommit(repoDir, MAIN);
   if (!sha) return null;
   const ws = new Types.ObjectId(workspaceId);
   const head = await AppIndexHead.findOne({ workspaceId: ws }).lean();
@@ -828,6 +828,27 @@ async function syncNow(
         apps: rows.map(rowToIndex),
         folders: head.folders,
       };
+    }
+  }
+
+  // A schema bump rebuilds the rows, and must not rebuild them BACKWARDS
+  // either: while old and new revisions run side by side, an instance on
+  // the new schema whose clone is behind the indexed commit rebuilds AT the
+  // indexed commit, not at its own stale main.
+  if (
+    head &&
+    head.schemaVersion !== INDEX_SCHEMA_VERSION &&
+    !options.force &&
+    head.sha !== sha
+  ) {
+    let headKnown = await commitExists(repoDir, head.sha);
+    if (!headKnown) {
+      await freshenForServe(workspaceId, 0).catch(() => undefined);
+      headKnown = await commitExists(repoDir, head.sha);
+      sha = (await resolveCommit(repoDir, MAIN)) ?? sha;
+    }
+    if (headKnown && (await isAncestor(repoDir, sha, head.sha))) {
+      sha = head.sha;
     }
   }
 

@@ -158,6 +158,13 @@ describe("inspect_table descriptions", () => {
     expect(sql).toContain("field_path = column_name");
   });
 
+  it("escapes a backslash before a quote in the table name", async () => {
+    await inspect("legacy", "x\\' OR 1=1 --");
+    const sql = queries.find(q => q.includes("COLUMN_FIELD_PATHS")) ?? "";
+    // `x\'` in: backslash doubled, quote escaped, the literal stays closed.
+    expect(sql).toContain("table_name = 'x\\\\\\' OR 1=1 --'");
+  });
+
   it("keeps the previous response shape when nothing describes the table", async () => {
     const result = await inspect("legacy", "accounts");
     expect(Object.keys(result).sort()).toEqual([
