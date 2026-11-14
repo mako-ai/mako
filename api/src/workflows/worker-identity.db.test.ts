@@ -1,9 +1,10 @@
 /**
  * A deployed workflow writes as itself, end to end: the runtime's own
- * `lib/mako.ts` (deploy/workflows/runtime/defaults), run inside the
- * AsyncLocalStorage worker.mjs sets, calls Mako's runtime query route over
- * real HTTP with the worker's key (and a person's key calls the MCP endpoint); Mako sees `workflow:<name>` and its writers list
- * decides. In-memory Mongo; only the BigQuery driver is stubbed, so a write
+ * `lib/mako.ts` (deploy/workflows/runtime/defaults), run as step.mjs runs it
+ * (the workflow and run it names, a pass for that step instead of the
+ * worker key: pass-fetch.test-helper.ts), calls Mako's runtime query route
+ * over real HTTP (and a person's key calls the MCP endpoint); Mako sees
+ * `workflow:<name>` and its writers list decides. In-memory Mongo; only the BigQuery driver is stubbed, so a write
  * that passes the check "succeeds" without a warehouse.
  *
  * Needs the runtime's packages: npm install --prefix deploy/workflows/runtime
@@ -32,9 +33,23 @@ import { loggingMiddleware } from "../logging";
 import { mcpProtocolRoutes } from "../routes/mcp-server.routes";
 import { workflowRuntimeRoutes } from "../routes/workflows";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { encryptString } from "../services/crypto.service";
+import { installPassFetch } from "./pass-fetch.test-helper";
+import { setFirstReadRetryForTests } from "./runs";
 
 const WORKER_KEY = "revops_worker_identity_key_tests_only";
 const PERSON_KEY = "revops_person_query_write_key_tests";
+const TENANT = "11111111-1111-1111-1111-111111111111";
+const HATCHET_TOKEN = `x.${Buffer.from(
+  JSON.stringify({ sub: TENANT, server_url: "https://hatchet.example" }),
+).toString("base64url")}.y`;
+/** An executing run of each workflow, as Hatchet answers it. */
+const RUNS: Record<string, string> = {
+  "0f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f": "crm-chat-classifier",
+  "1f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f": "other-flow",
+};
+const runOf = (workflow: string) =>
+  Object.keys(RUNS).find(id => RUNS[id] === workflow);
 const MERGE =
   "MERGE INTO `realadvisor-prod.crm_ai_chat.chat_labels` T USING (SELECT 1 AS id) S ON T.id = S.id WHEN NOT MATCHED THEN INSERT (id) VALUES (S.id)";
 
@@ -64,6 +79,28 @@ async function main() {
   const server = serve({ fetch: app.fetch, port: 0 });
   await new Promise(resolve => server.once("listening", resolve));
   const { port } = server.address() as AddressInfo;
+  setFirstReadRetryForTests([0, 0, 0]);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    const href =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    if (!href.startsWith("https://hatchet.example/")) {
+      return realFetch(input, init);
+    }
+    const id = href.match(/workflow-runs\/([0-9a-f-]{36})/)?.[1] ?? "";
+    if (!RUNS[id]) return Response.json({}, { status: 404 });
+    return Response.json({
+      run: { metadata: { id }, status: "RUNNING", additionalMetadata: {} },
+      tasks: [{ actionId: `${RUNS[id]}:step`, status: "RUNNING" }],
+    });
+  }) as typeof fetch;
   try {
     const ws = new Types.ObjectId();
     await User.create({ _id: "deployer", email: "deployer@example.com" });
@@ -98,8 +135,8 @@ async function main() {
         // A person's key that may write: it cannot name a workflow.
         key("Mine", PERSON_KEY, ["mcp", "query:write"]),
       ],
-      // The worker is believed only for workflows deployed from main.
       workflows: {
+        hatchetToken: encryptString(HATCHET_TOKEN),
         live: {
           sha: "a".repeat(40),
           tree: "t",
@@ -126,9 +163,26 @@ async function main() {
       ran.push(q);
       return { success: true, data: [], rowCount: 0 };
     };
-    // What the image runs: worker.mjs's storage, then the default helpers.
-    const running = new AsyncLocalStorage<string>();
-    (globalThis as { makoWorkflow?: unknown }).makoWorkflow = running;
+    // What the image runs: step.mjs names the workflow and its run, and
+    // swaps the worker key for the step's pass.
+    const named = new AsyncLocalStorage<string>();
+    const running = {
+      run: <T>(workflow: string, fn: () => Promise<T>) =>
+        named.run(workflow, fn),
+    };
+    (globalThis as { makoWorkflow?: unknown }).makoWorkflow = named;
+    (globalThis as { makoRun?: unknown }).makoRun = {
+      getStore: () => {
+        const workflow = named.getStore();
+        const runId = workflow ? runOf(workflow) : undefined;
+        return runId ? { runId, step: "step" } : undefined;
+      },
+    };
+    const uninstall = installPassFetch({
+      workerKey: WORKER_KEY,
+      workspaceId: () => ws.toString(),
+      makoOrigin: () => `http://127.0.0.1:${port}`,
+    });
     const load = async (apiKey: string): Promise<Mako> => {
       process.env.MAKO_URL = `http://127.0.0.1:${port}`;
       process.env.MAKO_API_KEY = apiKey;
@@ -181,11 +235,25 @@ async function main() {
     assert.equal(recorded[1].allowed, false);
     assert.equal(recorded[1].target, "crm_ai_chat.chat_labels");
 
-    // A name not deployed from main is not believed: the worker writes as
-    // no one listable, never as the person who deployed it.
-    const stranger = await running.run("not-deployed", () =>
-      attempt(() => worker.query(id, MERGE)),
-    );
+    // The worker key alone (no pass), even naming the listed workflow, is
+    // not believed: it writes as no one listable, never as the person who
+    // deployed it. This is what workflow code borrowing the key would get.
+    const stranger = await realFetch(
+      `http://127.0.0.1:${port}/api/workflows/runtime/query`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${WORKER_KEY}`,
+          "Content-Type": "application/json",
+          "X-Mako-Workflow": "crm-chat-classifier",
+        },
+        body: JSON.stringify({ connectionId: id, query: MERGE }),
+      },
+    ).then(async res => ({
+      success: res.ok,
+      error: ((await res.json()) as { error?: string }).error,
+    }));
+
     assert.equal(stranger.success, false);
     assert.match(
       stranger.error ?? "",
@@ -220,8 +288,10 @@ async function main() {
     assert.equal(read.success, true, read.error);
     assert.equal(ran.length, 2);
 
+    uninstall();
     console.log("workflow worker identity tests passed");
   } finally {
+    globalThis.fetch = realFetch;
     // The MCP client keeps its connections open.
     server.closeAllConnections();
     server.close();
