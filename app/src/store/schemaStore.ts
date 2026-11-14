@@ -1179,6 +1179,17 @@ export const useSchemaStore = create<SchemaState>()(
       // indexes / triggers) instead of a flat column list; discard older
       // cached trees so stale children don't linger.
       version: 3,
+      // Without a migrate, zustand logs an error on a version bump and
+      // drops everything. Keep what is still valid; drop only the tree
+      // cache the v3 bump was meant to invalidate.
+      migrate: (persisted, version) => {
+        const state = (persisted ?? {}) as Record<string, unknown>;
+        if (version < 3) {
+          const { treeNodes: _staleTrees, ...rest } = state;
+          return { ...rest, treeNodes: {} } as never;
+        }
+        return state as never;
+      },
       storage: createJSONStorage(() => indexedDBStorage),
       partialize: state => ({
         // Only persist the data, not loading/error states
