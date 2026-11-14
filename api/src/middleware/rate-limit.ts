@@ -5,6 +5,7 @@ import { Redis } from "ioredis";
 import { sessionManager } from "../auth/session";
 import { loggers } from "../logging";
 import { BASE_REDIS_OPTIONS } from "../utils/redis";
+import { clientIp } from "../utils/client-ip";
 
 const logger = loggers.api("rate-limit");
 
@@ -81,13 +82,9 @@ export function callerOf(c: Context): Caller {
   if (auth) return { key: `b:${hash(auth)}`, kind: "bearer" };
   const session = getCookie(c, sessionManager.sessionCookieName);
   if (session) return { key: `s:${hash(session)}`, kind: "session" };
-  // Behind Cloudflare the client is cf-connecting-ip; x-forwarded-for's
-  // first hop otherwise.
-  const ip =
-    c.req.header("cf-connecting-ip") ??
-    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
-    "unknown";
-  return { key: `i:${hash(ip)}`, kind: "ip" };
+  // Trusted-hop derivation (cf-connecting-ip, else the proxy-appended end of
+  // x-forwarded-for, else the socket) — never the client-typed first hop.
+  return { key: `i:${hash(clientIp(c))}`, kind: "ip" };
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +95,8 @@ export function callerOf(c: Context): Caller {
 interface CounterStore {
   /** Add `cost` to `key`'s window and return the window's total. */
   add(key: string, cost: number, ttlMs: number): Promise<number>;
+  /** Forget `key` (e.g. a successful login clears its failure budget). */
+  clear(key: string): Promise<void>;
 }
 
 function memoryStore(): CounterStore {
@@ -119,6 +118,9 @@ function memoryStore(): CounterStore {
       }
       hit.total += cost;
       return hit.total;
+    },
+    async clear(key) {
+      counters.delete(key);
     },
   };
 }
@@ -146,6 +148,9 @@ function redisStore(url: string): CounterStore {
         .exec()) as [[Error | null, number], unknown];
       return total;
     },
+    async clear(key) {
+      await redis.del(key);
+    },
   };
 }
 
@@ -157,6 +162,24 @@ function getStore(): CounterStore {
       : memoryStore();
   }
   return store;
+}
+
+/**
+ * Fixed-window counter on the shared store, for limiters other than the
+ * global one (the auth limiters). Redis when configured, so a brute force is
+ * counted across every instance rather than per instance. Throws on a store
+ * error; callers decide whether to fail open.
+ */
+export function addToCounter(
+  key: string,
+  cost: number,
+  ttlMs: number,
+): Promise<number> {
+  return getStore().add(key, cost, ttlMs);
+}
+
+export function clearCounter(key: string): Promise<void> {
+  return getStore().clear(key);
 }
 
 /** Test seam: rebuild the store (memory mode) on next use. */

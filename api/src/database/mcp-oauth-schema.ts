@@ -67,7 +67,11 @@ export interface IMcpOAuthToken extends Document {
   agentSessionId?: string;
   scopes: string[];
   accessExpiresAt: Date;
-  /** Absent for CLI / external MCP grants, which last until revoked. */
+  /**
+   * Sliding idle expiry for CLI / external grants (pushed out on every
+   * refresh; see refreshIdleTtlMs), fixed for ACP grants. Absent only when
+   * MCP_REFRESH_TOKEN_IDLE_DAYS=0 or on a legacy grant not yet migrated.
+   */
   refreshExpiresAt?: Date;
   createdAt: Date;
   lastUsedAt?: Date;
@@ -86,7 +90,7 @@ const McpOAuthTokenSchema = new Schema<IMcpOAuthToken>({
   createdAt: { type: Date, default: Date.now },
   lastUsedAt: { type: Date },
 });
-// TTL skips grants without a date; only expiring legacy / ACP grants are reaped.
+// TTL reaps lapsed grants; it skips grants without a date.
 McpOAuthTokenSchema.index({ refreshExpiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const McpOAuthClient = mongoose.model<IMcpOAuthClient>(

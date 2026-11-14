@@ -4,6 +4,7 @@ import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { secureHeaders } from "hono/secure-headers";
+import { spaCspMiddleware } from "./middleware/csp";
 import { serve as serveInngest } from "inngest/hono";
 import { Scalar } from "@scalar/hono-api-reference";
 import dotenv from "dotenv";
@@ -93,10 +94,13 @@ const isProduction = process.env.NODE_ENV === "production";
 // First, so its header rewrite runs after every other middleware's.
 app.use("*", appsHostGate);
 
-// Security headers. CSP is intentionally left unset here because the SPA loads
-// GTM, Google Fonts, and renders sandboxed blob/srcdoc iframes; a tuned CSP is
-// tracked as a follow-up. COOP/CORP/COEP are disabled to avoid breaking OAuth
-// popups and cross-origin asset loads.
+// Security headers. CSP is not set by secureHeaders: the SPA's HTML gets a
+// REPORT-ONLY baseline from spaCspMiddleware (middleware/csp.ts) because the
+// app loads GTM, Google Fonts and Monaco and renders blob/srcdoc iframes, so
+// an enforced policy must be tuned from the reports first
+// (CONTENT_SECURITY_POLICY_MODE=enforce once it is). COOP/CORP/COEP are
+// disabled to avoid breaking OAuth popups and cross-origin asset loads.
+app.use("*", spaCspMiddleware);
 app.use(
   "*",
   secureHeaders({

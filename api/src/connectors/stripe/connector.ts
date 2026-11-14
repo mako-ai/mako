@@ -929,12 +929,10 @@ export class StripeConnector extends BaseConnector {
   ): Promise<WebhookVerificationResult> {
     const { payload, headers, secret } = options;
 
-    logger.info("Webhook verification started", {
-      headers: JSON.stringify(headers, null, 2),
-    });
-
+    // Never log the header set: it carries the signature and, for other
+    // senders, bearer tokens. Presence is all a log needs.
     const signature = headers["stripe-signature"];
-    logger.info("Stripe signature header received", {
+    logger.debug("Stripe webhook verification started", {
       signature: signature ? "present" : "missing",
     });
 

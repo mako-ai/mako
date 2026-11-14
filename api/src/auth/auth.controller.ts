@@ -5,7 +5,13 @@ import { generateState, generateCodeVerifier } from "./oauth-client";
 import { sessionManager } from "./session";
 import { getGoogle, getGitHub, isOAuthDisabled } from "./oauth-providers";
 import { AuthService } from "./auth.service";
-import { authMiddleware, rateLimitMiddleware } from "./auth.middleware";
+import {
+  accountRateLimitMiddleware,
+  authMiddleware,
+  rateLimitMiddleware,
+} from "./auth.middleware";
+import { authErrorResponse } from "./auth-errors";
+import { socketRemoteAddress } from "../utils/client-ip";
 import { isSuperAdminEmail } from "./super-admin";
 import {
   getRequestOrigin,
@@ -74,10 +80,35 @@ const convertCookieAttributes = (attributes: any) => ({
     : undefined,
 });
 
+const AUTH_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000");
+
 const authRateLimiter = rateLimitMiddleware(
-  parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000"),
+  AUTH_WINDOW_MS,
   parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || "5"),
 );
+
+// Per-account budgets (keyed on the body's email), independent of the
+// caller's IP — see auth.middleware.ts. Every endpoint that checks a 6-digit
+// code shares the "code" bucket, so 5 guesses per window is the total.
+const loginAccountLimiter = accountRateLimitMiddleware({
+  bucket: "login",
+  windowMs: AUTH_WINDOW_MS,
+  max: 10,
+  clearOnSuccess: true,
+});
+const codeAccountLimiter = accountRateLimitMiddleware({
+  bucket: "code",
+  windowMs: AUTH_WINDOW_MS,
+  max: 5,
+  clearOnSuccess: true,
+});
+// Endpoints that send an email (and mint a fresh code): caps both email
+// bombing and how many fresh codes an attacker can cycle through.
+const sendAccountLimiter = accountRateLimitMiddleware({
+  bucket: "send",
+  windowMs: AUTH_WINDOW_MS,
+  max: 5,
+});
 
 // ── Auth config ──────────────────────────────────────────────────────────────
 
@@ -107,7 +138,7 @@ authRoutes.openapi(
     tags: ["Authentication"],
     summary: "Register a new account",
     security: [],
-    middleware: [authRateLimiter] as const,
+    middleware: [authRateLimiter, sendAccountLimiter] as const,
     request: {
       body: {
         required: true,
@@ -127,11 +158,8 @@ authRoutes.openapi(
     try {
       const { email, password } = await c.req.json();
 
-      const { user, requiresVerification } = await authService.register(
-        email,
-        password,
-        signupContext(c),
-      );
+      const { user, requiresVerification, emailSent } =
+        await authService.register(email, password, signupContext(c));
 
       return c.json({
         user: {
@@ -141,10 +169,15 @@ authRoutes.openapi(
           emailVerified: user.emailVerified,
         },
         requiresVerification,
-        message: "Verification email sent. Please check your inbox.",
+        emailSent,
+        // The account exists either way; a failed send is recoverable with
+        // "resend code" on the verification page, so this is still a 200.
+        message: emailSent
+          ? "Verification email sent. Please check your inbox."
+          : 'Account created, but we couldn\'t send the verification email. Use "Resend code" to try again.',
       });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+    } catch (error) {
+      return authErrorResponse(c, error, "register");
     }
   },
 );
@@ -156,7 +189,7 @@ authRoutes.openapi(
     tags: ["Authentication"],
     summary: "Verify email with a code",
     security: [],
-    middleware: [authRateLimiter] as const,
+    middleware: [authRateLimiter, codeAccountLimiter] as const,
     request: { body: JsonBody },
     responses: { ...AUTH_RESP },
   }),
@@ -190,8 +223,8 @@ authRoutes.openapi(
         },
         message: "Email verified successfully",
       });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+    } catch (error) {
+      return authErrorResponse(c, error, "verify-email");
     }
   },
 );
@@ -203,7 +236,7 @@ authRoutes.openapi(
     tags: ["Authentication"],
     summary: "Resend the verification email",
     security: [],
-    middleware: [authRateLimiter] as const,
+    middleware: [authRateLimiter, sendAccountLimiter] as const,
     request: { body: JsonBody },
     responses: { ...AUTH_RESP },
   }),
@@ -220,8 +253,8 @@ authRoutes.openapi(
       return c.json({
         message: "Verification email sent. Please check your inbox.",
       });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+    } catch (error) {
+      return authErrorResponse(c, error, "resend-verification");
     }
   },
 );
@@ -233,7 +266,7 @@ authRoutes.openapi(
     tags: ["Authentication"],
     summary: "Log in with email and password",
     security: [],
-    middleware: [authRateLimiter] as const,
+    middleware: [authRateLimiter, loginAccountLimiter] as const,
     request: {
       body: {
         required: true,
@@ -255,11 +288,14 @@ authRoutes.openapi(
 
       // Local-development shortcut: DEV_LOGIN_PASSWORD stands in for any
       // local user's password. Disabled unless every guard in dev-login.ts
-      // holds (non-production, loopback Host, secret configured and long
-      // enough) — and the process refuses to boot if it is set in production.
+      // holds (non-production, loopback Host AND loopback socket peer, secret
+      // configured and long enough) — and the process refuses to boot if it
+      // is set in production.
       const { user, session } =
-        devLoginEnabledForRequest(c.req.header("host")) &&
-        matchesDevLoginSecret(password)
+        devLoginEnabledForRequest(
+          c.req.header("host"),
+          socketRemoteAddress(c),
+        ) && matchesDevLoginSecret(password)
           ? await authService.devLogin(email)
           : await authService.login(email, password);
 
@@ -278,8 +314,8 @@ authRoutes.openapi(
           createdAt: user.createdAt,
         },
       });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+    } catch (error) {
+      return authErrorResponse(c, error, "login");
     }
   },
 );
@@ -309,8 +345,8 @@ authRoutes.openapi(
       );
 
       return c.json({ message: "Logged out successfully" });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+    } catch (error) {
+      return authErrorResponse(c, error, "logout");
     }
   },
 );
@@ -339,8 +375,8 @@ authRoutes.openapi(
           isSuperAdmin: isSuperAdminEmail(user.email),
         },
       });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+    } catch (error) {
+      return authErrorResponse(c, error, "me");
     }
   },
 );
@@ -373,8 +409,8 @@ authRoutes.openapi(
         success: true,
         message: "Onboarding data saved successfully",
       });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+    } catch (error) {
+      return authErrorResponse(c, error, "onboarding");
     }
   },
 );
@@ -420,8 +456,8 @@ authRoutes.openapi(
           email: user.email,
         },
       });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+    } catch (error) {
+      return authErrorResponse(c, error, "refresh");
     }
   },
 );
@@ -445,8 +481,8 @@ authRoutes.openapi(
       return c.json({
         message: "Verification code sent to your email.",
       });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+    } catch (error) {
+      return authErrorResponse(c, error, "request-set-password");
     }
   },
 );
@@ -480,8 +516,8 @@ authRoutes.openapi(
         message:
           "Password set successfully. You can now login with your email and password.",
       });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+    } catch (error) {
+      return authErrorResponse(c, error, "set-password");
     }
   },
 );
@@ -493,7 +529,7 @@ authRoutes.openapi(
     tags: ["Authentication"],
     summary: "Request a password reset",
     security: [],
-    middleware: [authRateLimiter] as const,
+    middleware: [authRateLimiter, sendAccountLimiter] as const,
     request: { body: JsonBody },
     responses: { ...AUTH_RESP },
   }),
@@ -528,7 +564,7 @@ authRoutes.openapi(
     tags: ["Authentication"],
     summary: "Reset a password with a code",
     security: [],
-    middleware: [authRateLimiter] as const,
+    middleware: [authRateLimiter, codeAccountLimiter] as const,
     request: { body: JsonBody },
     responses: { ...AUTH_RESP },
   }),
@@ -549,8 +585,8 @@ authRoutes.openapi(
         message:
           "Password reset successfully. You can now login with your new password.",
       });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+    } catch (error) {
+      return authErrorResponse(c, error, "reset-password");
     }
   },
 );

@@ -18,6 +18,11 @@ export default defineConfig({
       "src/auth/mcp-oauth.service.test.ts",
       // MCP sign-in pages: consent pre-ticks requested scopes; CLI parity.
       "src/auth/auth-page.test.ts",
+      "src/auth/auth-routes.test.ts",
+      "src/utils/client-ip.test.ts",
+      "src/services/safe-http-client.test.ts",
+      "src/routes/mcp-oauth-base-url.test.ts",
+      "src/middleware/csp.test.ts",
       "src/integrations/github/**/*.test.ts",
       "src/routes/dbt.routes.integration.test.ts",
       "src/routes/connector-reveal-secret.test.ts",

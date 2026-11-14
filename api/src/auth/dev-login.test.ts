@@ -54,13 +54,13 @@ for (const host of [
 // --- Happy path: every guard satisfied -------------------------------------
 setEnv("development", SECRET);
 assert.equal(devLoginSecret(), SECRET);
-assert.ok(devLoginEnabledForRequest("localhost:5173"));
+assert.ok(devLoginEnabledForRequest("localhost:5173", "127.0.0.1"));
 assert.ok(matchesDevLoginSecret(SECRET));
 
 // --- Guard 1: production disables it, even with everything else right ------
 setEnv("production", SECRET);
 assert.equal(devLoginSecret(), null, "production must disable dev login");
-assert.ok(!devLoginEnabledForRequest("localhost:5173"));
+assert.ok(!devLoginEnabledForRequest("localhost:5173", "127.0.0.1"));
 assert.ok(!matchesDevLoginSecret(SECRET));
 
 // --- Guard 4: and production must refuse to boot at all --------------------
@@ -94,13 +94,35 @@ assert.ok(
 // --- Guard 3 again, at the request level -----------------------------------
 setEnv("development", SECRET);
 assert.ok(
-  !devLoginEnabledForRequest("pr-697.mako.ai"),
+  !devLoginEnabledForRequest("pr-697.mako.ai", "127.0.0.1"),
   "a deployed Host must disable dev login even in a non-production process",
 );
 assert.ok(
-  !devLoginEnabledForRequest(undefined),
+  !devLoginEnabledForRequest(undefined, "127.0.0.1"),
   "a missing Host is not loopback",
 );
+
+// --- Guard 3: the socket peer, not just the (client-controlled) Host -------
+for (const peer of ["127.0.0.1", "127.0.0.53", "::1", "::ffff:127.0.0.1"]) {
+  assert.ok(
+    devLoginEnabledForRequest("localhost:8080", peer),
+    `${peer} is a loopback peer`,
+  );
+}
+for (const peer of [
+  "10.0.0.7",
+  "169.254.1.1",
+  "::ffff:35.191.0.1",
+  "2001:db8::1",
+  "",
+  undefined,
+  null,
+]) {
+  assert.ok(
+    !devLoginEnabledForRequest("localhost:8080", peer),
+    `a spoofed "Host: localhost" from ${String(peer)} must NOT enable dev login`,
+  );
+}
 
 // --- Wrong secrets never match --------------------------------------------
 assert.ok(!matchesDevLoginSecret(`${SECRET}x`), "longer candidate must fail");

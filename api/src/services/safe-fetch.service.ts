@@ -80,13 +80,13 @@ export function assertPublicIp(ip: string): void {
   }
 }
 
-function assertAllowedScheme(url: URL): void {
+export function assertAllowedScheme(url: URL): void {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new SafeFetchError(`Blocked URL scheme: ${url.protocol}`);
   }
 }
 
-function assertAllowedHostname(hostname: string): void {
+export function assertAllowedHostname(hostname: string): void {
   const host = hostname.toLowerCase();
   if (
     host === "localhost" ||
