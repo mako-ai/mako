@@ -6,24 +6,35 @@
  *   - list_skills                   compact index (workspace + system)
  *   - get_relevant_skills           same retrieval as pre-turn auto-inject
  *   - load_skill                    explicit load by name
- *   - read_skill_resource           system skill references/*.md
+ *   - read_skill_resource           a skill's extra files (read only)
  *   - search_skills                 free-text fallback
  *
  * The in-product agent also gets the index + top-k bodies injected into the
  * system prompt before each turn. MCP clients do not — they call list_skills /
  * get_relevant_skills instead.
+ *
+ * Every read that returns a skill is counted per day (skill-usage.service),
+ * after the result is built and without waiting for the write.
  */
 
 import { tool } from "ai";
 import { z } from "zod";
 import {
   deleteSkill,
+  findInvalidSkillsMatching,
+  invalidSkillsNotice,
   loadSkill,
   readSkillResource,
   retrieveRelevantSkills,
   saveSkill,
   searchSkills,
+  skillUsageForIndex,
 } from "../../services/skills.service";
+import {
+  recordSkillUsage,
+  skillScopeFromId,
+  type SkillUsageSource,
+} from "../../services/skill-usage.service";
 import { SKILL_NAME_RE, SKILL_NAME_RULE } from "../../apps/skill-files";
 import { loadSkillCatalog } from "../../apps/workspace-skills.service";
 
@@ -103,13 +114,13 @@ const readSkillResourceSchema = z.object({
     .string()
     .min(1)
     .describe(
-      "Name of the `[system]` skill that owns the resource, e.g. `apps`.",
+      "Name of the skill that owns the file, workspace or `[system]`, e.g. `apps`.",
     ),
   path: z
     .string()
     .min(1)
     .describe(
-      "Relative markdown path under the skill's references/ directory. The skill index lists available references.",
+      "Path relative to the skill folder, exactly as `load_skill` lists it under `resources`, e.g. `references/charting.md` or `scripts/backfill.sql`.",
     ),
 });
 
@@ -124,8 +135,29 @@ const getRelevantSkillsSchema = z.object({
     ),
 });
 
-export function createSkillTools(workspaceId: string, userId?: string) {
+export function createSkillTools(
+  workspaceId: string,
+  userId?: string,
+  options: {
+    /** Who these tools serve, for the usage counts. Default: the in-product agent. */
+    source?: SkillUsageSource;
+  } = {},
+) {
   const authorId = userId && userId.length > 0 ? userId : "agent";
+  const source: SkillUsageSource = options.source ?? "agent";
+  /** A hidden skill file the query named, as extra fields on a search result. */
+  const hiddenMatches = async (query: string) => {
+    const hidden = await findInvalidSkillsMatching(workspaceId, query);
+    if (hidden.length === 0) return {};
+    return {
+      invalid: hidden.map(file => ({
+        name: file.name,
+        path: file.path,
+        reason: file.reason,
+      })),
+      notice: invalidSkillsNotice(hidden),
+    };
+  };
 
   return {
     save_skill: tool({
@@ -186,6 +218,9 @@ export function createSkillTools(workspaceId: string, userId?: string) {
         "Bodies are NOT included — call load_skill / read_skill_resource for",
         "a specific skill, or get_relevant_skills for keyword matches with bodies.",
         "Prefer this over guessing skill names.",
+        "`loads30d` and `lastLoadedAt` say how often each skill was read.",
+        "`invalid` lists workspace skill files hidden from the agent, with the",
+        "reason; `warnings` lists loaded skills with a problem to fix.",
       ].join(" "),
       inputSchema: listSkillsSchema,
       execute: async () => {
@@ -193,7 +228,8 @@ export function createSkillTools(workspaceId: string, userId?: string) {
         const result = await retrieveRelevantSkills(workspaceId);
         // Files under skills/ that never reach the index, with why: without
         // this a bad folder name or frontmatter fails silently for agents.
-        const invalid = (await loadSkillCatalog(workspaceId)).invalid;
+        const { invalid, warnings } = await loadSkillCatalog(workspaceId);
+        const usageOf = await skillUsageForIndex(workspaceId);
         return {
           success: true as const,
           skills: result.index.map(s => ({
@@ -204,6 +240,7 @@ export function createSkillTools(workspaceId: string, userId?: string) {
             ...(s.references && s.references.length > 0
               ? { references: s.references }
               : {}),
+            ...(usageOf ? usageOf(s.scope, s.name) : {}),
           })),
           ...(invalid.length > 0
             ? {
@@ -214,6 +251,15 @@ export function createSkillTools(workspaceId: string, userId?: string) {
                 })),
                 invalidNote:
                   "These workspace skill files are NOT in the index. Tell the user and name the fix.",
+              }
+            : {}),
+          ...(warnings.length > 0
+            ? {
+                warnings: warnings.map(w => ({
+                  name: w.name,
+                  path: w.path,
+                  reason: w.reason,
+                })),
               }
             : {}),
         };
@@ -229,6 +275,12 @@ export function createSkillTools(workspaceId: string, userId?: string) {
       inputSchema: getRelevantSkillsSchema,
       execute: async ({ query }) => {
         const hits = await searchSkills(workspaceId, query, 3);
+        recordSkillUsage(
+          workspaceId,
+          hits.map(h => ({ skill: h.name, scope: h.scope })),
+          "relevant",
+          source,
+        );
         return {
           success: true as const,
           relevant: hits.map(h => ({
@@ -238,23 +290,53 @@ export function createSkillTools(workspaceId: string, userId?: string) {
             score: Math.round(h.score * 100) / 100,
             body: h.body,
           })),
+          ...(await hiddenMatches(query)),
         };
       },
     }),
     load_skill: tool({
       description:
-        "Load a skill by name from the index — its full body. Do this as soon as an index entry matches what you are about to do.",
+        "Load a skill by name from the index — its full body. Do this as soon as an index entry matches what you are about to do. `resources` lists the skill's extra files (path, bytes): read one with read_skill_resource.",
       inputSchema: loadSkillSchema,
       execute: async ({ name }) => {
-        return loadSkill(workspaceId, name);
+        const result = await loadSkill(workspaceId, name);
+        if (result.success) {
+          recordSkillUsage(
+            workspaceId,
+            [
+              {
+                skill: result.skill.name,
+                scope: skillScopeFromId(result.skill.id),
+              },
+            ],
+            "load",
+            source,
+          );
+        }
+        return result;
       },
     }),
     read_skill_resource: tool({
-      description:
-        "Read a tier-3 markdown reference file for a system skill. Use this only after the skill index or a loaded system skill points to a specific `references/*.md` path and the task needs that deeper detail.",
+      description: [
+        "Read one extra file of a skill: a reference, a SQL recipe, a script.",
+        "Workspace skills serve text files under `references/`, `scripts/` and",
+        "`resources/`; system skills serve `references/*.md`. Use it after the",
+        "index or `load_skill` lists the path and the task needs that detail.",
+        "This tool only reads: Mako never runs a script. To run one, execute",
+        "the returned text in your own shell or sandbox.",
+      ].join(" "),
       inputSchema: readSkillResourceSchema,
       execute: async ({ name, path }) => {
-        return readSkillResource(name, path);
+        const result = await readSkillResource(workspaceId, name, path);
+        if (result.success) {
+          recordSkillUsage(
+            workspaceId,
+            [{ skill: result.skill, scope: result.scope }],
+            "resource",
+            source,
+          );
+        }
+        return result;
       },
     }),
     search_skills: tool({
@@ -263,6 +345,12 @@ export function createSkillTools(workspaceId: string, userId?: string) {
       inputSchema: searchSkillsSchema,
       execute: async ({ query, limit }) => {
         const hits = await searchSkills(workspaceId, query, limit ?? 5);
+        recordSkillUsage(
+          workspaceId,
+          hits.map(h => ({ skill: h.name, scope: h.scope })),
+          "relevant",
+          source,
+        );
         return {
           success: true,
           results: hits.map(h => ({
@@ -271,6 +359,7 @@ export function createSkillTools(workspaceId: string, userId?: string) {
             body: h.body,
             score: Math.round(h.score * 100) / 100,
           })),
+          ...(await hiddenMatches(query)),
         };
       },
     }),

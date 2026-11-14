@@ -166,6 +166,22 @@ function fits(where: string, target: WriteTarget): boolean {
 /** The principal of the workflow worker when it names no deployed workflow. */
 export const WORKFLOW_WORKER = "worker:workflows";
 
+/** Every deployed workflow, as one entry of a writers or live readers list. */
+export const ALL_WORKFLOWS = "workflow:*";
+
+/**
+ * Whether the list entry `listed` stands for `principal`: the same
+ * principal, or `workflow:*` for any deployed workflow. Each deployed
+ * workflow acts as itself (its workflow pass, workflows/pass.ts), so one can
+ * be listed alone.
+ */
+export function principalMatches(listed: string, principal: string): boolean {
+  return (
+    listed === principal ||
+    (listed === ALL_WORKFLOWS && principal.startsWith("workflow:"))
+  );
+}
+
 /**
  * Who is acting: given explicitly (a scheduled console runs as its owner),
  * or the workflow or person of the request being served. Nobody for work
@@ -196,7 +212,9 @@ export function decideWrite(
   principal: string,
   query: unknown,
 ): WriteDecision {
-  const mine = (writers ?? []).filter(w => w.principal === principal);
+  const mine = (writers ?? []).filter(w =>
+    principalMatches(w.principal, principal),
+  );
   if (mine.length === 0) {
     return { allowed: false, why: "not-a-writer", places: [] };
   }
@@ -235,7 +253,9 @@ export function covers(
   principal: string,
   target: string | null,
 ): boolean {
-  const mine = (writers ?? []).filter(w => w.principal === principal);
+  const mine = (writers ?? []).filter(w =>
+    principalMatches(w.principal, principal),
+  );
   if (mine.some(w => !w.where)) return true;
   if (!target) return false;
   const parts = target.split(".");

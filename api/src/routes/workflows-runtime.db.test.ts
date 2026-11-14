@@ -14,6 +14,8 @@ import { LlmUsage, User } from "../database/schema";
 import { loggingMiddleware } from "../logging";
 import { Workspace } from "../database/workspace-schema";
 import { encryptString } from "../services/crypto.service";
+import { keyIdOf } from "../workflows/pass";
+import { setFirstReadRetryForTests } from "../workflows/runs";
 import { workerKeyName } from "../workflows/worker-key";
 import { workflowRuntimeRoutes } from "./workflows";
 
@@ -25,6 +27,13 @@ const WORKER_KEY = "revops_worker_key_for_tests";
 const OTHER_KEY = "revops_ordinary_key_for_tests";
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
+/** Executing runs Hatchet answers, by workflow (as it lowercases them). */
+const CLASSIFIER_RUN = "0f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+const DIGEST_RUN = "1f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+const RUNS: Record<string, string> = {
+  [CLASSIFIER_RUN]: "crm-chat-classifier",
+  [DIGEST_RUN]: "digest",
+};
 
 const app = new OpenAPIHono();
 // As in the API: the request context carries the workflow Mako checked.
@@ -171,11 +180,20 @@ async function main() {
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     const realFetch = globalThis.fetch;
+    setFirstReadRetryForTests([0, 0, 0]);
     globalThis.fetch = (async (
       input: string | URL | Request,
       init?: RequestInit,
     ) => {
-      const url = String(input);
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.startsWith("https://hatchet.example/")) {
+        const run = url.match(/workflow-runs\/([0-9a-f-]{36})/)?.[1] ?? "";
+        if (!RUNS[run]) return Response.json({}, { status: 404 });
+        return Response.json({
+          run: { metadata: { id: run }, status: "RUNNING" },
+          tasks: [{ actionId: `${RUNS[run]}:label`, status: "RUNNING" }],
+        });
+      }
       // Anything else (the model catalog, pricing) finds no network here.
       if (!url.endsWith("-model")) return new Response(null, { status: 503 });
       gatewayCalls.push({ url, init: init ?? {} });
@@ -190,10 +208,9 @@ async function main() {
           "content-type": "application/json",
           "ai-model-id": "typesafe-ai/jev",
           "ai-decision-model-specification-version": "4",
-          "x-mako-workflow": "crm-chat-classifier",
-          // The run and step the worker sends (worker.mjs), for its cost.
-          "x-mako-run": "0f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
-          "x-mako-step": "label",
+          // Believed from the pass alone: what a request says is not.
+          "x-mako-workflow": "digest",
+          "x-mako-run": DIGEST_RUN,
           cookie: "session=secret",
         },
         body: JSON.stringify({
@@ -211,10 +228,76 @@ async function main() {
       return LlmUsage.countDocuments({ workspaceId: id });
     };
     try {
+      // The dispatcher asks for a pass per step: the worker key only, for a
+      // deployed workflow's executing run.
+      const askPass = (key: string, body: unknown) =>
+        call("/passes", key, body);
+      const given = await askPass(WORKER_KEY, {
+        workflow: "crm-chat-classifier",
+        runId: CLASSIFIER_RUN,
+        step: "label",
+      });
+      assert.equal(given.status, 200);
+      const PASS = ((await given.json()) as { pass: string }).pass;
+      assert.match(PASS, /^mwp_/);
+      assert.equal(
+        (await askPass(OTHER_KEY, { workflow: "digest", runId: DIGEST_RUN }))
+          .status,
+        403,
+      );
+      assert.equal(
+        (
+          await askPass(WORKER_KEY, {
+            workflow: "not-deployed",
+            runId: DIGEST_RUN,
+          })
+        ).status,
+        403,
+      );
+      // Another workflow's run, or a run Hatchet does not know: no pass.
+      assert.equal(
+        (
+          await askPass(WORKER_KEY, {
+            workflow: "crm-chat-classifier",
+            runId: DIGEST_RUN,
+          })
+        ).status,
+        403,
+      );
+      assert.equal(
+        (
+          await askPass(WORKER_KEY, {
+            workflow: "digest",
+            runId: "9f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+          })
+        ).status,
+        403,
+      );
+      assert.equal(
+        (await askPass(WORKER_KEY, { workflow: "digest", runId: "x" })).status,
+        400,
+      );
+      // A pass gets none of the pod's own routes: not the Hatchet token, not
+      // the source, not another pass.
+      assert.equal((await call("/head", PASS)).status, 403);
+      assert.equal((await call(`/source/${SHA_A}`, PASS)).status, 403);
+      assert.equal((await call("/status", PASS, { sha: SHA_A })).status, 403);
+      assert.equal(
+        (await askPass(PASS, { workflow: "digest", runId: DIGEST_RUN })).status,
+        403,
+      );
+      // Signed for this workspace's worker key, it is what mintPass makes.
+      assert.equal(
+        keyIdOf(hashApiKey(WORKER_KEY)),
+        JSON.parse(
+          Buffer.from(PASS.split(".")[0].slice(4), "base64url").toString(),
+        ).kid,
+      );
+
       assert.equal((await decide(OTHER_KEY)).status, 403);
       assert.equal(gatewayCalls.length, 0);
 
-      const decided = await decide(WORKER_KEY);
+      const decided = await decide(PASS);
       assert.equal(decided.status, 200);
       assert.deepEqual(
         ((await decided.json()) as { answers: unknown }).answers,
@@ -269,7 +352,7 @@ async function main() {
           status: 404,
           headers: { "Content-Type": "application/json" },
         });
-      const missing = await decide(WORKER_KEY);
+      const missing = await decide(PASS);
       assert.equal(missing.status, 404);
       assert.deepEqual(await missing.json(), { error: "model not found" });
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -362,7 +445,7 @@ async function main() {
         costUsd: 10,
       });
       const callsBefore = gatewayCalls.length;
-      assert.equal((await decide(WORKER_KEY)).status, 402);
+      assert.equal((await decide(PASS)).status, 402);
       assert.equal(gatewayCalls.length, callsBefore);
     } finally {
       globalThis.fetch = realFetch;
