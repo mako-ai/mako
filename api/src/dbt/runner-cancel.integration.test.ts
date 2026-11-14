@@ -35,7 +35,12 @@ beforeEach(async () => {
 afterEach(async () => {
   process.env.DBT_VENV_BIN = prevVenv;
   process.env.DBT_KILL_GRACE_MS = prevGrace;
-  await rm(scriptDir, { recursive: true, force: true });
+  await rm(scriptDir, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 async function installFakeDbt(body: string): Promise<void> {

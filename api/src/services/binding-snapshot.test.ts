@@ -366,7 +366,12 @@ async function main() {
     await testStoreOrder();
     console.log("binding-snapshot tests passed");
   } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(tmp, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
   }
 }
 

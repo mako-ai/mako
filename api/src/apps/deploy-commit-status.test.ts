@@ -139,7 +139,12 @@ beforeAll(async () => {
 afterAll(async () => {
   await mongoose.disconnect();
   await mongo.stop();
-  fs.rmSync(tmp, { recursive: true, force: true });
+  fs.rmSync(tmp, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 beforeEach(async () => {

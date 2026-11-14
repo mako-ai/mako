@@ -79,7 +79,12 @@ beforeAll(async () => {
 afterAll(async () => {
   await mongoose.disconnect();
   await mongo.stop();
-  await fs.rm(tmpRoot, { recursive: true, force: true });
+  await fs.rm(tmpRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 beforeEach(async () => {
@@ -90,7 +95,12 @@ beforeEach(async () => {
   invalidateAppsIndexCache();
   variantCache.clear();
   resetThumbnailWarmState();
-  await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await fs.rm(path.join(tmpRoot, "repos"), {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
   await fs.rm(path.join(tmpRoot, "artifacts"), {
     recursive: true,
     force: true,

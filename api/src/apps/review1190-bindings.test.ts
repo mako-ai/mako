@@ -41,7 +41,12 @@ afterAll(async () => {
   await gitServer?.close();
   await mongoose.disconnect();
   await mongo.stop();
-  await fs.rm(tmpRoot, { recursive: true, force: true });
+  await fs.rm(tmpRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 const WS = new Types.ObjectId().toString();
@@ -54,8 +59,18 @@ const head = () =>
 beforeEach(async () => {
   await mongoose.connection.collection("app_projects").deleteMany({});
   await mongoose.connection.collection("app_worktrees").deleteMany({});
-  await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
-  await fs.rm(path.join(tmpRoot, "sessions"), { recursive: true, force: true });
+  await fs.rm(path.join(tmpRoot, "repos"), {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
+  await fs.rm(path.join(tmpRoot, "sessions"), {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
   await initRepo(repoDirFor(WS), seededTemplateFiles());
   await bindTestWorkspaceRepo(WS);
 });

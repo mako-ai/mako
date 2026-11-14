@@ -235,7 +235,14 @@ describe("the embedding document", () => {
   });
 
   const dir = mkdtempSync(path.join(tmpdir(), "app-embedding-doc-"));
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  afterAll(() =>
+    rmSync(dir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    }),
+  );
 
   it("reads README and UI sources from git at a commit", async () => {
     const appDir = path.join(dir, "apps", "sales");

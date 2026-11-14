@@ -60,12 +60,22 @@ beforeAll(async () => {
 afterAll(async () => {
   await mongoose.disconnect();
   await mongo.stop();
-  await fs.rm(tmpRoot, { recursive: true, force: true });
+  await fs.rm(tmpRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 beforeEach(async () => {
   await Promise.all([DbtProject.deleteMany({}), DbtJob.deleteMany({})]);
-  await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await fs.rm(path.join(tmpRoot, "repos"), {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
   await initRepo(repoDirFor(WS.toString()), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS.toString());
 });

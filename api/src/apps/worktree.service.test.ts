@@ -88,7 +88,12 @@ afterAll(async () => {
   await gitServer?.close();
   await mongoose.disconnect();
   await mongo.stop();
-  await fs.rm(tmpRoot, { recursive: true, force: true });
+  await fs.rm(tmpRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 const WS = new Types.ObjectId().toString();
@@ -99,8 +104,18 @@ beforeEach(async () => {
   await mongoose.connection.collection("app_worktrees").deleteMany({});
   // §10: ONE repo per workspace — wipe the git/session roots so each test
   // starts from an empty workspace repo.
-  await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
-  await fs.rm(path.join(tmpRoot, "sessions"), { recursive: true, force: true });
+  await fs.rm(path.join(tmpRoot, "repos"), {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
+  await fs.rm(path.join(tmpRoot, "sessions"), {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
   await initRepo(repoDirFor(WS), seededTemplateFiles());
   await bindTestWorkspaceRepo(WS);
 });
@@ -186,7 +201,12 @@ describe("project lifecycle", () => {
           message: "active feature branch commit",
         });
       } finally {
-        await fs.rm(featureWork, { recursive: true, force: true });
+        await fs.rm(featureWork, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 100,
+        });
       }
       await runGit([
         "-C",

@@ -13,7 +13,14 @@ import { afterAll, describe, expect, it } from "vitest";
 import { launcherSource } from "./dev-server.service";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mako-launcher-"));
-afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
+afterAll(() =>
+  fs.rmSync(tmp, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  }),
+);
 
 describe("dev server launcher", () => {
   it("is valid JavaScript", () => {

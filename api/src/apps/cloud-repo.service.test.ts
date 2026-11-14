@@ -145,7 +145,12 @@ async function commitFiles(
     );
     return commitOid;
   } finally {
-    await fs.rm(work, { recursive: true, force: true });
+    await fs.rm(work, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
   }
 }
 
@@ -388,7 +393,12 @@ describe("pushes to a connected repo", () => {
         parents: [base],
         message: "remote feature",
       });
-      await fs.rm(featureWork, { recursive: true, force: true });
+      await fs.rm(featureWork, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
       await runGit([
         "-C",
         remoteDir,
@@ -498,7 +508,12 @@ describe("pushes to a connected repo", () => {
         message: "active feature branch commit",
       });
     } finally {
-      await fs.rm(workDir, { recursive: true, force: true });
+      await fs.rm(workDir, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
     }
     await runGit(["-C", remoteDir, "update-ref", branch, remoteFeature]);
 

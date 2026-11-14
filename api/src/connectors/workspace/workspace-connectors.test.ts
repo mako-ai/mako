@@ -59,7 +59,12 @@ beforeAll(async () => {
 afterAll(async () => {
   await mongoose.disconnect();
   await mongo.stop();
-  await fs.rm(tmpRoot, { recursive: true, force: true });
+  await fs.rm(tmpRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 const WS = new Types.ObjectId().toString();
@@ -70,7 +75,12 @@ beforeEach(async () => {
   // on `main`, so a later case reconciles connectors it never pushed — which
   // is how "one bad connector does not stop the others" appeared to fail
   // while actually counting an earlier test's leftovers.
-  await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await fs.rm(path.join(tmpRoot, "repos"), {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 /** A connector an agent could plausibly have written. */

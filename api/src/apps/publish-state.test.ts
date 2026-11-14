@@ -60,7 +60,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await fs.rm(repoDir, { recursive: true, force: true });
+  await fs.rm(repoDir, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 describe("readPublishState deploy progress", () => {

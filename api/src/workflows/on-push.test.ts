@@ -166,7 +166,12 @@ async function main() {
   } finally {
     await mongoose.disconnect();
     await mongo.stop();
-    await fs.rm(tmp, { recursive: true, force: true });
+    await fs.rm(tmp, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
   }
 }
 

@@ -314,7 +314,12 @@ async function testLoadJobLabels(): Promise<void> {
         (error: Error) => assert.match(error.message, /stop before/),
       );
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
   }
 
   assert.ok(captured?.multipart, "the load must go through the wrapper");

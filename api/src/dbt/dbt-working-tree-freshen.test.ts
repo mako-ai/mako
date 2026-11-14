@@ -74,7 +74,12 @@ beforeAll(async () => {
 afterAll(async () => {
   await mongoose.disconnect();
   await mongo.stop();
-  await fs.rm(tmpRoot, { recursive: true, force: true });
+  await fs.rm(tmpRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 beforeEach(async () => {
@@ -171,7 +176,12 @@ describe("dbt working tree behind its mirror", () => {
     await ensureLocalRepo(WS.toString());
     const project = await seedProject();
     // …then a sibling instance seeded main and created the project.
-    await fs.rm(remoteDir, { recursive: true, force: true });
+    await fs.rm(remoteDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
     await initRepo(remoteDir, { "dbt/dbt_project.yml": "name: a\n" });
 
     const files = (await listWorkingFiles(project, USER)).map(f => f.path);

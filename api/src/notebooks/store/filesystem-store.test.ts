@@ -216,7 +216,12 @@ async function main() {
     );
   } finally {
     await fs
-      .rm(WORKDIR, { recursive: true, force: true })
+      .rm(WORKDIR, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      })
       .catch(() => undefined);
   }
   process.exit(0);

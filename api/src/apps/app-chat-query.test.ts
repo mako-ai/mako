@@ -51,7 +51,12 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(dir, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 describe("queryAppData", () => {
@@ -173,7 +178,12 @@ describe("direct httpfs mode", () => {
     } else {
       process.env[DUCKDB_EXTENSION_DIR_ENV] = originalExtensionDir;
     }
-    fs.rmSync(extensionDir, { recursive: true, force: true });
+    fs.rmSync(extensionDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
   });
 
   it("fails loudly when httpfs is not baked, without downloading", async () => {
@@ -186,7 +196,12 @@ describe("direct httpfs mode", () => {
       expect(fs.readdirSync(empty)).toEqual([]);
     } finally {
       process.env[DUCKDB_EXTENSION_DIR_ENV] = extensionDir;
-      fs.rmSync(empty, { recursive: true, force: true });
+      fs.rmSync(empty, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
     }
   });
 

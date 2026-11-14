@@ -134,7 +134,12 @@ afterAll(async () => {
   await server?.close();
   await mongoose.disconnect();
   await mongo?.stop();
-  await fs.rm(tmpRoot, { recursive: true, force: true });
+  await fs.rm(tmpRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 describe("tokens", () => {

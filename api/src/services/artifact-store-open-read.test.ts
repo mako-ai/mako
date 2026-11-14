@@ -95,7 +95,12 @@ describe("filesystem store openRead", () => {
   });
   afterEach(async () => {
     vi.unstubAllEnvs();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
   });
 
   it("opens a file with its size, and is null when it is missing", async () => {
