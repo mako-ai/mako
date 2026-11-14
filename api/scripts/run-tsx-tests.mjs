@@ -11,15 +11,13 @@
 //
 // Each file runs in its own `node --import tsx` process, with bounded
 // concurrency. Every failure is collected and reported at the end; one red
-// file no longer hides the rest the way the `&&` chain in `test` does.
+// file does not hide the rest.
 //
 // Options:
 //   --concurrency N | -j N   parallel files (default: TSX_TEST_CONCURRENCY,
 //                            else min(4, available CPUs))
 //   --timeout S              per-file timeout in seconds (default 600)
 //   --list                   print the files that would run, and exit
-//   --compare                diff the discovered set against the `test`
-//                            script's tsx chain, and exit
 //   filter...                only files whose path contains one of these
 import { spawn } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
@@ -53,7 +51,6 @@ const opts = {
     Math.min(4, os.availableParallelism?.() ?? os.cpus().length),
   timeoutMs: 600_000,
   list: false,
-  compare: false,
   filters: [],
 };
 for (let i = 0; i < argv.length; i++) {
@@ -61,7 +58,6 @@ for (let i = 0; i < argv.length; i++) {
   if (a === "--concurrency" || a === "-j") opts.concurrency = Number(argv[++i]);
   else if (a === "--timeout") opts.timeoutMs = Number(argv[++i]) * 1000;
   else if (a === "--list") opts.list = true;
-  else if (a === "--compare") opts.compare = true;
   else if (a.startsWith("-")) {
     console.error(`run-tsx-tests: unknown option ${a}`);
     process.exit(2);
@@ -143,15 +139,6 @@ async function vitestOwned() {
     );
 }
 
-function chainEntries() {
-  const pkg = JSON.parse(
-    readFileSync(path.join(API_ROOT, "package.json"), "utf8"),
-  );
-  return [
-    ...(pkg.scripts.test ?? "").matchAll(/tsx\s+(src\/[^\s&|]+\.test\.ts)/g),
-  ].map(m => m[1]);
-}
-
 const ownedByVitest = await vitestOwned();
 const notVitestOwned = allTestFiles().filter(f => !ownedByVitest(f));
 // A real import statement (single- or multi-line), not a mention in a comment.
@@ -167,18 +154,6 @@ if (opts.filters.length) {
   files = files.filter(f => opts.filters.some(x => f.includes(x)));
 }
 
-if (opts.compare) {
-  const chain = new Set(chainEntries());
-  const found = new Set(files);
-  const onlyHere = files.filter(f => !chain.has(f));
-  const onlyChain = [...chain].filter(f => !found.has(f));
-  console.log(`discovered ${files.length}, 'test' chain ${chain.size}`);
-  console.log(`run here but not in the chain (${onlyHere.length}):`);
-  for (const f of onlyHere) console.log(`  ${f}`);
-  console.log(`in the chain but not discovered here (${onlyChain.length}):`);
-  for (const f of onlyChain) console.log(`  ${f}`);
-  process.exit(onlyChain.length ? 1 : 0);
-}
 if (opts.list) {
   for (const f of files) console.log(f);
   process.exit(0);

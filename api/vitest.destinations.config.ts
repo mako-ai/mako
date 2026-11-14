@@ -40,6 +40,8 @@ export default defineConfig({
     exclude: [
       "**/node_modules/**",
       "**/dist/**",
+      // tsx + node:assert suite (run by scripts/run-tsx-tests.mjs).
+      "src/databases/drivers/cloudsql-postgres/driver.pools.test.ts",
       // Gated: only collect (and thus import testcontainers) on demand.
       ...(runIntegration ? [] : ["**/*.integration.test.ts"]),
     ],

@@ -1,4 +1,4 @@
-# Both API vitest configs before anything leaves this machine. The tsx chain
+# Both API vitest configs before anything leaves this machine. The tsx suites
 # and the lint/prettier/openapi checks already run per commit (lint-staged);
 # these two are the suites that were being run file-by-file and then failing
 # in CI under a job named "OpenAPI contract" (PRs #976, #979).

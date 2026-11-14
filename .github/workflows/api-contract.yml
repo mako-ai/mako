@@ -5,7 +5,7 @@ name: API Contract
 #    generated frontend types, then fails if either differs from what's
 #    committed (so a route change can't ship without updating the spec +
 #    client types); also runs the frontend typed client's own tests.
-#  - "API tests (tsx + vitest)": every API suite — the tsx chain, the three
+#  - "API tests (tsx + vitest)": every API suite — the tsx runner, the three
 #    vitest configs, agent-tools, destinations, the edge worker. This used to
 #    hide inside the contract job, so a unit-test failure read as "OpenAPI
 #    drift" and got triaged as such twice (PRs #976, #979).
