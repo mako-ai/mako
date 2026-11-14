@@ -79,9 +79,12 @@ function backfillMissing(workspaceId: string): void {
  * Start embedding the query now (cached, deduplicated), so it overlaps
  * with listing the apps the caller can see. Never throws.
  */
-export function prefetchQueryEmbedding(query: string): void {
+export function prefetchQueryEmbedding(
+  workspaceId: string,
+  query: string,
+): void {
   if (!getEmbeddingModelName()) return;
-  embedSearchQuery(query).catch(() => undefined);
+  embedSearchQuery(workspaceId, query).catch(() => undefined);
 }
 
 /**
@@ -109,7 +112,7 @@ export async function relatedSignals(
   try {
     const work = Promise.all([
       workspaceAppVectors(workspaceId),
-      embedSearchQuery(query),
+      embedSearchQuery(workspaceId, query),
     ]);
     // A late failure must not surface as an unhandled rejection.
     work.catch(() => undefined);
