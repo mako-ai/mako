@@ -68,6 +68,8 @@ import {
   DBT_RUNS_SEP,
 } from "../lib/explorer-reveal";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { DbtFileRenameDialog, DbtRenameWarnings } from "./DbtFileRenameDialog";
+import { filesReferringTo } from "../lib/dbt-rename-path";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
 import { dirname } from "../utils/path";
@@ -84,6 +86,8 @@ const DIR_SEP = DBT_DIR_SEP;
 const JOB_SEP = DBT_JOB_SEP;
 const RUNS_SEP = DBT_RUNS_SEP;
 const JOBS_DIR = "__jobs";
+/** A stable empty list, so the rename dialog does not re-check on each render. */
+const NO_PATHS: readonly string[] = [];
 
 interface ParsedNode {
   kind: "project" | "dir" | "file" | "job" | "runs";
@@ -308,7 +312,12 @@ export function DbtExplorer() {
     parsed: ParsedNode;
     name: string;
   } | null>(null);
-  const [renameValue, setRenameValue] = useState("");
+  // What a rename could not fix (config that stops applying, the old
+  // warehouse relation, consoles still naming it): shown until dismissed.
+  const [renameWarnings, setRenameWarnings] = useState<{
+    warnings: string[];
+    renamedTo: string;
+  } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{
     parsed: ParsedNode;
     name: string;
@@ -579,7 +588,6 @@ export function DbtExplorer() {
             key="rename"
             onClick={() => {
               setRenameTarget({ parsed, name: node.name });
-              setRenameValue(node.name);
               helpers.closeMenu();
             }}
           >
@@ -657,17 +665,44 @@ export function DbtExplorer() {
     setNewFileTarget(null);
   }, [workspaceId, newFileTarget, newFileName, createFile]);
 
-  const handleRenameConfirm = useCallback(async () => {
-    if (!renameTarget || !workspaceId) return;
-    const next = renameValue.trim();
-    const { parsed } = renameTarget;
-    if (next && next !== renameTarget.name && parsed.kind === "file") {
-      const dir = dirname(parsed.path);
-      const newPath = dir ? `${dir}/${next}` : next;
-      await renameFile(workspaceId, parsed.projectId, parsed.path, newPath);
-    }
-    setRenameTarget(null);
-  }, [renameTarget, renameValue, workspaceId, renameFile]);
+  // The files open here that ref() the model being renamed: the dialog
+  // names them when the new path would stop the file being a model.
+  const renameReferencedBy = useMemo(
+    () =>
+      renameTarget?.parsed.kind === "file"
+        ? filesReferringTo(
+            renameTarget.parsed.path,
+            useDbtStore.getState().filesByProject[
+              renameTarget.parsed.projectId
+            ] ?? {},
+          )
+        : NO_PATHS,
+    [renameTarget],
+  );
+
+  // The dialog sends the full project path it checked. A refusal comes
+  // back as text and stays in the dialog; warnings open after it closes.
+  const handleRenameConfirm = useCallback(
+    async (toPath: string, updateRefs: boolean): Promise<string | null> => {
+      if (!workspaceId || renameTarget?.parsed.kind !== "file") return null;
+      const { projectId, path } = renameTarget.parsed;
+      const outcome = await renameFile(workspaceId, projectId, path, toPath, {
+        updateRefs,
+      });
+      if (!outcome) {
+        return (
+          useDbtStore.getState().error[`file:${projectId}:${path}`] ??
+          "The file could not be renamed."
+        );
+      }
+      setRenameTarget(null);
+      if (outcome.warnings.length > 0) {
+        setRenameWarnings({ warnings: outcome.warnings, renamedTo: toPath });
+      }
+      return null;
+    },
+    [renameTarget, workspaceId, renameFile],
+  );
 
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget || !workspaceId) return;
@@ -1235,32 +1270,25 @@ export function DbtExplorer() {
         </DialogActions>
       </Dialog>
 
-      {/* Rename dialog */}
-      <Dialog
-        open={!!renameTarget}
+      {/* Rename or move: the full project path, checked as it is typed. */}
+      <DbtFileRenameDialog
+        open={renameTarget?.parsed.kind === "file"}
+        fromPath={
+          renameTarget?.parsed.kind === "file" ? renameTarget.parsed.path : ""
+        }
+        existingPaths={
+          (renameTarget && filePathsByProject[renameTarget.parsed.projectId]) ||
+          NO_PATHS
+        }
+        referencedBy={renameReferencedBy}
         onClose={() => setRenameTarget(null)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Rename file</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            size="small"
-            value={renameValue}
-            onChange={e => setRenameValue(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter") void handleRenameConfirm();
-            }}
-            sx={{ mt: 1 }}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setRenameTarget(null)}>Cancel</Button>
-          <Button onClick={handleRenameConfirm}>Rename</Button>
-        </DialogActions>
-      </Dialog>
+        onConfirm={handleRenameConfirm}
+      />
+      <DbtRenameWarnings
+        warnings={renameWarnings?.warnings ?? null}
+        renamedTo={renameWarnings?.renamedTo}
+        onClose={() => setRenameWarnings(null)}
+      />
 
       {/* Hover kebab menu — reuses the right-click action items */}
       <Menu

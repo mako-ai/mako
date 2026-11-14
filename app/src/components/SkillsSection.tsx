@@ -20,12 +20,15 @@ import {
 } from "@mui/material";
 import {
   Delete as DeleteIcon,
+  DriveFileRenameOutline as RenameIcon,
   EditOutlined as EditIcon,
   PushPinOutlined as PinIcon,
   Refresh as RefreshIcon,
   Save as SaveIcon,
 } from "@mui/icons-material";
+import { skillNameError } from "@mako/schemas";
 import { useWorkspace } from "../contexts/workspace-context";
+import { renameObject } from "../lib/object-links";
 import { useConfirm } from "./ConfirmDialog";
 
 interface SkillSummary {
@@ -37,6 +40,8 @@ interface SkillSummary {
   entities: string[];
   suppressed: boolean;
   pinned: boolean;
+  /** Previous names (a rename records them); `load_skill` still answers to them. */
+  aliases?: string[];
   definitionInvalid: { reason: string; path: string } | null;
   /** Problems that do not hide the skill (a cut description, a refused file). */
   warnings?: string[];
@@ -67,6 +72,13 @@ export function SkillsSection() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // Rename: the folder moves and the old name is kept as an alias, one
+  // commit (api/src/rename), so the agent's load_skill("old") keeps working.
+  const [renaming, setRenaming] = useState<SkillSummary | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
+
   const fetchSkills = useCallback(async () => {
     if (!workspaceId) return;
     setLoading(true);
@@ -94,6 +106,37 @@ export function SkillsSection() {
   useEffect(() => {
     void fetchSkills();
   }, [fetchSkills]);
+
+  // Checked as it is typed, with the server's rule and words
+  // (`@mako/schemas`): a name that would be refused cannot be sent. Whether
+  // the name is free is the server's answer, shown after a try.
+  const renameTo = renameValue.trim();
+  const renameUnchanged = renameTo === renaming?.name;
+  const renameProblem = renameUnchanged ? null : skillNameError(renameTo);
+
+  const handleRename = async () => {
+    if (!workspaceId || !renaming || renameBusy) return;
+    const next = renameTo;
+    if (renameUnchanged || renameProblem) return;
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      // By id: a pending proposal can carry a name a live skill was renamed
+      // away from, and that name alone would rename the live one.
+      await renameObject(workspaceId, "skill", {
+        ref: renaming.id,
+        slug: next,
+      });
+      setRenaming(null);
+      await fetchSkills();
+    } catch (err) {
+      setRenameError(
+        err instanceof Error ? err.message : "The skill could not be renamed.",
+      );
+    } finally {
+      setRenameBusy(false);
+    }
+  };
 
   useEffect(() => {
     const onIndexChanged = (event: Event) => {
@@ -352,11 +395,15 @@ export function SkillsSection() {
                       mb: 0.5,
                     }}
                   >
+                    {/* A long name wraps inside its column: it never runs
+                        under the action buttons. */}
                     <Typography
                       variant="body2"
                       sx={{
                         fontFamily: "monospace",
                         fontWeight: 600,
+                        minWidth: 0,
+                        overflowWrap: "anywhere",
                       }}
                     >
                       {skill.name}
@@ -407,6 +454,20 @@ export function SkillsSection() {
                   >
                     <strong>loadWhen:</strong> {skill.loadWhen}
                   </Typography>
+                  {skill.aliases && skill.aliases.length > 0 && (
+                    <Typography
+                      variant="caption"
+                      title="Previous names. They still open this skill."
+                      sx={{
+                        color: "text.secondary",
+                        display: "block",
+                        mb: 0.5,
+                        overflowWrap: "anywhere",
+                      }}
+                    >
+                      Previously: <code>{skill.aliases.join(", ")}</code>
+                    </Typography>
+                  )}
                   <Typography
                     variant="body2"
                     sx={{
@@ -449,6 +510,7 @@ export function SkillsSection() {
                     sx={{
                       color: "text.secondary",
                       fontFamily: "monospace",
+                      overflowWrap: "anywhere",
                     }}
                   >
                     {skill.definitionInvalid
@@ -480,6 +542,8 @@ export function SkillsSection() {
                   spacing={0.5}
                   sx={{
                     alignItems: "center",
+                    // The buttons keep their room; the text column yields.
+                    flexShrink: 0,
                   }}
                 >
                   <Tooltip
@@ -521,6 +585,22 @@ export function SkillsSection() {
                       <EditIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
+                  <Tooltip title="Rename (the old name keeps working)">
+                    <span>
+                      <IconButton
+                        size="small"
+                        onClick={() => {
+                          setRenaming(skill);
+                          setRenameValue(skill.name);
+                          setRenameError(null);
+                        }}
+                        aria-label="rename skill"
+                        disabled={!!skill.definitionInvalid}
+                      >
+                        <RenameIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
                   <Tooltip title="Delete current skill file">
                     <IconButton
                       size="small"
@@ -536,6 +616,59 @@ export function SkillsSection() {
           ))}
         </Stack>
       )}
+
+      <Dialog
+        open={renaming !== null}
+        onClose={() => !renameBusy && setRenaming(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Rename skill</DialogTitle>
+        <DialogContent>
+          <Typography
+            variant="body2"
+            sx={{ color: "text.secondary", mb: 1, overflowWrap: "anywhere" }}
+          >
+            The folder <code>skills/{renaming?.name}/</code> moves, and the old
+            name is kept, so{" "}
+            <code>load_skill(&quot;{renaming?.name}&quot;)</code> keeps working.
+          </Typography>
+          <TextField
+            autoFocus
+            fullWidth
+            size="small"
+            label="New name"
+            value={renameValue}
+            onChange={e => {
+              setRenameValue(e.target.value);
+              setRenameError(null);
+            }}
+            onKeyDown={e => {
+              if (e.key === "Enter") void handleRename();
+            }}
+            error={Boolean(renameProblem ?? renameError)}
+            helperText={
+              renameProblem ??
+              renameError ??
+              "Lowercase letters, digits, '-' and '_', starting with a letter or digit."
+            }
+            slotProps={{ htmlInput: { spellCheck: false } }}
+            sx={{ mt: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRenaming(null)} disabled={renameBusy}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => void handleRename()}
+            disabled={renameBusy || renameUnchanged || renameProblem !== null}
+          >
+            Rename
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog
         open={editing !== null || editLoading}

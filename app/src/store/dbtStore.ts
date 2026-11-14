@@ -14,6 +14,8 @@ import { apiClient } from "../lib/api-client";
 import { toLoadError, type LoadError } from "../api/result";
 import { realtimeClientId } from "../lib/realtime-client-id";
 import { onRealtimeEvent } from "./lib/realtime-channel";
+import { retargetDbtFileTabs } from "../lib/dbt-file-tabs";
+import { dbtNodeNameOf } from "../lib/dbt-rename-path";
 
 export interface DbtEnvironment {
   name: string;
@@ -324,22 +326,33 @@ interface DbtActions {
     projectId: string,
     path: string,
   ) => Promise<boolean>;
+  /**
+   * Rename or move a file: one commit. For a model, `updateRefs` (default
+   * true) also rewrites what names it across the project in that commit.
+   * Open tabs on `from` follow the file. Resolves to the server's warnings
+   * (what it could not fix: the old warehouse relation, consoles that still
+   * name it), or to null when the rename was refused: the reason is then
+   * in `error["file:<projectId>:<from>"]`.
+   */
   renameFile: (
     workspaceId: string,
     projectId: string,
     from: string,
     to: string,
-  ) => Promise<boolean>;
+    options?: { updateRefs?: boolean },
+  ) => Promise<{ warnings: string[] } | null>;
   /**
    * Apply a server-originated file change (agent server tools poke the realtime
    * channel). Pulls fresh content for an open file, or drops a deleted file.
    * Skips files with unsaved local edits to avoid clobbering the user's buffer.
+   * `renamedTo` (a delete that was a rename) moves open tabs to the new path.
    */
   applyRemoteFileUpdate: (
     workspaceId: string,
     projectId: string,
     path: string,
     deleted?: boolean,
+    renamedTo?: string,
   ) => Promise<void>;
 
   fetchJobs: (workspaceId: string, projectId: string) => Promise<void>;
@@ -739,7 +752,13 @@ export const useDbtStore = create<DbtStore>()(
       return get().persistFile(workspaceId, projectId, path);
     },
 
-    applyRemoteFileUpdate: async (workspaceId, projectId, path, deleted) => {
+    applyRemoteFileUpdate: async (
+      workspaceId,
+      projectId,
+      path,
+      deleted,
+      renamedTo,
+    ) => {
       if (deleted) {
         set(state => {
           delete state.filesByProject[projectId]?.[path];
@@ -748,6 +767,9 @@ export const useDbtStore = create<DbtStore>()(
             state.filePathsByProject[projectId] = paths.filter(p => p !== path);
           }
         });
+        // A rename: the tab follows the file. The poke for the new path
+        // then pulls its content like any other update.
+        if (renamedTo) retargetDbtFileTabs(projectId, path, renamedTo);
         return;
       }
       // Don't clobber a dirty buffer the user is editing.
@@ -814,12 +836,41 @@ export const useDbtStore = create<DbtStore>()(
       }
     },
 
-    renameFile: async (workspaceId, projectId, from, to) => {
+    renameFile: async (workspaceId, projectId, from, to, options) => {
+      const updateRefs = options?.updateRefs !== false;
+      const fail = (message: string) => {
+        set(state => {
+          state.error[`file:${projectId}:${from}`] = message;
+        });
+        return null;
+      };
+      // The server rewrites references in the COMMITTED files. A buffer with
+      // unsaved edits that names the model would lose those edits on reload,
+      // or put the old name back on its next save. So the rename waits
+      // until they are saved or discarded.
+      const model = updateRefs ? dbtNodeNameOf(from) : null;
+      if (model) {
+        const names = new RegExp(
+          `(?<![\\w])${model.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w])`,
+        );
+        const unsaved = Object.entries(get().filesByProject[projectId] ?? {})
+          .filter(([path, f]) => path !== from && f.dirty)
+          .filter(([, f]) => names.test(f.content))
+          .map(([path]) => path);
+        if (unsaved.length > 0) {
+          return fail(
+            `Save or discard your unsaved changes in ${unsaved.join(", ")} first. They mention '${model}', and the rename rewrites those files.`,
+          );
+        }
+      }
       try {
-        await apiClient.post(
+        const response = await apiClient.post<{
+          success: boolean;
+          result?: { warnings?: string[] };
+        }>(
           `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/rename`,
           // clientId lets this tab suppress the echo of its own rename pokes.
-          { from, to, clientId: realtimeClientId },
+          { from, to, clientId: realtimeClientId, updateRefs },
         );
         set(state => {
           const files = state.filesByProject[projectId];
@@ -833,16 +884,17 @@ export const useDbtStore = create<DbtStore>()(
               .map(p => (p === from ? to : p))
               .sort();
           }
+          // Files may have been rewritten (the moved one included, when it
+          // names itself): a clean buffer is stale now and is dropped so its
+          // editor reads the file again. A dirty one keeps the user's edits.
+          for (const [path, file] of Object.entries(files ?? {})) {
+            if (file.loaded && !file.dirty) delete files?.[path];
+          }
         });
-        return true;
+        retargetDbtFileTabs(projectId, from, to);
+        return { warnings: response.result?.warnings ?? [] };
       } catch (error) {
-        set(state => {
-          state.error[`file:${projectId}:${from}`] = errMessage(
-            error,
-            "Failed to rename file",
-          );
-        });
-        return false;
+        return fail(errMessage(error, "Failed to rename file"));
       }
     },
 
@@ -1263,6 +1315,7 @@ onRealtimeEvent(
       event.projectId,
       event.path,
       event.deleted,
+      event.renamedTo,
     );
   },
   { suppressOwnEcho: true },

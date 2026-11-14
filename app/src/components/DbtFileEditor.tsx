@@ -97,6 +97,7 @@ import {
   rowsToNdjson,
 } from "../lib/preview-export";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
+import { followMovedDbtFile } from "../lib/dbt-file-tabs";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
 import EntityLoadErrorState, {
   EntityLoadingState,
@@ -343,6 +344,16 @@ export default function DbtFileEditor({
       void readFile(workspaceId, projectId, path);
     }
   }, [workspaceId, projectId, path, file?.loaded, readFile]);
+
+  // A tab restored on a path its file has since left (renamed in another
+  // window, by the agent or from a laptop while this one was closed): ask
+  // where the file went, and the tab follows it instead of reporting a
+  // missing file. A file that is really gone keeps the error below.
+  useEffect(() => {
+    if (workspaceId && fileLoadError) {
+      void followMovedDbtFile(workspaceId, projectId, path);
+    }
+  }, [workspaceId, projectId, path, fileLoadError]);
 
   // Default to the user's saved dev environment (per-user setting), else
   // their personal environment, else the project default. Single player:
