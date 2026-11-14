@@ -84,7 +84,8 @@ describe("PublicSharePage", () => {
       expect.arrayContaining(["allow-scripts", "allow-same-origin"]),
     );
     expect(replaceLocation).not.toHaveBeenCalled();
-    expect(document.title).toBe("Pipeline");
+    // The page sets the title in an effect, after the frame renders.
+    await waitFor(() => expect(document.title).toBe("Pipeline"));
   });
 
   it("navigates to the entry and frames nothing when a proxy blocks the app's host", async () => {

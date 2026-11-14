@@ -64,5 +64,9 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
+          # setup-node v5 caches the pnpm store whenever package.json names a
+          # packageManager; this job installs nothing, so there is no store
+          # and the post-job save fails the job.
+          package-manager-cache: false
       # Reads pnpm-lock.yaml; no install needed.
       - run: pnpm audit --prod --audit-level high
