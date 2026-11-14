@@ -33,6 +33,11 @@ import {
 import CreateDatabaseDialog from "./CreateDatabaseDialog";
 import { AuthLayout } from "./AuthLayout";
 import { useSchemaStore } from "../store/schemaStore";
+import {
+  clearOnboardingProgress,
+  readOnboardingProgress,
+  updateOnboardingProgress,
+} from "../lib/onboarding-progress";
 
 interface OnboardingFlowProps {
   onComplete: () => void;
@@ -84,18 +89,59 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     () => onboardingInProgress && !!savedWorkspaceId,
   );
 
+  // Questionnaire answers restored after a reload (see onboarding-progress).
+  const [resumeDraft, setResumeDraft] = useState<{
+    data?: Partial<QualificationData>;
+    questionIndex?: number;
+  } | null>(null);
+
   useEffect(() => {
     if (isResumingOnboarding && savedWorkspaceId) {
-      // Resume onboarding from qualification step
+      // Resume where this tab left off (step + answers); default to the
+      // start of the questionnaire.
       setCreatedWorkspaceId(savedWorkspaceId);
+      const progress = readOnboardingProgress(savedWorkspaceId);
+      if (progress?.qualificationData && progress.step !== "qualification") {
+        setQualificationData(progress.qualificationData);
+        setState(progress.step);
+        return;
+      }
+      if (progress) {
+        setQualificationData(progress.qualificationData);
+        setResumeDraft({
+          data: progress.draft,
+          questionIndex: progress.questionIndex,
+        });
+      }
       setState("qualification");
     }
   }, [isResumingOnboarding, savedWorkspaceId]);
+
+  // Remember the current step for a reload.
+  useEffect(() => {
+    if (!createdWorkspaceId) return;
+    if (state !== "qualification" && state !== "path" && state !== "database") {
+      return;
+    }
+    updateOnboardingProgress(createdWorkspaceId, {
+      step: state,
+      qualificationData,
+    });
+  }, [createdWorkspaceId, state, qualificationData]);
+
+  const handleQualificationProgress = useCallback(
+    (draft: Partial<QualificationData>, questionIndex: number) => {
+      if (!createdWorkspaceId) return;
+      updateOnboardingProgress(createdWorkspaceId, { draft, questionIndex });
+    },
+    [createdWorkspaceId],
+  );
 
   // Helper to clear onboarding state and complete
   const finishOnboarding = useCallback(() => {
     // Clear onboarding state using the hook
     completeOnboarding();
+    clearOnboardingProgress();
     setIsResumingOnboarding(false);
     onComplete();
   }, [completeOnboarding, onComplete]);
@@ -338,7 +384,11 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         )}
 
         <QualificationStep
-          initialData={qualificationData || undefined}
+          initialData={qualificationData || resumeDraft?.data || undefined}
+          initialQuestionIndex={
+            qualificationData ? undefined : resumeDraft?.questionIndex
+          }
+          onProgress={handleQualificationProgress}
           onComplete={handleQualificationComplete}
         />
       </AuthLayout>

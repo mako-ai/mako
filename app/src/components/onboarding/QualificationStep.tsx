@@ -23,7 +23,55 @@ export interface QualificationData {
 
 interface QualificationStepProps {
   initialData?: Partial<QualificationData>;
+  /** Question to open on (resuming after a reload). */
+  initialQuestionIndex?: number;
+  /** Called as answers change, so the flow can survive a reload. */
+  onProgress?: (
+    draft: Partial<QualificationData>,
+    questionIndex: number,
+  ) => void;
   onComplete: (data: QualificationData) => void;
+}
+
+/**
+ * Arrow-key navigation for a radiogroup of option cards (WAI-ARIA radio
+ * pattern): moving focus also selects, like native radios.
+ */
+function handleRadioGroupKeyDown(event: React.KeyboardEvent<HTMLElement>) {
+  const forward = event.key === "ArrowDown" || event.key === "ArrowRight";
+  const backward = event.key === "ArrowUp" || event.key === "ArrowLeft";
+  if (!forward && !backward) return;
+  // Arrow keys inside the "Other" text field move the caret, not the radio.
+  if (event.target instanceof HTMLInputElement) return;
+  const radios = Array.from(
+    event.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]'),
+  );
+  if (radios.length === 0) return;
+  const current = radios.findIndex(
+    radio =>
+      radio === document.activeElement ||
+      radio.contains(document.activeElement),
+  );
+  const nextIndex =
+    current === -1
+      ? 0
+      : (current + (forward ? 1 : -1) + radios.length) % radios.length;
+  event.preventDefault();
+  const next = radios[nextIndex];
+  next.focus();
+  next.click();
+}
+
+/** Space/Enter select a focused option card. */
+function handleRadioKeyDown(
+  event: React.KeyboardEvent<HTMLElement>,
+  select: () => void,
+) {
+  if (event.target !== event.currentTarget) return;
+  if (event.key === " " || event.key === "Enter") {
+    event.preventDefault();
+    select();
+  }
 }
 
 const ROLES = [
@@ -59,12 +107,86 @@ const DATA_WAREHOUSES = [
 
 const TOTAL_QUESTIONS = 4;
 
+/**
+ * One option card. Module-level (not defined inside QualificationStep) so it
+ * keeps its identity across renders: a component recreated every render
+ * remounts, which dropped keyboard focus on each selection.
+ */
+const OptionButton = ({
+  selected,
+  label,
+  onClick,
+  tabbable,
+}: {
+  selected: boolean;
+  label: string;
+  onClick: () => void;
+  /** Roving tabindex: only the checked (or first) option is tabbable. */
+  tabbable: boolean;
+}) => (
+  <Paper
+    onClick={onClick}
+    role="radio"
+    aria-checked={selected}
+    tabIndex={tabbable ? 0 : -1}
+    onKeyDown={event => handleRadioKeyDown(event, onClick)}
+    elevation={0}
+    sx={{
+      p: 2,
+      cursor: "pointer",
+      border: 2,
+      borderColor: selected ? "primary.main" : "divider",
+      bgcolor: selected
+        ? theme => alpha(theme.palette.primary.main, 0.04)
+        : "background.paper",
+      borderRadius: 2,
+      transition: "all 0.15s ease",
+      display: "flex",
+      alignItems: "center",
+      gap: 1.5,
+      "&:focus-visible": {
+        outline: "2px solid",
+        outlineColor: "primary.main",
+        outlineOffset: 2,
+      },
+      "&:hover": {
+        borderColor: selected ? "primary.main" : "primary.light",
+        bgcolor: selected
+          ? theme => alpha(theme.palette.primary.main, 0.08)
+          : theme => alpha(theme.palette.primary.main, 0.02),
+        transform: "translateY(-1px)",
+      },
+    }}
+  >
+    {selected ? (
+      <CheckCircleIcon sx={{ color: "primary.main", fontSize: 22 }} />
+    ) : (
+      <RadioButtonUncheckedIcon
+        sx={{ color: "action.disabled", fontSize: 22 }}
+      />
+    )}
+    <Typography
+      variant="body1"
+      color={selected ? "primary.main" : "text.primary"}
+      sx={{
+        fontWeight: selected ? 600 : 400,
+      }}
+    >
+      {label}
+    </Typography>
+  </Paper>
+);
+
 export function QualificationStep({
   initialData,
+  initialQuestionIndex,
+  onProgress,
   onComplete,
 }: QualificationStepProps) {
   const theme = useTheme();
-  const [questionIndex, setQuestionIndex] = useState(0);
+  const [questionIndex, setQuestionIndex] = useState(() =>
+    Math.min(Math.max(initialQuestionIndex ?? 0, 0), TOTAL_QUESTIONS - 1),
+  );
   const [role, setRole] = useState(initialData?.role || "");
   const [roleOther, setRoleOther] = useState("");
   const [companySize, setCompanySize] = useState<string>(
@@ -80,6 +202,21 @@ export function QualificationStep({
   const [warehouseOther, setWarehouseOther] = useState("");
 
   const otherInputRef = useRef<HTMLInputElement>(null);
+
+  const onProgressRef = useRef(onProgress);
+  onProgressRef.current = onProgress;
+  useEffect(() => {
+    onProgressRef.current?.(
+      {
+        role,
+        companySize: (companySize || undefined) as
+          QualificationData["companySize"] | undefined,
+        primaryDatabase,
+        dataWarehouse,
+      },
+      questionIndex,
+    );
+  }, [questionIndex, role, companySize, primaryDatabase, dataWarehouse]);
 
   // Focus the "Other" input when it becomes visible
   useEffect(() => {
@@ -216,62 +353,11 @@ export function QualificationStep({
     }
   };
 
-  // Option button component
-  const OptionButton = ({
-    selected,
-    label,
-    onClick,
-  }: {
-    selected: boolean;
-    label: string;
-    onClick: () => void;
-  }) => (
-    <Paper
-      onClick={onClick}
-      elevation={0}
-      sx={{
-        p: 2,
-        cursor: "pointer",
-        border: 2,
-        borderColor: selected ? "primary.main" : "divider",
-        bgcolor: selected
-          ? theme => alpha(theme.palette.primary.main, 0.04)
-          : "background.paper",
-        borderRadius: 2,
-        transition: "all 0.15s ease",
-        display: "flex",
-        alignItems: "center",
-        gap: 1.5,
-        "&:hover": {
-          borderColor: selected ? "primary.main" : "primary.light",
-          bgcolor: selected
-            ? theme => alpha(theme.palette.primary.main, 0.08)
-            : theme => alpha(theme.palette.primary.main, 0.02),
-          transform: "translateY(-1px)",
-        },
-      }}
-    >
-      {selected ? (
-        <CheckCircleIcon sx={{ color: "primary.main", fontSize: 22 }} />
-      ) : (
-        <RadioButtonUncheckedIcon
-          sx={{ color: "action.disabled", fontSize: 22 }}
-        />
-      )}
-      <Typography
-        variant="body1"
-        color={selected ? "primary.main" : "text.primary"}
-        sx={{
-          fontWeight: selected ? 600 : 400,
-        }}
-      >
-        {label}
-      </Typography>
-    </Paper>
-  );
-
   // Other option that transforms into an input when selected
-  const OtherOptionInput = ({
+  // Called as a function, not rendered as a JSX element: it closes
+  // over this component, and a component recreated every render remounts
+  // (the input lost focus on every keystroke).
+  const renderOtherOption = ({
     selected,
     value,
     onChange,
@@ -287,6 +373,10 @@ export function QualificationStep({
     if (selected) {
       return (
         <Paper
+          role="radio"
+          aria-checked
+          aria-label="Other"
+          tabIndex={-1}
           elevation={0}
           sx={{
             p: 2,
@@ -303,6 +393,7 @@ export function QualificationStep({
           <input
             ref={otherInputRef as React.RefObject<HTMLInputElement | null>}
             type="text"
+            aria-label={placeholder}
             placeholder={placeholder}
             value={value}
             onChange={e => onChange(e.target.value)}
@@ -330,6 +421,10 @@ export function QualificationStep({
     return (
       <Paper
         onClick={onSelect}
+        role="radio"
+        aria-checked={false}
+        tabIndex={-1}
+        onKeyDown={event => handleRadioKeyDown(event, onSelect)}
         elevation={0}
         sx={{
           p: 2,
@@ -342,6 +437,11 @@ export function QualificationStep({
           display: "flex",
           alignItems: "center",
           gap: 1.5,
+          "&:focus-visible": {
+            outline: "2px solid",
+            outlineColor: "primary.main",
+            outlineOffset: 2,
+          },
           "&:hover": {
             borderColor: "primary.light",
             bgcolor: theme => alpha(theme.palette.primary.main, 0.02),
@@ -383,36 +483,46 @@ export function QualificationStep({
     </Box>
   );
 
+  const questionTitleId = `onboarding-question-${questionIndex}`;
+  const radioGroupProps = {
+    role: "radiogroup",
+    "aria-labelledby": questionTitleId,
+    onKeyDown: handleRadioGroupKeyDown,
+    sx: { display: "flex", flexDirection: "column", gap: 1.5 },
+  } as const;
+
   // Render current question content
   const renderQuestionContent = () => {
     switch (questionIndex) {
       case 0:
         return (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-            {ROLES.filter(r => r.value !== "other").map(r => (
+          <Box {...radioGroupProps}>
+            {ROLES.filter(r => r.value !== "other").map((r, index) => (
               <OptionButton
                 key={r.value}
+                tabbable={role ? role === r.value : index === 0}
                 selected={role === r.value}
                 label={r.label}
                 onClick={() => setRole(r.value)}
               />
             ))}
-            <OtherOptionInput
-              selected={role === "other"}
-              value={roleOther}
-              onChange={setRoleOther}
-              onSelect={() => setRole("other")}
-              placeholder="Please specify your role..."
-            />
+            {renderOtherOption({
+              selected: role === "other",
+              value: roleOther,
+              onChange: setRoleOther,
+              onSelect: () => setRole("other"),
+              placeholder: "Please specify your role...",
+            })}
           </Box>
         );
 
       case 1:
         return (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-            {COMPANY_SIZES.map(s => (
+          <Box {...radioGroupProps}>
+            {COMPANY_SIZES.map((s, index) => (
               <OptionButton
                 key={s.value}
+                tabbable={companySize ? companySize === s.value : index === 0}
                 selected={companySize === s.value}
                 label={s.label}
                 onClick={() => setCompanySize(s.value)}
@@ -423,43 +533,53 @@ export function QualificationStep({
 
       case 2:
         return (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-            {PRIMARY_DATABASES.filter(db => db.value !== "other").map(db => (
-              <OptionButton
-                key={db.value}
-                selected={primaryDatabase === db.value}
-                label={db.label}
-                onClick={() => setPrimaryDatabase(db.value)}
-              />
-            ))}
-            <OtherOptionInput
-              selected={primaryDatabase === "other"}
-              value={databaseOther}
-              onChange={setDatabaseOther}
-              onSelect={() => setPrimaryDatabase("other")}
-              placeholder="Please specify your database..."
-            />
+          <Box {...radioGroupProps}>
+            {PRIMARY_DATABASES.filter(db => db.value !== "other").map(
+              (db, index) => (
+                <OptionButton
+                  key={db.value}
+                  tabbable={
+                    primaryDatabase ? primaryDatabase === db.value : index === 0
+                  }
+                  selected={primaryDatabase === db.value}
+                  label={db.label}
+                  onClick={() => setPrimaryDatabase(db.value)}
+                />
+              ),
+            )}
+            {renderOtherOption({
+              selected: primaryDatabase === "other",
+              value: databaseOther,
+              onChange: setDatabaseOther,
+              onSelect: () => setPrimaryDatabase("other"),
+              placeholder: "Please specify your database...",
+            })}
           </Box>
         );
 
       case 3:
         return (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-            {DATA_WAREHOUSES.filter(wh => wh.value !== "other").map(wh => (
-              <OptionButton
-                key={wh.value}
-                selected={dataWarehouse === wh.value}
-                label={wh.label}
-                onClick={() => setDataWarehouse(wh.value)}
-              />
-            ))}
-            <OtherOptionInput
-              selected={dataWarehouse === "other"}
-              value={warehouseOther}
-              onChange={setWarehouseOther}
-              onSelect={() => setDataWarehouse("other")}
-              placeholder="Please specify your data warehouse..."
-            />
+          <Box {...radioGroupProps}>
+            {DATA_WAREHOUSES.filter(wh => wh.value !== "other").map(
+              (wh, index) => (
+                <OptionButton
+                  key={wh.value}
+                  tabbable={
+                    dataWarehouse ? dataWarehouse === wh.value : index === 0
+                  }
+                  selected={dataWarehouse === wh.value}
+                  label={wh.label}
+                  onClick={() => setDataWarehouse(wh.value)}
+                />
+              ),
+            )}
+            {renderOtherOption({
+              selected: dataWarehouse === "other",
+              value: warehouseOther,
+              onChange: setWarehouseOther,
+              onSelect: () => setDataWarehouse("other"),
+              placeholder: "Please specify your data warehouse...",
+            })}
           </Box>
         );
 
@@ -475,6 +595,7 @@ export function QualificationStep({
         {questionIndex > 0 && (
           <IconButton
             onClick={handleBack}
+            aria-label="Previous question"
             size="small"
             sx={{
               color: "text.secondary",
@@ -492,6 +613,7 @@ export function QualificationStep({
         <Box>
           {/* Question header */}
           <Typography
+            id={questionTitleId}
             variant="h4"
             gutterBottom
             sx={{

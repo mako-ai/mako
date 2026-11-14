@@ -117,7 +117,15 @@ export function PathSelectionStep({
               </Typography>
             </Box>
           </Box>
+          {/* Visual call to action only: the whole card is the button, and
+              a <button> nested in CardActionArea's <button> is invalid HTML
+              that screen readers announce twice. */}
           <Button
+            component="span"
+            role="presentation"
+            aria-hidden
+            tabIndex={-1}
+            disableRipple
             variant={isRecommended ? "contained" : "outlined"}
             fullWidth
             size="large"
