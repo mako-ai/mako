@@ -60,6 +60,22 @@ Before writing any query, Mako inspects your actual schema. No guessing, no hall
 
 The agent uses sample data to understand real values — not just types. If your `status` column contains `'active'`, `'churned'`, `'trial'`, it knows what to filter on.
 
+`inspect_table` on a SQL table also returns table and column descriptions: from dbt when the table is a dbt relation (`descriptionSource: dbt`, and `dbtNode` names the model), and from the warehouse otherwise (BigQuery).
+
+### Ontology lookups
+
+In **React App** and **Transforms** mode the agent also asks what your workspace already defines before it writes a binding or a model. These are read-only metadata lookups, open to every workspace role, built from the last production dbt build and the term registry (`dbt/ontology/terms.yml` in the workspace repo):
+
+| Tool             | What It Does                                                                                                                         |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `lookup_term`    | Resolves a business term or entity ("MRR", "paying customers"): definition, owner, canonical model and column, grain, known variants |
+| `find_models`    | Searches models, sources and seeds by name, description, columns, tags and registry synonyms; canonical models rank first            |
+| `describe_model` | One model in full: columns, tests, lineage, exposures, the apps that read it, and a warning when it is a known variant of a term     |
+| `model_readers`  | Transforms mode: the apps and binding files that read a model or raw table, so the agent sees what a column change touches           |
+| `find_join_path` | The shortest declared join between two entities, models or raw tables: join columns, cardinality and a fan-out warning per hop       |
+
+When a canonical model exists the agent reads or extends it instead of deriving the metric again, and it joins two entities on the columns `find_join_path` returns. A path that relates two entities only through a shared third entity is marked `suspect`. A workspace without a registry file gets an empty registry and a message. The same tools are on the [MCP server](/mcp-server/).
+
 ## Persistent Memory (Self-Directive)
 
 Mako learns your database over time. When it discovers that your `created_at` column stores Unix timestamps instead of dates, or that your `users` table uses `uuid` instead of `id` as the primary key, it saves that knowledge:
@@ -82,7 +98,7 @@ Beyond the always-on self-directive, Mako supports **skills** — named, workspa
 | `load_skill`    | Explicitly load a skill mid-turn when the index hints at it |
 | `search_skills` | Keyword match over names, descriptions, entities, bodies    |
 
-Every turn, Mako puts the complete skill index (every skill's name and description) in the prompt, plus budgeted body excerpts for skills marked `pinned: true` in their `SKILL.md`. The agent loads complete bodies by name. Skills are files in the workspace repo (`skills/<name>/SKILL.md`) and nothing else — there is no live index database, no embeddings, and no usage counters. See [Skills](/skills/) for the file format, admin UI, and REST API.
+Every turn, Mako puts the complete skill index (every skill's name and description) in the prompt, plus budgeted body excerpts for skills marked `pinned: true` in their `SKILL.md`. The agent loads complete bodies by name. Skills are files in the workspace repo (`skills/<name>/SKILL.md`) and nothing else — there is no live index database and no embeddings. Mako does keep one count per skill, how often it was loaded (`loads30d` and `lastLoadedAt` in `list_skills`); it stores no user, chat or query with it. See [Skills](/skills/) for the file format, hidden-file reporting, usage counts, admin UI, and REST API.
 
 Skill _retrieval_ and _writes_ (`get_relevant_skills`, `load_skill`, `save_skill`, `read_skill_resource`) are always active — the skills prompt names them every turn, so keeping them core avoids search/load round-trips. Long-tail lookups (`delete_skill`, `list_skills`, `search_skills`) are deferred tools the agent activates on demand — see [Tool paging](#tool-paging) below.
 
@@ -99,7 +115,7 @@ On a fresh request the default mode is picked from what you're looking at — th
 | **React App**       | Build [React apps](/apps/) wired to workspace data — edit files in a git-backed sandbox, run shell commands, create data bindings                 |
 | **Transforms**      | Build and run [dbt transformations](/transforms/) — edit project files, compile, test, and run models against the warehouse                       |
 | **Notebook**        | Build [notebooks](/notebooks/) — add SQL/Python/Markdown cells, run SQL against data sources and Python on the managed kernel, iterate on results |
-| **Explore**         | Read-only investigation across connections, consoles, apps, and memory                                                                           |
+| **Explore**         | Read-only investigation across connections, consoles, apps, and memory                                                                            |
 
 `Explore` is read-only by design. Mode ids persist in chat history, so renames stay backward-compatible (the legacy `dbt` mode resolves to `transform`). Enabling a mode adds its tools — modes accumulate across a turn rather than replacing one another.
 
@@ -134,12 +150,12 @@ Both are workspace-scoped. See [Version History](/version-history/).
 
 The agent can capture screenshots of the live UI for visual QA via the **`capture_screenshot`** client tool. It runs in the browser (no server round-trip) and returns a PNG that the agent inspects directly. Supported targets:
 
-| Target             | Captures                                                   |
-| ------------------ | ---------------------------------------------------------- |
-| `active_tab`       | The current main tab                                       |
-| `app_shell`        | The full Mako app UI                                       |
-| `viewport`         | The current visible page                                   |
-| `selector`         | A specific element matched by a CSS selector               |
+| Target       | Captures                                     |
+| ------------ | -------------------------------------------- |
+| `active_tab` | The current main tab                         |
+| `app_shell`  | The full Mako app UI                         |
+| `viewport`   | The current visible page                     |
+| `selector`   | A specific element matched by a CSS selector |
 
 This lets the agent verify rendering (chart legibility, overlap, layout reflow) and debug UI issues by actually looking at the result rather than reasoning blind.
 
