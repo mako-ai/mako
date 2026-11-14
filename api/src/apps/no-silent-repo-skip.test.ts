@@ -20,7 +20,7 @@ const SRC = path.join(__dirname, "..");
  * Empty on purpose: every `if (!repoDir) return` under api/src was a
  * write-skip. Lookups use `repoExists` / `return null` instead.
  */
-const ALLOWLIST: Readonly<Record<string, string[]>> = {};
+const ALLOWLIST: Record<string, string[]> = {};
 
 const PATTERN = /if\s*\(\s*!repoDir\s*\)\s*return/;
 

@@ -660,7 +660,10 @@ describe("the index", () => {
     );
     // Defense in depth: even a stale/forged caller shape cannot return foreign state.
     await expect(
-      ensureProjectRow({ ...resolved, _id: foreign._id }, USER),
+      ensureProjectRow(
+        { ...resolved, _id: foreign._id } as typeof resolved,
+        USER,
+      ),
     ).rejects.toThrow();
   });
 

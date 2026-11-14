@@ -100,7 +100,7 @@ beforeEach(async () => {
   const passwordHash = await bcrypt.hash("pw", 4);
   const base = {
     workspaceId: new Types.ObjectId(),
-    access: "workspace",
+    access: "workspace" as const,
     owner_id: "owner",
     createdBy: "owner",
     publishedSha: SHA,

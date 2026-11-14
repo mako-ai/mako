@@ -461,7 +461,7 @@ async function endToEnd() {
   );
 
   // Live load via the actual tool, then the next step activates it.
-  const loadTool = runtime.tools.load_tools as {
+  const loadTool = runtime.tools.load_tools as unknown as {
     execute: (input: { names: string[] }) => Promise<{ loaded: string[] }>;
   };
   const result = await loadTool.execute({ names: ["mcp_slack_tool_7"] });

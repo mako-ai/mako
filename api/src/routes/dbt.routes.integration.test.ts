@@ -118,12 +118,21 @@ function makeApp() {
 
 const app = makeApp();
 
-function req(method: string, path: string, body?: unknown): Promise<Response> {
-  return app.request(`/api/workspaces/${WS}/dbt${path}`, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
+/** A test response whose `json()` is untyped: each assertion states the shape it expects. */
+type TestResponse = Omit<Response, "json"> & { json(): Promise<any> };
+
+function req(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<TestResponse> {
+  return Promise.resolve(
+    app.request(`/api/workspaces/${WS}/dbt${path}`, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    }),
+  );
 }
 
 const ENV = {

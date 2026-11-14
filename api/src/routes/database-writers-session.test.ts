@@ -52,7 +52,7 @@ beforeAll(async () => {
     ["owner", "owner"],
     ["vic", "viewer"],
     ["dee", "viewer"],
-  ]) {
+  ] as const) {
     await WorkspaceMember.create({
       workspaceId: WS,
       userId,

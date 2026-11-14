@@ -235,10 +235,10 @@ function testWebhookChangeIdFallbackIncludesSourceTs() {
 
   assert.equal(records.length, 1);
   assert.ok(
-    records[0].changeId.endsWith(":2026-06-21T17:19:39.000Z"),
-    `changeId should include sourceTs, got ${records[0].changeId}`,
+    String(records[0]?.changeId).endsWith(":2026-06-21T17:19:39.000Z"),
+    `changeId should include sourceTs, got ${records[0]?.changeId}`,
   );
-  assert.ok(records[0].changeId.includes("lead_xyz"));
+  assert.ok(String(records[0]?.changeId).includes("lead_xyz"));
 }
 
 function testGroupsEntityIsAvailable() {
