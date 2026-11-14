@@ -47,6 +47,8 @@ import {
   stripLeadingSqlComments,
 } from "./query-pagination.service";
 import { countTopLevelSemicolons } from "./sql-query-utils";
+import { MongoShellError, runMongoShellQuery } from "./mongo-shell-interpreter";
+import { StopReading } from "./query-row-cap";
 
 const logger = loggers.db();
 
@@ -56,6 +58,8 @@ export interface QueryResult {
   error?: string;
   rowCount?: number;
   fields?: any[];
+  /** Rows were cut at the caller's `maxRows`: `data` holds the first ones. */
+  truncated?: boolean;
 }
 
 export interface QueryPreviewResult {
@@ -120,6 +124,12 @@ export interface QueryExecuteOptions {
    * Large MERGE/DML jobs need a higher value or we return a false timeout while BQ keeps running.
    */
   bigQueryJobMaxWaitMs?: number;
+  /**
+   * The most rows to read, where the engine can stop early (MongoDB shell
+   * queries read their cursor up to it). Engines that cannot ignore it; the
+   * caller cuts their result (query-row-cap.ts).
+   */
+  maxRows?: number;
   /**
    * Given each batch of rows as it is read (BigQuery: each result page).
    * Throwing stops the read; the query fails with that error.
@@ -695,7 +705,8 @@ export class DatabaseConnectionService {
 
   /**
    * Run `query` exactly once and read its whole result, handing each batch
-   * of rows to `options.onRows` as it arrives (it throws to stop reading).
+   * of rows to `options.onRows` as it arrives (it throws to stop reading;
+   * StopReading stops a Postgres cursor read with the rows read so far).
    * On Postgres a read goes through a cursor in one transaction, so a result
    * past the caller's limit is never held whole; BigQuery reads its job's
    * pages; any other engine, or a write, returns its result whole first.
@@ -821,12 +832,19 @@ export class DatabaseConnectionService {
             batch.rows as Record<string, unknown>[],
             fields,
           );
+          // StopReading ends the read with what was read (a row cap).
+          let stop = false;
           if (keepRows || batchRows.length > 0) {
-            await options.onRows(batchRows);
+            try {
+              await options.onRows(batchRows);
+            } catch (error) {
+              if (!(error instanceof StopReading)) throw error;
+              stop = true;
+            }
           }
           rowCount += batchRows.length;
           if (keepRows) rows.push(...batchRows);
-          if (batch.rows.length < fetchRows) break;
+          if (stop || batch.rows.length < fetchRows) break;
         }
         await client.query("COMMIT");
         open = false;
@@ -909,7 +927,12 @@ export class DatabaseConnectionService {
           rowCount: page.pageInfo.returnedRows,
           fields: this.normalizeQueryFields(result.fields, page.rows),
           pageInfo: page.pageInfo,
-          warnings: page.warnings,
+          warnings: result.truncated
+            ? [
+                ...(page.warnings ?? []),
+                `Only the first ${rows.length} documents were read (server row cap). Narrow the query with a filter, $group or .limit().`,
+              ]
+            : page.warnings,
         };
       }
 
@@ -3598,12 +3621,20 @@ export class DatabaseConnectionService {
       // Handle different MongoDB operations
       if (typeof query === "string") {
         // Parse JavaScript-style query
-        const result = await this.executeMongoDBJavaScriptQuery(
+        const { data, truncated } = await this.executeMongoDBJavaScriptQuery(
           db,
           query,
           abortController?.signal,
+          options?.maxRows,
         );
-        return { success: true, data: result };
+        return truncated
+          ? {
+              success: true,
+              data,
+              truncated: true,
+              rowCount: Array.isArray(data) ? data.length : undefined,
+            }
+          : { success: true, data };
       } else if (query.collection && query.operation) {
         // Handle structured query
         const collection = db.collection(query.collection);
@@ -3630,26 +3661,44 @@ export class DatabaseConnectionService {
           ]);
         };
 
+        // A row cap reads one row past it, so the caller knows it cut.
+        const capRead =
+          options?.maxRows !== undefined ? options.maxRows + 1 : undefined;
         switch (query.operation) {
-          case "find":
+          case "find": {
+            const findOptions = { ...(query.options || {}) };
+            if (
+              capRead !== undefined &&
+              !(findOptions.limit > 0 && findOptions.limit <= capRead)
+            ) {
+              findOptions.limit = capRead;
+            }
             result = await raceWithAbort(
-              collection
-                .find(query.filter || {}, query.options || {})
-                .toArray(),
+              collection.find(query.filter || {}, findOptions).toArray(),
             );
             break;
+          }
           case "findOne":
             result = await raceWithAbort(
               collection.findOne(query.filter || {}, query.options || {}),
             );
             break;
-          case "aggregate":
+          case "aggregate": {
+            const pipeline: Record<string, unknown>[] = [
+              ...(query.pipeline || []),
+            ];
+            const last = pipeline[pipeline.length - 1];
+            if (
+              capRead !== undefined &&
+              !(last && ("$out" in last || "$merge" in last))
+            ) {
+              pipeline.push({ $limit: capRead });
+            }
             result = await raceWithAbort(
-              collection
-                .aggregate(query.pipeline || [], query.options || {})
-                .toArray(),
+              collection.aggregate(pipeline, query.options || {}).toArray(),
             );
             break;
+          }
           case "insertMany":
             result = await raceWithAbort(
               collection.insertMany(query.documents || [], query.options || {}),
@@ -3728,7 +3777,8 @@ export class DatabaseConnectionService {
     db: Db,
     query: string,
     signal?: AbortSignal,
-  ): Promise<any> {
+    maxRows?: number,
+  ): Promise<{ data: unknown; truncated: boolean }> {
     logger.debug("Executing MongoDB query", { query: query.substring(0, 200) });
 
     // Check if already aborted
@@ -3736,182 +3786,27 @@ export class DatabaseConnectionService {
       throw new Error("Query cancelled");
     }
 
-    // Track async index operations to surface errors even if not awaited by the user
-    const trackedIndexPromises: Promise<any>[] = [];
-    const trackedIndexErrors: any[] = [];
-
-    // Wrap a collection (and returned objects) to intercept ANY async calls and attach handlers
-    const wrapCollection = (collection: any) =>
-      new Proxy(collection, {
-        get: (target, prop, receiver) => {
-          const original = Reflect.get(target, prop, receiver);
-          if (typeof original === "function") {
-            return (...args: any[]) => {
-              try {
-                const result = original.apply(target, args);
-                if (result && typeof result.then === "function") {
-                  // Attach a handler so rejections are observed and recorded
-                  result.catch((err: any) => {
-                    trackedIndexErrors.push(err);
-                  });
-                  trackedIndexPromises.push(result);
-                }
-                // If the result is another driver object, wrap it too
-                if (result && typeof result === "object") {
-                  return wrapCollection(result);
-                }
-                return result;
-              } catch (err) {
-                trackedIndexErrors.push(err);
-                throw err;
-              }
-            };
-          }
-          if (original && typeof original === "object") {
-            return wrapCollection(original);
-          }
-          return original;
-        },
-      });
-
-    // Create a proxy db object that can access any collection dynamically
-    const dbProxy = new Proxy(db, {
-      get: (target, prop) => {
-        // First check if this property exists on the target (database methods)
-        if (prop in target) {
-          const value = (target as any)[prop];
-          // If it's the collection() factory, wrap returned collection
-          if (prop === "collection" && typeof value === "function") {
-            return (name: string, options?: any) => {
-              const col = value.call(target, name, options);
-              return wrapCollection(col);
-            };
-          }
-          if (typeof value === "function") {
-            // Wrap db-level async methods to observe errors
-            return (...args: any[]) => {
-              const fn = value.bind(target);
-              const result = fn(...args);
-              if (result && typeof result.then === "function") {
-                result.catch((err: any) => {
-                  trackedIndexErrors.push(err);
-                });
-                trackedIndexPromises.push(result);
-              }
-              if (result && typeof result === "object") {
-                return wrapCollection(result);
-              }
-              return result;
-            };
-          }
-          if (value && typeof value === "object") {
-            return wrapCollection(value);
-          }
-          return value;
-        }
-
-        // Mongo-shell helper for db.getCollectionInfos([filter], [options])
-        if (prop === "getCollectionInfos") {
-          return (filter?: any, options?: any) => {
-            return (target as Db).listCollections(filter, options).toArray();
-          };
-        }
-
-        // Mongo-shell helper for db.getCollectionNames([filter])
-        if (prop === "getCollectionNames") {
-          return (filter?: any) => {
-            return (target as Db)
-              .listCollections(filter, { nameOnly: true })
-              .toArray()
-              .then(infos => infos.map(info => info.name));
-          };
-        }
-
-        // Provide backwards-compatibility for Mongo-shell style helper db.getCollection(<n>)
-        if (prop === "getCollection") {
-          return (name: string) =>
-            wrapCollection((target as Db).collection(name));
-        }
-
-        // If it's a string and not a database method, treat it as a collection name
-        if (typeof prop === "string") {
-          logger.debug("Accessing collection", { collection: prop });
-          return wrapCollection(target.collection(prop));
-        }
-
-        return undefined;
-      },
-    });
-
+    // Interpreted, never evaluated: the query is parsed and only `db` chains,
+    // literals and the shell's value helpers run (mongo-shell-interpreter.ts).
+    // A write method runs only if the query was classified as a write, and
+    // so went through checkConnectionWrite in executeQuery.
     try {
-      // Execute the query content directly - much simpler and more reliable
-      logger.debug("Evaluating MongoDB query");
-      const db = dbProxy; // Make db available in eval context for evaluated queries
-      void db; // Referenced by eval(query) at runtime — invisible to tsc/eslint.
-      const result = eval(query);
-
-      logger.debug("Raw result info", {
-        type: typeof result,
-        constructor: result?.constructor?.name,
-        hasToArray: typeof result?.toArray === "function",
-        hasThen: typeof result?.then === "function",
-      });
-
-      // Helper to race a promise against abort signal
-      const raceWithAbort = async <T>(promise: Promise<T>): Promise<T> => {
-        if (!signal) return promise;
-        return Promise.race([
-          promise,
-          new Promise<never>((_, reject) => {
-            if (signal.aborted) {
-              reject(new Error("Query cancelled"));
-            }
-            signal.addEventListener(
-              "abort",
-              () => {
-                reject(new Error("Query cancelled"));
-              },
-              { once: true },
-            );
-          }),
-        ]);
-      };
-
-      // Handle MongoDB cursors and promises
-      let finalResult: any;
-      if (result && typeof result.then === "function") {
-        // It's a promise, await it
-        logger.debug("Awaiting promise result");
-        finalResult = await raceWithAbort(result);
-        logger.debug("Promise resolved", {
-          type: typeof finalResult,
-          constructor: finalResult?.constructor?.name,
-        });
-      } else if (result && typeof result.toArray === "function") {
-        // It's a MongoDB cursor, convert to array
-        logger.debug("Converting cursor to array");
-        finalResult = await raceWithAbort(result.toArray());
-        logger.debug("Cursor converted", { arrayLength: finalResult?.length });
-      } else {
-        // It's a direct result
-        logger.debug("Using direct result");
-        finalResult = result;
-      }
+      const { value: finalResult, truncated } = await runMongoShellQuery(
+        db,
+        query,
+        {
+          allowWrites: isWrite("mongodb", query),
+          signal,
+          maxRows,
+        },
+      );
 
       logger.debug("Final result info", {
         type: typeof finalResult,
         isArray: Array.isArray(finalResult),
         length: Array.isArray(finalResult) ? finalResult.length : undefined,
+        truncated,
       });
-
-      // Wait for any tracked index operations to settle, then surface errors
-      if (trackedIndexPromises.length > 0) {
-        await Promise.allSettled(trackedIndexPromises);
-        if (trackedIndexErrors.length > 0) {
-          // Throw the first tracked error so it is returned to the client
-          throw trackedIndexErrors[0];
-        }
-      }
 
       // Ensure the result can be safely serialized to JSON (avoid circular refs)
       const getCircularReplacer = () => {
@@ -3964,9 +3859,14 @@ export class DatabaseConnectionService {
         serializedResult = String(finalResult);
       }
 
-      return serializedResult;
+      return { data: serializedResult, truncated };
     } catch (error) {
-      // Don't log cancellation as an error - it's expected behavior
+      // A refused query (MongoShellError) is the user's to fix, and a
+      // cancellation is expected: neither is a server error.
+      if (error instanceof MongoShellError) {
+        logger.info("Refused a MongoDB shell query", { error: error.message });
+        throw error;
+      }
       const isCancellation =
         error instanceof Error &&
         (error.message.includes("cancelled") ||

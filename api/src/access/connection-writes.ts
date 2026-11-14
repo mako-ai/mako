@@ -26,6 +26,7 @@ import {
   stripLeadingSqlComments,
 } from "../services/query-pagination.service";
 import { countTopLevelSemicolons } from "../services/sql-query-utils";
+import { findMongoShellWrite } from "../services/mongo-shell-interpreter";
 import { ConnectionWriteEvent } from "./connection-write-event";
 
 const logger = loggers.db();
@@ -95,7 +96,11 @@ export function isWrite(type: string, query: unknown): boolean {
     }
     return MONGO_WRITE.test(JSON.stringify(request.pipeline ?? []));
   }
-  if (type === "mongodb") return MONGO_WRITE.test(query);
+  if (type === "mongodb") {
+    // The pattern catches the plain spelling; the parsed query catches the
+    // rest (comments, `["insertOne"]`, escaped `$out` keys, `db.command`).
+    return MONGO_WRITE.test(query) || findMongoShellWrite(query) !== null;
+  }
   if (type === "cloudflare-kv") return /^\s*(put|set|delete)\b/i.test(query);
   const statement = stripLeadingSqlComments(query.trim());
   if (LOOKING.test(statement) && singleStatement(statement)) return false;

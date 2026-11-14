@@ -108,6 +108,9 @@ importers:
       '@tavily/core':
         specifier: ^0.7.14
         version: 0.7.14
+      acorn:
+        specifier: 8.19.0
+        version: 8.19.0
       ai:
         specifier: 7.0.137
         version: 7.0.137(zod@4.6.6)
