@@ -40,6 +40,11 @@ entities:
 - Long examples, vendor manuals, chart specifications, and debugging playbooks
   belong in `references/*.md`.
 
+Workspace skills (`skills/<name>/SKILL.md` in a workspace repo) use the same
+package shape and can also ship `scripts/` and `resources/` files. Their
+limits, the hidden-file report and the usage counts are documented in
+`docs/src/content/docs/skills.md`.
+
 ## Discovery and build
 
 `api/src/agent-lib/skills/system-skills.ts` discovers every

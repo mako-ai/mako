@@ -5,7 +5,14 @@
  * already does it before scaffolding a near-copy. No git, no Mongo here.
  */
 
-/** The tables a binding's SQL reads, lowercased, unquoted, CTEs excluded. */
+/**
+ * The tables a binding's SQL reads, lowercased, unquoted, CTEs excluded.
+ *
+ * A reference is one to three dotted parts, each a bare identifier, a quoted
+ * one, or the `{{ dbt_schema }}` token (written `{{dbt_schema}}` in the
+ * result): `{{ dbt_schema }}.fct_orders`, `` `proj.{{ dbt_schema }}.dim_x` ``,
+ * `` `proj`.`dataset`.`table` `` and `dataset.table` all come back whole.
+ */
 export function extractTables(sql: string): string[] {
   const text = sql
     .replace(/--[^\n]*/g, " ")
@@ -22,7 +29,7 @@ export function extractTables(sql: string): string[] {
   )) {
     ctes.add(m[1].toLowerCase());
   }
-  const ident = String.raw`(?:\x60[^\x60]+\x60|"[^"]+"|\[[^\]]+\]|[A-Za-z_][\w$-]*)`;
+  const ident = String.raw`(?:\x60[^\x60]+\x60|"[^"]+"|\[[^\]]+\]|\{\{\s*dbt_schema\s*\}\}|[A-Za-z_][\w$-]*)`;
   const re = new RegExp(
     String.raw`\b(?:from|join)\s+(${ident}(?:\s*\.\s*${ident}){0,2})`,
     "gi",
@@ -95,7 +102,12 @@ const FIELDS: Array<{
   { name: "title", weight: 5, text: a => a.title },
   { name: "description", weight: 2, text: a => a.description ?? "" },
   { name: "path", weight: 2, text: a => a.path },
-  { name: "tables", weight: 3, text: a => a.tables.join(" ") },
+  {
+    name: "tables",
+    weight: 3,
+    // The templating token is in most apps' tables: not a word to match on.
+    text: a => a.tables.join(" ").replace(/\{\{dbt_schema\}\}/g, " "),
+  },
   { name: "owner", weight: 1, text: a => a.owner ?? "" },
 ];
 

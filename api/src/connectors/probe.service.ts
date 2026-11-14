@@ -26,6 +26,13 @@
  *     "invalid key: sk_…" message, a URL with the token in its query string).
  *     Every string value of the config is scrubbed from the whole result
  *     before it is returned.
+ *
+ * Reading a page of an entity is a live read, so it follows the connection's
+ * live-read rule (Access tab): live reads on, and the caller on the live
+ * readers list when there is one. The connection's managers and the
+ * workspace owner may always probe: they hold the key and need the probe to
+ * try a new connection. A credential-only check returns no records and stays
+ * open to every member.
  */
 import { Types } from "mongoose";
 
@@ -42,6 +49,12 @@ import {
 import { recordConnectionCheck } from "./workspace/reconcile.service";
 import { ConnectorBindingError } from "./workspace/resolver";
 import { SourceConnection } from "../database/workspace-schema";
+import { actingPrincipal } from "../access/connection-writes";
+import {
+  mayChangeSourceConnection,
+  peopleOf,
+} from "../access/source-connection-access";
+import { mayReadLive } from "../connections/proxy.service";
 import { loggers } from "../logging";
 import { redactSecrets, secretValuesOf } from "../connections/redact";
 import { syncConnectorRegistry } from "../sync/connector-registry";
@@ -68,6 +81,7 @@ export type ProbeErrorCode =
   | "not_found"
   | "connector_unavailable"
   | "unknown_entity"
+  | "forbidden"
   | "timeout";
 
 export class ProbeError extends Error {
@@ -80,11 +94,13 @@ export class ProbeError extends Error {
   }
 
   /** HTTP status the REST route answers with. */
-  get status(): 400 | 404 | 500 | 504 {
+  get status(): 400 | 403 | 404 | 500 | 504 {
     switch (this.code) {
       case "invalid_input":
       case "unknown_entity":
         return 400;
+      case "forbidden":
+        return 403;
       case "not_found":
         return 404;
       case "timeout":
@@ -264,6 +280,51 @@ function normalizeFields(fields: string[] | undefined): string[] | undefined {
 }
 
 /**
+ * Refuse an entity probe by someone who may not read this connection live.
+ * Work no request started (no principal) is the system's and is not checked,
+ * as for writes.
+ */
+async function assertMayProbeEntity(
+  workspaceId: string,
+  row: Parameters<typeof mayReadLive>[0] & {
+    name?: string;
+    liveReads?: boolean;
+    managers?: unknown;
+    createdBy?: unknown;
+  },
+): Promise<void> {
+  const principal = actingPrincipal();
+  if (!principal) return;
+  const name = row.name ?? "this connection";
+  if (principal.startsWith("user:")) {
+    const userId = principal.slice("user:".length);
+    const people = peopleOf(workspaceId);
+    const role = await people.roleOf(userId);
+    if (!role) {
+      throw new ProbeError(
+        "forbidden",
+        `${principal} is not a member of this workspace, so it cannot probe ${name}.`,
+      );
+    }
+    if (await mayChangeSourceConnection({ ...people, role, userId }, row)) {
+      return;
+    }
+  }
+  if (row.liveReads !== true) {
+    throw new ProbeError(
+      "forbidden",
+      `Live reads are off for ${name}, so only its managers and the workspace owner can probe its records. Omit entity to check the credential only, read its synced tables, or ask a manager to turn live reads on in its Access tab.`,
+    );
+  }
+  if (!mayReadLive(row, principal)) {
+    throw new ProbeError(
+      "forbidden",
+      `${principal} is not allowed to read ${name} live, so it cannot probe its records. Omit entity to check the credential only, read its synced tables, or ask one of its managers or the workspace owner to allow ${principal} on its Access tab.`,
+    );
+  }
+}
+
+/**
  * Probe a connector: check its credential, then read one bounded page of an
  * entity when one is named. Throws `ProbeError` for caller mistakes and for
  * the deadline; anything else the connector throws is passed through with
@@ -288,7 +349,15 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
   // exercise another workspace's credential against a live platform.
   const owned = await SourceConnection.findOne(
     { _id: new Types.ObjectId(connectionId), workspaceId },
-    { _id: 1 },
+    {
+      _id: 1,
+      name: 1,
+      liveReads: 1,
+      liveReaders: 1,
+      writers: 1,
+      managers: 1,
+      createdBy: 1,
+    },
   ).lean();
   if (!owned) {
     throw new ProbeError(
@@ -296,6 +365,7 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
       'Connection not found in this workspace. Call list_connections({ kind: "source" }) for valid ids.',
     );
   }
+  if (input.entity) await assertMayProbeEntity(workspaceId, owned);
 
   const sourceConnection =
     await sourceConnectionManager.getSourceConnection(connectionId);

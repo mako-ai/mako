@@ -14,5 +14,5 @@ What they show and the tests rely on: each task's `actionId` is
 `<workflow>:<step>` lowercased (`runbindingproof:write-first`), while the
 workflow is named `RunBindingProof`; the run has no `workflowName`; during
 the onFailure task the run is still `RUNNING`; and the onFailure task's
-`workflowRunExternalId` is the run's id, which is what the worker sends as
-`X-Mako-Run`.
+`workflowRunExternalId` is the run's id, which is the run a step's pass
+names.

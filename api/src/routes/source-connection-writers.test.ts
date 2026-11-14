@@ -142,10 +142,11 @@ describe("source connection writers", () => {
     expect(
       (await (await req("GET", `/${id}/writers`)).json()).data.liveReads,
     ).toBe(true);
-    // Any workflow is every deployed workflow (they share one identity).
+    // Each deployed workflow acts as itself, so each is kept by its name.
     const put = await req("PUT", `/${id}/writers`, {
       writers: [
         { principal: "workflow:fr-offer-to-cash" },
+        { principal: "workflow:other-flow" },
         { principal: "workflow:other-flow" },
       ],
       liveReads: false,
@@ -153,11 +154,96 @@ describe("source connection writers", () => {
     expect(put.status).toBe(200);
     const stored = await SourceConnection.findById(id).lean();
     expect(stored?.writers).toMatchObject([
-      { principal: "workflow:*", addedBy: "manager1" },
+      { principal: "workflow:fr-offer-to-cash", addedBy: "manager1" },
+      { principal: "workflow:other-flow", addedBy: "manager1" },
     ]);
-    expect(stored?.writers).toHaveLength(1);
+    expect(stored?.writers).toHaveLength(2);
     expect(stored?.writers?.[0].where).toBeUndefined();
+    // Or every deployed workflow at once.
+    expect(
+      (
+        await req("PUT", `/${id}/writers`, {
+          writers: [{ principal: "workflow:*" }],
+        })
+      ).status,
+    ).toBe(200);
     expect(stored?.liveReads).toBe(false);
+  });
+
+  it("limits live reads to the listed, viewers included, and opens them again", async () => {
+    expect(
+      (await (await req("GET", `/${id}/writers`)).json()).data.liveReaders,
+    ).toBeNull();
+    await WorkspaceMember.create({
+      workspaceId: WS,
+      userId: "vera",
+      role: "viewer",
+      joinedAt: new Date(),
+    });
+    const put = await req("PUT", `/${id}/writers`, {
+      writers: [],
+      liveReads: true,
+      liveReaders: [
+        { principal: "user:vera" },
+        { principal: "workflow:fr-offer-to-cash" },
+        { principal: "workflow:other-flow" },
+      ],
+    });
+    expect(put.status).toBe(200);
+    const { data } = await (await req("GET", `/${id}/writers`)).json();
+    expect(data.liveReaders).toMatchObject([
+      { principal: "user:vera", addedBy: "manager1" },
+      { principal: "workflow:fr-offer-to-cash", where: null },
+      { principal: "workflow:other-flow", where: null },
+    ]);
+    // Omitted: unchanged, while the writers change.
+    await req("PUT", `/${id}/writers`, {
+      writers: [{ principal: "workflow:*" }],
+    });
+    expect(
+      (await SourceConnection.findById(id).lean())?.liveReaders,
+    ).toHaveLength(3);
+    // An empty list: only the writers.
+    await req("PUT", `/${id}/writers`, { writers: [], liveReaders: [] });
+    expect((await SourceConnection.findById(id).lean())?.liveReaders).toEqual(
+      [],
+    );
+    // Null: everyone again.
+    await req("PUT", `/${id}/writers`, { writers: [], liveReaders: null });
+    expect(
+      (await SourceConnection.findById(id).lean())?.liveReaders,
+    ).toBeUndefined();
+  });
+
+  it("refuses a stranger, an agent or an API key as a live reader", async () => {
+    expect(
+      (
+        await req("PUT", `/${id}/writers`, {
+          writers: [],
+          liveReaders: [{ principal: "user:stranger" }],
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await req("PUT", `/${id}/writers`, {
+          writers: [],
+          liveReaders: [{ principal: "agent:user:manager1" }],
+        })
+      ).status,
+    ).toBe(400);
+    who.authType = "apiKey";
+    expect(
+      (
+        await req("PUT", `/${id}/writers`, {
+          writers: [],
+          liveReaders: [{ principal: "user:manager1" }],
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (await SourceConnection.findById(id).lean())?.liveReaders,
+    ).toBeUndefined();
   });
 
   it("refuses a change from an API key, or for a stranger", async () => {
@@ -248,9 +334,9 @@ describe("source connection writers", () => {
       event("agent:user:manager1", "POST /task/", false),
     ]);
     const { data } = await (await req("GET", `/${id}/writers`)).json();
-    // Shown as every deployed workflow, which is what it allows.
+    // Shown by its name, without the ignored `where`.
     expect(data.writers).toMatchObject([
-      { principal: "workflow:*", where: null },
+      { principal: "workflow:fr-offer-to-cash", where: null },
     ]);
     const byPrincipal = Object.fromEntries(
       data.recent.map((r: { principal: string; uncovered: string[] }) => [
@@ -258,16 +344,17 @@ describe("source connection writers", () => {
         r.uncovered,
       ]),
     );
-    // Every workflow's attempts are one entry, all covered now.
-    expect(byPrincipal["workflow:*"]).toEqual([]);
-    expect(byPrincipal["workflow:other-flow"]).toBeUndefined();
+    // Each workflow's attempts are its own entry: the listed one is covered
+    // everywhere, the other is offered.
+    expect(byPrincipal["workflow:fr-offer-to-cash"]).toEqual([]);
+    expect(byPrincipal["workflow:other-flow"]).toEqual(["POST /task/"]);
     // The worker naming no workflow cannot be listed, so it is not offered.
     expect(byPrincipal["worker:workflows"]).toBeUndefined();
     // Nor an agent's refused attempt: agents never write.
     expect(byPrincipal["agent:user:manager1"]).toBeUndefined();
   });
 
-  it("offers refused workflows once, with the name each one sent", async () => {
+  it("offers each refused workflow by its name", async () => {
     const event = (principal: string, target: string) => ({
       workspaceId: WS,
       connectionId: new Types.ObjectId(id),
@@ -280,14 +367,18 @@ describe("source connection writers", () => {
       event("workflow:b-flow", "PUT /lead/1/"),
     ]);
     const { data } = await (await req("GET", `/${id}/writers`)).json();
-    expect(data.recent).toHaveLength(1);
-    expect(data.recent[0].principal).toBe("workflow:*");
-    expect(data.recent[0].count).toBe(2);
-    expect([...data.recent[0].uncovered].sort()).toEqual([
-      "POST /task/ (the workflow sent the name a-flow)",
-      "PUT /lead/1/ (the workflow sent the name b-flow)",
+    expect(
+      data.recent
+        .map((r: { principal: string; uncovered: string[] }) => [
+          r.principal,
+          r.uncovered,
+        ])
+        .sort(),
+    ).toEqual([
+      ["workflow:a-flow", ["POST /task/"]],
+      ["workflow:b-flow", ["PUT /lead/1/"]],
     ]);
-    // Allowing that entry allows every deployed workflow.
+    // Allowing every deployed workflow covers both.
     expect(
       (
         await req("PUT", `/${id}/writers`, {
@@ -296,7 +387,7 @@ describe("source connection writers", () => {
       ).status,
     ).toBe(200);
     const after = await (await req("GET", `/${id}/writers`)).json();
-    expect(after.data.recent[0].uncovered).toEqual([]);
+    for (const r of after.data.recent) expect(r.uncovered).toEqual([]);
   });
 
   it("checks only writers new to the list: a stored viewer blocks no other change", async () => {
