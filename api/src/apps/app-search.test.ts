@@ -23,6 +23,48 @@ LEFT JOIN won ON won.lead_id = l.id
 WHERE EXTRACT(year FROM l.created_at) = 2026 -- FROM not_a_table`),
   ["close.leads", "public.users", "realadvisor-dwh.close.opportunities"],
 );
+// dbt-templated references: `{{ dbt_schema }}.model` used to be dropped, and
+// `project.{{ dbt_schema }}.model` used to come back as the project alone.
+assert.deepEqual(
+  extractTables(`SELECT * FROM {{ dbt_schema }}.fct_orders o
+JOIN {{dbt_schema}}.dim_customer c USING (customer_id)`),
+  ["{{dbt_schema}}.dim_customer", "{{dbt_schema}}.fct_orders"],
+);
+assert.deepEqual(
+  extractTables(
+    "select * from realadvisor-prod.{{ dbt_schema }}.fct_orders where true",
+  ),
+  ["realadvisor-prod.{{dbt_schema}}.fct_orders"],
+);
+assert.deepEqual(
+  extractTables(`select m.*, t.team
+from \`realadvisor-prod.{{ dbt_schema }}.dim_sales_team_membership\` m
+join \`realadvisor-prod\`.\`{{dbt_schema}}\`.\`dim_team\` t using (team_id)`),
+  [
+    "realadvisor-prod.{{dbt_schema}}.dim_sales_team_membership",
+    "realadvisor-prod.{{dbt_schema}}.dim_team",
+  ],
+);
+// Backticked `project.dataset.table` (whole or per part) and plain
+// `dataset.table` keep every part.
+assert.deepEqual(
+  extractTables(`select * from \`acme-prod.crm_public.organisations\` o
+join \`acme-prod\`.\`stripe\`.\`subscriptions\` s on s.org = o.id
+join dbt_prod.dim_account a on a.id = o.id
+left join Analytics.Events e on e.org = o.id`),
+  [
+    "acme-prod.crm_public.organisations",
+    "acme-prod.stripe.subscriptions",
+    "analytics.events",
+    "dbt_prod.dim_account",
+  ],
+);
+// A CTE named like a model is still a CTE; a templated one is a table.
+assert.deepEqual(
+  extractTables(`with fct_orders as (select * from {{ dbt_schema }}.fct_orders)
+select * from fct_orders`),
+  ["{{dbt_schema}}.fct_orders"],
+);
 assert.deepEqual(extractTables("SELECT 1"), []);
 assert.deepEqual(extractTables("select * from (select 1) t"), []);
 
@@ -95,3 +137,17 @@ assert.deepEqual(churn.map(h => h.appId).slice(0, 2), ["y", "x"]);
 assert.equal(rankApps(apps, "leads", { limit: 1 }).length, 1);
 
 console.log("app-search: ok");
+
+// The templating token is not a word: "schema" must not match every app
+// that reads a dbt model, while the model's own name still does.
+const templated: SearchableApp[] = [
+  {
+    appId: "t1",
+    path: "apps/t1",
+    title: "Orders",
+    tables: ["{{dbt_schema}}.fct_orders"],
+  },
+];
+assert.deepEqual(rankApps(templated, "dbt schema"), []);
+assert.equal(rankApps(templated, "fct_orders")[0]?.appId, "t1");
+process.stdout.write("ok dbt-templated tables: extracted and searchable\n");

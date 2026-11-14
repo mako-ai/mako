@@ -3,10 +3,13 @@
  *
  * Every non-suppressed skill's name and description is in the agent's
  * prompt every turn; pinned skills ride with budgeted body excerpts; everything
- * else is one `load_skill` away. No retrieval, no embeddings, no index rows,
- * no counters — the catalog is `loadSkillCatalog`, an in-memory view of
+ * else is one `load_skill` away. No retrieval, no embeddings, no index rows
+ * — the catalog is `loadSkillCatalog`, an in-memory view of
  * `skills/<name>/SKILL.md` at main. `search_skills` is a keyword match over that
  * catalog for the case where the index line did not ring a bell.
+ *
+ * Usage counts (skill-usage.service) sit beside the catalog, never in it:
+ * the tools record a read after serving it, and the listings show the totals.
  */
 import {
   aliasClaimantsOf,
@@ -20,7 +23,11 @@ import {
   resolveSkillRef,
   resolveSkillThroughHistory,
   loadSkillCatalog,
+  readWorkspaceSkillResource,
   skillId,
+  INDEX_DESCRIPTION_CHARS,
+  type InvalidSkillFile,
+  type SkillCatalog,
   type WorkspaceSkill,
 } from "../apps/workspace-skills.service";
 import { SKILL_NAME_MAX_LENGTH, skillNameError } from "@mako/schemas";
@@ -31,6 +38,8 @@ import {
   MAX_WORKSPACE_SKILLS,
   SKILL_NAME_RE,
   SKILL_NAME_RULE,
+  canonicalSkillName,
+  type SkillResource,
 } from "../apps/skill-files";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import { STOPWORDS } from "../agent-lib/entity-extraction";
@@ -38,17 +47,22 @@ import { loggers } from "../logging";
 import {
   getSystemSkill,
   getSystemSkillIndex,
+  getSystemSkillResources,
   readSystemSkillResource,
 } from "../agent-lib/skills/system-skills";
+import {
+  getSkillUsageOrNull,
+  skillUsageKey,
+  type SkillUsageSummary,
+} from "./skill-usage.service";
 
 const logger = loggers.app();
 
 const MAX_NAME_LENGTH = SKILL_NAME_MAX_LENGTH;
 /** The description is in every prompt: keep it a trigger line, not a summary. */
 export const MAX_LOAD_WHEN_LENGTH = 300;
-/** Past this the index alone stops working (selection degrades around 30–50 items). */
 /** What the index shows per skill; longer descriptions are cut with an ellipsis. */
-export const INDEX_DESCRIPTION_CHARS = 200;
+export { INDEX_DESCRIPTION_CHARS };
 /** Per-skill and total bounds for bodies injected into every agent turn. */
 export const MAX_SKILL_EXCERPT_CHARS = 2_500;
 export const MAX_PINNED_SKILL_BODY_CHARS = 7_500;
@@ -343,7 +357,11 @@ export async function loadSkill(
         body: string;
         suppressed: boolean;
         pinned: boolean;
+        /** Files `read_skill_resource` serves for this skill: path and bytes. */
+        resources: SkillResource[];
       };
+      /** Set when a hidden workspace file of this name was passed over. */
+      notice?: string;
     }
   | { success: false; error: string }
 > {
@@ -359,6 +377,7 @@ export async function loadSkill(
       body: skill.body,
       suppressed: skill.suppressed,
       pinned: skill.pinned,
+      resources: skill.resources,
     },
   });
   const resolved = await resolveSkillRef(workspaceId, name);
@@ -367,9 +386,15 @@ export async function loadSkill(
   if (!systemSkill) {
     const renamed =
       resolved?.skill ?? (await resolveSkillThroughHistory(workspaceId, name));
-    return renamed
-      ? found(renamed)
-      : { success: false, error: `skill "${name}" not found` };
+    if (renamed) return found(renamed);
+  }
+  // The name may be a workspace file that is hidden: say so, with the reason.
+  const hidden = await findInvalidSkillByName(workspaceId, name);
+  if (!systemSkill) {
+    return {
+      success: false,
+      error: hidden ? hiddenSkillError(hidden) : `skill "${name}" not found`,
+    };
   }
   return {
     success: true,
@@ -380,23 +405,89 @@ export async function loadSkill(
       body: systemSkill.body,
       suppressed: false,
       pinned: false,
+      resources: getSystemSkillResources(systemSkill.name),
     },
+    ...(hidden
+      ? {
+          notice: `This is the system skill. The workspace's own ${hidden.path} is hidden from the agent (${hidden.reason}). Tell the user and name the fix.`,
+        }
+      : {}),
   };
 }
 
-export function readSkillResource(
+/** The hidden workspace file a name points at: its folder, `-` and `_` folded. */
+async function findInvalidSkillByName(
+  workspaceId: string,
+  name: string,
+): Promise<InvalidSkillFile | null> {
+  const invalid = (await loadSkillCatalog(workspaceId)).invalid;
+  const trimmed = name.trim();
+  return (
+    invalid.find(file => file.name === trimmed) ??
+    invalid.find(
+      file => canonicalSkillName(file.name) === canonicalSkillName(trimmed),
+    ) ??
+    null
+  );
+}
+
+function hiddenSkillError(file: InvalidSkillFile): string {
+  return `skill "${file.name}" is hidden from the agent: ${file.path} (${file.reason}). Tell the user and name the fix.`;
+}
+
+/**
+ * One resource file of a skill, resolved the way `load_skill` resolves the
+ * skill: the workspace file at main first, else the system skill. Reading
+ * only: nothing is executed.
+ */
+export async function readSkillResource(
+  workspaceId: string,
   name: string,
   relPath: string,
-):
+): Promise<
   | {
       success: true;
       skill: string;
+      scope: "workspace" | "system";
       path: string;
       content: string;
+      /** Every resource path of the skill. */
       references: string[];
     }
-  | { success: false; error: string } {
-  return readSystemSkillResource(name, relPath);
+  | { success: false; error: string }
+> {
+  if (!name || name.trim().length === 0) {
+    return { success: false, error: "name is required" };
+  }
+  // The same lookup as loadSkill: a live name, then a system skill, then an
+  // old name (an alias, or a folder git renamed).
+  const resolved = await resolveSkillRef(workspaceId, name);
+  let skill = resolved?.via === "current" ? resolved.skill : null;
+  if (!skill && !getSystemSkill(name.trim())) {
+    skill =
+      resolved?.skill ?? (await resolveSkillThroughHistory(workspaceId, name));
+  }
+  if (skill) {
+    const read = await readWorkspaceSkillResource(workspaceId, skill, relPath);
+    if (read.success) return { ...read, scope: "workspace" };
+    // A workspace skill named like a system one shadows its body, not its
+    // reference files: those stay readable, as they were before workspace
+    // skills had resources.
+    const shadowed = getSystemSkill(skill.name)
+      ? readSystemSkillResource(skill.name, relPath)
+      : null;
+    return shadowed?.success ? { ...shadowed, scope: "system" } : read;
+  }
+  const read = readSystemSkillResource(name, relPath);
+  if (read.success) return { ...read, scope: "system" };
+  if (!getSystemSkill(name.trim())) {
+    const hidden = await findInvalidSkillByName(workspaceId, name);
+    return {
+      success: false,
+      error: hidden ? hiddenSkillError(hidden) : `skill "${name}" not found`,
+    };
+  }
+  return read;
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +583,58 @@ export async function searchSkills(
       a.name.localeCompare(b.name),
   );
   return ranked.slice(0, limit);
+}
+
+/** The words of a skill name: `mrr_walkthrough-fr` → mrr, walkthrough. */
+function nameWords(name: string): string[] {
+  return name
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(word => word.length >= 3 && !STOPWORDS.has(word));
+}
+
+/**
+ * Hidden skill files a query asked for by name: the query holds the whole
+ * name as a word (`-` and `_` folded), or every word of it. A name inside a
+ * longer word (`sql` in "postgresql") is no match. A search that would have
+ * found the skill says so, instead of returning the next best match as if
+ * nothing were missing.
+ */
+export async function findInvalidSkillsMatching(
+  workspaceId: string,
+  query: string,
+): Promise<InvalidSkillFile[]> {
+  const invalid = (await loadSkillCatalog(workspaceId)).invalid;
+  if (invalid.length === 0) return [];
+  const folded = canonicalSkillName(query);
+  const words = new Set(
+    query
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(word => word.length > 0),
+  );
+  return invalid.filter(file => {
+    const whole = canonicalSkillName(file.name);
+    const at = whole.length >= 3 ? folded.indexOf(whole) : -1;
+    const wordChar = /[a-z0-9_]/;
+    if (
+      at >= 0 &&
+      !wordChar.test(folded[at - 1] ?? " ") &&
+      !wordChar.test(folded[at + whole.length] ?? " ")
+    ) {
+      return true;
+    }
+    const wanted = nameWords(file.name);
+    return wanted.length > 0 && wanted.every(word => words.has(word));
+  });
+}
+
+/** One line for a tool result: which hidden files matched, and why each is hidden. */
+export function invalidSkillsNotice(files: InvalidSkillFile[]): string {
+  const list = files.map(file => `${file.path} (${file.reason})`).join("; ");
+  return files.length === 1
+    ? `1 skill file matches this query by name but is hidden from the agent: ${list}. Tell the user and name the fix.`
+    : `${files.length} skill files match this query by name but are hidden from the agent: ${list}. Tell the user and name the fix.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -629,13 +772,113 @@ export interface AdminSkillSummary {
   /** Previous names (a rename records them); they still resolve. */
   aliases: string[];
   definitionInvalid: { reason: string; path: string } | null;
+  /** Problems that do not hide the skill: a cut description, a refused resource. */
+  warnings: string[];
+  /** Files `read_skill_resource` serves for this skill. */
+  resources: SkillResource[];
+  /**
+   * Loads, resource reads and keyword-match bodies in the last 30 days.
+   * Absent, with `lastLoadedAt`, when the usage numbers cannot be read: a
+   * listing never shows a false 0.
+   */
+  loads30d?: number;
+  /** Last read of any kind (ISO time), null when never read. */
+  lastLoadedAt?: string | null;
 }
 
 export interface AdminSkillDetail extends AdminSkillSummary {
   body: string;
 }
 
-function summaryOf(skill: WorkspaceSkill): AdminSkillSummary {
+function usageFields(
+  usage: Map<string, SkillUsageSummary>,
+  scope: "workspace" | "system",
+  names: string[],
+): { loads30d: number; lastLoadedAt: string | null } {
+  let loads30d = 0;
+  let lastLoadedAt: Date | null = null;
+  for (const name of new Set(names)) {
+    const entry = usage.get(skillUsageKey(scope, name));
+    if (!entry) continue;
+    loads30d += entry.loads30d;
+    if (
+      entry.lastLoadedAt &&
+      (!lastLoadedAt || entry.lastLoadedAt > lastLoadedAt)
+    ) {
+      lastLoadedAt = entry.lastLoadedAt;
+    }
+  }
+  return { loads30d, lastLoadedAt: lastLoadedAt?.toISOString() ?? null };
+}
+
+/**
+ * The names a workspace skill's usage is recorded under: usage is keyed by
+ * name, so a renamed skill's earlier reads sit under its old names. An old
+ * name counts only while this skill alone claims it and no skill holds it
+ * live, the same rule that lets it resolve.
+ */
+function usageNamesBySkill(catalog: SkillCatalog): Map<string, string[]> {
+  const live = new Set(catalog.skills.map(skill => skill.name));
+  const claims = new Map<string, number>();
+  for (const skill of catalog.skills) {
+    for (const alias of new Set(skill.aliases ?? [])) {
+      claims.set(alias, (claims.get(alias) ?? 0) + 1);
+    }
+  }
+  return new Map(
+    catalog.skills.map(skill => [
+      skill.name,
+      [
+        skill.name,
+        ...(skill.aliases ?? []).filter(
+          alias => !live.has(alias) && claims.get(alias) === 1,
+        ),
+      ],
+    ]),
+  );
+}
+
+/**
+ * Usage per index entry for `list_skills`, or null when the numbers cannot
+ * be read: the listing then leaves the two fields out, never shows a false 0.
+ */
+export async function skillUsageForIndex(
+  workspaceId: string,
+): Promise<
+  | ((
+      scope: "workspace" | "system",
+      name: string,
+    ) => { loads30d: number; lastLoadedAt: string | null })
+  | null
+> {
+  const usage = await getSkillUsageOrNull(workspaceId);
+  if (!usage) return null;
+  const namesOf = usageNamesBySkill(await loadSkillCatalog(workspaceId));
+  return (scope, name) =>
+    usageFields(
+      usage,
+      scope,
+      scope === "workspace" ? (namesOf.get(name) ?? [name]) : [name],
+    );
+}
+
+/** A skill's warnings as lines: the SKILL.md ones bare, the others with their file. */
+function warningTexts(catalog: SkillCatalog, name: string): string[] {
+  return catalog.warnings
+    .filter(warning => warning.name === name)
+    .map(warning =>
+      warning.path.endsWith("/SKILL.md")
+        ? warning.reason
+        : `${warning.path}: ${warning.reason}`,
+    );
+}
+
+function summaryOf(
+  skill: WorkspaceSkill,
+  warnings: string[] = [],
+  usage: Map<string, SkillUsageSummary> | null = null,
+  usageNames: string[] = [skill.name],
+): AdminSkillSummary {
   return {
     id: skill.id,
     name: skill.name,
@@ -648,6 +891,9 @@ function summaryOf(skill: WorkspaceSkill): AdminSkillSummary {
     pinned: skill.pinned,
     aliases: skill.aliases ?? [],
     definitionInvalid: null,
+    warnings,
+    resources: skill.resources,
+    ...(usage ? usageFields(usage, "workspace", usageNames) : {}),
   };
 }
 
@@ -656,8 +902,17 @@ export async function listSkillsForAdmin(
   workspaceId: string,
 ): Promise<AdminSkillSummary[]> {
   const catalog = await loadSkillCatalog(workspaceId);
+  const usage = await getSkillUsageOrNull(workspaceId);
+  const namesOf = usageNamesBySkill(catalog);
   return [
-    ...catalog.skills.map(summaryOf),
+    ...catalog.skills.map(skill =>
+      summaryOf(
+        skill,
+        warningTexts(catalog, skill.name),
+        usage,
+        namesOf.get(skill.name),
+      ),
+    ),
     ...catalog.invalid.map(file => ({
       id: skillId(workspaceId, file.name),
       name: file.name,
@@ -669,6 +924,9 @@ export async function listSkillsForAdmin(
       pinned: false,
       aliases: [],
       definitionInvalid: { reason: file.reason, path: file.path },
+      warnings: [],
+      resources: [],
+      ...(usage ? { loads30d: 0, lastLoadedAt: null } : {}),
     })),
   ];
 }
@@ -679,7 +937,17 @@ export async function getSkillForAdmin(
 ): Promise<AdminSkillDetail | null> {
   const skill = await findSkillById(workspaceId, id);
   if (!skill) return null;
-  return { ...summaryOf(skill), body: skill.body };
+  const catalog = await loadSkillCatalog(workspaceId);
+  const usage = await getSkillUsageOrNull(workspaceId);
+  return {
+    ...summaryOf(
+      skill,
+      warningTexts(catalog, skill.name),
+      usage,
+      usageNamesBySkill(catalog).get(skill.name),
+    ),
+    body: skill.body,
+  };
 }
 
 export async function toggleSkillSuppressed(

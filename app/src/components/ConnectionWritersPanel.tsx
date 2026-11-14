@@ -8,7 +8,8 @@
  *
  * Both kinds of connection: a database (`where` is a schema or table) and a
  * source connection, written through Mako's proxy (a writer writes anywhere
- * there; live reads can be turned off).
+ * there; live reads can be turned off, or limited to the people and
+ * workflows listed, writers included).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -19,10 +20,9 @@ import {
   Button,
   Chip,
   CircularProgress,
-  FormControlLabel,
   IconButton,
+  MenuItem,
   Stack,
-  Switch,
   TextField,
   Tooltip,
   Typography,
@@ -39,6 +39,8 @@ import {
   X,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useAuth } from "../contexts/auth-context";
+import { useConfirm } from "./ConfirmDialog";
 import {
   useSchemaStore,
   type ConnectionRecentWriter,
@@ -53,6 +55,8 @@ import {
 import { initials } from "../lib/initials";
 
 type ConnectionKind = "database" | "source";
+
+type ReadMode = "off" | "everyone" | "listed";
 
 type Who = { principal: string; label: string; kind: "person" | "workflow" };
 
@@ -110,6 +114,8 @@ export default function ConnectionWritersPanel({
 }) {
   const source = kind === "source";
   const { currentWorkspace, members, loadMembers } = useWorkspace();
+  const { user } = useAuth();
+  const confirm = useConfirm();
   const workspaceId = currentWorkspace?.id;
   const getDatabaseWriters = useSchemaStore(s => s.getConnectionWriters);
   const setDatabaseWriters = useSchemaStore(s => s.setConnectionWriters);
@@ -131,11 +137,16 @@ export default function ConnectionWritersPanel({
     !source || (state as SourceConnectionWriters | null)?.liveReads === true;
   const callable =
     !source || (state as SourceConnectionWriters | null)?.callable !== false;
+  // Null: everyone in the workspace reads live.
+  const liveReaders = source
+    ? ((state as SourceConnectionWriters | null)?.liveReaders ?? null)
+    : null;
   const [namespaces, setNamespaces] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [who, setWho] = useState<Who | null>(null);
   const [where, setWhere] = useState<string>(ANYWHERE);
+  const [reader, setReader] = useState<Who | null>(null);
 
   const load = useCallback(async () => {
     if (!workspaceId) return;
@@ -182,18 +193,18 @@ export default function ConnectionWritersPanel({
       })),
     [members],
   );
-  // A source connection allows deployed workflows together (they share one
-  // identity today): one option, never each workflow.
+  // Every deployed workflow acts as itself (its step's pass), so each can be
+  // allowed alone, or all of them at once.
   const flows = useMemo<Who[]>(
-    () =>
-      source
-        ? [ALL_WORKFLOWS]
-        : (workflows ?? []).map(w => ({
-            principal: `workflow:${w.workflowId}`,
-            label: w.workflowId,
-            kind: "workflow",
-          })),
-    [workflows, source],
+    () => [
+      ALL_WORKFLOWS,
+      ...(workflows ?? []).map(w => ({
+        principal: `workflow:${w.workflowId}`,
+        label: w.workflowId,
+        kind: "workflow" as const,
+      })),
+    ],
+    [workflows],
   );
   const describe = useCallback(
     (principal: string): Who => {
@@ -213,6 +224,7 @@ export default function ConnectionWritersPanel({
   const save = async (
     next: ConnectionWriter[],
     nextLiveReads?: boolean,
+    nextLiveReaders?: { principal: string }[] | null,
   ): Promise<boolean> => {
     if (!workspaceId) return false;
     setBusy(true);
@@ -221,7 +233,13 @@ export default function ConnectionWritersPanel({
         principal: w.principal,
         ...(w.where ? { where: w.where } : {}),
       }));
-      await setWriters(workspaceId, connectionId, writers, nextLiveReads);
+      await setWriters(
+        workspaceId,
+        connectionId,
+        writers,
+        nextLiveReads,
+        nextLiveReaders,
+      );
       await load();
       return true;
     } catch (err) {
@@ -238,6 +256,56 @@ export default function ConnectionWritersPanel({
     if (await save([...state.writers, { principal, where: scope }])) {
       setWho(null);
       setWhere(ANYWHERE);
+    }
+  };
+
+  const saveReaders = (next: { principal: string }[] | null) =>
+    state &&
+    save(
+      state.writers,
+      undefined,
+      next?.map(r => ({ principal: r.principal })) ?? null,
+    );
+
+  const readMode: ReadMode = !liveReads
+    ? "off"
+    : liveReaders
+      ? "listed"
+      : "everyone";
+
+  // Starting a list starts it with the person doing it, so they are not
+  // locked out; going back to everyone forgets the list, so ask first.
+  const changeReadMode = async (next: ReadMode) => {
+    if (!state || next === readMode) return;
+    if (next === "off") {
+      await save(state.writers, false);
+      return;
+    }
+    if (next === "listed") {
+      await save(
+        state.writers,
+        true,
+        user?.id ? [{ principal: `user:${user.id}` }] : [],
+      );
+      return;
+    }
+    if (
+      liveReaders &&
+      liveReaders.length > 0 &&
+      !(await confirm({
+        title: "Let everyone read live?",
+        body: `Everyone in this workspace and their agents will read ${connectionName} live, and the ${liveReaders.length === 1 ? "one allowed entry" : `${liveReaders.length} allowed entries`} will be forgotten.`,
+        confirmLabel: "Let everyone read",
+      }))
+    ) {
+      return;
+    }
+    await save(state.writers, true, null);
+  };
+
+  const allowReader = async (principal: string) => {
+    if (await saveReaders([...(liveReaders ?? []), { principal }])) {
+      setReader(null);
     }
   };
 
@@ -284,7 +352,11 @@ export default function ConnectionWritersPanel({
           icon={<BookOpen size={16} />}
           label={source ? "Read live" : "Read"}
           value={
-            liveReads ? "Everyone in the workspace" : "Off: synced tables only"
+            !liveReads
+              ? "Off: synced tables only"
+              : liveReaders
+                ? `${liveReaders.length} allowed, and writers`
+                : "Everyone in the workspace"
           }
           tone={liveReads ? "normal" : "muted"}
         />
@@ -307,44 +379,157 @@ export default function ConnectionWritersPanel({
         </Alert>
       )}
 
-      {source && state.canEdit && (
-        <FormControlLabel
-          control={
-            <Switch
-              size="small"
-              checked={liveReads}
-              disabled={busy}
-              onChange={(_, checked) => void save(state.writers, checked)}
-            />
-          }
-          label={
-            <Typography variant="body2">
-              Live reads: workflows and agents may read {connectionName}{" "}
-              directly, not only its synced tables. Off until a manager turns it
-              on. When on, everyone in this workspace, viewers included, and
-              their agents can read live through this key.
-            </Typography>
-          }
-        />
+      {source && (
+        <Box>
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 2,
+              mb: 0.5,
+            }}
+          >
+            <Typography variant="subtitle2">Allowed to read live</Typography>
+            {state.canEdit && (
+              <TextField
+                select
+                size="small"
+                margin="none"
+                value={readMode}
+                disabled={busy}
+                onChange={e => void changeReadMode(e.target.value as ReadMode)}
+                sx={{ minWidth: 220 }}
+                slotProps={{ htmlInput: { "aria-label": "Who reads live" } }}
+              >
+                <MenuItem value="off">Off</MenuItem>
+                <MenuItem value="everyone">Everyone in the workspace</MenuItem>
+                <MenuItem value="listed">Only people listed</MenuItem>
+              </TextField>
+            )}
+          </Box>
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{ mb: readMode === "listed" ? 1.5 : 0 }}
+          >
+            {readMode === "off"
+              ? `Workflows and agents use ${connectionName}'s synced tables only.`
+              : readMode === "everyone"
+                ? `Everyone in this workspace, viewers included, and their agents can query ${connectionName} directly.`
+                : `Only the people and workflows listed, and the writers below, can query ${connectionName} directly.`}
+          </Typography>
+          {liveReaders !== null && liveReads && (
+            <>
+              {liveReaders.length === 0 ? (
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{ py: 1 }}
+                >
+                  Only the writers below read {connectionName} live.
+                </Typography>
+              ) : (
+                <Box
+                  sx={{
+                    border: 1,
+                    borderColor: "divider",
+                    borderRadius: 1.5,
+                    overflow: "hidden",
+                  }}
+                >
+                  {liveReaders.map((r, index) => {
+                    const w = describe(r.principal);
+                    return (
+                      <Box
+                        key={r.principal}
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 1.5,
+                          px: 1.5,
+                          py: 1,
+                          borderTop: index ? 1 : 0,
+                          borderColor: "divider",
+                        }}
+                      >
+                        <PrincipalAvatar who={w} />
+                        <Typography variant="body2" noWrap sx={{ flex: 1 }}>
+                          {w.label}
+                        </Typography>
+                        {state.canEdit && (
+                          <Tooltip title="Remove">
+                            <span>
+                              <IconButton
+                                size="small"
+                                disabled={busy}
+                                aria-label={`Remove ${w.label} from live readers`}
+                                onClick={() =>
+                                  void saveReaders(
+                                    liveReaders.filter(
+                                      x => x.principal !== r.principal,
+                                    ),
+                                  )
+                                }
+                              >
+                                <X size={16} />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        )}
+                      </Box>
+                    );
+                  })}
+                </Box>
+              )}
+              {state.canEdit && (
+                <Box
+                  sx={{
+                    mt: 1.5,
+                    display: "grid",
+                    gridTemplateColumns: { xs: "1fr", sm: "1fr auto" },
+                    gap: 1,
+                  }}
+                >
+                  <Autocomplete
+                    size="small"
+                    options={[...people, ...flows].filter(
+                      o => !liveReaders.some(r => r.principal === o.principal),
+                    )}
+                    groupBy={o =>
+                      o.kind === "workflow" ? "Workflows" : "People"
+                    }
+                    getOptionLabel={o => o.label}
+                    isOptionEqualToValue={(a, b) => a.principal === b.principal}
+                    value={reader}
+                    onChange={(_, value) => setReader(value)}
+                    renderInput={params => (
+                      <TextField
+                        {...params}
+                        margin="none"
+                        placeholder="Person or workflow"
+                      />
+                    )}
+                  />
+                  <Button
+                    variant="contained"
+                    disableElevation
+                    disabled={!reader || busy}
+                    onClick={() => reader && void allowReader(reader.principal)}
+                    sx={{ px: 2.5 }}
+                  >
+                    Allow
+                  </Button>
+                </Box>
+              )}
+            </>
+          )}
+        </Box>
       )}
 
       {/* Allowed */}
       <Box>
         <SectionTitle>Allowed to write</SectionTitle>
-        {source &&
-          (who?.kind === "workflow" ||
-            state.writers.some(
-              writer => describe(writer.principal).kind === "workflow",
-            )) && (
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", mb: 1 }}
-            >
-              Workflows are allowed together: they share one deployed identity
-              today, so Mako cannot tell one from another.
-            </Typography>
-          )}
         {state.writers.length === 0 ? (
           <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
             {source

@@ -101,9 +101,12 @@ import {
   deleteSkill,
   listSkillsForAdmin,
   loadSkill,
+  readSkillResource,
   saveSkill,
+  skillUsageForIndex,
   toggleSkillSuppressed,
 } from "../../services/skills.service";
+import { recordSkillUsageNow } from "../../services/skill-usage.service";
 import { MAX_ALIASES } from "../alias-cap";
 import { renameObject, resolveObjectRef } from "../registry";
 
@@ -363,6 +366,52 @@ describe("one commit, the whole folder, and the old name keeps working", () => {
     await deleteSkill(WS, "beta", "u1");
     expect(await resolves("beta")).toBeNull();
     expect(await loads("beta")).toBeNull();
+  });
+});
+
+describe("what the folder carries: its files and its usage", () => {
+  it("read_skill_resource answers to the old name; usage counts across the names", async () => {
+    await seed("glossary");
+    await push({ writes: { "skills/glossary/references/terms.md": "MRR\n" } });
+    const asWorkspace = (skill: string) => [
+      { skill, scope: "workspace" as const },
+    ];
+    await recordSkillUsageNow(WS, asWorkspace("glossary"), "load", "agent");
+    await recordSkillUsageNow(WS, asWorkspace("glossary"), "resource", "mcp");
+
+    expect(await rename("glossary", "glossary-v2")).toMatchObject({
+      aliasesAdded: ["glossary"],
+    });
+
+    // The file moved with the folder, and the old name still opens it.
+    for (const name of ["glossary", "glossary-v2"]) {
+      expect(
+        await readSkillResource(WS, name, "references/terms.md"),
+      ).toMatchObject({
+        success: true,
+        skill: "glossary-v2",
+        scope: "workspace",
+        content: "MRR\n",
+      });
+    }
+
+    // Reads recorded before the rename sit under the old name; the panel
+    // and list_skills add them to the skill's count.
+    await recordSkillUsageNow(WS, asWorkspace("glossary-v2"), "load", "agent");
+    const usageOf = await skillUsageForIndex(WS);
+    expect(usageOf?.("workspace", "glossary-v2").loads30d).toBe(3);
+    expect(
+      (await listSkillsForAdmin(WS)).find(s => s.name === "glossary-v2"),
+    ).toMatchObject({ loads30d: 3 });
+
+    // A new skill takes the old name for good: from then on the renamed
+    // skill counts only its own reads.
+    await seed("glossary");
+    const listed = await listSkillsForAdmin(WS);
+    expect(listed.find(s => s.name === "glossary-v2")).toMatchObject({
+      aliases: [],
+      loads30d: 1,
+    });
   });
 });
 
