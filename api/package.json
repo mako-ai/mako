@@ -20,6 +20,8 @@
     "test:apps": "vitest run --config vitest.apps.config.ts",
     "apps:build-template": "tsx src/apps/e2b-template.ts",
     "test:apps:watch": "vitest --config vitest.apps.config.ts",
+    "test:all": "pnpm --filter @mako/agent-tools build && node --import tsx scripts/run-tsx-tests.mjs && vitest run --config vitest.apps.config.ts",
+    "test:tsx": "node --import tsx scripts/run-tsx-tests.mjs",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",
     "lint:fix": "eslint . --ext ts,tsx --fix"
   },
