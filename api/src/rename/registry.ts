@@ -6,6 +6,7 @@
  * surface, instead of a 404 that reads as "your object is gone".
  */
 import { connectionRenameHandler } from "./handlers/connection";
+import { dbtFileRenameHandler } from "./handlers/dbt-file";
 import { normalizeDisplayName } from "./title-rules";
 import {
   RENAME_KINDS,
@@ -21,6 +22,7 @@ import {
 
 export const RENAME_HANDLERS: Partial<Record<RenameKind, RenameHandler>> = {
   connection: connectionRenameHandler,
+  dbt_file: dbtFileRenameHandler,
 };
 
 export function isRenameKind(value: string): value is RenameKind {

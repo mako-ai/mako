@@ -38,6 +38,8 @@ import {
   repoExists,
   resolveCommit,
   updateRefCas,
+  type IndexEntry,
+  type IndexMode,
 } from "../apps/repository.service";
 
 /** Repo-relative root of the dbt project inside the workspace repo. */
@@ -202,9 +204,70 @@ export async function readWorkingFile(
   }
 }
 
+/** A change to the dbt tree, in PROJECT-RELATIVE paths. */
+export interface DbtMutation {
+  writes?: Record<string, string>;
+  deletes?: string[];
+  /** Blobs placed as they are (oid + mode): a binary, an executable, a symlink. */
+  entries?: IndexEntry[];
+  /** Mode for a written path (default 100644). */
+  modes?: Record<string, IndexMode>;
+}
+
+/** What a mutation was decided from; the commit is refused when it changed. */
+export interface DbtCommitExpectation {
+  /** Project path → the blob oid read there (`null`: the path must be absent). */
+  blobs?: Record<string, string | null>;
+  /**
+   * The oid of the whole `dbt/` tree as read. Any change anywhere in the
+   * project (a save, an added or a deleted file) refuses the commit with
+   * `BlobPreconditionError` (path `dbt`): for a mutation decided from every
+   * file of the project, this is "compare-and-swap on everything it read"
+   * in one check, however many files there are.
+   */
+  tree?: string;
+}
+
+/**
+ * Bring `branch` up to date with the mirror before a write, unthrottled: a
+ * commit onto a tip this instance had not caught up with cannot be pushed.
+ */
+async function freshenBranchForWrite(
+  workspaceId: string,
+  branch: string,
+): Promise<void> {
+  if (branch === DEFAULT_BRANCH) {
+    await freshenBeforeMainWrite(workspaceId);
+  } else {
+    await fetchFromCloud(workspaceId, branch).catch(() => undefined);
+  }
+}
+
+/**
+ * The commit a multi-file change (a rename with its ref rewrites) reads the
+ * project at: the head of the branch the write will land on, freshened from
+ * the mirror exactly as the write itself freshens. A session branch with no
+ * ref yet reads the default branch, which is where the write forks it from.
+ * Null when there is no repo or no commit to read.
+ */
+export async function resolveDbtWriteBase(
+  project: Pick<IDbtProject, "workspaceId">,
+  userId: string,
+): Promise<{ repoDir: string; branch: string; head: string } | null> {
+  const repoDir = await repoDirIfExists(project);
+  if (repoDir == null) return null;
+  const branch = await getCheckoutBranch(project, userId);
+  await freshenBranchForWrite(project.workspaceId.toString(), branch);
+  const head =
+    (await resolveCommit(repoDir, `refs/heads/${branch}`)) ??
+    (await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`));
+  return head ? { repoDir, branch, head } : null;
+}
+
 /**
  * Commit a mutation to the dbt tree on the actor's session branch and push it
- * to the mirror. The one write path for saves, deletes and renames.
+ * to the mirror. The one write path for saves, deletes and renames (a
+ * rename is rename/dbt-file.ts, through `commitDbtChanges`).
  *
  * The branch is freshened from the mirror first: a commit onto a tip this
  * instance had not caught up with cannot be pushed (non-fast-forward), and
@@ -216,8 +279,9 @@ export async function readWorkingFile(
 async function commitDbtMutation(
   project: IDbtProject,
   userId: string,
-  mutation: { writes?: Record<string, string>; deletes?: string[] },
+  mutation: DbtMutation,
   message: string,
+  expect: DbtCommitExpectation = {},
 ): Promise<WriteWorkingFileResult> {
   const workspaceId = project.workspaceId.toString();
   // Production: the workspace's own repo is the only durable store (§17).
@@ -234,17 +298,28 @@ async function commitDbtMutation(
       Object.entries(mutation.writes ?? {}).map(([p, c]) => [repoPath(p), c]),
     ),
     deletes: (mutation.deletes ?? []).map(repoPath),
+    entries: (mutation.entries ?? []).map(entry => ({
+      ...entry,
+      path: repoPath(entry.path),
+    })),
+    modes: Object.fromEntries(
+      Object.entries(mutation.modes ?? {}).map(([p, m]) => [repoPath(p), m]),
+    ),
   };
+  // What the mutation was decided from, checked against the head of every
+  // attempt (the retry on the mirror's tip included). The named files come
+  // first: one of them having changed is the clearer refusal.
+  const expectBlobs: Record<string, string | null> = Object.fromEntries(
+    Object.entries(expect.blobs ?? {}).map(([p, oid]) => [repoPath(p), oid]),
+  );
+  if (expect.tree !== undefined) expectBlobs[DBT_ROOT] = expect.tree;
 
-  const commit = async () => {
-    if (onDefault) {
-      await freshenBeforeMainWrite(workspaceId);
-    } else {
-      await fetchFromCloud(workspaceId, branch).catch(() => undefined);
-    }
+  const commit = async (landed?: string) => {
+    await freshenBranchForWrite(workspaceId, branch);
     // A remembered session branch whose ref is gone (deleted from another
     // checkout) forks back off the default branch head, like ensureWorktree.
-    if (!(await resolveCommit(repoDir, `refs/heads/${branch}`))) {
+    const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
+    if (!head) {
       if (!onDefault) await freshenBeforeMainWrite(workspaceId);
       const mainHead = await resolveCommit(
         repoDir,
@@ -253,7 +328,17 @@ async function commitDbtMutation(
       if (!mainHead) throw new RepoRequiredError();
       await updateRefCas(repoDir, `refs/heads/${branch}`, mainHead, ZERO_OID);
     }
-    return commitBlobsOnBranch(repoDir, branch, files, { message, author });
+    // The retry, and the first commit is still the tip: the mutation is
+    // there already. Checked before the preconditions, which describe the
+    // tree BEFORE the mutation and would refuse its own result.
+    if (landed && head === landed) {
+      return { commitOid: landed, previousHead: landed, unchanged: true };
+    }
+    return commitBlobsOnBranch(repoDir, branch, files, {
+      message,
+      author,
+      expectBlobs,
+    });
   };
 
   let result = await commit();
@@ -274,7 +359,7 @@ async function commitDbtMutation(
     });
     // When the mirror did not move, the first commit is still the tip and
     // this one is "unchanged": it still has to reach the mirror.
-    const retried = await commit();
+    const retried = await commit(result.commitOid);
     if (!retried.unchanged) result = retried;
     try {
       await mirrorPushDefaultBranchNow(workspaceId);
@@ -283,6 +368,31 @@ async function commitDbtMutation(
     }
   }
   return { commitOid: result.commitOid };
+}
+
+/**
+ * Commit writes, deletes and moved blobs in ONE commit, on the same path as
+ * every other dbt write (freshen, commit, push, retry on the mirror's tip).
+ * `expect` makes it a compare-and-swap: the commit is refused with
+ * `BlobPreconditionError` when what the caller read has changed, on the
+ * first attempt and on the retry alike, so a rewrite decided from stale
+ * content never lands on top of a save.
+ */
+export async function commitDbtChanges(
+  project: IDbtProject,
+  userId: string,
+  mutation: DbtMutation,
+  message: string,
+  expect: DbtCommitExpectation = {},
+): Promise<WriteWorkingFileResult> {
+  for (const path of [
+    ...Object.keys(mutation.writes ?? {}),
+    ...(mutation.deletes ?? []),
+    ...(mutation.entries ?? []).map(entry => entry.path),
+  ]) {
+    assertSafeDbtPath(path);
+  }
+  return commitDbtMutation(project, userId, mutation, message, expect);
 }
 
 /** Commit a batch of files in one commit (scaffold, imports). */
@@ -328,30 +438,6 @@ export async function deleteWorkingFile(
     `dbt: delete ${path}`,
   );
   return true;
-}
-
-/** Rename: one commit carrying the delete and the add. */
-export async function renameWorkingFile(
-  project: IDbtProject,
-  userId: string,
-  from: string,
-  to: string,
-): Promise<string | null> {
-  assertSafeDbtPath(from);
-  assertSafeDbtPath(to);
-  const [source, target] = await Promise.all([
-    readWorkingFile(project, userId, from),
-    readWorkingFile(project, userId, to),
-  ]);
-  if (!source) return "File not found";
-  if (target) return `"${to}" already exists`;
-  await commitDbtMutation(
-    project,
-    userId,
-    { writes: { [to]: source.content }, deletes: [from] },
-    `dbt: rename ${from} -> ${to}`,
-  );
-  return null;
 }
 
 /**

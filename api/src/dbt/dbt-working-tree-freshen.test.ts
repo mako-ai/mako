@@ -34,6 +34,10 @@ vi.mock("../services/workspace-repos.service", () => ({
 vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
 }));
+// A rename pokes open windows; nothing listens here.
+vi.mock("../services/realtime.service", () => ({
+  publishRealtimeEvent: vi.fn(),
+}));
 
 import { DbtProject, type IDbtProject } from "../database/workspace-schema";
 import { runGit } from "../apps/git";
@@ -52,6 +56,7 @@ import {
   writeWorkingFile,
 } from "./dbt-working-tree.service";
 import { listJobDefinitionsAtMain } from "./dbt-config.service";
+import { renameDbtFile } from "../rename/dbt-file";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -216,5 +221,78 @@ describe("dbt working tree behind its mirror", () => {
     ).stdout.trim();
 
     expect(await resolveWorkingTreeCommit(project, {})).toBe(mirrorHead);
+  });
+});
+
+describe("a rename behind the mirror", () => {
+  const admin = () => ({
+    workspaceId: WS.toString(),
+    userId: USER,
+    role: "admin",
+  });
+  const onMirror = async (file: string) =>
+    (await runGit(["-C", remoteDir, "show", `${DEFAULT_BRANCH}:dbt/${file}`]))
+      .stdout;
+
+  it("rewrites what another instance committed and reaches the mirror", async () => {
+    await initRepo(remoteDir, { "dbt/models/orders.sql": "select 1\n" });
+    await ensureLocalRepo(WS.toString());
+    await seedProject();
+    // A model referencing `orders`, saved through a sibling instance.
+    await commitOnMirror({
+      "dbt/models/mart.sql": "select * from {{ ref('orders') }}\n",
+    });
+
+    const result = await renameDbtFile(admin(), {
+      from: "models/orders.sql",
+      to: "models/fct_orders.sql",
+    });
+
+    expect(result.commit).toBeTruthy();
+    expect(await mirrorMainFiles()).toContain("dbt/models/fct_orders.sql");
+    expect(await mirrorMainFiles()).not.toContain("dbt/models/orders.sql");
+    expect(await onMirror("models/mart.sql")).toBe(
+      "select * from {{ ref('fct_orders') }}\n",
+    );
+  });
+
+  it("is pushed again, not refused, when the first push fails and the mirror did not move", async () => {
+    await initRepo(remoteDir, { "dbt/models/orders.sql": "select 1\n" });
+    await ensureLocalRepo(WS.toString());
+    await seedProject();
+    // The mirror refuses the first push only.
+    const marker = path.join(tmpRoot, `refused-${WS.toString()}`);
+    await fs.writeFile(
+      path.join(remoteDir, "hooks", "pre-receive"),
+      `#!/bin/sh\nif [ -f "${marker}" ]; then exit 0; fi\n: > "${marker}"\nexit 1\n`,
+      { mode: 0o755 },
+    );
+
+    const result = await renameDbtFile(admin(), {
+      from: "models/orders.sql",
+      to: "models/fct_orders.sql",
+    });
+
+    expect(result.after.slug).toBe("models/fct_orders.sql");
+    expect(await mirrorMainFiles()).toEqual(["dbt/models/fct_orders.sql"]);
+  });
+
+  it("fails, and says the mirror refused it, when it cannot be pushed", async () => {
+    await initRepo(remoteDir, { "dbt/models/orders.sql": "select 1\n" });
+    await ensureLocalRepo(WS.toString());
+    await seedProject();
+    await fs.writeFile(
+      path.join(remoteDir, "hooks", "pre-receive"),
+      "#!/bin/sh\nexit 1\n",
+      { mode: 0o755 },
+    );
+
+    await expect(
+      renameDbtFile(admin(), {
+        from: "models/orders.sql",
+        to: "models/fct_orders.sql",
+      }),
+    ).rejects.toBeInstanceOf(DbtSaveNotMirroredError);
+    expect(await mirrorMainFiles()).toEqual(["dbt/models/orders.sql"]);
   });
 });

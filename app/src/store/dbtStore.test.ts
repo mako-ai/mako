@@ -165,6 +165,32 @@ describe("file buffer — write / persist / read", () => {
     expect(second).toBe("select 2");
     expect(api.get).toHaveBeenCalledTimes(1); // served from cache the 2nd time
   });
+
+  it("a file changed elsewhere is read again only when it is open here, or new", async () => {
+    api.get.mockResolvedValue({
+      success: true,
+      files: [{ path: "models/a.sql" }, { path: "models/mart.sql" }],
+    });
+    await useDbtStore.getState().fetchFiles(WS, "p1");
+    const update = (path: string) =>
+      useDbtStore.getState().applyRemoteFileUpdate(WS, "p1", path);
+    // Listed, and nobody has it open here: nothing to refresh.
+    api.get.mockClear();
+    await update("models/mart.sql");
+    expect(api.get).not.toHaveBeenCalled();
+    // Open here (a clean buffer), or not listed yet: read.
+    api.get.mockResolvedValue({
+      success: true,
+      file: { path: "models/a.sql", content: "fresh" },
+    });
+    await useDbtStore.getState().readFile(WS, "p1", "models/a.sql");
+    await update("models/a.sql");
+    await update("models/new.sql");
+    expect(api.get).toHaveBeenCalledTimes(3);
+    expect(useDbtStore.getState().filePathsByProject.p1).toContain(
+      "models/new.sql",
+    );
+  });
 });
 
 describe("ad-hoc runner passthrough", () => {
