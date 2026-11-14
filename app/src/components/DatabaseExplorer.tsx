@@ -203,8 +203,14 @@ function DatabaseExplorer({
 
   useEffect(() => {
     if (!currentWorkspace) return;
+    const errors = useSchemaStore.getState().error;
     databases.forEach(db => {
       const hasNodes = treeNodes[db.id] && treeNodes[db.id]["root"];
+      // A failed root stores only an error, never nodes; without this check
+      // every unrelated tree change re-requested an unreachable database
+      // (each possibly waiting out a connection timeout). The user retries
+      // with Refresh, which clears the error.
+      if (errors[`tree:${db.id}:root`]) return;
       if (!hasNodes) {
         ensureTreeRoot(currentWorkspace.id, db.id);
       }

@@ -763,6 +763,11 @@ export const useSchemaStore = create<SchemaState>()(
           connectionIds.forEach(connId => {
             delete s.treeNodes[connId];
             delete s.autocompleteSchemas[connId];
+            // A refresh retries trees that failed to load (the explorer
+            // skips errored roots until then).
+            Object.keys(s.error)
+              .filter(k => k.startsWith(`tree:${connId}:`))
+              .forEach(k => delete s.error[k]);
 
             // Clear columns
             const columnKeysToDelete = Object.keys(s.columns).filter(k =>

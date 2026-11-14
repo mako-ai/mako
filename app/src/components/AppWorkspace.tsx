@@ -179,6 +179,13 @@ function useHiddenPause(): boolean {
   return paused;
 }
 
+/** xterm colours per palette mode (xterm needs concrete colour strings). */
+function xtermTheme(mode: "light" | "dark") {
+  return mode === "dark"
+    ? { background: "#0b0b0d", foreground: "#e6e6e6" }
+    : { background: "#ffffff", foreground: "#1a1a1a", cursor: "#1a1a1a" };
+}
+
 function TerminalPanel({
   appId,
   workspaceId,
@@ -213,6 +220,18 @@ function TerminalPanel({
   // allowed to boot a machine. Assigned inside the socket effect.
   const connectRef = useRef<((force?: boolean) => void) | null>(null);
   const theme = useTheme();
+  const paletteMode = theme.palette.mode;
+  // The live xterm instance, so a theme toggle restyles it in place instead
+  // of tearing down the terminal and its WebSocket (the mode used to be a
+  // dependency of the effect below, which reconnected every pty).
+  const termRef = useRef<Terminal | null>(null);
+  const paletteModeRef = useRef(paletteMode);
+  paletteModeRef.current = paletteMode;
+
+  useEffect(() => {
+    const term = termRef.current;
+    if (term) term.options.theme = xtermTheme(paletteMode);
+  }, [paletteMode]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -224,10 +243,7 @@ function TerminalPanel({
       fontSize: 12,
       cursorBlink: true,
       // Match the app's theme so the terminal does not look bolted on.
-      theme:
-        theme.palette.mode === "dark"
-          ? { background: "#0b0b0d", foreground: "#e6e6e6" }
-          : { background: "#ffffff", foreground: "#1a1a1a", cursor: "#1a1a1a" },
+      theme: xtermTheme(paletteModeRef.current),
       // Holds the tmux history prefill (TMUX_HISTORY_LINES server-side)
       // plus a session's worth of new output — xterm.js is the ONLY
       // scrolling layer now; tmux just keeps the session alive.
@@ -243,6 +259,7 @@ function TerminalPanel({
       ? null
       : new TerminalTypeAhead(term);
     term.open(host);
+    termRef.current = term;
     // Debug handle: lets devtools reach the live instance (buffer state,
     // options) — xterm exposes nothing on its DOM nodes.
     (host as HTMLElement & { __term?: Terminal }).__term = term;
@@ -417,12 +434,13 @@ function TerminalPanel({
       typeAhead?.dispose();
       ws?.close();
       term.dispose();
+      if (termRef.current === term) termRef.current = null;
       if (inputRef) inputRef.current = null;
     };
     // onSessionEnd deliberately not a dependency: it is stable in practice
     // and reconnecting the pty because a parent re-rendered would be worse.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appId, workspaceId, termId, fresh, theme.palette.mode]);
+  }, [appId, workspaceId, termId, fresh]);
 
   return (
     <Box
