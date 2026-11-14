@@ -272,29 +272,31 @@ export function BackfillPanel({
   flowId,
   onEdit,
 }: BackfillPanelProps) {
-  const {
-    flows: flowsMap,
-    startCdcBackfill,
-    fetchCdcStatus,
-    fetchCdcDestinationCounts,
-    fetchFlowStatus,
-    fetchExecutionDetails,
-    fetchFlowHistory,
-    fetchWebhookEvents,
-    fetchEntitySchema,
-    fetchEntitySchemaHealth,
-    startCdcStream,
-    pauseCdcStream,
-    pauseCdcFlow,
-    cancelCdcBackfill,
-    resumeCdcFlow,
-    resetCdcEntityTable,
-    resyncCdcFlow,
-    recoverCdcStream,
-    recoverCdcBackfill,
-    reprocessStaleEvents,
-    retryAllFailedWebhookEvents,
-  } = useFlowStore();
+  const flowsMap = useFlowStore(s => s.flows);
+  const startCdcBackfill = useFlowStore(s => s.startCdcBackfill);
+  const fetchCdcStatus = useFlowStore(s => s.fetchCdcStatus);
+  const fetchCdcDestinationCounts = useFlowStore(
+    s => s.fetchCdcDestinationCounts,
+  );
+  const fetchFlowStatus = useFlowStore(s => s.fetchFlowStatus);
+  const fetchExecutionDetails = useFlowStore(s => s.fetchExecutionDetails);
+  const fetchFlowHistory = useFlowStore(s => s.fetchFlowHistory);
+  const fetchWebhookEvents = useFlowStore(s => s.fetchWebhookEvents);
+  const fetchEntitySchema = useFlowStore(s => s.fetchEntitySchema);
+  const fetchEntitySchemaHealth = useFlowStore(s => s.fetchEntitySchemaHealth);
+  const startCdcStream = useFlowStore(s => s.startCdcStream);
+  const pauseCdcStream = useFlowStore(s => s.pauseCdcStream);
+  const pauseCdcFlow = useFlowStore(s => s.pauseCdcFlow);
+  const cancelCdcBackfill = useFlowStore(s => s.cancelCdcBackfill);
+  const resumeCdcFlow = useFlowStore(s => s.resumeCdcFlow);
+  const resetCdcEntityTable = useFlowStore(s => s.resetCdcEntityTable);
+  const resyncCdcFlow = useFlowStore(s => s.resyncCdcFlow);
+  const recoverCdcStream = useFlowStore(s => s.recoverCdcStream);
+  const recoverCdcBackfill = useFlowStore(s => s.recoverCdcBackfill);
+  const reprocessStaleEvents = useFlowStore(s => s.reprocessStaleEvents);
+  const retryAllFailedWebhookEvents = useFlowStore(
+    s => s.retryAllFailedWebhookEvents,
+  );
 
   const [expandedEntity, setExpandedEntity] = useState<string | null>(null);
   const [entitySchemaCache, setEntitySchemaCache] = useState<

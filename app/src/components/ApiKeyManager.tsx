@@ -283,7 +283,11 @@ function McpConnectSection({
 export function ApiKeyManager() {
   const { currentWorkspace, loading: workspaceLoading } = useWorkspace();
   const confirm = useConfirm();
-  const { keys, loading, fetchKeys, createKey, deleteKey } = useApiKeyStore();
+  const keys = useApiKeyStore(s => s.keys);
+  const loading = useApiKeyStore(s => s.loading);
+  const fetchKeys = useApiKeyStore(s => s.fetchKeys);
+  const createKey = useApiKeyStore(s => s.createKey);
+  const deleteKey = useApiKeyStore(s => s.deleteKey);
   const apiKeys = currentWorkspace ? keys[currentWorkspace.id] || [] : [];
   const isLoading = currentWorkspace
     ? !!loading[`fetch:${currentWorkspace.id}`]

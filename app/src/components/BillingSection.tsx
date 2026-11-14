@@ -21,14 +21,12 @@ import { useBillingStore } from "../store/billingStore";
 
 export function BillingSection() {
   const { currentWorkspace } = useWorkspace();
-  const {
-    status,
-    isLoading,
-    error,
-    fetchBillingStatus,
-    createCheckoutSession,
-    createPortalSession,
-  } = useBillingStore();
+  const status = useBillingStore(s => s.status);
+  const isLoading = useBillingStore(s => s.isLoading);
+  const error = useBillingStore(s => s.error);
+  const fetchBillingStatus = useBillingStore(s => s.fetchBillingStatus);
+  const createCheckoutSession = useBillingStore(s => s.createCheckoutSession);
+  const createPortalSession = useBillingStore(s => s.createPortalSession);
 
   useEffect(() => {
     if (currentWorkspace?.id) {

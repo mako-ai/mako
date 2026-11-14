@@ -74,7 +74,8 @@ interface WorkspaceProviderProps {
 
 export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const { user, loading: authLoading } = useAuth();
-  const { currentWorkspaceId, setCurrentWorkspaceId } = useUIStore();
+  const currentWorkspaceId = useUIStore(s => s.currentWorkspaceId);
+  const setCurrentWorkspaceId = useUIStore(s => s.setCurrentWorkspaceId);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [currentWorkspace, setCurrentWorkspace] = useState<Workspace | null>(
     null,

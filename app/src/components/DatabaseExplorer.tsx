@@ -163,7 +163,8 @@ function DatabaseExplorer({
     ? error[`connections:${currentWorkspace.id}`]
     : null;
 
-  const { types: dbTypes, fetchTypes } = useDatabaseCatalogStore();
+  const dbTypes = useDatabaseCatalogStore(s => s.types);
+  const fetchTypes = useDatabaseCatalogStore(s => s.fetchTypes);
 
   useEffect(() => {
     fetchTypes().catch(() => undefined);

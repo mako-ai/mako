@@ -192,13 +192,13 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     reValidateMode: "onChange",
   });
 
-  const {
-    fetchTypes,
-    fetchSchema,
-    types: dbTypes,
-    schemas,
-  } = useDatabaseCatalogStore();
-  const { testConnection, fetchDatabase, saveDatabase } = useSchemaStore();
+  const fetchTypes = useDatabaseCatalogStore(s => s.fetchTypes);
+  const fetchSchema = useDatabaseCatalogStore(s => s.fetchSchema);
+  const dbTypes = useDatabaseCatalogStore(s => s.types);
+  const schemas = useDatabaseCatalogStore(s => s.schemas);
+  const testConnection = useSchemaStore(s => s.testConnection);
+  const fetchDatabase = useSchemaStore(s => s.fetchDatabase);
+  const saveDatabase = useSchemaStore(s => s.saveDatabase);
 
   // Toggle password visibility for a field
   const togglePasswordVisibility = useCallback((fieldName: string) => {

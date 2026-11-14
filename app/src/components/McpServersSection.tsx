@@ -939,15 +939,13 @@ function ServerDetail({
 }) {
   const { currentWorkspace } = useWorkspace();
   const confirm = useConfirm();
-  const {
-    testServer,
-    updateServer,
-    deleteServer,
-    fetchGrants,
-    revokeGrant,
-    saveGrant,
-    grants,
-  } = useMcpStore();
+  const testServer = useMcpStore(s => s.testServer);
+  const updateServer = useMcpStore(s => s.updateServer);
+  const deleteServer = useMcpStore(s => s.deleteServer);
+  const fetchGrants = useMcpStore(s => s.fetchGrants);
+  const revokeGrant = useMcpStore(s => s.revokeGrant);
+  const saveGrant = useMcpStore(s => s.saveGrant);
+  const grants = useMcpStore(s => s.grants);
   const [testing, setTesting] = useState(false);
   const myGrants = grants[server.id] ?? [];
   const hasAvailableTools =
@@ -1635,16 +1633,14 @@ export function McpServersSection() {
   const { currentWorkspace, loading: workspaceLoading } = useWorkspace();
   const muiTheme = useTheme();
   const fullScreenDialog = useMediaQuery(muiTheme.breakpoints.down("sm"));
-  const {
-    servers,
-    presets,
-    loading,
-    error,
-    fetchServers,
-    fetchPresets,
-    oauthReturn,
-    clearOAuthReturn,
-  } = useMcpStore();
+  const servers = useMcpStore(s => s.servers);
+  const presets = useMcpStore(s => s.presets);
+  const loading = useMcpStore(s => s.loading);
+  const error = useMcpStore(s => s.error);
+  const fetchServers = useMcpStore(s => s.fetchServers);
+  const fetchPresets = useMcpStore(s => s.fetchPresets);
+  const oauthReturn = useMcpStore(s => s.oauthReturn);
+  const clearOAuthReturn = useMcpStore(s => s.clearOAuthReturn);
   const [addOpen, setAddOpen] = useState(false);
   const [addPreset, setAddPreset] = useState<string | undefined>(undefined);
   const [detailId, setDetailId] = useState<string | null>(null);

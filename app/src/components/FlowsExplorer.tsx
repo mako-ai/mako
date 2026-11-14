@@ -75,17 +75,18 @@ const classifyTriggers = (flow: any): FlowTreeNode["triggerKind"] => {
 
 export function FlowsExplorer() {
   const { currentWorkspace } = useWorkspace();
-  const {
-    flows: flowsMap,
-    loading: loadingMap,
-    error: errorMap,
-    init,
-    refresh,
-    selectFlow,
-    clearError,
-  } = useFlowStore();
-  const { tabs, activeTabId, openTab, setActiveTab, loadConsole } =
-    useConsoleStore();
+  const flowsMap = useFlowStore(s => s.flows);
+  const loadingMap = useFlowStore(s => s.loading);
+  const errorMap = useFlowStore(s => s.error);
+  const init = useFlowStore(s => s.init);
+  const refresh = useFlowStore(s => s.refresh);
+  const selectFlow = useFlowStore(s => s.selectFlow);
+  const clearError = useFlowStore(s => s.clearError);
+  const tabs = useConsoleStore(s => s.tabs);
+  const activeTabId = useConsoleStore(s => s.activeTabId);
+  const openTab = useConsoleStore(s => s.openTab);
+  const setActiveTab = useConsoleStore(s => s.setActiveTab);
+  const loadConsole = useConsoleStore(s => s.loadConsole);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [scheduledQueries, setScheduledQueries] = useState<
     ScheduledQueryListItem[]
