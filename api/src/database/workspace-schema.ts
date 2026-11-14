@@ -2429,9 +2429,10 @@ const ChatSchema = new Schema<IChat>(
 // Indexes
 ChatSchema.index({ workspaceId: 1 });
 ChatSchema.index({ workspaceId: 1, title: 1 });
-// A user's chat list, newest first (routes/chats.ts): the sort is served by
-// the index instead of in memory. Also covers `{ workspaceId, createdBy }`.
-ChatSchema.index({ workspaceId: 1, createdBy: 1, updatedAt: -1 });
+// A user's chat list, newest first (services/chat-list.service.ts): the
+// keyset sort `(updatedAt desc, _id desc)` is served by the index instead of
+// in memory. Also covers `{ workspaceId, createdBy }`.
+ChatSchema.index({ workspaceId: 1, createdBy: 1, updatedAt: -1, _id: -1 });
 ChatSchema.index(
   { workspaceId: 1, appId: 1, createdBy: 1, updatedAt: -1 },
   { partialFilterExpression: { appId: { $type: "string" } } },

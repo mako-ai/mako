@@ -272,12 +272,14 @@ The response is a **Server-Sent Events (SSE)** stream:
 
 | Method   | Endpoint                                         | Description                                                |
 | -------- | ------------------------------------------------ | ---------------------------------------------------------- |
-| `GET`    | `/api/workspaces/:wid/chats`                     | List chat sessions                                         |
+| `GET`    | `/api/workspaces/:wid/chats`                     | List chat sessions (paginated, see below)                  |
 | `POST`   | `/api/workspaces/:wid/chats`                     | Create a new chat                                          |
 | `GET`    | `/api/workspaces/:wid/chats/:id`                 | Get chat details                                           |
 | `PUT`    | `/api/workspaces/:wid/chats/:id`                 | Update chat title                                          |
 | `DELETE` | `/api/workspaces/:wid/chats/:id`                 | Delete a chat                                              |
 | `GET`    | `/api/workspaces/:wid/chat-images/:attachmentId` | Fetch a stored chat image attachment (authenticated proxy) |
+
+`GET /api/workspaces/:wid/chats` is paginated: it returns `{ success, chats, nextCursor }`, newest first, `limit` per page (default 30, max 100). Pass `nextCursor` back as `?cursor=` until it is `null`. Entries carry list metadata only (`_id`, `title`, `createdAt`, `updatedAt`, `activeStreamId`, `usage.totalTokens`, `usage.costUsd`); fetch a chat by id for its messages.
 
 ## Skills
 
