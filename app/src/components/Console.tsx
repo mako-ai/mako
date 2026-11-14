@@ -42,7 +42,7 @@ import {
   Share2 as Share2Icon,
   MoreHorizontal as MoreIcon,
 } from "lucide-react";
-import Editor, { DiffEditor } from "@monaco-editor/react";
+import Editor, { DiffEditor } from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useTheme } from "../contexts/ThemeContext";
 import { useWorkspace } from "../contexts/workspace-context";

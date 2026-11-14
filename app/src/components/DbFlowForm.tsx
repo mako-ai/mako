@@ -44,7 +44,7 @@ import {
   NavigateNext as NextIcon,
   ExpandMore as ExpandMoreIcon,
 } from "@mui/icons-material";
-import Editor, { Monaco, OnMount } from "@monaco-editor/react";
+import Editor, { type Monaco, type OnMount } from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";

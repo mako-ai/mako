@@ -7,7 +7,7 @@
  * (keyword/type/string/comment/number/predefined/delimiter) so the default
  * `vs` / `vs-dark` themes colour them without any global theme override.
  */
-import type { Monaco } from "@monaco-editor/react";
+import type { Monaco } from "./monaco/load";
 
 export const DBT_JINJA_LANGUAGE_ID = "jinja-sql";
 

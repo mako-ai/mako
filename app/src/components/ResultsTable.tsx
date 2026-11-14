@@ -27,7 +27,7 @@ import {
   Download as DownloadIcon,
   FileCode2 as StructureIcon,
 } from "lucide-react";
-import Editor from "@monaco-editor/react";
+import Editor from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useIsMobile } from "../hooks/useIsMobile";
 import type { MakoChartSpec } from "../lib/chart-spec";

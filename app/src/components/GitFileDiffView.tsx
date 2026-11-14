@@ -5,7 +5,7 @@
  * diff that opens on its first change (VS Code semantics).
  */
 import { Box, Chip, CircularProgress, Typography } from "@mui/material";
-import { DiffEditor } from "@monaco-editor/react";
+import { DiffEditor } from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { languageForPath } from "../app-runtime/monaco-jsx";
 

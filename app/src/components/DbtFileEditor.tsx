@@ -53,7 +53,7 @@ import {
   Wrench as BuildIcon,
 } from "lucide-react";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import MonacoEditor, { type Monaco } from "@monaco-editor/react";
+import MonacoEditor, { type Monaco } from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";

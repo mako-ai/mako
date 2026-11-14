@@ -15,7 +15,7 @@ import {
   Close as CloseIcon,
   Warning as WarningIcon,
 } from "@mui/icons-material";
-import { DiffEditor } from "@monaco-editor/react";
+import { DiffEditor } from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 
 export interface ConflictData {

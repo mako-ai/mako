@@ -26,7 +26,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import MonacoEditor from "@monaco-editor/react";
+import MonacoEditor from "../lib/monaco/MonacoEditor";
 import {
   ArrowLeft as BackIcon,
   ChevronDown as ChevronIcon,

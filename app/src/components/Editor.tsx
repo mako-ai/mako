@@ -59,7 +59,7 @@ function TabKindGlyph({ kind }: { kind: TabKind | undefined }) {
   return <Icon size={18} strokeWidth={1.5} />;
 }
 import { Group, Panel, Separator, type Layout } from "react-resizable-panels";
-import { loader } from "@monaco-editor/react";
+import { loadMonaco } from "../lib/monaco/load";
 import Console, { ConsoleRef } from "./Console";
 import ResultsTable from "./ResultsTable";
 import Settings from "../pages/Settings";
@@ -816,7 +816,7 @@ function Editor({
   // Load Monaco instance for unified SQL autocomplete
   const [monacoInstance, setMonacoInstance] = useState<unknown>(null);
   useEffect(() => {
-    loader.init().then(monaco => setMonacoInstance(monaco));
+    loadMonaco().then(monaco => setMonacoInstance(monaco));
   }, []);
 
   // Dynamic getters for unified SQL autocomplete
