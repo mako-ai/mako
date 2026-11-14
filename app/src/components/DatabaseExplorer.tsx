@@ -187,7 +187,7 @@ function DatabaseExplorer({
     string | undefined
   >(undefined);
 
-  const ensureAgentChecked = useLocalAgentStore(s => s.ensureChecked);
+  const ensureAgentChecked = useLocalAgentStore(s => s.autoCheck);
 
   useEffect(() => {
     if (currentWorkspace) {

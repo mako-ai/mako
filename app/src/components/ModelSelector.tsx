@@ -59,8 +59,15 @@ const PROVIDER_PRIORITY: string[] = [
   "cohere",
 ];
 
-async function probeLocalAcpProviders(): Promise<void> {
-  const agentStatus = await useLocalAgentStore.getState().checkAgent();
+/**
+ * `background` (mount-time) probes skip browsers that have never seen the
+ * Local Agent; opening the menu always probes (first-time detection).
+ */
+async function probeLocalAcpProviders(background = false): Promise<void> {
+  const agentStore = useLocalAgentStore.getState();
+  const agentStatus = background
+    ? await agentStore.autoCheck()
+    : await agentStore.checkAgent();
   if (agentStatus !== "online") return;
   const store = useAcpStore.getState();
   await store.refreshStatus();
@@ -98,7 +105,7 @@ export const ModelSelector: React.FC = () => {
 
   useEffect(() => {
     void fetchModels();
-    void probeLocalAcpProviders();
+    void probeLocalAcpProviders(true);
   }, [fetchModels]);
 
   useEffect(() => {

@@ -7,6 +7,7 @@ import {
   isLocalConnectionId,
   localAgentClient,
 } from "../lib/local-agent-client";
+import { useLocalAgentStore } from "./localAgentStore";
 
 // ============================================================================
 // Types
@@ -146,6 +147,13 @@ function makeNodeKey(node?: { id: string; kind: string }): string {
  * agent is not running so cloud connections are unaffected.
  */
 async function fetchLocalConnections(): Promise<Connection[]> {
+  // Ask /connections only when the agent is known to be up: for users
+  // without it this was a refused loopback request on every load.
+  const agentStatus = await useLocalAgentStore
+    .getState()
+    .autoCheck()
+    .catch(() => "offline" as const);
+  if (agentStatus !== "online") return [];
   try {
     const res = await localAgentClient.get<{
       success: boolean;
