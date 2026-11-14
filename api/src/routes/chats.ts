@@ -8,7 +8,19 @@ import { getConsolesByIds, saveChat } from "../services/agent-thread.service";
 import { generateChatTitle } from "../services/title-generator";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { workspaceService } from "../services/workspace.service";
-import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import {
+  AUTH_SECURITY,
+  OPEN_RESPONSES,
+  createRouter,
+  jsonContent,
+  zDateTime,
+} from "../openapi/core";
+import {
+  CHAT_LIST_DEFAULT_LIMIT,
+  CHAT_LIST_MAX_LIMIT,
+  ChatListCursorError,
+  listUserChats,
+} from "../services/chat-list.service";
 
 const logger = loggers.api("chats");
 
@@ -103,16 +115,73 @@ chatsRoutes.use("*", async (c: AuthenticatedContext, next) => {
   await next();
 });
 
-// List chat sessions (most recent first)
+// List chat sessions (most recent first), one page at a time
+const ChatListQuery = z.object({
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(CHAT_LIST_MAX_LIMIT)
+    .optional()
+    .openapi({
+      param: { name: "limit", in: "query" },
+      description: `Page size (default ${CHAT_LIST_DEFAULT_LIMIT}, max ${CHAT_LIST_MAX_LIMIT}).`,
+    }),
+  cursor: z
+    .string()
+    .max(512)
+    .optional()
+    .openapi({
+      param: { name: "cursor", in: "query" },
+      description:
+        "Opaque `nextCursor` from the previous page. Omit for the first page.",
+    }),
+});
+
+const ChatListEntrySchema = z
+  .object({
+    _id: z.string(),
+    title: z.string(),
+    createdAt: zDateTime().optional(),
+    updatedAt: zDateTime().optional(),
+    activeStreamId: z
+      .string()
+      .nullable()
+      .optional()
+      .openapi({ description: "Set while a turn is generating server-side." }),
+    usage: z
+      .object({
+        totalTokens: z.number().optional(),
+        costUsd: z.number().optional(),
+      })
+      .optional(),
+  })
+  .openapi("ChatListEntry");
+
+const ChatListResponseSchema = z
+  .object({
+    success: z.literal(true),
+    chats: z.array(ChatListEntrySchema),
+    nextCursor: z.string().nullable().openapi({
+      description: "Pass back as `cursor` for the next page; null at the end.",
+    }),
+  })
+  .openapi("ChatListResponse");
+
 chatsRoutes.openapi(
   createRoute({
     method: "get",
     path: "/",
     tags: ["Chats"],
     summary: "List chats",
+    description:
+      "The caller's own chats in this workspace, most recently updated first, paginated by an opaque keyset cursor: pass `nextCursor` back as `cursor` until it is null. App chats and workflow-step runs are not listed. Entries carry only list metadata (title, timestamps, streaming pointer, token/cost totals) — fetch a chat by id for its messages. 400 on a cursor the server did not issue.",
     security: AUTH_SECURITY,
-    request: { params: WorkspaceParam },
-    responses: { ...OPEN_RESPONSES },
+    request: { params: WorkspaceParam, query: ChatListQuery },
+    responses: {
+      ...OPEN_RESPONSES,
+      200: jsonContent(ChatListResponseSchema, "One page of chats"),
+    },
   }),
   async c => {
     try {
@@ -121,37 +190,30 @@ chatsRoutes.openapi(
       const userId = user?.id;
 
       if (!userId) {
-        return c.json({ error: "User not authenticated" }, 401);
+        return c.json({ success: false, error: "User not authenticated" }, 401);
       }
       const workspaceId = c.req.param("workspaceId") as string;
 
       if (!ObjectId.isValid(workspaceId)) {
-        return c.json({ error: "Invalid workspace id" }, 400);
+        return c.json({ success: false, error: "Invalid workspace id" }, 400);
       }
 
-      // Filter by both workspaceId AND createdBy for privacy. App chats
-      // ("chat with app") live in their app's history, not this one.
-      const chats = await Chat.find(
-        {
-          workspaceId: new ObjectId(workspaceId),
-          createdBy: userId.toString(),
-          appId: { $exists: false },
-          // Agent runs from workflow steps are opened from their run.
-          source: { $ne: "workflow" },
-        },
-        { messages: 0 },
-      ).sort({ updatedAt: -1 });
+      const { limit, cursor } = c.req.valid("query");
+      // Filtered by both workspaceId AND createdBy for privacy.
+      const page = await listUserChats({
+        workspaceId,
+        userId: userId.toString(),
+        limit,
+        cursor: cursor || null,
+      });
 
-      // Convert ObjectId to string for frontend convenience
-      const mapped = chats.map(chat => ({
-        ...chat.toObject(),
-        _id: chat._id.toString(),
-      }));
-
-      return c.json(mapped);
+      return c.json({ success: true as const, ...page }, 200);
     } catch (error) {
+      if (error instanceof ChatListCursorError) {
+        return c.json({ success: false, error: error.message }, error.status);
+      }
       logger.error("Error listing chats", { error });
-      return c.json({ error: "Failed to list chats" }, 500);
+      return c.json({ success: false, error: "Failed to list chats" }, 500);
     }
   },
 );

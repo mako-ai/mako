@@ -1490,7 +1490,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List chats */
+        /**
+         * List chats
+         * @description The caller's own chats in this workspace, most recently updated first, paginated by an opaque keyset cursor: pass `nextCursor` back as `cursor` until it is null. App chats and workflow-step runs are not listed. Entries carry only list metadata (title, timestamps, streaming pointer, token/cost totals) — fetch a chat by id for its messages. 400 on a cursor the server did not issue.
+         */
         get: operations["get_api_workspaces_workspaceId_chats"];
         put?: never;
         /** Create a chat */
@@ -6092,6 +6095,27 @@ export interface components {
             folderId?: string | null;
             /** @enum {string} */
             access?: "private" | "workspace";
+        };
+        ChatListResponse: {
+            /** @enum {boolean} */
+            success: true;
+            chats: components["schemas"]["ChatListEntry"][];
+            /** @description Pass back as `cursor` for the next page; null at the end. */
+            nextCursor: string | null;
+        };
+        ChatListEntry: {
+            _id: string;
+            title: string;
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: date-time */
+            updatedAt?: string;
+            /** @description Set while a turn is generating server-side. */
+            activeStreamId?: string | null;
+            usage?: {
+                totalTokens?: number;
+                costUsd?: number;
+            };
         };
         Error: {
             success?: boolean;
@@ -11034,7 +11058,12 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_chats: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Page size (default 30, max 100). */
+                limit?: number;
+                /** @description Opaque `nextCursor` from the previous page. Omit for the first page. */
+                cursor?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
@@ -11043,13 +11072,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful response */
-            "2XX": {
+            /** @description One page of chats */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                    "application/json": components["schemas"]["ChatListResponse"];
                 };
             };
             /** @description Invalid request */

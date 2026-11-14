@@ -1,6 +1,7 @@
 import React from "react";
 import {
   Box,
+  CircularProgress,
   IconButton,
   InputAdornment,
   ListItemIcon,
@@ -15,6 +16,8 @@ import { MessageSquare, Search, Trash2 } from "lucide-react";
 import { streamingIndicatorDotSx } from "./streaming-indicator-styles";
 import { formatCostUsd } from "./response-cost";
 import type { ChatSessionMeta } from "./hooks/useChatSessions";
+import { useChatHistoryStore } from "../../store/chatHistoryStore";
+import { useInfiniteSentinel } from "../apps-home/useInfiniteSentinel";
 
 interface ChatHistoryMenuProps {
   anchorEl: HTMLElement | null;
@@ -162,6 +165,29 @@ export function ChatHistoryMenu({
 
   const hasResults = groups.length > 0;
 
+  // Further pages load as the sentinel under the last row nears the bottom
+  // of the menu's scroller. The sentinel only exists once the Menu's portal
+  // has mounted, so it is tracked as state (a callback ref) — a plain ref
+  // would be null on the render that opened the menu and never re-checked.
+  const hasMore = useChatHistoryStore(s => s.nextCursor !== null && s.loaded);
+  const loadingFirst = useChatHistoryStore(s => s.loadingFirst);
+  const loadingMore = useChatHistoryStore(s => s.loadingMore);
+  const loadMore = useChatHistoryStore(s => s.loadMore);
+  const [sentinel, setSentinel] = React.useState<HTMLLIElement | null>(null);
+  const sentinelRef = React.useMemo(() => ({ current: sentinel }), [sentinel]);
+  const onLoadMore = React.useCallback(() => {
+    void loadMore();
+  }, [loadMore]);
+  useInfiniteSentinel({
+    sentinelRef,
+    enabled: open && hasMore && !loadingMore,
+    onLoadMore,
+    margin: 160,
+    // Re-checks after every page: a search that filters most rows out keeps
+    // loading while the sentinel stays in view.
+    version: `${sessions.length}:${query}`,
+  });
+
   return (
     <Menu
       anchorEl={anchorEl}
@@ -207,7 +233,7 @@ export function ChatHistoryMenu({
               color: "text.secondary",
             }}
           >
-            No chat history yet
+            {loadingFirst ? "Loading chats…" : "No chat history yet"}
           </Typography>
         </MenuItem>
       )}
@@ -220,7 +246,9 @@ export function ChatHistoryMenu({
               color: "text.secondary",
             }}
           >
-            No chats match “{query.trim()}”
+            {hasMore
+              ? `Searching older chats for “${query.trim()}”…`
+              : `No chats match “${query.trim()}”`}
           </Typography>
         </MenuItem>
       )}
@@ -360,6 +388,25 @@ export function ChatHistoryMenu({
           );
         }),
       ])}
+
+      {hasMore && (
+        <Box
+          component="li"
+          ref={setSentinel}
+          role="presentation"
+          sx={{
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            minHeight: 28,
+            listStyle: "none",
+          }}
+        >
+          {loadingMore && (
+            <CircularProgress size={14} aria-label="Loading older chats" />
+          )}
+        </Box>
+      )}
     </Menu>
   );
 }

@@ -5,41 +5,36 @@ import {
   useState,
   type MutableRefObject,
 } from "react";
-import { api } from "../../../api/client";
+import {
+  useChatHistoryStore,
+  type ChatSessionMeta,
+} from "../../../store/chatHistoryStore";
 import { useRealtimeStore } from "../../../store/realtimeStore";
 
-/** Rolled-up spend for a chat, as the list endpoint returns it. */
-export interface ChatSessionUsage {
-  totalTokens?: number;
-  costUsd?: number;
-}
-
-export interface ChatSessionMeta {
-  _id: string;
-  title: string;
-  createdAt?: string;
-  updatedAt?: string;
-  /** Resume pointer set while a turn is generating server-side. */
-  activeStreamId?: string | null;
-  /**
-   * Per-chat token/cost roll-up. The list endpoint returns the whole chat
-   * document minus `messages`, so this rides along for every session.
-   */
-  usage?: ChatSessionUsage;
-}
+export type {
+  ChatSessionMeta,
+  ChatSessionUsage,
+} from "../../../store/chatHistoryStore";
 
 export interface UseChatSessionsArgs {
   workspaceId: string | undefined;
 }
 
+const EMPTY: ChatSessionMeta[] = [];
+
 /**
  * Chat session list for the history menu: fetch, live streaming indicator,
- * delete, and the menu anchor state. Selecting/creating a session is
- * cross-cutting orchestration (queue, gate, messages) and stays in Chat.tsx.
+ * delete, and the menu anchor state. The list itself (pages, cursor, merge)
+ * lives in chatHistoryStore, and the menu loads further pages from it on
+ * scroll. Selecting/creating a session is cross-cutting orchestration
+ * (queue, gate, messages) and stays in Chat.tsx.
  */
 export function useChatSessions({ workspaceId }: UseChatSessionsArgs): {
   sessions: ChatSessionMeta[];
-  /** Latest fetch — useChat's onFinish refreshes the list through this ref. */
+  /**
+   * Re-reads the first page and merges it in (new/updated chats rise to the
+   * top, deeper pages stay) — useChat's onFinish refreshes through this ref.
+   */
   fetchSessionsRef: MutableRefObject<(() => Promise<void>) | undefined>;
   isSessionStreaming: (session: ChatSessionMeta) => boolean;
   /** Deletes the session server-side; resolves true on success. */
@@ -49,7 +44,11 @@ export function useChatSessions({ workspaceId }: UseChatSessionsArgs): {
   handleHistoryMenuOpen: (event: React.MouseEvent<HTMLElement>) => void;
   handleHistoryMenuClose: () => void;
 } {
-  const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
+  const storeWorkspaceId = useChatHistoryStore(s => s.workspaceId);
+  const storeSessions = useChatHistoryStore(s => s.sessions);
+  // Never show another workspace's list while the new one loads.
+  const sessions =
+    workspaceId && storeWorkspaceId === workspaceId ? storeSessions : EMPTY;
   const [historyMenuAnchor, setHistoryMenuAnchor] =
     useState<null | HTMLElement>(null);
   const historyMenuOpen = Boolean(historyMenuAnchor);
@@ -59,48 +58,10 @@ export function useChatSessions({ workspaceId }: UseChatSessionsArgs): {
   const fetchSessionsRef = useRef<() => Promise<void>>(undefined);
   fetchSessionsRef.current = async () => {
     if (!workspaceId) return;
-    try {
-      const { data, response } = await api.GET(
-        "/api/workspaces/{workspaceId}/chats",
-        { params: { path: { workspaceId } } },
-      );
-      if (response.ok && Array.isArray(data)) {
-        // Map explicitly rather than casting the raw document: `usage` is the
-        // field the history menu prices each chat with, and a blanket cast
-        // silently dropped it from the declared shape before.
-        setSessions(
-          (data as Array<Record<string, unknown>>).map(raw => {
-            const session = raw as unknown as ChatSessionMeta;
-            const usage = raw.usage as ChatSessionUsage | undefined;
-            return {
-              _id: session._id,
-              title: session.title,
-              createdAt: session.createdAt,
-              updatedAt: session.updatedAt,
-              activeStreamId: session.activeStreamId,
-              usage:
-                usage && typeof usage === "object"
-                  ? {
-                      totalTokens:
-                        typeof usage.totalTokens === "number"
-                          ? usage.totalTokens
-                          : undefined,
-                      costUsd:
-                        typeof usage.costUsd === "number"
-                          ? usage.costUsd
-                          : undefined,
-                    }
-                  : undefined,
-            };
-          }),
-        );
-      }
-    } catch {
-      /* ignore */
-    }
+    await useChatHistoryStore.getState().refresh(workspaceId);
   };
 
-  // Fetch available chat sessions when the workspace resolves/changes.
+  // Fetch the first page when the workspace resolves/changes.
   useEffect(() => {
     void fetchSessionsRef.current?.();
   }, [workspaceId]);
@@ -123,19 +84,7 @@ export function useChatSessions({ workspaceId }: UseChatSessionsArgs): {
   const deleteSession = useCallback(
     async (id: string): Promise<boolean> => {
       if (!workspaceId) return false;
-      try {
-        const { response } = await api.DELETE(
-          "/api/workspaces/{workspaceId}/chats/{id}",
-          { params: { path: { workspaceId, id } } },
-        );
-        if (response.ok) {
-          setSessions(prev => prev.filter(s => s._id !== id));
-          return true;
-        }
-      } catch {
-        /* ignore */
-      }
-      return false;
+      return useChatHistoryStore.getState().deleteSession(workspaceId, id);
     },
     [workspaceId],
   );
@@ -144,8 +93,9 @@ export function useChatSessions({ workspaceId }: UseChatSessionsArgs): {
     (event: React.MouseEvent<HTMLElement>) => {
       setHistoryMenuAnchor(event.currentTarget);
       // The list goes stale the moment a new chat starts a turn (the doc is
-      // created server-side at turn start) — refresh it on every open so
-      // in-flight chats appear immediately with their streaming indicator.
+      // created server-side at turn start) — refresh the first page on every
+      // open so in-flight chats appear immediately with their streaming
+      // indicator. Deeper pages already loaded are kept.
       void fetchSessionsRef.current?.();
     },
     [],
