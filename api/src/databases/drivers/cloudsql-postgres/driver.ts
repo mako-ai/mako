@@ -25,6 +25,7 @@ import {
   normalizePostgresRows,
 } from "../postgresql/pg-type-utils";
 import { listPostgresTableLevelChildren } from "../postgresql/introspection";
+import { pgBackendPid } from "../postgresql/pg-backend-pid";
 import { buildPostgresTableDefinition } from "../postgresql/table-definition";
 import { escapeSqlLiteral } from "../../sql-utils";
 
@@ -45,8 +46,13 @@ const CLOUDSQL_SCOPES = [
 ] as const;
 
 export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
+  // One Connector per connection id (it is per instance + credentials, and
+  // owns cert-refresh timers and sockets), shared by that connection's pools.
   private connectors: Map<string, Connector> = new Map();
-  private pools: Map<string, PgPool> = new Map();
+  private connectorsInFlight: Map<string, Promise<Connector>> = new Map();
+  // Pools are per connection id AND database name: `${id}:${db||"default"}`.
+  private pools: Map<string, { pool: PgPool; lastUsed: number }> = new Map();
+  private poolsInFlight: Map<string, Promise<PgPool>> = new Map();
   private runningQueries: Map<
     string,
     { pid: number; poolKey: string; pool: PgPool }
@@ -271,10 +277,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         let readOnlyTransactionStarted = false;
         try {
           if (executionId) {
-            const pidResult = await client.query(
-              "SELECT pg_backend_pid() as pid",
-            );
-            const pid = pidResult.rows?.[0]?.pid as number | undefined;
+            const pid = await pgBackendPid(client);
             if (typeof pid === "number") {
               this.runningQueries.set(executionId, { pid, poolKey, pool });
             }
@@ -505,14 +508,57 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     dbNameOverride?: string,
   ): Promise<PgPool> {
     const key = `${database._id.toString()}:${dbNameOverride || "default"}`;
-    const existingPool = this.pools.get(key);
-    if (existingPool) {
-      return existingPool;
+    const existing = this.pools.get(key);
+    if (existing) {
+      existing.lastUsed = Date.now();
+      return existing.pool;
     }
+    // Concurrent first calls share one creation instead of each building a
+    // pool and all but the last leaking.
+    const pending = this.poolsInFlight.get(key);
+    if (pending) return pending;
+    const creating = this.createPool(database, dbNameOverride, key).finally(
+      () => {
+        if (this.poolsInFlight.get(key) === creating) {
+          this.poolsInFlight.delete(key);
+        }
+      },
+    );
+    this.poolsInFlight.set(key, creating);
+    return creating;
+  }
 
+  /** The connection's shared Connector, created on first use. */
+  private async getSharedConnector(
+    database: IDatabaseConnection,
+  ): Promise<Connector> {
+    const id = database._id.toString();
+    const existing = this.connectors.get(id);
+    if (existing) return existing;
+    const pending = this.connectorsInFlight.get(id);
+    if (pending) return pending;
+    const creating = this._getConnector(database)
+      .then(connector => {
+        this.connectors.set(id, connector);
+        return connector;
+      })
+      .finally(() => {
+        if (this.connectorsInFlight.get(id) === creating) {
+          this.connectorsInFlight.delete(id);
+        }
+      });
+    this.connectorsInFlight.set(id, creating);
+    return creating;
+  }
+
+  private async createPool(
+    database: IDatabaseConnection,
+    dbNameOverride: string | undefined,
+    key: string,
+  ): Promise<PgPool> {
     try {
       const conn = (database.connection as any) || {};
-      const connector = await this._getConnector(database);
+      const connector = await this.getSharedConnector(database);
 
       const getOpts: any = {};
       if (conn.instanceConnectionName || conn.instance_connection_name) {
@@ -597,27 +643,13 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         max: 5,
       });
 
-      // Only cache if we used the connector we just got
-      // Note: In this simplified driver, we might be creating a new connector instance each time _getConnector is called
-      // ideally we should cache connectors too, but the existing code creates map entries based on databaseId
-      // We need to be careful about key management.
-      // Let's keep the connector in the map keyed by databaseId (shared across pools for same connection)
-      // But wait, this.connectors key is databaseId. If we call this multiple times for different DBs, we overwrite it?
-      // Actually _getConnector creates a NEW connector each time currently (except it returns if found in map? No _getConnector doesn't check map).
-      // Wait, _getConnector logic:
-      // It parses config and returns `new Connector(...)`. It doesn't use `this.connectors`.
-      // `getConnection` sets `this.connectors.set(key, connector)`.
-      // If `key` now includes dbName, we will have multiple connectors for same instance?
-      // Connector is per-instance usually.
-      // Let's adjust `key` logic.
+      // An idle client's socket error is emitted on the pool; unhandled, it
+      // would crash the process. pg already drops the broken client.
+      pool.on("error", err => {
+        logger.error("Cloud SQL pool error", { key, error: err.message });
+      });
 
-      // Refined logic:
-      // Connector is per database CONFIG (instance), not per DB name.
-      // Pool is per DB name.
-
-      this.connectors.set(database._id.toString(), connector);
-      this.pools.set(key, pool); // key includes dbName
-
+      this.pools.set(key, { pool, lastUsed: Date.now() });
       return pool;
     } catch (error) {
       logger.error("Failed to create connection pool", { error });
@@ -630,22 +662,102 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     }
   }
 
+  /**
+   * Close every pool (one per database name) and the Connector held for a
+   * connection id. Creations still in flight are awaited first so a pool
+   * that lands after this call is not left behind.
+   */
   async closeConnection(databaseId: string): Promise<void> {
-    const pool = this.pools.get(databaseId);
-    if (pool) {
-      await pool.end();
-      this.pools.delete(databaseId);
+    const prefix = `${databaseId}:`;
+    const pending: Promise<unknown>[] = [];
+    for (const [key, creating] of this.poolsInFlight) {
+      if (key.startsWith(prefix)) {
+        this.poolsInFlight.delete(key);
+        pending.push(creating);
+      }
     }
+    const connecting = this.connectorsInFlight.get(databaseId);
+    if (connecting) {
+      this.connectorsInFlight.delete(databaseId);
+      pending.push(connecting);
+    }
+    await Promise.allSettled(pending);
+
+    // Remove from the maps BEFORE ending, so a concurrent getConnection
+    // builds a new pool instead of being handed one that is closing.
+    const pools: Array<[string, PgPool]> = [];
+    for (const [key, { pool }] of this.pools) {
+      if (key.startsWith(prefix)) pools.push([key, pool]);
+    }
+    for (const [key] of pools) this.pools.delete(key);
     const connector = this.connectors.get(databaseId);
+    this.connectors.delete(databaseId);
+
+    await Promise.all(
+      pools.map(([key, pool]) =>
+        pool.end().catch(error => {
+          logger.error("Error closing Cloud SQL pool", { key, error });
+        }),
+      ),
+    );
     if (connector) {
-      await connector.close();
-      this.connectors.delete(databaseId);
+      try {
+        connector.close();
+      } catch (error) {
+        logger.error("Error closing Cloud SQL connector", {
+          databaseId,
+          error,
+        });
+      }
     }
   }
 
   async closeAllConnections(): Promise<void> {
-    for (const id of this.pools.keys()) {
+    const ids = new Set<string>();
+    for (const key of [...this.pools.keys(), ...this.poolsInFlight.keys()]) {
+      ids.add(key.slice(0, key.indexOf(":")));
+    }
+    for (const id of this.connectors.keys()) ids.add(id);
+    for (const id of this.connectorsInFlight.keys()) ids.add(id);
+    for (const id of ids) {
       await this.closeConnection(id);
+    }
+  }
+
+  /**
+   * Close pools unused for longer than `maxIdleMs` that have no client
+   * checked out, and the Connector of any connection left with no pool.
+   */
+  async cleanupIdleConnections(maxIdleMs: number): Promise<void> {
+    const now = Date.now();
+    for (const [key, entry] of this.pools) {
+      const busy =
+        entry.pool.waitingCount > 0 ||
+        entry.pool.idleCount < entry.pool.totalCount;
+      if (busy || now - entry.lastUsed <= maxIdleMs) continue;
+      this.pools.delete(key);
+      try {
+        await entry.pool.end();
+        logger.info("Closed idle Cloud SQL pool", { key });
+      } catch (error) {
+        logger.error("Error closing idle Cloud SQL pool", { key, error });
+      }
+    }
+    const inUse = new Set<string>();
+    for (const key of [...this.pools.keys(), ...this.poolsInFlight.keys()]) {
+      inUse.add(key.slice(0, key.indexOf(":")));
+    }
+    for (const [id, connector] of this.connectors) {
+      if (inUse.has(id)) continue;
+      this.connectors.delete(id);
+      try {
+        connector.close();
+      } catch (error) {
+        logger.error("Error closing idle Cloud SQL connector", {
+          id,
+          error,
+        });
+      }
     }
   }
 
