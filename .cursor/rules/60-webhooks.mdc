@@ -5,7 +5,7 @@ description: Webhook handlers, idempotency, and security guidance
 
 # Webhook Guidelines
 
-- Overview and fixes: [WEBHOOK_IMPLEMENTATION.md](mdc:WEBHOOK_IMPLEMENTATION.md), [WEBHOOK_BUGS_FIXED.md](mdc:WEBHOOK_BUGS_FIXED.md), [WEBHOOK_SIMPLIFICATION_SUMMARY.md](mdc:WEBHOOK_SIMPLIFICATION_SUMMARY.md).
+- Connector webhook routes: [api/src/routes/webhooks.ts](mdc:api/src/routes/webhooks.ts); Stripe billing: [api/src/routes/stripe-webhook.ts](mdc:api/src/routes/stripe-webhook.ts).
 
 Rules:
 

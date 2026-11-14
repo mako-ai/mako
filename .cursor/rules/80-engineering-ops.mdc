@@ -56,12 +56,12 @@ log.warn("Warning condition", { threshold });
 - Logging sinks in `/api/src/logging/sinks/` (they ARE the console output)
 - Interactive CLI demos (`demo-interactive.ts`, `example-programmatic.ts`)
 
-For full details: [LOGTAPE_IMPLEMENTATION.md](mdc:LOGTAPE_IMPLEMENTATION.md)
+For full details: [api/src/logging](mdc:api/src/logging)
 
 ## Other Guidelines
 
-- Testing auth: use [AUTH_TESTING_CHECKLIST.md](mdc:AUTH_TESTING_CHECKLIST.md) when adding/changing protected routes.
-- Database migrations: see [DATABASE_MIGRATION.md](mdc:DATABASE_MIGRATION.md) and update schemas accordingly.
+- Testing auth: when adding/changing protected routes, test that unauthenticated and wrong-workspace requests are refused.
+- Database migrations: `pnpm migrate create "name"` / `pnpm migrate` (runner in [api/src/migrations](mdc:api/src/migrations)); update schemas accordingly.
 - Console API docs: [CONSOLE_API_DOCUMENTATION.md](mdc:CONSOLE_API_DOCUMENTATION.md) for integration boundaries.
 
 ## Rules

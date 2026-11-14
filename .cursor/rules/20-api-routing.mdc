@@ -10,7 +10,7 @@ description: API routing, middleware, and services conventions
 - Shared logic should reside under [api/src/services/](mdc:api/src/services/).
 - Auth middleware: see [api/src/auth/unified-auth.middleware.ts](mdc:api/src/auth/unified-auth.middleware.ts) and [api/src/auth/auth.middleware.ts](mdc:api/src/auth/auth.middleware.ts).
 - Inngest handlers and jobs live under [api/src/inngest/](mdc:api/src/inngest/).
-- Connectors are registered via [api/src/connectors](mdc:api/src/connectors) and [api/dist/connectors/registry.js](mdc:api/dist/connectors/registry.js) is generated output.
+- Connectors are registered via [api/src/connectors](mdc:api/src/connectors) (`api/dist/` is build output, never edit it).
 
 ## Logging in Routes
 
