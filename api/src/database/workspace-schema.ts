@@ -636,6 +636,20 @@ export interface ISavedConsole extends Document {
   };
   is_deleted?: boolean;
   deletedAt?: Date;
+  /**
+   * Who deleted it. "app": trashed in Mako — it comes back only through a
+   * restore, never because a file appears at its old path (that file is a
+   * new console). "git": its file was removed by a push — the file pushed
+   * back restores it. Absent on rows deleted before this field: as "git".
+   */
+  deletedVia?: "app" | "git";
+  /**
+   * Earlier lives of this console's file: a trip to the trash ends the
+   * file, and a restore adds a new one where git's history of it starts.
+   * Each entry is the path it had and the commit that removed it, so the
+   * history up to the delete is still this console's after an Undo.
+   */
+  historySegments?: Array<{ path: string; until: string }>;
   createdAt: Date;
   updatedAt: Date;
   lastExecutedAt?: Date;
@@ -2141,6 +2155,16 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     },
     deletedAt: {
       type: Date,
+    },
+    deletedVia: { type: String, enum: ["app", "git"] },
+    historySegments: {
+      type: [
+        new Schema(
+          { path: { type: String }, until: { type: String } },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
     },
   },
   {

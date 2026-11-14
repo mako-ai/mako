@@ -17,10 +17,12 @@ import {
   DEFAULT_BRANCH,
   diffNameStatus,
   log as repoLog,
+  logFollow,
   readBlob,
   resolveCommit,
   type ChangedFile,
   type CommitInfo,
+  type FollowedCommit,
 } from "./repository.service";
 
 const MAIN_REF = `refs/heads/${DEFAULT_BRANCH}`;
@@ -137,4 +139,135 @@ export async function entityFileVersions(
     after: after?.isBinary ? null : (after?.contents ?? null),
     binary: Boolean(before?.isBinary || after?.isBinary),
   };
+}
+
+// ---------------------------------------------------------------------------
+// One file followed across its renames (consoles, notebooks)
+// ---------------------------------------------------------------------------
+
+/**
+ * A file-backed entity that keeps its id when its file is renamed or moved.
+ * Its history is the file's own rename chain — not whatever else has lived
+ * at its current path, and not the paths it used to have once another file
+ * took them. So every read is scoped by COMMIT: a path is the entity's only
+ * in a commit of its own history, under the name it had in that commit.
+ */
+export interface FollowedFile {
+  workspaceId: string;
+  /** Where the file is now; undefined while it has none (in the trash). */
+  path?: string | null;
+  /**
+   * Earlier lives, oldest first: the path the file had and the commit
+   * that removed it (a trip to the trash; a restore starts a new file).
+   */
+  earlier?: ReadonlyArray<{ path: string; until: string }>;
+  /** A companion file that travels with it (a console's chart sidecar). */
+  companionOf?: (path: string) => string | undefined;
+}
+
+/** The entity's commits, newest first, each with the file's path in it. */
+export async function followedHistory(
+  file: FollowedFile,
+  limit = 50,
+): Promise<FollowedCommit[]> {
+  const repoDir = await boundRepoDirIfExists(file.workspaceId);
+  if (repoDir == null) return [];
+  if (!(await resolveCommit(repoDir, MAIN_REF))) return [];
+  const out: FollowedCommit[] = [];
+  const seen = new Set<string>();
+  const add = (commits: FollowedCommit[]) => {
+    for (const commit of commits) {
+      if (seen.has(commit.oid)) continue;
+      seen.add(commit.oid);
+      out.push(commit);
+    }
+  };
+  if (file.path) add(await logFollow(repoDir, MAIN_REF, limit, file.path));
+  for (const life of [...(file.earlier ?? [])].reverse()) {
+    if (out.length >= limit) break;
+    // A removing commit that is no longer in the repo takes that life along.
+    const until = await resolveCommit(repoDir, life.until);
+    if (until) add(await logFollow(repoDir, until, limit, life.path));
+  }
+  return out.slice(0, limit);
+}
+
+/** The entity's own entry for `sha`, or null when the commit is not its. */
+async function followedAt(
+  file: FollowedFile,
+  sha: string,
+): Promise<{
+  repoDir: string;
+  oid: string;
+  parent: string | null;
+  at: FollowedCommit | null;
+}> {
+  const found = await commitAndParent(file.workspaceId, sha);
+  const history = await followedHistory(file, 200);
+  return { ...found, at: history.find(c => c.oid === found.oid) ?? null };
+}
+
+/** What one commit did to the entity's file (and its companion). */
+export async function followedCommitChanges(
+  file: FollowedFile,
+  sha: string,
+): Promise<CommitChanges> {
+  const { repoDir, oid, parent, at } = await followedAt(file, sha);
+  if (!at) return { sha: oid, parent, files: [] };
+  const mine = new Set<string>();
+  for (const p of [at.path, at.previousPath]) {
+    if (!p) continue;
+    mine.add(p);
+    const companion = file.companionOf?.(p);
+    if (companion) mine.add(companion);
+  }
+  const all = await diffNameStatus(repoDir, parent ?? EMPTY_TREE, oid);
+  return { sha: oid, parent, files: all.filter(f => mine.has(f.path)) };
+}
+
+/**
+ * The entity's file (or companion) before and after one of ITS commits.
+ * `relPath` is the name the file had in that commit, or its current one
+ * (or omitted) — both mean "this entity's file then". Anything else throws
+ * {@link NotEntityPathError}: the repo holds other people's private files.
+ */
+export async function followedFileVersions(
+  file: FollowedFile,
+  sha: string,
+  relPath?: string,
+): Promise<FileVersions> {
+  const { repoDir, oid, parent, at } = await followedAt(file, sha);
+  if (!at) throw new NotEntityPathError(relPath ?? file.path ?? "");
+  const companion = (p: string | undefined | null) =>
+    (p && file.companionOf?.(p)) || undefined;
+  const before = at.previousPath ?? at.path;
+  let pair: [string, string] | undefined;
+  if (!relPath || relPath === at.path || relPath === file.path) {
+    pair = [before, at.path];
+  } else if (
+    relPath === companion(at.path) ||
+    relPath === companion(file.path)
+  ) {
+    pair = [companion(before) as string, companion(at.path) as string];
+  }
+  if (!pair) throw new NotEntityPathError(relPath ?? "");
+  const read = (ref: string | null, rel: string) =>
+    ref ? readBlob(repoDir, ref, rel).catch(() => null) : null;
+  const [was, is] = await Promise.all([
+    read(parent, pair[0]),
+    read(oid, pair[1]),
+  ]);
+  return {
+    before: was?.isBinary ? null : (was?.contents ?? null),
+    after: is?.isBinary ? null : (is?.contents ?? null),
+    binary: Boolean(was?.isBinary || is?.isBinary),
+  };
+}
+
+/** Where the entity's file was in `sha`, when that is one of its commits. */
+export async function followedPathAt(
+  file: FollowedFile,
+  sha: string,
+): Promise<string | null> {
+  return (await followedAt(file, sha)).at?.path ?? null;
 }

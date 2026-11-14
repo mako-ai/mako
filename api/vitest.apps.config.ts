@@ -170,11 +170,19 @@ export default defineConfig({
       // connection handler (real Mongo), and the name rules' two entry points.
       "src/rename/registry.test.ts",
       "src/rename/handlers/connection.test.ts",
+      // The console handler: real git + Mongo.
+      "src/rename/handlers/console.test.ts",
       "src/rename/scenarios/name-rules-parity.test.ts",
       // rename_object: kinds per surface, per-kind grants, call results.
       "src/agent-lib/tools/rename-tools.test.ts",
       // /objects/resolve and /objects/{kind}/rename: who may call them.
       "src/routes/objects.test.ts",
+      // Consoles: rename and delete interleaved on purpose (real git + Mongo),
+      // then the relocation service, the trash and the laptop-rename sync.
+      "src/apps/console-rename-delete-race.test.ts",
+      "src/apps/console-relocation.test.ts",
+      // The same over HTTP: what each console route answers when refused.
+      "src/routes/consoles-rename-trash.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.

@@ -1,4 +1,4 @@
-import { sortTreeNodes } from "./folder-tree";
+import { collectDescendantFolderIds, sortTreeNodes } from "./folder-tree";
 import { Types } from "mongoose";
 import {
   SavedConsole,
@@ -9,18 +9,35 @@ import {
 } from "../database/workspace-schema";
 import { getLogger } from "../logging";
 import { canReadResource, canWriteResource } from "./resource-acl";
+import { cleanedConsoleName, suffixedConsoleName } from "@mako/schemas";
 import {
-  commitConsoleBatch,
   commitConsoleMoves,
+  commitConsoleRelocation,
   commitConsoleRemoval,
+  commitConsoleRemovals,
   commitConsoleState,
+  consoleCommitHooks,
   descriptionIsAuthored,
+  folderSegmentsFor,
+  listConsoleDefinitionsAtMain,
   loadLiveConsoleById,
   loadLiveConsoles,
+  repoPathForRow,
+  restoreConsoleFile,
+  syncConsolesIndexFromRepo,
+  uniquePath,
   type LiveConsole,
 } from "../apps/workspace-consoles.service";
-import { chartSidecarPath } from "../apps/console-files";
+import {
+  ConsoleNameError,
+  chartSidecarPath,
+  cleanConsoleName,
+  foldConsolePath,
+  parseConsoleRepoPath,
+} from "../apps/console-files";
 import { RepoRequiredError } from "../apps/config";
+import { BlobPreconditionError } from "../apps/repository.service";
+import { publishRealtimeEvent } from "../services/realtime.service";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 
 const logger = getLogger(["api", "consoles"]);
@@ -139,6 +156,106 @@ function metadataFromRow(savedConsole: ISavedConsole, consolePath: string) {
     owner_id: savedConsole.owner_id || savedConsole.createdBy,
     _raw: savedConsole,
   };
+}
+
+export { ConsoleNameError };
+
+/**
+ * A rename, move, delete or restore could not be applied as decided: the
+ * file changed or moved on main between the read and the commit, or the
+ * place it was headed for is taken. A 409 on every route; nothing is
+ * overwritten and the caller may reload and retry.
+ */
+export class ConsoleConflictError extends Error {
+  readonly status = 409 as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "ConsoleConflictError";
+  }
+}
+
+/** The target file (or a case twin of it) already is another console's. */
+export class ConsolePathTakenError extends ConsoleConflictError {
+  constructor(readonly path: string) {
+    const at = parseConsoleRepoPath(path);
+    const where = at?.folderSegments.length
+      ? ` in ${at.folderSegments.join("/")}`
+      : "";
+    super(
+      at
+        ? `A console named “${at.name}” already exists${where}.`
+        : `${path} already exists.`,
+    );
+    this.name = "ConsolePathTakenError";
+  }
+}
+
+/**
+ * Who can see a console — its own access, or what it inherits from the
+ * folders it is in — is changed by its owner or a workspace admin. Someone
+ * who can merely edit it renames and moves it within its visibility.
+ */
+export class ConsoleScopeError extends Error {
+  readonly status = 403 as const;
+  constructor(
+    message = "Only the console's owner or a workspace admin can change who sees it.",
+  ) {
+    super(message);
+    this.name = "ConsoleScopeError";
+  }
+}
+
+/** The visibility rule: the owner, a workspace admin, or a workspace key. */
+export function mayChangeVisibility(
+  row: { owner_id?: string | null; createdBy?: string | null },
+  actor: { userId?: string; isAdmin?: boolean },
+): boolean {
+  if (!actor.userId || actor.isAdmin) return true;
+  return (row.owner_id || row.createdBy)?.toString() === actor.userId;
+}
+
+export interface ConsoleChange {
+  /** A new name, as typed: stored with the stand-ins a file name needs. */
+  name?: string;
+  /** `null` moves to the root; `undefined` leaves the folder alone. */
+  folderId?: string | null;
+  access?: ConsoleAccessLevel;
+}
+
+export interface ConsoleActor {
+  userId?: string;
+  /** The caller is a workspace owner or admin. */
+  isAdmin?: boolean;
+  /** Commit subject prefix (default `rename`). */
+  verb?: "rename" | "move";
+}
+
+/** What a folder delete moved to the trash — what its Undo puts back. */
+export interface TrashedFolder {
+  folders: Array<{
+    id: string;
+    name: string;
+    parentId: string | null;
+    access: ConsoleAccessLevel;
+  }>;
+  consoles: Array<{ id: string; name: string; folderId: string | null }>;
+}
+
+type FolderScope = Pick<IConsoleFolder, "access" | "isPrivate" | "ownerId">;
+
+function folderAccess(folder: {
+  access?: string | null;
+  isPrivate?: boolean | null;
+}): ConsoleAccessLevel {
+  return folder.access === "workspace" || folder.access === "private"
+    ? folder.access
+    : folder.isPrivate
+      ? "private"
+      : "workspace";
+}
+
+function ownerOf(row: { owner_id?: string | null; createdBy?: string | null }) {
+  return (row.owner_id || row.createdBy)?.toString();
 }
 
 export class ConsoleManager {
@@ -823,6 +940,23 @@ export class ConsoleManager {
   }
 
   /**
+   * The name a save is about to write: the one the console already has is
+   * kept as it is (a name a laptop gave it is not re-judged); a new one is
+   * cleaned like a rename's — stand-ins for what a file name cannot carry
+   * — or refused (`ConsoleNameError`).
+   */
+  static nameToStore(
+    name: string,
+    current?: string | null,
+    language?: ISavedConsole["language"],
+  ): string {
+    if (current && (name === current || cleanedConsoleName(name) === current)) {
+      return current;
+    }
+    return cleanConsoleName(name, "console", language);
+  }
+
+  /**
    * Save console content to database
    */
   async saveConsole(
@@ -879,6 +1013,9 @@ export class ConsoleManager {
           name: consoleName,
           workspaceId: new Types.ObjectId(workspaceId),
           isSaved: true, // Only match saved consoles, not drafts
+          // …and never one in the trash: it holds no name, and a save
+          // must not write into it.
+          is_deleted: { $ne: true },
         };
 
         if (folderId) {
@@ -901,7 +1038,11 @@ export class ConsoleManager {
 
       if (savedConsole) {
         // Update existing console (draft -> saved)
-        savedConsole.name = consoleName; // Update name (may change if draft is being saved with a path)
+        savedConsole.name = ConsoleManager.nameToStore(
+          consoleName,
+          savedConsole.isSaved ? savedConsole.name : undefined,
+          options?.language ?? savedConsole.language,
+        );
         savedConsole.folderId = folderId
           ? new Types.ObjectId(folderId)
           : undefined; // Update folder (draft -> saved with path)
@@ -961,7 +1102,11 @@ export class ConsoleManager {
             : undefined,
           databaseName: databaseName,
           databaseId: databaseId,
-          name: consoleName,
+          name: ConsoleManager.nameToStore(
+            consoleName,
+            undefined,
+            options?.language,
+          ),
           description: options?.description || "",
           code: content,
           language: options?.language || this.detectLanguage(content),
@@ -979,10 +1124,26 @@ export class ConsoleManager {
         }
 
         savedConsole = new SavedConsole(consoleData);
+        // A new console never lands on another's file: not a live
+        // console's, not a case twin's (the rule a rename follows), and —
+        // by the commit's own check — not a file pushed and not indexed.
+        const newPath = await repoPathForRow(savedConsole);
+        await this.assertConsolePathFree(
+          workspaceId,
+          newPath,
+          savedConsole._id,
+          null,
+        );
         const committed = await commitConsoleState({
           row: savedConsole,
           actorUserId: userId,
           message: `create: ${consolePath}`,
+          expectAbsent: true,
+        }).catch(error => {
+          if (error instanceof BlobPreconditionError) {
+            throw new ConsolePathTakenError(newPath);
+          }
+          throw error;
         });
         savedConsole.path = committed.path;
         savedConsole.sourceBlobSha = committed.sourceBlobSha;
@@ -991,7 +1152,13 @@ export class ConsoleManager {
 
       return savedConsole;
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof ConsoleNameError ||
+        error instanceof ConsoleConflictError
+      ) {
+        throw error;
+      }
       logger.error("Error saving console to database", { error });
       throw error;
     }
@@ -1026,9 +1193,18 @@ export class ConsoleManager {
       }
     }
 
+    // Named like any folder — a directory in the repo — and no twin of a
+    // folder already there: "Team" and "team" are one directory on macOS
+    // and Windows.
+    const name = cleanConsoleName(folderName, "folder");
+    await this.assertNoFolderTwin(workspaceId, name, parentId ?? null, {
+      access: resolvedAccess,
+      ownerId: userId,
+    });
+
     const folder = new ConsoleFolder({
       workspaceId: new Types.ObjectId(workspaceId),
-      name: folderName,
+      name,
       parentId: parentId ? new Types.ObjectId(parentId) : undefined,
       isPrivate: resolvedAccess === "private",
       ownerId: userId,
@@ -1039,79 +1215,431 @@ export class ConsoleManager {
   }
 
   /**
-   * Rename a console in the database
+   * THE console rename/move: a new name, folder and/or access level, applied
+   * to the row with the file moved on main in ONE commit. The explorer's
+   * rename and "Move to…", the editor's Rename/Move, the REST routes and
+   * `rename_object` all end here, so the id, shares, schedule and
+   * telemetry never detach and no route decides a path on its own.
+   *
+   * The file is moved AS IT IS AT MAIN (`commitConsoleRelocation`): a
+   * rename never commits the row's working copy, so an unsaved draft stays
+   * a draft. The commit is a compare-and-swap; the target being taken — by
+   * another console, a case twin, or a file pushed from a laptop and not
+   * indexed yet — refuses with `ConsolePathTakenError`. When the file is
+   * not where the row says (a push or another rename landed first), the
+   * index is synced and the rename decided ONCE more from the fresh row.
+   *
+   * Returns null when the console does not exist or is in the trash: a
+   * deleted console is not renamed. A draft is renamed in the index only.
+   */
+  async relocateConsole(
+    consoleId: string,
+    workspaceId: string,
+    change: ConsoleChange,
+    actor: ConsoleActor = {},
+  ): Promise<{ row: ISavedConsole; commit?: string } | null> {
+    if (!Types.ObjectId.isValid(consoleId)) return null;
+    for (let attempt = 0; ; attempt++) {
+      const outcome = await this.relocateConsoleOnce(
+        consoleId,
+        workspaceId,
+        change,
+        actor,
+      );
+      if (outcome !== "drift") return outcome;
+      if (attempt > 0) {
+        throw new ConsoleConflictError(
+          "The console changed in the repository while it was being renamed. Reload and try again.",
+        );
+      }
+      await syncConsolesIndexFromRepo(workspaceId);
+    }
+  }
+
+  private async relocateConsoleOnce(
+    consoleId: string,
+    workspaceId: string,
+    change: ConsoleChange,
+    actor: ConsoleActor,
+  ): Promise<{ row: ISavedConsole; commit?: string } | null | "drift"> {
+    const id = new Types.ObjectId(consoleId);
+    const ws = new Types.ObjectId(workspaceId);
+    const current = await SavedConsole.findOne({
+      _id: id,
+      workspaceId: ws,
+      is_deleted: { $ne: true },
+    });
+    if (!current) return null;
+    const readPath = current.path ?? null;
+
+    // Only a NEW name is judged: the one it has, however it is spelled
+    // ("Q1: revenue" for "Q1 - revenue"), is no change, and a name a
+    // laptop gave it is not refused until someone changes it.
+    const name =
+      change.name === undefined ||
+      cleanedConsoleName(change.name) === current.name
+        ? undefined
+        : cleanConsoleName(change.name, "console", current.language);
+
+    // Who can see it is the row's access AND its folder chain. Changing
+    // either is the owner's or an admin's call — measured before anything
+    // below touches the row.
+    const visibleBefore = await this.effectiveVisibility(current);
+    const folderId =
+      change.folderId === undefined
+        ? undefined
+        : change.folderId
+          ? new Types.ObjectId(change.folderId)
+          : null;
+    if (folderId) {
+      const exists = await ConsoleFolder.exists({
+        _id: folderId,
+        workspaceId: ws,
+      });
+      if (!exists) {
+        throw new ConsoleConflictError(
+          "That folder no longer exists. Reload and choose another.",
+        );
+      }
+    }
+    // `access` is the visibility the caller wants the console to have (the
+    // section it is dropped in). Where the folder it is headed for already
+    // gives it that, the row's own access is left alone: moving a console
+    // within what its folder shows asks for no change of who sees it.
+    const rowAccess = ConsoleManager.resolveAccess(current);
+    const nextFolder = folderId === undefined ? current.folderId : folderId;
+    const inherited = await this.effectiveVisibility({
+      access: rowAccess,
+      folderId: nextFolder,
+    });
+    const access =
+      change.access && change.access !== inherited ? change.access : undefined;
+    const visibleAfter = access
+      ? await this.effectiveVisibility({ access, folderId: nextFolder })
+      : inherited;
+    if (
+      (access !== undefined || visibleBefore !== visibleAfter) &&
+      !mayChangeVisibility(current, actor)
+    ) {
+      throw new ConsoleScopeError(
+        "Moving this console there would change who can see it. Only its owner or a workspace admin can do that.",
+      );
+    }
+
+    const set: Record<string, unknown> = { updatedAt: new Date() };
+    if (name !== undefined) {
+      current.name = name;
+      set.name = name;
+    }
+    if (folderId !== undefined) {
+      current.folderId = folderId ?? undefined;
+      set.folderId = folderId;
+    }
+    if (access) {
+      current.access = access;
+      current.isPrivate = access === "private";
+      set.access = access;
+      set.isPrivate = current.isPrivate;
+    }
+
+    let commit: string | undefined;
+    if (current.isSaved) {
+      const toPath = await repoPathForRow(current);
+      const message = `${actor.verb ?? "rename"}: ${current.name}`;
+      if (toPath !== readPath) {
+        await this.assertConsolePathFree(workspaceId, toPath, id, readPath);
+      }
+      if (!readPath) {
+        // Never committed: the row is the only definition — project it.
+        const committed = await commitConsoleState({
+          row: current,
+          actorUserId: actor.userId,
+          message,
+          expectAbsent: true,
+        }).catch(error => {
+          if (error instanceof BlobPreconditionError) {
+            throw new ConsolePathTakenError(toPath);
+          }
+          throw error;
+        });
+        set.path = committed.path;
+        set.sourceBlobSha = committed.sourceBlobSha;
+        commit = committed.commitOid;
+      } else if (toPath !== readPath) {
+        let moved: Awaited<ReturnType<typeof commitConsoleRelocation>>;
+        try {
+          moved = await commitConsoleRelocation({
+            workspaceId,
+            fromPath: readPath,
+            toPath,
+            actorUserId: actor.userId,
+            message,
+            sourceBlobSha: current.sourceBlobSha,
+          });
+        } catch (error) {
+          if (!(error instanceof BlobPreconditionError)) throw error;
+          // The commit's compare-and-swap, which the check above cannot
+          // replace: the target appeared meanwhile → taken; the source is
+          // not the file the row knows → decide again from the fresh row.
+          if (
+            error.path === toPath ||
+            error.path === chartSidecarPath(toPath)
+          ) {
+            throw new ConsolePathTakenError(toPath);
+          }
+          return "drift";
+        }
+        // No file where the row says: a push or another rename moved it.
+        if (!moved) return "drift";
+        set.path = moved.path;
+        set.sourceBlobSha = moved.sourceBlobSha;
+        commit = moved.commitOid;
+        await consoleCommitHooks.afterCommit?.();
+      }
+    }
+
+    // Never onto a row a delete took meanwhile (its file went with it): the
+    // rename answers "not found". And never over a later rename: the row
+    // must still be where this one read it, or where this one's commit put
+    // the file (a sync may already have followed it there).
+    const filter: Record<string, unknown> = {
+      _id: id,
+      workspaceId: ws,
+      is_deleted: { $ne: true },
+    };
+    if (readPath) filter.path = { $in: [readPath, set.path ?? readPath] };
+    const updated = await SavedConsole.findOneAndUpdate(
+      filter,
+      { $set: set, $inc: { draftRevision: 1 } },
+      { returnDocument: "after" },
+    );
+    if (!updated) {
+      const now = await SavedConsole.findOne({ _id: id, workspaceId: ws });
+      if (!now || now.is_deleted) return null;
+      throw new ConsoleConflictError(
+        "The console was renamed or moved again while this change was being applied. Reload to see where it is.",
+      );
+    }
+    publishRealtimeEvent(workspaceId, {
+      type: "console.updated",
+      consoleId,
+      draftRevision: updated.draftRevision ?? 1,
+      name: updated.name,
+      updatedBy: actor.userId ?? "agent",
+      origin: "save",
+    });
+    return { row: updated, commit };
+  }
+
+  /**
+   * Who can see a console: "workspace" when its own access is workspace or
+   * any folder on its chain is a workspace folder, else "private".
+   */
+  async effectiveVisibility(console: {
+    access?: ConsoleAccessLevel | null;
+    isPrivate?: boolean | null;
+    folderId?: Types.ObjectId | string | null;
+  }): Promise<ConsoleAccessLevel> {
+    if (
+      folderAccess({ ...console, isPrivate: console.isPrivate ?? false }) ===
+      "workspace"
+    ) {
+      return "workspace";
+    }
+    let at = console.folderId?.toString();
+    for (let depth = 0; at && depth < 32; depth++) {
+      const folder = await ConsoleFolder.findById(at)
+        .select("access isPrivate parentId")
+        .lean<(FolderScope & { parentId?: Types.ObjectId }) | null>();
+      if (!folder) break;
+      if (folderAccess(folder) === "workspace") return "workspace";
+      at = folder.parentId?.toString();
+    }
+    return "private";
+  }
+
+  /**
+   * Where a console is, as a rename, a move or a restore answers: its name
+   * as saved, its `Folder/Sub/name` path, its folder, and who can see it.
+   */
+  async consoleLocation(row: ISavedConsole): Promise<{
+    id: string;
+    name: string;
+    path: string;
+    folderId: string | null;
+    access: ConsoleAccessLevel;
+  }> {
+    const segments = await folderSegmentsFor(
+      row.folderId,
+      row.workspaceId.toString(),
+    );
+    return {
+      id: row._id.toString(),
+      name: row.name,
+      path: [...segments, row.name].join("/"),
+      folderId: row.folderId ? row.folderId.toString() : null,
+      access: await this.effectiveVisibility(row),
+    };
+  }
+
+  /**
+   * The paths every LIVE console holds — files at main, then rows — keyed
+   * by their fold, each with the path as it is really spelled. A console
+   * in the trash holds no name: its file is gone, and the path its row
+   * keeps is only where it would like to come back.
+   */
+  private async takenConsolePaths(
+    workspaceId: string,
+    self?: Types.ObjectId,
+  ): Promise<Map<string, string>> {
+    const [defs, rows] = await Promise.all([
+      listConsoleDefinitionsAtMain(workspaceId),
+      SavedConsole.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+        ...(self ? { _id: { $ne: self } } : {}),
+        isSaved: true,
+        is_deleted: { $ne: true },
+        path: { $exists: true, $ne: null },
+      })
+        .select("path")
+        .lean<Array<{ path?: string }>>(),
+    ]);
+    // A file on main says how the name is really spelled; a row whose
+    // file is not there yet only fills in.
+    const taken = new Map<string, string>();
+    for (const path of [
+      ...rows.map(r => r.path as string),
+      ...defs.map(d => d.path),
+    ]) {
+      taken.set(foldConsolePath(path), path);
+    }
+    return taken;
+  }
+
+  /**
+   * Throw `ConsolePathTakenError` when a file at main or a live row holds
+   * `path`, or a path that differs from it only in letter case or Unicode
+   * form (one file on macOS and Windows) — other than the console's own.
+   */
+  private async assertConsolePathFree(
+    workspaceId: string,
+    path: string,
+    self: Types.ObjectId,
+    ownPath: string | null,
+  ): Promise<void> {
+    const taken = await this.takenConsolePaths(workspaceId, self);
+    if (ownPath) taken.delete(foldConsolePath(ownPath));
+    // Named as the console that has it is really called ("Alpha", for a
+    // request to call another one "alpha").
+    const holder = taken.get(foldConsolePath(path));
+    if (holder) throw new ConsolePathTakenError(holder);
+  }
+
+  /** `name`, or "name (2)", "name (3)"… — the first whose file is free. */
+  private async freeNameFor(row: ISavedConsole): Promise<string> {
+    const taken = await this.takenConsolePaths(
+      row.workspaceId.toString(),
+      row._id,
+    );
+    const free = uniquePath(
+      await repoPathForRow(row),
+      new Set(taken.keys()),
+      null,
+    );
+    return parseConsoleRepoPath(free)?.name ?? row.name;
+  }
+
+  /**
+   * Refuse a folder whose name, in the place it is headed for, is another
+   * folder's but for letter case or Unicode form. At the root a private
+   * folder only collides with its owner's own.
+   */
+  private async assertNoFolderTwin(
+    workspaceId: string,
+    name: string,
+    parentId: string | null,
+    scope: { access: ConsoleAccessLevel; ownerId?: string },
+    self?: string,
+  ): Promise<void> {
+    const twin = await this.folderTwin(
+      workspaceId,
+      name,
+      parentId,
+      scope,
+      self,
+    );
+    if (twin) {
+      throw new ConsoleConflictError(
+        `A folder named “${twin.name}” already exists here.`,
+      );
+    }
+  }
+
+  private async folderTwin(
+    workspaceId: string,
+    name: string,
+    parentId: string | null,
+    scope: { access: ConsoleAccessLevel; ownerId?: string },
+    self?: string,
+  ): Promise<IConsoleFolder | null> {
+    const siblings = await ConsoleFolder.find({
+      workspaceId: new Types.ObjectId(workspaceId),
+      ...(parentId
+        ? { parentId: new Types.ObjectId(parentId) }
+        : { $or: [{ parentId: null }, { parentId: { $exists: false } }] }),
+    });
+    const fold = foldConsolePath(name);
+    return (
+      siblings.find(
+        f =>
+          f._id.toString() !== self &&
+          foldConsolePath(f.name) === fold &&
+          (parentId !== null ||
+            (folderAccess(f) === scope.access &&
+              (scope.access === "workspace" ||
+                f.ownerId?.toString() === scope.ownerId))),
+      ) ?? null
+    );
+  }
+
+  /**
+   * Rename a console. A `Folder/Sub/name` value also moves it into that
+   * folder chain (found or created), in the same commit.
    */
   async renameConsole(
     consoleId: string,
     newName: string,
     workspaceId: string,
     userId: string,
-  ): Promise<boolean> {
-    try {
-      // Parse the new name for potential folder path
-      const parts = newName.split("/");
-      const consoleName = parts[parts.length - 1];
-
-      let folderId: string | undefined = undefined;
-
-      if (parts.length > 1) {
-        // Extract folder path and find/create the folder
-        const folderParts = parts.slice(0, -1);
-        folderId = await this.ensureFolderPath(
-          folderParts,
-          workspaceId,
-          userId,
-        );
-      }
-
-      const updateFields: any = {
-        name: consoleName,
-        updatedAt: new Date(),
-      };
-
-      // Update folderId if we have a folder path
-      if (parts.length > 1) {
-        updateFields.folderId = folderId ? new Types.ObjectId(folderId) : null;
-      }
-
-      const current = await SavedConsole.findOne({
+    isAdmin = false,
+  ): Promise<ISavedConsole | null> {
+    const parts = newName.split("/");
+    // Nothing is created for a console that is gone or in the trash.
+    if (
+      !Types.ObjectId.isValid(consoleId) ||
+      !(await SavedConsole.exists({
         _id: new Types.ObjectId(consoleId),
         workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!current) return false;
-      if (current.isSaved) {
-        current.name = consoleName;
-        if (parts.length > 1) {
-          current.folderId = folderId
-            ? new Types.ObjectId(folderId)
-            : undefined;
-        }
-        const committed = await commitConsoleState({
-          row: current,
-          previousPath: current.path,
-          actorUserId: userId,
-          message: `rename: ${consoleName}`,
-        });
-        updateFields.path = committed.path;
-        updateFields.sourceBlobSha = committed.sourceBlobSha;
-      }
-
-      const result = await SavedConsole.updateOne(
-        {
-          _id: new Types.ObjectId(consoleId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        },
-        {
-          $set: updateFields,
-        },
-      );
-
-      return result.modifiedCount > 0;
-    } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
-      logger.error("Error renaming console", { error });
-      return false;
+        is_deleted: { $ne: true },
+      }))
+    ) {
+      return null;
     }
+    const folderId =
+      parts.length > 1
+        ? ((await this.ensureFolderPath(
+            parts.slice(0, -1),
+            workspaceId,
+            userId,
+          )) ?? null)
+        : undefined;
+    const moved = await this.relocateConsole(
+      consoleId,
+      workspaceId,
+      { name: parts[parts.length - 1], folderId },
+      { userId, isAdmin, verb: "rename" },
+    );
+    return moved?.row ?? null;
   }
 
   /**
@@ -1162,7 +1690,16 @@ export class ConsoleManager {
       });
       if (!folder) return false;
       const previousName = folder.name;
-      folder.name = newName;
+      if (cleanedConsoleName(newName) === previousName) return true;
+      const name = cleanConsoleName(newName, "folder");
+      await this.assertNoFolderTwin(
+        workspaceId,
+        name,
+        folder.parentId?.toString() ?? null,
+        { access: folderAccess(folder), ownerId: folder.ownerId?.toString() },
+        folderId,
+      );
+      folder.name = name;
       await folder.save();
       try {
         await this.reprojectFolderSubtree(
@@ -1178,7 +1715,13 @@ export class ConsoleManager {
       }
       return true;
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof ConsoleNameError ||
+        error instanceof ConsoleConflictError
+      ) {
+        throw error;
+      }
       logger.error("Error renaming folder", { error });
       return false;
     }
@@ -1256,57 +1799,137 @@ export class ConsoleManager {
   }
 
   /**
-   * Delete a folder from database
+   * Delete a folder: every console under it (subfolders included) moves to
+   * the TRASH — its row, id, shares and history kept, never erased — and
+   * the folder records go. Answers with what was trashed, which is what an
+   * Undo puts back.
+   *
+   * Every console under it must be one the actor may delete on its own:
+   * theirs, or any for a workspace admin; otherwise nothing changes
+   * (`ConsoleScopeError`). The files leave main in one commit.
    */
   async deleteFolder(
     folderId: string,
     workspaceId: string,
     userId?: string,
-  ): Promise<boolean> {
-    try {
+    isAdmin = false,
+  ): Promise<TrashedFolder | null> {
+    const wid = new Types.ObjectId(workspaceId);
+    // Like a console's own delete, the files removed are the ones the rows
+    // point to WHEN THE COMMIT LANDS: a console of the folder renamed in
+    // between must not stay on main while its row goes to the trash. A
+    // lost race reads the folder again; three times at most.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const root = await ConsoleFolder.findOne({
+        _id: new Types.ObjectId(folderId),
+        workspaceId: wid,
+      });
+      if (!root) return null;
+      const folderIds = [
+        root._id,
+        ...(await collectDescendantFolderIds(ConsoleFolder, wid, root._id)),
+      ];
+      const folders = await ConsoleFolder.find({ _id: { $in: folderIds } });
+      const rows = await SavedConsole.find({
+        workspaceId: wid,
+        folderId: { $in: folderIds },
+      });
+      const live = rows.filter(r => !r.is_deleted);
+      if (userId && !isAdmin && live.some(r => ownerOf(r) !== userId)) {
+        throw new ConsoleScopeError(
+          "This folder holds consoles of other members: only they or a workspace admin can delete those. Move them out first, or ask an admin.",
+        );
+      }
       // Git first: every file under the folder goes in one commit.
-      const rows = await this.consolesUnderFolder(folderId, workspaceId);
-      const paths = rows
-        .map(r => r.path)
-        .filter((p): p is string => Boolean(p));
-      if (paths.length > 0) {
-        await commitConsoleBatch({
+      const paths = live
+        .filter(r => r.isSaved !== false && r.path)
+        .map(r => r.path as string);
+      let removal: string | undefined;
+      try {
+        const removed = await commitConsoleRemovals({
           workspaceId,
+          paths,
           actorUserId: userId,
-          mutation: {
-            deletes: paths.flatMap(p => [p, chartSidecarPath(p)]),
-          },
           message: `delete folder (${paths.length} console${paths.length === 1 ? "" : "s"})`,
         });
+        if (removed.absent.length > 0) {
+          // A file is not where its row says: take the index in first.
+          await syncConsolesIndexFromRepo(workspaceId);
+          continue;
+        }
+        if (!removed.unchanged) removal = removed.commitOid;
+      } catch (error) {
+        if (error instanceof BlobPreconditionError) continue;
+        throw error;
       }
-      // Delete all consoles in the folder
-      await SavedConsole.deleteMany({
-        folderId: new Types.ObjectId(folderId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-
-      // Delete all child folders recursively
-      const childFolders = await ConsoleFolder.find({
-        parentId: new Types.ObjectId(folderId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-
-      for (const childFolder of childFolders) {
-        await this.deleteFolder(childFolder._id.toString(), workspaceId);
-      }
-
-      // Delete the folder itself
-      const result = await ConsoleFolder.deleteOne({
-        _id: new Types.ObjectId(folderId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-
-      return result.deletedCount > 0;
-    } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
-      logger.error("Error deleting folder", { error });
-      return false;
+      return this.trashFolderRows(workspaceId, folders, live, removal);
     }
+    throw new ConsoleConflictError(
+      "A console in this folder was renamed or moved while the folder was being deleted. Reload and try again.",
+    );
+  }
+
+  /** The rows of a deleted folder into the trash; the folder records go. */
+  private async trashFolderRows(
+    workspaceId: string,
+    folders: IConsoleFolder[],
+    live: ISavedConsole[],
+    removal: string | undefined,
+  ): Promise<TrashedFolder> {
+    const wid = new Types.ObjectId(workspaceId);
+    const folderIds = folders.map(f => f._id);
+    // Into the trash and out of the folder, which is about to go.
+    const now = new Date();
+    for (const row of live) {
+      await SavedConsole.updateOne(
+        { _id: row._id, workspaceId: wid },
+        {
+          $set: {
+            is_deleted: true,
+            deletedAt: now,
+            deletedVia: "app",
+            folderId: null,
+          },
+          ...(removal && row.path
+            ? {
+                $addToSet: {
+                  historySegments: { path: row.path, until: removal },
+                },
+              }
+            : {}),
+        },
+      );
+    }
+    await SavedConsole.updateMany(
+      { workspaceId: wid, folderId: { $in: folderIds } },
+      { $set: { folderId: null } },
+    );
+    await ConsoleFolder.deleteMany({
+      _id: { $in: folderIds },
+      workspaceId: wid,
+    });
+    // Announced only now: every open window refetches the tree on
+    // `console.deleted`, and a refetch while the folder records still
+    // existed listed the deleted folder, empty, until a manual refresh.
+    for (const row of live) {
+      publishRealtimeEvent(workspaceId, {
+        type: "console.deleted",
+        consoleId: row._id.toString(),
+      });
+    }
+    return {
+      folders: folders.map(f => ({
+        id: f._id.toString(),
+        name: f.name,
+        parentId: f.parentId?.toString() ?? null,
+        access: folderAccess(f),
+      })),
+      consoles: live.map(r => ({
+        id: r._id.toString(),
+        name: r.name,
+        folderId: r.folderId?.toString() ?? null,
+      })),
+    };
   }
 
   /**
@@ -1386,12 +2009,13 @@ export class ConsoleManager {
         }
       }
 
-      // Build query for console with same name in same folder (or root if no folder)
-      // Only match explicitly saved consoles (isSaved: true) - not drafts
+      // The LIVE saved consoles in that folder (or at the root): a draft
+      // is not at a path, and a console in the trash holds no name — a new
+      // one may take it (the trashed one then comes back as "name (2)").
       const query: any = {
-        name: consoleName,
         workspaceId: new Types.ObjectId(workspaceId),
-        isSaved: true, // Only match saved consoles, not drafts
+        isSaved: true,
+        is_deleted: { $ne: true },
       };
 
       if (folderId) {
@@ -1401,9 +2025,14 @@ export class ConsoleManager {
         query.$or = [{ folderId: null }, { folderId: { $exists: false } }];
       }
 
-      // Sort by updatedAt descending to get the most recently updated console
-      // in case there are duplicate entries
-      return await SavedConsole.findOne(query).sort({ updatedAt: -1 });
+      // The same name, or one that differs only in letter case or Unicode
+      // form — one file on macOS and Windows, and what a rename refuses.
+      // The exact name first, then the most recently updated twin.
+      const wanted = foldConsolePath(cleanedConsoleName(consoleName));
+      const twins = (
+        await SavedConsole.find(query).sort({ updatedAt: -1 })
+      ).filter(row => foldConsolePath(row.name) === wanted);
+      return twins.find(row => row.name === consoleName) ?? twins[0] ?? null;
     } catch (error) {
       console.error("Error getting console by path:", error);
       return null;
@@ -1519,6 +2148,14 @@ export class ConsoleManager {
           : undefined,
       });
 
+      // "team" for an existing "Team" is that folder, not a second one.
+      folder ??= await this.folderTwin(
+        workspaceId,
+        cleanedConsoleName(folderName),
+        currentParentId ?? null,
+        { access: "private", ownerId: userId },
+      );
+
       if (!folder) {
         // Create the folder if it doesn't exist
         folder = await this.createFolder(
@@ -1584,7 +2221,8 @@ export class ConsoleManager {
   }
 
   /**
-   * Move a console to a different folder (or root if folderId is null)
+   * Move a console to a different folder (or root if folderId is null),
+   * optionally renaming it and changing its access in the same commit.
    */
   async moveConsole(
     consoleId: string,
@@ -1592,57 +2230,15 @@ export class ConsoleManager {
     folderId: string | null,
     access?: ConsoleAccessLevel,
     userId?: string,
+    options: { name?: string; isAdmin?: boolean } = {},
   ): Promise<boolean> {
-    const objectId = Types.ObjectId.isValid(consoleId)
-      ? new Types.ObjectId(consoleId)
-      : null;
-    if (!objectId) return false;
-
-    const updateFields: Record<string, any> = {
-      updatedAt: new Date(),
-    };
-
-    if (folderId) {
-      updateFields.folderId = new Types.ObjectId(folderId);
-    } else {
-      updateFields.folderId = null;
-    }
-
-    if (access) {
-      updateFields.access = access;
-      updateFields.isPrivate = access === "private";
-    }
-
-    const current = await SavedConsole.findOne({
-      _id: objectId,
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-    if (!current) return false;
-    if (current.isSaved) {
-      current.folderId = folderId ? new Types.ObjectId(folderId) : undefined;
-      if (access) {
-        current.access = access;
-        current.isPrivate = access === "private";
-      }
-      const committed = await commitConsoleState({
-        row: current,
-        previousPath: current.path,
-        actorUserId: userId,
-        message: `move: ${current.name}`,
-      });
-      updateFields.path = committed.path;
-      updateFields.sourceBlobSha = committed.sourceBlobSha;
-    }
-
-    const result = await SavedConsole.updateOne(
-      {
-        _id: objectId,
-        workspaceId: new Types.ObjectId(workspaceId),
-      },
-      { $set: updateFields },
+    const moved = await this.relocateConsole(
+      consoleId,
+      workspaceId,
+      { folderId, access, name: options.name },
+      { userId, isAdmin: options.isAdmin, verb: "move" },
     );
-
-    return result.modifiedCount > 0;
+    return moved !== null;
   }
 
   /**
@@ -1655,8 +2251,10 @@ export class ConsoleManager {
     newParentId: string | null,
     access?: ConsoleAccessLevel,
     userId?: string,
+    isAdmin = false,
   ): Promise<boolean> {
     if (!Types.ObjectId.isValid(folderId)) return false;
+    const actor = { userId, isAdmin };
 
     // Prevent moving folder into itself
     if (newParentId === folderId) return false;
@@ -1689,6 +2287,36 @@ export class ConsoleManager {
       workspaceId: new Types.ObjectId(workspaceId),
     }).lean();
     if (!before) return false;
+
+    const nextAccess = access ?? folderAccess(before);
+    await this.assertNoFolderTwin(
+      workspaceId,
+      before.name,
+      newParentId,
+      { access: nextAccess, ownerId: before.ownerId?.toString() },
+      folderId,
+    );
+    // A folder shows what it holds to whoever can see the folder. Moving
+    // it so that changes for a console is that console's owner's call, or
+    // a workspace admin's — the rule a console's own move follows.
+    const seenAs = async (
+      parent: Types.ObjectId | string | null | undefined,
+      own: ConsoleAccessLevel,
+    ) =>
+      own === "workspace"
+        ? own
+        : this.effectiveVisibility({ access: "private", folderId: parent });
+    const changesWhoSees =
+      (await seenAs(before.parentId, folderAccess(before))) !==
+      (await seenAs(newParentId, nextAccess));
+    if (changesWhoSees && actor.userId && !actor.isAdmin) {
+      const held = await this.consolesUnderFolder(folderId, workspaceId);
+      if (held.some(row => ownerOf(row) !== actor.userId)) {
+        throw new ConsoleScopeError(
+          "This folder holds consoles of other members: only they or a workspace admin can change who sees those.",
+        );
+      }
+    }
 
     const result = await ConsoleFolder.updateOne(
       {
@@ -1734,7 +2362,18 @@ export class ConsoleManager {
   }
 
   /**
-   * Soft-delete a console (set is_deleted=true instead of removing).
+   * Move a console to the trash: its file leaves main, its row stays
+   * (id, shares, history) marked deleted.
+   *
+   * The file removed is the one the row points to WHEN THE COMMIT LANDS.
+   * Read once and committed blindly, a rename landing in between moved the
+   * file away: the delete removed nothing, marked the row deleted, the
+   * renamed file stayed on main and the next sync brought the console
+   * back. So the removal is a compare-and-swap on the file as it is at
+   * main, the row is marked deleted only while it still points where the
+   * removal looked, and a lost race is decided again from the fresh row —
+   * a bounded number of times, then `ConsoleConflictError`. True means the
+   * console is in the trash and its file is gone from main.
    */
   async softDeleteConsole(
     consoleId: string,
@@ -1742,66 +2381,131 @@ export class ConsoleManager {
     userId?: string,
   ): Promise<boolean> {
     if (!Types.ObjectId.isValid(consoleId)) return false;
-    const current = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    }).select("path name");
-    if (!current) return false;
-    // The row keeps its `path` so a restore puts the file back where it was.
-    if (current.path) {
-      await commitConsoleRemoval({
-        workspaceId,
-        path: current.path,
-        actorUserId: userId,
-        message: `delete: ${current.path}`,
-      });
+    const id = new Types.ObjectId(consoleId);
+    const ws = new Types.ObjectId(workspaceId);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const current = await SavedConsole.findOne({
+        _id: id,
+        workspaceId: ws,
+      }).select("path is_deleted");
+      // Nothing to delete, or already in the trash.
+      if (!current || current.is_deleted) return false;
+      const path = current.path ?? null;
+      let segment: { path: string; until: string } | undefined;
+      if (path) {
+        let removed: Awaited<ReturnType<typeof commitConsoleRemoval>>;
+        try {
+          removed = await commitConsoleRemoval({
+            workspaceId,
+            path,
+            actorUserId: userId,
+            message: `delete: ${path}`,
+            onlyAsItIs: true,
+          });
+        } catch (error) {
+          // The file changed or moved between the read and the commit.
+          if (error instanceof BlobPreconditionError) continue;
+          throw error;
+        }
+        if (removed.absent) {
+          // Not where the row says: a rename or a push moved it and the
+          // index has not caught up. Take that in and decide again.
+          await syncConsolesIndexFromRepo(workspaceId);
+          continue;
+        }
+        // The file's history up to here is this console's earlier life: a
+        // restore adds a new file, where git's history of it starts.
+        if (!removed.unchanged) segment = { path, until: removed.commitOid };
+      }
+      const result = await SavedConsole.updateOne(
+        { _id: id, workspaceId: ws, path: path ?? null },
+        {
+          $set: { is_deleted: true, deletedAt: new Date(), deletedVia: "app" },
+          ...(segment ? { $addToSet: { historySegments: segment } } : {}),
+        },
+      );
+      // A rename re-pointed the row meanwhile: decide again.
+      if (result.matchedCount === 0) continue;
+      return result.modifiedCount > 0;
     }
-    const result = await SavedConsole.updateOne(
-      {
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      },
-      { $set: { is_deleted: true, deletedAt: new Date() } },
+    throw new ConsoleConflictError(
+      "This console was renamed or moved while it was being deleted. Reload and try again.",
     );
-    return result.modifiedCount > 0;
   }
 
   /**
-   * Restore a soft-deleted console.
+   * Restore a console from the trash: in place, or — when its name was
+   * taken meanwhile — as "name (2)". The file comes back as it was last
+   * committed, at a path that must be free when the commit lands.
+   *
+   * `folderId` files it in that folder instead (a folder delete's Undo
+   * recreates the folder first); a folder that no longer exists means the
+   * root. Returns the row as restored, or null when there is nothing in
+   * the trash under that id.
    */
   async restoreConsole(
     consoleId: string,
     workspaceId: string,
     userId?: string,
-  ): Promise<boolean> {
-    if (!Types.ObjectId.isValid(consoleId)) return false;
+    options: { folderId?: string | null } = {},
+  ): Promise<ISavedConsole | null> {
+    if (!Types.ObjectId.isValid(consoleId)) return null;
+    const ws = new Types.ObjectId(workspaceId);
     const current = await SavedConsole.findOne({
       _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
+      workspaceId: ws,
     });
-    if (!current) return false;
-    const set: Record<string, unknown> = { is_deleted: false };
+    // Only a deleted console is restored: on a live one this would be a
+    // second copy of its file.
+    if (!current?.is_deleted) return null;
+    const wanted =
+      options.folderId === undefined ? current.folderId : options.folderId;
+    const folder = wanted
+      ? await ConsoleFolder.exists({ _id: wanted, workspaceId: ws })
+      : null;
+    current.folderId = folder?._id;
+    const set: Record<string, unknown> = {
+      is_deleted: false,
+      folderId: folder?._id ?? null,
+    };
     if (current.isSaved) {
-      const committed = await commitConsoleState({
-        row: current,
-        actorUserId: userId,
-        message: `restore: ${current.name}`,
-      });
-      set.path = committed.path;
-      set.sourceBlobSha = committed.sourceBlobSha;
+      for (let attempt = 0; ; attempt++) {
+        current.name = await this.freeNameFor(current);
+        try {
+          const committed = await restoreConsoleFile({
+            row: current,
+            actorUserId: userId,
+            message: `restore: ${current.name}`,
+          });
+          set.name = current.name;
+          set.path = committed.path;
+          set.sourceBlobSha = committed.sourceBlobSha;
+          break;
+        } catch (error) {
+          // The name was taken between the choice and the commit.
+          if (!(error instanceof BlobPreconditionError) || attempt > 1) {
+            throw error;
+          }
+        }
+      }
     }
-    const result = await SavedConsole.updateOne(
+    // The revision moves so an open tab picks up the restored console (its
+    // name may now be "name (2)").
+    return SavedConsole.findOneAndUpdate(
+      { _id: current._id, workspaceId: ws, is_deleted: true },
       {
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
+        $set: set,
+        $unset: { deletedAt: "", deletedVia: "" },
+        $inc: { draftRevision: 1 },
       },
-      { $set: set, $unset: { deletedAt: "" } },
+      { returnDocument: "after" },
     );
-    return result.modifiedCount > 0;
   }
 
   /**
-   * Duplicate a console: creates a copy with " copy" appended to the name.
+   * Duplicate a console: a private copy named "<name> copy" — "<name> copy
+   * (2)" when that file is taken — whose name always fits the length
+   * limit. The copy never lands on another console's file.
    */
   async duplicateConsole(
     consoleId: string,
@@ -1821,11 +2525,11 @@ export class ConsoleManager {
       connectionId: original.connectionId,
       databaseName: original.databaseName,
       databaseId: original.databaseId,
-      name: `${original.name} copy`,
+      name: suffixedConsoleName(original.name, " copy"),
       description: original.description,
       code: original.code,
       language: original.language,
-      mongoOptions: original.mongoOptions,
+      mongoOptions: original.mongoOptions ?? undefined,
       createdBy: userId,
       isPrivate: true,
       isSaved: true,
@@ -1833,13 +2537,24 @@ export class ConsoleManager {
       owner_id: userId,
       executionCount: 0,
     });
-    const committed = await commitConsoleState({
-      row: copy,
-      actorUserId: userId,
-      message: `duplicate: ${original.name}`,
-    });
-    copy.path = committed.path;
-    copy.sourceBlobSha = committed.sourceBlobSha;
+    for (let attempt = 0; ; attempt++) {
+      copy.name = await this.freeNameFor(copy);
+      try {
+        const committed = await commitConsoleState({
+          row: copy,
+          actorUserId: userId,
+          message: `duplicate: ${original.name}`,
+          expectAbsent: true,
+        });
+        copy.path = committed.path;
+        copy.sourceBlobSha = committed.sourceBlobSha;
+        break;
+      } catch (error) {
+        if (!(error instanceof BlobPreconditionError) || attempt > 1) {
+          throw error;
+        }
+      }
+    }
     await copy.save();
     return copy;
   }

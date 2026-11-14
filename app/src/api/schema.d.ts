@@ -6132,6 +6132,7 @@ export interface components {
             folderId?: string | null;
             /** @enum {string} */
             access?: "private" | "workspace";
+            name?: string;
         };
         Error: {
             success?: boolean;
@@ -6210,6 +6211,7 @@ export interface components {
             folderId?: string | null;
             /** @enum {string} */
             access?: "private" | "workspace";
+            name?: string;
         };
         NotebookExecuteRequest: {
             code: string;

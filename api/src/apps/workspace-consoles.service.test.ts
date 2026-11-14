@@ -204,8 +204,8 @@ describe("write-through", () => {
     expect(await treePaths()).toContain("consoles/a.sql");
 
     expect(
-      await manager.renameConsole(saved._id.toString(), "b", WS, USER),
-    ).toBe(true);
+      (await manager.renameConsole(saved._id.toString(), "b", WS, USER))?.name,
+    ).toBe("b");
     let paths = await treePaths();
     expect(paths).toContain("consoles/b.sql");
     expect(paths).not.toContain("consoles/a.sql");
@@ -249,9 +249,9 @@ describe("write-through", () => {
       `users/${HANDLE}/consoles/Team/b.sql`,
     );
     // …and restore puts it back at its path.
-    expect(await manager.restoreConsole(saved._id.toString(), WS, USER)).toBe(
-      true,
-    );
+    expect(
+      (await manager.restoreConsole(saved._id.toString(), WS, USER))?.path,
+    ).toBe(`users/${HANDLE}/consoles/Team/b.sql`);
     expect(await treePaths()).toContain(`users/${HANDLE}/consoles/Team/b.sql`);
 
     const history = await log(repoDirFor(WS), MAIN, 20);

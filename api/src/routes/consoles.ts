@@ -1,7 +1,13 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { workspaceResourceLoader } from "./lib/load-resource";
 import type { Context } from "hono";
-import { ConsoleManager } from "../utils/console-manager";
+import {
+  ConsoleConflictError,
+  ConsoleManager,
+  ConsoleNameError,
+  ConsoleScopeError,
+} from "../utils/console-manager";
+import { NotEntityPathError } from "../apps/entity-git-history";
 import { canWriteResource } from "../utils/resource-acl";
 import { wouldCreateFolderCycle } from "../utils/folder-tree";
 import { registerFolderRoutes, type FolderBackend } from "./lib/folder-routes";
@@ -85,6 +91,26 @@ function repoRequired(c: Context, error: RepoRequiredError) {
 }
 
 /** GET/list without a GitHub binding is an empty explorer, not 412. */
+/**
+ * A console change that was refused, as the client should show it: a name
+ * no file can have (400), a visibility change that is not the caller's to
+ * make (403), a place that is taken or a race that was lost (409).
+ */
+function consoleRefusal(c: Context, error: unknown): Response | undefined {
+  if (error instanceof RepoRequiredError) return repoRequired(c, error);
+  if (
+    error instanceof ConsoleNameError ||
+    error instanceof ConsoleScopeError ||
+    error instanceof ConsoleConflictError
+  ) {
+    return c.json({ success: false, error: error.message }, error.status);
+  }
+  return undefined;
+}
+
+/** The caller can open the console and cannot change it. */
+const READ_ONLY_CONSOLE = "You have read-only access to this console.";
+
 function emptyConsoleTree() {
   return {
     success: true as const,
@@ -153,6 +179,12 @@ function computeConsoleStateHash(
   return hashContent(
     `${content}|${connectionId || ""}|${databaseId || ""}|${databaseName || ""}`,
   );
+}
+
+/** The same query text, line endings and trailing blank lines aside. */
+function sameConsoleCode(a: string | undefined, b: string): boolean {
+  const plain = (code: string) => code.replace(/\r\n/g, "\n").trimEnd();
+  return plain(a ?? "") === plain(b);
 }
 
 /**
@@ -537,8 +569,14 @@ consoleRoutes.openapi(
         const serverRevision = doc.draftRevision ?? 1;
         if (serverRevision === clientRevision) continue;
         const isSaved = doc.isSaved ?? true;
-        const savedStateHash = isSaved
-          ? await getLatestConsoleSavedStateHash(doc)
+        const saved = isSaved ? await savedConsoleStateFromRepo(doc) : null;
+        const savedStateHash = saved
+          ? computeConsoleStateHash(
+              saved.code,
+              saved.connectionId,
+              saved.databaseId,
+              saved.databaseName,
+            )
           : undefined;
         changed.push({
           id,
@@ -554,6 +592,14 @@ consoleRoutes.openapi(
           // consoles don't). Missing on legacy docs ⇒ treated as saved.
           isSaved,
           savedStateHash,
+          // Whether the working copy IS the saved content (the file on
+          // main). A revision also moves for a rename, a move or a restore,
+          // which change no content: with an unchanged `version` this lets
+          // a tab holding unsaved edits tell those from a real change,
+          // instead of warning about "an older copy" on every rename.
+          contentIsSaved: saved
+            ? sameConsoleCode(doc.code, saved.code)
+            : undefined,
           // Lets the client route an agent edit into the diff-review flow even
           // when the live poke was missed (reconnect/reload). Undefined ⇒ user.
           lastDraftOrigin: doc.lastDraftOrigin,
@@ -1158,7 +1204,8 @@ consoleRoutes.openapi(
         201,
       );
     } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      const refused = consoleRefusal(c, error);
+      if (refused) return refused;
       logger.error("Error creating console", { error });
       return c.json(
         {
@@ -1211,6 +1258,18 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         _id: new Types.ObjectId(pathOrId),
         workspaceId: new Types.ObjectId(workspaceId),
       });
+      // In the trash: a save (from a tab still open on it) must not put a
+      // file back on main for a row that stays deleted. It returns through
+      // a restore.
+      if (existingById?.is_deleted && existingById.deletedVia === "app") {
+        return c.json(
+          {
+            success: false,
+            error: "This console is in the trash. Restore it to save to it.",
+          },
+          404,
+        );
+      }
       // A console that exists only in git (no row yet) is addressed by its
       // derived id. It still has an owner (its path scope) and a language
       // (its extension): the ACL check must run against the file, and the
@@ -1378,7 +1437,12 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         // Update with path information (use upsert in case console hasn't been auto-saved yet)
         const setFields: Record<string, any> = {
           code: body.content,
-          name: consoleName,
+          // A new name is stored as a file can carry it (or refused).
+          name: ConsoleManager.nameToStore(
+            consoleName,
+            existingById?.isSaved ? existingById.name : undefined,
+            existingById?.language,
+          ),
           folderId: folderId ? new Types.ObjectId(folderId) : undefined,
           connectionId: body.connectionId
             ? new Types.ObjectId(body.connectionId)
@@ -1688,6 +1752,8 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       },
     });
   } catch (error) {
+    const refused = consoleRefusal(c, error);
+    if (refused) return refused;
     logger.error("Error updating console", {
       path: c.req.param("path"),
       error,
@@ -1771,7 +1837,7 @@ consoleRoutes.openapi(
           return c.json(
             {
               success: false,
-              error: "Cannot rename a read-only console",
+              error: READ_ONLY_CONSOLE,
             },
             403,
           );
@@ -1785,45 +1851,29 @@ consoleRoutes.openapi(
         );
       }
 
-      const success = await consoleManager.renameConsole(
+      // One service for every rename and move (`relocateConsole`): it moves
+      // the file as it is on main in one commit, bumps the revision and
+      // tells the other windows.
+      const renamed = await consoleManager.renameConsole(
         consoleId,
         name,
         workspaceId,
         user.id,
+        isAdminRename,
       );
-
-      if (success) {
-        // Bump the draft revision so revision-sync catches the rename, then
-        // poke subscribers (other tabs/users update the tab title live).
-        if (Types.ObjectId.isValid(consoleId)) {
-          const renamed = await SavedConsole.findOneAndUpdate(
-            {
-              _id: new Types.ObjectId(consoleId),
-              workspaceId: new Types.ObjectId(workspaceId),
-            },
-            { $inc: { draftRevision: 1 } },
-            { returnDocument: "after" },
-          );
-          if (renamed) {
-            publishRealtimeEvent(workspaceId, {
-              type: "console.updated",
-              consoleId,
-              draftRevision: renamed.draftRevision ?? 1,
-              name: renamed.name,
-              updatedBy: user.id,
-              origin: "save",
-            });
-          }
-        }
-        return c.json({
-          success: true,
-          message: "Console renamed successfully",
-        });
-      } else {
+      if (!renamed) {
         return c.json({ success: false, error: "Console not found" }, 404);
       }
+      return c.json({
+        success: true,
+        message: "Console renamed successfully",
+        // The name as saved: characters a file name cannot carry were
+        // replaced ("Q1: revenue" is saved as "Q1 - revenue").
+        data: await consoleManager.consoleLocation(renamed),
+      });
     } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      const refused = consoleRefusal(c, error);
+      if (refused) return refused;
       logger.error("Error renaming console", {
         consoleId: c.req.param("id"),
         error,
@@ -1922,7 +1972,8 @@ consoleRoutes.openapi(
         return c.json({ success: false, error: "Console not found" }, 404);
       }
     } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      const refused = consoleRefusal(c, error);
+      if (refused) return refused;
       logger.error("Error deleting console", {
         consoleId: c.req.param("id"),
         error,
@@ -2003,7 +2054,8 @@ consoleRoutes.openapi(
         return c.json({ success: false, error: "Console not found" }, 404);
       }
     } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      const refused = consoleRefusal(c, error);
+      if (refused) return refused;
       logger.error("Error duplicating console", {
         consoleId: c.req.param("id"),
         error,
@@ -2061,19 +2113,70 @@ consoleRoutes.openapi(
         );
       }
 
-      const success = await consoleManager.restoreConsole(
+      // Taking a console out of the trash is for whoever could put it
+      // there: its owner or a workspace admin (it comes back with its
+      // shares, and `folderId` chooses who sees it through a folder).
+      if (Types.ObjectId.isValid(consoleId)) {
+        const trashed = await SavedConsole.findOne({
+          _id: new Types.ObjectId(consoleId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        }).select("owner_id createdBy");
+        if (
+          trashed &&
+          (trashed.owner_id || trashed.createdBy) !== user.id &&
+          !(await workspaceService.hasRole(workspaceId, user.id, [
+            "owner",
+            "admin",
+          ]))
+        ) {
+          return c.json(
+            {
+              success: false,
+              error:
+                "Only the console owner or a workspace admin can restore it",
+            },
+            403,
+          );
+        }
+      }
+      const body = (await c.req.json().catch(() => ({}))) as {
+        folderId?: unknown;
+      };
+      const folderId =
+        body?.folderId === null ||
+        (typeof body?.folderId === "string" &&
+          Types.ObjectId.isValid(body.folderId))
+          ? (body.folderId as string | null)
+          : undefined;
+
+      const restored = await consoleManager.restoreConsole(
         consoleId,
         workspaceId,
         user.id,
+        { folderId },
       );
 
-      if (success) {
-        return c.json({ success: true, message: "Console restored" });
+      if (restored) {
+        publishRealtimeEvent(workspaceId, {
+          type: "console.updated",
+          consoleId,
+          draftRevision: restored.draftRevision ?? 1,
+          name: restored.name,
+          updatedBy: user.id,
+          origin: "save",
+        });
+        return c.json({
+          success: true,
+          message: "Console restored",
+          // Its name may now be "name (2)": the old one was taken meanwhile.
+          data: await consoleManager.consoleLocation(restored),
+        });
       } else {
         return c.json({ success: false, error: "Console not found" }, 404);
       }
     } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      const refused = consoleRefusal(c, error);
+      if (refused) return refused;
       logger.error("Error restoring console", {
         consoleId: c.req.param("id"),
         error,
@@ -3251,30 +3354,19 @@ consoleRoutes.openapi(
       const loaded = await loadReadableConsole(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { sha, path: relPath } = c.req.valid("query");
-      const target = relPath ?? loaded.doc.path;
-      if (!target) {
-        return c.json(
-          { success: false, error: "Console has no file yet" },
-          404,
-        );
-      }
-      // Only this console's own file (and its chart) may be read through it.
-      const own = new Set([
-        loaded.doc.path,
-        loaded.doc.path
-          ? `${loaded.doc.path.replace(/\.[^./]+(\.js)?$/, "")}.chart.json`
-          : undefined,
-      ]);
-      if (!own.has(target)) {
+      // Only this console's own file (and its chart), in one of its own
+      // commits — under the name it had then, which a rename since may
+      // have changed.
+      const versions = await consoleFileVersions(loaded.doc, sha, relPath);
+      return c.json({ success: true as const, versions });
+    } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof NotEntityPathError) {
         return c.json(
           { success: false, error: "Path is not this console" },
           403,
         );
       }
-      const versions = await consoleFileVersions(loaded.doc, sha, target);
-      return c.json({ success: true as const, versions });
-    } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error reading console file versions", { error });
       return c.json({ success: false, error: "Failed to read the diff" }, 500);
     }
@@ -3346,6 +3438,7 @@ consoleRoutes.openapi(
 async function consoleFolderWriteDenied(
   ctx: { workspaceId: string; userId: string; role: string | undefined },
   folderId: string,
+  verb: "rename" | "delete" | "move",
 ): Promise<{ ok: false; status: 403 | 404; error: string } | null> {
   const folder = await ConsoleFolder.findOne({
     _id: new Types.ObjectId(folderId),
@@ -3359,8 +3452,17 @@ async function consoleFolderWriteDenied(
     ctx.role,
     { effectiveAccess: access },
   );
-  return allowed ? null : { ok: false, status: 403, error: "Access denied" };
+  return allowed
+    ? null
+    : {
+        ok: false,
+        status: 403,
+        error: `Only the folder's owner or a workspace admin can ${verb} this folder.`,
+      };
 }
+
+const isAdminRole = (role: string | undefined) =>
+  role === "owner" || role === "admin";
 
 const consoleFolderBackend: FolderBackend = {
   createFolder: async (ctx, { name, parentId, access }) => {
@@ -3376,6 +3478,7 @@ const consoleFolderBackend: FolderBackend = {
       ok: true,
       data: {
         id: folder._id.toString(),
+        // As saved: "Q1: plans" is stored as "Q1 - plans".
         name: folder.name,
         parentId: folder.parentId?.toString(),
         isPrivate: folder.isPrivate,
@@ -3384,7 +3487,7 @@ const consoleFolderBackend: FolderBackend = {
   },
 
   renameFolder: async (ctx, { folderId, name }) => {
-    const denied = await consoleFolderWriteDenied(ctx, folderId);
+    const denied = await consoleFolderWriteDenied(ctx, folderId, "rename");
     if (denied) return denied;
     const success = await consoleManager.renameFolder(
       folderId,
@@ -3393,23 +3496,26 @@ const consoleFolderBackend: FolderBackend = {
       ctx.userId,
     );
     if (!success) return { ok: false, status: 404, error: "Folder not found" };
-    return { ok: true };
+    const renamed = await ConsoleFolder.findById(folderId).select("name");
+    return { ok: true, data: { id: folderId, name: renamed?.name ?? name } };
   },
 
   deleteFolder: async (ctx, { folderId }) => {
-    const denied = await consoleFolderWriteDenied(ctx, folderId);
+    const denied = await consoleFolderWriteDenied(ctx, folderId, "delete");
     if (denied) return denied;
-    const success = await consoleManager.deleteFolder(
+    // Into the trash, never erased; the answer is what an Undo puts back.
+    const trashed = await consoleManager.deleteFolder(
       folderId,
       ctx.workspaceId,
       ctx.userId,
+      isAdminRole(ctx.role),
     );
-    if (!success) return { ok: false, status: 404, error: "Folder not found" };
-    return { ok: true };
+    if (!trashed) return { ok: false, status: 404, error: "Folder not found" };
+    return { ok: true, data: { ...trashed } };
   },
 
   moveFolder: async (ctx, { folderId, parentId, access }) => {
-    const denied = await consoleFolderWriteDenied(ctx, folderId);
+    const denied = await consoleFolderWriteDenied(ctx, folderId, "move");
     if (denied) return denied;
     if (
       parentId &&
@@ -3432,18 +3538,19 @@ const consoleFolderBackend: FolderBackend = {
       parentId ?? null,
       access,
       ctx.userId,
+      isAdminRole(ctx.role),
     );
     if (!success) return { ok: false, status: 404, error: "Folder not found" };
     return { ok: true };
   },
 
-  moveItem: async (ctx, { itemId, folderId, access }) => {
+  moveItem: async (ctx, { itemId, folderId, access, name }) => {
+    const isAdmin = isAdminRole(ctx.role);
     if (Types.ObjectId.isValid(itemId)) {
       const existing = await SavedConsole.findOne({
         _id: new Types.ObjectId(itemId),
         workspaceId: new Types.ObjectId(ctx.workspaceId),
       });
-      const isAdmin = ctx.role === "owner" || ctx.role === "admin";
       if (
         existing &&
         !ConsoleManager.canWrite(existing, ctx.userId, isAdmin, ctx.role)
@@ -3451,19 +3558,22 @@ const consoleFolderBackend: FolderBackend = {
         return {
           ok: false,
           status: 403,
-          error: "Cannot move a read-only console",
+          error: READ_ONLY_CONSOLE,
         };
       }
     }
-    const success = await consoleManager.moveConsole(
+    // The same service as a rename; `name` renames in the same commit.
+    const moved = await consoleManager.relocateConsole(
       itemId,
       ctx.workspaceId,
-      folderId ?? null,
-      access,
-      ctx.userId,
+      { folderId: folderId ?? null, access, name },
+      { userId: ctx.userId, isAdmin, verb: "move" },
     );
-    if (!success) return { ok: false, status: 404, error: "Console not found" };
-    return { ok: true };
+    if (!moved) return { ok: false, status: 404, error: "Console not found" };
+    return {
+      ok: true,
+      data: { ...(await consoleManager.consoleLocation(moved.row)) },
+    };
   },
 };
 
@@ -3472,6 +3582,5 @@ registerFolderRoutes(consoleRoutes, {
   schemaPrefix: "Console",
   backend: consoleFolderBackend,
   createdStatus: 201,
-  onError: (c, error) =>
-    error instanceof RepoRequiredError ? repoRequired(c, error) : undefined,
+  onError: consoleRefusal,
 });

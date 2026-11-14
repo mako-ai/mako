@@ -170,6 +170,9 @@
               "private",
               "workspace"
             ]
+          },
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -464,6 +467,9 @@
               "private",
               "workspace"
             ]
+          },
+          "name": {
+            "type": "string"
           }
         }
       },

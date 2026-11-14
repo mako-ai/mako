@@ -75,11 +75,15 @@ import {
   requireWorkspaceRepo,
   boundRepoDirIfExists,
 } from "./workspace-repo-required";
+import { suffixedConsoleName } from "@mako/schemas";
 import {
+  CONSOLES_DIR,
   CONSOLES_README,
   CONSOLES_README_PATH,
+  USERS_DIR,
   chartSidecarPath,
   consoleRepoPath,
+  foldConsolePath,
   parseChartSpec,
   parseConsoleFile,
   parseConsoleRepoPath,
@@ -91,31 +95,33 @@ import {
   type ParsedConsoleFile,
 } from "./console-files";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
   blobOid,
   commitBlobsOnBranch,
-  diffNameStatus,
+  lastCommitTouching,
   listTree,
   log as repoLog,
   readBlob,
   readBlobsBatch,
+  renamesInCommit,
   resolveCommit,
   type BlobMutation,
-  type CommitInfo,
+  type FollowedCommit,
   type GitAuthor,
+  type IndexMode,
   type TreeEntry,
 } from "./repository.service";
 import { commitBranchFor } from "./branch-policy";
-import { EMPTY_TREE } from "./git";
+import { runGit } from "./git";
 import {
-  NotEntityPathError,
-  entityCommitChanges,
-  entityFileVersions,
-  entityHistory,
-  fileScope,
+  followedCommitChanges,
+  followedFileVersions,
+  followedHistory,
+  followedPathAt,
   type CommitChanges,
-  type EntityGitScope,
   type FileVersions,
+  type FollowedFile,
 } from "./entity-git-history";
 
 const logger = loggers.api("consoles-git");
@@ -443,11 +449,34 @@ export async function consolesAdopted(repoDir: string): Promise<boolean> {
 export function derivedConsoleId(
   workspaceId: string,
   path: string,
+  attempt = 0,
 ): Types.ObjectId {
   const digest = createHash("sha1")
-    .update(`consoles:${workspaceId}:${path}`)
+    .update(`consoles:${workspaceId}:${path}${attempt ? `:${attempt}` : ""}`)
     .digest("hex");
   return new Types.ObjectId(digest.slice(0, 24));
+}
+
+/**
+ * The derived id for a file with no row, skipping ids a row already holds:
+ * a console that was born in git and then renamed (or trashed) keeps the
+ * id derived from its FIRST path, and a new file at that path is another
+ * console — it must not be listed, or indexed, under the first one's id.
+ */
+function freeDerivedConsoleId(
+  workspaceId: string,
+  path: string,
+  taken: ReadonlySet<string>,
+): Types.ObjectId {
+  for (let attempt = 0; ; attempt++) {
+    const id = derivedConsoleId(workspaceId, path, attempt);
+    if (!taken.has(id.toString())) return id;
+  }
+}
+
+/** A row a file at its path does not bring back: trashed in Mako. */
+function trashedInApp(row: Pick<ISavedConsole, "is_deleted" | "deletedVia">) {
+  return Boolean(row.is_deleted) && row.deletedVia === "app";
 }
 
 export interface ConsoleDefinitionAtMain {
@@ -586,16 +615,21 @@ function joinLiveConsoles(
   defs: ConsoleDefinitionAtMain[],
   rows: ISavedConsole[],
 ): LiveConsole[] {
+  // A path is answered by its live row; failing that by a row a push
+  // deleted (the file coming back restores it). Never by a console that
+  // was trashed in Mako: a file at its old path is a new console.
   const byPath = new Map<string, ISavedConsole>();
   for (const row of rows) {
-    if (row.path) byPath.set(row.path, row);
+    if (!row.path || trashedInApp(row)) continue;
+    if (!row.is_deleted || !byPath.has(row.path)) byPath.set(row.path, row);
   }
+  const taken = new Set(rows.map(r => r._id.toString()));
   return defs.map(def => {
     const row = byPath.get(def.path) ?? null;
     return {
       ...def,
       row,
-      id: row?._id ?? derivedConsoleId(workspaceId, def.path),
+      id: row?._id ?? freeDerivedConsoleId(workspaceId, def.path, taken),
     };
   });
 }
@@ -658,6 +692,9 @@ export async function loadLiveConsoleById(
   const repoDir = await boundRepoDirIfExists(workspaceId);
   if (repoDir == null) return null;
 
+  // Trashed in Mako: whatever file is at its old path now is not this one.
+  if (row && trashedInApp(row)) return null;
+
   if (row?.path) {
     const def = await readConsoleDefinitionAtMain(workspaceId, row.path);
     if (!def) return null;
@@ -690,17 +727,18 @@ export async function commitConsoleBatch(input: {
   message: string;
   /** Skip adoption — used by adoption itself. */
   skipAdoption?: boolean;
+  /**
+   * Compare-and-swap on content (`commitBlobsOnBranch`): path → the blob
+   * the caller read there, `null` = must be absent. A file that changed or
+   * moved since refuses the commit with `BlobPreconditionError`.
+   */
+  expectBlobs?: Record<string, string | null>;
+  /** The caller already ran `freshMain` and read main after it. */
+  alreadyFresh?: boolean;
 }): Promise<ConsoleCommitResult> {
-  const repoDir = await requireWorkspaceRepo(input.workspaceId);
-  if (
-    appsRequireConnectedRepo() &&
-    !(await resolveMirrorTarget(input.workspaceId))
-  ) {
-    throw new RepoRequiredError();
-  }
-  // Commit onto the mirror's main, not a stale cached tip (consoles pin to
-  // the default branch — see branch-policy.ts).
-  await freshenBeforeMainWrite(input.workspaceId);
+  const repoDir = input.alreadyFresh
+    ? await requireWorkspaceRepo(input.workspaceId)
+    : await freshMain(input.workspaceId);
   if (!input.skipAdoption && !(await consolesAdopted(repoDir))) {
     // First console write on a workspace that never adopted: bring every
     // saved console in (snapshot; the CLI replays history).
@@ -720,9 +758,78 @@ export async function commitConsoleBatch(input: {
   const result = await commitBlobsOnBranch(repoDir, branch, input.mutation, {
     message: input.message,
     author,
+    expectBlobs: input.expectBlobs,
   });
   if (!result.unchanged) queueMirrorPush(input.workspaceId);
   return { commitOid: result.commitOid, unchanged: result.unchanged };
+}
+
+/**
+ * The workspace repo with main freshened from the mirror — what a write
+ * reads before deciding what to write, so a push that arrives in that
+ * fetch is seen, not overwritten. Throws `RepoRequiredError` like every
+ * console write.
+ */
+async function freshMain(workspaceId: string): Promise<string> {
+  const repoDir = await requireWorkspaceRepo(workspaceId);
+  if (appsRequireConnectedRepo() && !(await resolveMirrorTarget(workspaceId))) {
+    throw new RepoRequiredError();
+  }
+  // Commit onto the mirror's main, not a stale cached tip (consoles pin to
+  // the default branch — see branch-policy.ts).
+  await freshenBeforeMainWrite(workspaceId);
+  return repoDir;
+}
+
+/**
+ * Test seams: the points where a concurrent rename, delete or push lands
+ * in the interleaving tests. Never set outside tests.
+ */
+export const consoleCommitHooks: {
+  /** A relocation or a removal has read main and is about to commit. */
+  afterRead?: () => Promise<void>;
+  /** A relocation has committed and is about to write its row. */
+  afterCommit?: () => Promise<void>;
+  /** An index sync has read the tree and the rows and is about to write. */
+  afterSyncRead?: () => Promise<void>;
+} = {};
+
+interface FileAtMain {
+  oid: string;
+  mode: IndexMode;
+  sidecar: { oid: string; mode: IndexMode } | null;
+}
+
+/**
+ * A console file and its chart sidecar as they are at `head` — blob and
+ * mode, so a move re-files them exactly (one `ls-tree` for both).
+ */
+async function consoleFileAt(
+  repoDir: string,
+  head: string,
+  path: string,
+): Promise<FileAtMain | null> {
+  const sidecarPath = chartSidecarPath(path);
+  const { stdout } = await runGit([
+    "-C",
+    repoDir,
+    "ls-tree",
+    "-z",
+    head,
+    "--",
+    path,
+    sidecarPath,
+  ]);
+  const at = new Map<string, { oid: string; mode: IndexMode }>();
+  for (const record of stdout.split("\0")) {
+    const tab = record.indexOf("\t");
+    if (tab < 0) continue;
+    const [mode, type, oid] = record.slice(0, tab).split(" ");
+    if (type !== "blob") continue;
+    at.set(record.slice(tab + 1), { oid, mode: mode as IndexMode });
+  }
+  const file = at.get(path);
+  return file ? { ...file, sidecar: at.get(sidecarPath) ?? null } : null;
 }
 
 /**
@@ -735,6 +842,12 @@ export async function commitConsoleState(input: {
   previousPath?: string | null;
   actorUserId?: string | null;
   message: string;
+  /**
+   * The console has no file yet (a copy): the path must be free when the
+   * commit lands. A file pushed there meanwhile, indexed or not, is never
+   * overwritten — the commit is refused (`BlobPreconditionError`).
+   */
+  expectAbsent?: boolean;
 }): Promise<ConsoleCommitResult & { path: string; sourceBlobSha: string }> {
   const workspaceId = input.row.workspaceId.toString();
   const path = await repoPathForRow(input.row);
@@ -748,6 +861,9 @@ export async function commitConsoleState(input: {
     actorUserId: input.actorUserId,
     mutation: { writes, deletes },
     message: input.message,
+    expectBlobs: input.expectAbsent
+      ? { [path]: null, [chartSidecarPath(path)]: null }
+      : undefined,
   });
   return { ...result, path, sourceBlobSha: blobOid(writes[path]) };
 }
@@ -758,13 +874,171 @@ export async function commitConsoleRemoval(input: {
   path: string;
   actorUserId?: string | null;
   message: string;
-}): Promise<ConsoleCommitResult> {
-  return commitConsoleBatch({
+  /**
+   * Remove the file only as it is at main when the commit lands: a rename
+   * or a save that moves or changes it between the read and the commit
+   * refuses the commit (`BlobPreconditionError`), and a file that is not
+   * there at all commits nothing and answers `absent`. The caller decides
+   * again from the fresh row either way.
+   */
+  onlyAsItIs?: boolean;
+}): Promise<ConsoleCommitResult & { absent?: boolean }> {
+  const sidecar = chartSidecarPath(input.path);
+  const base = {
     workspaceId: input.workspaceId,
     actorUserId: input.actorUserId,
-    mutation: { deletes: [input.path, chartSidecarPath(input.path)] },
+    mutation: { deletes: [input.path, sidecar] },
     message: input.message,
+  };
+  if (!input.onlyAsItIs) return commitConsoleBatch(base);
+  const repoDir = await freshMain(input.workspaceId);
+  const head = await resolveCommit(repoDir, MAIN);
+  const file = head ? await consoleFileAt(repoDir, head, input.path) : null;
+  await consoleCommitHooks.afterRead?.();
+  if (!file) return { commitOid: head ?? "", unchanged: true, absent: true };
+  return commitConsoleBatch({
+    ...base,
+    expectBlobs: {
+      [input.path]: file.oid,
+      [sidecar]: file.sidecar?.oid ?? null,
+    },
+    alreadyFresh: true,
   });
+}
+
+/**
+ * Remove several consoles' files (a folder delete) in one commit, each only
+ * as it is at main when the commit lands — `commitConsoleRemoval`'s rule,
+ * for all of them or none. `absent` lists the paths that hold no file:
+ * nothing is committed then, and the caller decides again.
+ */
+export async function commitConsoleRemovals(input: {
+  workspaceId: string;
+  paths: string[];
+  actorUserId?: string | null;
+  message: string;
+}): Promise<ConsoleCommitResult & { absent: string[] }> {
+  const repoDir = await freshMain(input.workspaceId);
+  const head = await resolveCommit(repoDir, MAIN);
+  const expectBlobs: Record<string, string | null> = {};
+  const absent: string[] = [];
+  for (const path of input.paths) {
+    const file = head ? await consoleFileAt(repoDir, head, path) : null;
+    if (!file) absent.push(path);
+    else {
+      expectBlobs[path] = file.oid;
+      expectBlobs[chartSidecarPath(path)] = file.sidecar?.oid ?? null;
+    }
+  }
+  await consoleCommitHooks.afterRead?.();
+  if (absent.length > 0 || input.paths.length === 0) {
+    return { commitOid: head ?? "", unchanged: true, absent };
+  }
+  const result = await commitConsoleBatch({
+    workspaceId: input.workspaceId,
+    actorUserId: input.actorUserId,
+    mutation: { deletes: Object.keys(expectBlobs) },
+    message: input.message,
+    expectBlobs,
+    alreadyFresh: true,
+  });
+  return { ...result, absent };
+}
+
+/**
+ * Move a console's file (and chart sidecar) AS IT IS AT MAIN to a new path
+ * in one commit — the blobs are re-filed, never re-written from the row,
+ * so a rename or a move cannot publish the row's working copy (an unsaved
+ * draft stays a draft). Returns null when there is no file at `fromPath`.
+ *
+ * The commit is a compare-and-swap: `fromPath` must still hold the blob
+ * read here and `toPath` (and its sidecar) must be absent when it lands.
+ * Two renames racing for one name cannot both win, a file pushed onto the
+ * target between the read and the commit is not overwritten, and a save
+ * racing the rename is not undone. A file at `fromPath` that is not the
+ * blob the row was derived from (`sourceBlobSha`: a push not yet indexed)
+ * is refused the same way, for the caller to sync and decide again.
+ * Refusals throw `BlobPreconditionError`.
+ */
+export async function commitConsoleRelocation(input: {
+  workspaceId: string;
+  fromPath: string;
+  toPath: string;
+  actorUserId?: string | null;
+  message: string;
+  sourceBlobSha?: string | null;
+}): Promise<
+  (ConsoleCommitResult & { path: string; sourceBlobSha: string }) | null
+> {
+  const repoDir = await freshMain(input.workspaceId);
+  const head = await resolveCommit(repoDir, MAIN);
+  const file = head ? await consoleFileAt(repoDir, head, input.fromPath) : null;
+  await consoleCommitHooks.afterRead?.();
+  if (!file) return null;
+  if (input.sourceBlobSha && file.oid !== input.sourceBlobSha) {
+    throw new BlobPreconditionError(
+      input.fromPath,
+      input.sourceBlobSha,
+      file.oid,
+    );
+  }
+  const fromSidecar = chartSidecarPath(input.fromPath);
+  const toSidecar = chartSidecarPath(input.toPath);
+  const entries = [{ path: input.toPath, oid: file.oid, mode: file.mode }];
+  if (file.sidecar) entries.push({ path: toSidecar, ...file.sidecar });
+  const result = await commitConsoleBatch({
+    workspaceId: input.workspaceId,
+    actorUserId: input.actorUserId,
+    mutation: { entries, deletes: [input.fromPath, fromSidecar] },
+    message: input.message,
+    expectBlobs: {
+      [input.fromPath]: file.oid,
+      [fromSidecar]: file.sidecar?.oid ?? null,
+      [input.toPath]: null,
+      [toSidecar]: null,
+    },
+    alreadyFresh: true,
+  });
+  return { ...result, path: input.toPath, sourceBlobSha: file.oid };
+}
+
+/**
+ * Put a trashed console's file back as it was LAST COMMITTED: the blob the
+ * row's `sourceBlobSha` names is still in the object store (history holds
+ * it) and is filed again at the row's path, which must be free. The row's
+ * working copy is not what a restore commits. A row that was never
+ * committed is projected instead — it is the only definition there is.
+ */
+export async function restoreConsoleFile(input: {
+  row: RowLike & { sourceBlobSha?: string | null };
+  actorUserId?: string | null;
+  message: string;
+}): Promise<ConsoleCommitResult & { path: string; sourceBlobSha: string }> {
+  const oid = input.row.sourceBlobSha;
+  const repoDir = await requireWorkspaceRepo(input.row.workspaceId.toString());
+  const kept =
+    oid &&
+    (await runGit(["-C", repoDir, "cat-file", "-e", `${oid}^{blob}`]).then(
+      () => true,
+      () => false,
+    ));
+  if (!oid || !kept) {
+    return commitConsoleState({ ...input, expectAbsent: true });
+  }
+  const path = await repoPathForRow(input.row);
+  const sidecar = chartSidecarPath(path);
+  const chart =
+    input.row.chartSpec && Object.keys(input.row.chartSpec).length > 0
+      ? { [sidecar]: serializeChartSpec(input.row.chartSpec) }
+      : undefined;
+  const result = await commitConsoleBatch({
+    workspaceId: input.row.workspaceId.toString(),
+    actorUserId: input.actorUserId,
+    mutation: { entries: [{ path, oid, mode: "100644" }], writes: chart },
+    message: input.message,
+    expectBlobs: { [path]: null, [sidecar]: null },
+  });
+  return { ...result, path, sourceBlobSha: oid };
 }
 
 /**
@@ -1027,16 +1301,35 @@ async function syncNow(
     isSaved: true,
     path: { $exists: true, $ne: null },
   }).select("+descriptionEmbedding")) as IndexRow[];
-  const rowByPath = new Map<string, IndexRow>();
-  for (const r of rows) if (r.path) rowByPath.set(r.path, r);
+  // A path is answered by its LIVE row. A deleted row keeps its `path`,
+  // and the file coming back at that very path restores it — but only when
+  // a push deleted it. A console trashed in Mako stays trashed: its delete
+  // committed the removal of its file, so a file there now is a new
+  // console (or a lost race that must not bring the old one back, shares
+  // and all). It returns through a restore, which checks who may.
+  const liveByPath = new Map<string, IndexRow>();
+  const deadByPath = new Map<string, IndexRow>();
+  for (const r of rows) {
+    if (!r.path) continue;
+    if (!r.is_deleted) liveByPath.set(r.path, r);
+    else if (r.deletedVia !== "app") deadByPath.set(r.path, r);
+  }
+  await consoleCommitHooks.afterSyncRead?.();
+  const takenIds = new Set(rows.map(r => r._id.toString()));
   const seenRows = new Set<string>();
   const touched: IndexRow[] = [];
   const actor = userId && userId.length > 0 ? userId : "git";
   const directory = await loadOwnerDirectory(workspaceId);
 
-  // Rows whose path is gone are rename candidates for new paths with the
-  // same blob; anything unclaimed at the end is a deletion.
-  const orphans = rows.filter(r => r.path && !byPath.has(r.path));
+  // Live rows whose path is gone are rename candidates: for a new path
+  // holding the same blob (a pure `git mv`), then for the path git's own
+  // rename detection pairs them with (a `git mv` plus an edit). Deleted
+  // rows are never candidates: content alone must not hand a deleted
+  // console, and who it was shared with, to whoever pushes the same query
+  // later. Anything unclaimed at the end is a deletion.
+  const orphans = rows.filter(
+    r => !r.is_deleted && r.path && !byPath.has(r.path),
+  );
   const orphanByBlob = new Map<string, IndexRow[]>();
   for (const o of orphans) {
     if (!o.sourceBlobSha) continue;
@@ -1044,6 +1337,13 @@ async function syncNow(
     list.push(o);
     orphanByBlob.set(o.sourceBlobSha, list);
   }
+  const unclaimed = consoleEntries.some(
+    e => !liveByPath.has(e.path) && !orphanByBlob.has(e.oid),
+  );
+  const orphanByNewPath =
+    orphans.length > 0 && unclaimed
+      ? await movedConsoleRows(repoDir, head, orphans, byPath)
+      : new Map<string, IndexRow | null>();
 
   for (const entry of consoleEntries) {
     // One file's failure is that file's problem: a folder-name validation
@@ -1053,16 +1353,26 @@ async function syncNow(
       const location = parseConsoleRepoPath(entry.path);
       if (!location) continue;
       const sidecar = byPath.get(chartSidecarPath(entry.path));
-      let row = rowByPath.get(entry.path);
+      let row = liveByPath.get(entry.path);
 
       if (!row) {
-        const candidates = orphanByBlob.get(entry.oid);
-        const moved = candidates?.shift();
-        if (moved) {
+        // Inside one owner's tree only: a workspace console's row must not
+        // follow its content into a member's private folder, or back.
+        const moved =
+          orphanByBlob
+            .get(entry.oid)
+            ?.find(
+              c =>
+                !seenRows.has(c._id.toString()) &&
+                sameConsoleTree(c.path as string, entry.path),
+            ) ?? orphanByNewPath.get(entry.path);
+        if (moved && !seenRows.has(moved._id.toString())) {
           row = moved;
           stats.renamed++;
         }
       }
+      // The file is back where a push had removed it: a push undoes a push.
+      row ??= deadByPath.get(entry.path);
 
       if (row) {
         seenRows.add(row._id.toString());
@@ -1142,22 +1452,28 @@ async function syncNow(
       Object.assign(set, scheduleSet.set);
 
       if (row) {
-        await SavedConsole.updateOne(
-          { _id: row._id },
+        // Never onto a row that went to the trash since this sync read
+        // it: the row as read here was live, and writing it back whole
+        // would take the console out of the trash again.
+        const written = await SavedConsole.updateOne(
+          { _id: row._id, deletedVia: { $ne: "app" } },
           {
             $set: set,
             $inc: { version: 1, draftRevision: 1 },
-            $unset: { deletedAt: "", ...scheduleSet.unset },
+            $unset: { deletedAt: "", deletedVia: "", ...scheduleSet.unset },
           },
         );
+        if (written.matchedCount === 0) continue;
         const fresh = await SavedConsole.findById(row._id);
         if (fresh) touched.push(fresh);
         continue;
       }
 
+      const newId = freeDerivedConsoleId(workspaceId, entry.path, takenIds);
+      takenIds.add(newId.toString());
       try {
         const created = await SavedConsole.create({
-          _id: derivedConsoleId(workspaceId, entry.path),
+          _id: newId,
           workspaceId: ws,
           createdBy: actor,
           executionCount: 0,
@@ -1171,16 +1487,14 @@ async function syncNow(
       } catch {
         // Unique-id race with a concurrent list/sync: keep the winner so a
         // git-only file that already appeared under the derived id does not
-        // mint a second row.
-        const winner =
-          (await SavedConsole.findById(
-            derivedConsoleId(workspaceId, entry.path),
-          )) ??
-          (await SavedConsole.findOne({
-            workspaceId: ws,
-            path: entry.path,
-            isSaved: true,
-          }));
+        // mint a second row — a winner AT THIS PATH; a row elsewhere that
+        // holds the id is another console.
+        const winner = await SavedConsole.findOne({
+          workspaceId: ws,
+          path: entry.path,
+          isSaved: true,
+          is_deleted: { $ne: true },
+        });
         if (!winner) throw new Error("Could not persist the console index row");
         stats.created++;
         seenRows.add(winner._id.toString());
@@ -1201,7 +1515,7 @@ async function syncNow(
     if (!row.path || byPath.has(row.path) || row.is_deleted) continue;
     const deleted = await SavedConsole.updateOne(
       { _id: row._id, is_deleted: { $ne: true } },
-      { $set: { is_deleted: true, deletedAt: new Date() } },
+      { $set: { is_deleted: true, deletedAt: new Date(), deletedVia: "git" } },
     );
     // Duplicate push deliveries or concurrent instances may reconcile the
     // same commit. Only the process that changed the row may broadcast it.
@@ -1234,6 +1548,63 @@ async function syncNow(
     logger.info("Console index synced from repo", { workspaceId, ...stats });
   }
   return stats;
+}
+
+/**
+ * May a row follow its file from `from` to `to`? Only inside one tree: the
+ * workspace's, or ONE member's private one.
+ */
+function sameConsoleTree(from: string, to: string): boolean {
+  const a = parseConsoleRepoPath(from);
+  const b = parseConsoleRepoPath(to);
+  return Boolean(
+    a && b && a.scope === b.scope && a.ownerHandle === b.ownerHandle,
+  );
+}
+
+/**
+ * Where git says each vanished row's file went: new path → the row (null
+ * when two rows were paired with one path — neither guess is kept).
+ *
+ * Asked of the commit that removed the file, against its parent, never of
+ * "then..head": a console deleted long ago must not be paired with a
+ * merely similar file someone pushes later. One push can move a file more
+ * than once (a → b, then b → c): the chain is followed, hop by hop inside
+ * one tree, to the path that exists at head.
+ */
+async function movedConsoleRows(
+  repoDir: string,
+  head: string,
+  orphans: IndexRow[],
+  atHead: ReadonlyMap<string, TreeEntry>,
+): Promise<Map<string, IndexRow | null>> {
+  const out = new Map<string, IndexRow | null>();
+  const pairsOf = new Map<string, Map<string, string>>();
+  for (const row of orphans) {
+    let from = row.path as string;
+    let to: string | undefined;
+    for (let hop = 0; hop < 16; hop++) {
+      const removal = await lastCommitTouching(repoDir, head, from);
+      if (!removal) break;
+      let pairs = pairsOf.get(removal);
+      if (!pairs) {
+        pairs = await renamesInCommit(repoDir, removal, [
+          CONSOLES_DIR,
+          USERS_DIR,
+        ]);
+        pairsOf.set(removal, pairs);
+      }
+      const next = pairs.get(from);
+      if (!next || !sameConsoleTree(from, next)) break;
+      if (atHead.has(next)) {
+        to = next;
+        break;
+      }
+      from = next;
+    }
+    if (to) out.set(to, out.has(to) ? null : row);
+  }
+  return out;
 }
 
 async function sidecarMatches(
@@ -1454,7 +1825,7 @@ export async function adoptWorkspaceConsoles(
   }
   const folderCache = new Map<string, FolderLean | null>();
   const actorAuthor = await authorForUser(options.actorUserId);
-  const takenPaths = new Set<string>(tree.keys());
+  const takenPaths = new Set<string>([...tree.keys()].map(foldConsolePath));
   // Paths other rows already own. A file at the wanted path with the SAME
   // blob and no owner is this console (an earlier run that stopped between
   // its commit and its stamp) — claim it rather than minting "(2)".
@@ -1549,7 +1920,7 @@ export async function adoptWorkspaceConsoles(
         : `Adopt console: ${finalPath}`,
       author,
     );
-    takenPaths.add(finalPath);
+    takenPaths.add(foldConsolePath(finalPath));
     await stampRow(row, finalPath, finalSha);
   }
 
@@ -1572,22 +1943,32 @@ export async function adoptWorkspaceConsoles(
   return report;
 }
 
-/** Two rows that sanitize to the same path get " (2)", " (3)", … */
-function uniquePath(
+/**
+ * Two consoles that would land on one file get " (2)", " (3)", … — the
+ * suffix always fits: a name at the length limit is cut to make room, so
+ * every candidate is a different path and the search ends. (Appended to a
+ * 120-character name, the suffix was cut off again by the file-name rule;
+ * each candidate was the taken path and the loop never ended.) `taken`
+ * holds folded paths (`foldConsolePath`): a case twin is one file on
+ * macOS and Windows.
+ */
+export function uniquePath(
   wanted: string,
-  taken: Set<string>,
+  taken: ReadonlySet<string>,
   ownPath: string | undefined | null,
 ): string {
-  if (wanted === ownPath || !taken.has(wanted)) return wanted;
+  const free = (p: string) => p === ownPath || !taken.has(foldConsolePath(p));
+  if (free(wanted)) return wanted;
   const location = parseConsoleRepoPath(wanted);
   if (!location) return wanted;
-  for (let i = 2; ; i++) {
+  for (let i = 2; i < 100_000; i++) {
     const candidate = consoleRepoPath({
       ...location,
-      name: `${location.name} (${i})`,
+      name: suffixedConsoleName(location.name, ` (${i})`),
     });
-    if (candidate === ownPath || !taken.has(candidate)) return candidate;
+    if (free(candidate)) return candidate;
   }
+  throw new Error(`No free name for ${wanted}`);
 }
 
 async function stampRow(
@@ -1707,52 +2088,60 @@ export async function projectSavedConsole(input: {
 // History: the same shapes the apps History popover consumes
 // ---------------------------------------------------------------------------
 
-/** The console's file and chart sidecar, as one history scope. */
-function consoleScope(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
-): EntityGitScope | null {
-  if (!row.path) return null;
-  return fileScope(
-    row.workspaceId.toString(),
-    row.path,
-    chartSidecarPath(row.path),
-  );
+type HistoryRow = Pick<
+  ISavedConsole,
+  "workspaceId" | "path" | "historySegments" | "is_deleted"
+>;
+
+/**
+ * A console as a file followed across its renames — and across a trip to
+ * the trash, which ends its file (`historySegments`). The chart sidecar
+ * travels with it.
+ */
+function consoleFile(row: HistoryRow): FollowedFile {
+  return {
+    workspaceId: row.workspaceId.toString(),
+    // In the trash it has no file: the path it keeps (to come back to) may
+    // be another console's by now.
+    path: row.is_deleted ? undefined : row.path,
+    earlier: row.historySegments,
+    companionOf: p =>
+      parseConsoleRepoPath(p) ? chartSidecarPath(p) : undefined,
+  };
 }
 
-/** Commits that touched a console's file (renames included via its row path). */
+/**
+ * A console's own commits, newest first, across its renames and moves:
+ * each says where the file was in it. The walk ends at the file's creation
+ * — never the console that held the name before, nor one it was copied
+ * from.
+ */
 export async function consoleHistory(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
+  row: HistoryRow,
   limit = 50,
-): Promise<CommitInfo[]> {
-  const scope = consoleScope(row);
-  return scope ? entityHistory(scope, limit) : [];
+): Promise<FollowedCommit[]> {
+  return followedHistory(consoleFile(row), limit);
 }
 
 /** What one commit did to this console (its file and chart sidecar). */
 export async function consoleCommitChanges(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
+  row: HistoryRow,
   sha: string,
 ): Promise<CommitChanges> {
-  const scope = consoleScope(row) ?? {
-    workspaceId: row.workspaceId.toString(),
-    pathspec: "",
-    owns: () => false,
-  };
-  return entityCommitChanges(scope, sha);
+  return followedCommitChanges(consoleFile(row), sha);
 }
 
 /**
- * The console's file (or chart sidecar) before and after one commit.
- * Throws {@link NotEntityPathError} for any other path.
+ * The console's file (or chart sidecar) before and after one of its own
+ * commits, under the name it had then. Throws {@link NotEntityPathError}
+ * for any other path or commit.
  */
 export async function consoleFileVersions(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
+  row: HistoryRow,
   sha: string,
-  relPath: string,
+  relPath?: string,
 ): Promise<FileVersions> {
-  const scope = consoleScope(row);
-  if (!scope) throw new NotEntityPathError(relPath);
-  return entityFileVersions(scope, sha, relPath);
+  return followedFileVersions(consoleFile(row), sha, relPath);
 }
 
 /**
@@ -1771,24 +2160,10 @@ export async function restoreConsoleTo(
   if (repoDir == null) throw new RepoRequiredError();
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
-  let at = row.path;
-  let blob = await readBlob(repoDir, oid, at).catch(() => null);
-  if (!blob) {
-    // The console lived elsewhere at that commit: find its file by blob id
-    // lineage is not tracked, so fall back to the commit's own touched path.
-    const changes = await diffNameStatus(
-      repoDir,
-      (await resolveCommit(repoDir, `${oid}^`)) ?? EMPTY_TREE,
-      oid,
-    );
-    const candidate = changes.find(
-      f => parseConsoleRepoPath(f.path) && f.status !== "deleted",
-    );
-    if (candidate) {
-      at = candidate.path;
-      blob = await readBlob(repoDir, oid, at).catch(() => null);
-    }
-  }
+  // Under the name the file had in that commit — one of ITS OWN commits.
+  const at = await followedPathAt(consoleFile(row), oid);
+  if (!at) throw new Error("That commit is not in this console's history");
+  const blob = await readBlob(repoDir, oid, at).catch(() => null);
   if (!blob || blob.isBinary) {
     throw new Error("That commit has no readable version of this console");
   }
