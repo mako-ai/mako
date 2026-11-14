@@ -24,6 +24,12 @@ import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useConsoleTreeStore } from "../store/consoleTreeStore";
 import { useRealtimeStore } from "../store/realtimeStore";
+import {
+  clearActiveWorkspaceId,
+  getActiveWorkspaceId,
+  getTabWorkspaceId,
+  setActiveWorkspaceId,
+} from "../lib/active-workspace";
 
 interface WorkspaceContextState {
   // State
@@ -74,7 +80,8 @@ interface WorkspaceProviderProps {
 
 export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const { user, loading: authLoading } = useAuth();
-  const { currentWorkspaceId, setCurrentWorkspaceId } = useUIStore();
+  const currentWorkspaceId = useUIStore(s => s.currentWorkspaceId);
+  const setCurrentWorkspaceId = useUIStore(s => s.setCurrentWorkspaceId);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [currentWorkspace, setCurrentWorkspace] = useState<Workspace | null>(
     null,
@@ -159,13 +166,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       if (workspaceList.length === 0) {
         // No workspaces - will trigger onboarding
         setCurrentWorkspace(null);
-        localStorage.removeItem("activeWorkspaceId");
+        clearActiveWorkspaceId();
       } else if (workspaceList.length === 1) {
         // Exactly one workspace - auto-select it
         const workspace = workspaceList[0];
         setCurrentWorkspace(workspace);
         setCurrentWorkspaceId(workspace.id);
-        localStorage.setItem("activeWorkspaceId", workspace.id);
+        setActiveWorkspaceId(workspace.id);
 
         // Sync with backend
         try {
@@ -175,8 +182,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         }
       } else {
         // Multiple workspaces - check for persisted selection
+        // This tab's own choice first: uiStore and the localStorage default
+        // are shared by every tab, so they only seed a tab that has none.
         const persistedId =
-          currentWorkspaceId || localStorage.getItem("activeWorkspaceId");
+          getTabWorkspaceId() || currentWorkspaceId || getActiveWorkspaceId();
         const persisted = persistedId
           ? workspaceList.find(ws => ws.id === persistedId)
           : undefined;
@@ -195,7 +204,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         } else {
           // No valid persisted workspace - show selector
           setCurrentWorkspace(null);
-          localStorage.removeItem("activeWorkspaceId");
+          clearActiveWorkspaceId();
         }
       }
     } catch (err: any) {
@@ -265,7 +274,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         // Set as current workspace WITHOUT reloading
         setCurrentWorkspace(workspace);
         setCurrentWorkspaceId(workspace.id);
-        localStorage.setItem("activeWorkspaceId", workspace.id);
+        setActiveWorkspaceId(workspace.id);
 
         // Sync with backend (don't await to avoid blocking)
         workspaceClient.switchWorkspace(workspace.id).catch(() => {
@@ -312,7 +321,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             await switchWorkspace(remaining[0].id);
           } else {
             setCurrentWorkspace(null);
-            localStorage.removeItem("activeWorkspaceId");
+            clearActiveWorkspaceId();
           }
         }
       } catch (err: any) {
@@ -481,7 +490,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
         // Set localStorage FIRST to ensure the invited workspace is selected after redirect
         // This prevents the race condition where loadWorkspaces() picks a different workspace
-        localStorage.setItem("activeWorkspaceId", workspace.id);
+        setActiveWorkspaceId(workspace.id);
 
         // Add workspace to local list and set as current
         setWorkspaces(prev => {

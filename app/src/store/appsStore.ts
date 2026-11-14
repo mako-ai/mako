@@ -2495,6 +2495,9 @@ export const useAppsStore = create<AppsStore>()(
     {
       name: "apps-store",
       version: 1,
+      // v0 had the same persisted shape (the list cache): keep it rather
+      // than letting zustand log an error and discard it.
+      migrate: persisted => (persisted ?? {}) as never,
       // Only the list cache survives a reload; everything else is live
       // state that must come from the box or the API.
       partialize: s => ({ appsCacheByWorkspace: s.appsCacheByWorkspace }),

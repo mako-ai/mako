@@ -24,6 +24,20 @@ import {
 } from "../store/desktopHitlStore";
 import { useAcpStore } from "../store/acpStore";
 import { localAgentClient } from "./local-agent-client";
+import {
+  shouldAutoProbeLocalAgent,
+  useLocalAgentStore,
+} from "../store/localAgentStore";
+
+/** Idle wait while no Local Agent is known (no network request is made). */
+const BRIDGE_IDLE_CHECK_MS = 5_000;
+/** Backoff after a failed bridge request: 2s doubling up to 60s. */
+const BRIDGE_BACKOFF_MIN_MS = 2_000;
+const BRIDGE_BACKOFF_MAX_MS = 60_000;
+
+function bridgeSleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 type BridgeToolName =
   | "run_app"
@@ -199,7 +213,18 @@ async function completeJob(
 }
 
 async function pollLoop(): Promise<void> {
+  let backoffMs = BRIDGE_BACKOFF_MIN_MS;
   while (running && !abort?.signal.aborted) {
+    // Without a Local Agent this loop used to hit 127.0.0.1:41720 every 2s
+    // forever (a refused request + console error each time). Only talk to
+    // it once it is known to be up, or in a browser that has seen it.
+    if (
+      useLocalAgentStore.getState().status !== "online" &&
+      !shouldAutoProbeLocalAgent()
+    ) {
+      await bridgeSleep(BRIDGE_IDLE_CHECK_MS);
+      continue;
+    }
     try {
       await localAgentClient.post(
         "/desktop/bridge/hello",
@@ -211,6 +236,7 @@ async function pollLoop(): Promise<void> {
         { waitMs: 20_000 },
         { signal: abort?.signal },
       );
+      backoffMs = BRIDGE_BACKOFF_MIN_MS;
       const job = body.data?.job;
       if (!job) continue;
 
@@ -245,7 +271,8 @@ async function pollLoop(): Promise<void> {
       if (/abort|timeout/i.test(message)) {
         continue;
       }
-      await new Promise(r => setTimeout(r, 2_000));
+      await bridgeSleep(backoffMs);
+      backoffMs = Math.min(backoffMs * 2, BRIDGE_BACKOFF_MAX_MS);
     }
   }
 }

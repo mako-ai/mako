@@ -116,7 +116,9 @@ describe("app sharing authorization", () => {
         password: "test-password",
       });
       expect(response.status).toBe(200);
-      const { data } = await response.json();
+      const { data } = (await response.json()) as {
+        data: { token: string };
+      };
       expect(data).toMatchObject({ enabled: true, hasPassword: true });
       expect(JSON.stringify(data)).not.toContain("test-password");
 
@@ -140,7 +142,7 @@ describe("app sharing authorization", () => {
         headers: { Cookie: cookie ?? "" },
       });
       expect(content.status).toBe(200);
-      expect((await content.json()).data).toMatchObject({
+      expect(((await content.json()) as { data: unknown }).data).toMatchObject({
         kind: "app",
         title: "Financial Model",
       });

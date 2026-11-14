@@ -13,7 +13,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // Monaco can't render in jsdom — stub the editor to a plain node.
-vi.mock("@monaco-editor/react", () => ({ default: () => null }));
+vi.mock("../lib/monaco/MonacoEditor", () => ({ default: () => null }));
 // Avoid pulling the (Monaco-bound) language registration.
 vi.mock("../lib/dbt-monaco", () => ({
   DBT_JINJA_LANGUAGE_ID: "jinja-sql",

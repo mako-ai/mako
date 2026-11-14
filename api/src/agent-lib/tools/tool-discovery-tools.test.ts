@@ -97,7 +97,7 @@ async function endToEnd() {
 
   const tools = createToolDiscoveryTools({ modeState, catalog });
 
-  const search = tools.search_tools as {
+  const search = tools.search_tools as unknown as {
     execute: (input: { query: string }) => Promise<{
       results: Array<{ name: string; loaded: boolean }>;
       note: string;
@@ -114,7 +114,7 @@ async function endToEnd() {
   assert.match(searchResult.note, /already active|Call load_tools/);
   assert.doesNotMatch(searchResult.note, /never guess/i);
 
-  const load = tools.load_tools as {
+  const load = tools.load_tools as unknown as {
     execute: (input: { names: string[] }) => Promise<{
       loaded: string[];
       alreadyLoaded: string[];
@@ -133,7 +133,7 @@ async function endToEnd() {
     modeState,
     catalog: singleCatalog,
   });
-  const singleSearch = singleTools.search_tools as typeof search;
+  const singleSearch = singleTools.search_tools as unknown as typeof search;
   const singleResult = await singleSearch.execute({ query: "save_skill" });
   assert.equal(singleResult.results.length, 1);
   assert.equal(singleResult.results[0]?.loaded, true);

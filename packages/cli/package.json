@@ -28,12 +28,12 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@ai-sdk/gateway": "3.0.210",
-    "@ai-sdk/mcp": "1.0.91",
+    "@ai-sdk/gateway": "3.0.236",
+    "@ai-sdk/mcp": "1.0.104",
     "@makoai/app-sdk": "workspace:*",
-    "ai": "6.0.301",
+    "ai": "6.0.331",
     "tsx": "4.19.4",
-    "zod": "4.2.1"
+    "zod": "4.6.7"
   },
   "publishConfig": {
     "access": "public"

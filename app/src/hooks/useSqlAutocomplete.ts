@@ -7,6 +7,7 @@ import {
   stripSqlIdentifierQuotes,
 } from "../lib/sql-autocomplete/sqlContext";
 import { SQL_KEYWORDS } from "../lib/sql-autocomplete/sqlKeywords";
+import { modelUriOf } from "../lib/sql-autocomplete/modelScope";
 
 type Monaco = unknown;
 
@@ -18,6 +19,12 @@ type UseSqlAutocompleteArgs = {
   getConnectionId: () => string | undefined;
   /** Getter for current connection type - called dynamically */
   getConnectionType: () => string | undefined;
+  /**
+   * Which models this provider answers for (by model URI). Monaco providers
+   * are per language, so without this every provider answers every SQL
+   * editor on the page. Defaults to all models.
+   */
+  acceptsModel?: (modelUri: string) => boolean;
 };
 
 /**
@@ -30,16 +37,29 @@ export function useSqlAutocomplete({
   getWorkspaceId,
   getConnectionId,
   getConnectionType,
+  acceptsModel,
 }: UseSqlAutocompleteArgs) {
   const completionProviderRef = useRef<{ dispose: () => void } | null>(null);
+  // Getters are read through refs so the provider is registered once per
+  // Monaco instance instead of being disposed/re-registered whenever a
+  // caller passes a fresh inline callback.
+  const gettersRef = useRef({
+    getWorkspaceId,
+    getConnectionId,
+    getConnectionType,
+    acceptsModel,
+  });
+  gettersRef.current = {
+    getWorkspaceId,
+    getConnectionId,
+    getConnectionType,
+    acceptsModel,
+  };
 
   // Store methods for lazy loading (BigQuery-style)
   const ensureTreeRoot = useSchemaStore(s => s.ensureTreeRoot);
   const ensureTreeChildren = useSchemaStore(s => s.ensureTreeChildren);
   const ensureColumns = useSchemaStore(s => s.ensureColumns);
-
-  // Store state for preloaded schemas (Postgres/MySQL-style)
-  const autocompleteSchemas = useSchemaStore(s => s.autocompleteSchemas);
 
   const keywordSuggestions = useMemo(() => {
     const m = monaco as {
@@ -97,10 +117,17 @@ export function useSqlAutocomplete({
           },
           position: { lineNumber: number; column: number },
         ) => {
+          const getters = gettersRef.current;
+          if (
+            getters.acceptsModel &&
+            !getters.acceptsModel(modelUriOf(model))
+          ) {
+            return { suggestions: [] };
+          }
           // Get current context dynamically
-          const workspaceId = getWorkspaceId();
-          const connectionId = getConnectionId();
-          const connectionType = getConnectionType();
+          const workspaceId = getters.getWorkspaceId();
+          const connectionId = getters.getConnectionId();
+          const connectionType = getters.getConnectionType();
 
           if (!workspaceId || !connectionId) {
             return {
@@ -155,7 +182,9 @@ export function useSqlAutocomplete({
               ensureColumns,
             );
           } else {
-            const schema = autocompleteSchemas[connectionId];
+            // Preloaded schemas (Postgres/MySQL-style), read at request time.
+            const schema =
+              useSchemaStore.getState().autocompleteSchemas[connectionId];
             if (!schema) {
               return { suggestions: keywordWithRange };
             }
@@ -180,10 +209,6 @@ export function useSqlAutocomplete({
     ensureTreeRoot,
     ensureTreeChildren,
     ensureColumns,
-    autocompleteSchemas,
-    getWorkspaceId,
-    getConnectionId,
-    getConnectionType,
   ]);
 }
 

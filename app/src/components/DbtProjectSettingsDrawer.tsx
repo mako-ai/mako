@@ -187,6 +187,17 @@ interface DbtProjectSettingsDrawerProps {
   onClose: () => void;
 }
 
+/**
+ * An editable variable row. The id is a stable React key: index keys made
+ * focus and field state jump to the next row when one was removed.
+ */
+type VarRow = { id: number; key: string; value: string };
+let varRowSeq = 0;
+function newVarRow(key = "", value = ""): VarRow {
+  varRowSeq += 1;
+  return { id: varRowSeq, key, value };
+}
+
 export default function DbtProjectSettingsDrawer({
   open,
   projectId,
@@ -222,17 +233,13 @@ export default function DbtProjectSettingsDrawer({
   const [editEnvs, setEditEnvs] = useState<DbtEnvironment[]>([]);
   // Per-environment variable rows, parallel to editEnvs (same index). Kept as
   // an ordered array (not a record) so typing keys never reorders or collides.
-  const [editVarRows, setEditVarRows] = useState<
-    Array<Array<{ key: string; value: string }>>
-  >([]);
+  const [editVarRows, setEditVarRows] = useState<Array<Array<VarRow>>>([]);
 
   const [envModalOpen, setEnvModalOpen] = useState(false);
   const [envModalDraft, setEnvModalDraft] = useState<DbtEnvironment | null>(
     null,
   );
-  const [envModalVarRows, setEnvModalVarRows] = useState<
-    Array<{ key: string; value: string }>
-  >([]);
+  const [envModalVarRows, setEnvModalVarRows] = useState<Array<VarRow>>([]);
   const [envModalSaving, setEnvModalSaving] = useState(false);
   const [envModalError, setEnvModalError] = useState<string | null>(null);
 
@@ -244,10 +251,12 @@ export default function DbtProjectSettingsDrawer({
     setEditEnvs(p.environments.map(env => ({ ...env })));
     setEditVarRows(
       p.environments.map(env =>
-        Object.entries(env.vars ?? {}).map(([key, value]) => ({
-          key,
-          value: typeof value === "string" ? value : JSON.stringify(value),
-        })),
+        Object.entries(env.vars ?? {}).map(([key, value]) =>
+          newVarRow(
+            key,
+            typeof value === "string" ? value : JSON.stringify(value),
+          ),
+        ),
       ),
     );
     setSaveError(null);
@@ -448,9 +457,7 @@ export default function DbtProjectSettingsDrawer({
 
   const addVarRow = useCallback((envIndex: number) => {
     setEditVarRows(prev =>
-      prev.map((rows, i) =>
-        i === envIndex ? [...rows, { key: "", value: "" }] : rows,
-      ),
+      prev.map((rows, i) => (i === envIndex ? [...rows, newVarRow()] : rows)),
     );
   }, []);
 
@@ -741,7 +748,7 @@ export default function DbtProjectSettingsDrawer({
         </Typography>
         {(editVarRows[index] ?? []).map((row, rowIndex) => (
           <Box
-            key={rowIndex}
+            key={row.id}
             sx={{ display: "flex", gap: 1, mb: 1, alignItems: "center" }}
           >
             <TextField
@@ -1369,7 +1376,7 @@ export default function DbtProjectSettingsDrawer({
               </Typography>
               {envModalVarRows.map((row, rowIndex) => (
                 <Box
-                  key={rowIndex}
+                  key={row.id}
                   sx={{ display: "flex", gap: 1, mb: 1, alignItems: "center" }}
                 >
                   <TextField
@@ -1415,7 +1422,7 @@ export default function DbtProjectSettingsDrawer({
                 size="small"
                 startIcon={<PlusIcon size={14} />}
                 onClick={() =>
-                  setEnvModalVarRows(prev => [...prev, { key: "", value: "" }])
+                  setEnvModalVarRows(prev => [...prev, newVarRow()])
                 }
               >
                 Add variable

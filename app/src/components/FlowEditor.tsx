@@ -60,7 +60,9 @@ export function FlowEditor({
   const [viewTab, setViewTab] = useState<"cdc" | "runs">("cdc");
 
   const { currentWorkspace } = useWorkspace();
-  const { flows: flowsMap, runFlow, fetchFlows } = useFlowStore();
+  const flowsMap = useFlowStore(s => s.flows);
+  const runFlow = useFlowStore(s => s.runFlow);
+  const fetchFlows = useFlowStore(s => s.fetchFlows);
   const flowsError = useFlowStore(s =>
     currentWorkspace ? s.error[currentWorkspace.id] : null,
   );

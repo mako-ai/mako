@@ -4,7 +4,12 @@
 # - Default (USE_PREBUILT=0): build from source inside Docker (local `docker build -t mako .`)
 # - CI (USE_PREBUILT=1): package host-built dist/ artifacts (avoids rebuilding twice)
 #
-# Runtime layers (apt, dbt venvs, pnpm) are ordered for BuildKit cache reuse.
+# Runtime layers (apt, dbt venvs, prod node_modules) are ordered for BuildKit
+# cache reuse. Compilers live only in the build stages: native modules and the
+# dbt venvs are built there and copied into a slim runtime that runs as `node`.
+#
+# pnpm is the exact version in the root package.json `packageManager` field,
+# activated by corepack (the same pin CI uses).
 
 # Must be declared before any FROM so it can interpolate the builder selector stage.
 ARG USE_PREBUILT=0
@@ -15,7 +20,8 @@ ARG USE_PREBUILT=0
 FROM node:24.22.1-bookworm AS builder-source
 WORKDIR /app
 
-RUN npm install -g pnpm
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
 
 # Skip the Electron binary download (only needed by packages/desktop on
 # developer machines, never in the server image)
@@ -26,8 +32,10 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY app/package.json ./app/package.json
 COPY api/package.json ./api/package.json
 COPY docs/package.json ./docs/package.json
-COPY packages/schemas/package.json packages/schemas/prepare.js ./packages/schemas/
-COPY packages/agent-tools/package.json packages/agent-tools/prepare.js ./packages/agent-tools/
+# schemas and agent-tools come in whole: their `prepare` hooks compile them
+# with tsc during the install, which needs their tsconfig and sources.
+COPY packages/schemas ./packages/schemas
+COPY packages/agent-tools ./packages/agent-tools
 COPY packages/desktop/package.json ./packages/desktop/package.json
 COPY packages/local-agent/package.json ./packages/local-agent/package.json
 
@@ -64,27 +72,12 @@ FROM builder-prebuilt AS builder-1
 FROM builder-${USE_PREBUILT} AS builder
 
 # =============================================================================
-# Production runtime
+# dbt venvs (pip may compile wheels; the compilers stay in this stage)
 # =============================================================================
-FROM node:24.22.1-bookworm-slim
-WORKDIR /app
-
-# Install build tools needed for native modules (+ venv for the dbt runner).
-# This layer is stable and should stay cached across app deploys.
-# `git` is required by Apps: the API keeps a local clone of each linked
-# GitHub repo as an ephemeral read cache for the file explorer (the sandbox
-# does its own in-VM git for pushing). node:*-slim ships without git, so the
-# missing binary surfaced as `spawn git ENOENT` on app creation.
-# `ca-certificates` is required when chat-with-app reads parquet over DuckDB
-# httpfs (HTTPS / gs://): the sandbox allow-lists the system CA bundle.
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-venv \
-    python3-pip \
-    make \
-    g++ \
-    git \
-    ca-certificates \
+# Same Debian release as the runtime, so /usr/bin/python3 (the venvs'
+# interpreter) is the same Python there.
+FROM node:24.22.1-bookworm AS dbt-venvs
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # Bake a pinned dbt Core venv with the supported warehouse adapters.
@@ -97,21 +90,27 @@ RUN python3 -m venv /opt/dbt \
     "dbt-bigquery==1.9.2" \
     "dbt-clickhouse==1.9.2" \
     "dbt-sqlserver==1.9.0"
-ENV DBT_VENV_BIN=/opt/dbt/bin/dbt
 
 # dbt-mysql lags upstream (requires dbt-core ~=1.7), so it gets its own venv.
 RUN python3 -m venv /opt/dbt-mysql \
     && /opt/dbt-mysql/bin/pip install --no-cache-dir \
     "dbt-core==1.7.19" \
     "dbt-mysql==1.7.0"
-ENV DBT_MYSQL_VENV_BIN=/opt/dbt-mysql/bin/dbt
 
-RUN npm install -g pnpm
+# =============================================================================
+# Production node_modules (native modules compile here, never at runtime)
+# =============================================================================
+FROM node:24.22.1-bookworm AS prod-deps
+WORKDIR /app
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
 
-# Minimal workspace so pnpm can resolve workspace:* deps
-RUN echo '{"private":true}' > package.json
-COPY --from=builder /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
-COPY --from=builder /app/pnpm-lock.yaml ./pnpm-lock.yaml
+# The real root manifest (packageManager pin, overrides via the workspace
+# file) and the lockfile, so the install is --frozen-lockfile.
+COPY --from=builder /app/package.json /app/pnpm-workspace.yaml /app/pnpm-lock.yaml ./
+# The root `prepare` hook runs husky, a devDependency absent from a --prod
+# install. Scripts are not part of the lockfile check.
+RUN npm pkg delete scripts.prepare
 
 # Package manifests only — keeps prod install cached when only compiled output changes
 COPY --from=builder /app/api/package.json ./api/package.json
@@ -123,23 +122,62 @@ COPY --from=builder /app/packages/agent-tools/prepare.js ./packages/agent-tools/
 # Placeholder dist dirs so prepare hooks / package mains resolve during install
 RUN mkdir -p packages/schemas/dist packages/agent-tools/dist
 
-RUN pnpm install --prod --filter api...
+RUN pnpm install --prod --frozen-lockfile --filter api...
 
 # Bake DuckDB extensions with the exact @duckdb/node-api binary just installed
 # (same DuckDB version and linux_amd64 platform the server runs). Chat-with-app
 # direct-GCS mode LOADs httpfs from here with auto-install off, so no Cloud Run
 # instance downloads from extensions.duckdb.org. Cached until the lockfile or
 # this one compiled file changes.
-ENV DUCKDB_EXTENSION_DIRECTORY=/opt/duckdb-extensions
 COPY --from=builder /app/api/dist/apps/duckdb-extensions.js ./api/dist/apps/duckdb-extensions.js
-RUN node api/dist/apps/duckdb-extensions.js "$DUCKDB_EXTENSION_DIRECTORY" \
-    && test -n "$(find "$DUCKDB_EXTENSION_DIRECTORY" -name 'httpfs.duckdb_extension')"
+RUN node api/dist/apps/duckdb-extensions.js /opt/duckdb-extensions \
+    && test -n "$(find /opt/duckdb-extensions -name 'httpfs.duckdb_extension')" \
+    && rm -rf api/dist
+
+# =============================================================================
+# Production runtime
+# =============================================================================
+FROM node:24.22.1-bookworm-slim
+WORKDIR /app
+
+# Runtime packages only (no compilers):
+# - python3 + python3-venv: run the dbt venvs copied below.
+# - git: Apps keep a local clone of each linked GitHub repo as an ephemeral
+#   read cache for the file explorer; node:*-slim ships without it (`spawn
+#   git ENOENT` on app creation).
+# - ca-certificates: chat-with-app reads parquet over DuckDB httpfs (HTTPS /
+#   gs://) and the sandbox allow-lists the system CA bundle.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-venv \
+    git \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=dbt-venvs /opt/dbt /opt/dbt
+COPY --from=dbt-venvs /opt/dbt-mysql /opt/dbt-mysql
+ENV DBT_VENV_BIN=/opt/dbt/bin/dbt
+ENV DBT_MYSQL_VENV_BIN=/opt/dbt-mysql/bin/dbt
+
+ENV DUCKDB_EXTENSION_DIRECTORY=/opt/duckdb-extensions
+COPY --from=prod-deps /opt/duckdb-extensions /opt/duckdb-extensions
+
+# Installed workspace (root + per-package node_modules, symlinks intact)
+COPY --from=prod-deps /app ./
 
 # Copy compiled shared packages + app/API output
 COPY --from=builder /app/packages/schemas/dist ./packages/schemas/dist
 COPY --from=builder /app/packages/agent-tools/dist ./packages/agent-tools/dist
 COPY --from=builder /app/api/dist ./api/dist
 COPY --from=builder /app/app/dist ./api/public
+
+# Run as the image's unprivileged `node` user. Code stays root-owned
+# (read-only to the server); the only in-image write path is the filesystem
+# artifact store's default (api/.data). Everything else goes to $HOME or
+# the OS temp dir.
+RUN mkdir -p /app/api/.data && chown node:node /app/api/.data
+USER node
+ENV HOME=/home/node
 
 WORKDIR /app/api
 

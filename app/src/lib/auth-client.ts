@@ -168,7 +168,20 @@ class AuthClient {
    * So we retry transient failures with backoff to ride out the deploy window
    * and only conclude the user is unauthenticated on a definitive `401`.
    */
-  async getMe(): Promise<User | null> {
+  getMe(): Promise<User | null> {
+    // Concurrent callers (StrictMode's double mount, several consumers on
+    // boot) share one request instead of each hitting /auth/me.
+    if (!this.inFlightGetMe) {
+      this.inFlightGetMe = this.fetchMe().finally(() => {
+        this.inFlightGetMe = null;
+      });
+    }
+    return this.inFlightGetMe;
+  }
+
+  private inFlightGetMe: Promise<User | null> | null = null;
+
+  private async fetchMe(): Promise<User | null> {
     const backoffsMs = [300, 800, 1500, 2500];
 
     for (let attempt = 0; ; attempt++) {

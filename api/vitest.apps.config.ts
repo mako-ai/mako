@@ -34,6 +34,10 @@ export default defineConfig({
       "src/apps/git-endpoint.test.ts",
       "src/apps/workspace-consoles.service.test.ts",
       "src/apps/workspace-skills.service.test.ts",
+      // Skill loads per day behind list_skills' loads30d / lastLoadedAt.
+      "src/services/skill-usage.service.test.ts",
+      // A hidden skill file as a failed `mako/skills` status on the commit.
+      "src/apps/skill-commit-status.test.ts",
       "src/apps/box-state.service.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",

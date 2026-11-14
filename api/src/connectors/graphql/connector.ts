@@ -7,6 +7,7 @@ import {
   type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
+import { createSsrfSafeAxios } from "../../services/safe-http-client";
 import { loggers } from "../../logging";
 
 const logger = loggers.connector("graphql");
@@ -199,7 +200,8 @@ export class GraphQLConnector extends BaseConnector {
         }
       }
 
-      this.graphqlClient = axios.create({
+      // User-supplied endpoint: SSRF-guarded (no private/metadata targets).
+      this.graphqlClient = createSsrfSafeAxios({
         baseURL: this.dataSource.config.endpoint,
         headers,
       });

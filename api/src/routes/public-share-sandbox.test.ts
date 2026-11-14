@@ -113,7 +113,7 @@ beforeAll(async () => {
   const passwordHash = await bcrypt.hash("pw", 4);
   const base = {
     workspaceId: new Types.ObjectId(),
-    access: "workspace",
+    access: "workspace" as const,
     owner_id: "owner",
     createdBy: "owner",
     publishedSha: "38ce8e7b28e8ace0c1d83bdacb95e28df3d5175b",
@@ -322,7 +322,11 @@ describe.skipIf(!playwrightDir || !chromiumPath)(
         const reportOf = async (url: string) => {
           await page.goto(url);
           await page.waitForFunction(
-            () => document.title.startsWith("report:"),
+            () =>
+              // Runs in the page; api has no DOM lib.
+              (
+                globalThis as unknown as { document: { title: string } }
+              ).document.title.startsWith("report:"),
             null,
             { timeout: 15_000 },
           );

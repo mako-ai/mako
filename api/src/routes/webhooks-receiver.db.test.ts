@@ -7,6 +7,10 @@
  * minted + enabled) — it keeps polling, webhooks only add speed. A scheduled
  * flow never switched on still answers 404.
  *
+ * A connector WITHOUT native signature verification fails closed: the sender
+ * must present the flow's shared secret (header, Bearer or ?token=), and a
+ * flow with no secret configured takes no deliveries.
+ *
  * Run: npx tsx src/routes/webhooks-receiver.db.test.ts
  */
 import assert from "node:assert/strict";
@@ -49,13 +53,24 @@ async function main(): Promise<void> {
       return String(doc.insertedId);
     }
 
-    async function post(flowId: string) {
+    const SECRET = "whk_shared_secret_value";
+    let deliveries = 0;
+
+    async function post(
+      flowId: string,
+      auth: { headers?: Record<string, string>; query?: string } = {
+        headers: { "x-mako-webhook-token": SECRET },
+      },
+    ) {
       const res = await webhookRoutes.request(
-        `/webhooks/${String(workspaceId)}/${flowId}`,
+        `/webhooks/${String(workspaceId)}/${flowId}${auth.query ?? ""}`,
         {
           method: "POST",
-          body: JSON.stringify({ id: `evt_${flowId}`, type: "x.updated" }),
-          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            id: `evt_${flowId}_${deliveries++}`,
+            type: "x.updated",
+          }),
+          headers: { "content-type": "application/json", ...auth.headers },
         },
       );
       return res.status;
@@ -67,7 +82,7 @@ async function main(): Promise<void> {
     // 1. A webhook flow, unchanged behaviour (even with no stored endpoint).
     const webhookFlow = await flow({
       type: "webhook",
-      webhookConfig: { enabled: true, totalReceived: 0 },
+      webhookConfig: { enabled: true, totalReceived: 0, secret: SECRET },
     });
     assert.equal(await post(webhookFlow), 200, "webhook flow takes deliveries");
 
@@ -88,6 +103,7 @@ async function main(): Promise<void> {
         enabled: true,
         endpoint: endpoint(String(hybridId)),
         totalReceived: 0,
+        secret: SECRET,
       },
     });
     assert.equal(await post(String(hybridId)), 200, "hybrid takes deliveries");
@@ -124,6 +140,78 @@ async function main(): Promise<void> {
       },
     });
     assert.equal(await post(String(offId)), 403, "disabled stays disabled");
+
+    // 5. Unverified connector: the shared secret is mandatory.
+    const before = await WebhookEvent.countDocuments({ flowId: webhookFlow });
+    assert.equal(
+      await post(webhookFlow, {}),
+      401,
+      "no token presented: refused",
+    );
+    assert.equal(
+      await post(webhookFlow, {
+        headers: { "x-mako-webhook-token": "wrong" },
+      }),
+      401,
+      "wrong token: refused",
+    );
+    assert.equal(
+      await post(webhookFlow, { query: "?token=wrong" }),
+      401,
+      "wrong query token: refused",
+    );
+    assert.equal(
+      await WebhookEvent.countDocuments({ flowId: webhookFlow }),
+      before,
+      "a refused delivery stores nothing",
+    );
+    assert.equal(
+      await post(webhookFlow, {
+        headers: { authorization: `Bearer ${SECRET}` },
+      }),
+      200,
+      "Bearer token accepted",
+    );
+    assert.equal(
+      await post(webhookFlow, { query: `?token=${SECRET}` }),
+      200,
+      "query token accepted",
+    );
+    assert.equal(
+      await WebhookEvent.countDocuments({ flowId: webhookFlow }),
+      before + 2,
+      "both authenticated deliveries were stored",
+    );
+    const stored = await WebhookEvent.findOne({ flowId: webhookFlow }).lean();
+    assert.ok(
+      !String(stored?.signature ?? "").includes(SECRET),
+      "the shared secret is never persisted with the event",
+    );
+
+    // 6. A flow with no secret configured takes nothing, whatever is sent.
+    const noSecretId = new Types.ObjectId();
+    await Flow.collection.insertOne({
+      _id: noSecretId,
+      workspaceId,
+      name: "nosecret",
+      type: "webhook",
+      sourceType: "connector",
+      dataSourceId: source.insertedId,
+      destinationDatabaseId: new Types.ObjectId(),
+      createdBy: "u1",
+      webhookConfig: {
+        enabled: true,
+        endpoint: endpoint(String(noSecretId)),
+        totalReceived: 0,
+      },
+    });
+    assert.equal(
+      await post(String(noSecretId), {
+        headers: { "x-mako-webhook-token": "" },
+      }),
+      401,
+      "no secret configured: fail closed",
+    );
 
     console.log("webhooks receiver tests passed");
   } finally {

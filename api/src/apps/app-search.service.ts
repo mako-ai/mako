@@ -23,6 +23,7 @@ import {
 import { loadAppsIndex, type AppsIndexSnapshot } from "./app-index.service";
 import type { RelatedSignals } from "./app-search";
 import { homeUsageStats } from "./app-home-base.service";
+import { BoundedMap } from "../utils/bounded-map";
 
 const logger = loggers.api("app-search");
 
@@ -53,7 +54,10 @@ export async function appUsageScores(
 export const SEMANTIC_TIMEOUT_MS = 1500;
 /** A workspace with apps lacking a vector is backfilled at most this often. */
 const BACKFILL_EVERY_MS = 10 * 60_000;
-const backfillAt = new Map<string, number>();
+const backfillAt = new BoundedMap<string, number>({
+  maxEntries: 5_000,
+  ttlMs: BACKFILL_EVERY_MS,
+});
 
 /**
  * Embed what the search found without a vector, in the background: apps

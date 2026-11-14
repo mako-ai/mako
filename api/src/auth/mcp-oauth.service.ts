@@ -5,9 +5,10 @@
  * PKCE S256 — exactly what the MCP spec's auth profile and every major MCP
  * client (Claude, Cursor, Codex) implement. Tokens are opaque `mcpat_`/
  * `mcprt_` strings. Every grant carries the full MCP scope set
- * (MCP_OAUTH_SCOPES): connecting a client gives it everything its owner's
- * workspace role allows, with no per-permission consent option. Roles, not
- * scopes, keep viewers read-only.
+ * (MCP_OAUTH_SCOPES) at consent time: connecting a client gives it everything
+ * its owner's workspace role allows, with no per-permission consent option.
+ * Roles, not scopes, keep viewers read-only. A refresh never widens a grant
+ * beyond what was consented, and refresh tokens expire after an idle period.
  */
 import * as crypto from "crypto";
 
@@ -28,9 +29,34 @@ const CLIENT_ID_PREFIX = "mcpc_";
 
 const AUTH_CODE_TTL_MS = 10 * 60 * 1000;
 const ACCESS_TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
-// Only session-minted Desktop ACP grants expire; browser-authorized grants
-// remain renewable until explicitly revoked.
+// Session-minted Desktop ACP grants expire 30 days after minting, fixed.
 const ACP_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Idle lifetime of a browser-authorized refresh token, SLIDING: every refresh
+ * rotates the token and pushes the expiry out again, so a client in regular
+ * use never notices, while a leaked `mcprt_` stops working once it has sat
+ * unused this long. (Grants used to be renewable forever, which made a leaked
+ * refresh token a permanent foothold.)
+ *
+ * `MCP_REFRESH_TOKEN_IDLE_DAYS` overrides the default of 30; `0` restores
+ * never-expiring grants.
+ */
+export function refreshIdleTtlMs(): number | null {
+  const raw = process.env.MCP_REFRESH_TOKEN_IDLE_DAYS;
+  const days = raw === undefined || raw === "" ? 30 : Number(raw);
+  if (!Number.isFinite(days) || days < 0) return 30 * DAY_MS;
+  return days === 0 ? null : days * DAY_MS;
+}
+
+function refreshExpiryFields(clientId: string): { refreshExpiresAt?: Date } {
+  if (clientId === ACP_MCP_CLIENT_ID) {
+    return { refreshExpiresAt: new Date(Date.now() + ACP_GRANT_TTL_MS) };
+  }
+  const idle = refreshIdleTtlMs();
+  return idle === null ? {} : { refreshExpiresAt: new Date(Date.now() + idle) };
+}
 /** Avoid a write per MCP request: bump lastUsedAt at most once a minute. */
 const LAST_USED_WRITE_INTERVAL_MS = 60 * 1000;
 
@@ -165,9 +191,7 @@ async function issueTokens(grant: {
     agentSessionId: grant.agentSessionId,
     scopes: grant.scopes,
     accessExpiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_MS),
-    ...(grant.clientId === ACP_MCP_CLIENT_ID
-      ? { refreshExpiresAt: new Date(Date.now() + ACP_GRANT_TTL_MS) }
-      : {}),
+    ...refreshExpiryFields(grant.clientId),
   });
   return {
     accessToken,
@@ -282,11 +306,11 @@ export async function refreshAccessToken(input: {
   const refreshToken = randomToken(MCP_REFRESH_TOKEN_PREFIX);
   // Rotate atomically in place: a failed write or wrong client must not
   // destroy a valid grant. Only one caller may consume each refresh token.
-  // Scopes are widened to today's MCP_OAUTH_SCOPES so a grant made before a
-  // scope existed (e.g. `workflows:run`) gets it on its next refresh, without
-  // a revoke and re-sign-in. Live workspace roles still decide what a viewer
-  // may do; internal scopes are never added (session-minted ACP grants never
-  // reach this point).
+  // Scopes are NEVER widened: a refresh carries exactly what was consented
+  // to (minus internal scopes, which a browser grant must not hold). A grant
+  // made before a scope existed gets it by signing in again, not silently.
+  // The refresh expiry slides forward (see refreshIdleTtlMs).
+  const idle = refreshIdleTtlMs();
   const record = await McpOAuthToken.findOneAndUpdate(
     {
       refreshTokenHash: sha256(input.refreshToken),
@@ -304,18 +328,15 @@ export async function refreshAccessToken(input: {
           accessExpiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_MS),
           scopes: {
             $setDifference: [
-              {
-                $setUnion: [
-                  { $ifNull: ["$scopes", []] },
-                  { $literal: [...MCP_OAUTH_SCOPES] },
-                ],
-              },
+              { $ifNull: ["$scopes", []] },
               { $literal: [...INTERNAL_WORKSPACE_API_KEY_SCOPES] },
             ],
           },
         },
       },
-      { $unset: "refreshExpiresAt" },
+      idle === null
+        ? { $unset: "refreshExpiresAt" }
+        : { $set: { refreshExpiresAt: new Date(Date.now() + idle) } },
     ],
     { returnDocument: "after", updatePipeline: true },
   );
@@ -388,6 +409,22 @@ export async function listMcpConnections(
     lastUsedAt: g.lastUsedAt,
     accessExpiresAt: g.accessExpiresAt,
   }));
+}
+
+/**
+ * Revoke every grant a user holds in a workspace, across all clients — for
+ * member removal, where any surviving grant would keep minting access
+ * tokens bound to a workspace the user no longer belongs to.
+ */
+export async function revokeMcpGrantsForMember(input: {
+  workspaceId: string;
+  userId: string;
+}): Promise<number> {
+  const result = await McpOAuthToken.deleteMany({
+    workspaceId: input.workspaceId,
+    userId: input.userId,
+  });
+  return result.deletedCount ?? 0;
 }
 
 /**

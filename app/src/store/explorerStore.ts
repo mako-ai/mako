@@ -316,30 +316,3 @@ export const useExplorerStore = create<ExplorerStore>()(
     },
   ),
 );
-
-// Re-export for backwards compatibility with useDatabaseExplorerStore
-export const useDatabaseExplorerStore = () => {
-  const store = useExplorerStore();
-
-  return {
-    expandedServers: store.database.expandedServers,
-    expandedDatabases: store.database.expandedDatabases,
-    expandedCollectionGroups: store.database.expandedCollectionGroups,
-    expandedViewGroups: store.database.expandedViewGroups,
-    expandedNodes: store.database.expandedNodes,
-
-    toggleServer: store.toggleServer,
-    toggleDatabase: store.toggleDatabase,
-    toggleCollectionGroup: store.toggleCollectionGroup,
-    toggleViewGroup: store.toggleViewGroup,
-    toggleNode: store.toggleNode,
-    expandServer: store.expandServer,
-    expandDatabase: store.expandDatabase,
-
-    isServerExpanded: store.isServerExpanded,
-    isDatabaseExpanded: store.isDatabaseExpanded,
-    isCollectionGroupExpanded: store.isCollectionGroupExpanded,
-    isViewGroupExpanded: store.isViewGroupExpanded,
-    isNodeExpanded: store.isNodeExpanded,
-  };
-};

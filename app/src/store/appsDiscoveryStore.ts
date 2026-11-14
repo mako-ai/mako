@@ -468,6 +468,9 @@ export const useAppsDiscoveryStore = create<
     {
       name: "apps-discovery-store",
       version: 1,
+      // Keep the cached listing across the bump (merge() below already
+      // tolerates partial/older snapshots) instead of an error + wipe.
+      migrate: persisted => (persisted ?? {}) as never,
       // The Apps home paints from the last listing (titles, thumbnails,
       // owners, popularity) while the live requests run: a cold API under
       // load takes seconds, and the page should not be blank meanwhile.

@@ -4,6 +4,7 @@ import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { secureHeaders } from "hono/secure-headers";
+import { spaCspMiddleware } from "./middleware/csp";
 import { serve as serveInngest } from "inngest/hono";
 import { Scalar } from "@scalar/hono-api-reference";
 import dotenv from "dotenv";
@@ -11,6 +12,7 @@ import fs from "fs";
 import path from "path";
 import type { Context } from "hono";
 import { connectDatabase } from "./database/schema";
+import { ensureFlowExecutionTtlIndex } from "./database/flow-execution-retention";
 import {
   injectOgTags,
   ogTagsForPath,
@@ -93,10 +95,13 @@ const isProduction = process.env.NODE_ENV === "production";
 // First, so its header rewrite runs after every other middleware's.
 app.use("*", appsHostGate);
 
-// Security headers. CSP is intentionally left unset here because the SPA loads
-// GTM, Google Fonts, and renders sandboxed blob/srcdoc iframes; a tuned CSP is
-// tracked as a follow-up. COOP/CORP/COEP are disabled to avoid breaking OAuth
-// popups and cross-origin asset loads.
+// Security headers. CSP is not set by secureHeaders: the SPA's HTML gets a
+// REPORT-ONLY baseline from spaCspMiddleware (middleware/csp.ts) because the
+// app loads GTM, Google Fonts and Monaco and renders blob/srcdoc iframes, so
+// an enforced policy must be tuned from the reports first
+// (CONTENT_SECURITY_POLICY_MODE=enforce once it is). COOP/CORP/COEP are
+// disabled to avoid breaking OAuth popups and cross-origin asset loads.
+app.use("*", spaCspMiddleware);
 app.use(
   "*",
   secureHeaders({
@@ -225,9 +230,21 @@ databaseRegistry.register(new BigQueryDatabaseDriver());
 databaseRegistry.register(new MongoDatabaseDriver());
 databaseRegistry.register(new PostgreSQLDatabaseDriver());
 databaseRegistry.register(new MySQLDatabaseDriver());
-databaseRegistry.register(new CloudSQLPostgresDatabaseDriver());
-databaseRegistry.register(new CloudflareD1DatabaseDriver());
-databaseRegistry.register(new CloudflareKVDatabaseDriver());
+// Stateful drivers (pools, connectors, running-query maps) are shared with
+// databaseConnectionService, which resolves them through the same registry
+// slot — getOrRegister keeps it to one instance whichever side runs first.
+databaseRegistry.getOrRegister(
+  "cloudsql-postgres",
+  () => new CloudSQLPostgresDatabaseDriver(),
+);
+databaseRegistry.getOrRegister(
+  "cloudflare-d1",
+  () => new CloudflareD1DatabaseDriver(),
+);
+databaseRegistry.getOrRegister(
+  "cloudflare-kv",
+  () => new CloudflareKVDatabaseDriver(),
+);
 databaseRegistry.register(new ClickHouseDatabaseDriver());
 databaseRegistry.register(new RedshiftDatabaseDriver());
 
@@ -403,6 +420,22 @@ async function main(): Promise<void> {
   } catch (error) {
     logger.error("Failed to connect to database", { error });
     throw error;
+  }
+
+  // Run-history TTL: apply a changed FLOW_EXECUTION_RETENTION_DAYS to the
+  // existing index (autoIndex cannot change a TTL; this collMods it).
+  if (mongoose.connection.db) {
+    ensureFlowExecutionTtlIndex(mongoose.connection.db)
+      .then(result => {
+        if (result.action !== "unchanged") {
+          logger.info("flow_executions TTL index reconciled", { ...result });
+        }
+      })
+      .catch(err => {
+        logger.warn("Could not reconcile the flow_executions TTL index", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
   }
 
   // Log Inngest configuration status (after logging is initialized)

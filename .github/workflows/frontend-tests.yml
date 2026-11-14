@@ -5,7 +5,7 @@ name: Frontend tests
 # filters prevent from starting.
 #
 # api-contract.yml is the only other workflow that runs tests on a pull
-# request, and it is a heavy job: the api tsx chain, agent-tools, the
+# request, and it is a heavy job: the api tsx suites, agent-tools, the
 # destination suite, dbt, and an OpenAPI regenerate-and-diff. Widening ITS
 # path filter to cover app/src would give frontend changes behavioural
 # coverage, but at the cost of running all of that for a one-line CSS change.
@@ -39,13 +39,11 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
-        with:
-          version: 9
 
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Install dependencies
@@ -65,13 +63,11 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
-        with:
-          version: 9
 
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Install dependencies

@@ -8,7 +8,7 @@ The authentication system consists of:
 
 ### Backend (API)
 
-- **Lucia Auth**: Session management library
+- **Sessions** (`auth/session.ts`): in-repo session manager; sessions are MongoDB documents, the browser holds an HTTP-only `auth_session` cookie
 - **OAuth client** (`auth/oauth-client.ts`): authorization-code flow for Google (PKCE) & GitHub
 - **MongoDB**: Database for users, sessions, and OAuth accounts
 - **Mongoose**: MongoDB ORM
@@ -28,14 +28,13 @@ The authentication system consists of:
 api/
 ├── src/
 │   ├── auth/
-│   │   ├── lucia.ts          # Lucia configuration
+│   │   ├── session.ts        # Session manager (create/validate/invalidate)
 │   │   ├── oauth-client.ts   # OAuth 2.0 authorization-code client
 │   │   ├── oauth-providers.ts# OAuth providers setup
 │   │   ├── auth.service.ts   # Auth business logic
 │   │   ├── auth.controller.ts# Route handlers
 │   │   ├── auth.middleware.ts# Auth & rate limit middleware
-│   │   ├── mongodb-adapter.ts# Lucia MongoDB adapter
-│   │   └── index.ts          # Module exports
+│   │   └── unified-auth.middleware.ts # Session OR API-key auth for routes
 │   └── database/
 │       └── schema.ts         # MongoDB schemas
 
@@ -494,10 +493,16 @@ would fall through to the SPA fallback and poison client discovery.
 ### Token model
 
 - Opaque tokens, stored as SHA-256 hashes: access `mcpat_*` (8 h TTL),
-  refresh `mcprt_*` (no expiry for CLI / external MCP grants, rotated on every
-  refresh). Sign-ins last until revoked, including after long periods of
-  inactivity. Access tokens renew silently; auth codes live 10 minutes and
-  are consumed atomically. Session-minted Desktop ACP grants remain expiring.
+  refresh `mcprt_*` (rotated on every refresh, with a SLIDING idle expiry:
+  30 days by default, `MCP_REFRESH_TOKEN_IDLE_DAYS` to change it, `0` for
+  none). A client in regular use never re-signs in; a grant left unused for
+  the whole window lapses, so a leaked refresh token is not a permanent
+  foothold. Access tokens renew silently; auth codes live 10 minutes and
+  are consumed atomically. Session-minted Desktop ACP grants expire 30 days
+  after minting.
+- A refresh never widens a grant: it carries exactly the scopes consented to.
+- Removing a workspace member revokes every MCP grant they hold in that
+  workspace and the workspace API keys they created.
 - `unifiedAuthMiddleware` recognizes the `mcpat_` Bearer prefix and sets
   `authType: "mcpOAuth"` with the grant's workspace binding and scopes.
 - Every browser OAuth grant carries the full MCP scope set
@@ -612,7 +617,7 @@ SESSION_DURATION=3600000  # 1 hour in milliseconds
 ### Adding Custom User Fields
 
 1. Update the schema in `database/schema.ts`
-2. Update the `DatabaseUserAttributes` interface in `lucia.ts`
+2. Update the `IUser` interface in `database/schema.ts` (and `ValidatedUser` in `auth/session.ts` if the field belongs on the request user)
 3. Update the auth service to handle new fields
 
 ## Troubleshooting

@@ -47,7 +47,7 @@ Key UI: Console editor, Database explorer, Chat interface, App editor, Collectio
 | --------- | ------------------------------------------ |
 | Framework | Hono (on Node.js adapter)                  |
 | Database  | MongoDB (Mongoose ODM)                     |
-| Auth      | Lucia Auth + Arctic (Google, GitHub OAuth) |
+| Auth      | In-repo sessions + OAuth client (Google, GitHub) |
 | Job Queue | Inngest                                    |
 | AI        | Vercel AI SDK                              |
 
@@ -79,7 +79,7 @@ Each driver implements `executeQuery()` and `inspectSchema()`. Connections are e
 
 ### Authentication
 
-Lucia Auth with Arctic OAuth providers (Google, GitHub). Sessions stored in MongoDB. API key authentication available for programmatic access.
+A small in-repo session manager (`api/src/auth/session.ts`) and OAuth 2.0 client (`api/src/auth/oauth-client.ts`, Google with PKCE and GitHub). Sessions stored in MongoDB. API key authentication available for programmatic access.
 
 ## Data Flow
 

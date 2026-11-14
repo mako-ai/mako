@@ -33,11 +33,7 @@ import {
   databaseConnectionService,
   ConnectionConfig,
 } from "./database-connection.service";
-import {
-  prepareQueryForValidation,
-  substituteTemplates,
-  detectTemplates,
-} from "../utils/template-substitution";
+import { prepareQueryForValidation } from "../utils/template-substitution";
 /**
  * Helper function to infer JavaScript type from a value
  */
@@ -100,6 +96,10 @@ export interface DbSyncChunkState {
   hasMore: boolean;
   lastTrackingValue?: string;
   lastKeysetValue?: string; // For keyset pagination
+  /** JS type `lastKeysetValue` was read as, so "00123" stays a string. */
+  lastKeysetValueType?: CursorValueType;
+  /** Key-column values of the last row: the keyset tiebreaker. */
+  lastKeysetTiebreaker?: CursorValue[];
   estimatedTotal?: number;
   stagingPrepared?: boolean;
   sourceSchema?: ColumnDefinition[]; // Cached schema from source query (fetched once)
@@ -1123,12 +1123,14 @@ export async function validateQuery(
   }
 }
 
-// SQL query utilities (extracted to sql-query-utils.ts for testability)
+// Chunk paging (pure, tested against SQLite in db-sync-pagination.test.ts)
 import {
-  findTopLevelKeyword,
-  appendWhereCondition,
-  appendSqlClause,
-} from "./sql-query-utils";
+  buildChunkQuery,
+  keysetCursorAfter,
+  maxTrackingValue,
+  type CursorValue,
+  type CursorValueType,
+} from "./db-sync-pagination";
 
 /**
  * Dangerous SQL statement patterns that should be rejected
@@ -1492,130 +1494,26 @@ export async function executeDbSyncChunk(options: {
   const keysetColumn = paginationConfig?.keysetColumn;
   const keysetDirection = paginationConfig?.keysetDirection || "asc";
 
-  // Check if the query uses template placeholders
-  const queryTemplates = detectTemplates(sourceQuery);
-  const usesTemplates =
-    queryTemplates.hasLimit ||
-    queryTemplates.hasOffset ||
-    queryTemplates.hasLastSyncValue ||
-    queryTemplates.hasKeysetValue;
-
-  // Build paginated query
-  let paginatedQuery: string;
-
-  if (usesTemplates) {
-    // Template-based query: substitute placeholders with runtime values
-    const lastKeyset =
-      currentState.lastKeysetValue || paginationConfig?.lastKeysetValue;
-
-    // Prepare last_sync_value: format based on tracking type
-    let lastSyncValue: string | number | null = null;
-    if (
-      syncMode === "incremental" &&
-      incrementalConfig?.trackingColumn &&
-      incrementalConfig?.lastValue
-    ) {
-      lastSyncValue =
-        incrementalConfig.trackingType === "timestamp"
-          ? incrementalConfig.lastValue // Keep as string for timestamps
-          : incrementalConfig.lastValue;
-    }
-
-    // Prepare keyset_value: preserve type (string vs number)
-    let keysetValue: string | number | null = null;
-    if (paginationMode === "keyset" && lastKeyset) {
-      keysetValue = isNaN(Number(lastKeyset)) ? lastKeyset : Number(lastKeyset);
-    }
-
-    paginatedQuery = substituteTemplates(sourceQuery, {
-      limit: maxRowsPerChunk,
-      offset: currentState.offset,
-      last_sync_value: lastSyncValue,
-      keyset_value: keysetValue,
-    });
-  } else {
-    // Legacy mode: append WHERE clauses and LIMIT/OFFSET dynamically
-    // Strip trailing semicolons to avoid "... ; LIMIT ..." syntax errors
-    let effectiveQuery = sourceQuery.replace(/;\s*$/, "");
-
-    // Helper: escape a value for safe SQL interpolation
-    const escapeValue = (val: string, type: string): string => {
-      if (type === "timestamp") {
-        // Escape single quotes in timestamp values
-        return `'${val.replace(/'/g, "''")}'`;
-      }
-      // Numeric values - validate they are actually numeric
-      const num = Number(val);
-      if (!isNaN(num) && isFinite(num)) {
-        return String(num);
-      }
-      // Fallback: treat as string
-      return `'${val.replace(/'/g, "''")}'`;
-    };
-
-    // Add incremental filter if applicable
-    if (
-      syncMode === "incremental" &&
-      incrementalConfig?.trackingColumn &&
-      incrementalConfig?.lastValue
-    ) {
-      const value = escapeValue(
-        incrementalConfig.lastValue,
-        incrementalConfig.trackingType || "timestamp",
-      );
-      const condition = `${incrementalConfig.trackingColumn} > ${value}`;
-      effectiveQuery = appendWhereCondition(effectiveQuery, condition);
-    }
-
-    // Handle pagination based on mode
-    if (paginationMode === "keyset" && keysetColumn) {
-      // Keyset pagination: use WHERE column > last_value
-      const lastKeyset =
-        currentState.lastKeysetValue || paginationConfig?.lastKeysetValue;
-
-      if (lastKeyset) {
-        // Add keyset filter with proper escaping
-        const keysetOperator = keysetDirection === "asc" ? ">" : "<";
-        const keysetValue = isNaN(Number(lastKeyset))
-          ? `'${String(lastKeyset).replace(/'/g, "''")}'`
-          : lastKeyset;
-        const condition = `${keysetColumn} ${keysetOperator} ${keysetValue}`;
-        effectiveQuery = appendWhereCondition(effectiveQuery, condition);
-      }
-
-      // Ensure ORDER BY matches keyset column and direction
-      if (findTopLevelKeyword(effectiveQuery, /^ORDER\s+BY\b/i) === -1) {
-        effectiveQuery = appendSqlClause(
-          effectiveQuery,
-          `ORDER BY ${keysetColumn} ${keysetDirection.toUpperCase()}`,
-        );
-      }
-
-      // Add LIMIT only (no OFFSET needed for keyset)
-      paginatedQuery = appendSqlClause(
-        effectiveQuery,
-        `LIMIT ${maxRowsPerChunk}`,
-      );
-    } else {
-      // Offset pagination: use LIMIT/OFFSET
-      const orderColumn = incrementalConfig?.trackingColumn || "1";
-      if (findTopLevelKeyword(effectiveQuery, /^ORDER\s+BY\b/i) === -1) {
-        effectiveQuery = appendSqlClause(
-          effectiveQuery,
-          `ORDER BY ${orderColumn}`,
-        );
-      }
-
-      paginatedQuery = appendSqlClause(
-        effectiveQuery,
-        `LIMIT ${maxRowsPerChunk} OFFSET ${currentState.offset}`,
-      );
-    }
-  }
+  // One path for every query: template placeholders are substituted; a
+  // query written without them is translated to template mode first (see
+  // db-sync-pagination for the tie-safe incremental, keyset and offset
+  // contract).
+  const paginatedQuery = buildChunkQuery({
+    sourceQuery,
+    syncMode,
+    incrementalConfig,
+    paginationMode: paginationMode === "keyset" ? "keyset" : "offset",
+    keysetColumn,
+    keysetDirection: keysetDirection === "desc" ? "desc" : "asc",
+    keyColumns,
+    maxRowsPerChunk,
+    state: currentState,
+    savedKeysetValue: paginationConfig?.lastKeysetValue,
+  });
 
   let rowsProcessedInChunk = 0;
   let lastTrackingValue: string | undefined;
-  let lastKeysetValue: string | undefined;
+  let keysetCursor: ReturnType<typeof keysetCursorAfter> = null;
 
   try {
     const result = await driver.executeQuery(sourceConnection, paginatedQuery, {
@@ -1663,28 +1561,24 @@ export async function executeDbSyncChunk(options: {
       rowsProcessedInChunk += writeResult.rowsWritten;
       currentState.totalProcessed += writeResult.rowsWritten;
 
-      // Track the last value for incremental column
+      // Track the max value of the incremental column (rows are not
+      // necessarily ordered by it, e.g. in keyset mode).
       if (incrementalConfig?.trackingColumn && batch.length > 0) {
-        const lastRow = batch[batch.length - 1];
-        const trackingValue = lastRow[incrementalConfig.trackingColumn];
-        if (trackingValue !== null && trackingValue !== undefined) {
-          lastTrackingValue =
-            trackingValue instanceof Date
-              ? trackingValue.toISOString()
-              : String(trackingValue);
-        }
+        lastTrackingValue = maxTrackingValue(
+          batch,
+          incrementalConfig.trackingColumn,
+          lastTrackingValue,
+        );
       }
 
-      // Track the last keyset value for keyset pagination
+      // Track the keyset cursor (value + key-column tiebreaker, typed)
       if (paginationMode === "keyset" && keysetColumn && batch.length > 0) {
-        const lastRow = batch[batch.length - 1];
-        const keysetValue = lastRow[keysetColumn];
-        if (keysetValue !== null && keysetValue !== undefined) {
-          lastKeysetValue =
-            keysetValue instanceof Date
-              ? keysetValue.toISOString()
-              : String(keysetValue);
-        }
+        keysetCursor =
+          keysetCursorAfter(
+            batch[batch.length - 1],
+            keysetColumn,
+            keyColumns,
+          ) ?? keysetCursor;
       }
 
       onProgress?.(currentState.totalProcessed, currentState.estimatedTotal);
@@ -1696,8 +1590,10 @@ export async function executeDbSyncChunk(options: {
     // Update state based on pagination mode
     if (paginationMode === "keyset") {
       // For keyset pagination, don't use offset
-      if (lastKeysetValue) {
-        currentState.lastKeysetValue = lastKeysetValue;
+      if (keysetCursor) {
+        currentState.lastKeysetValue = keysetCursor.lastKeysetValue;
+        currentState.lastKeysetValueType = keysetCursor.lastKeysetValueType;
+        currentState.lastKeysetTiebreaker = keysetCursor.lastKeysetTiebreaker;
       }
     } else {
       // For offset pagination
@@ -1706,7 +1602,12 @@ export async function executeDbSyncChunk(options: {
 
     currentState.hasMore = hasMore;
     if (lastTrackingValue) {
-      currentState.lastTrackingValue = lastTrackingValue;
+      // The run-wide max, across chunks.
+      currentState.lastTrackingValue = maxTrackingValue(
+        [{ value: lastTrackingValue }],
+        "value",
+        currentState.lastTrackingValue,
+      );
     }
 
     return {
@@ -1787,7 +1688,7 @@ export async function dryRunDbSync(options: {
   );
 
   const allRows: Record<string, unknown>[] = [];
-  let lastKeysetValue: string | undefined;
+  let keysetCursor: ReturnType<typeof keysetCursorAfter> = null;
   const paginationMode = paginationConfig?.mode || "offset";
   const keysetColumn = paginationConfig?.keysetColumn;
   const keysetDirection = paginationConfig?.keysetDirection || "asc";
@@ -1795,40 +1696,17 @@ export async function dryRunDbSync(options: {
   try {
     // Execute specified number of pages
     for (let page = 0; page < pages; page++) {
-      let paginatedQuery: string;
-      // Strip trailing semicolons before appending clauses
-      const baseQuery = sourceQuery.replace(/;\s*$/, "");
-
-      if (paginationMode === "keyset" && keysetColumn) {
-        let effectiveQuery = baseQuery;
-
-        if (lastKeysetValue) {
-          const keysetOperator = keysetDirection === "asc" ? ">" : "<";
-          const keysetValue = isNaN(Number(lastKeysetValue))
-            ? `'${String(lastKeysetValue).replace(/'/g, "''")}'`
-            : lastKeysetValue;
-          const condition = `${keysetColumn} ${keysetOperator} ${keysetValue}`;
-          effectiveQuery = appendWhereCondition(effectiveQuery, condition);
-        }
-
-        if (findTopLevelKeyword(effectiveQuery, /^ORDER\s+BY\b/i) === -1) {
-          effectiveQuery = appendSqlClause(
-            effectiveQuery,
-            `ORDER BY ${keysetColumn} ${keysetDirection.toUpperCase()}`,
-          );
-        }
-
-        paginatedQuery = appendSqlClause(effectiveQuery, `LIMIT ${pageSize}`);
-      } else {
-        let effectiveQuery = baseQuery;
-        if (findTopLevelKeyword(effectiveQuery, /^ORDER\s+BY\b/i) === -1) {
-          effectiveQuery = appendSqlClause(effectiveQuery, `ORDER BY 1`);
-        }
-        paginatedQuery = appendSqlClause(
-          effectiveQuery,
-          `LIMIT ${pageSize} OFFSET ${page * pageSize}`,
-        );
-      }
+      // Same paging as a real run (db-sync-pagination), page by page:
+      // a template query is substituted, a plain one translated.
+      const paginatedQuery = buildChunkQuery({
+        sourceQuery,
+        syncMode: "full",
+        paginationMode: paginationMode === "keyset" ? "keyset" : "offset",
+        keysetColumn,
+        keysetDirection: keysetDirection === "desc" ? "desc" : "asc",
+        maxRowsPerChunk: pageSize,
+        state: { offset: page * pageSize, ...(keysetCursor ?? {}) },
+      });
 
       const result = await driver.executeQuery(
         sourceConnection,
@@ -1864,12 +1742,9 @@ export async function dryRunDbSync(options: {
 
       // Update keyset value for next page
       if (paginationMode === "keyset" && keysetColumn && rows.length > 0) {
-        const lastRow = rows[rows.length - 1];
-        const value = lastRow[keysetColumn];
-        if (value !== null && value !== undefined) {
-          lastKeysetValue =
-            value instanceof Date ? value.toISOString() : String(value);
-        }
+        keysetCursor =
+          keysetCursorAfter(rows[rows.length - 1], keysetColumn) ??
+          keysetCursor;
       }
 
       // Stop if we got fewer rows than requested

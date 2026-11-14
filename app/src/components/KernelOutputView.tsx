@@ -6,6 +6,7 @@ import type {
   KernelOutput,
 } from "../notebook-runtime/kernel";
 import { getApiBasePath } from "../lib/api-base-path";
+import { KernelHtmlFrame } from "./KernelHtmlFrame";
 
 /** Strip ANSI escape codes (kernel tracebacks are colourised). */
 // eslint-disable-next-line no-control-regex
@@ -35,14 +36,6 @@ function artifactUrl(
   const base = getApiBasePath(import.meta.env.VITE_API_URL);
   return `${base}/workspaces/${workspaceId}/notebooks/${notebookId}/artifacts/${ref.artifactId}`;
 }
-
-const HTML_SX = {
-  px: 1,
-  py: 0.5,
-  overflowX: "auto" as const,
-  "& table": { borderCollapse: "collapse", fontSize: "0.78rem" },
-  "& td, & th": { border: 1, borderColor: "divider", px: 0.5 },
-};
 
 /** Fetch an offloaded text/HTML payload lazily and render it. */
 function ArtifactText({ url, asHtml }: { url: string; asHtml: boolean }) {
@@ -79,9 +72,9 @@ function ArtifactText({ url, asHtml }: { url: string; asHtml: boolean }) {
     );
   }
   if (asHtml) {
-    // Rich HTML from the user's own kernel (pandas tables, plots). Sanitize
-    // before notebooks become cross-user durable (Git-storage slice).
-    return <Box sx={HTML_SX} dangerouslySetInnerHTML={{ __html: text }} />;
+    // Rich HTML (pandas tables, styled reprs) is untrusted once notebooks
+    // are shared: render it in a script-less sandboxed frame.
+    return <KernelHtmlFrame html={text} />;
   }
   return (
     <Box component="pre" sx={PRE_SX}>
@@ -148,7 +141,7 @@ function MimeBundle({
     );
   }
   if (typeof html === "string") {
-    return <Box sx={HTML_SX} dangerouslySetInnerHTML={{ __html: html }} />;
+    return <KernelHtmlFrame html={html} />;
   }
 
   // text/plain — inline or offloaded.

@@ -149,7 +149,12 @@ export function SaveCommentDialog({
               }}
               onClick={() => setDiffExpanded(v => !v)}
             >
-              <IconButton size="small" sx={{ p: 0, mr: 0.5 }}>
+              <IconButton
+                aria-label={diffExpanded ? "Collapse diff" : "Expand diff"}
+                aria-expanded={diffExpanded}
+                size="small"
+                sx={{ p: 0, mr: 0.5 }}
+              >
                 {diffExpanded ? (
                   <ChevronDown size={14} />
                 ) : (

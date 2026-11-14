@@ -12,15 +12,18 @@
  *   1. `NODE_ENV !== "production"`.
  *   2. `DEV_LOGIN_PASSWORD` is set and at least {@link MIN_SECRET_LENGTH}
  *      characters — a short secret is treated as unset, never as "good enough".
- *   3. The request arrived on a loopback host (`localhost`, `127.0.0.1`, `::1`).
+ *   3. The request arrived on a loopback host (`localhost`, `127.0.0.1`, `::1`)
+ *      AND from a loopback socket peer. The Host header alone is
+ *      client-controlled (`curl -H 'Host: localhost' https://app.mako.ai`),
+ *      so it only counts together with the TCP peer address, which is not.
  *   4. The process REFUSES TO BOOT if `NODE_ENV=production` and the variable is
  *      set at all (see {@link assertDevLoginSafeAtBoot}) — a misconfiguration
  *      is a loud crash at startup, never a quietly weakened login.
  *
  * Guard 3 is the one that earns its keep. `NODE_ENV` comes from Cloud Run env
  * vars rather than the Dockerfile, so a deploy could in principle omit it; a
- * request to a deployed instance still arrives with `Host: pr-697.mako.ai` or
- * `app.mako.ai`, never a loopback address. Guards 1 and 3 therefore have to
+ * request to a deployed instance arrives from Google's front end, never from a
+ * loopback socket — whatever Host header the client chose to send. Guards 1 and 3 therefore have to
  * fail *together* — in two different systems — before this is reachable, and
  * guard 4 makes the most likely single mistake fatal at boot.
  *
@@ -31,6 +34,7 @@
  */
 import { timingSafeEqual } from "node:crypto";
 import { loggers } from "../logging";
+import { isLoopbackAddress } from "../utils/client-ip";
 
 const log = loggers.api("dev-login");
 
@@ -86,11 +90,20 @@ export function isLoopbackHost(host: string | undefined | null): boolean {
   return LOOPBACK_HOSTNAMES.has(hostname);
 }
 
-/** Whether the dev shortcut may be considered at all for this request. */
+/**
+ * Whether the dev shortcut may be considered at all for this request.
+ * `remoteAddress` is the TCP peer of the socket (never a header); a missing
+ * one — no socket at all — is not loopback.
+ */
 export function devLoginEnabledForRequest(
   host: string | undefined | null,
+  remoteAddress: string | undefined | null,
 ): boolean {
-  return devLoginSecret() !== null && isLoopbackHost(host);
+  return (
+    devLoginSecret() !== null &&
+    isLoopbackHost(host) &&
+    isLoopbackAddress(remoteAddress)
+  );
 }
 
 /**

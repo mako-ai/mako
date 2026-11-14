@@ -7,6 +7,7 @@ import {
   isLocalConnectionId,
   localAgentClient,
 } from "../lib/local-agent-client";
+import { useLocalAgentStore } from "./localAgentStore";
 
 // ============================================================================
 // Types
@@ -146,6 +147,13 @@ function makeNodeKey(node?: { id: string; kind: string }): string {
  * agent is not running so cloud connections are unaffected.
  */
 async function fetchLocalConnections(): Promise<Connection[]> {
+  // Ask /connections only when the agent is known to be up: for users
+  // without it this was a refused loopback request on every load.
+  const agentStatus = await useLocalAgentStore
+    .getState()
+    .autoCheck()
+    .catch(() => "offline" as const);
+  if (agentStatus !== "online") return [];
   try {
     const res = await localAgentClient.get<{
       success: boolean;
@@ -755,6 +763,11 @@ export const useSchemaStore = create<SchemaState>()(
           connectionIds.forEach(connId => {
             delete s.treeNodes[connId];
             delete s.autocompleteSchemas[connId];
+            // A refresh retries trees that failed to load (the explorer
+            // skips errored roots until then).
+            Object.keys(s.error)
+              .filter(k => k.startsWith(`tree:${connId}:`))
+              .forEach(k => delete s.error[k]);
 
             // Clear columns
             const columnKeysToDelete = Object.keys(s.columns).filter(k =>
@@ -1166,6 +1179,17 @@ export const useSchemaStore = create<SchemaState>()(
       // indexes / triggers) instead of a flat column list; discard older
       // cached trees so stale children don't linger.
       version: 3,
+      // Without a migrate, zustand logs an error on a version bump and
+      // drops everything. Keep what is still valid; drop only the tree
+      // cache the v3 bump was meant to invalidate.
+      migrate: (persisted, version) => {
+        const state = (persisted ?? {}) as Record<string, unknown>;
+        if (version < 3) {
+          const { treeNodes: _staleTrees, ...rest } = state;
+          return { ...rest, treeNodes: {} } as never;
+        }
+        return state as never;
+      },
       storage: createJSONStorage(() => indexedDBStorage),
       partialize: state => ({
         // Only persist the data, not loading/error states

@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Box, Button, Chip, Typography } from "@mui/material";
 import { Database as DatabaseIcon, Play as PlayIcon } from "lucide-react";
-import MonacoEditor from "@monaco-editor/react";
+import MonacoEditor from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppsStore } from "../store/appsStore";

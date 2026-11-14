@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vite",
     "dev:scan": "VITE_REACT_SCAN=true VITE_RENDER_DEBUG=true vite",
-    "build": "pnpm run lint && tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build",
     "test:unit": "vitest run",
     "typecheck": "tsc --noEmit",
     "generate:api-types": "openapi-typescript ../docs/src/openapi/mako-api.json -o src/api/schema.d.ts",
@@ -43,6 +43,7 @@
     "immer": "^11.1.21",
     "lucide-react": "^1.55.0",
     "modern-screenshot": "^4.7.0",
+    "monaco-editor": "0.55.1",
     "mui-chips-input": "^9.0.0",
     "openapi-fetch": "^0.17.0",
     "overlayscrollbars": "^2.16.0",

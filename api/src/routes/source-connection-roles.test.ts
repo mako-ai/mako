@@ -81,7 +81,14 @@ app.route(
   sourceConnectionRoutes,
 );
 
-function req(method: string, path: string, body?: unknown) {
+/** A test response whose `json()` is untyped: each assertion states the shape it expects. */
+type TestResponse = Omit<Response, "json"> & { json(): Promise<any> };
+
+function req(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<TestResponse> {
   return Promise.resolve(
     app.request(
       `/api/workspaces/${WS}/connections/sources${path === "/" ? "" : path}`,

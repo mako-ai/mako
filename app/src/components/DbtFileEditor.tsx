@@ -53,7 +53,7 @@ import {
   Wrench as BuildIcon,
 } from "lucide-react";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import MonacoEditor, { type Monaco } from "@monaco-editor/react";
+import MonacoEditor, { type Monaco } from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
@@ -104,6 +104,7 @@ import EntityLoadErrorState, {
 import StreamingMarkdown from "./StreamingMarkdown";
 import DbtCommandsPanel from "./DbtCommandsPanel";
 import { useConfirmProdRun } from "../dbt-runtime/confirm-prod-run";
+import { clickableProps } from "../lib/a11y";
 
 const DbtLineageView = lazy(() => import("./DbtLineageView"));
 // The results grid drags in MUI's DataGrid (+ its stylesheet) and the charting
@@ -192,6 +193,11 @@ function ProblemList({
           onClick={() => {
             if (problem.filePath) focusDbtFileTab(projectId, problem.filePath);
           }}
+          {...(problem.filePath
+            ? clickableProps(() =>
+                focusDbtFileTab(projectId, problem.filePath as string),
+              )
+            : {})}
           sx={{
             display: "flex",
             alignItems: "flex-start",
@@ -383,6 +389,10 @@ export default function DbtFileEditor({
   // ⌘S saves, ⌘↵ previews. Both are registered once on mount, so they read the
   // live handler through a ref rather than capturing the mount-time closure.
   const previewRef = useRef<() => void>(() => {});
+  // Without this, Cmd+S kept the mount-time saveNow, which closes over the
+  // mount-time `path` — after a rename it persisted the old file.
+  const saveNowRef = useRef(saveNow);
+  saveNowRef.current = saveNow;
   const handleEditorMount = useCallback(
     (
       editor: { addCommand: (keys: number, handler: () => void) => void },
@@ -391,12 +401,14 @@ export default function DbtFileEditor({
         KeyCode: { KeyS: number; Enter: number };
       },
     ) => {
-      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveNow);
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () =>
+        saveNowRef.current(),
+      );
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () =>
         previewRef.current(),
       );
     },
-    [saveNow],
+    [],
   );
 
   /**

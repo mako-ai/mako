@@ -4,6 +4,7 @@ import React, {
   useMemo,
   useState,
   useCallback,
+  type ComponentProps,
 } from "react";
 import { DndContext, closestCenter, type DragEndEvent } from "@dnd-kit/core";
 import { useDragSensors } from "../hooks/useDragSensors";
@@ -59,31 +60,12 @@ function TabKindGlyph({ kind }: { kind: TabKind | undefined }) {
   return <Icon size={18} strokeWidth={1.5} />;
 }
 import { Group, Panel, Separator, type Layout } from "react-resizable-panels";
-import { loader } from "@monaco-editor/react";
+import { loadMonaco } from "../lib/monaco/load";
+import { lazyWithSuspense } from "../lib/lazy-component";
 import Console, { ConsoleRef } from "./Console";
-import ResultsTable from "./ResultsTable";
-import Settings from "../pages/Settings";
-import SourceConnectionTab from "./SourceConnectionTab";
-import { WorkspaceMembers } from "./WorkspaceMembers";
-import { FlowEditor } from "./FlowEditor";
-import NotebookRenderer from "./NotebookRenderer";
-import AppWorkspace from "./AppWorkspace";
 import { useAppsStore } from "../store/appsStore";
-import AppFileEditor from "./AppFileEditor";
-import AppDiffTab from "./AppDiffTab";
-import HistoryDiffTab from "./HistoryDiffTab";
 import type { HistoryEntityKind } from "../store/entityHistoryStore";
-import RepoDiffTab from "./RepoDiffTab";
 import EntityHistoryPopover from "./EntityHistoryPopover";
-import AppBindingEditor from "./AppBindingEditor";
-import PlanDocumentTab from "./PlanDocumentTab";
-import DbtFileEditor from "./DbtFileEditor";
-import DbtJobView from "./DbtJobView";
-import DbtConsoleView from "./DbtConsoleView";
-import DbtRunsView from "./DbtRunsView";
-import AppsHome from "./apps-home/AppsHome";
-import WorkflowView from "./WorkflowView";
-import TableDataView from "./TableDataView";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
 import EntityLoadErrorState from "./EntityLoadErrorState";
 import { tabKindEntityLabel } from "../lib/entity-labels";
@@ -109,8 +91,8 @@ import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
-import ShareDialog from "./ShareDialog";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
+import { isDbFlowQueryModelUri } from "../lib/sql-autocomplete/modelScope";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
@@ -131,6 +113,38 @@ import {
   useRenderCount,
   useWhyChanged,
 } from "../utils/renderDebug";
+
+// Heavy tab bodies are split out of the entry chunk (xterm, MUI X data
+// grid, notebooks, dbt, settings): each loads when its tab first renders.
+const Settings = lazyWithSuspense(() => import("../pages/Settings"));
+const SourceConnectionTab = lazyWithSuspense(
+  () => import("./SourceConnectionTab"),
+);
+const NotebookRenderer = lazyWithSuspense(() => import("./NotebookRenderer"));
+const AppWorkspace = lazyWithSuspense(() => import("./AppWorkspace"));
+const AppFileEditor = lazyWithSuspense(() => import("./AppFileEditor"));
+const AppDiffTab = lazyWithSuspense(() => import("./AppDiffTab"));
+const HistoryDiffTab = lazyWithSuspense(() => import("./HistoryDiffTab"));
+const RepoDiffTab = lazyWithSuspense(() => import("./RepoDiffTab"));
+const AppBindingEditor = lazyWithSuspense(() => import("./AppBindingEditor"));
+const PlanDocumentTab = lazyWithSuspense(() => import("./PlanDocumentTab"));
+const DbtFileEditor = lazyWithSuspense(() => import("./DbtFileEditor"));
+const DbtJobView = lazyWithSuspense(() => import("./DbtJobView"));
+const DbtConsoleView = lazyWithSuspense(() => import("./DbtConsoleView"));
+const DbtRunsView = lazyWithSuspense(() => import("./DbtRunsView"));
+const AppsHome = lazyWithSuspense(() => import("./apps-home/AppsHome"));
+const WorkflowView = lazyWithSuspense(() => import("./WorkflowView"));
+const TableDataView = lazyWithSuspense(() => import("./TableDataView"));
+// The results grid (MUI X DataGridPremium) is only needed once a console
+// has results, so it stays out of the initial load too.
+const ResultsTable = lazyWithSuspense(() => import("./ResultsTable"));
+const WorkspaceMembers = lazyWithSuspense<Record<string, never>>(() =>
+  import("./WorkspaceMembers").then(m => ({ default: m.WorkspaceMembers })),
+);
+const FlowEditor = lazyWithSuspense<
+  ComponentProps<(typeof import("./FlowEditor"))["FlowEditor"]>
+>(() => import("./FlowEditor").then(m => ({ default: m.FlowEditor })));
+const ShareDialog = lazyWithSuspense(() => import("./ShareDialog"), null);
 
 interface QueryPageInfo {
   pageSize: number;
@@ -815,7 +829,21 @@ function Editor({
   // Load Monaco instance for unified SQL autocomplete
   const [monacoInstance, setMonacoInstance] = useState<unknown>(null);
   useEffect(() => {
-    loader.init().then(monaco => setMonacoInstance(monaco));
+    // This used to be a bare loader.init().then(): when the CDN script
+    // failed, the loader rejected with the script's error Event and it
+    // surfaced as an unhandled rejection on every load. Monaco is bundled
+    // now, but a failed chunk load must still not go unhandled.
+    let active = true;
+    loadMonaco()
+      .then(monaco => {
+        if (active) setMonacoInstance(monaco);
+      })
+      .catch((error: unknown) => {
+        console.error("[monaco] failed to load the editor", error);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   // Dynamic getters for unified SQL autocomplete
@@ -851,6 +879,8 @@ function Editor({
     getWorkspaceId,
     getConnectionId,
     getConnectionType,
+    // DB flow query editors run their own provider (flow source connection).
+    acceptsModel: uri => !isDbFlowQueryModelUri(uri),
   });
 
   // NOTE: the legacy "console-modification" event (agent diff preview) is
@@ -2333,6 +2363,7 @@ function Editor({
                                 {tab.title}
                               </span>
                               <IconButton
+                                aria-label={`Close ${tab.title}`}
                                 component="span"
                                 size="small"
                                 className="tab-close-btn"

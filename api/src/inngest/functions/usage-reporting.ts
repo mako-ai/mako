@@ -20,6 +20,7 @@ import {
   getStripeSecretKey,
   getStripeMeterEventName,
   PLAN_DEFINITIONS,
+  startOfUtcMonth,
 } from "../../billing/config";
 import { loggers } from "../../logging";
 
@@ -37,10 +38,16 @@ interface ReportableWorkspaceBilling {
   pendingMeterEventIdempotencyKey: string | null;
 }
 
+const USAGE_REPORT_CHUNK = 25;
+
 export const usageReportingFunction = inngest.createFunction(
   {
     id: "billing/usage-reporting",
     name: "Report LLM usage to Stripe meters",
+    // One sweep at a time; each workspace's report is itself claimed and
+    // idempotent (pending cursor + Stripe idempotency key).
+    concurrency: { limit: 1 },
+    retries: 3,
     triggers: { cron: "0 * * * *" },
   },
   // every hour
@@ -90,141 +97,154 @@ export const usageReportingFunction = inngest.createFunction(
     let reported = 0;
     let skipped = 0;
 
-    for (const ws of workspaces) {
-      const result = await step.run(`report-usage-${ws.id}`, async () => {
-        const periodStart = ws.currentPeriodStart
-          ? new Date(ws.currentPeriodStart)
-          : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    // Workspaces per step: one step per workspace hit Inngest's per-run
+    // step limit as the paying tenant count grew. A retried chunk re-runs
+    // workspaces it already reported; that is safe because each report is
+    // claimed through the overage cursor and sent with an idempotency key.
+    const reportWorkspace = async (
+      ws: ReportableWorkspaceBilling,
+    ): Promise<"reported" | "skipped"> => {
+      const periodStart = ws.currentPeriodStart
+        ? new Date(ws.currentPeriodStart)
+        : startOfUtcMonth();
 
-        const [agg] = await LlmUsage.aggregate([
-          {
-            $match: {
-              workspaceId: new ObjectId(ws.id),
-              createdAt: { $gte: periodStart },
-            },
+      const [agg] = await LlmUsage.aggregate([
+        {
+          $match: {
+            workspaceId: new ObjectId(ws.id),
+            createdAt: { $gte: periodStart },
           },
-          {
-            $group: {
-              _id: null,
-              totalCostUsd: { $sum: "$costUsd" },
-            },
+        },
+        {
+          $group: {
+            _id: null,
+            totalCostUsd: { $sum: "$costUsd" },
           },
-        ]);
+        },
+      ]);
 
-        const totalCostUsd = agg?.totalCostUsd ?? 0;
-        const includedQuota =
-          ws.usageQuotaUsd ??
-          PLAN_DEFINITIONS[ws.plan as keyof typeof PLAN_DEFINITIONS]
-            ?.usageQuotaUsd ??
-          0;
-        const overageUsd = Math.max(0, totalCostUsd - includedQuota);
-        const overageCents = Math.round(overageUsd * 100);
-        const pendingTargetOverageCents = ws.pendingReportedOverageCents;
-        let targetOverageCents = pendingTargetOverageCents;
-        let meterEventIdempotencyKey = ws.pendingMeterEventIdempotencyKey;
+      const totalCostUsd = agg?.totalCostUsd ?? 0;
+      const includedQuota =
+        ws.usageQuotaUsd ??
+        PLAN_DEFINITIONS[ws.plan as keyof typeof PLAN_DEFINITIONS]
+          ?.usageQuotaUsd ??
+        0;
+      const overageUsd = Math.max(0, totalCostUsd - includedQuota);
+      const overageCents = Math.round(overageUsd * 100);
+      const pendingTargetOverageCents = ws.pendingReportedOverageCents;
+      let targetOverageCents = pendingTargetOverageCents;
+      let meterEventIdempotencyKey = ws.pendingMeterEventIdempotencyKey;
 
-        if (targetOverageCents == null) {
-          if (overageCents <= ws.lastReportedOverageCents) {
-            return "skipped" as const;
-          }
-
-          targetOverageCents = overageCents;
-          meterEventIdempotencyKey = [
-            "billing-overage",
-            ws.id,
-            periodStart.toISOString(),
-            ws.lastReportedOverageCents,
-            targetOverageCents,
-          ].join(":");
-
-          const claimResult = await Workspace.updateOne(
-            {
-              _id: new ObjectId(ws.id),
-              "billing.lastReportedOverageCents": ws.lastReportedOverageCents,
-              $or: [
-                { "billing.pendingReportedOverageCents": null },
-                { "billing.pendingReportedOverageCents": { $exists: false } },
-              ],
-            },
-            {
-              $set: {
-                "billing.pendingReportedOverageCents": targetOverageCents,
-                "billing.pendingMeterEventIdempotencyKey":
-                  meterEventIdempotencyKey,
-              },
-            },
-          );
-
-          if (claimResult.modifiedCount !== 1) {
-            logger.warn("Skipped usage report because overage cursor changed", {
-              workspaceId: ws.id,
-            });
-            return "skipped" as const;
-          }
-        }
-
-        const deltaCents = targetOverageCents - ws.lastReportedOverageCents;
-        if (deltaCents <= 0 || !meterEventIdempotencyKey) {
+      if (targetOverageCents == null) {
+        if (overageCents <= ws.lastReportedOverageCents) {
           return "skipped" as const;
         }
 
-        try {
-          const stripe = new Stripe(getStripeSecretKey(), {
-            apiVersion: STRIPE_BILLING_API_VERSION,
-          });
+        targetOverageCents = overageCents;
+        meterEventIdempotencyKey = [
+          "billing-overage",
+          ws.id,
+          periodStart.toISOString(),
+          ws.lastReportedOverageCents,
+          targetOverageCents,
+        ].join(":");
 
-          await stripe.billing.meterEvents.create(
-            {
-              event_name: getStripeMeterEventName(),
-              payload: {
-                stripe_customer_id: ws.stripeCustomerId,
-                value: String(deltaCents),
-              },
-              timestamp: Math.floor(Date.now() / 1000),
-            },
-            {
-              idempotencyKey: meterEventIdempotencyKey,
-            },
-          );
-
-          await Workspace.updateOne(
-            {
-              _id: new ObjectId(ws.id),
+        const claimResult = await Workspace.updateOne(
+          {
+            _id: new ObjectId(ws.id),
+            "billing.lastReportedOverageCents": ws.lastReportedOverageCents,
+            $or: [
+              { "billing.pendingReportedOverageCents": null },
+              { "billing.pendingReportedOverageCents": { $exists: false } },
+            ],
+          },
+          {
+            $set: {
               "billing.pendingReportedOverageCents": targetOverageCents,
               "billing.pendingMeterEventIdempotencyKey":
                 meterEventIdempotencyKey,
             },
-            {
-              $set: { "billing.lastReportedOverageCents": targetOverageCents },
-              $unset: {
-                "billing.pendingReportedOverageCents": "",
-                "billing.pendingMeterEventIdempotencyKey": "",
-              },
-            },
-          );
+          },
+        );
 
-          logger.info("Reported usage overage to Stripe meter", {
+        if (claimResult.modifiedCount !== 1) {
+          logger.warn("Skipped usage report because overage cursor changed", {
             workspaceId: ws.id,
-            totalCostUsd,
-            overageUsd,
-            deltaCents,
-            overageCents: targetOverageCents,
-          });
-
-          return "reported" as const;
-        } catch (err) {
-          logger.error("Failed to report usage to Stripe meter", {
-            workspaceId: ws.id,
-            error: err,
           });
           return "skipped" as const;
         }
-      });
+      }
 
-      if (result === "reported") {
-        reported++;
-      } else {
-        skipped++;
+      const deltaCents = targetOverageCents - ws.lastReportedOverageCents;
+      if (deltaCents <= 0 || !meterEventIdempotencyKey) {
+        return "skipped" as const;
+      }
+
+      try {
+        const stripe = new Stripe(getStripeSecretKey(), {
+          apiVersion: STRIPE_BILLING_API_VERSION,
+        });
+
+        await stripe.billing.meterEvents.create(
+          {
+            event_name: getStripeMeterEventName(),
+            payload: {
+              stripe_customer_id: ws.stripeCustomerId,
+              value: String(deltaCents),
+            },
+            timestamp: Math.floor(Date.now() / 1000),
+          },
+          {
+            idempotencyKey: meterEventIdempotencyKey,
+          },
+        );
+
+        await Workspace.updateOne(
+          {
+            _id: new ObjectId(ws.id),
+            "billing.pendingReportedOverageCents": targetOverageCents,
+            "billing.pendingMeterEventIdempotencyKey": meterEventIdempotencyKey,
+          },
+          {
+            $set: { "billing.lastReportedOverageCents": targetOverageCents },
+            $unset: {
+              "billing.pendingReportedOverageCents": "",
+              "billing.pendingMeterEventIdempotencyKey": "",
+            },
+          },
+        );
+
+        logger.info("Reported usage overage to Stripe meter", {
+          workspaceId: ws.id,
+          totalCostUsd,
+          overageUsd,
+          deltaCents,
+          overageCents: targetOverageCents,
+        });
+
+        return "reported" as const;
+      } catch (err) {
+        logger.error("Failed to report usage to Stripe meter", {
+          workspaceId: ws.id,
+          error: err,
+        });
+        return "skipped" as const;
+      }
+    };
+
+    for (let i = 0; i < workspaces.length; i += USAGE_REPORT_CHUNK) {
+      const chunk = workspaces.slice(i, i + USAGE_REPORT_CHUNK);
+      const results = await step.run(
+        `report-usage-${i / USAGE_REPORT_CHUNK}`,
+        async () => {
+          const out: Array<"reported" | "skipped"> = [];
+          for (const ws of chunk) out.push(await reportWorkspace(ws));
+          return out;
+        },
+      );
+      for (const result of results) {
+        if (result === "reported") reported++;
+        else skipped++;
       }
     }
 

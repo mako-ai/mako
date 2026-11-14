@@ -167,7 +167,7 @@ async function testConvertedToolCallsAlwaysHaveObjectInput() {
 
   const modelMessages = await convertToModelMessages(sanitized);
   const toolCalls = modelMessages
-    .flatMap(m => (Array.isArray(m.content) ? m.content : []))
+    .flatMap(m => (Array.isArray(m.content) ? (m.content as unknown[]) : []))
     .filter(
       (c): c is { type: "tool-call"; input: unknown } =>
         (c as { type?: string }).type === "tool-call",

@@ -10,6 +10,10 @@ import {
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
 import { resolvePosthogEntitySchema } from "./schema";
+import { withHttpRetry } from "../base/http-retry";
+import { loggers } from "../../logging";
+
+const logger = loggers.connector("posthog");
 
 type JsonRecord = Record<string, unknown>;
 
@@ -790,27 +794,23 @@ export class PosthogConnector extends BaseConnector {
     });
   }
 
+  /**
+   * Shared policy (backoff with jitter, Retry-After in seconds or as a
+   * date, 429/5xx/network only). Previously every error was retried,
+   * including 4xx that can never succeed.
+   */
   private async executeWithRetry<T>(operation: () => Promise<T>): Promise<T> {
-    const maxRetries = this.dataSource.settings?.max_retries || 3;
-    let attempts = 0;
-    while (attempts <= maxRetries) {
-      try {
-        return await operation();
-      } catch (error) {
-        attempts++;
-        if (attempts > maxRetries) throw error;
-
-        let delayMs = 500 * Math.pow(2, attempts);
-        if (axios.isAxiosError(error) && error.response?.status === 429) {
-          const retryAfter = error.response.headers["retry-after"];
-          delayMs = retryAfter
-            ? parseInt(String(retryAfter), 10) * 1000
-            : delayMs;
-        }
-        await this.sleep(delayMs);
-      }
-    }
-    throw new Error("Max retries exceeded");
+    return withHttpRetry(operation, {
+      maxRetries: this.dataSource.settings?.max_retries || 3,
+      baseDelayMs: 1_000,
+      sleep: ms => this.sleep(ms),
+      onRetry: ({ status, attempt, delayMs }) =>
+        logger.warn("PostHog API rate limited or server error, retrying", {
+          status,
+          attempt,
+          delayMs,
+        }),
+    });
   }
 
   getIncrementalCapabilities(): IncrementalCapabilities {

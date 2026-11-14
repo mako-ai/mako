@@ -208,19 +208,17 @@ export function SyncFlowForm({
 }: SyncFlowFormProps) {
   const { currentWorkspace } = useWorkspace();
   const confirm = useConfirm();
-  const {
-    flows: flowsMap,
-    error: errorMap,
-    createFlow,
-    updateFlow,
-    setSyncEngine,
-    clearError,
-    deleteFlow,
-    fetchConnectors,
-    provisionFlowWebhook,
-    resyncCdcFlow,
-    backfillFlow,
-  } = useFlowStore();
+  const flowsMap = useFlowStore(s => s.flows);
+  const errorMap = useFlowStore(s => s.error);
+  const createFlow = useFlowStore(s => s.createFlow);
+  const updateFlow = useFlowStore(s => s.updateFlow);
+  const setSyncEngine = useFlowStore(s => s.setSyncEngine);
+  const clearError = useFlowStore(s => s.clearError);
+  const deleteFlow = useFlowStore(s => s.deleteFlow);
+  const fetchConnectors = useFlowStore(s => s.fetchConnectors);
+  const provisionFlowWebhook = useFlowStore(s => s.provisionFlowWebhook);
+  const resyncCdcFlow = useFlowStore(s => s.resyncCdcFlow);
+  const backfillFlow = useFlowStore(s => s.backfillFlow);
   const [backfillStarting, setBackfillStarting] = useState(false);
   const [backfillNotice, setBackfillNotice] = useState<string | null>(null);
 
@@ -1871,6 +1869,7 @@ export function SyncFlowForm({
                                 Query {index + 1}
                               </Typography>
                               <IconButton
+                                aria-label="Remove query"
                                 size="small"
                                 color="error"
                                 onClick={() => removeQuery(index)}

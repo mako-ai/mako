@@ -38,6 +38,10 @@ MCP tools are always deferred; they activate via `search_tools`/`load_tools`.
 
 ## Essential Commands
 
+Node 24 (`.nvmrc`; `nvm use`) and the pnpm version pinned in the root
+`package.json` `packageManager` field (`corepack enable` picks it up). CI and
+the Docker image use the same two.
+
 ### Development
 
 ```bash
@@ -50,8 +54,8 @@ pnpm docs:dev              # Documentation site (Astro)
 ### Building & Production
 
 ```bash
-pnpm build                 # Lint + build all packages in workspace
-pnpm start                 # Start production server (serves both API and static frontend)
+pnpm build                 # Lint (no autofix) + build all packages in workspace
+pnpm start                 # Run the built API (api/dist; run `pnpm build` first). Serves the frontend only if app/dist is copied to api/public, as the Docker image does
 pnpm app:build             # Build frontend only (outputs to app/dist)
 pnpm api:build             # Build backend only (TypeScript compilation)
 pnpm lint:all              # Lint all packages
@@ -59,6 +63,7 @@ pnpm lint:fix:all          # Auto-fix linting issues across workspace
 pnpm openapi:sync          # Regenerate OpenAPI spec + typed client (~3s) — REQUIRED after any api route/schema change; commit the outputs
 pnpm --filter api run test:dbt   # vitest.config.ts: src/dbt/**, github integration, dbt tools (whole config, not single files)
 pnpm --filter api run test:apps  # vitest.apps.config.ts: apps, consoles, skills, flows, notebooks
+pnpm --filter api run test:tsx   # every tsx-style src/**/*.test.ts not owned by a vitest config, in parallel, all failures reported
 ```
 
 Hooks: `pre-commit` runs lint-staged (eslint, prettier, the test-coverage
@@ -214,8 +219,6 @@ Create a `.env` file in the root directory. See `.env.example` for reference.
 # Database
 DATABASE_URL=mongodb://localhost:27017/myapp
 MONGODB_CONNECTION_STRING=mongodb://localhost:27018
-MONGODB_MAX_POOL_SIZE=10
-MONGODB_MIN_POOL_SIZE=2
 
 # OAuth
 GOOGLE_CLIENT_ID=your_google_client_id
@@ -240,7 +243,7 @@ AI_GATEWAY_API_KEY=your_vercel_ai_gateway_key
 OPENAI_API_KEY=your_openai_api_key
 
 # Email (SendGrid)
-SENDGRID_API_KEY=your_sendgrid_api_key
+SENDGRID_API_KEY=            # empty in dev: emails are logged, not sent
 SENDGRID_FROM_EMAIL=noreply@yourdomain.com
 SENDGRID_INVITATION_TEMPLATE_ID=d-xxxxxxxxx
 SENDGRID_VERIFICATION_TEMPLATE_ID=d-xxxxxxxxx

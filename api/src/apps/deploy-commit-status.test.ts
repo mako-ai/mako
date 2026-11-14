@@ -169,7 +169,7 @@ beforeEach(async () => {
 function report(
   sha: string,
   status: "pending" | "success" | "failure",
-  description = status,
+  description: string = status,
 ) {
   return reportAppDeployStatus({
     workspaceId: WS,

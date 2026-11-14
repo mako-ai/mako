@@ -1,3 +1,4 @@
+import { viewerWriteRefusal } from "../access/viewer-writes";
 import {
   checkConnectionWrite,
   covers,
@@ -26,7 +27,14 @@ import {
   Flow,
   SavedConsole,
 } from "../database/workspace-schema";
-import { databaseConnectionService } from "../services/database-connection.service";
+import {
+  databaseConnectionService,
+  type QueryExecuteOptions,
+} from "../services/database-connection.service";
+import {
+  executeQueryWithRowCap,
+  resolveExecuteMaxRows,
+} from "../services/query-row-cap";
 import { recordConnectionVerification } from "../services/connection-verification.service";
 import {
   queryExecutionService,
@@ -296,6 +304,33 @@ async function createAdHocParquetResponse(options: {
 /**
  * Determine query language from database type
  */
+/**
+ * The execution options a caller may set in a request body: where to run
+ * and how to track it. Never the write check's own flags (`writeChecked`,
+ * `actor`, `readOnlyTransaction`…), which a body must not be able to set.
+ */
+function requestExecutionOptions(
+  value: unknown,
+): Pick<
+  QueryExecuteOptions,
+  "databaseName" | "databaseId" | "executionId" | "location" | "batchSize"
+> {
+  if (!value || typeof value !== "object") return {};
+  const raw = value as Record<string, unknown>;
+  const text = (key: string) =>
+    typeof raw[key] === "string" ? (raw[key] as string) : undefined;
+  return {
+    databaseName: text("databaseName"),
+    databaseId: text("databaseId"),
+    executionId: text("executionId"),
+    location: text("location"),
+    batchSize:
+      typeof raw.batchSize === "number" && Number.isFinite(raw.batchSize)
+        ? raw.batchSize
+        : undefined,
+  };
+}
+
 function getQueryLanguage(databaseType: string): QueryLanguage {
   if (databaseType === "mongodb") {
     return "mongodb";
@@ -947,6 +982,13 @@ workspaceDatabaseRoutes.openapi(
       }
       await database.save();
 
+      // Every pool/client/connector is cached by connection id alone, so
+      // without this an edited host or rotated password keeps being served
+      // by the pool built from the old configuration until a restart.
+      if (body.connection) {
+        await databaseConnectionService.invalidateConnection(databaseId);
+      }
+
       return c.json({
         success: true,
         verified: verifyBeforeSave,
@@ -1323,14 +1365,28 @@ workspaceDatabaseRoutes.openapi(
         return c.json({ success: false, error: "Query is required" }, 400);
       }
 
-      const result = await databaseConnectionService.executeQuery(
+      const memberRole = c.get("memberRole");
+      const viewerRefusal = viewerWriteRefusal(
+        memberRole,
+        database.type,
+        body.query,
+      );
+      if (viewerRefusal) {
+        return c.json({ success: false, error: viewerRefusal }, 403);
+      }
+
+      const result = await executeQueryWithRowCap(
+        databaseConnectionService,
         database,
         body.query,
         {
-          ...body.options,
+          ...requestExecutionOptions(body.options),
           readOnly: queryAccess === "read",
+          // A viewer's read runs read-only where the engine can enforce it.
+          ...(memberRole === "viewer" ? { readOnlyTransaction: true } : {}),
           labels: { mako_source: "adhoc" },
         },
+        resolveExecuteMaxRows(),
       );
 
       return c.json(result);
@@ -2253,12 +2309,31 @@ workspaceExecuteRoutes.openapi(
         );
       }
 
+      const memberRole = c.get("memberRole");
+      const viewerRefusal = viewerWriteRefusal(
+        memberRole,
+        database.type,
+        executableQuery,
+      );
+      if (viewerRefusal) {
+        return c.json(
+          { success: false, error: viewerRefusal, code: "FORBIDDEN" as const },
+          403,
+        );
+      }
+
+      const maxRows = resolveExecuteMaxRows();
       // Build options for query execution
       const options = {
         databaseId: effectiveQueryDefinition.databaseId || databaseId,
         databaseName: effectiveQueryDefinition.databaseName || databaseName,
         executionId,
         readOnly: queryAccess === "read",
+        // A viewer's read runs read-only where the engine can enforce it.
+        ...(memberRole === "viewer" ? { readOnlyTransaction: true } : {}),
+        // Bounds what a preview reads where it cannot page in the engine
+        // (MongoDB); a full execute is capped by executeQueryWithRowCap.
+        maxRows,
         labels: {
           // A console tab runs through here; its id says which console.
           mako_source: consoleId ? "console" : "adhoc",
@@ -2323,10 +2398,12 @@ workspaceExecuteRoutes.openapi(
       }
 
       const result = useFullExecute
-        ? await databaseConnectionService.executeQuery(
+        ? await executeQueryWithRowCap(
+            databaseConnectionService,
             database,
             executableQuery,
             options,
+            maxRows,
           )
         : await databaseConnectionService.executePreviewQuery(
             database,

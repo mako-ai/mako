@@ -325,7 +325,11 @@ export function SchemaMappingTable({
                             </Box>
                           }
                         >
-                          <IconButton size="small" sx={{ p: 0 }}>
+                          <IconButton
+                            aria-label="Type mismatch warning"
+                            size="small"
+                            sx={{ p: 0 }}
+                          >
                             <WarningIcon
                               fontSize="small"
                               sx={{ color: "warning.main" }}

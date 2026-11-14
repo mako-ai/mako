@@ -19,8 +19,46 @@ import {
   type SignupContext,
 } from "./signup-attribution";
 import { loggers } from "../logging";
+import { AuthError } from "./auth-errors";
 
 const logger = loggers.auth();
+
+/** `validateAndNormalizeEmail`, with its (user-facing) failure as an AuthError. */
+function requireValidEmail(email: string): string {
+  try {
+    return validateAndNormalizeEmail(email);
+  } catch (error) {
+    throw new AuthError(
+      error instanceof Error ? error.message : "Invalid email format",
+      400,
+    );
+  }
+}
+
+/**
+ * Send a verification-code email; false (logged, never thrown) on failure.
+ *
+ * A failed send must not fail the request that created the code: the code is
+ * already stored, so the user can ask for another one, whereas surfacing the
+ * transport error both leaks internals ("fetch failed") and — for register —
+ * reports failure for an account that WAS created.
+ */
+async function trySendVerificationEmail(
+  email: string,
+  code: string,
+  verifyUrl: string,
+): Promise<boolean> {
+  try {
+    await emailService.sendVerificationEmail(email, code, verifyUrl);
+    return true;
+  } catch (error) {
+    logger.error("Failed to send verification email", { error, email });
+    return false;
+  }
+}
+
+const EMAIL_SEND_FAILED =
+  "We couldn't send the email right now. Please try again in a few minutes.";
 
 /**
  * Generate a random ID (replacement for Lucia's generateId)
@@ -48,14 +86,14 @@ export class AuthService {
   async register(email: string, password: string, signup?: SignupContext) {
     // Validate input
     if (!password) {
-      throw new Error("Password is required");
+      throw new AuthError("Password is required");
     }
 
     if (password.length < 8) {
-      throw new Error("Password must be at least 8 characters long");
+      throw new AuthError("Password must be at least 8 characters long");
     }
 
-    const normalizedEmail = validateAndNormalizeEmail(email);
+    const normalizedEmail = requireValidEmail(email);
 
     // Check if user already exists
     const existingUser = await User.findOne({ email: normalizedEmail });
@@ -68,8 +106,9 @@ export class AuthService {
         });
         if (oauthAccounts.length > 0) {
           const providers = oauthAccounts.map(a => a.provider).join(", ");
-          throw new Error(
+          throw new AuthError(
             `This email is linked to a ${providers} account. Please login with ${providers} and set a password from your account settings.`,
+            409,
           );
         }
       }
@@ -94,7 +133,7 @@ export class AuthService {
         });
 
         const verifyUrl = `${process.env.CLIENT_URL}/verify-email?email=${encodeURIComponent(normalizedEmail)}&code=${code}`;
-        await emailService.sendVerificationEmail(
+        const emailSent = await trySendVerificationEmail(
           normalizedEmail,
           code,
           verifyUrl,
@@ -102,9 +141,9 @@ export class AuthService {
 
         // Return success but indicate this was a resend, not a password update
         // The user should use their original password to log in after verification
-        return { user: existingUser, requiresVerification: true };
+        return { user: existingUser, requiresVerification: true, emailSent };
       }
-      throw new Error("User with this email already exists");
+      throw new AuthError("User with this email already exists", 409);
     }
 
     // Hash password
@@ -138,9 +177,13 @@ export class AuthService {
 
     // Send verification email
     const verifyUrl = `${process.env.CLIENT_URL}/verify-email?email=${encodeURIComponent(normalizedEmail)}&code=${code}`;
-    await emailService.sendVerificationEmail(normalizedEmail, code, verifyUrl);
+    const emailSent = await trySendVerificationEmail(
+      normalizedEmail,
+      code,
+      verifyUrl,
+    );
 
-    return { user, requiresVerification: true };
+    return { user, requiresVerification: true, emailSent };
   }
 
   /**
@@ -158,13 +201,13 @@ export class AuthService {
     });
 
     if (!verification) {
-      throw new Error("Invalid or expired verification code");
+      throw new AuthError("Invalid or expired verification code");
     }
 
     // Find user
     const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
-      throw new Error("User not found");
+      throw new AuthError("Invalid or expired verification code");
     }
 
     // Mark user as verified
@@ -201,11 +244,11 @@ export class AuthService {
     // Find user
     const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
-      throw new Error("User not found");
+      throw new AuthError("User not found", 404);
     }
 
     if (user.emailVerified) {
-      throw new Error("Email is already verified");
+      throw new AuthError("Email is already verified", 409);
     }
 
     // Delete old verification codes
@@ -225,7 +268,9 @@ export class AuthService {
 
     // Send verification email
     const verifyUrl = `${process.env.CLIENT_URL}/verify-email?email=${encodeURIComponent(normalizedEmail)}&code=${code}`;
-    await emailService.sendVerificationEmail(normalizedEmail, code, verifyUrl);
+    if (!(await trySendVerificationEmail(normalizedEmail, code, verifyUrl))) {
+      throw new AuthError(EMAIL_SEND_FAILED, 503);
+    }
   }
 
   /**
@@ -234,33 +279,45 @@ export class AuthService {
   async login(email: string, password: string) {
     // Validate input
     if (!password) {
-      throw new Error("Password is required");
+      throw new AuthError("Password is required");
     }
 
     // Find user
-    const normalizedEmail = validateAndNormalizeEmail(email);
+    const normalizedEmail = requireValidEmail(email);
     const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
-      throw new Error("Invalid email or password");
+      throw new AuthError("Invalid email or password", 401);
     }
 
     // Check if user has password (not OAuth only)
     if (!user.hashedPassword) {
-      throw new Error("Please login with your OAuth provider");
+      throw new AuthError("Please login with your OAuth provider", 401);
     }
 
     // Verify password
     const validPassword = await bcrypt.compare(password, user.hashedPassword);
     if (!validPassword) {
-      throw new Error("Invalid email or password");
+      throw new AuthError("Invalid email or password", 401);
     }
 
     // Check if email is verified
     if (!user.emailVerified) {
-      // Send a new verification code
-      await this.resendVerification(email);
-      throw new Error(
-        "Please verify your email before logging in. A new verification code has been sent.",
+      // Send a new verification code. A failed send must not turn into an
+      // opaque error here: the user still needs to be told to verify.
+      const sent = await this.resendVerification(email).then(
+        () => true,
+        (error: unknown) => {
+          if (!(error instanceof AuthError)) {
+            logger.error("Resend on unverified login failed", { error });
+          }
+          return false;
+        },
+      );
+      throw new AuthError(
+        sent
+          ? "Please verify your email before logging in. A new verification code has been sent."
+          : "Please verify your email before logging in. We couldn't send a new code just now; request one from the verification page.",
+        403,
       );
     }
 
@@ -293,11 +350,11 @@ export class AuthService {
    * use, which is usually a Google signup with no password at all.
    */
   async devLogin(email: string) {
-    const normalizedEmail = validateAndNormalizeEmail(email);
+    const normalizedEmail = requireValidEmail(email);
     const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
       // Same opaque message as the real login path.
-      throw new Error("Invalid email or password");
+      throw new AuthError("Invalid email or password", 401);
     }
 
     const workspaces = await workspaceService.getWorkspacesForUser(user._id);
@@ -543,22 +600,22 @@ export class AuthService {
     });
 
     if (!verification) {
-      throw new Error("Invalid or expired verification code");
+      throw new AuthError("Invalid or expired verification code");
     }
 
     // Find user
     const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
-      throw new Error("User not found");
+      throw new AuthError("User not found", 404);
     }
 
     if (user.hashedPassword) {
-      throw new Error("Password is already set for this account");
+      throw new AuthError("Password is already set for this account", 409);
     }
 
     // Validate password
     if (!password || password.length < 8) {
-      throw new Error("Password must be at least 8 characters long");
+      throw new AuthError("Password must be at least 8 characters long");
     }
 
     // Hash and save password
@@ -582,11 +639,11 @@ export class AuthService {
     // Find user
     const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
-      throw new Error("User not found");
+      throw new AuthError("User not found", 404);
     }
 
     if (user.hashedPassword) {
-      throw new Error("Password is already set for this account");
+      throw new AuthError("Password is already set for this account", 409);
     }
 
     // Delete old verification codes
@@ -606,7 +663,9 @@ export class AuthService {
 
     // Send verification email
     const verifyUrl = `${process.env.CLIENT_URL}/set-password?email=${encodeURIComponent(normalizedEmail)}&code=${code}`;
-    await emailService.sendVerificationEmail(normalizedEmail, code, verifyUrl);
+    if (!(await trySendVerificationEmail(normalizedEmail, code, verifyUrl))) {
+      throw new AuthError(EMAIL_SEND_FAILED, 503);
+    }
   }
 
   /**
@@ -664,11 +723,11 @@ export class AuthService {
 
     // Validate password
     if (!newPassword) {
-      throw new Error("Password is required");
+      throw new AuthError("Password is required");
     }
 
     if (newPassword.length < 8) {
-      throw new Error("Password must be at least 8 characters long");
+      throw new AuthError("Password must be at least 8 characters long");
     }
 
     // Find verification record
@@ -680,13 +739,13 @@ export class AuthService {
     });
 
     if (!verification) {
-      throw new Error("Invalid or expired reset code");
+      throw new AuthError("Invalid or expired reset code");
     }
 
     // Find user
     const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
-      throw new Error("User not found");
+      throw new AuthError("Invalid or expired reset code");
     }
 
     // Hash and save new password
@@ -718,7 +777,7 @@ export class AuthService {
   ) {
     const user = await User.findById(userId);
     if (!user) {
-      throw new Error("User not found");
+      throw new AuthError("User not found", 404);
     }
 
     // Update onboarding data

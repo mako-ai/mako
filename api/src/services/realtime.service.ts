@@ -219,51 +219,89 @@ export function publishRealtimeEvent(
 }
 
 /**
+ * Per-channel queue of subscribe/unsubscribe operations. Without it, the
+ * last listener's disposer could delete the entry and `await` unsubscribe
+ * while a new listener subscribed, and the pending unsubscribe then
+ * removed the NEW subscription.
+ */
+const channelOps = new Map<string, Promise<void>>();
+
+function serializeChannelOp<T>(
+  channel: string,
+  op: () => Promise<T>,
+): Promise<T> {
+  const previous = channelOps.get(channel) ?? Promise.resolve();
+  const run = previous.then(op);
+  const tail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  channelOps.set(channel, tail);
+  void tail.then(() => {
+    if (channelOps.get(channel) === tail) channelOps.delete(channel);
+  });
+  return run;
+}
+
+/** Test seam: swap the subscriber handle (null restores the default). */
+export function __setRealtimeSubscriberForTest(sub: Subscriber | null): void {
+  subscriber = sub;
+  channelListeners.clear();
+  channelOps.clear();
+}
+
+/**
  * Subscribe to a workspace's realtime events. Returns an async disposer.
  *
  * The underlying backend channel is subscribed when the first listener for a
  * workspace registers and unsubscribed when the last one leaves
- * (ref-counting), so idle workspaces cost nothing.
+ * (ref-counting), so idle workspaces cost nothing. Subscribe and
+ * unsubscribe for one channel run one at a time, and the registry entry is
+ * only kept once the backend subscription succeeded: a failed subscribe
+ * (Redis down or over quota) rethrows and leaves nothing behind, so the
+ * next subscriber retries instead of joining a dead entry forever.
  */
 export async function subscribeToWorkspaceEvents(
   workspaceId: string,
   callback: (event: RealtimeEvent) => void,
 ): Promise<() => Promise<void>> {
   const channel = channelFor(workspaceId);
-  let listeners = channelListeners.get(channel);
 
-  if (!listeners) {
-    listeners = { callbacks: new Set() };
-    channelListeners.set(channel, listeners);
-    const entry = listeners;
-    await getSubscriber().subscribe(channel, (message: string) => {
-      let event: RealtimeEvent;
-      try {
-        event = JSON.parse(message) as RealtimeEvent;
-      } catch (error) {
-        logger.warn("Dropping malformed realtime event", { error, channel });
-        return;
-      }
-      for (const cb of entry.callbacks) {
+  await serializeChannelOp(channel, async () => {
+    let listeners = channelListeners.get(channel);
+    if (!listeners) {
+      const entry: ChannelListeners = { callbacks: new Set() };
+      await getSubscriber().subscribe(channel, (message: string) => {
+        let event: RealtimeEvent;
         try {
-          cb(event);
+          event = JSON.parse(message) as RealtimeEvent;
         } catch (error) {
-          logger.warn("Realtime event listener threw", { error, channel });
+          logger.warn("Dropping malformed realtime event", { error, channel });
+          return;
         }
-      }
-    });
-  }
-
-  listeners.callbacks.add(callback);
+        for (const cb of entry.callbacks) {
+          try {
+            cb(event);
+          } catch (error) {
+            logger.warn("Realtime event listener threw", { error, channel });
+          }
+        }
+      });
+      channelListeners.set(channel, entry);
+      listeners = entry;
+    }
+    listeners.callbacks.add(callback);
+  });
 
   let disposed = false;
   return async () => {
     if (disposed) return;
     disposed = true;
-    const current = channelListeners.get(channel);
-    if (!current) return;
-    current.callbacks.delete(callback);
-    if (current.callbacks.size === 0) {
+    await serializeChannelOp(channel, async () => {
+      const current = channelListeners.get(channel);
+      if (!current) return;
+      current.callbacks.delete(callback);
+      if (current.callbacks.size > 0) return;
       channelListeners.delete(channel);
       try {
         await getSubscriber().unsubscribe(channel);
@@ -273,6 +311,6 @@ export async function subscribeToWorkspaceEvents(
           channel,
         });
       }
-    }
+    });
   };
 }

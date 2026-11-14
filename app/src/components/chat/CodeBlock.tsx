@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Button, IconButton, Typography } from "@mui/material";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { SyntaxHighlighter } from "../../lib/syntax-highlighter";
 import {
   prism,
   tomorrow,
@@ -88,6 +88,7 @@ export const CodeBlock = React.memo(
           }}
         >
           <IconButton
+            aria-label={isCopied ? "Copied" : "Copy code"}
             size="small"
             onClick={handleCopy}
             sx={{

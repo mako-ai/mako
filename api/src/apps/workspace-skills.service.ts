@@ -27,7 +27,6 @@ import {
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
-  globTree,
   listTree,
   readBlob,
   repoDirFor,
@@ -37,17 +36,24 @@ import {
 import {
   SKILLS_README,
   SKILLS_README_PATH,
-  SKILL_FILE_GLOB,
+  SKILLS_DIR,
   SKILL_NAME_RE,
   SKILL_NAME_RULE,
   canonicalSkillName,
   MAX_SKILL_BODY_CHARS,
   MAX_SKILL_FILE_BYTES,
+  MAX_SKILL_RESOURCE_BYTES,
   MAX_WORKSPACE_SKILLS,
+  classifySkillResources,
+  formatCount,
+  normalizeSkillResourcePath,
   parseSkillFile,
+  parseSkillFileDetailed,
   serializeSkillFile,
   skillFilePath,
   skillNameFromPath,
+  type RefusedSkillResource,
+  type SkillResource,
   type WorkspaceSkillFile,
 } from "./skill-files";
 
@@ -61,6 +67,10 @@ const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 export interface WorkspaceSkill extends WorkspaceSkillFile {
   id: string;
   path: string;
+  /** Files `read_skill_resource` serves, relative to the skill folder. */
+  resources: SkillResource[];
+  /** Files under a resource folder that are not served, with why. */
+  refusedResources: RefusedSkillResource[];
 }
 
 /** A `skills/<name>/SKILL.md` at main that does not parse. Listed, never offered. */
@@ -70,6 +80,19 @@ export interface InvalidSkillFile {
   reason: string;
 }
 
+/** Something about a loaded skill its author should fix. Never hides it. */
+export interface SkillFileWarning {
+  name: string;
+  path: string;
+  reason: string;
+}
+
+/**
+ * What the index shows of a description. skills.service imports this module,
+ * so the number lives here and is re-exported there.
+ */
+export const INDEX_DESCRIPTION_CHARS = 200;
+
 export interface SkillCatalog {
   workspaceId: string;
   /** Main commit the catalog was built from; null when there is no repo. */
@@ -77,6 +100,14 @@ export interface SkillCatalog {
   /** Valid skills, sorted by name. */
   skills: WorkspaceSkill[];
   invalid: InvalidSkillFile[];
+  /** Loaded skills with a problem worth a line: a cut description, a refused resource. */
+  warnings: SkillFileWarning[];
+  /**
+   * A skill file could not be read from git (a timeout, a spawn error): it
+   * sits in `invalid` for this read only. The catalog is not cached and no
+   * commit status is posted from it, so the next read tries again.
+   */
+  incomplete?: boolean;
 }
 
 /**
@@ -117,7 +148,7 @@ function cacheCatalog(workspaceId: string, catalog: SkillCatalog): void {
 }
 
 function emptyCatalog(workspaceId: string): SkillCatalog {
-  return { workspaceId, head: null, skills: [], invalid: [] };
+  return { workspaceId, head: null, skills: [], invalid: [], warnings: [] };
 }
 
 /**
@@ -134,10 +165,53 @@ export async function loadSkillCatalog(
   if (!head) return emptyCatalog(workspaceId);
   const cached = getCachedCatalog(workspaceId, head);
   if (cached) return cached;
+  // Two readers of a new head share one build (and one catalog object): a
+  // save is followed at once by its own status report and the caller's read.
+  const building = catalogBuilds.get(workspaceId);
+  if (building && building.head === head) return building.catalog;
+  const build = {
+    head,
+    catalog: buildSkillCatalog(workspaceId, repoDir, head),
+  };
+  catalogBuilds.set(workspaceId, build);
+  try {
+    const catalog = await build.catalog;
+    // An invalidation during the build means this result may be stale; a
+    // read error means it is incomplete. Neither is kept.
+    if (catalogBuilds.get(workspaceId) === build && !catalog.incomplete) {
+      cacheCatalog(workspaceId, catalog);
+    }
+    return catalog;
+  } finally {
+    if (catalogBuilds.get(workspaceId) === build) {
+      catalogBuilds.delete(workspaceId);
+    }
+  }
+}
 
+const catalogBuilds = new Map<
+  string,
+  { head: string; catalog: Promise<SkillCatalog> }
+>();
+
+async function buildSkillCatalog(
+  workspaceId: string,
+  repoDir: string,
+  head: string,
+): Promise<SkillCatalog> {
   const skills: WorkspaceSkill[] = [];
   const invalid: InvalidSkillFile[] = [];
-  const paths = await globTree(repoDir, MAIN, SKILL_FILE_GLOB, 1000);
+  const warnings: SkillFileWarning[] = [];
+  let incomplete = false;
+  // One tree read serves both the skill files and their resource folders.
+  const tree = (await listTree(repoDir, head)).filter(entry =>
+    entry.path.startsWith(`${SKILLS_DIR}/`),
+  );
+  const paths = tree
+    .map(entry => entry.path)
+    .filter(path => /^skills\/[^/]+\/SKILL\.md$/.test(path))
+    .slice(0, 1000);
+  const sizeOf = new Map(tree.map(entry => [entry.path, entry.size]));
   for (const path of paths.sort()) {
     const name = skillNameFromPath(path);
     if (!name) {
@@ -150,40 +224,47 @@ export async function loadSkillCatalog(
     }
     let contents: string | null = null;
     let invalidReason: string | null = null;
-    try {
-      const blob = await readBlob(repoDir, MAIN, path);
-      if (blob.isBinary) {
-        invalidReason = "binary skill file";
-      } else if (blob.size > MAX_SKILL_FILE_BYTES) {
-        invalidReason = `skill file exceeds ${MAX_SKILL_FILE_BYTES} bytes`;
-      } else {
-        contents = blob.contents;
+    // The tree already knows the size: an oversized file is never read.
+    const treeSize = sizeOf.get(path) ?? 0;
+    if (treeSize > MAX_SKILL_FILE_BYTES) {
+      invalidReason = `file ${formatCount(treeSize)} bytes over the ${formatCount(MAX_SKILL_FILE_BYTES)} limit`;
+    } else {
+      try {
+        const blob = await readBlob(repoDir, head, path);
+        if (blob.isBinary) {
+          invalidReason = "binary file: SKILL.md must be text";
+        } else {
+          contents = blob.contents;
+        }
+      } catch (error) {
+        // The path came from this commit's tree, so the file exists: a
+        // failed read is the machine's problem, not the author's.
+        incomplete = true;
+        invalidReason = "the file could not be read just now; retry";
+        logger.warn("Unreadable skill file at main", {
+          workspaceId,
+          path,
+          error,
+        });
       }
-    } catch (error) {
-      logger.warn("Unreadable skill file at main", {
-        workspaceId,
-        path,
-        error,
-      });
     }
-    const parsed = contents === null ? null : parseSkillFile(name, contents);
-    if (!parsed) {
+    const result =
+      contents === null ? null : parseSkillFileDetailed(name, contents);
+    if (!result || !result.ok) {
       invalid.push({
         name,
         path,
         reason:
-          invalidReason ??
-          (contents === null
-            ? "unreadable or binary skill file"
-            : "unparseable skill file (frontmatter with `description` and a body are required)"),
+          invalidReason ?? (result ? result.reason : "the file is unreadable"),
       });
       continue;
     }
+    const parsed = result.skill;
     if (parsed.body.length > MAX_SKILL_BODY_CHARS) {
       invalid.push({
         name,
         path,
-        reason: `body exceeds ${MAX_SKILL_BODY_CHARS} characters`,
+        reason: `body ${formatCount(parsed.body.length)} chars over the ${formatCount(MAX_SKILL_BODY_CHARS)} limit`,
       });
       continue;
     }
@@ -191,20 +272,56 @@ export async function loadSkillCatalog(
       invalid.push({
         name,
         path,
-        reason: `workspace exceeds the ${MAX_WORKSPACE_SKILLS} skill limit`,
+        reason: `over the ${MAX_WORKSPACE_SKILLS} skills per workspace limit`,
       });
       continue;
     }
-    skills.push({ ...parsed, id: skillId(workspaceId, name), path });
+    const folder = `${SKILLS_DIR}/${name}/`;
+    const { resources, refused } = classifySkillResources(
+      tree
+        .filter(entry => entry.path.startsWith(folder))
+        .map(entry => ({
+          path: entry.path.slice(folder.length),
+          size: entry.size,
+          mode: entry.mode,
+        })),
+    );
+    if (parsed.loadWhen.length > INDEX_DESCRIPTION_CHARS) {
+      warnings.push({
+        name,
+        path,
+        reason: `description ${formatCount(parsed.loadWhen.length)} chars: the index shows the first ${INDEX_DESCRIPTION_CHARS}`,
+      });
+    }
+    for (const file of refused) {
+      warnings.push({
+        name,
+        path: `${folder}${file.path}`,
+        reason: `resource not served: ${file.reason}`,
+      });
+    }
+    skills.push({
+      ...parsed,
+      id: skillId(workspaceId, name),
+      path,
+      resources,
+      refusedResources: refused,
+    });
   }
-  const catalog: SkillCatalog = { workspaceId, head, skills, invalid };
-  cacheCatalog(workspaceId, catalog);
-  return catalog;
+  return {
+    workspaceId,
+    head,
+    skills,
+    invalid,
+    warnings,
+    ...(incomplete ? { incomplete: true } : {}),
+  };
 }
 
 /** Drop the cached catalog; the next read rebuilds from main. */
 export function invalidateSkillCatalog(workspaceId: string): void {
   catalogCache.delete(workspaceId);
+  catalogBuilds.delete(workspaceId);
 }
 
 /** The skill whose folder is exactly `name`. Writes key on this. */
@@ -256,8 +373,119 @@ export async function findSkillById(
 }
 
 // ---------------------------------------------------------------------------
+// Resources — extra files in the skill folder, read-only
+// ---------------------------------------------------------------------------
+
+export type SkillResourceRead =
+  | {
+      success: true;
+      skill: string;
+      path: string;
+      content: string;
+      size: number;
+      /** Every resource path of the skill, as the system-skill read returns. */
+      references: string[];
+    }
+  | { success: false; error: string };
+
+/**
+ * One resource file of a workspace skill, read at main. A path is served
+ * only when it is one of the skill's listed
+ * resources: the list comes from the git tree under the skill's own folder,
+ * so no spelling of a path can reach a file outside it. Nothing is executed.
+ */
+export async function readWorkspaceSkillResource(
+  workspaceId: string,
+  skill: WorkspaceSkill,
+  relPath: string,
+): Promise<SkillResourceRead> {
+  const normalized = normalizeSkillResourcePath(relPath);
+  if (!normalized.ok) return { success: false, error: normalized.error };
+  const listed = skill.resources.find(file => file.path === normalized.path);
+  if (!listed) {
+    const refused = skill.refusedResources.find(
+      file => file.path === normalized.path,
+    );
+    if (refused) {
+      return {
+        success: false,
+        error: `resource "${normalized.path}" of skill "${skill.name}" is not served: ${refused.reason}`,
+      };
+    }
+    const available = skill.resources.map(file => file.path);
+    return {
+      success: false,
+      error:
+        `resource "${normalized.path}" not found for skill "${skill.name}". ` +
+        (available.length > 0
+          ? `Available: ${available.join(", ")}`
+          : "This skill has no resources."),
+    };
+  }
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  const head = repoDir ? await resolveCommit(repoDir, MAIN) : null;
+  if (repoDir == null || !head) {
+    return { success: false, error: "the workspace repository is unavailable" };
+  }
+  try {
+    const blob = await readBlob(
+      repoDir,
+      head,
+      `${SKILLS_DIR}/${skill.name}/${listed.path}`,
+    );
+    if (blob.isBinary) {
+      return {
+        success: false,
+        error: `resource "${listed.path}" is a binary file: only text is served`,
+      };
+    }
+    if (blob.size > MAX_SKILL_RESOURCE_BYTES) {
+      return {
+        success: false,
+        error: `resource "${listed.path}" is ${formatCount(blob.size)} bytes, over the ${formatCount(MAX_SKILL_RESOURCE_BYTES)} limit`,
+      };
+    }
+    return {
+      success: true,
+      skill: skill.name,
+      path: listed.path,
+      content: blob.contents,
+      size: blob.size,
+      references: skill.resources.map(file => file.path),
+    };
+  } catch (error) {
+    logger.warn("Unreadable skill resource at main", {
+      workspaceId,
+      skill: skill.name,
+      path: listed.path,
+      error,
+    });
+    return {
+      success: false,
+      error: `resource "${listed.path}" not found for skill "${skill.name}"`,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Writes — commits on main
 // ---------------------------------------------------------------------------
+
+/**
+ * A save, delete or flag flip moved main without a push event: report the
+ * new head's skills status too. Imported lazily (the status module imports
+ * this one), fire-and-forget, never throws.
+ */
+function reportSkillsStatusAfterWrite(workspaceId: string): void {
+  void import("./skill-commit-status")
+    .then(m => m.reportSkillsCommitStatus(workspaceId))
+    .catch(error => {
+      logger.warn("Skills commit status after a write failed", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+}
 
 async function readRepoFile(
   repoDir: string,
@@ -300,6 +528,7 @@ export async function commitSkillSave(
   );
   invalidateSkillCatalog(workspaceId);
   queueMirrorPush(workspaceId);
+  reportSkillsStatusAfterWrite(workspaceId);
 }
 
 async function skillFolderPaths(
@@ -334,6 +563,7 @@ export async function commitSkillDelete(
   );
   invalidateSkillCatalog(workspaceId);
   queueMirrorPush(workspaceId);
+  reportSkillsStatusAfterWrite(workspaceId);
   return true;
 }
 
@@ -376,6 +606,7 @@ export async function commitSkillFlags(
   );
   invalidateSkillCatalog(workspaceId);
   queueMirrorPush(workspaceId);
+  reportSkillsStatusAfterWrite(workspaceId);
   return true;
 }
 

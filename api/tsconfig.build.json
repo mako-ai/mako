@@ -1,5 +1,11 @@
 {
   "extends": "./tsconfig.json",
+  // The emitted server is CommonJS. tsconfig.json itself type-checks with
+  // "module": "preserve" so the vitest suites (ESM: top-level await,
+  // import.meta) type-check alongside the code (`tsc --noEmit -p .`).
+  "compilerOptions": {
+    "module": "commonjs"
+  },
   "exclude": [
     "node_modules",
     "dist",

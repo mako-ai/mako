@@ -52,10 +52,11 @@ url = "https://your-mako-host/api/mcp"
 
 Verify the connection (Claude Code): `claude mcp list` should show `mako … ✓ Connected`.
 
-CLI and external MCP sign-ins stay connected until you revoke them, even after
-long periods of inactivity. Access tokens last 8 hours and clients renew them
-automatically with a rotating refresh token that has no expiry. You can revoke
-a connection from your workspace settings.
+CLI and external MCP sign-ins stay connected while you use them. Access tokens
+last 8 hours and clients renew them automatically with a rotating refresh
+token; each renewal extends the sign-in, and a connection left unused for 30
+days expires and asks you to sign in again. You can revoke a connection from
+your workspace settings, and removing someone from a workspace revokes theirs.
 
 Under the hood this is standard OAuth 2.1 for MCP: RFC 9728 protected-resource discovery, dynamic client registration, PKCE, and rotating refresh tokens. Every grant carries `mcp query:read warehouse:write connections:write connections:manage workflows:run`, whatever the client requests; workspace roles decide what a viewer can do.
 
@@ -92,7 +93,7 @@ Try: _"Using the mako tools, explore my data and build an app showing revenue by
 
 The server ships usage instructions with the handshake, so agents discover this workflow on their own:
 
-1. **Discover** — `list_connections` lists every configured credential, of two kinds: `database` connections (BigQuery, Postgres, MongoDB, …) that `list_databases` / `list_tables` / `inspect_table` describe (schemas + sample rows; they dispatch on engine) and SQL queries, and `source` connections (a Stripe key, a Vercel key, …) that flows read from and `probe_connection` reads live. Every row names its `kind` and its `connector` — the code it was configured with. `search_consoles` finds existing workspace work. Skills: `list_skills` (index), `get_relevant_skills` (ranked bodies for your task — same retrieval as the in-product agent), then `load_skill` / `read_skill_resource` as needed.
+1. **Discover** — `list_connections` lists every configured credential, of two kinds: `database` connections (BigQuery, Postgres, MongoDB, …) that `list_databases` / `list_tables` / `inspect_table` describe (schemas + sample rows; they dispatch on engine) and SQL queries, and `source` connections (a Stripe key, a Vercel key, …) that flows read from and `probe_connection` reads live. Every row names its `kind` and its `connector` — the code it was configured with. `search_consoles` finds existing workspace work. Skills: `list_skills` (index), `get_relevant_skills` (ranked bodies for your task — same retrieval as the in-product agent), then `load_skill` / `read_skill_resource` as needed. `load_skill` lists a skill's resource files (references, SQL recipes, scripts) and `read_skill_resource` returns one as text: Mako never runs it, the client does.
 2. **Validate queries** — `sql_execute_query` (read-only, short exploration timeout). Results come back as one compact markdown table (column names once, long cells shortened, rows added until a size budget runs out — 50 rows by default; pass `maxRows` up to 200 for more, but prefer aggregating in SQL), with a note saying what was left out. Slow warehouse? `create_console` → `run_console` → `check_query_status` for long-running queries.
 3. **Build apps** — `app_list_apps` / `app_create_app` to discover or scaffold (`apps/<slug>/`, a real Vite project; `app_create_app` requires a one-line `description`), then `app_write_file` / `app_edit_file` / `app_bash` for ordinary file and shell work, and `app_materialize` to build a binding's parquet artifact (bindings are `bindings/<name>.sql` files with the validated query).
 4. **Verify with real eyes** — `app_open_app` starts the dev server (and focuses the app in the user's UI), `app_dev_log` returns the boot/vite log plus browser-console output, and `app_browse` drives a headless browser against the running dev server: click, navigate, and screenshot what a user would actually see.
@@ -230,7 +231,7 @@ systems must not be mixed on one app.
 | Symptom                                                                  | Cause / fix                                                                                                                                                                            |
 | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Client never opens the sign-in browser                                   | The client predates MCP OAuth support — update it, or fall back to an API key header.                                                                                                  |
-| `401 Invalid or expired MCP access token`                                | The access token expired or the connection was revoked. The client should refresh automatically; reconnect if the grant was revoked or the client lost its saved credentials.                                                                           |
+| `401 Invalid or expired MCP access token`                                | The access token expired or the connection was revoked. The client should refresh automatically; reconnect if the grant was revoked or the client lost its saved credentials.          |
 | `403 … created before MCP scopes existed`                                | Legacy key. Sign in via OAuth or create a new key under Workspace Settings → API Keys.                                                                                                 |
 | `403 … does not include the mcp scope`                                   | Key was created without the `mcp` scope — create a new key.                                                                                                                            |
 | `Mako MCP access is read-only: the query was rejected…`                  | The agent attempted a write (`UPDATE`/`INSERT`/DDL). Expected — run writes with your own database tooling.                                                                             |

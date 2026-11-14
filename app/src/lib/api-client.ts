@@ -4,6 +4,7 @@
 import { getApiBasePath } from "./api-base-path";
 import { handleUnauthorized } from "./auth-redirect";
 import { ApiError } from "../api/result";
+import { getActiveWorkspaceId } from "./active-workspace";
 
 interface ApiRequestOptions extends RequestInit {
   params?: Record<string, string>;
@@ -20,7 +21,7 @@ class ApiClient {
    * Get active workspace ID from localStorage
    */
   private getActiveWorkspaceId(): string | null {
-    return localStorage.getItem("activeWorkspaceId");
+    return getActiveWorkspaceId();
   }
 
   /**

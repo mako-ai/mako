@@ -6,7 +6,6 @@ import {
   BatchWriteResult,
   InsertOptions,
   UpsertOptions,
-  StreamingQueryOptions,
   TablePartitioning,
   TableClustering,
 } from "../../driver";
@@ -1010,7 +1009,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     let chunkSize = 1000; // Start smaller to be safe
     let totalWritten = 0;
 
-    for (let i = 0; i < rows.length; ) {
+    for (let i = 0; i < rows.length;) {
       // Build query for current chunk using VALUES syntax (more compact than SELECT...UNION ALL)
       let chunk = rows.slice(i, i + chunkSize);
       let query = this.buildInsertQuery(
@@ -1231,7 +1230,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     let chunkSize = 500; // MERGE is more verbose, start smaller
     let totalWritten = 0;
 
-    for (let i = 0; i < rows.length; ) {
+    for (let i = 0; i < rows.length;) {
       // Build MERGE query for current chunk
       let chunk = rows.slice(i, i + chunkSize);
       let query = this.buildMergeQuery(
@@ -1784,62 +1783,5 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
       rowsWritten: result.success ? 1 : 0,
       error: result.error,
     };
-  }
-
-  /**
-   * Execute a streaming query with batched callbacks
-   * Uses LIMIT/OFFSET pagination for BigQuery
-   */
-  async executeStreamingQuery(
-    database: IDatabaseConnection,
-    query: string,
-    options: StreamingQueryOptions,
-  ): Promise<{ success: boolean; totalRows: number; error?: string }> {
-    const batchSize = options.batchSize || 10000; // BigQuery can handle larger batches
-    let totalRows = 0;
-
-    try {
-      let offset = 0;
-      let hasMore = true;
-
-      while (hasMore) {
-        // Check for cancellation
-        if (options.signal?.aborted) {
-          return { success: false, totalRows, error: "Query cancelled" };
-        }
-
-        // Add LIMIT/OFFSET to query
-        const paginatedQuery = `${query.replace(/;?\s*$/, "")} LIMIT ${batchSize} OFFSET ${offset};`;
-
-        const result = await this.executeQuery(database, paginatedQuery);
-
-        if (!result.success) {
-          return { success: false, totalRows, error: result.error };
-        }
-
-        const rows = result.data || [];
-        if (rows.length === 0) {
-          hasMore = false;
-        } else {
-          await options.onBatch(rows);
-          totalRows += rows.length;
-          offset += rows.length;
-
-          // If we got fewer rows than batch size, we're done
-          if (rows.length < batchSize) {
-            hasMore = false;
-          }
-        }
-      }
-
-      return { success: true, totalRows };
-    } catch (error) {
-      return {
-        success: false,
-        totalRows,
-        error:
-          error instanceof Error ? error.message : "Streaming query failed",
-      };
-    }
   }
 }

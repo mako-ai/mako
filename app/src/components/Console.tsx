@@ -42,7 +42,7 @@ import {
   Share2 as Share2Icon,
   MoreHorizontal as MoreIcon,
 } from "lucide-react";
-import Editor, { DiffEditor } from "@monaco-editor/react";
+import Editor, { DiffEditor } from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useTheme } from "../contexts/ThemeContext";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -276,7 +276,14 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // Refs for tracking state without triggering re-renders
   const isProgrammaticUpdateRef = useRef(false);
   const lastInitialContentRef = useRef(initialContent);
-  const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Two independent debouncers: sharing one timer ref let the content flush
+  // cancel the trailing version-history save on every keystroke.
+  const versionSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const contentFlushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const filePathRef = useRef(filePath);
   const monacoRef = useRef<any>(null);
 
@@ -671,8 +678,13 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   onContentChangeRef.current = onContentChange;
   useEffect(() => {
     return () => {
-      if (debounceTimeoutRef.current) {
-        clearTimeout(debounceTimeoutRef.current);
+      if (versionSaveTimeoutRef.current) {
+        clearTimeout(versionSaveTimeoutRef.current);
+        versionSaveTimeoutRef.current = null;
+      }
+      if (contentFlushTimeoutRef.current) {
+        clearTimeout(contentFlushTimeoutRef.current);
+        contentFlushTimeoutRef.current = null;
       }
       const pending = pendingContentRef.current;
       pendingContentRef.current = null;
@@ -819,10 +831,10 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         content !== lastInitialContentRef.current &&
         !isApplyingModification.current
       ) {
-        const shouldSaveImmediately = !debounceTimeoutRef.current;
+        const shouldSaveImmediately = !versionSaveTimeoutRef.current;
 
-        if (debounceTimeoutRef.current) {
-          clearTimeout(debounceTimeoutRef.current);
+        if (versionSaveTimeoutRef.current) {
+          clearTimeout(versionSaveTimeoutRef.current);
         }
 
         if (shouldSaveImmediately) {
@@ -830,21 +842,22 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           lastInitialContentRef.current = content;
         }
 
-        debounceTimeoutRef.current = setTimeout(() => {
+        versionSaveTimeoutRef.current = setTimeout(() => {
+          versionSaveTimeoutRef.current = null;
           saveUserEdit(content, "User edit");
           lastInitialContentRef.current = content;
-          debounceTimeoutRef.current = null;
         }, 500);
       }
 
       // Normal content change callback
       if (onContentChange) {
-        if (debounceTimeoutRef.current) {
-          clearTimeout(debounceTimeoutRef.current);
+        if (contentFlushTimeoutRef.current) {
+          clearTimeout(contentFlushTimeoutRef.current);
         }
 
         pendingContentRef.current = content;
-        debounceTimeoutRef.current = setTimeout(() => {
+        contentFlushTimeoutRef.current = setTimeout(() => {
+          contentFlushTimeoutRef.current = null;
           pendingContentRef.current = null;
           onContentChange(content);
         }, 500);
@@ -1766,7 +1779,11 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             </>
           )}
           <Divider orientation="vertical" flexItem />
-          <IconButton onClick={handleInfoClick} size="small">
+          <IconButton
+            aria-label="Console info"
+            onClick={handleInfoClick}
+            size="small"
+          >
             <InfoOutlineIcon strokeWidth={2} size={22} />
           </IconButton>
         </Box>

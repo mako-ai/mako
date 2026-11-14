@@ -31,6 +31,10 @@ import {
   repoExists,
 } from "../apps/repository.service";
 import { loadSkill, searchSkills } from "../services/skills.service";
+import {
+  recordSkillUsage,
+  skillScopeFromId,
+} from "../services/skill-usage.service";
 import { listAppFolders } from "../apps/worktree.service";
 import { loggers } from "../logging";
 import type { BridgeableTool, MakoMcpContext } from "./mako-mcp-server";
@@ -313,6 +317,14 @@ async function fetchSkillDoc(
   name: string,
 ): Promise<FetchedDoc | null> {
   const loaded = await loadSkill(workspaceId, name);
+  if (loaded.success) {
+    recordSkillUsage(
+      workspaceId,
+      [{ skill: loaded.skill.name, scope: skillScopeFromId(loaded.skill.id) }],
+      "load",
+      "mcp",
+    );
+  }
   const workspaceSkill =
     loaded.success && loaded.skill.id.startsWith("system:") === false
       ? loaded.skill

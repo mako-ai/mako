@@ -48,6 +48,17 @@ export const useSourceConnectionStore = create<SourceConnectionState>()(
     {
       name: "connector-draft-store",
       version: 1,
+      // Unsaved connector drafts are user work: a version bump must never
+      // drop them (zustand discards state when there is no migrate).
+      migrate: persisted => {
+        const state = (persisted ?? {}) as { drafts?: unknown };
+        return {
+          drafts:
+            state.drafts && typeof state.drafts === "object"
+              ? state.drafts
+              : {},
+        } as never;
+      },
     },
   ),
 );

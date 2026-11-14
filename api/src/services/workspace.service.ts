@@ -16,6 +16,7 @@ import {
   normalizeEmail,
 } from "../utils/email.utils";
 import { loggers } from "../logging";
+import { revokeMcpGrantsForMember } from "../auth/mcp-oauth.service";
 
 const logger = loggers.workspace();
 
@@ -297,6 +298,25 @@ export class WorkspaceService {
       workspaceId: new Types.ObjectId(workspaceId),
       userId: userId,
     });
+    // Credentials the user minted for THIS workspace outlive the membership
+    // otherwise: an MCP OAuth grant keeps refreshing access tokens bound to
+    // the workspace, and a workspace API key keeps acting as its creator.
+    // Revoke both (idempotent, so it also cleans up after a partial removal).
+    const [mcpGrants, apiKeys] = await Promise.all([
+      revokeMcpGrantsForMember({ workspaceId, userId }),
+      Workspace.updateOne(
+        { _id: new Types.ObjectId(workspaceId) },
+        { $pull: { apiKeys: { createdBy: userId } } },
+      ),
+    ]);
+    if (mcpGrants > 0 || apiKeys.modifiedCount > 0) {
+      logger.info("Revoked removed member's workspace credentials", {
+        workspaceId,
+        userId,
+        mcpGrants,
+        apiKeysRevoked: apiKeys.modifiedCount > 0,
+      });
+    }
     return result.deletedCount > 0;
   }
 
@@ -650,7 +670,8 @@ export class WorkspaceService {
       await workspace.save({ session });
 
       // Create workspace member with isDefaultMembership flag
-      // The unique partial index on { userId } where { isDefaultMembership: true }
+      // The unique partial index on { userId, isDefaultMembership } where
+      // { isDefaultMembership: true }
       // ensures only one request succeeds in concurrent scenarios
       const member = new WorkspaceMember({
         workspaceId: workspace._id,

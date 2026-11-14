@@ -34,6 +34,7 @@ import {
 } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import { loggers } from "../logging";
+import { BoundedMap } from "../utils/bounded-map";
 import {
   boxCheckout,
   boxCommitAll,
@@ -283,7 +284,17 @@ export function syncRepoBackedResources(
       error: error instanceof Error ? error.message : String(error),
     });
   });
-  // Skills are files only (apps.md §27): nothing to reconcile on push.
+  // Skills are files only (apps.md §27): nothing to reconcile on push. A
+  // file that stopped loading is reported on the commit instead (a failed
+  // `mako/skills` status), so a hidden skill is seen where it was pushed.
+  void import("./skill-commit-status")
+    .then(m => m.reportSkillsCommitStatus(workspaceId))
+    .catch(error => {
+      logger.warn("Skills commit status after push failed", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   // dbt orchestration config (jobs/environments YAML — apps.md §23):
   // external edits re-register schedules on the next push.
   void import("../dbt/dbt-config.service")
@@ -471,10 +482,10 @@ export function sessionKeyFor(
  * miss returns undefined — the caller then leaves the box's existing identity
  * alone rather than stamping a wrong one.
  */
-const actorIdentityCache = new Map<
+const actorIdentityCache = new BoundedMap<
   string,
   { name: string; email: string } | undefined
->();
+>({ maxEntries: 5_000, ttlMs: 10 * 60_000 });
 
 export async function resolveActorIdentity(
   userId: string,
@@ -2817,10 +2828,10 @@ export async function listBranches(scope: RepoScope): Promise<BranchInfo[]> {
 }
 
 const branchListInFlight = new Map<string, Promise<BranchInfo[]>>();
-const branchListCache = new Map<
+const branchListCache = new BoundedMap<
   string,
   { refs: string; branches: BranchInfo[] }
->();
+>({ maxEntries: 500, ttlMs: 10 * 60_000 });
 
 async function buildBranchList(
   repoDir: string,

@@ -26,7 +26,7 @@ export function UpgradePrompt({
   onDismiss,
 }: UpgradePromptProps) {
   const { currentWorkspace } = useWorkspace();
-  const { createCheckoutSession } = useBillingStore();
+  const createCheckoutSession = useBillingStore(s => s.createCheckoutSession);
 
   const isUsageLimit = errorCode === "usage_limit_exceeded";
 

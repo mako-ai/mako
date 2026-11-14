@@ -61,7 +61,7 @@ The script:
 
 ### Environment Variables
 
-Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`):
+Set these in Cloud Run's environment configuration (`deploy.sh` generates the service's env file):
 
 | Variable                       | Required    | Purpose                                  |
 | ------------------------------ | ----------- | ---------------------------------------- |

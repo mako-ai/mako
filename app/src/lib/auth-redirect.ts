@@ -14,6 +14,7 @@
  * next request succeeds once the new revision is serving.
  */
 import { getApiBasePath } from "./api-base-path";
+import { clearActiveWorkspaceId } from "./active-workspace";
 
 const LOGIN_PATH = "/login";
 const AUTH_PAGES = new Set([LOGIN_PATH, "/register"]);
@@ -42,11 +43,7 @@ function delay(ms: number): Promise<void> {
 }
 
 function clearActiveWorkspace(): void {
-  try {
-    localStorage.removeItem("activeWorkspaceId");
-  } catch {
-    // ignore storage failures (private mode / SSR)
-  }
+  clearActiveWorkspaceId();
 }
 
 function redirectToLogin(): void {

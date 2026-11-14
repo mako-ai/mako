@@ -298,7 +298,14 @@ export default function SettingsModels() {
                     >
                       {enabledCount}/{providerModels.length}
                     </Typography>
-                    <IconButton size="small" sx={{ p: 0.25 }}>
+                    <IconButton
+                      aria-label={
+                        isCollapsed ? "Expand provider" : "Collapse provider"
+                      }
+                      aria-expanded={!isCollapsed}
+                      size="small"
+                      sx={{ p: 0.25 }}
+                    >
                       {isCollapsed ? (
                         <ExpandMoreIcon sx={{ fontSize: 18 }} />
                       ) : (

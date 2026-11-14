@@ -24,8 +24,9 @@ Skills survive across sessions and are shared across all members of the workspac
 | --------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `save_skill`          | Commit a new or updated workspace skill by name. New agent-authored skills start suppressed pending approval |
 | `delete_skill`        | Remove the current skill file; earlier versions remain in git history                                        |
-| `load_skill`          | Load a workspace or system skill's complete body by name                                                     |
-| `list_skills`         | List the workspace and system skill index                                                                    |
+| `load_skill`          | Load a workspace or system skill's complete body by name, with the list of its resource files                |
+| `read_skill_resource` | Read one resource file of a skill. Reading only: Mako never runs a script                                    |
+| `list_skills`         | List the workspace and system skill index, with usage, hidden files and warnings                             |
 | `get_relevant_skills` | Return the best workspace keyword matches with their bodies                                                  |
 | `search_skills`       | Search workspace skill names, descriptions, entities, and bodies                                             |
 
@@ -39,7 +40,77 @@ Skills survive across sessions and are shared across all members of the workspac
 
 New skills proposed by the agent are committed with `suppressed: true`. Activate them from Settings → Skills or by editing the file in git.
 
-A file under `skills/` that does not load (a bad folder name, missing frontmatter `description`, an oversized body) stays out of the index. Settings → Skills lists it as "invalid file" with the reason, and `list_skills` returns it under `invalid`.
+## Limits
+
+| Limit                    | Value                   | Over the limit                                  |
+| ------------------------ | ----------------------- | ----------------------------------------------- |
+| Body                     | 20,000 characters       | The skill is hidden                             |
+| `SKILL.md` file          | 64,000 bytes            | The skill is hidden                             |
+| Skills per workspace     | 200                     | The skills past 200 (by name) are hidden        |
+| Description in the index | 200 characters          | The index cuts it. The skill loads. A warning   |
+| One resource file        | 64,000 bytes            | The file is refused. The skill loads. A warning |
+| Resource files per skill | 40 files, 512,000 bytes | The files past the cap are refused. A warning   |
+
+`save_skill` and the REST API cap a description at 300 characters. A file committed from a clone can hold a longer one.
+
+## Hidden Skills
+
+A skill file that breaks a limit or does not parse is hidden: it stays out of the index, and `load_skill` does not find it. Mako reports each hidden file with its path and the reason in five places:
+
+1. **The commit.** Every push to main gets a `mako/skills` commit status on GitHub. One hidden file fails the commit and the status names it: `1 skill file hidden from the agent: skills/glossary/SKILL.md: body 24,713 chars over the 20,000 limit`. A warning passes the commit and shows in the status text. A workspace with no skill files gets no status.
+2. **`list_skills`.** Hidden files come back under `invalid`, warnings under `warnings`.
+3. **`get_relevant_skills` and `search_skills`.** A query that names a hidden skill returns a `notice` with the file and the reason.
+4. **`load_skill` and `read_skill_resource`.** A call that names a hidden skill returns an error with the file and the reason. When a system skill of the same name loads in its place, the result carries a `notice`.
+5. **Settings → Skills.** A hidden file shows "invalid file" with the reason. A warning shows under the skill.
+
+A file that git fails to read (a timeout) is reported as `the file could not be read just now; retry`. Mako posts no status for it and reads it again on the next call.
+
+The reasons:
+
+| Reason                                                      | Fix                                                       |
+| ----------------------------------------------------------- | --------------------------------------------------------- |
+| `body 24,713 chars over the 20,000 limit`                   | Move detail into `references/` files                      |
+| `file 70,112 bytes over the 64,000 limit`                   | Same                                                      |
+| `front matter line 7: bad indentation of a mapping entry`   | Fix the YAML on that line. Quote a value that holds a `:` |
+| `front matter has no description`                           | Add `description: <when to load it>`                      |
+| `no front matter: the file must start with a --- block ...` | Add the `---` block at the top of the file                |
+| `the body under the front matter is empty`                  | Write the playbook under the block                        |
+| `folder name must be lowercase a-z, 0-9, '-' and '_' ...`   | Rename the folder                                         |
+| `over the 200 skills per workspace limit`                   | Delete or merge skills                                    |
+
+## Resources
+
+A skill folder can hold files next to `SKILL.md`. The agent reads them on demand, so a long skill can keep a short body.
+
+```text
+skills/revenue-recon/
+  SKILL.md
+  references/ledger-map.md
+  scripts/backfill.sql
+  resources/rates/2026.csv
+```
+
+- **Folders:** `references/`, `scripts/` and `resources/`, with any depth of subfolders. Other files in the skill folder are ignored.
+- **File types:** `.md` `.txt` `.sql` `.py` `.js` `.mjs` `.ts` `.sh` `.json` `.yml` `.yaml` `.csv`. Any other extension, a binary file and a symbolic link are refused with the reason.
+- **Sizes:** 64,000 bytes per file, 40 files and 512,000 bytes per skill.
+- **Discovery:** `load_skill` returns `resources`, a list of `{ path, size }`.
+- **Reading:** `read_skill_resource({ name, path })` returns the file's text. It serves the in-product agent and MCP clients, with the same workspace access as `load_skill`.
+- **No execution:** Mako never runs a resource. A caller that wants to run a script runs the returned text in its own shell or sandbox.
+
+A path is served only when it is in the skill's own resource list. `..`, an absolute path or a backslash is refused.
+
+Resources are committed with git: from a clone, a terminal or the repository file tools. `save_skill` writes `SKILL.md` only.
+
+## Usage
+
+Mako counts three events per skill: a `load_skill` that returns it, a `read_skill_resource` that returns one of its files, and a body returned by `get_relevant_skills` or `search_skills`. The index and the pinned excerpts in every prompt do not count.
+
+`list_skills` and Settings → Skills show two numbers per skill:
+
+- `loads30d` -- the three events over the last 30 days, the in-product agent and MCP clients together
+- `lastLoadedAt` -- the time of the last event, or `null`
+
+The counts are daily totals per workspace, skill and source (`agent` or `mcp`). Mako stores no user, chat or query with them, and drops a row 400 days after its last event. A renamed skill starts at 0.
 
 ## What Good Skills Look Like
 
@@ -62,7 +133,7 @@ Settings → Skills lists every skill in the workspace. For each skill you can:
 - **Suppress** -- keep the file but exclude the skill from the prompt index and keyword search
 - **Delete** -- remove the current file; git history remains available for recovery
 
-API-created skills are capped at 200 per workspace. Files that do not parse or exceed the body/file limits are shown as invalid and are never offered to the agent.
+API-created skills are capped at 200 per workspace. Files that do not parse or exceed the body/file limits are shown as invalid and are never offered to the agent. See [Hidden Skills](#hidden-skills).
 
 ## REST API
 

@@ -70,7 +70,8 @@ export function ConnectionSelector({
     : false;
 
   // Database type icons
-  const { types: dbTypes, fetchTypes } = useDatabaseCatalogStore();
+  const dbTypes = useDatabaseCatalogStore(s => s.types);
+  const fetchTypes = useDatabaseCatalogStore(s => s.fetchTypes);
 
   useEffect(() => {
     fetchTypes().catch(() => undefined);

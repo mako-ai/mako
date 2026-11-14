@@ -1,15 +1,16 @@
 /**
  * Every test file must be run by SOMETHING.
  *
- * `api/` has four test runners and each keeps its own hand-maintained list:
+ * `api/` has four test runners:
  *
- *   test              — an `&&` chain of `tsx <file>` calls in package.json
+ *   test:tsx          — scripts/run-tsx-tests.mjs: every test file no vitest
+ *                       config owns and that does not import vitest (no list)
  *   test:dbt          — vitest.config.ts
  *   test:apps         — vitest.apps.config.ts
  *   test:destinations — vitest.destinations.config.ts
  *
- * A new `*.test.ts` is therefore run only if a human remembers to add it to
- * the right one of four places, and nothing ever complained when they didn't.
+ * A tsx-style file is run as soon as it exists. A vitest suite still has to
+ * be listed in a config's include, and nothing complained when it wasn't.
  * `bigquery-abandoned-job.test.ts` is what that looks like: written, correct,
  * asserting real behaviour, and never executed once.
  *
@@ -83,12 +84,11 @@ const matchesAny = (file: string, patterns: string[]) =>
 
 // ── Where does an orphan actually belong? ─────────────────────────
 //
-// "Covered by no runner" reads as "add it to the `test` chain", and for a
-// vitest-style suite that is the WRONG fix: `import { describe } from "vitest"`
-// outside a vitest run throws at import, so wiring it as a tsx entry turns
-// "never runs" into "always red" — at the top of an `&&` chain, taking every
-// test after it down too. So the guard names the destination instead of
-// leaving the reader to guess, and says so plainly when it cannot tell.
+// Only a vitest-style suite can be orphaned (the tsx runner takes every
+// other file), and running it under tsx is the WRONG fix:
+// `import { describe } from "vitest"` outside a vitest run throws at import,
+// turning "never runs" into "always red". So the guard names the vitest
+// config it belongs in, and says so plainly when it cannot tell.
 
 type Style = "vitest" | "tsx" | "unknown";
 
@@ -132,10 +132,13 @@ export function describeDestination(
         ? `vitest-style → add to ${cfg} include`
         : `vitest-style → add to a vitest config's include (no existing ` +
             `config covers this directory; choose one deliberately). Do NOT ` +
-            `add it to the 'test' chain — it throws at import outside vitest.`;
+            `run it under tsx — it throws at import outside vitest.`;
     }
     case "tsx":
-      return "tsx-style → add `&& tsx <file>` to the 'test' script";
+      return (
+        "tsx-style → scripts/run-tsx-tests.mjs runs it; if it is not run, " +
+        "a vitest config's include claims it — add it to that exclude"
+      );
     default:
       return (
         "UNKNOWN style — imports neither vitest nor node:assert. Work out " +
@@ -161,13 +164,15 @@ function allTestFiles(dir = "src", acc: string[] = []): string[] {
   return acc.sort();
 }
 
-/** The `tsx a && tsx b && …` chain, as a list (duplicates preserved). */
-function tsxChainEntries(): string[] {
-  const pkg = JSON.parse(
-    readFileSync(path.join(API_ROOT, "package.json"), "utf8"),
-  ) as { scripts: Record<string, string> };
-  return [...pkg.scripts.test.matchAll(/tsx\s+(src\/[^\s&|]+\.test\.ts)/g)].map(
-    m => m[1],
+/**
+ * Whether scripts/run-tsx-tests.mjs runs `file` once no vitest config owns
+ * it: it imports no vitest (same test as the runner) and is not skipped
+ * (the runner's SKIP mirrors DELIBERATELY_UNCOVERED).
+ */
+function runByTsxRunner(file: string): boolean {
+  if (file in DELIBERATELY_UNCOVERED) return false;
+  return !/^(?:import\b|\}).*from\s+["']vitest["']/m.test(
+    readFileSync(path.join(API_ROOT, file), "utf8"),
   );
 }
 
@@ -237,7 +242,7 @@ function selfTest() {
 
 /**
  * The advice has to be right, not merely present: sending a vitest suite to
- * the tsx chain turns "never runs" into "always red". Pinned against two real
+ * the tsx runner turns "never runs" into "always red". Pinned against two real
  * files of each style, so a refactor of styleOf cannot quietly invert it.
  */
 async function selfTestDestinations(
@@ -255,8 +260,8 @@ async function selfTestDestinations(
   );
   assert.doesNotMatch(
     forVitest,
-    /'test' script/,
-    "a vitest suite must never be sent to the tsx chain",
+    /run-tsx-tests/,
+    "a vitest suite must never be sent to the tsx runner",
   );
 
   assert.match(
@@ -268,43 +273,40 @@ async function selfTestDestinations(
 
 export async function computeCoverage() {
   const files = allTestFiles();
-  const chain = tsxChainEntries();
   const runners = await vitestRunners();
-  const chainSet = new Set(chain);
 
   const ownersOf = (file: string) => {
     const owners: string[] = [];
-    if (chainSet.has(file)) owners.push("test");
     for (const r of runners) {
       if (matchesAny(file, r.include) && !matchesAny(file, r.exclude)) {
         owners.push(r.name);
       }
     }
+    // The tsx runner takes every file no vitest config owns.
+    if (owners.length === 0 && runByTsxRunner(file)) owners.push("test:tsx");
     return owners;
   };
 
   return {
     files,
-    chain,
     runners,
     ownersOf,
     uncovered: files.filter(f => ownersOf(f).length === 0),
-    // A chain entry whose file no longer exists fails the whole `&&` chain.
-    missingFromDisk: chain.filter(f => !files.includes(f)),
-    duplicatedInChain: chain.filter((f, i) => chain.indexOf(f) !== i),
+    // A tsx suite claimed by a vitest config fails there ("no test suite").
+    tsxClaimedByVitest: files.filter(
+      f =>
+        styleOf(f) === "tsx" &&
+        runners.some(
+          r => matchesAny(f, r.include) && !matchesAny(f, r.exclude),
+        ),
+    ),
   };
 }
 
 async function main() {
   selfTest();
-  const {
-    files,
-    uncovered,
-    missingFromDisk,
-    duplicatedInChain,
-    ownersOf,
-    runners,
-  } = await computeCoverage();
+  const { files, uncovered, tsxClaimedByVitest, ownersOf, runners } =
+    await computeCoverage();
   await selfTestDestinations(runners);
 
   if (process.argv.includes("--report")) {
@@ -320,15 +322,11 @@ async function main() {
   }
 
   assert.deepEqual(
-    missingFromDisk,
+    tsxClaimedByVitest,
     [],
-    `The 'test' script runs files that do not exist. The chain is '&&'-joined, ` +
-      `so this fails every test after it:\n  ${missingFromDisk.join("\n  ")}`,
-  );
-  assert.deepEqual(
-    duplicatedInChain,
-    [],
-    `Duplicate entries in the 'test' script:\n  ${duplicatedInChain.join("\n  ")}`,
+    `These node:assert suites are claimed by a vitest config's include, so ` +
+      `vitest fails on them and the tsx runner skips them. Add each to that ` +
+      `config's exclude:\n  ${tsxClaimedByVitest.join("\n  ")}`,
   );
 
   const unexplained = uncovered.filter(f => !(f in DELIBERATELY_UNCOVERED));

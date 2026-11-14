@@ -27,8 +27,38 @@ import axios, { AxiosInstance } from "axios";
 import * as crypto from "crypto";
 import { loggers } from "../../logging";
 import { throttledRequest } from "../rate-gate";
+import {
+  getErrorStatus,
+  isRetryableHttpError,
+  withHttpRetry,
+} from "../base/http-retry";
 
 const logger = loggers.connector("close");
+
+/**
+ * Retries per Close request (shared policy in base/http-retry.ts). Close
+ * rate limits are per key and frequent during bulk syncs, and its
+ * Retry-After is honoured, so allow more than the default.
+ */
+const CLOSE_MAX_RETRIES = 8;
+
+/**
+ * Whether a Close request only reads, so repeating it is harmless: a GET,
+ * the search API (a POST that reads), or a POST tunnelled as GET via
+ * `x-http-method-override`.
+ */
+function isCloseReadRequest(
+  method: string,
+  endpoint: string,
+  args: unknown[],
+): boolean {
+  if (method === "get") return true;
+  if (method !== "post") return false;
+  if (endpoint === "/data/search/") return true;
+  const config = args[2] as { headers?: Record<string, unknown> } | undefined;
+  const override = config?.headers?.["x-http-method-override"];
+  return typeof override === "string" && override.toUpperCase() === "GET";
+}
 
 const MAX_CLOSE_ERROR_RESPONSE_LENGTH = 2_000;
 
@@ -721,6 +751,8 @@ export class CloseConnector extends BaseConnector {
       // Wrap get/post/put/patch/delete through the per-API-key throttle
       // so concurrent flows sharing the same key don't blast the rate limit.
       const emitLog = this.emitSyncLog.bind(this);
+      // Late-bound so tests that stub `sleep` on the instance stay fast.
+      const sleepFor = (ms: number) => this.sleep(ms);
       const seqRef = { seq: 0 };
 
       this.closeApi = new Proxy(rawClient, {
@@ -731,46 +763,85 @@ export class CloseConnector extends BaseConnector {
             typeof prop === "string" &&
             ["get", "post", "put", "patch", "delete"].includes(prop)
           ) {
+            const endpoint = (args: unknown[]) =>
+              typeof args[0] === "string" ? args[0] : "";
             return (...args: unknown[]) =>
-              throttledRequest(
-                gateKey,
-                () => {
-                  const requestId = `close_req_${Date.now()}_${++seqRef.seq}`;
-                  emitLog("info", "Close API request sent", {
-                    requestId,
-                    method: prop.toUpperCase(),
-                    endpoint: typeof args[0] === "string" ? args[0] : "",
-                  });
-                  const startedAt = Date.now();
+              withHttpRetry(
+                () =>
+                  throttledRequest(
+                    gateKey,
+                    () => {
+                      const requestId = `close_req_${Date.now()}_${++seqRef.seq}`;
+                      emitLog("info", "Close API request sent", {
+                        requestId,
+                        method: prop.toUpperCase(),
+                        endpoint: typeof args[0] === "string" ? args[0] : "",
+                      });
+                      const startedAt = Date.now();
 
-                  return (val.apply(target, args) as Promise<any>).then(
-                    (response: any) => {
-                      emitLog("info", "Close API response received", {
-                        requestId,
-                        method: prop.toUpperCase(),
-                        endpoint: typeof args[0] === "string" ? args[0] : "",
-                        status: response.status,
-                        durationMs: Date.now() - startedAt,
-                      });
-                      return response;
+                      return (val.apply(target, args) as Promise<any>).then(
+                        (response: any) => {
+                          emitLog("info", "Close API response received", {
+                            requestId,
+                            method: prop.toUpperCase(),
+                            endpoint:
+                              typeof args[0] === "string" ? args[0] : "",
+                            status: response.status,
+                            durationMs: Date.now() - startedAt,
+                          });
+                          return response;
+                        },
+                        (error: any) => {
+                          emitLog("warn", "Close API request failed", {
+                            requestId,
+                            method: prop.toUpperCase(),
+                            endpoint:
+                              typeof args[0] === "string" ? args[0] : "",
+                            status: error?.response?.status,
+                            durationMs: Date.now() - startedAt,
+                            error: axios.isAxiosError(error)
+                              ? error.message
+                              : String(error),
+                            responseBody: formatCloseApiErrorResponse(error),
+                          });
+                          return Promise.reject(error);
+                        },
+                      );
                     },
-                    (error: any) => {
-                      emitLog("warn", "Close API request failed", {
-                        requestId,
+                    minDelayMs,
+                  ),
+                {
+                  maxRetries: CLOSE_MAX_RETRIES,
+                  // Outside the gate: a backoff wait never holds it.
+                  sleep: ms => sleepFor(ms),
+                  // Reads retry on 429/5xx/network. A write is retried only
+                  // on 429 (not processed), never after a 5xx or a dropped
+                  // connection, which may have applied it.
+                  isRetryable: error =>
+                    isCloseReadRequest(prop, endpoint(args), args)
+                      ? isRetryableHttpError(error)
+                      : getErrorStatus(error) === 429,
+                  onRetry: ({ status, attempt, delayMs, fromRetryAfter }) => {
+                    emitLog(
+                      "warn",
+                      "Close API rate limited or failed, retrying",
+                      {
                         method: prop.toUpperCase(),
-                        endpoint: typeof args[0] === "string" ? args[0] : "",
-                        status: error?.response?.status,
-                        durationMs: Date.now() - startedAt,
-                        error: axios.isAxiosError(error)
-                          ? error.message
-                          : String(error),
-                        responseBody: formatCloseApiErrorResponse(error),
-                      });
-                      return Promise.reject(error);
-                    },
-                  );
+                        endpoint: endpoint(args),
+                        status,
+                        attempt,
+                        delayMs,
+                        fromRetryAfter,
+                      },
+                    );
+                    logger.warn("Close API request retrying", {
+                      endpoint: endpoint(args),
+                      status,
+                      attempt,
+                      delayMs,
+                    });
+                  },
                 },
-                minDelayMs,
               );
           }
           return val;
@@ -1009,56 +1080,39 @@ export class CloseConnector extends BaseConnector {
     }
 
     while (hasMore && iterations < maxIterations) {
-      let response: any;
       const params: any = {
         _limit: batchSize,
         _skip: offset,
         _order_by: "id",
       };
+      const endpoint = this.getEntityEndpoint(entity);
 
-      try {
-        const endpoint = this.getEntityEndpoint(entity);
+      if (since) {
+        const dateFilter = since.toISOString().split("T")[0];
+        params.date_updated__gte = dateFilter;
+        params._order_by = "-date_updated";
+      }
+      const response = await api.get(endpoint, { params });
 
-        if (since) {
-          const dateFilter = since.toISOString().split("T")[0];
-          params.date_updated__gte = dateFilter;
-          params._order_by = "-date_updated";
+      const data = response.data.data || [];
+
+      if (data.length > 0) {
+        await onBatch(data);
+        recordCount += data.length;
+
+        if (onProgress) {
+          onProgress(recordCount, totalCount);
         }
-        response = await api.get(endpoint, { params });
+      }
 
-        const data = response.data.data || [];
+      hasMore = response.data.has_more || false;
 
-        if (data.length > 0) {
-          await onBatch(data);
-          recordCount += data.length;
-
-          if (onProgress) {
-            onProgress(recordCount, totalCount);
-          }
-        }
-
-        hasMore = response.data.has_more || false;
-
-        if (hasMore) {
-          offset += batchSize;
-          iterations++;
-          await this.sleep(rateLimitDelay);
-        } else {
-          break;
-        }
-      } catch (error) {
-        if (axios.isAxiosError(error) && error.response?.status === 429) {
-          const retryAfter = parseInt(
-            error.response.headers["retry-after"] || "60",
-          );
-          logger.warn("Rate limited, waiting", {
-            retryAfterSeconds: retryAfter,
-          });
-          await this.sleep(retryAfter * 1000);
-          // Don't increment iterations for rate limit retries
-        } else {
-          throw error;
-        }
+      if (hasMore) {
+        offset += batchSize;
+        iterations++;
+        await this.sleep(rateLimitDelay);
+      } else {
+        break;
       }
     }
 
@@ -1099,44 +1153,30 @@ export class CloseConnector extends BaseConnector {
     }
 
     while (hasMore && iterations < maxIterations) {
-      try {
-        const params = {
-          _limit: batchSize,
-          _skip: offset,
-          // Note: /user/ endpoint doesn't support _order_by parameter
-        };
+      const params = {
+        _limit: batchSize,
+        _skip: offset,
+        // Note: /user/ endpoint doesn't support _order_by parameter
+      };
 
-        const response = await api.get("/user/", { params });
-        const data = response.data.data || [];
+      const response = await api.get("/user/", { params });
+      const data = response.data.data || [];
 
-        if (data.length > 0) {
-          await onBatch(data);
-          recordCount += data.length;
+      if (data.length > 0) {
+        await onBatch(data);
+        recordCount += data.length;
 
-          if (onProgress) {
-            onProgress(recordCount, totalCount);
-          }
+        if (onProgress) {
+          onProgress(recordCount, totalCount);
         }
+      }
 
-        hasMore = response.data.has_more || false;
+      hasMore = response.data.has_more || false;
 
-        if (hasMore) {
-          offset += batchSize;
-          iterations++;
-          await this.sleep(rateLimitDelay);
-        }
-      } catch (error) {
-        if (axios.isAxiosError(error) && error.response?.status === 429) {
-          const retryAfter = parseInt(
-            error.response.headers["retry-after"] || "60",
-          );
-          logger.warn("Rate limited, waiting", {
-            retryAfterSeconds: retryAfter,
-          });
-          await this.sleep(retryAfter * 1000);
-        } else {
-          throw error;
-        }
+      if (hasMore) {
+        offset += batchSize;
+        iterations++;
+        await this.sleep(rateLimitDelay);
       }
     }
 
@@ -1561,23 +1601,7 @@ export class CloseConnector extends BaseConnector {
         iterations++;
         await this.sleep(rateLimitDelay);
       } catch (error) {
-        if (axios.isAxiosError(error) && error.response?.status === 429) {
-          const retryAfter = parseInt(
-            error.response.headers["retry-after"] || "60",
-          );
-          this.emitSyncLog("warn", "Close API rate limited, waiting", {
-            retryAfterSeconds: retryAfter,
-            entity,
-            recordsFetched: recordCount,
-            page: iterations,
-          });
-          logger.warn("Rate limited on search API, waiting", {
-            retryAfterSeconds: retryAfter,
-            entity,
-            recordsFetched: recordCount,
-          });
-          await this.sleep(retryAfter * 1000);
-        } else if (
+        if (
           axios.isAxiosError(error) &&
           error.response?.status === 400 &&
           error.response?.data?.["field-errors"]?.cursor
@@ -1818,16 +1842,10 @@ export class CloseConnector extends BaseConnector {
         }
         pending.shift();
       } catch (error) {
+        // The client already retried (shared policy); a 429 that
+        // survives that is surfaced, not treated as a field problem.
         if (axios.isAxiosError(error) && error.response?.status === 429) {
-          const retryAfter = parseInt(
-            error.response.headers["retry-after"] || "60",
-          );
-          this.emitSyncLog("warn", "Close API rate limited, waiting", {
-            retryAfterSeconds: retryAfter,
-            objectType,
-          });
-          await this.sleep(retryAfter * 1000);
-          continue;
+          throw error;
         }
         const remainingFields: CloseCustomField[] = pending
           .flatMap(b => b.filter(field => field !== "id"))
@@ -1945,43 +1963,32 @@ export class CloseConnector extends BaseConnector {
     windowField: "date_created" | "date_updated" = "date_created",
   ): Promise<boolean> {
     while (true) {
-      try {
-        const resp = await api.post("/data/search/", {
-          query: {
-            negate: false,
-            type: "and",
-            queries: [
-              { negate: false, type: "object_type", object_type: objectType },
-              {
-                type: "field_condition",
-                field: {
-                  type: "regular_field",
-                  object_type: objectType,
-                  field_name: windowField,
-                },
-                condition: {
-                  type: "moment_range",
-                  on_or_after: { type: "fixed_utc", value: rangeStart },
-                  before: { type: "fixed_utc", value: rangeEnd },
-                },
+      const resp = await api.post("/data/search/", {
+        query: {
+          negate: false,
+          type: "and",
+          queries: [
+            { negate: false, type: "object_type", object_type: objectType },
+            {
+              type: "field_condition",
+              field: {
+                type: "regular_field",
+                object_type: objectType,
+                field_name: windowField,
               },
-            ],
-          },
-          _limit: 1,
-          _fields: { [objectType]: ["id"] },
-        });
+              condition: {
+                type: "moment_range",
+                on_or_after: { type: "fixed_utc", value: rangeStart },
+                before: { type: "fixed_utc", value: rangeEnd },
+              },
+            },
+          ],
+        },
+        _limit: 1,
+        _fields: { [objectType]: ["id"] },
+      });
 
-        return (resp.data?.data?.length ?? 0) > 0;
-      } catch (error) {
-        if (axios.isAxiosError(error) && error.response?.status === 429) {
-          const retryAfter = parseInt(
-            error.response.headers["retry-after"] || "60",
-          );
-          await this.sleep(retryAfter * 1000);
-          continue;
-        }
-        throw error;
-      }
+      return (resp.data?.data?.length ?? 0) > 0;
     }
   }
 
@@ -2051,62 +2058,46 @@ export class CloseConnector extends BaseConnector {
       };
 
       // Fetch data based on entity type
-      try {
-        if (entity === "leads") {
-          response = await this.requestLeadsPage({
-            limit: batchSize,
-            offset,
-            since,
-            orderBy: since ? "-date_updated" : "id",
-          });
-        } else {
-          const endpoint = this.getEntityEndpoint(entity);
+      if (entity === "leads") {
+        response = await this.requestLeadsPage({
+          limit: batchSize,
+          offset,
+          since,
+          orderBy: since ? "-date_updated" : "id",
+        });
+      } else {
+        const endpoint = this.getEntityEndpoint(entity);
 
-          if (since) {
-            const dateFilter = since.toISOString().split("T")[0];
-            params.date_updated__gte = dateFilter;
-            params._order_by = "-date_updated";
-          }
-          response = await api.get(endpoint, { params });
+        if (since) {
+          const dateFilter = since.toISOString().split("T")[0];
+          params.date_updated__gte = dateFilter;
+          params._order_by = "-date_updated";
         }
+        response = await api.get(endpoint, { params });
+      }
 
-        const rawData = response.data.data || [];
-        const data =
-          entity === "leads" ? this.normalizeLeadBatch(rawData) : rawData;
+      const rawData = response.data.data || [];
+      const data =
+        entity === "leads" ? this.normalizeLeadBatch(rawData) : rawData;
 
-        // Pass batch to callback
-        if (data.length > 0) {
-          await onBatch(data);
-          recordCount += data.length;
+      // Pass batch to callback
+      if (data.length > 0) {
+        await onBatch(data);
+        recordCount += data.length;
 
-          if (onProgress) {
-            onProgress(recordCount, totalCount);
-          }
+        if (onProgress) {
+          onProgress(recordCount, totalCount);
         }
+      }
 
-        // Check for more pages
-        hasMore = response.data.has_more || false;
+      // Check for more pages
+      hasMore = response.data.has_more || false;
 
-        if (hasMore) {
-          offset += batchSize;
+      if (hasMore) {
+        offset += batchSize;
 
-          // Rate limiting
-          await this.sleep(rateLimitDelay);
-        }
-      } catch (error) {
-        if (axios.isAxiosError(error) && error.response?.status === 429) {
-          // Handle rate limiting
-          const retryAfter = parseInt(
-            error.response.headers["retry-after"] || "60",
-          );
-          logger.warn("Rate limited, waiting", {
-            retryAfterSeconds: retryAfter,
-          });
-          await this.sleep(retryAfter * 1000);
-          // Don't increment offset, retry the same page
-        } else {
-          throw error;
-        }
+        // Rate limiting
+        await this.sleep(rateLimitDelay);
       }
     }
   }
@@ -2195,49 +2186,33 @@ export class CloseConnector extends BaseConnector {
     }
 
     while (hasMore) {
-      try {
-        const params = {
-          _limit: batchSize,
-          _skip: offset,
-          // Note: /user/ endpoint doesn't support _order_by parameter
-        };
+      const params = {
+        _limit: batchSize,
+        _skip: offset,
+        // Note: /user/ endpoint doesn't support _order_by parameter
+      };
 
-        const response = await api.get("/user/", { params });
-        const data = response.data.data || [];
+      const response = await api.get("/user/", { params });
+      const data = response.data.data || [];
 
-        // Pass batch to callback
-        if (data.length > 0) {
-          await onBatch(data);
-          recordCount += data.length;
+      // Pass batch to callback
+      if (data.length > 0) {
+        await onBatch(data);
+        recordCount += data.length;
 
-          if (onProgress) {
-            onProgress(recordCount, totalCount);
-          }
+        if (onProgress) {
+          onProgress(recordCount, totalCount);
         }
+      }
 
-        // Check for more pages
-        hasMore = response.data.has_more || false;
+      // Check for more pages
+      hasMore = response.data.has_more || false;
 
-        if (hasMore) {
-          offset += batchSize;
+      if (hasMore) {
+        offset += batchSize;
 
-          // Rate limiting
-          await this.sleep(rateLimitDelay);
-        }
-      } catch (error) {
-        if (axios.isAxiosError(error) && error.response?.status === 429) {
-          // Handle rate limiting
-          const retryAfter = parseInt(
-            error.response.headers["retry-after"] || "60",
-          );
-          logger.warn("Rate limited, waiting", {
-            retryAfterSeconds: retryAfter,
-          });
-          await this.sleep(retryAfter * 1000);
-          // Don't increment offset, retry the same page
-        } else {
-          throw error;
-        }
+        // Rate limiting
+        await this.sleep(rateLimitDelay);
       }
     }
   }
@@ -2280,41 +2255,27 @@ export class CloseConnector extends BaseConnector {
     let iterations = 0;
 
     while (hasMore && iterations < maxIterations) {
-      try {
-        const response = await api.get("/group/", {
-          params: {
-            _limit: batchSize,
-            _skip: offset,
-            // `/group/` omits name/members unless explicitly requested.
-            _fields: "id,name,members,organization_id",
-          },
-        });
-        const data = response.data.data || [];
+      const response = await api.get("/group/", {
+        params: {
+          _limit: batchSize,
+          _skip: offset,
+          // `/group/` omits name/members unless explicitly requested.
+          _fields: "id,name,members,organization_id",
+        },
+      });
+      const data = response.data.data || [];
 
-        if (data.length > 0) {
-          await onBatch(data);
-          recordCount += data.length;
-          if (onProgress) onProgress(recordCount, undefined);
-        }
+      if (data.length > 0) {
+        await onBatch(data);
+        recordCount += data.length;
+        if (onProgress) onProgress(recordCount, undefined);
+      }
 
-        hasMore = response.data.has_more || false;
-        if (hasMore) {
-          offset += batchSize;
-          iterations++;
-          await this.sleep(rateLimitDelay);
-        }
-      } catch (error) {
-        if (axios.isAxiosError(error) && error.response?.status === 429) {
-          const retryAfter = parseInt(
-            error.response.headers["retry-after"] || "60",
-          );
-          logger.warn("Rate limited, waiting", {
-            retryAfterSeconds: retryAfter,
-          });
-          await this.sleep(retryAfter * 1000);
-        } else {
-          throw error;
-        }
+      hasMore = response.data.has_more || false;
+      if (hasMore) {
+        offset += batchSize;
+        iterations++;
+        await this.sleep(rateLimitDelay);
       }
     }
 
@@ -2354,36 +2315,22 @@ export class CloseConnector extends BaseConnector {
     let iterations = 0;
 
     while (hasMore && iterations < maxIterations) {
-      try {
-        const response = await api.get(endpoint, {
-          params: { _limit: batchSize, _skip: offset },
-        });
-        const data = response.data.data || [];
+      const response = await api.get(endpoint, {
+        params: { _limit: batchSize, _skip: offset },
+      });
+      const data = response.data.data || [];
 
-        if (data.length > 0) {
-          await onBatch(data);
-          recordCount += data.length;
-          if (onProgress) onProgress(recordCount, undefined);
-        }
+      if (data.length > 0) {
+        await onBatch(data);
+        recordCount += data.length;
+        if (onProgress) onProgress(recordCount, undefined);
+      }
 
-        hasMore = response.data.has_more || false;
-        if (hasMore) {
-          offset += batchSize;
-          iterations++;
-          await this.sleep(rateLimitDelay);
-        }
-      } catch (error) {
-        if (axios.isAxiosError(error) && error.response?.status === 429) {
-          const retryAfter = parseInt(
-            error.response.headers["retry-after"] || "60",
-          );
-          logger.warn("Rate limited, waiting", {
-            retryAfterSeconds: retryAfter,
-          });
-          await this.sleep(retryAfter * 1000);
-        } else {
-          throw error;
-        }
+      hasMore = response.data.has_more || false;
+      if (hasMore) {
+        offset += batchSize;
+        iterations++;
+        await this.sleep(rateLimitDelay);
       }
     }
 

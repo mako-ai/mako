@@ -161,8 +161,8 @@ describe("published deployment artifact source", () => {
       contentType: "text/html; charset=utf-8",
       size: 10,
     });
-    expect(stores.primary.exists).toHaveBeenCalledWith(indexKey);
-    expect(stores.primary.openReadStream).not.toHaveBeenCalled();
+    expect(stores.primary!.exists).toHaveBeenCalledWith(indexKey);
+    expect(stores.primary!.openReadStream).not.toHaveBeenCalled();
     expect(stores.source.openReadStream).toHaveBeenCalledWith(indexKey);
   });
 
@@ -231,7 +231,7 @@ describe("published deployment artifact source", () => {
 
     expect(await deploymentExists(projectId, sha)).toBe(true);
 
-    expect(stores.primary.exists).toHaveBeenCalledWith(indexKey);
+    expect(stores.primary!.exists).toHaveBeenCalledWith(indexKey);
     expect(stores.source.exists).not.toHaveBeenCalled();
   });
 
@@ -247,7 +247,7 @@ describe("published deployment artifact source", () => {
 
     expect(response?.status).toBe(200);
     expect(await response?.text()).toBe(`true:${bindingKey}`);
-    expect(stores.primary.exists).toHaveBeenCalledWith(bindingKey);
+    expect(stores.primary!.exists).toHaveBeenCalledWith(bindingKey);
     expect(stores.source.exists).toHaveBeenCalledWith(bindingKey);
   });
 
@@ -277,7 +277,7 @@ describe("published deployment artifact source", () => {
     expect(anonymous?.headers.get("cache-control")).toBe("private, no-store");
     expect(await anonymous?.json()).toBeNull();
     // Never a store read: identity is not an artifact.
-    expect(stores.primary.exists).not.toHaveBeenCalled();
+    expect(stores.primary!.exists).not.toHaveBeenCalled();
   });
 });
 

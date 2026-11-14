@@ -36,22 +36,44 @@ import { loggers } from "../logging";
 const logger = loggers.auth();
 
 /**
- * Public origin clients use to reach Mako (the Vite dev server proxy or the
- * production host). Falls back to the request's own origin so a deployment
- * without PUBLIC_URL still serves consistent metadata.
+ * Whether `host` is this service's own direct Cloud Run hostname. Cloud Run
+ * routes by Host, so a request carrying another service's run.app name never
+ * reaches us; on Cloud Run (K_SERVICE set) the name must also be ours.
  */
-function publicBaseUrl(c: Context): string {
+export function isOwnRunAppHost(host: string): boolean {
+  const hostname = host.split(":")[0].toLowerCase();
+  if (!hostname.endsWith(".run.app")) return false;
+  const service = process.env.K_SERVICE?.toLowerCase();
+  return !service || hostname.startsWith(`${service}-`);
+}
+
+/**
+ * Public origin clients use to reach Mako (the Vite dev server proxy or the
+ * production host): the issuer and every endpoint in the discovery
+ * documents. Configuration first — PUBLIC_URL, CLIENT_URL, BASE_URL — and
+ * never `x-forwarded-host`, which any client can set: these documents tell
+ * an MCP client where to send the user's sign-in, so a request-controlled
+ * value would let a crafted request advertise an attacker's host (and poison
+ * any cache in front). Only with nothing configured does the request's own
+ * Host decide.
+ */
+export function publicBaseUrl(c: Context): string {
   const url = new URL(c.req.url);
-  const proto = c.req.header("x-forwarded-proto") || url.protocol.slice(0, -1);
-  const host = c.req.header("x-forwarded-host") || url.host;
+  const host = url.host;
   // A direct Cloud Run host bypasses the CDN/WAF that fronts the canonical
   // domain. Serve self-referential metadata there so the entire OAuth dance
   // stays on the host the client actually reached — e.g. connecting claude.ai
   // to a PR preview via its *.run.app URL when Cloudflare blocks Anthropic's
-  // user agents on the canonical host.
-  if (host.endsWith(".run.app")) return `${proto}://${host}`;
-  const configured = process.env.PUBLIC_URL || process.env.CLIENT_URL;
+  // user agents on the canonical host. run.app is always https.
+  if (isOwnRunAppHost(host)) return `https://${host}`;
+  const configured =
+    process.env.PUBLIC_URL || process.env.CLIENT_URL || process.env.BASE_URL;
   if (configured) return configured.replace(/\/$/, "");
+  const forwardedProto = c.req.header("x-forwarded-proto")?.split(",")[0];
+  const proto =
+    forwardedProto === "https" || forwardedProto === "http"
+      ? forwardedProto
+      : url.protocol.slice(0, -1);
   return `${proto}://${host}`;
 }
 

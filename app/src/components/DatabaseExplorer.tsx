@@ -9,6 +9,7 @@ import {
   ListItemIcon,
   Tooltip,
   Button,
+  Snackbar,
 } from "@mui/material";
 import {
   Database as DatabaseIcon,
@@ -163,7 +164,8 @@ function DatabaseExplorer({
     ? error[`connections:${currentWorkspace.id}`]
     : null;
 
-  const { types: dbTypes, fetchTypes } = useDatabaseCatalogStore();
+  const dbTypes = useDatabaseCatalogStore(s => s.types);
+  const fetchTypes = useDatabaseCatalogStore(s => s.fetchTypes);
 
   useEffect(() => {
     fetchTypes().catch(() => undefined);
@@ -183,11 +185,13 @@ function DatabaseExplorer({
   const toggleNode = useExplorerStore(s => s.toggleNode);
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  // Shown in a snackbar instead of a blocking native alert().
+  const [actionError, setActionError] = useState<string | null>(null);
   const [editingDatabaseId, setEditingDatabaseId] = useState<
     string | undefined
   >(undefined);
 
-  const ensureAgentChecked = useLocalAgentStore(s => s.ensureChecked);
+  const ensureAgentChecked = useLocalAgentStore(s => s.autoCheck);
 
   useEffect(() => {
     if (currentWorkspace) {
@@ -202,8 +206,14 @@ function DatabaseExplorer({
 
   useEffect(() => {
     if (!currentWorkspace) return;
+    const errors = useSchemaStore.getState().error;
     databases.forEach(db => {
       const hasNodes = treeNodes[db.id] && treeNodes[db.id]["root"];
+      // A failed root stores only an error, never nodes; without this check
+      // every unrelated tree change re-requested an unreachable database
+      // (each possibly waiting out a connection timeout). The user retries
+      // with Refresh, which clears the error.
+      if (errors[`tree:${db.id}:root`]) return;
       if (!hasNodes) {
         ensureTreeRoot(currentWorkspace.id, db.id);
       }
@@ -564,7 +574,7 @@ function DatabaseExplorer({
                   err instanceof Error
                     ? err.message
                     : "Failed to delete database";
-                alert(message);
+                setActionError(message);
               }
             }}
           >
@@ -734,7 +744,11 @@ function DatabaseExplorer({
           {connectionError}
         </Alert>
         <Box sx={{ textAlign: "center" }}>
-          <IconButton onClick={handleRefresh} color="primary">
+          <IconButton
+            aria-label="Refresh connections"
+            onClick={handleRefresh}
+            color="primary"
+          >
             <RefreshIcon />
           </IconButton>
         </Box>
@@ -838,6 +852,20 @@ function DatabaseExplorer({
         }
       </ExplorerShell>
 
+      <Snackbar
+        open={actionError !== null}
+        autoHideDuration={6000}
+        onClose={() => setActionError(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert
+          severity="error"
+          variant="filled"
+          onClose={() => setActionError(null)}
+        >
+          {actionError}
+        </Alert>
+      </Snackbar>
       <CreateDatabaseDialog
         open={createDialogOpen}
         onClose={() => {

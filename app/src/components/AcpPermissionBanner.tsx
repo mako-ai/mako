@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Alert, Button, Stack, Typography } from "@mui/material";
 import { useAcpStore } from "../store/acpStore";
 
@@ -25,17 +26,23 @@ function toolLabel(toolCall: unknown): string {
  * composer — never send the user to a terminal to approve.
  */
 export function AcpPermissionBanner() {
-  const pending = useAcpStore(s => {
-    const activeId = s.activeSessionId;
-    const activePrompt = activeId ? s.permissionsBySession[activeId] : null;
-    if (activeId && activePrompt) {
-      return { sessionId: activeId, prompt: activePrompt };
+  // Select the raw slices separately: a selector that builds a fresh object
+  // on every call makes zustand 5's useSyncExternalStore loop forever
+  // ("Maximum update depth exceeded") as soon as a prompt is pending.
+  const activeSessionId = useAcpStore(s => s.activeSessionId);
+  const permissionsBySession = useAcpStore(s => s.permissionsBySession);
+  const pending = useMemo(() => {
+    const activePrompt = activeSessionId
+      ? permissionsBySession[activeSessionId]
+      : null;
+    if (activeSessionId && activePrompt) {
+      return { sessionId: activeSessionId, prompt: activePrompt };
     }
-    for (const [sessionId, prompt] of Object.entries(s.permissionsBySession)) {
+    for (const [sessionId, prompt] of Object.entries(permissionsBySession)) {
       if (prompt) return { sessionId, prompt };
     }
     return null;
-  });
+  }, [activeSessionId, permissionsBySession]);
   const respondPermission = useAcpStore(s => s.respondPermission);
   const setActiveSession = useAcpStore(s => s.setActiveSession);
   const sessions = useAcpStore(s => s.sessions);

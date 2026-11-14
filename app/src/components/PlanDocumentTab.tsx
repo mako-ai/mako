@@ -11,7 +11,7 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import MonacoEditor from "@monaco-editor/react";
+import MonacoEditor from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import {
   Circle,

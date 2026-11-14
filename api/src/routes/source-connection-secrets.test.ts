@@ -191,12 +191,12 @@ describe("source-connection reads never return a credential", () => {
 
     const stored = await Connector.findById(id).lean();
     expect(
-      (stored as { config: { api_key: string; account: string } }).config
-        .api_key,
+      (stored as unknown as { config: { api_key: string; account: string } })
+        .config.api_key,
     ).toBe(ciphertext);
     expect(
-      (stored as { config: { api_key: string; account: string } }).config
-        .account,
+      (stored as unknown as { config: { api_key: string; account: string } })
+        .config.account,
     ).toBe("acct_456");
   });
 
@@ -234,7 +234,10 @@ describe("source-connection reads never return a credential", () => {
       workspaceId: new Types.ObjectId(WS),
       name: "Hasura",
       type: "graphql",
-      config: { headers: ciphertext, endpoint: "https://api.example.com" },
+      config: {
+        headers: ciphertext,
+        endpoint: "https://api.example.com",
+      } as Record<string, unknown>,
       isActive: true,
       createdBy: "u1",
       settings: {

@@ -173,6 +173,76 @@
           }
         }
       },
+      "ChatListResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "chats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatListEntry"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` for the next page; null at the end."
+          }
+        },
+        "required": [
+          "success",
+          "chats",
+          "nextCursor"
+        ]
+      },
+      "ChatListEntry": {
+        "type": "object",
+        "properties": {
+          "_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "activeStreamId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set while a turn is generating server-side."
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "totalTokens": {
+                "type": "number"
+              },
+              "costUsd": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "required": [
+          "_id",
+          "title"
+        ]
+      },
       "Error": {
         "type": "object",
         "properties": {
@@ -9116,6 +9186,7 @@
           "Chats"
         ],
         "summary": "List chats",
+        "description": "The caller's own chats in this workspace, most recently updated first, paginated by an opaque keyset cursor: pass `nextCursor` back as `cursor` until it is null. App chats and workflow-step runs are not listed. Entries carry only list metadata (title, timestamps, streaming pointer, token/cost totals) — fetch a chat by id for its messages. 400 on a cursor the server did not issue.",
         "security": [
           {
             "cookieAuth": []
@@ -9132,25 +9203,38 @@
             "required": true,
             "name": "workspaceId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "description": "Page size (default 30, max 100)."
+            },
+            "required": false,
+            "description": "Page size (default 30, max 100).",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 512,
+              "description": "Opaque `nextCursor` from the previous page. Omit for the first page."
+            },
+            "required": false,
+            "description": "Opaque `nextCursor` from the previous page. Omit for the first page.",
+            "name": "cursor",
+            "in": "query"
           }
         ],
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "One page of chats",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ChatListResponse"
                 }
               }
             }
@@ -34100,7 +34184,7 @@
           "Webhooks"
         ],
         "summary": "Receive an inbound connector webhook",
-        "description": "Inbound webhook receiver for connector flows. Public — authenticated via the connector's signature, not session/API key.",
+        "description": "Inbound webhook receiver for connector flows. Public — authenticated via the connector's signature, or, for connectors without one, the flow's shared secret (X-Mako-Webhook-Token header, Bearer token or ?token=). Not session/API key.",
         "security": [],
         "parameters": [
           {

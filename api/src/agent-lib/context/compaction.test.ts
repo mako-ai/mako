@@ -141,7 +141,7 @@ t("leaves small tool outputs alone even in old turns", () => {
           state: "output-available",
         },
       ],
-    } as UIMessage,
+    } as unknown as UIMessage,
     userMsg("u1", "q1"),
     assistantWithTool("a1", "1"),
     userMsg("u2", "q2"),

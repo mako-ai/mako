@@ -122,7 +122,7 @@ describe("describeAppData", () => {
 });
 
 describe("direct httpfs mode", () => {
-  let server: http.Server;
+  let server: http.Server | undefined;
   let allowedUrl: string;
   let forbiddenUrl: string;
   let remoteTables: AppDataTable[];
@@ -139,7 +139,7 @@ describe("direct httpfs mode", () => {
     if (!secretParquet || !ordersParquet) {
       throw new Error("expected local parquet fixtures");
     }
-    server = http.createServer((req, res) => {
+    const listening = http.createServer((req, res) => {
       const file =
         req.url && req.url.startsWith("/secret")
           ? secretParquet
@@ -152,8 +152,11 @@ describe("direct httpfs mode", () => {
       });
       res.end(buf);
     });
-    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-    const addr = server.address();
+    server = listening;
+    await new Promise<void>(resolve =>
+      listening.listen(0, "127.0.0.1", resolve),
+    );
+    const addr = listening.address();
     if (!addr || typeof addr === "string") {
       throw new Error("httpfs test server has no port");
     }
@@ -164,7 +167,7 @@ describe("direct httpfs mode", () => {
   });
 
   afterAll(() => {
-    server.close();
+    server?.close();
     if (originalExtensionDir === undefined) {
       delete process.env[DUCKDB_EXTENSION_DIR_ENV];
     } else {

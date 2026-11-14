@@ -17,9 +17,9 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.8.0",
-    "@hono/node-server": "^2.1.4",
+    "@hono/node-server": "^2.1.8",
     "@mako/agent-tools": "workspace:*",
-    "hono": "^4.13.13"
+    "hono": "^4.13.18"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

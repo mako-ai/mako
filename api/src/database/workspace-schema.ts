@@ -6,6 +6,12 @@ import {
   WORKSPACE_API_KEY_SCOPES,
   type WorkspaceApiKeyScope,
 } from "../auth/api-key-scopes";
+import {
+  FLOW_EXECUTION_TTL_INDEX_NAME,
+  FLOW_EXECUTION_TTL_KEY,
+  FLOW_EXECUTION_TTL_PARTIAL_FILTER,
+  flowExecutionRetentionSeconds,
+} from "./flow-execution-retention";
 
 // Encryption: ONE implementation, in services/crypto.service. These names
 // are kept for the many callers that import them from here.
@@ -1167,6 +1173,13 @@ export interface IFlow extends Document {
   };
 
   lastRunAt?: Date;
+  /**
+   * When the poll scheduler last dispatched this flow (its atomic claim).
+   * A dispatched run can sit queued behind `concurrency: 1` before it
+   * stamps `lastRunAt`; due-ness counts from the later of the two so the
+   * next tick does not dispatch it again. Runtime state, never in YAML.
+   */
+  lastScheduledDispatchAt?: Date;
   lastSuccessAt?: Date;
   lastError?: string;
   nextRunAt?: Date;
@@ -1606,9 +1619,14 @@ const WorkspaceMemberSchema = new Schema<IWorkspaceMember>({
 // Indexes
 WorkspaceMemberSchema.index({ workspaceId: 1, userId: 1 }, { unique: true });
 WorkspaceMemberSchema.index({ userId: 1 });
-// Prevent duplicate default workspace creation during concurrent onboarding requests
+// Prevent duplicate default workspace creation during concurrent onboarding
+// requests. The key must differ from the plain `{ userId: 1 }` index above:
+// Mongoose drops an unnamed index whose key duplicates an earlier one, so a
+// `{ userId: 1 }` partial index here was silently never created. Existing
+// deployments get it from migration
+// 2026-11-14-195939_workspace_member_default_membership_unique.
 WorkspaceMemberSchema.index(
-  { userId: 1 },
+  { userId: 1, isDefaultMembership: 1 },
   { unique: true, partialFilterExpression: { isDefaultMembership: true } },
 );
 
@@ -2161,6 +2179,10 @@ SavedConsoleSchema.index(
   { workspaceId: 1, "scheduledRun.nextAt": 1 },
   { sparse: true },
 );
+// The every-minute scheduler scan (services/scheduled-run-claim.ts) filters
+// `scheduledRun.nextAt <= now` across ALL workspaces, so the workspace-led
+// index above cannot serve it.
+SavedConsoleSchema.index({ "scheduledRun.nextAt": 1 }, { sparse: true });
 SavedConsoleSchema.index(
   { workspaceId: 1, lastExternalUsedAt: 1 },
   { sparse: true, name: "savedconsoles_workspace_last_external_used" },
@@ -2413,7 +2435,10 @@ const ChatSchema = new Schema<IChat>(
 // Indexes
 ChatSchema.index({ workspaceId: 1 });
 ChatSchema.index({ workspaceId: 1, title: 1 });
-ChatSchema.index({ workspaceId: 1, createdBy: 1 }); // For user-specific chat queries
+// A user's chat list, newest first (services/chat-list.service.ts): the
+// keyset sort `(updatedAt desc, _id desc)` is served by the index instead of
+// in memory. Also covers `{ workspaceId, createdBy }`.
+ChatSchema.index({ workspaceId: 1, createdBy: 1, updatedAt: -1, _id: -1 });
 ChatSchema.index(
   { workspaceId: 1, appId: 1, createdBy: 1, updatedAt: -1 },
   { partialFilterExpression: { appId: { $type: "string" } } },
@@ -2810,6 +2835,7 @@ const FlowSchema = new Schema<IFlow>(
       trigger: { type: String, enum: ["scheduled", "manual"] },
     },
     lastRunAt: Date,
+    lastScheduledDispatchAt: Date,
     lastSuccessAt: Date,
     lastError: String,
     nextRunAt: Date,
@@ -2834,6 +2860,8 @@ const FlowSchema = new Schema<IFlow>(
 
 // Indexes
 FlowSchema.index({ workspaceId: 1, "schedule.enabled": 1 });
+// The poll scheduler's scan (buildScheduledFlowSelection) has no workspaceId.
+FlowSchema.index({ "schedule.enabled": 1 });
 // One file per slug per workspace. Sparse so rows awaiting the backfill
 // (no slug yet) do not collide with each other on null.
 FlowSchema.index({ workspaceId: 1, slug: 1 }, { unique: true, sparse: true });
@@ -2891,6 +2919,17 @@ const FlowExecutionSchema = new Schema<IFlowExecution>(
 
 // Indexes
 FlowExecutionSchema.index({ flowId: 1, startedAt: -1 });
+// cleanup-abandoned-flows scans `{ status: "running", lastHeartbeat < t }`
+// every 5 minutes.
+FlowExecutionSchema.index({ status: 1, lastHeartbeat: 1 });
+// Run-history retention: finished runs expire FLOW_EXECUTION_RETENTION_DAYS
+// (default 90) after completedAt; running ones never (partial on terminal
+// statuses). See flow-execution-retention.ts.
+FlowExecutionSchema.index(FLOW_EXECUTION_TTL_KEY, {
+  name: FLOW_EXECUTION_TTL_INDEX_NAME,
+  expireAfterSeconds: flowExecutionRetentionSeconds(),
+  partialFilterExpression: FLOW_EXECUTION_TTL_PARTIAL_FILTER,
+});
 
 /**
  * WebhookEvent Schema
@@ -5229,6 +5268,71 @@ AppUsageDailySchema.index({ workspaceId: 1, userId: 1, lastAt: -1 });
 export const AppUsageDaily = mongoose.model<IAppUsageDaily>(
   "AppUsageDaily",
   AppUsageDailySchema,
+);
+
+/** Rows of skill_usage_daily expire this long after their last bump. */
+export const SKILL_USAGE_TTL_SECONDS = 400 * 24 * 60 * 60;
+
+/**
+ * Which skills get read, rolled up per UTC day (skill-usage.service). One row
+ * per (workspace, scope, skill, source, day), bumped with `$inc` upserts, so
+ * the collection grows with distinct skill-days, never with traffic. Counts
+ * only: no user, no chat, no query text. `skill` is the folder name, so a
+ * renamed skill starts a new history. Rows expire 400 days after their last
+ * bump (the TTL index on `lastAt`).
+ */
+export interface ISkillUsageDaily extends Document {
+  workspaceId: Types.ObjectId;
+  scope: "workspace" | "system";
+  skill: string;
+  /** Who asked: the in-product agent, or a client over MCP. */
+  source: "agent" | "mcp";
+  /** UTC day, `YYYY-MM-DD`. */
+  day: string;
+  /** `load_skill` calls that returned the skill. */
+  loads: number;
+  /** `read_skill_resource` calls that returned one of its files. */
+  resourceReads: number;
+  /** Bodies returned by `get_relevant_skills` or `search_skills`. */
+  relevantHits: number;
+  firstAt: Date;
+  lastAt: Date;
+}
+
+const SkillUsageDailySchema = new Schema<ISkillUsageDaily>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    scope: { type: String, enum: ["workspace", "system"], required: true },
+    skill: { type: String, required: true },
+    source: { type: String, enum: ["agent", "mcp"], required: true },
+    day: { type: String, required: true },
+    loads: { type: Number, default: 0 },
+    resourceReads: { type: Number, default: 0 },
+    relevantHits: { type: Number, default: 0 },
+    firstAt: { type: Date, required: true },
+    lastAt: { type: Date, required: true },
+  },
+  { collection: "skill_usage_daily", versionKey: false },
+);
+
+SkillUsageDailySchema.index(
+  { workspaceId: 1, scope: 1, skill: 1, source: 1, day: 1 },
+  { unique: true },
+);
+// The 30-day window scan behind `list_skills`.
+SkillUsageDailySchema.index({ workspaceId: 1, day: 1 });
+SkillUsageDailySchema.index(
+  { lastAt: 1 },
+  { expireAfterSeconds: SKILL_USAGE_TTL_SECONDS },
+);
+
+export const SkillUsageDaily = mongoose.model<ISkillUsageDaily>(
+  "SkillUsageDaily",
+  SkillUsageDailySchema,
 );
 
 /**

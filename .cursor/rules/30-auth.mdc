@@ -1,13 +1,14 @@
 ---
 globs: api/src/auth/**/*.ts
-description: Authentication stack (Lucia, API keys, unified middleware)
+description: Authentication stack (in-repo sessions + OAuth client, API keys, unified middleware)
 ---
 
 # Auth Guidelines
 
-- High-level overview: [AUTH_README.md](mdc:AUTH_README.md) and [AUTH_IMPLEMENTATION_SUMMARY.md](mdc:AUTH_IMPLEMENTATION_SUMMARY.md).
+- High-level overview: [AUTH_README.md](mdc:AUTH_README.md).
 - Middleware entry points: [api/src/auth/unified-auth.middleware.ts](mdc:api/src/auth/unified-auth.middleware.ts), [api/src/auth/api-key.middleware.ts](mdc:api/src/auth/api-key.middleware.ts).
-- Lucia config: [api/src/auth/lucia.ts](mdc:api/src/auth/lucia.ts) and adapter in [api/src/auth/mongodb-adapter.ts](mdc:api/src/auth/mongodb-adapter.ts).
+- Sessions: [api/src/auth/session.ts](mdc:api/src/auth/session.ts) (`sessionManager`, Mongo `Session` model, `auth_session` cookie). There is no Lucia; it was removed.
+- OAuth login: [api/src/auth/oauth-client.ts](mdc:api/src/auth/oauth-client.ts) (small in-repo Google PKCE / GitHub client that replaced `arctic`), wired in [api/src/auth/oauth-providers.ts](mdc:api/src/auth/oauth-providers.ts) and [api/src/auth/auth.controller.ts](mdc:api/src/auth/auth.controller.ts).
 
 Environment (local defaults):
 
@@ -57,7 +58,7 @@ routes.use("*", async (c: AuthenticatedContext, next) => {
 ## Rules
 
 - Prefer `unified-auth.middleware` at route boundaries; only fall back to API key middleware for machine-to-machine endpoints.
-- Store sessions via the MongoDB adapter; do not bypass the adapter or write sessions directly.
-- When adding new protected endpoints, cover with entries in [AUTH_TESTING_CHECKLIST.md](mdc:AUTH_TESTING_CHECKLIST.md).
+- Create, validate and invalidate sessions through `sessionManager` (`api/src/auth/session.ts`); do not write `Session` documents directly.
+- When adding new protected endpoints, add a test that an unauthenticated and a wrong-workspace request are refused.
 - **Always include an `else` clause** in workspace verification middleware to reject unauthenticated requests.
 - Call `enrichContextWithWorkspace()` or `enrichContextWithUser()` only AFTER authorization succeeds.

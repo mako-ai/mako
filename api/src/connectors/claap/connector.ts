@@ -16,9 +16,10 @@ import {
   type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import { resolveClaapEntitySchema } from "./schema";
-import axios, { AxiosError, AxiosInstance } from "axios";
+import axios, { AxiosInstance } from "axios";
 import { loggers } from "../../logging";
 import { safeFetch } from "../../services/safe-fetch.service";
+import { withHttpRetry } from "../base/http-retry";
 
 const logger = loggers.connector("claap");
 
@@ -376,43 +377,21 @@ export class ClaapConnector extends BaseConnector {
     return undefined;
   }
 
+  /** Shared policy: backoff with jitter, Retry-After, 429/5xx/network. */
   private async executeWithRetry<T>(
     fn: () => Promise<T>,
     maxRetries = 5,
   ): Promise<T> {
-    let attempt = 0;
-    while (true) {
-      try {
-        return await fn();
-      } catch (error) {
-        const axiosError = error as AxiosError;
-        const status = axiosError.response?.status;
-        const retryable =
-          status === 429 ||
-          (status !== undefined && status >= 500 && status < 600);
-
-        if (!retryable || attempt >= maxRetries) {
-          throw error;
-        }
-
-        const retryAfterHeader = axiosError.response?.headers?.["retry-after"];
-        const retryAfterSeconds = parseInt(
-          String(retryAfterHeader ?? "60"),
-          10,
-        );
-        const delayMs = Number.isFinite(retryAfterSeconds)
-          ? retryAfterSeconds * 1000
-          : Math.min(1000 * 2 ** attempt, 60_000);
-
+    return withHttpRetry(fn, {
+      maxRetries,
+      sleep: ms => this.sleep(ms),
+      onRetry: ({ status, attempt, delayMs }) =>
         logger.warn("Claap API rate limited or server error, retrying", {
           status,
-          attempt: attempt + 1,
+          attempt,
           delayMs,
-        });
-        await this.sleep(delayMs);
-        attempt++;
-      }
-    }
+        }),
+    });
   }
 
   async testConnection(): Promise<ConnectionTestResult> {

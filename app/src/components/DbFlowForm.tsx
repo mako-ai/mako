@@ -6,6 +6,7 @@ import {
   useImperativeHandle,
   useRef,
   useCallback,
+  useId,
 } from "react";
 import { useForm, Controller } from "react-hook-form";
 import {
@@ -43,7 +44,7 @@ import {
   NavigateNext as NextIcon,
   ExpandMore as ExpandMoreIcon,
 } from "@mui/icons-material";
-import Editor, { Monaco, OnMount } from "@monaco-editor/react";
+import Editor, { type Monaco, type OnMount } from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
@@ -51,6 +52,11 @@ import { useSchemaStore, TreeNode } from "../store/schemaStore";
 import { trackEvent } from "../lib/analytics";
 import { ConnectionSelector } from "./ConnectionSelector";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
+import {
+  dbFlowQueryModelPath,
+  modelUriMatchesPath,
+  modelUriOf,
+} from "../lib/sql-autocomplete/modelScope";
 import { SchemaMappingTable, TypeCoercion } from "./SchemaMappingTable";
 import { FlowRunNotificationsSection } from "./FlowRunNotificationsSection";
 import { useConfirm } from "./ConfirmDialog";
@@ -200,17 +206,14 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
   ) {
     const { currentWorkspace } = useWorkspace();
     const confirm = useConfirm();
-    const {
-      flows: flowsMap,
-      loading: _loadingMap,
-      error: errorMap,
-      createFlow,
-      updateFlow,
-      clearError,
-      deleteFlow,
-      validateDbQuery,
-      fetchFlowDetails,
-    } = useFlowStore();
+    const flowsMap = useFlowStore(s => s.flows);
+    const errorMap = useFlowStore(s => s.error);
+    const createFlow = useFlowStore(s => s.createFlow);
+    const updateFlow = useFlowStore(s => s.updateFlow);
+    const clearError = useFlowStore(s => s.clearError);
+    const deleteFlow = useFlowStore(s => s.deleteFlow);
+    const validateDbQuery = useFlowStore(s => s.validateDbQuery);
+    const fetchFlowDetails = useFlowStore(s => s.fetchFlowDetails);
 
     // Get workspace-specific data
     const flows = useMemo(
@@ -275,7 +278,15 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
 
     // Monaco editor refs
     const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
-    const monacoRef = useRef<Monaco | null>(null);
+    // State, not a ref: the SQL autocomplete hook must see the instance once
+    // the editor mounts (a ref read during render stayed null).
+    const [monacoInstance, setMonacoInstance] = useState<Monaco | null>(null);
+    // Unique model path for this form's query editor: both completion
+    // providers below answer only for this model, so they neither leak into
+    // consoles nor into another open flow form.
+    const queryModelPath = dbFlowQueryModelPath(useId());
+    const queryModelPathRef = useRef(queryModelPath);
+    queryModelPathRef.current = queryModelPath;
     const templateCompletionDisposable = useRef<{ dispose: () => void } | null>(
       null,
     );
@@ -293,6 +304,11 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
         monaco.languages.registerCompletionItemProvider("sql", {
           triggerCharacters: ["{"],
           provideCompletionItems: (model, position) => {
+            if (
+              !modelUriMatchesPath(modelUriOf(model), queryModelPathRef.current)
+            ) {
+              return { suggestions: [] };
+            }
             const textBefore = model.getValueInRange({
               startLineNumber: position.lineNumber,
               startColumn: Math.max(1, position.column - 2),
@@ -491,8 +507,9 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
 
     // SQL autocomplete for schema-aware completions
     useSqlAutocomplete({
-      monaco: monacoRef.current,
+      monaco: monacoInstance,
       getWorkspaceId: () => currentWorkspace?.id,
+      acceptsModel: uri => modelUriMatchesPath(uri, queryModelPath),
       getConnectionId: getSourceConnectionId,
       getConnectionType: getSourceConnectionType,
     });
@@ -1301,6 +1318,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                   >
                                     <Editor
                                       language="sql"
+                                      path={queryModelPath}
                                       value={field.value}
                                       theme={monacoTheme}
                                       onChange={value =>
@@ -1314,7 +1332,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                       }}
                                       onMount={(editor, monaco) => {
                                         editorRef.current = editor;
-                                        monacoRef.current = monaco;
+                                        setMonacoInstance(monaco);
                                         registerTemplateCompletions(monaco);
                                       }}
                                     />
