@@ -5014,7 +5014,7 @@
                       "properties": {
                         "principal": {
                           "type": "string",
-                          "pattern": "^(user:[A-Za-z0-9_-]+|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$",
+                          "pattern": "^(user:[A-Za-z0-9_-]+|workflow:\\*|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$",
                           "example": "workflow:crm-chat-issues"
                         },
                         "where": {
@@ -12009,7 +12009,7 @@
         "tags": [
           "Source Connections"
         ],
-        "summary": "Who may write through this source connection",
+        "summary": "Who may read live and write through this source connection",
         "security": [
           {
             "cookieAuth": []
@@ -12084,7 +12084,7 @@
         "tags": [
           "Source Connections"
         ],
-        "summary": "Change who may write through this source connection",
+        "summary": "Change who may read live and write through this source connection",
         "security": [
           {
             "cookieAuth": []
@@ -12136,6 +12136,26 @@
                   },
                   "liveReads": {
                     "type": "boolean"
+                  },
+                  "liveReaders": {
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "principal": {
+                          "type": "string",
+                          "pattern": "^(user:[A-Za-z0-9_-]+|workflow:\\*|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$",
+                          "example": "workflow:*"
+                        }
+                      },
+                      "required": [
+                        "principal"
+                      ]
+                    },
+                    "maxItems": 200
                   }
                 },
                 "required": [
@@ -13321,7 +13341,7 @@
         "tags": [
           "Source Connections"
         ],
-        "summary": "Who may write through this source connection",
+        "summary": "Who may read live and write through this source connection",
         "security": [
           {
             "cookieAuth": []
@@ -13396,7 +13416,7 @@
         "tags": [
           "Source Connections"
         ],
-        "summary": "Change who may write through this source connection",
+        "summary": "Change who may read live and write through this source connection",
         "security": [
           {
             "cookieAuth": []
@@ -13448,6 +13468,26 @@
                   },
                   "liveReads": {
                     "type": "boolean"
+                  },
+                  "liveReaders": {
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "principal": {
+                          "type": "string",
+                          "pattern": "^(user:[A-Za-z0-9_-]+|workflow:\\*|workflow:[A-Za-z0-9][A-Za-z0-9_-]{0,99})$",
+                          "example": "workflow:*"
+                        }
+                      },
+                      "required": [
+                        "principal"
+                      ]
+                    },
+                    "maxItems": 200
                   }
                 },
                 "required": [

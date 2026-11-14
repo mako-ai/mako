@@ -5,25 +5,27 @@
  * Reads are live reads: on only where a manager turned them on in the Access
  * tab (every connection starts off, and one made before live reads existed,
  * with no `liveReads` stored, is off), and then for everyone in the
- * workspace. GET, HEAD, OPTIONS, a connection's `reads` (a Close search POST)
+ * workspace, or, when the connection has a live readers list, only for the
+ * principals on it and its writers (same identity rule as writers; a request
+ * that identifies no one reads nothing there). GET, HEAD, OPTIONS, a connection's `reads` (a Close search POST)
  * and a GraphQL query are reads; everything else is a write, for the
  * principals on the connection's writers list only (the same list and the
  * same identity rule as database connections, access/connection-writes.ts):
  * a person's own run writes as `user:<id>`, and a request that identifies no
- * one writes nothing, nor does a viewer. Deployed workflows share one
- * identity today (the worker's key; the name a request sends cannot be
- * trusted), so a source connection lists them as one, `workflow:*` ("All
- * deployed workflows"): a deployed workflow writes iff it is listed. An
+ * one writes nothing, nor does a viewer. A deployed workflow acts as itself,
+ * by the workflow pass its step calls with (workflows/pass.ts), so a list
+ * names it alone (`workflow:<name>`) or every deployed workflow at once
+ * (`workflow:*`): a deployed workflow reads or writes iff it is listed. An
  * agent (an MCP login) only reads when it calls a connection itself. A run
  * it starts writes like any run, as the person (sandbox) or the workflow
  * (deployed), except a run started with an API key (CI, a script), whose
  * writes are refused. A dry run records its writes instead (`record`): not
  * sent, answered 202, and kept whole under the run, credential redacted
  * (workflows/recorded-writes.ts), so the agent can check what it would have
- * sent. Mako knows a deployed run by the run the worker names with each
- * request (X-Mako-Run, workflows/runs.ts `runStartedBy`); a deployed
- * workflow's write from a run Mako cannot tell is refused, as is one
- * naming a run of another workflow or a run no longer executing. A listed
+ * sent. Mako knows a deployed run by the run its pass names, which must be
+ * a run of its workflow that is executing (workflows/runs.ts
+ * `runStartedBy`); a deployed workflow's write from a run Mako cannot tell
+ * is refused. A listed
  * writer writes
  * anywhere through the connection: a `where` stored on a source writer (the
  * list's schema is shared with database connections, where it limits a
@@ -38,9 +40,9 @@ import {
   type ISourceConnection,
 } from "../database/workspace-schema";
 import { ConnectionWriteEvent } from "../access/connection-write-event";
-import { sourceWriterPrincipal } from "../access/connection-writers-list";
 import {
   actingPrincipal,
+  principalMatches,
   principalsOutsideWorkspace,
   viewerPrincipals,
 } from "../access/connection-writes";
@@ -106,17 +108,30 @@ export interface ConnectionRequestResult extends ForwardResult {
 
 /**
  * Whether `principal` may write through a source connection with `writers`:
- * it is listed, a deployed workflow as `workflow:*` (any `workflow:<name>`
- * stored counts as that, as the Access tab shows it). A stored `where` is
- * ignored (see the header).
+ * it is listed, a deployed workflow by its name or as `workflow:*` (every
+ * deployed workflow). A stored `where` is ignored (see the header).
  */
 export function mayWrite(
   writers: IConnectionWriter[] | undefined,
   principal: string,
 ): boolean {
-  const wanted = sourceWriterPrincipal(principal);
-  return (writers ?? []).some(
-    w => sourceWriterPrincipal(w.principal) === wanted,
+  return (writers ?? []).some(w => principalMatches(w.principal, principal));
+}
+
+/**
+ * Whether `principal` may read live through a source connection whose live
+ * reads are on: everyone when it has no live readers list, else the listed
+ * principals and its writers, a deployed workflow by its name or as
+ * `workflow:*`.
+ */
+export function mayReadLive(
+  row: Pick<ISourceConnection, "liveReaders" | "writers">,
+  principal: string | undefined,
+): boolean {
+  if (!row.liveReaders) return true;
+  if (!principal) return false;
+  return (
+    mayWrite(row.liveReaders, principal) || mayWrite(row.writers, principal)
   );
 }
 
@@ -229,9 +244,6 @@ async function recordInstead(
     );
   }
   logger.info("Recorded a dry run's write", where);
-  const shown = principal.startsWith("workflow:")
-    ? "All deployed workflows"
-    : principal;
   return {
     status: 202,
     headers: { "content-type": "application/json", "x-mako-recorded": "true" },
@@ -241,7 +253,7 @@ async function recordInstead(
       wouldSend,
       message: wouldSend
         ? `Recorded, not sent (a dry run). ${target} on ${row.name} is in this run's recordedWrites (workflows_status).`
-        : `Recorded, not sent (a dry run). ${target} on ${row.name} is in this run's recordedWrites (workflows_status). A real run would be refused: ${shown} is not on ${row.name}'s writers list (its Access tab).`,
+        : `Recorded, not sent (a dry run). ${target} on ${row.name} is in this run's recordedWrites (workflows_status). A real run would be refused: ${principal} is not on ${row.name}'s writers list (its Access tab).`,
     },
     read: false,
     recorded: true,
@@ -322,6 +334,15 @@ export async function connectionRequest(
         403,
       );
     }
+    if (!mayReadLive(row, principal)) {
+      logger.warn("Refused a connection read", where);
+      throw new ConnectionRequestError(
+        principal
+          ? `${principal} is not allowed to read ${row.name} live. Read its synced tables, or ask one of this connection's managers or the workspace owner to allow ${principal} to read live on its Access tab.`
+          : `Only some people and workflows may read ${row.name} live, and Mako could not tell who is reading.`,
+        403,
+      );
+    }
     logger.info("Connection read", where);
   } else {
     if (params.readOnly) {
@@ -377,7 +398,7 @@ export async function connectionRequest(
         logger.warn("Refused a write by a run that does not write", where);
         throw new ConnectionRequestError(
           origin.writes === "record"
-            ? `This run is a dry run, and the worker did not name its run (X-Mako-Run), so ${target} on ${row.name} was neither sent nor recorded.`
+            ? `This run is a dry run, and Mako could not tell which run this write comes from, so ${target} on ${row.name} was neither sent nor recorded.`
             : `This run was started with an API key, and such a run only reads through connections; ${target} on ${row.name} is a write. Start it from the app, the agent's workflows_run, a schedule or a webhook to write.`,
           403,
         );
@@ -386,7 +407,7 @@ export async function connectionRequest(
         await recordProxyWrite(row, principal, target, false);
         logger.warn("Refused a write by a run Mako could not tell", where);
         throw new ConnectionRequestError(
-          `Mako could not tell which run of ${principal.slice("workflow:".length)} this write comes from, so it was not sent. A write must come from a run of this workflow that is still executing, named with each request (X-Mako-Run); update the workflows runtime, or try again if Hatchet was unreachable.`,
+          `Mako could not tell which run of ${principal.slice("workflow:".length)} this write comes from, so it was not sent. A write must come from a run of this workflow that is still executing, with the pass of one of its steps; try again if Hatchet was unreachable.`,
           403,
         );
       }
@@ -417,12 +438,8 @@ export async function connectionRequest(
           403,
         );
       }
-      // A workflow is allowed as every deployed workflow.
-      const shown = principal.startsWith("workflow:")
-        ? "All deployed workflows"
-        : principal;
       throw new ConnectionRequestError(
-        `${principal} is not allowed to write to ${row.name}. Ask one of this connection's managers or the workspace owner to allow ${shown} on the connection's Access tab.`,
+        `${principal} is not allowed to write to ${row.name}. Ask one of this connection's managers or the workspace owner to allow ${principal} on the connection's Access tab.`,
         403,
       );
     }
