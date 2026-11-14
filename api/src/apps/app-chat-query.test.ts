@@ -122,7 +122,7 @@ describe("describeAppData", () => {
 });
 
 describe("direct httpfs mode", () => {
-  let server: http.Server;
+  let server: http.Server | undefined;
   let allowedUrl: string;
   let forbiddenUrl: string;
   let remoteTables: AppDataTable[];
@@ -164,7 +164,7 @@ describe("direct httpfs mode", () => {
   });
 
   afterAll(() => {
-    server.close();
+    server?.close();
     if (originalExtensionDir === undefined) {
       delete process.env[DUCKDB_EXTENSION_DIR_ENV];
     } else {
