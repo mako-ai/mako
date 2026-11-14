@@ -7,6 +7,7 @@
  */
 import { connectionRenameHandler } from "./handlers/connection";
 import { consoleRenameHandler } from "./handlers/console";
+import { notebookRenameHandler } from "./handlers/notebook";
 import { normalizeDisplayName } from "./title-rules";
 import {
   RENAME_KINDS,
@@ -22,6 +23,7 @@ import {
 
 export const RENAME_HANDLERS: Partial<Record<RenameKind, RenameHandler>> = {
   console: consoleRenameHandler,
+  notebook: notebookRenameHandler,
   connection: connectionRenameHandler,
 };
 

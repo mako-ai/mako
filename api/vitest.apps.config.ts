@@ -170,8 +170,11 @@ export default defineConfig({
       // connection handler (real Mongo), and the name rules' two entry points.
       "src/rename/registry.test.ts",
       "src/rename/handlers/connection.test.ts",
-      // The console handler: real git + Mongo.
+      // The console and notebook handlers: real git + Mongo.
       "src/rename/handlers/console.test.ts",
+      // Notebook rename: the service, a rename against a delete in both
+      // orders, and the handler.
+      "src/rename/notebook.test.ts",
       "src/rename/scenarios/name-rules-parity.test.ts",
       // rename_object: kinds per surface, per-kind grants, call results.
       "src/agent-lib/tools/rename-tools.test.ts",
