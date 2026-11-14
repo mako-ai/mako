@@ -947,6 +947,13 @@ workspaceDatabaseRoutes.openapi(
       }
       await database.save();
 
+      // Every pool/client/connector is cached by connection id alone, so
+      // without this an edited host or rotated password keeps being served
+      // by the pool built from the old configuration until a restart.
+      if (body.connection) {
+        await databaseConnectionService.invalidateConnection(databaseId);
+      }
+
       return c.json({
         success: true,
         verified: verifyBeforeSave,

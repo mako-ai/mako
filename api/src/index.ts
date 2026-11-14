@@ -225,9 +225,21 @@ databaseRegistry.register(new BigQueryDatabaseDriver());
 databaseRegistry.register(new MongoDatabaseDriver());
 databaseRegistry.register(new PostgreSQLDatabaseDriver());
 databaseRegistry.register(new MySQLDatabaseDriver());
-databaseRegistry.register(new CloudSQLPostgresDatabaseDriver());
-databaseRegistry.register(new CloudflareD1DatabaseDriver());
-databaseRegistry.register(new CloudflareKVDatabaseDriver());
+// Stateful drivers (pools, connectors, running-query maps) are shared with
+// databaseConnectionService, which resolves them through the same registry
+// slot — getOrRegister keeps it to one instance whichever side runs first.
+databaseRegistry.getOrRegister(
+  "cloudsql-postgres",
+  () => new CloudSQLPostgresDatabaseDriver(),
+);
+databaseRegistry.getOrRegister(
+  "cloudflare-d1",
+  () => new CloudflareD1DatabaseDriver(),
+);
+databaseRegistry.getOrRegister(
+  "cloudflare-kv",
+  () => new CloudflareKVDatabaseDriver(),
+);
 databaseRegistry.register(new ClickHouseDatabaseDriver());
 databaseRegistry.register(new RedshiftDatabaseDriver());
 

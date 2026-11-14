@@ -140,9 +140,18 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
   async executeQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: { databaseId?: string; namespaceId?: string },
+    options?: {
+      databaseId?: string;
+      namespaceId?: string;
+      signal?: AbortSignal;
+    },
   ): Promise<KVQueryResult> {
+    // KV has no server-side cancel; aborting stops the remaining requests.
+    const signal = options?.signal;
     try {
+      if (signal?.aborted) {
+        return { success: false, error: "Query cancelled" };
+      }
       const conn = database.connection as unknown as KVConnection;
       const namespaceId =
         options?.databaseId || options?.namespaceId || conn.namespace_id;
@@ -167,22 +176,36 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
 
       switch (parsed.method) {
         case "list":
-          return this.kvList(client, namespaceId, parsed.options);
+          return await this.kvList(client, namespaceId, parsed.options, signal);
         case "get":
-          return this.kvGet(client, namespaceId, parsed.key ?? "");
+          return await this.kvGet(
+            client,
+            namespaceId,
+            parsed.key ?? "",
+            signal,
+          );
         case "put":
-          return this.kvPut(
+          return await this.kvPut(
             client,
             namespaceId,
             parsed.key ?? "",
             parsed.value,
+            signal,
           );
         case "delete":
-          return this.kvDelete(client, namespaceId, parsed.key ?? "");
+          return await this.kvDelete(
+            client,
+            namespaceId,
+            parsed.key ?? "",
+            signal,
+          );
         default:
           return { success: false, error: `Unknown method: ${parsed.method}` };
       }
     } catch (error: any) {
+      if (signal?.aborted) {
+        return { success: false, error: "Query cancelled" };
+      }
       return {
         success: false,
         error:
@@ -273,6 +296,7 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
     client: AxiosInstance,
     namespaceId: string,
     options?: { prefix?: string; limit?: number },
+    signal?: AbortSignal,
   ): Promise<KVQueryResult> {
     const limit = Math.min(options?.limit ?? 100, 10000);
     const allKeys: KVKey[] = [];
@@ -286,7 +310,10 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
       if (options?.prefix) params.prefix = options.prefix;
       if (cursor) params.cursor = cursor;
 
-      const response = await client.get(`/${namespaceId}/keys`, { params });
+      const response = await client.get(`/${namespaceId}/keys`, {
+        params,
+        signal,
+      });
       if (!response.data.success) {
         return {
           success: false,
@@ -303,7 +330,12 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
     } while (cursor && allKeys.length < limit);
 
     // Then fetch values using bulk get API (up to 100 keys per request)
-    const results = await this.bulkGetValues(client, namespaceId, allKeys);
+    const results = await this.bulkGetValues(
+      client,
+      namespaceId,
+      allKeys,
+      signal,
+    );
 
     return {
       success: true,
@@ -321,12 +353,15 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
     client: AxiosInstance,
     namespaceId: string,
     keys: KVKey[],
+    signal?: AbortSignal,
   ): Promise<any[]> {
     const results: any[] = [];
     const BULK_GET_LIMIT = 100; // Cloudflare's max per bulk get request
 
     // Process in batches of 100
     for (let i = 0; i < keys.length; i += BULK_GET_LIMIT) {
+      // A batch failure below degrades to null values; a cancel must not.
+      signal?.throwIfAborted();
       const batch = keys.slice(i, i + BULK_GET_LIMIT);
       const keyNames = batch.map(k => k.name);
 
@@ -334,9 +369,11 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
         // Cloudflare bulk get API - fetch values for multiple keys
         // POST /accounts/{account_id}/storage/kv/namespaces/{namespace_id}/bulk/get
         // Body: { keys: string[] }
-        const response = await client.post(`/${namespaceId}/bulk/get`, {
-          keys: keyNames,
-        });
+        const response = await client.post(
+          `/${namespaceId}/bulk/get`,
+          { keys: keyNames },
+          { signal },
+        );
 
         if (response.data.success && response.data.result) {
           // Response: { result: { values: { key1: value1, key2: value2 } } }
@@ -379,6 +416,7 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
           }
         }
       } catch (error: any) {
+        if (signal?.aborted) throw error;
         // Fallback: add keys without values on error
         for (const key of batch) {
           results.push({
@@ -401,13 +439,14 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
     client: AxiosInstance,
     namespaceId: string,
     key: string,
+    signal?: AbortSignal,
   ): Promise<KVQueryResult> {
     if (!key) return { success: false, error: "Key is required" };
 
     try {
       const response = await client.get(
         `/${namespaceId}/values/${encodeURIComponent(key)}`,
-        { transformResponse: [(data: any) => data] },
+        { transformResponse: [(data: any) => data], signal },
       );
 
       let value = response.data;
@@ -431,6 +470,7 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
     namespaceId: string,
     key: string,
     value: any,
+    signal?: AbortSignal,
   ): Promise<KVQueryResult> {
     if (!key) return { success: false, error: "Key is required" };
 
@@ -444,6 +484,7 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
           "Content-Type":
             typeof value === "object" ? "application/json" : "text/plain",
         },
+        signal,
       },
     );
 
@@ -458,10 +499,13 @@ export class CloudflareKVDatabaseDriver implements DatabaseDriver {
     client: AxiosInstance,
     namespaceId: string,
     key: string,
+    signal?: AbortSignal,
   ): Promise<KVQueryResult> {
     if (!key) return { success: false, error: "Key is required" };
 
-    await client.delete(`/${namespaceId}/values/${encodeURIComponent(key)}`);
+    await client.delete(`/${namespaceId}/values/${encodeURIComponent(key)}`, {
+      signal,
+    });
     return { success: true, data: [{ key, status: "deleted" }], rowCount: 1 };
   }
 

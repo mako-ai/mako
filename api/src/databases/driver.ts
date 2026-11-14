@@ -132,6 +132,17 @@ export interface DatabaseDriver {
     executionId: string,
   ): Promise<{ success: boolean; error?: string }>;
 
+  /**
+   * Optional: drop whatever this driver caches for one connection (pools,
+   * connectors, HTTP clients carrying credentials). Called by
+   * `databaseConnectionService.invalidateConnection` when a connection is
+   * edited or deleted, so the next query uses the saved configuration.
+   */
+  closeConnection?(databaseId: string): Promise<void> | void;
+
+  /** Optional: drop everything this driver caches (shutdown). */
+  closeAllConnections?(): Promise<void> | void;
+
   // ============ DESTINATION DIALECT CAPABILITIES ============
   // These let generic sync/route code stay engine-agnostic instead of
   // branching on `database.type`. Drivers override only what differs from
@@ -362,14 +373,4 @@ export interface DatabaseDriver {
     keyFilters: Record<string, unknown>,
     options?: InsertOptions,
   ): Promise<BatchWriteResult>;
-
-  /**
-   * Execute a streaming query, calling onBatch for each batch of rows
-   * This is memory-efficient for large result sets
-   */
-  executeStreamingQuery?(
-    database: IDatabaseConnection,
-    query: string,
-    options: StreamingQueryOptions,
-  ): Promise<{ success: boolean; totalRows: number; error?: string }>;
 }

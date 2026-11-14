@@ -168,9 +168,17 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
   async executeQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: { databaseId?: string; databaseName?: string },
+    options?: {
+      databaseId?: string;
+      databaseName?: string;
+      signal?: AbortSignal;
+    },
   ): Promise<D1QueryResult> {
+    const signal = options?.signal;
     try {
+      if (signal?.aborted) {
+        return { success: false, error: "Query cancelled" };
+      }
       const conn = database.connection as unknown as D1Connection;
       // D1 uses UUID for database identification; accept both databaseId and databaseName
       // since other parts of the system may pass databaseName (which for D1 is also the UUID)
@@ -192,9 +200,12 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
       const client = this.getHttpClient(database);
 
       // Use the query endpoint for standard queries
-      const response = await client.post(`/${databaseId}/query`, {
-        sql: query,
-      });
+      // D1 has no server-side cancel; aborting stops waiting on the request.
+      const response = await client.post(
+        `/${databaseId}/query`,
+        { sql: query },
+        { signal },
+      );
 
       const result = response.data;
 
@@ -220,6 +231,9 @@ export class CloudflareD1DatabaseDriver implements DatabaseDriver {
         meta: firstResult.meta,
       };
     } catch (error: any) {
+      if (signal?.aborted) {
+        return { success: false, error: "Query cancelled" };
+      }
       const errorMessage =
         error?.response?.data?.errors?.[0]?.message ||
         error?.message ||

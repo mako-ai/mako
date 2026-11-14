@@ -6,7 +6,6 @@ import {
   BatchWriteResult,
   InsertOptions,
   UpsertOptions,
-  StreamingQueryOptions,
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { databaseConnectionService } from "../../../services/database-connection.service";
@@ -875,66 +874,5 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
       rowsWritten: result.success ? (result.rowCount ?? 0) : 0,
       error: result.error,
     };
-  }
-
-  /**
-   * Execute a streaming query with batched callbacks
-   * Uses CURSOR for memory-efficient large result set handling
-   */
-  async executeStreamingQuery(
-    database: IDatabaseConnection,
-    query: string,
-    options: StreamingQueryOptions,
-  ): Promise<{ success: boolean; totalRows: number; error?: string }> {
-    const batchSize = options.batchSize || 1000;
-    let totalRows = 0;
-
-    try {
-      // For PostgreSQL, we use LIMIT/OFFSET based streaming
-      // because cursors require a single transaction and connection
-      let offset = 0;
-      let hasMore = true;
-
-      while (hasMore) {
-        // Check for cancellation
-        if (options.signal?.aborted) {
-          return { success: false, totalRows, error: "Query cancelled" };
-        }
-
-        // Add LIMIT/OFFSET to query
-        const paginatedQuery = `${query.replace(/;?\s*$/, "")} LIMIT ${batchSize} OFFSET ${offset};`;
-
-        const result = await this.executeQuery(database, paginatedQuery, {
-          databaseName: options.databaseName,
-        });
-
-        if (!result.success) {
-          return { success: false, totalRows, error: result.error };
-        }
-
-        const rows = result.data || [];
-        if (rows.length === 0) {
-          hasMore = false;
-        } else {
-          await options.onBatch(rows);
-          totalRows += rows.length;
-          offset += rows.length;
-
-          // If we got fewer rows than batch size, we're done
-          if (rows.length < batchSize) {
-            hasMore = false;
-          }
-        }
-      }
-
-      return { success: true, totalRows };
-    } catch (error) {
-      return {
-        success: false,
-        totalRows,
-        error:
-          error instanceof Error ? error.message : "Streaming query failed",
-      };
-    }
   }
 }
