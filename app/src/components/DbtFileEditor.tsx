@@ -383,6 +383,10 @@ export default function DbtFileEditor({
   // ⌘S saves, ⌘↵ previews. Both are registered once on mount, so they read the
   // live handler through a ref rather than capturing the mount-time closure.
   const previewRef = useRef<() => void>(() => {});
+  // Without this, Cmd+S kept the mount-time saveNow, which closes over the
+  // mount-time `path` — after a rename it persisted the old file.
+  const saveNowRef = useRef(saveNow);
+  saveNowRef.current = saveNow;
   const handleEditorMount = useCallback(
     (
       editor: { addCommand: (keys: number, handler: () => void) => void },
@@ -391,12 +395,14 @@ export default function DbtFileEditor({
         KeyCode: { KeyS: number; Enter: number };
       },
     ) => {
-      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveNow);
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () =>
+        saveNowRef.current(),
+      );
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () =>
         previewRef.current(),
       );
     },
-    [saveNow],
+    [],
   );
 
   /**

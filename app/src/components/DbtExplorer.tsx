@@ -51,10 +51,12 @@ import { useConsoleStore } from "../store/consoleStore";
 import { useExplorerStore } from "../store/explorerStore";
 import { useDbtStore, type DbtJobItem } from "../store/dbtStore";
 import {
+  closeDbtFileTab,
   focusDbtConsoleTab,
   focusDbtFileTab,
   focusDbtJobTab,
   focusDbtRunsTab,
+  retargetDbtFileTab,
 } from "../dbt-runtime/shell";
 import { envBadgeColor } from "../lib/dbt-env";
 import {
@@ -664,7 +666,13 @@ export function DbtExplorer() {
     if (next && next !== renameTarget.name && parsed.kind === "file") {
       const dir = dirname(parsed.path);
       const newPath = dir ? `${dir}/${next}` : next;
-      await renameFile(workspaceId, parsed.projectId, parsed.path, newPath);
+      const ok = await renameFile(
+        workspaceId,
+        parsed.projectId,
+        parsed.path,
+        newPath,
+      );
+      if (ok) retargetDbtFileTab(parsed.projectId, parsed.path, newPath);
     }
     setRenameTarget(null);
   }, [renameTarget, renameValue, workspaceId, renameFile]);
@@ -675,7 +683,8 @@ export function DbtExplorer() {
     if (parsed.kind === "project") {
       await deleteProject(workspaceId, parsed.projectId);
     } else if (parsed.kind === "file") {
-      await deleteFile(workspaceId, parsed.projectId, parsed.path);
+      const ok = await deleteFile(workspaceId, parsed.projectId, parsed.path);
+      if (ok) closeDbtFileTab(parsed.projectId, parsed.path);
     } else if (parsed.kind === "job") {
       await deleteJob(workspaceId, parsed.projectId, parsed.path);
     }
