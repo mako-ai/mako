@@ -63,7 +63,7 @@ Local materialization defaults to the filesystem. To exercise the same GCS path 
 
 ```bash
 DASHBOARD_ARTIFACT_STORE=gcs
-GCS_DASHBOARD_BUCKET=revops-462013-dashboard-artifacts
+GCS_DASHBOARD_BUCKET=<your-dashboard-artifacts-bucket>
 DASHBOARD_ARTIFACT_PREFIX=dashboard-artifacts/local-<your-name>
 ```
 
@@ -76,7 +76,7 @@ Because of that, the recommended local setup is:
 1. Obtain the approved dev service account JSON key.
 2. Set `GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/key.json`.
 3. Grant that service account:
-   - `roles/storage.objectAdmin` on `gs://revops-462013-dashboard-artifacts`
+   - `roles/storage.objectAdmin` on `gs://<your-dashboard-artifacts-bucket>`
    - `roles/iam.serviceAccountTokenCreator` on itself for signed URL generation
 
 If you only run `gcloud auth application-default login`, uploads may work but signed URL generation will fail.
@@ -89,7 +89,7 @@ BASE_URL=http://localhost:8080
 CLIENT_URL=http://localhost:5173
 
 DASHBOARD_ARTIFACT_STORE=gcs
-GCS_DASHBOARD_BUCKET=revops-462013-dashboard-artifacts
+GCS_DASHBOARD_BUCKET=<your-dashboard-artifacts-bucket>
 DASHBOARD_ARTIFACT_PREFIX=dashboard-artifacts/local-<your-name>
 GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/dev-service-account.json
 ```
