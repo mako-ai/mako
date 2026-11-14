@@ -104,10 +104,18 @@ await connection("ch_close").post("/task/", {
 ```
 
 - `get`, `post`, `put`, `patch` and `delete` return the body and throw `ConnectionError` at a status of 400 or more (its message includes the start of the service's answer). `request(method, path, body, options)` returns `{ status, headers, body }` whatever the status. Options: `query`, and `headers` such as `Idempotency-Key`.
-- Reads need live reads on in the connection's Access tab.
-- A write needs **All deployed workflows** on the connection's writers list. A person's own run (`mako workflow run`, a sandbox run started from the app) writes as that person instead.
+- Reads need live reads on in the connection's Access tab (and, if it lists who may read live, this workflow or **All deployed workflows** on that list, or on its writers list).
+- A write needs this workflow, or **All deployed workflows**, on the connection's writers list. A person's own run (`mako workflow run`, a sandbox run started from the app) writes as that person instead.
 - A run started by an agent (the in-product agent's tool or an MCP client) writes like a run from the app: in the sandbox as the person the agent acts for, on the workers as the workflow, within the connection's writers list. A run started with an API key (CI, a script) has its connection writes refused, so it fails.
 - A **dry run** (`dryRun: true` on `workflows_run` or `POST /workflows/{name}/run`) records each connection call that writes instead of sending it: the call answers `202` with `{ recorded: true, sent: false, wouldSend }`, and the run's status gives `recordedWriteCount` and a page of `recordedWrites` (method, full URL, headers and body, credentials redacted), so an agent can check a Slack or email payload before sending it. `wouldSend: false` means a real run would be refused by the writers list. A dry run's SQL only reads. The run's page in the app says how many writes were recorded. Recorded writes are kept 7 days, at most 200 per run.
+
+### Each workflow acts as itself
+
+All of a workspace's deployed workflows run in one worker pod, but workflow code never holds the pod's key. The pod's dispatcher, which runs no workflow code, asks Mako for a **pass** for each step it is about to run: a short-lived token for that workflow, that run and that step, given only for a run Hatchet says is a run of that workflow and executing now. The step runs in a program of its own, as a user of its own for that workflow, with the pass instead of the key.
+
+So a writers list or a live readers list can name one workflow: Mako believes the workflow a pass names, and nothing a request says about itself. A pass stops working when its run ends, when the worker key is replaced, and after 24 hours at the latest. A step program stays for 60 seconds after its step, so a workflow that runs every few seconds keeps one and a daily one does not.
+
+What a step's `ctx` offers: its input, its parents' outputs, the run's ids and metadata, logs, `refreshTimeout`, `releaseSlot`, `putStream`, `cancel`, `runChild` and `spawnChild` (by workflow name), and in a durable task `sleepFor`, `sleepUntil`, `now` and `waitForEvent` (key and expression). Task options that are not plain data (a `waitFor`, `skipIf` or `cancelIf` condition object) are refused when the workflows are loaded. A workspace's own `workflows/hatchet.ts` is used to declare workflows only: the dispatcher connects to Hatchet with its own client.
 
 ### Query results
 
@@ -152,7 +160,7 @@ Hatchet dashboard: `http://localhost:8086` (`admin@example.com` / `Admin123!!`).
 
 `mako workflow run <name> --input '{"limit":3}'` runs `workflows/<name>/workflow.ts` from your checkout, uncommitted edits included, in one Node process with no Hatchet engine. Steps run once each, parents first. Every Mako call is real and carries your `mako login` (or `MAKO_API_KEY`, which needs the `workflows:run` scope). The whole run is saved to `.mako/runs/<name>.json`, and `--task <step>` reruns one step from its saved outputs. See the [CLI README](https://github.com/mako-ai/mako/blob/master/packages/cli/README.md) for details.
 
-When a person runs workflow code this way, calls to the worker's SQL, model and agent routes act as that person, with exactly the rights they have over `/api/mcp`. The `X-Mako-Workflow` header from a person's credential grants nothing extra. The deployed worker's key keeps meaning the workflow's own rights.
+When a person runs workflow code this way, calls to the worker's SQL, model and agent routes act as that person, with exactly the rights they have over `/api/mcp`. The `X-Mako-Workflow` header grants nothing, from anyone. A deployed step has the workflow's own rights through its pass (see "Each workflow acts as itself" below).
 
 ### Production
 
@@ -193,7 +201,7 @@ A run opens on where it failed: a failure card (step, error, the code line from 
 
 Every model call and `agent()` turn a deployed step makes is counted against its workflow, run and step. A run's cost is the sum of its calls. Queries and compute are not counted. The run page shows the cost per step, the runs table has an AI cost column, and the workflow page shows the last 30 days. `workflows_status` returns each run's cost and its cost per step to an agent.
 
-The worker sends the run id and step name with each call (`X-Mako-Run`, `X-Mako-Step`). A person's own run (`mako workflow run`, or a sandbox run) sends none, so it is not counted. Runs from before costs were recorded show none. To attribute older calls, a super admin can `POST /api/admin/workflows/cost-backfill` (body `{ workspaceId?, days?, dryRun? }`; `days` is 1–90, default 30). It is a dry run unless `dryRun: false`, and answers per workspace the calls matched, ambiguous and unmatched with their cost, and how many it saved. It matches calls to the step they were made in by time and marks them as backfilled. Calls in overlapping runs are left alone. The script `api/src/scripts/backfill-workflow-ai-costs.ts` (`--dry-run` first) runs the same function from a shell with production access.
+Each call carries the run and step it comes from in the step's pass. A person's own run (`mako workflow run`, or a sandbox run) sends none, so it is not counted. Runs from before costs were recorded show none. To attribute older calls, a super admin can `POST /api/admin/workflows/cost-backfill` (body `{ workspaceId?, days?, dryRun? }`; `days` is 1–90, default 30). It is a dry run unless `dryRun: false`, and answers per workspace the calls matched, ambiguous and unmatched with their cost, and how many it saved. It matches calls to the step they were made in by time and marks them as backfilled. Calls in overlapping runs are left alone. The script `api/src/scripts/backfill-workflow-ai-costs.ts` (`--dry-run` first) runs the same function from a shell with production access.
 
 ## API
 
