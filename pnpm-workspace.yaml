@@ -24,3 +24,28 @@ ignoredBuiltDependencies:
 # default; declaring it here makes local resolution match CI so a fresh
 # install can't pin hours-old releases into the lockfile.
 minimumReleaseAge: 1440
+overrides:
+  # `next` is only an optional peer of inngest (its Next.js serve adapter).
+  # Mako serves Inngest through Hono, so drop it: it was 100 MB of the
+  # Cloud Run image and most of the critical audit findings.
+  inngest>next: '-'
+  # Floor transitive copies at the first patched release of each major
+  # (TLS-validation bypass, DoS, cache poisoning). Drop these once the
+  # parents (cheerio, e2b, @ai-sdk/provider-utils, axios) require them.
+  undici@>=6.0.0 <6.29.1: ^6.29.1
+  undici@>=7.0.0 <7.30.1: ^7.30.1
+  undici@>=8.0.0 <8.12.2: ^8.12.4
+  follow-redirects@<1.16.2: ^1.16.2
+  # e2b ships an exact npm:undici@8.11.2 alias as an optional dependency.
+  e2b>undici8: npm:undici@^8.12.4
+  # Same-major floors for the remaining high/critical transitive findings
+  # (aws-sdk via mongodb, express via the MCP SDK, inngest's otel host
+  # metrics, ajv, docs' httpsnippet).
+  fast-xml-parser@>=4.0.0 <4.5.5: ^4.5.5
+  body-parser@>=2.0.0 <2.4.0: ^2.4.0
+  systeminformation@<5.33.16: ^5.33.16
+  fast-uri@>=3.0.0 <3.1.9: ^3.1.9
+  form-data@>=4.0.0 <4.0.6: ^4.0.6
+  # mssql>tedious pins an @azure/identity whose msal-node (6.x) has a high
+  # advisory; identity 4.14 moves to the patched msal-node 7.
+  '@azure/identity@>=4.0.0 <4.14.1': ^4.14.1
