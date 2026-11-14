@@ -19,13 +19,7 @@ const log = loggers.sync("cdc.sync-state");
 type StreamEventType = "START" | "PAUSE" | "RESUME" | "FAIL" | "RECOVER";
 
 type BackfillEventType =
-  | "START"
-  | "PAUSE"
-  | "RESUME"
-  | "COMPLETE"
-  | "FAIL"
-  | "RECOVER"
-  | "CANCEL";
+  "START" | "PAUSE" | "RESUME" | "COMPLETE" | "FAIL" | "RECOVER" | "CANCEL";
 
 type StreamMachineEvent =
   | { type: "START"; reason?: string }
@@ -120,6 +114,13 @@ interface ApplyBackfillTransitionInput {
   flowId: string;
   event: BackfillMachineEvent;
   context?: TransitionGuardContext;
+  /**
+   * Apply the event only from these states; from any other state the call
+   * is a no-op (`changed: false`). For callers that observed a specific
+   * state and must not act on a later one — e.g. abandoned-flow cleanup
+   * fails a `running` backfill but must leave one the user just paused.
+   */
+  onlyFrom?: BackfillStatus[];
 }
 
 interface ApplyTransitionResult {
@@ -141,17 +142,74 @@ function assertBackfillGuards(
   }
 }
 
-class CdcSyncStateService {
-  async applyStreamTransition(
-    input: ApplyStreamTransitionInput,
-  ): Promise<ApplyTransitionResult> {
-    const workspaceObjectId = new Types.ObjectId(input.workspaceId);
-    const flowObjectId = new Types.ObjectId(input.flowId);
+/**
+ * How many times a transition re-reads the flow after losing a
+ * compare-and-swap race before giving up. Each retry recomputes the
+ * transition from the state the winner left, so a lost race either applies
+ * the event on top of it or reports a no-op; it never overwrites.
+ */
+const MAX_TRANSITION_ATTEMPTS = 5;
 
-    const flow = await Flow.findOne({
-      _id: flowObjectId,
-      workspaceId: workspaceObjectId,
-    });
+/**
+ * A filter matching a stored state value. A missing field reads as "idle"
+ * (see `flow.streamState || "idle"`), so the idle CAS must also match a doc
+ * that has no value yet. `$in: [null]` matches both null and missing.
+ */
+function stateFilter(path: string, state: string): Record<string, unknown> {
+  return state === "idle"
+    ? { [path]: { $in: [null, "idle"] } }
+    : { [path]: state };
+}
+
+type TransitionMachine = "stream" | "backfill";
+
+interface CasTransitionInput<S extends string> {
+  machine: TransitionMachine;
+  workspaceId: string;
+  flowId: string;
+  eventType: string;
+  reason?: string;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
+  /** Dotted path of the state field on the flow document. */
+  statePath: string;
+  readState: (flow: {
+    streamState?: string | null;
+    backfillState?: { status?: string | null } | null;
+  }) => S;
+  resolve: (fromState: S) => S | null;
+  /**
+   * The `$set` for the new state. Defaults to `{ [statePath]: resolved }`;
+   * the backfill machine overrides it because a dotted `$set` fails when
+   * the parent subdocument is stored as null.
+   */
+  buildSet?: (
+    flow: { backfillState?: { status?: string | null } | null },
+    resolved: S,
+  ) => Record<string, unknown>;
+  /** Throws when the transition is not allowed (guards). */
+  assertGuards?: () => void;
+}
+
+/**
+ * Apply one state-machine transition atomically: read the current state,
+ * compute the target, then write with the read state in the filter
+ * (compare-and-swap). Concurrent actors (cdc-materialize, the flow
+ * function, the backfill sweeper, user pause/resume, abandoned-flow
+ * cleanup) can no longer both read `running` and both apply a transition,
+ * and the audit row records a `fromState` that was really there.
+ */
+async function casTransition<S extends string>(
+  input: CasTransitionInput<S>,
+): Promise<ApplyTransitionResult> {
+  const workspaceObjectId = new Types.ObjectId(input.workspaceId);
+  const flowObjectId = new Types.ObjectId(input.flowId);
+  const scope = { _id: flowObjectId, workspaceId: workspaceObjectId };
+
+  for (let attempt = 1; attempt <= MAX_TRANSITION_ATTEMPTS; attempt++) {
+    const flow = await Flow.findOne(scope)
+      .select("syncEngine streamState backfillState.status")
+      .lean();
     if (!flow) {
       throw new Error("Flow not found");
     }
@@ -159,125 +217,131 @@ class CdcSyncStateService {
       throw new Error("CDC lifecycle transitions require syncEngine=cdc");
     }
 
-    const fromState = (flow.streamState || "idle") as StreamState;
-    const resolved = STREAM_TRANSITIONS[fromState]?.[input.event.type] || null;
+    const fromState = input.readState(flow);
+    const resolved = input.resolve(fromState);
     if (!resolved) {
       return { changed: false, fromState, toState: fromState };
     }
+    input.assertGuards?.();
 
     const now = new Date();
-    const reason = "reason" in input.event ? input.event.reason : undefined;
-    const lastErrorCode =
-      "errorCode" in input.event ? input.event.errorCode : undefined;
-    const lastErrorMessage =
-      "errorMessage" in input.event ? input.event.errorMessage : undefined;
+    const updated = await Flow.findOneAndUpdate(
+      {
+        ...scope,
+        syncEngine: "cdc",
+        ...stateFilter(input.statePath, fromState),
+      },
+      {
+        $set: {
+          ...(input.buildSet
+            ? input.buildSet(flow, resolved)
+            : { [input.statePath]: resolved }),
+          syncStateUpdatedAt: now,
+          syncStateMeta: {
+            lastEvent: `${input.machine}:${input.eventType}`,
+            lastReason: input.reason,
+            lastErrorCode: input.lastErrorCode,
+            lastErrorMessage: input.lastErrorMessage,
+          },
+        },
+      },
+      { projection: { _id: 1 } },
+    ).lean();
 
-    flow.streamState = resolved;
-    flow.syncStateUpdatedAt = now;
-    flow.syncStateMeta = {
-      lastEvent: `stream:${input.event.type}`,
-      lastReason: reason,
-      lastErrorCode,
-      lastErrorMessage,
-    };
-    await flow.save();
+    if (!updated) {
+      log.debug("State transition lost a compare-and-swap race; retrying", {
+        flowId: input.flowId,
+        machine: input.machine,
+        fromState,
+        event: input.eventType,
+        attempt,
+      });
+      continue;
+    }
 
     await CdcStateTransition.create({
       workspaceId: workspaceObjectId,
       flowId: flowObjectId,
-      machine: "stream",
+      machine: input.machine,
       fromState,
-      event: input.event.type,
+      event: input.eventType,
       toState: resolved,
       at: now,
-      reason,
+      reason: input.reason,
     });
 
-    log.info("Stream state transition applied", {
+    log.info(
+      input.machine === "stream"
+        ? "Stream state transition applied"
+        : "Backfill state transition applied",
+      {
+        flowId: input.flowId,
+        fromState,
+        event: input.eventType,
+        toState: resolved,
+        reason: input.reason,
+      },
+    );
+
+    return { changed: fromState !== resolved, fromState, toState: resolved };
+  }
+
+  throw new Error(
+    `CDC ${input.machine} transition ${input.eventType} for flow ${input.flowId} ` +
+      `lost ${MAX_TRANSITION_ATTEMPTS} compare-and-swap races`,
+  );
+}
+
+function eventDetails(event: StreamMachineEvent | BackfillMachineEvent): {
+  reason?: string;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
+} {
+  return {
+    reason: "reason" in event ? event.reason : undefined,
+    lastErrorCode: "errorCode" in event ? event.errorCode : undefined,
+    lastErrorMessage: "errorMessage" in event ? event.errorMessage : undefined,
+  };
+}
+
+class CdcSyncStateService {
+  async applyStreamTransition(
+    input: ApplyStreamTransitionInput,
+  ): Promise<ApplyTransitionResult> {
+    return casTransition<StreamState>({
+      machine: "stream",
+      workspaceId: input.workspaceId,
       flowId: input.flowId,
-      fromState,
-      event: input.event.type,
-      toState: resolved,
-      reason,
+      eventType: input.event.type,
+      ...eventDetails(input.event),
+      statePath: "streamState",
+      readState: flow => (flow.streamState || "idle") as StreamState,
+      resolve: from => STREAM_TRANSITIONS[from]?.[input.event.type] || null,
     });
-
-    return {
-      changed: fromState !== resolved,
-      fromState,
-      toState: resolved,
-    };
   }
 
   async applyBackfillTransition(
     input: ApplyBackfillTransitionInput,
   ): Promise<ApplyTransitionResult> {
-    const workspaceObjectId = new Types.ObjectId(input.workspaceId);
-    const flowObjectId = new Types.ObjectId(input.flowId);
-
-    const flow = await Flow.findOne({
-      _id: flowObjectId,
-      workspaceId: workspaceObjectId,
-    });
-    if (!flow) {
-      throw new Error("Flow not found");
-    }
-    if (flow.syncEngine !== "cdc") {
-      throw new Error("CDC lifecycle transitions require syncEngine=cdc");
-    }
-
-    const fromState = (flow.backfillState?.status || "idle") as BackfillStatus;
-    const resolved =
-      BACKFILL_TRANSITIONS[fromState]?.[input.event.type] || null;
-    if (!resolved) {
-      return { changed: false, fromState, toState: fromState };
-    }
-
-    assertBackfillGuards(input.event, input.context);
-
-    const now = new Date();
-    const reason = "reason" in input.event ? input.event.reason : undefined;
-    const lastErrorCode =
-      "errorCode" in input.event ? input.event.errorCode : undefined;
-    const lastErrorMessage =
-      "errorMessage" in input.event ? input.event.errorMessage : undefined;
-
-    if (!flow.backfillState) {
-      flow.backfillState = { status: "idle" };
-    }
-    flow.backfillState.status = resolved;
-    flow.syncStateUpdatedAt = now;
-    flow.syncStateMeta = {
-      lastEvent: `backfill:${input.event.type}`,
-      lastReason: reason,
-      lastErrorCode,
-      lastErrorMessage,
-    };
-    await flow.save();
-
-    await CdcStateTransition.create({
-      workspaceId: workspaceObjectId,
-      flowId: flowObjectId,
+    return casTransition<BackfillStatus>({
       machine: "backfill",
-      fromState,
-      event: input.event.type,
-      toState: resolved,
-      at: now,
-      reason,
-    });
-
-    log.info("Backfill state transition applied", {
+      workspaceId: input.workspaceId,
       flowId: input.flowId,
-      fromState,
-      event: input.event.type,
-      toState: resolved,
-      reason,
+      eventType: input.event.type,
+      ...eventDetails(input.event),
+      statePath: "backfillState.status",
+      readState: flow =>
+        (flow.backfillState?.status || "idle") as BackfillStatus,
+      resolve: from =>
+        input.onlyFrom && !input.onlyFrom.includes(from)
+          ? null
+          : BACKFILL_TRANSITIONS[from]?.[input.event.type] || null,
+      buildSet: (flow, resolved) =>
+        flow.backfillState == null
+          ? { backfillState: { status: resolved } }
+          : { "backfillState.status": resolved },
+      assertGuards: () => assertBackfillGuards(input.event, input.context),
     });
-
-    return {
-      changed: fromState !== resolved,
-      fromState,
-      toState: resolved,
-    };
   }
 
   async saveBackfillCursor(params: {
