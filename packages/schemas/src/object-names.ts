@@ -163,6 +163,10 @@ export function isConnectorSlug(slug: string): boolean {
  * or null when it can. Whether the name is free is the server's question.
  */
 export function connectorSlugError(slug: string): string | null {
+  // A name that reads as an object id is refused in the words every kind
+  // uses for it, also when it could not be a connector slug anyway (an id
+  // usually starts with a digit).
+  if (looksLikeObjectId(slug)) return unsafeSlugReason(slug);
   if (!isConnectorSlug(slug)) {
     return `"${slug}" is not a valid connector slug: lowercase letters, digits and dashes, starting with a letter, up to ${CONNECTOR_SLUG_MAX_LENGTH} characters (it becomes connectors/${slug}/).`;
   }

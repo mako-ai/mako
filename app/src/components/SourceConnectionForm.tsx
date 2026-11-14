@@ -34,8 +34,13 @@ import {
 
 // Zustand stores
 import { useSourceConnectionStore } from "../store/sourceConnectionStore";
-import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
+import {
+  cachedConnectorSchema,
+  useConnectorCatalogStore,
+} from "../store/connectorCatalogStore";
 import { connectorIconUrl } from "../lib/connector-icon";
+import { ConnectorRenameButton } from "./ConnectorRenameButton";
+import { connectorRenamedMessage } from "../lib/connector-rename";
 import { EntityHistoryButton } from "./EntityHistoryButton";
 import ConnectionManagersPanel from "./ConnectionManagersPanel";
 import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
@@ -161,6 +166,7 @@ function SourceConnectionForm({
     Record<string, boolean>
   >({});
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
+  const [bindingSaving, setBindingSaving] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -250,6 +256,17 @@ function SourceConnectionForm({
   } = form;
 
   const selectedType = watch("type");
+  // The connection's connector binding does not resolve (the server says
+  // why, and whether saving with its own type would bind it): while the
+  // form still shows the connection's own type, that message is the form's
+  // state. No schema is asked for, and none is reported missing.
+  const binding = connector?.connectorBinding as
+    { message: string; rebindable?: boolean } | undefined;
+  const closed = Boolean(binding) && selectedType === connector?.type;
+  const listed = connectorTypes.some(c => c.type === selectedType);
+  const selectedSlug = selectedType?.startsWith(WORKSPACE_TYPE_PREFIX)
+    ? selectedType.slice(WORKSPACE_TYPE_PREFIX.length)
+    : selectedType;
   // The server refuses a change by someone who may not make it; say so first.
   const readOnly = connector
     ? connector.canEdit === false
@@ -263,30 +280,54 @@ function SourceConnectionForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connector?._id]);
 
+  // A connector renamed elsewhere moves this connection's type under an
+  // open form (ws:<old> to ws:<new>): follow it, unless the person picked
+  // another type themselves.
+  useEffect(() => {
+    if (
+      connector?.type &&
+      form.getValues("type") !== connector.type &&
+      !form.getFieldState("type").isDirty
+    ) {
+      form.resetField("type", { defaultValue: connector.type });
+    }
+  }, [connector?.type, form]);
+
   const { schemas, fetchSchema } = useConnectorCatalogStore();
 
   useEffect(() => {
-    if (!selectedType) {
+    if (!selectedType || closed) {
       setSchema(null);
+      setSchemaError(null);
+      setSchemaLoading(false);
       return;
     }
-    if (schemas[selectedType]) {
-      setSchema(schemas[selectedType]);
-      // A second fetch that raced the first answered null; the schema is here.
+    const cached = cachedConnectorSchema(schemas, selectedType);
+    if (cached) {
+      // The schema is here (cached, or a request that answered meanwhile):
+      // whatever an earlier attempt said, nothing is failing or loading now.
+      setSchema(cached);
       setSchemaError(null);
+      setSchemaLoading(false);
       const currentValues = form.getValues();
-      schemas[selectedType].fields.forEach((field: ConnectorFieldSchema) => {
+      cached.fields.forEach((field: ConnectorFieldSchema) => {
         if (field.type === "object_array" && !currentValues[field.name]) {
           form.setValue(field.name, []);
         }
       });
+      // The store checks a cached form against the server once.
+      void fetchSchema(selectedType);
       return;
     }
     setSchemaLoading(true);
     setSchemaError(null);
+    let current = true;
     fetchSchema(selectedType).then(res => {
+      // A newer selection owns the form now.
+      if (form.getValues("type") !== selectedType) return;
       if (res) {
         setSchema(res);
+        setSchemaError(null);
         const defaults = generateDefaultValues(res);
         Object.entries(defaults).forEach(([key, value]) => {
           if (form.getValues(key) === undefined) {
@@ -294,12 +335,17 @@ function SourceConnectionForm({
             form.setValue(key, mutableValue);
           }
         });
-      } else {
+      } else if (current) {
+        // Only the request still in charge reports a failure: a superseded
+        // one says nothing about the schema that may have arrived since.
         setSchemaError("Failed to load connector schema");
       }
       setSchemaLoading(false);
     });
-  }, [selectedType, schemas, fetchSchema, form]);
+    return () => {
+      current = false;
+    };
+  }, [selectedType, closed, schemas, fetchSchema, form]);
 
   // Reveal a stored secret: the SERVER reads the ciphertext from its own
   // connector record (apps.md — connector decrypt oracle fix). The client
@@ -433,10 +479,9 @@ function SourceConnectionForm({
 
     const payload: Record<string, unknown> = {};
 
-    // A connection whose connector binding does not resolve is re-bound by a
-    // save that names its type: saving with the connector still selected is
-    // that deliberate act, so the type is sent even when it did not change.
-    if (isNewConnector || dirtyFields.type || connector?.connectorBinding) {
+    // An unchanged type is not sent: binding a closed connection to the
+    // connector that has its name now is its own button, a deliberate act.
+    if (isNewConnector || dirtyFields.type) {
       payload.type = values.type;
     }
 
@@ -994,6 +1039,21 @@ function SourceConnectionForm({
     );
   };
 
+  /**
+   * Bind a closed connection to the connector that holds its slug now: a
+   * save that names its own type and nothing else. Offered only when the
+   * server says such a connector exists (`rebindable`).
+   */
+  const bindToConnector = async () => {
+    if (!connector?.type) return;
+    setBindingSaving(true);
+    try {
+      await onSubmit({ type: connector.type });
+    } finally {
+      setBindingSaving(false);
+    }
+  };
+
   const typeSelect = (
     <FormControl fullWidth margin="normal">
       <InputLabel>Connector Type</InputLabel>
@@ -1008,6 +1068,13 @@ function SourceConnectionForm({
             size="small"
             disabled={readOnly}
           >
+            {/* The connection's own type stays visible when the catalog
+                does not list it (its connector's folder is off main). */}
+            {selectedType && !listed && (
+              <MenuItem value={selectedType} disabled>
+                {closed ? `${selectedSlug} (removed)` : selectedType}
+              </MenuItem>
+            )}
             {connectorTypes.map(connector => (
               <MenuItem key={connector.type} value={connector.type}>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -1018,6 +1085,16 @@ function SourceConnectionForm({
                     sx={{ width: 20, height: 20 }}
                   />
                   {connector.name}
+                  {/* A workspace connector's name comes from its code; its
+                      type id is what a folder rename changes. */}
+                  {connector.type.startsWith(WORKSPACE_TYPE_PREFIX) && (
+                    <Typography
+                      variant="caption"
+                      sx={{ color: "text.secondary", fontFamily: "monospace" }}
+                    >
+                      {connector.type}
+                    </Typography>
+                  )}
                 </Box>
               </MenuItem>
             ))}
@@ -1071,7 +1148,7 @@ function SourceConnectionForm({
         schema.fields
           .filter(f => isFieldShown(f, schema.fields, watch))
           .map(f => renderDynamicField(f, form))}
-      {!schemaLoading && !schema && (
+      {!schemaLoading && !schema && !closed && (
         <Typography
           sx={{
             color: "text.secondary",
@@ -1207,9 +1284,25 @@ function SourceConnectionForm({
         </Alert>
       )}
 
-      {connector?.connectorBinding?.message && (
-        <Alert severity="warning" sx={{ mb: 2 }}>
-          {connector.connectorBinding.message}
+      {binding?.message && (
+        <Alert
+          severity="warning"
+          sx={{ mb: 2 }}
+          action={
+            closed && binding.rebindable ? (
+              <Button
+                color="inherit"
+                size="small"
+                disabled={readOnly || bindingSaving}
+                onClick={() => void bindToConnector()}
+                sx={{ whiteSpace: "nowrap" }}
+              >
+                Bind to this connector
+              </Button>
+            ) : undefined
+          }
+        >
+          {binding.message}
         </Alert>
       )}
 
@@ -1251,8 +1344,22 @@ function SourceConnectionForm({
                 }}
               >
                 {connectorTypes.find(c => c.type === selectedType)?.name ||
-                  selectedType}
+                  (closed ? `${selectedSlug} (removed)` : selectedType)}
               </Typography>
+              {/* The type id: what a folder rename changes. The title above
+                  is the name the connector's code declares. */}
+              {selectedType.startsWith(WORKSPACE_TYPE_PREFIX) && listed && (
+                <Typography
+                  variant="caption"
+                  sx={{
+                    display: "block",
+                    color: "text.secondary",
+                    fontFamily: "monospace",
+                  }}
+                >
+                  {selectedType}
+                </Typography>
+              )}
               <Typography
                 variant="caption"
                 sx={{
@@ -1262,8 +1369,43 @@ function SourceConnectionForm({
                 {connectorTypes.find(c => c.type === selectedType)?.description}
               </Typography>
             </Box>
-            {selectedType.startsWith(WORKSPACE_TYPE_PREFIX) && (
-              <Box sx={{ ml: "auto", flexShrink: 0 }}>
+            {selectedType.startsWith(WORKSPACE_TYPE_PREFIX) && listed && (
+              <Box
+                sx={{ ml: "auto", flexShrink: 0, display: "flex", gap: 0.5 }}
+              >
+                {/* Like History below: the connector's folder, not this
+                    connection. */}
+                <ConnectorRenameButton
+                  slug={selectedType.slice(WORKSPACE_TYPE_PREFIX.length)}
+                  displayName={
+                    connectorTypes.find(c => c.type === selectedType)?.name
+                  }
+                  onRenamed={slug => {
+                    // The catalog was reloaded by the rename: the name
+                    // the code declares is listed under the new type.
+                    setSnackbarMessage(
+                      connectorRenamedMessage(
+                        slug,
+                        useConnectorCatalogStore
+                          .getState()
+                          .types?.find(
+                            t => t.type === `${WORKSPACE_TYPE_PREFIX}${slug}`,
+                          )?.name,
+                      ),
+                    );
+                    // The connector kept its id; its type is ws:<new> now:
+                    // here, in the catalog (already reloaded) and on its
+                    // other connections.
+                    form.resetField("type", {
+                      defaultValue: `${WORKSPACE_TYPE_PREFIX}${slug}`,
+                    });
+                    if (currentWorkspace) {
+                      void useSourceConnectionEntitiesStore
+                        .getState()
+                        .refresh(currentWorkspace.id);
+                    }
+                  }}
+                />
                 {/* The definition's folder in the workspace repo, not this
                     connection: connections are credentials, not files. */}
                 <EntityHistoryButton
