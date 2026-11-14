@@ -7,6 +7,7 @@ import {
   type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance, AxiosRequestConfig } from "axios";
+import { createSsrfSafeAxios } from "../../services/safe-http-client";
 
 type JsonRecord = Record<string, any>;
 
@@ -235,7 +236,8 @@ export class RestConnector extends BaseConnector {
         }
       }
 
-      this.httpClient = axios.create({
+      // User-supplied base URL: SSRF-guarded (no private/metadata targets).
+      this.httpClient = createSsrfSafeAxios({
         baseURL: this.dataSource.config.api_base_url,
         headers,
       });

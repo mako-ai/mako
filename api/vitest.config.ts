@@ -20,6 +20,7 @@ export default defineConfig({
       "src/auth/auth-page.test.ts",
       "src/auth/auth-routes.test.ts",
       "src/utils/client-ip.test.ts",
+      "src/services/safe-http-client.test.ts",
       "src/integrations/github/**/*.test.ts",
       "src/routes/dbt.routes.integration.test.ts",
       "src/routes/connector-reveal-secret.test.ts",
