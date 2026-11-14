@@ -12,10 +12,7 @@
  */
 
 import { Types } from "mongoose";
-import {
-  claimScheduledRun,
-  findDueScheduledRuns,
-} from "../../services/scheduled-run-claim";
+import { claimDueScheduledRuns } from "../../services/scheduled-run-claim";
 import { inngest } from "../client";
 import {
   DbtJob,
@@ -730,46 +727,65 @@ export const dbtRunCancelFunction = inngest.createFunction(
   },
 );
 
+/** Jobs triggered per step: bounds steps per run at (due jobs / 20) + 1. */
+const DBT_SCHEDULER_TRIGGER_CHUNK = 20;
+
 export const dbtSchedulerFunction = inngest.createFunction(
   {
     id: "dbt-job-scheduler",
     name: "Run Scheduled dbt Jobs",
+    concurrency: { limit: 1 },
+    retries: 3,
     triggers: { cron: "*/1 * * * *" },
   },
   async ({ step }) => {
-    const now = new Date();
-
-    const dueJobs = await step.run("fetch-due-dbt-jobs", () =>
-      findDueScheduledRuns(DbtJob, now, { enabled: true }),
+    // Fetch + optimistic claim of every due job in one step; only the
+    // scan that flips nextAt triggers.
+    const claimed = await step.run("claim-due-dbt-jobs", () =>
+      claimDueScheduledRuns(DbtJob, new Date(), { enabled: true }),
     );
 
     let triggered = 0;
-    for (const dueJob of dueJobs) {
-      if (!dueJob.schedule?.cron || !dueJob.schedule?.timezone) continue;
-
-      // Optimistic claim — only the instance that flips nextAt triggers.
-      const updateResult = await step.run(
-        `claim-${dueJob.id}-${dueJob.nextAt?.toString() ?? "none"}`,
-        () => claimScheduledRun(DbtJob, dueJob, now),
+    for (let i = 0; i < claimed.length; i += DBT_SCHEDULER_TRIGGER_CHUNK) {
+      const chunk = claimed.slice(i, i + DBT_SCHEDULER_TRIGGER_CHUNK);
+      // A retried chunk re-triggers jobs it already queued, but scheduled
+      // triggers use `skipIfActive`, so those are no-ops.
+      const runIds = await step.run(
+        `trigger-dbt-jobs-${i / DBT_SCHEDULER_TRIGGER_CHUNK}`,
+        async () => {
+          const ids: string[] = [];
+          let firstError: unknown = null;
+          for (const dueJob of chunk) {
+            try {
+              const job = await DbtJob.findOne({
+                _id: new Types.ObjectId(dueJob.id),
+                workspaceId: new Types.ObjectId(dueJob.workspaceId),
+              });
+              if (!job) continue;
+              const run = await triggerDbtJobRun({
+                workspaceId: dueJob.workspaceId,
+                job,
+                trigger: "schedule",
+                triggeredBy: "scheduler",
+              });
+              ids.push(run._id.toString());
+            } catch (error) {
+              firstError ??= error;
+              logger.error("Failed to trigger scheduled dbt job", {
+                jobId: dueJob.id,
+                workspaceId: dueJob.workspaceId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          if (firstError) throw firstError;
+          return ids;
+        },
       );
-
-      if (updateResult.modifiedCount === 0) continue;
-
-      await step.run(`trigger-${dueJob.id}`, async () => {
-        const job = await DbtJob.findById(new Types.ObjectId(dueJob.id));
-        if (!job) return null;
-        const run = await triggerDbtJobRun({
-          workspaceId: dueJob.workspaceId,
-          job,
-          trigger: "schedule",
-          triggeredBy: "scheduler",
-        });
-        return run._id.toString();
-      });
-      triggered++;
+      triggered += runIds.length;
     }
 
-    return { checked: dueJobs.length, triggered };
+    return { claimed: claimed.length, triggered };
   },
 );
 

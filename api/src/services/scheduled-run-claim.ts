@@ -82,3 +82,53 @@ export async function claimScheduledRun(
   );
   return { modifiedCount: result.modifiedCount };
 }
+
+/** A due doc this scan claimed; small and JSON-safe (it is step output). */
+export interface ClaimedScheduledRun {
+  id: string;
+  workspaceId: string;
+  /** The `nextAt` this claim consumed, ISO — the occurrence's identity. */
+  occurrence: string;
+}
+
+/**
+ * Fetch every due doc and claim each one in ONE call, meant to be ONE
+ * `step.run`. One step per due doc ran into Inngest's per-run step limit
+ * at a few hundred due rows. The claims are compare-and-swap, so a retry
+ * of the whole step re-claims nothing that an earlier attempt already
+ * advanced; the dispatch that follows uses deterministic event ids
+ * (`scheduledRunEventId`) so a replayed send cannot double-trigger.
+ *
+ * Docs without both a cron and a timezone are skipped, as before.
+ */
+export async function claimDueScheduledRuns(
+  model: Model<any>,
+  now: Date,
+  extraFilter: Record<string, unknown> = {},
+): Promise<ClaimedScheduledRun[]> {
+  const due = await findDueScheduledRuns(model, now, extraFilter);
+  const claimed: ClaimedScheduledRun[] = [];
+  for (const doc of due) {
+    if (!doc.schedule?.cron || !doc.schedule?.timezone) continue;
+    const result = await claimScheduledRun(model, doc, now);
+    if (result.modifiedCount === 0) continue;
+    claimed.push({
+      id: doc.id,
+      workspaceId: doc.workspaceId,
+      occurrence: doc.nextAt ? new Date(doc.nextAt).toISOString() : "none",
+    });
+  }
+  return claimed;
+}
+
+/**
+ * Deterministic Inngest event id for one claimed occurrence. Inngest drops
+ * a second event with the same id (24h window), so a replayed dispatch
+ * step is idempotent.
+ */
+export function scheduledRunEventId(
+  kind: string,
+  claimed: Pick<ClaimedScheduledRun, "id" | "occurrence">,
+): string {
+  return `${kind}:${claimed.id}:${claimed.occurrence}`;
+}
