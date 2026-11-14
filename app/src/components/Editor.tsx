@@ -2363,6 +2363,7 @@ function Editor({
                                 {tab.title}
                               </span>
                               <IconButton
+                                aria-label={`Close ${tab.title}`}
                                 component="span"
                                 size="small"
                                 className="tab-close-btn"

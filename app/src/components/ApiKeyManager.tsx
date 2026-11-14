@@ -693,6 +693,7 @@ export function ApiKeyManager() {
                 )}
               </Box>
               <IconButton
+                aria-label={showKey ? "Hide API key" : "Show API key"}
                 size="small"
                 onClick={() => setShowKey(!showKey)}
                 sx={{ flexShrink: 0 }}
@@ -700,6 +701,7 @@ export function ApiKeyManager() {
                 {showKey ? <VisibilityOffIcon /> : <VisibilityIcon />}
               </IconButton>
               <IconButton
+                aria-label="Copy API key"
                 size="small"
                 onClick={() => copyToClipboard(newApiKey?.key || "")}
                 sx={{ flexShrink: 0 }}

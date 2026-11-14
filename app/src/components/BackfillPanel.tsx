@@ -55,6 +55,7 @@ import {
 import { BUI_MONO_FONT_FAMILY } from "./chat/bui-styles";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EntityHistoryButton } from "./EntityHistoryButton";
+import { clickableProps } from "../lib/a11y";
 
 interface BackfillPanelProps {
   workspaceId: string;
@@ -2098,6 +2099,7 @@ export function BackfillPanel({
                       <Box
                         key={run.executionId}
                         onClick={() => loadRunLogs(run.executionId)}
+                        {...clickableProps(() => loadRunLogs(run.executionId))}
                         sx={{
                           px: 1,
                           py: 0.75,

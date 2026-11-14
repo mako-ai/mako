@@ -433,7 +433,11 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
             <Typography variant="subtitle2" sx={{ wordBreak: "break-word" }}>
               {selectedNode.name}
             </Typography>
-            <IconButton size="small" onClick={() => setSelectedNodeId(null)}>
+            <IconButton
+              aria-label="Close details"
+              size="small"
+              onClick={() => setSelectedNodeId(null)}
+            >
               <CloseIcon size={16} />
             </IconButton>
           </Box>

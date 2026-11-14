@@ -104,6 +104,7 @@ import EntityLoadErrorState, {
 import StreamingMarkdown from "./StreamingMarkdown";
 import DbtCommandsPanel from "./DbtCommandsPanel";
 import { useConfirmProdRun } from "../dbt-runtime/confirm-prod-run";
+import { clickableProps } from "../lib/a11y";
 
 const DbtLineageView = lazy(() => import("./DbtLineageView"));
 // The results grid drags in MUI's DataGrid (+ its stylesheet) and the charting
@@ -192,6 +193,11 @@ function ProblemList({
           onClick={() => {
             if (problem.filePath) focusDbtFileTab(projectId, problem.filePath);
           }}
+          {...(problem.filePath
+            ? clickableProps(() =>
+                focusDbtFileTab(projectId, problem.filePath as string),
+              )
+            : {})}
           sx={{
             display: "flex",
             alignItems: "flex-start",

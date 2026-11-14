@@ -88,6 +88,7 @@ export const CodeBlock = React.memo(
           }}
         >
           <IconButton
+            aria-label={isCopied ? "Copied" : "Copy code"}
             size="small"
             onClick={handleCopy}
             sx={{

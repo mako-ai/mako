@@ -482,7 +482,8 @@ function MainApp() {
   const handleDatabaseCollectionClick = useCallback(
     async (dbId: string, collection: CollectionInfo) => {
       // Try server-provided template first
-      let prefill = `db.getCollection("${collection.name}").find({}).limit(500)`;
+      // JSON.stringify quotes/escapes the name (a `"` in it broke the prefill).
+      let prefill = `db.getCollection(${JSON.stringify(collection.name)}).find({}).limit(500)`;
       try {
         const { useSchemaStore } = await import("./store/schemaStore");
         const workspaceId = getActiveWorkspaceId();

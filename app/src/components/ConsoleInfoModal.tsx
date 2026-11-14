@@ -80,6 +80,7 @@ const MonospaceField = ({ value, onCopy, disabled }: MonospaceFieldProps) => {
       </Typography>
       {onCopy && (
         <IconButton
+          aria-label="Copy to clipboard"
           size="small"
           onClick={onCopy}
           title="Copy to clipboard"

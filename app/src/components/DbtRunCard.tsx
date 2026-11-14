@@ -33,6 +33,7 @@ import {
   type BuiPillTone,
 } from "./bui-status";
 import { formatDuration } from "../utils/format";
+import { clickableProps } from "../lib/a11y";
 
 interface DbtRunCardProps {
   runId: string;
@@ -179,6 +180,12 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
           narrow chat panel instead of being squeezed out by the chips. */}
       <Box
         onClick={() => hasBody && setExpanded(prev => !prev)}
+        {...(hasBody
+          ? {
+              ...clickableProps(() => setExpanded(prev => !prev)),
+              "aria-expanded": expanded,
+            }
+          : {})}
         sx={{
           px: 1.25,
           py: 1,

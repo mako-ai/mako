@@ -1779,7 +1779,11 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             </>
           )}
           <Divider orientation="vertical" flexItem />
-          <IconButton onClick={handleInfoClick} size="small">
+          <IconButton
+            aria-label="Console info"
+            onClick={handleInfoClick}
+            size="small"
+          >
             <InfoOutlineIcon strokeWidth={2} size={22} />
           </IconButton>
         </Box>

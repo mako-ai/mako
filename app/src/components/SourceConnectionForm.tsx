@@ -835,6 +835,7 @@ function SourceConnectionForm({
                 {field.label} {index + 1}
               </Typography>
               <IconButton
+                aria-label="Remove"
                 size="small"
                 color="error"
                 disabled={readOnly}

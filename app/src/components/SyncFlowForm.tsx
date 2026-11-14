@@ -1869,6 +1869,7 @@ export function SyncFlowForm({
                                 Query {index + 1}
                               </Typography>
                               <IconButton
+                                aria-label="Remove query"
                                 size="small"
                                 color="error"
                                 onClick={() => removeQuery(index)}

@@ -88,6 +88,7 @@ import {
   reportAppFrameMemory,
   setAppFrameVisible,
 } from "../lib/app-memory";
+import { clickableProps } from "../lib/a11y";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
@@ -521,6 +522,12 @@ function TerminalPanel({
             setStatus("connecting");
             connectRef.current?.(true);
           }}
+          // The only way to boot the terminal again: keyboard users must be
+          // able to reach it too.
+          {...clickableProps(() => {
+            setStatus("connecting");
+            connectRef.current?.(true);
+          }, "The machine is off. Start it and reconnect")}
           sx={{
             position: "absolute",
             inset: 0,
@@ -1013,6 +1020,7 @@ function SessionRow({
   return (
     <Box
       onClick={onSelect}
+      {...clickableProps(onSelect)}
       sx={{
         display: "flex",
         alignItems: "center",
@@ -1049,7 +1057,12 @@ function SessionRow({
             e.stopPropagation();
             onClose();
           }}
-          sx={{ fontSize: 12, opacity: 0, "&:hover": { opacity: 1 } }}
+          {...clickableProps(onClose, `Close ${label}`)}
+          sx={{
+            fontSize: 12,
+            opacity: 0,
+            "&:hover, &:focus-visible": { opacity: 1 },
+          }}
         >
           ×
         </Box>

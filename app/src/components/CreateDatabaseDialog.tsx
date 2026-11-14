@@ -780,7 +780,12 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
               }}
             >
               {!databaseId && (
-                <IconButton onClick={handleBack} size="small" edge="start">
+                <IconButton
+                  aria-label="Back"
+                  onClick={handleBack}
+                  size="small"
+                  edge="start"
+                >
                   <ArrowBackIcon />
                 </IconButton>
               )}

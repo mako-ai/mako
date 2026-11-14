@@ -71,6 +71,14 @@ const STATUS_LABELS: Record<McpServerInfo["status"], string> = {
 };
 
 /** Favicon for a custom MCP server, derived from its URL's host. */
+/** Custom header row; the id is a stable React key (not the index). */
+type HeaderRow = { id: number; key: string; value: string };
+let headerRowSeq = 0;
+function newHeaderRow(): HeaderRow {
+  headerRowSeq += 1;
+  return { id: headerRowSeq, key: "", value: "" };
+}
+
 function faviconForUrl(url: string): string | null {
   try {
     const host = new URL(url).hostname;
@@ -702,9 +710,9 @@ function CredentialsForm({
   const fields = preset?.headerFields ?? [];
   const isCustom = fields.length === 0;
   const [values, setValues] = useState<Record<string, string>>({});
-  const [customHeaders, setCustomHeaders] = useState<
-    Array<{ key: string; value: string }>
-  >([{ key: "", value: "" }]);
+  const [customHeaders, setCustomHeaders] = useState<Array<HeaderRow>>(() => [
+    newHeaderRow(),
+  ]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -729,7 +737,7 @@ function CredentialsForm({
           );
       await saveCredentials(currentWorkspace.id, server.id, headers);
       setValues({});
-      setCustomHeaders([{ key: "", value: "" }]);
+      setCustomHeaders([newHeaderRow()]);
       onSaved();
     } catch (err) {
       setError(
@@ -766,7 +774,7 @@ function CredentialsForm({
       {isCustom ? (
         <>
           {customHeaders.map((h, i) => (
-            <Stack key={i} direction="row" spacing={1}>
+            <Stack key={h.id} direction="row" spacing={1}>
               <TextField
                 label="Header name"
                 size="small"
@@ -800,9 +808,7 @@ function CredentialsForm({
           ))}
           <Button
             size="small"
-            onClick={() =>
-              setCustomHeaders(prev => [...prev, { key: "", value: "" }])
-            }
+            onClick={() => setCustomHeaders(prev => [...prev, newHeaderRow()])}
             sx={{ alignSelf: "flex-start" }}
           >
             Add header
