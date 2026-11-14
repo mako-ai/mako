@@ -266,6 +266,11 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // routes do). Neither reaches the platform behind it.
   update_connection: bridge(),
   delete_connection: bridge({ destructiveHint: true }),
+  // Renames any kind in place; gated per kind by RENAME_CAPABILITIES
+  // (agent-tools). Flagged destructive for MCP clients even though ids
+  // survive: references by the old name can stop resolving (a source
+  // connection keeps no old names), so a client should confirm first.
+  rename_object: bridge({ destructiveHint: true }),
   // The pre-push check for flow files. Reads only — it says what a push
   // WOULD do to running streams and performs none of it — so it is bridged
   // next to the discovery pair it completes: discover ids, write the file,

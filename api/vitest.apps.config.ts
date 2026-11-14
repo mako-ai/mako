@@ -166,6 +166,15 @@ export default defineConfig({
       "src/connectors/workspace/sync-box.test.ts",
       "src/apps/repository.service.test.ts",
       "src/services/workspace-repos.service.test.ts",
+      // Graceful rename (api/src/rename): the contract every kind shares, the
+      // connection handler (real Mongo), and the name rules' two entry points.
+      "src/rename/registry.test.ts",
+      "src/rename/handlers/connection.test.ts",
+      "src/rename/scenarios/name-rules-parity.test.ts",
+      // rename_object: kinds per surface, per-kind grants, call results.
+      "src/agent-lib/tools/rename-tools.test.ts",
+      // /objects/resolve and /objects/{kind}/rename: who may call them.
+      "src/routes/objects.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.

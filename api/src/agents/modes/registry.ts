@@ -93,6 +93,8 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   mongo_list_databases: "mongodb",
   mongo_list_collections: "mongodb",
   mongo_inspect_collection: "mongodb",
+  // Rename a workspace object in place (api/src/rename).
+  rename_object: "workspace",
 };
 
 export const DEFERRED_BUILTIN_TOOL_NAMES: readonly string[] = Object.keys(

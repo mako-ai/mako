@@ -8,9 +8,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ZERO_OID, assertSafeRelPath } from "./git";
+import { ZERO_OID, assertSafeRelPath, runGitBuffer } from "./git";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
+  blobOid,
+  blobOidAt,
+  commitBlobsOnBranch,
   commitTree,
   diffNameStatus,
   globTree,
@@ -146,6 +150,209 @@ describe("updateRefCas", () => {
     // Stale writer (expects c1) must lose.
     expect(await updateRefCas(repoDir, ref, c1, c1)).toBe(false);
     expect(await resolveCommit(repoDir, ref)).toBe(c2);
+  });
+});
+
+describe("commitBlobsOnBranch expectBlobs (compare-and-swap on content)", () => {
+  it("refuses a mutation whose read-side file changed or whose new path appeared, and commits otherwise", async () => {
+    const { commitOid: c1 } = await initRepo(repoDir, {
+      "flows/a.yml": "name: A\n",
+    });
+    const aOid = blobOid("name: A\n");
+    expect(await blobOidAt(repoDir, c1, "flows/a.yml")).toBe(aOid);
+    expect(await blobOidAt(repoDir, c1, "flows/b.yml")).toBeNull();
+
+    // Someone else edits a.yml first.
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "flows/a.yml": "name: A edited\n" } },
+      { message: "edit" },
+    );
+    const headBefore = await resolveCommit(
+      repoDir,
+      `refs/heads/${DEFAULT_BRANCH}`,
+    );
+    // A move decided from the ORIGINAL a.yml must not re-apply on top.
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { "flows/b.yml": "name: B\n" }, deletes: ["flows/a.yml"] },
+        {
+          message: "mv",
+          expectBlobs: { "flows/a.yml": aOid, "flows/b.yml": null },
+        },
+      ),
+    ).rejects.toBeInstanceOf(BlobPreconditionError);
+    expect(await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`)).toBe(
+      headBefore,
+    );
+
+    // Decided from the current a.yml: applies.
+    const edited = blobOid("name: A edited\n");
+    const moved = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "flows/b.yml": "name: B\n" }, deletes: ["flows/a.yml"] },
+      {
+        message: "mv",
+        expectBlobs: { "flows/a.yml": edited, "flows/b.yml": null },
+      },
+    );
+    expect(moved.unchanged).toBe(false);
+    expect(await blobOidAt(repoDir, moved.commitOid, "flows/a.yml")).toBeNull();
+    expect(await blobOidAt(repoDir, moved.commitOid, "flows/b.yml")).toBe(
+      blobOid("name: B\n"),
+    );
+
+    // "Must be absent" fails once the path exists.
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { "flows/b.yml": "name: B2\n" } },
+        { message: "x", expectBlobs: { "flows/b.yml": null } },
+      ),
+    ).rejects.toMatchObject({ path: "flows/b.yml", expected: null });
+  });
+});
+
+describe("commitBlobsOnBranch writes many blobs in one go, byte for byte", () => {
+  it("CRLF, binary, non-UTF-8, empty, spaces and unicode in names, a symlink entry and an executable: exact bytes, oids, modes", async () => {
+    await initRepo(repoDir, { "README.md": "x\n" });
+    const files: Record<string, string | Buffer> = {
+      "a/crlf.sql": "select 1\r\nfrom t\r\n",
+      "a/binary.png": Buffer.from([0x89, 0x50, 0x00, 0xff, 0x00, 0x0a, 0x0d]),
+      "a/latin1.sql": Buffer.from("-- caf\xe9\n", "latin1"),
+      "a/empty.txt": "",
+      "a/with space.md": "spaces\n",
+      "a/café ☕.md": "unicode name\n",
+      "a/run.sh": "#!/bin/sh\necho hi\n",
+      "a/no-final-newline": "last line",
+    };
+    for (let i = 0; i < 40; i++) files[`bulk/f${i}.txt`] = `file ${i}\n`;
+    const link = blobOid("crlf.sql");
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "a/target.txt": "crlf.sql" } },
+      { message: "a blob the symlink entry can point at" },
+    );
+    const { commitOid } = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      {
+        writes: files,
+        modes: { "a/run.sh": "100755" },
+        entries: [{ path: "a/link.sql", oid: link, mode: "120000" }],
+      },
+      { message: "many" },
+    );
+    const tree = new Map(
+      (await listTree(repoDir, commitOid)).map(e => [e.path, e]),
+    );
+    for (const [p, contents] of Object.entries(files)) {
+      const entry = tree.get(p);
+      expect([p, entry?.oid]).toEqual([p, blobOid(contents)]);
+      expect(entry?.mode).toBe(p === "a/run.sh" ? "100755" : "100644");
+      const bytes = await runGitBuffer([
+        "-C",
+        repoDir,
+        "cat-file",
+        "blob",
+        blobOid(contents),
+      ]);
+      const want = Buffer.isBuffer(contents)
+        ? contents
+        : Buffer.from(contents, "utf8");
+      expect([p, bytes.equals(want)]).toEqual([p, true]);
+    }
+    expect(tree.get("a/link.sql")).toMatchObject({ oid: link, mode: "120000" });
+  });
+
+  it("one written file and none: same commit semantics", async () => {
+    await initRepo(repoDir, { "README.md": "x\n" });
+    const one = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "one.txt": "1\r\n" } },
+      { message: "one" },
+    );
+    expect(await blobOidAt(repoDir, one.commitOid, "one.txt")).toBe(
+      blobOid("1\r\n"),
+    );
+    const none = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { deletes: ["one.txt"] },
+      { message: "none" },
+    );
+    expect(await blobOidAt(repoDir, none.commitOid, "one.txt")).toBeNull();
+  });
+
+  it("refuses a mode or an entry it does not know, and leaves the branch where it was", async () => {
+    const { commitOid } = await initRepo(repoDir, { "README.md": "x\n" });
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        {
+          writes: { "a.sh": "echo\n" },
+          modes: { "a.sh": "160000" as "100755" },
+        },
+        { message: "submodule mode" },
+      ),
+    ).rejects.toThrow();
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { entries: [{ path: "b.txt", oid: "not-an-oid", mode: "100644" }] },
+        { message: "bad oid" },
+      ),
+    ).rejects.toThrow();
+    expect(await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`)).toBe(
+      commitOid,
+    );
+  });
+
+  it("path conflicts are refused, the first one named, across a large batch", async () => {
+    await initRepo(repoDir, { "m/a.sql": "a\n", "d/x/y.txt": "y\n" });
+    const writes: Record<string, string> = {};
+    for (let i = 0; i < 60; i++) writes[`m/ok${i}.sql`] = `${i}\n`;
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { ...writes, "m/a.sql/b.sql": "b\n" } },
+        { message: "file as folder" },
+      ),
+    ).rejects.toMatchObject({
+      name: "PathConflictError",
+      path: "m/a.sql/b.sql",
+      conflict: "m/a.sql",
+      kind: "file",
+    });
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { ...writes, "d/x": "now a file\n" } },
+        { message: "folder as file" },
+      ),
+    ).rejects.toMatchObject({ name: "PathConflictError", kind: "directory" });
+    // …unless the mutation removes what is in the way.
+    const ok = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      {
+        writes: { ...writes, "d/x": "now a file\n", "m/a.sql/b.sql": "b\n" },
+        deletes: ["d/x/y.txt", "m/a.sql"],
+      },
+      { message: "replace" },
+    );
+    expect(ok.unchanged).toBe(false);
   });
 });
 
