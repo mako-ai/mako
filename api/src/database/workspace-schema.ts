@@ -405,6 +405,12 @@ export interface ISourceConnection extends Document {
    * with it off.
    */
   liveReads?: boolean;
+  /**
+   * Who may read live, while `liveReads` is on. Absent: everyone in the
+   * workspace. A list, even empty: only its principals, and the connection's
+   * writers (a writer reads what it writes to). Same entries as `writers`.
+   */
+  liveReaders?: IConnectionWriter[];
   createdBy: string;
   /**
    * User ids that configure this connection (edit, reveal or replace its
@@ -1808,6 +1814,10 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
       default: undefined,
     },
     liveReads: { type: Boolean },
+    liveReaders: {
+      type: [ConnectionWriterSchema],
+      default: undefined,
+    },
     createdBy: {
       type: String,
       ref: "User",
@@ -5245,6 +5255,71 @@ export const AppUsageDaily = mongoose.model<IAppUsageDaily>(
   AppUsageDailySchema,
 );
 
+/** Rows of skill_usage_daily expire this long after their last bump. */
+export const SKILL_USAGE_TTL_SECONDS = 400 * 24 * 60 * 60;
+
+/**
+ * Which skills get read, rolled up per UTC day (skill-usage.service). One row
+ * per (workspace, scope, skill, source, day), bumped with `$inc` upserts, so
+ * the collection grows with distinct skill-days, never with traffic. Counts
+ * only: no user, no chat, no query text. `skill` is the folder name, so a
+ * renamed skill starts a new history. Rows expire 400 days after their last
+ * bump (the TTL index on `lastAt`).
+ */
+export interface ISkillUsageDaily extends Document {
+  workspaceId: Types.ObjectId;
+  scope: "workspace" | "system";
+  skill: string;
+  /** Who asked: the in-product agent, or a client over MCP. */
+  source: "agent" | "mcp";
+  /** UTC day, `YYYY-MM-DD`. */
+  day: string;
+  /** `load_skill` calls that returned the skill. */
+  loads: number;
+  /** `read_skill_resource` calls that returned one of its files. */
+  resourceReads: number;
+  /** Bodies returned by `get_relevant_skills` or `search_skills`. */
+  relevantHits: number;
+  firstAt: Date;
+  lastAt: Date;
+}
+
+const SkillUsageDailySchema = new Schema<ISkillUsageDaily>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    scope: { type: String, enum: ["workspace", "system"], required: true },
+    skill: { type: String, required: true },
+    source: { type: String, enum: ["agent", "mcp"], required: true },
+    day: { type: String, required: true },
+    loads: { type: Number, default: 0 },
+    resourceReads: { type: Number, default: 0 },
+    relevantHits: { type: Number, default: 0 },
+    firstAt: { type: Date, required: true },
+    lastAt: { type: Date, required: true },
+  },
+  { collection: "skill_usage_daily", versionKey: false },
+);
+
+SkillUsageDailySchema.index(
+  { workspaceId: 1, scope: 1, skill: 1, source: 1, day: 1 },
+  { unique: true },
+);
+// The 30-day window scan behind `list_skills`.
+SkillUsageDailySchema.index({ workspaceId: 1, day: 1 });
+SkillUsageDailySchema.index(
+  { lastAt: 1 },
+  { expireAfterSeconds: SKILL_USAGE_TTL_SECONDS },
+);
+
+export const SkillUsageDaily = mongoose.model<ISkillUsageDaily>(
+  "SkillUsageDaily",
+  SkillUsageDailySchema,
+);
+
 /**
  * Every view event, append-only (app-usage.service): the raw log the daily
  * rollup above is derived from, kept so ranking can be re-derived from
@@ -5435,6 +5510,8 @@ export interface IAppIndexEntry extends Document {
   schedules: Array<{ binding: string; cron: string; timezone?: string }>;
   /** Tables the app's bindings read (`FROM`/`JOIN`) — search input. */
   tables?: string[];
+  /** The same tables per binding — which binding file reads which table. */
+  bindingTables?: Array<{ binding: string; tables: string[] }>;
   /** Binding names on main — which binding state rows are current. */
   bindings?: string[];
   /** Who first committed the app's manifest, and when (discovery). */
@@ -5487,6 +5564,18 @@ const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
       default: [],
     },
     tables: { type: [String], default: undefined },
+    bindingTables: {
+      type: [
+        new Schema(
+          {
+            binding: { type: String, required: true },
+            tables: { type: [String], default: [] },
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
+    },
     bindings: { type: [String], default: undefined },
     authorEmail: { type: String },
     firstCommitAt: { type: Date },

@@ -226,11 +226,12 @@ headers, body }` at any status. GraphQL: `post("/", { query, variables })`.
 GETs, GraphQL queries and Close searches are reads: on once a manager turns
 live reads on in the connection's Access tab (every connection starts off).
 A GraphQL document with the word `mutation` or `subscription` anywhere, even
-in a string or comment, is a write. Anything else is a write: it needs "All
-deployed workflows" on that tab's writers list (workflows share one deployed
-identity today, so they are allowed together; a listed writer writes
-anywhere through the connection), and a refused one throws and shows there
-with Allow. Tell the user which connection to allow first.
+in a string or comment, is a write. Anything else is a write: it needs the
+workflow by name, or "All deployed workflows", on that tab's writers list
+(each deployed workflow acts as itself; a listed writer writes anywhere
+through the connection), and a refused one throws and shows there with
+Allow. A connection may also list who reads live: the workflow must be on
+that list or the writers list to read. Tell the user which connection to allow first.
 
 A run you start (`workflows_run`, sandbox or not) really writes, as a run
 from the app does: a Slack step posts to Slack, an email step sends. In the
