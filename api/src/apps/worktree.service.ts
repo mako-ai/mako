@@ -34,6 +34,7 @@ import {
 } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import { loggers } from "../logging";
+import { BoundedMap } from "../utils/bounded-map";
 import {
   boxCheckout,
   boxCommitAll,
@@ -481,10 +482,10 @@ export function sessionKeyFor(
  * miss returns undefined — the caller then leaves the box's existing identity
  * alone rather than stamping a wrong one.
  */
-const actorIdentityCache = new Map<
+const actorIdentityCache = new BoundedMap<
   string,
   { name: string; email: string } | undefined
->();
+>({ maxEntries: 5_000, ttlMs: 10 * 60_000 });
 
 export async function resolveActorIdentity(
   userId: string,
@@ -2827,10 +2828,10 @@ export async function listBranches(scope: RepoScope): Promise<BranchInfo[]> {
 }
 
 const branchListInFlight = new Map<string, Promise<BranchInfo[]>>();
-const branchListCache = new Map<
+const branchListCache = new BoundedMap<
   string,
   { refs: string; branches: BranchInfo[] }
->();
+>({ maxEntries: 500, ttlMs: 10 * 60_000 });
 
 async function buildBranchList(
   repoDir: string,

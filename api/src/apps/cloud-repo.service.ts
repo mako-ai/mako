@@ -41,6 +41,7 @@ import {
 } from "./repository.service";
 import { initialWorkspaceFiles } from "./workspace-template";
 import { loggers } from "../logging";
+import { BoundedMap } from "../utils/bounded-map";
 
 const logger = loggers.api("apps");
 
@@ -452,7 +453,11 @@ function reconcileMirrorDeletions(
 }
 
 const MIRROR_RECONCILE_INTERVAL_MS = 60_000;
-const lastReconcileAt = new Map<string, number>();
+// Throttle stamps: an entry past the interval means nothing, so expire it.
+const lastReconcileAt = new BoundedMap<string, number>({
+  maxEntries: 5_000,
+  ttlMs: MIRROR_RECONCILE_INTERVAL_MS,
+});
 
 /**
  * Fire-and-forget, throttled: drop branches deleted on the mirror without
@@ -619,7 +624,12 @@ export async function ensureCommitLocally(
  * the client's git command produce the specific error.
  */
 const FRESHEN_INTERVAL_MS = 3_000;
-const lastFreshenAt = new Map<string, number>();
+// Throttle stamps; callers pass intervals of seconds, so an hour-old stamp
+// throttles nothing and can go.
+const lastFreshenAt = new BoundedMap<string, number>({
+  maxEntries: 5_000,
+  ttlMs: 60 * 60_000,
+});
 const freshenInFlight = new Map<string, Promise<void>>();
 
 export async function freshenForServe(
