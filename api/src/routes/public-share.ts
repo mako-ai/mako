@@ -28,6 +28,9 @@ import type { Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { loggers } from "../logging";
+// Trusted-hop client IP: the first x-forwarded-for entry is client-typed, so
+// keying the unlock limiter on it gave every request its own bucket.
+import { clientIp } from "../utils/client-ip";
 import { serverTiming, timed } from "../middleware/server-timing";
 import {
   refreshBindingHttp,
@@ -242,14 +245,6 @@ function isUnlockRateLimited(key: string): boolean {
     }
   }
   return entry.count > UNLOCK_MAX_ATTEMPTS;
-}
-
-function clientIp(c: Context): string {
-  return (
-    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
-    c.req.header("x-real-ip") ||
-    "unknown"
-  );
 }
 
 // ── Routes ──
