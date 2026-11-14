@@ -8,7 +8,7 @@ The authentication system consists of:
 
 ### Backend (API)
 
-- **Lucia Auth**: Session management library
+- **Sessions** (`auth/session.ts`): in-repo session manager; sessions are MongoDB documents, the browser holds an HTTP-only `auth_session` cookie
 - **OAuth client** (`auth/oauth-client.ts`): authorization-code flow for Google (PKCE) & GitHub
 - **MongoDB**: Database for users, sessions, and OAuth accounts
 - **Mongoose**: MongoDB ORM
@@ -28,14 +28,13 @@ The authentication system consists of:
 api/
 ├── src/
 │   ├── auth/
-│   │   ├── lucia.ts          # Lucia configuration
+│   │   ├── session.ts        # Session manager (create/validate/invalidate)
 │   │   ├── oauth-client.ts   # OAuth 2.0 authorization-code client
 │   │   ├── oauth-providers.ts# OAuth providers setup
 │   │   ├── auth.service.ts   # Auth business logic
 │   │   ├── auth.controller.ts# Route handlers
 │   │   ├── auth.middleware.ts# Auth & rate limit middleware
-│   │   ├── mongodb-adapter.ts# Lucia MongoDB adapter
-│   │   └── index.ts          # Module exports
+│   │   └── unified-auth.middleware.ts # Session OR API-key auth for routes
 │   └── database/
 │       └── schema.ts         # MongoDB schemas
 
@@ -618,7 +617,7 @@ SESSION_DURATION=3600000  # 1 hour in milliseconds
 ### Adding Custom User Fields
 
 1. Update the schema in `database/schema.ts`
-2. Update the `DatabaseUserAttributes` interface in `lucia.ts`
+2. Update the `IUser` interface in `database/schema.ts` (and `ValidatedUser` in `auth/session.ts` if the field belongs on the request user)
 3. Update the auth service to handle new fields
 
 ## Troubleshooting

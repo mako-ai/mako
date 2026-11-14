@@ -26,7 +26,7 @@ vi.mock("../integrations/github/app-auth", () => ({
 vi.mock("../inngest/client", () => ({
   inngest: { send: vi.fn(async () => undefined) },
 }));
-const syncConnectors = vi.fn(async () => ({
+const syncConnectors = vi.fn(async (..._args: unknown[]) => ({
   created: 0,
   updated: 1,
   unchanged: 0,

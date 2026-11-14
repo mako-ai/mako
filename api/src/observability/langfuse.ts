@@ -14,7 +14,14 @@
  * unaffected.
  */
 
-import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
+import { context, propagation, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import {
+  CompositePropagator,
+  W3CBaggagePropagator,
+  W3CTraceContextPropagator,
+} from "@opentelemetry/core";
+import { TracerProvider } from "@opentelemetry/sdk-trace";
 import { LangfuseSpanProcessor } from "@langfuse/otel";
 import { LegacyOpenTelemetry } from "@ai-sdk/otel";
 import { registerTelemetry } from "ai";
@@ -22,7 +29,7 @@ import { loggers } from "../logging";
 
 const logger = loggers.app();
 
-let provider: NodeTracerProvider | null = null;
+let provider: TracerProvider | null = null;
 let spanProcessor: LangfuseSpanProcessor | null = null;
 
 /**
@@ -97,10 +104,24 @@ export function initLangfuseTracing(): boolean {
     exportMode: "batched",
   });
 
-  provider = new NodeTracerProvider({
+  provider = new TracerProvider({
     spanProcessors: [spanProcessor],
   });
-  provider.register();
+  // What the deprecated NodeTracerProvider.register() did: global provider,
+  // an AsyncLocalStorage context manager (so child spans find their parent
+  // across awaits) and the W3C trace-context + baggage propagators.
+  trace.setGlobalTracerProvider(provider);
+  context.setGlobalContextManager(
+    new AsyncLocalStorageContextManager().enable(),
+  );
+  propagation.setGlobalPropagator(
+    new CompositePropagator({
+      propagators: [
+        new W3CTraceContextPropagator(),
+        new W3CBaggagePropagator(),
+      ],
+    }),
+  );
   // AI SDK 7 no longer emits spans on its own: the OpenTelemetry integration
   // is a separate package and must be registered. The legacy integration
   // keeps the v6 span shape (`ai.streamText`, `ai.toolCall`, ...) that our

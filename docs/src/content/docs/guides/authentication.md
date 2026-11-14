@@ -3,19 +3,19 @@ title: Authentication
 description: How authentication works in Mako.
 ---
 
-Mako uses a robust authentication system built with **Lucia Auth** and **Arctic**.
+Mako's authentication is a small in-repo implementation: a session manager and an OAuth 2.0 authorization-code client, with no third-party auth framework.
 
 ## Overview
 
-- **Session Management**: Lucia Auth (v3) with MongoDB adapter.
-- **OAuth**: Arctic for handling Google and GitHub flows.
+- **Session Management**: `api/src/auth/session.ts`, sessions stored in MongoDB behind an HTTP-only cookie.
+- **OAuth**: `api/src/auth/oauth-client.ts` for the Google (PKCE) and GitHub flows.
 - **Security**: HTTP-only cookies, CSRF protection, and rate limiting.
 
 ## Features
 
 - **Email/Password**: Secure registration and login with bcrypt hashing.
 - **Social Login**: "Continue with Google" and "Continue with GitHub".
-- **Session Persistence**: Configurable session duration (default 24h).
+- **Session Persistence**: Configurable session duration (`SESSION_DURATION`, default 1 year, sliding).
 
 ## Integration Guide
 

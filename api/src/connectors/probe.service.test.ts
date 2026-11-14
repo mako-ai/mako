@@ -420,7 +420,10 @@ describe("no credential leaves", () => {
 
 describe("who may probe records", () => {
   const as = <T>(principal: Record<string, unknown>, fn: () => Promise<T>) =>
-    requestContextStorage.run({ requestId: "r", ...principal }, fn);
+    requestContextStorage.run(
+      { requestId: "r", method: "GET", path: "/", startTime: 0, ...principal },
+      fn,
+    );
   const access = (fields: Record<string, unknown>) =>
     Connector.updateOne({ _id: mine }, { $set: fields });
 

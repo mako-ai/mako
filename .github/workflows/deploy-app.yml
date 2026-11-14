@@ -287,13 +287,11 @@ jobs:
 
       - name: Install pnpm
         uses: pnpm/action-setup@v5
-        with:
-          version: 9
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Install dependencies
@@ -305,7 +303,7 @@ jobs:
       - name: Lint API
         run: pnpm run --filter api lint
 
-      # Lint already ran above — build:ci skips lint:fix so we don't triple-lint.
+      # Lint ran above; build:ci and the package builds do not lint again.
       # Frontend env (including VITE_BUILD_ID) is baked here; the Docker step only packages.
       - name: Build workspaces
         run: pnpm run build:ci
@@ -956,13 +954,11 @@ jobs:
 
       - name: Install pnpm
         uses: pnpm/action-setup@v5
-        with:
-          version: 9
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Install dependencies
@@ -974,7 +970,7 @@ jobs:
       - name: Lint API
         run: pnpm run --filter api lint
 
-      # Lint already ran above — build:ci skips lint:fix so we don't triple-lint.
+      # Lint ran above; build:ci and the package builds do not lint again.
       # Frontend env (including VITE_BUILD_ID) is baked here; the Docker step only packages.
       - name: Build workspaces
         run: pnpm run build:ci

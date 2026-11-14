@@ -289,7 +289,11 @@ describe.skipIf(!playwrightDir || !chromiumPath)(
             stats.leaks = [];
             await page.goto(`${mako}/share/${SHARE}`);
             await page.waitForFunction(
-              () => document.title.startsWith("done:"),
+              () =>
+                // Runs in the page; api has no DOM lib.
+                (
+                  globalThis as unknown as { document: { title: string } }
+                ).document.title.startsWith("done:"),
               null,
               { timeout: 30_000 },
             );

@@ -104,7 +104,9 @@ import { minimizeDirtyPaths } from "./mongoose-dirty-paths";
   // Minimized, only the ancestor survives — a single non-conflicting $set
   // key whose value (read from the mutated doc) carries the schedule change.
   assert.deepEqual(minimizeDirtyPaths(dirty), ["dataBindings"]);
-  const value = doc.get("dataBindings");
+  const value = doc.get("dataBindings") as Array<{
+    materializationSchedule: { enabled: boolean; cron: string };
+  }>;
   assert.equal(value[0].materializationSchedule.enabled, true);
   assert.equal(value[0].materializationSchedule.cron, "0 * * * *");
 }

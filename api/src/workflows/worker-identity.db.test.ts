@@ -13,6 +13,7 @@
  */
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -293,7 +294,7 @@ async function main() {
   } finally {
     globalThis.fetch = realFetch;
     // The MCP client keeps its connections open.
-    server.closeAllConnections();
+    (server as Server).closeAllConnections();
     server.close();
     // Query tracking is written without waiting: let it land.
     await new Promise(resolve => setTimeout(resolve, 300));

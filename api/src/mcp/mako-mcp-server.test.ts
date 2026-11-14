@@ -364,6 +364,7 @@ async function main() {
         annotations?: {
           readOnlyHint?: boolean;
           destructiveHint?: boolean;
+          openWorldHint?: boolean;
         };
       }[];
     };

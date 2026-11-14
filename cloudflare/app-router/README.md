@@ -29,10 +29,10 @@ the `X-Mako-Maintenance-Token` header. Never store this token in KV or git.
 
 ```bash
 node --test cloudflare/app-router/worker.test.mjs
-npx wrangler@4.110.0 deploy \
+pnpm exec wrangler deploy \
   --config cloudflare/app-router/wrangler.jsonc \
   --dry-run
-npx wrangler@4.110.0 deploy \
+pnpm exec wrangler deploy \
   --config cloudflare/app-router/wrangler.canary.jsonc \
   --dry-run
 ```
@@ -41,26 +41,26 @@ npx wrangler@4.110.0 deploy \
 
 ```bash
 # Route production to an origin.
-npx wrangler@4.110.0 kv key put \
+pnpm exec wrangler kv key put \
   --remote \
   --namespace-id 4b7600c488094db88540a401e8fbbce1 \
   "route:app.mako.ai" \
   '{"origin":"https://mako-PROJECT_HASH-ew.a.run.app","maintenance":false}'
 
 # Route canary traffic without claiming the production route.
-npx wrangler@4.110.0 kv key put \
+pnpm exec wrangler kv key put \
   --remote \
   --namespace-id 4b7600c488094db88540a401e8fbbce1 \
   "route:app-canary.mako.ai" \
   '{"origin":"https://mako-canary-PROJECT_HASH-ew.a.run.app","maintenance":false}'
 
 # Enter/exit maintenance while webhook endpoints remain available.
-npx wrangler@4.110.0 kv key put \
+pnpm exec wrangler kv key put \
   --remote \
   --namespace-id 4b7600c488094db88540a401e8fbbce1 \
   "route:app.mako.ai" \
   '{"origin":"https://mako-PROJECT_HASH-ew.a.run.app","maintenance":true}'
-npx wrangler@4.110.0 kv key put \
+pnpm exec wrangler kv key put \
   --remote \
   --namespace-id 4b7600c488094db88540a401e8fbbce1 \
   "route:app.mako.ai" \

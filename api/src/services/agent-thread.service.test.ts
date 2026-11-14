@@ -17,9 +17,10 @@ const stored = convertUIMessageToStoredFormat({
       callProviderMetadata: { provider: "gateway" },
     },
   ],
-} as UIMessage);
+} as unknown as UIMessage);
 
-const part = stored.parts[0];
+// Stored parts are loosely typed; this test is about the fields below.
+const part = stored.parts[0] as unknown as Record<string, unknown>;
 assert.deepEqual(part.approval, approval);
 assert.equal(part.state, "approval-responded");
 assert.equal(part.toolCallId, "call-slack-1");

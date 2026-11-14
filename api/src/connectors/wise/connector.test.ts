@@ -748,7 +748,7 @@ async function testBalanceUpdatesBackfillIsNoop() {
   const batches: unknown[] = [];
   const state = await connector.fetchEntityChunk({
     entity: "balance_updates",
-    onBatch: async batch => {
+    onBatch: async (batch: any[]) => {
       batches.push(...batch);
     },
   } as any);
@@ -788,7 +788,7 @@ async function testTransfersChunkUsesOffsetAndProfile() {
   const state = await connector.fetchEntityChunk({
     entity: "transfers",
     batchSize: 50,
-    onBatch: async batch => {
+    onBatch: async (batch: any[]) => {
       batches.push(...batch);
     },
   } as any);
@@ -948,7 +948,7 @@ async function testRecipientsContinuesWhenPageShorterThanRequestedSize() {
     batchSize: 100,
     maxIterations: 10,
     rateLimitDelay: 0,
-    onBatch: async batch => {
+    onBatch: async (batch: any[]) => {
       batches.push(...batch);
     },
   } as any);
@@ -997,7 +997,7 @@ async function testActivitiesChunkUsesNextCursorQueryParam() {
     batchSize: 50,
     maxIterations: 1,
     rateLimitDelay: 0,
-    onBatch: async batch => {
+    onBatch: async (batch: any[]) => {
       batches.push(...batch);
     },
   } as any);
@@ -1015,7 +1015,7 @@ async function testActivitiesChunkUsesNextCursorQueryParam() {
     maxIterations: 1,
     rateLimitDelay: 0,
     state: first,
-    onBatch: async batch => {
+    onBatch: async (batch: any[]) => {
       batches.push(...batch);
     },
   } as any);
@@ -1106,7 +1106,7 @@ async function testProfilesChunkFiltersConfiguredProfile() {
   const batches: Array<Record<string, unknown>> = [];
   const state = await connector.fetchEntityChunk({
     entity: "profiles",
-    onBatch: async batch => {
+    onBatch: async (batch: any[]) => {
       batches.push(...batch);
     },
   } as any);

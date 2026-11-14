@@ -1,0 +1,68 @@
+name: PR checks
+
+# Lint, typecheck and dependency audit on every pull request. These used to
+# run only inside the deploy workflows, so a PR could merge with a lint error
+# or a type error in a test file (test files are not part of the api build's
+# tsconfig) and only fail at deploy time.
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # app + api ESLint, then the connector-agnosticism check.
+      - run: pnpm run lint:all
+
+  typecheck:
+    name: Typecheck (api incl. tests, app)
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=7168
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build workspace packages the api and app import
+        run: |
+          pnpm --filter @mako/schemas run build
+          pnpm --filter @mako/agent-tools run build
+      # tsconfig.json covers all of api/src, test files included
+      # (tsconfig.build.json, which the build uses, excludes them).
+      - name: api
+        run: pnpm --filter api exec tsc --noEmit -p .
+      - name: app
+        run: pnpm --filter app exec tsc --noEmit -p .
+
+  audit:
+    name: Dependency audit (prod, high+)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+      # Reads pnpm-lock.yaml; no install needed.
+      - run: pnpm audit --prod --audit-level high

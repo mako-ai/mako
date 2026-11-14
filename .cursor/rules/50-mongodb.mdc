@@ -5,8 +5,7 @@ description: MongoDB pooling, schema locations, and reliability fixes
 
 # MongoDB Guidelines
 
-- Pooling fix and migration notes: [MONGODB_CONNECTION_POOLING_FIX.md](mdc:MONGODB_CONNECTION_POOLING_FIX.md), [UNIFIED_MONGODB_POOL_MIGRATION.md](mdc:UNIFIED_MONGODB_POOL_MIGRATION.md).
-- Topology closure fix: [MONGODB_TOPOLOGY_CLOSED_FIX.md](mdc:MONGODB_TOPOLOGY_CLOSED_FIX.md), [MONGODB_CONNECTION_REFACTORING_SUMMARY.md](mdc:MONGODB_CONNECTION_REFACTORING_SUMMARY.md).
+- Pooling: connections to user databases come from the connection service below (one pool per connection, never a raw `new MongoClient()`); the app database's Mongoose pool is configured in `api/src/database/schema.ts`.
 - Connection provider: [api/src/services/database-connection.service.ts](mdc:api/src/services/database-connection.service.ts).
 - Schemas: [api/src/database/schema.ts](mdc:api/src/database/schema.ts), [api/src/database/workspace-schema.ts](mdc:api/src/database/workspace-schema.ts).
 

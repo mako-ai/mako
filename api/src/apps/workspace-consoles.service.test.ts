@@ -403,7 +403,7 @@ describe("sync hardening", () => {
     }) as typeof SavedConsole.updateOne);
     try {
       const stats = await syncConsolesIndexFromRepo(WS, USER);
-      expect(stats.deleted).toBe(1);
+      expect(stats?.deleted).toBe(1);
       expect(failed).toBe(true);
     } finally {
       spy.mockRestore();
