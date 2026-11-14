@@ -62,6 +62,8 @@ export interface ConsoleTreeProps {
   onSoftDelete?: (item: ConsoleEntry) => void;
   onDuplicate?: (item: ConsoleEntry) => void;
   onUndo?: () => void;
+  /** Delete or F2 on a row this person does not manage: say why. */
+  onDeniedAction?: (item: ConsoleEntry, action: "delete" | "rename") => void;
 
   searchQuery?: string;
 }
@@ -97,6 +99,7 @@ function ConsoleTreeInner(
     onSoftDelete,
     onDuplicate,
     onUndo,
+    onDeniedAction,
     searchQuery = "",
   }: ConsoleTreeProps,
   ref: React.Ref<ConsoleTreeRef>,
@@ -349,6 +352,20 @@ function ConsoleTreeInner(
     (node: ResourceTreeNode) => canManage(node as ConsoleEntry),
     [canManage],
   );
+  // The server decides who may move a console where, and says why not (a
+  // read-only console, a move that would change who sees it): every
+  // console can be dragged and a refusal is shown, instead of a row that
+  // silently does not move. Folders keep the manage rule.
+  const handleCanDragItem = useCallback(
+    (node: ResourceTreeNode) =>
+      !node.isDirectory || canManage(node as ConsoleEntry),
+    [canManage],
+  );
+  const handleDeniedAction = useCallback(
+    (node: ResourceTreeNode, action: "delete" | "rename") =>
+      onDeniedAction?.(node as ConsoleEntry, action),
+    [onDeniedAction],
+  );
   const getResourceItemIcon = useCallback(
     (node: ResourceTreeNode) => getItemIcon(node as ConsoleEntry),
     [getItemIcon],
@@ -396,6 +413,8 @@ function ConsoleTreeInner(
       onExpandFolder={expandFolder}
       getFolderExpansionKey={getResourceFolderExpansionKey}
       canManageItem={handleCanManageItem}
+      canDragItem={handleCanDragItem}
+      onDeniedAction={handleDeniedAction}
     />
   );
 }

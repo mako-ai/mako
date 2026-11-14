@@ -19,6 +19,7 @@ import ExplorerShell from "./ExplorerShell";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
+import { closeTabsOf } from "../lib/console-tab-location";
 import { useExplorerStore } from "../store/explorerStore";
 import {
   useExplorerRevealStore,
@@ -387,7 +388,19 @@ export default function NotebooksExplorer() {
         }
         confirmLabel="Delete"
         destructive
-        onConfirm={() => void tree.confirmDelete()}
+        onConfirm={() => {
+          // A deleted notebook is gone for good: its open tab goes with it,
+          // rather than staying to ask the server about a notebook that is
+          // not there.
+          const target = tree.deleteTarget;
+          void tree.confirmDelete().then(deleted => {
+            if (deleted && target && !target.isDirectory) {
+              closeTabsOf(useConsoleStore.getState(), {
+                notebookId: realEntityId(target.id),
+              });
+            }
+          });
+        }}
         onCancel={tree.cancelDelete}
       />
 

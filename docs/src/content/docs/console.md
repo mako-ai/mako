@@ -39,6 +39,12 @@ When the agent edits a console, the chat shows the target console name and a com
 
 Consoles can be organized into folders. Use the sidebar tree to drag and arrange.
 
+A console's name is its file name in the workspace repo, so a few characters cannot be part of it: `\ / : * ? " < > |` are replaced when the name is saved (`Q1: revenue` becomes `Q1 - revenue`; the dialog shows "Will be saved as …" as you type), and a name that is empty, starts or ends with a dot, is longer than 120 characters or is a device name Windows reserves is refused. Two consoles in one folder cannot differ only in letter case.
+
+Renaming or moving a console keeps its id, so links, shares and schedules keep working, and its history follows it. The file is moved as it is on main: anything typed and not saved yet stays unsaved. If another console already has the name, the rename is refused.
+
+Deleting a console moves it to the trash and shows **Undo**, which restores it in place (as `name (2)` when the name was taken meanwhile). Deleting a folder moves the consoles in it to the trash; its Undo recreates the folder and puts them back. A folder that holds another member's console can only be deleted by a workspace admin. There is no trash view yet: Undo, right after the delete, is the way back. A console deleted in Mako stays deleted when a file is later pushed at its old path — that file is a new console.
+
 ### Version History
 
 Every explicit save of a console creates an immutable version record. Open the history panel from the editor to browse past versions, preview them, and restore with one click. Full details: [Version History](/version-history/).

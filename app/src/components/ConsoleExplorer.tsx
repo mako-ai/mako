@@ -4,6 +4,7 @@ import {
   useImperativeHandle,
   useRef,
   useCallback,
+  useEffect,
 } from "react";
 import {
   Box,
@@ -16,6 +17,8 @@ import {
   Skeleton,
   Menu,
   MenuItem,
+  Snackbar,
+  Button,
   Tooltip,
 } from "@mui/material";
 import {
@@ -33,6 +36,15 @@ import {
 import { useConsoleStore } from "../store/consoleStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
 import { filterTree } from "../store/lib/tree-helpers";
+import { closeTabsOf } from "../lib/console-tab-location";
+import {
+  consoleRestoredNotice,
+  deniedActionNotice,
+  folderDeleteConfirmText,
+  folderRestoredNotice,
+  trashedNotice,
+  type TrashedFolder,
+} from "../lib/console-trash";
 import { useResourceTreeExplorer } from "../hooks/useResourceTreeExplorer";
 import FileExplorerDialog from "./FileExplorerDialog";
 import ConsoleInfoModal from "./ConsoleInfoModal";
@@ -40,6 +52,9 @@ import FolderInfoModal from "./FolderInfoModal";
 import ConsoleTree from "./ConsoleTree";
 import ExplorerShell from "./ExplorerShell";
 import { ConfirmDialog } from "./ConfirmDialog";
+
+/** How long "Moved to trash — Undo" stays (also after the pointer leaves it). */
+const UNDO_TOAST_MS = 10_000;
 
 interface ConsoleExplorerProps {
   onConsoleSelect: (
@@ -77,7 +92,7 @@ function ConsoleExplorer(
     loading,
     error,
   } = tree;
-  const moveConsole = useConsoleTreeStore(state => state.moveItem);
+  const moveConsole = useConsoleTreeStore(state => state.moveConsole);
   const moveFolder = useConsoleTreeStore(state => state.moveFolder);
   const deleteItem = useConsoleTreeStore(state => state.deleteItem);
   const searchConsoles = useConsoleTreeStore(state => state.searchConsoles);
@@ -98,9 +113,39 @@ function ConsoleExplorer(
     null,
   );
 
-  const [undoStack, setUndoStack] = useState<
-    Array<{ type: "delete"; id: string; isDirectory: boolean }>
-  >([]);
+  // Why the last rename, move or delete was refused (the server's words),
+  // and what the last action did when the tree alone does not say it (a
+  // name saved with a stand-in, a restore).
+  const workspaceId = currentWorkspace?.id;
+  const actionError = useConsoleTreeStore(state =>
+    workspaceId ? (state.actionError[workspaceId] ?? null) : null,
+  );
+  const clearActionError = useConsoleTreeStore(state => state.clearActionError);
+  const actionNotice = useConsoleTreeStore(state =>
+    workspaceId ? (state.actionNotice[workspaceId] ?? null) : null,
+  );
+  const clearActionNotice = useConsoleTreeStore(
+    state => state.clearActionNotice,
+  );
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!actionNotice || !workspaceId) return;
+    setNotice(actionNotice);
+    clearActionNotice(workspaceId);
+  }, [actionNotice, workspaceId, clearActionNotice]);
+
+  interface UndoEntry {
+    id: string;
+    name: string;
+    /** A folder: what its delete moved to the trash, and where it was. */
+    folder?: TrashedFolder;
+    parentId?: string | null;
+    section?: "my" | "workspace";
+  }
+  const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
+  // "Moved to trash" with its Undo, after every delete. The trash has no
+  // view: this Undo (and Ctrl+Z in the tree) is the way back.
+  const [trashToast, setTrashToast] = useState<UndoEntry | null>(null);
 
   const collectIds = (nodes: ConsoleEntry[]): Set<string> => {
     const ids = new Set<string>();
@@ -305,31 +350,6 @@ function ConsoleExplorer(
     return inWorkspace !== undefined ? "workspace" : "my";
   };
 
-  const findFolderPathById = (
-    nodes: ConsoleEntry[],
-    folderId: string,
-  ): string | null => {
-    for (const node of nodes) {
-      if (node.id === folderId && node.isDirectory) return node.path;
-      if (node.isDirectory && node.children) {
-        const found = findFolderPathById(node.children, folderId);
-        if (found) return found;
-      }
-    }
-    return null;
-  };
-
-  const getPathForMoveTarget = (
-    targetFolderId: string | null,
-    section: "my" | "workspace",
-    itemName: string,
-  ): string => {
-    if (!targetFolderId) return itemName;
-    const tree = section === "workspace" ? sharedWithWorkspace : myConsoles;
-    const folderPath = findFolderPathById(tree, targetFolderId);
-    return folderPath ? `${folderPath}/${itemName}` : itemName;
-  };
-
   const handleMoveTo = (item: ConsoleEntry) => {
     setSelectedItem(item);
     setExplorerDialogOpen(true);
@@ -342,44 +362,36 @@ function ConsoleExplorer(
   ) => {
     if (!currentWorkspace || !selectedItem?.id) return;
 
-    if (newName && newName !== selectedItem.name) {
+    if (selectedItem.isDirectory && newName && newName !== selectedItem.name) {
       const renameItem = useConsoleTreeStore.getState().renameItem;
-      await renameItem(
-        currentWorkspace.id,
-        selectedItem.id,
-        newName,
-        selectedItem.isDirectory,
-      );
+      await renameItem(currentWorkspace.id, selectedItem.id, newName, true);
     }
 
+    const access = section === "workspace" ? "workspace" : "private";
     if (selectedItem.isDirectory) {
       await moveFolder(
         currentWorkspace.id,
         selectedItem.id,
         targetFolderId,
-        section === "workspace" ? "workspace" : "private",
+        access,
       );
     } else {
-      const success = await moveConsole(
+      // Rename and move in ONE request: a console is a file in the repo,
+      // and two requests made two commits for one gesture. An open tab
+      // follows the server's answer — the name as saved, the folder, who
+      // sees it — never a path computed here. A refusal is in the store's
+      // `actionError`, shown below.
+      const moved = await moveConsole(
         currentWorkspace.id,
         selectedItem.id,
         targetFolderId,
-        section === "workspace" ? "workspace" : "private",
+        access,
+        newName && newName !== selectedItem.name ? newName : undefined,
       );
-      if (success) {
-        const nextName = newName || selectedItem.name;
-        const nextPath = getPathForMoveTarget(
-          targetFolderId,
-          section,
-          nextName,
-        );
-        updateTabFilePath(selectedItem.id, nextPath);
-        // Title is the canonical leaf name; the path drives the breadcrumb.
-        updateTabTitle(selectedItem.id, nextName);
-        updateTabAccess(
-          selectedItem.id,
-          section === "workspace" ? "workspace" : "private",
-        );
+      if (moved) {
+        updateTabFilePath(selectedItem.id, moved.path);
+        updateTabTitle(selectedItem.id, moved.name);
+        updateTabAccess(selectedItem.id, moved.access);
       }
     }
 
@@ -405,32 +417,82 @@ function ConsoleExplorer(
     setFolderInfoOpen(true);
   };
 
+  const remember = (entry: UndoEntry) => {
+    setUndoStack(prev => [...prev, entry]);
+    setTrashToast(entry);
+  };
+
+  // A console goes to the trash without a dialog: the toast offers Undo.
   const handleSoftDelete = async (item: ConsoleEntry) => {
-    if (!currentWorkspace || !item.id) return;
-    const itemId = item.id;
-    const success = await deleteItem(
-      currentWorkspace.id,
-      itemId,
-      item.isDirectory,
-    );
-    if (success) {
-      setUndoStack(prev => [
-        ...prev,
-        { type: "delete", id: itemId, isDirectory: item.isDirectory },
-      ]);
+    if (!currentWorkspace || !item.id || item.isDirectory) return;
+    const success = await deleteItem(currentWorkspace.id, item.id, false);
+    if (!success) return;
+    // Their own delete: the tab closes (the toast offers the way back)
+    // rather than staying open to say the console "was deleted".
+    closeTabsOf(useConsoleStore.getState(), { consoleId: item.id });
+    remember({ id: item.id, name: item.name });
+  };
+
+  // The folder confirm's "Delete": its consoles go to the trash, and what
+  // went there is kept for the Undo.
+  const handleConfirmDelete = async () => {
+    const target = tree.deleteTarget as ConsoleEntry | null;
+    tree.cancelDelete();
+    if (!currentWorkspace || !target?.id) return;
+    if (!target.isDirectory) return handleSoftDelete(target);
+    const parentId = getParentFolderIdForItem(target);
+    const section = getSectionForItem(target);
+    const folder = await useConsoleTreeStore
+      .getState()
+      .trashFolder(currentWorkspace.id, target.id);
+    if (folder) {
+      for (const trashed of folder.consoles) {
+        closeTabsOf(useConsoleStore.getState(), { consoleId: trashed.id });
+      }
+      remember({ id: target.id, name: target.name, folder, parentId, section });
     }
   };
 
-  const handleUndo = async () => {
-    if (!currentWorkspace || undoStack.length === 0) return;
-    const last = undoStack[undoStack.length - 1];
-    if (last.type === "delete" && !last.isDirectory) {
-      const restoreConsole = useConsoleTreeStore.getState().restoreConsole;
-      const success = await restoreConsole(currentWorkspace.id, last.id);
-      if (success) {
-        setUndoStack(prev => prev.slice(0, -1));
+  const undoEntry = async (entry: UndoEntry) => {
+    if (!currentWorkspace) return;
+    setTrashToast(null);
+    const store = useConsoleTreeStore.getState();
+    if (!entry.folder) {
+      const restored = await store.restoreConsole(
+        currentWorkspace.id,
+        entry.id,
+      );
+      // A refusal is in `actionError`; the entry stays for another try.
+      if (!restored) return;
+      // A tab still open on it (another pane) no longer says "deleted".
+      if (
+        useConsoleStore.getState().tabs[entry.id]?.remoteUpdate?.kind ===
+        "deleted"
+      ) {
+        useConsoleStore.getState().setRemoteUpdate(entry.id, null);
       }
+      setUndoStack(prev => prev.filter(e => e !== entry));
+      setNotice(consoleRestoredNotice(entry.name, restored.name));
+      return;
     }
+    const outcome = await store.restoreFolder(
+      currentWorkspace.id,
+      entry.folder,
+      entry.parentId ?? null,
+    );
+    setUndoStack(prev => prev.filter(e => e !== entry));
+    setNotice(
+      folderRestoredNotice(
+        entry.name,
+        outcome,
+        entry.section === "workspace" ? "Workspace" : "My Consoles",
+      ),
+    );
+  };
+
+  const handleUndo = async () => {
+    if (undoStack.length === 0) return;
+    await undoEntry(undoStack[undoStack.length - 1]);
   };
 
   const treeRef = useRef<import("./ConsoleTree").ConsoleTreeRef | null>(null);
@@ -531,6 +593,9 @@ function ConsoleExplorer(
                 onSoftDelete={handleSoftDelete}
                 onDuplicate={handleDuplicate}
                 onUndo={handleUndo}
+                onDeniedAction={(item, action) =>
+                  setNotice(deniedActionNotice(item.isDirectory, action))
+                }
                 searchQuery={searchQuery}
               />
 
@@ -623,14 +688,14 @@ function ConsoleExplorer(
       <ConfirmDialog
         open={!!tree.deleteTarget}
         title={`Delete ${tree.deleteTarget?.isDirectory ? "Folder" : "Console"}`}
-        body={`${
+        body={
           tree.deleteTarget?.isDirectory
-            ? "This will permanently delete the folder and all its contents (subfolders and consoles)."
-            : "This will permanently delete the console."
-        } Are you sure you want to delete "${tree.deleteTarget?.name}"?`}
+            ? folderDeleteConfirmText(tree.deleteTarget.name)
+            : `“${tree.deleteTarget?.name ?? ""}” will be moved to the trash. You can undo this right after.`
+        }
         confirmLabel="Delete"
         destructive
-        onConfirm={() => void tree.confirmDelete()}
+        onConfirm={() => void handleConfirmDelete()}
         onCancel={tree.cancelDelete}
       />
 
@@ -661,6 +726,44 @@ function ConsoleExplorer(
           selectedItem ? getParentFolderIdForItem(selectedItem) : null
         }
         initialSection={selectedItem ? getSectionForItem(selectedItem) : "my"}
+      />
+
+      <Snackbar
+        open={actionError !== null}
+        autoHideDuration={6000}
+        onClose={() => {
+          if (workspaceId) clearActionError(workspaceId);
+        }}
+        message={actionError ?? ""}
+      />
+      <Snackbar
+        open={trashToast !== null && actionError === null}
+        // Long enough to read and reach: this Undo is the way back.
+        autoHideDuration={UNDO_TOAST_MS}
+        resumeHideDuration={UNDO_TOAST_MS}
+        onClose={(_event, reason) => {
+          if (reason !== "clickaway") setTrashToast(null);
+        }}
+        message={
+          trashToast ? trashedNotice(trashToast.name, trashToast.folder) : ""
+        }
+        action={
+          trashToast ? (
+            <Button
+              color="inherit"
+              size="small"
+              onClick={() => void undoEntry(trashToast)}
+            >
+              Undo
+            </Button>
+          ) : undefined
+        }
+      />
+      <Snackbar
+        open={notice !== null && actionError === null && trashToast === null}
+        autoHideDuration={5000}
+        onClose={() => setNotice(null)}
+        message={notice ?? ""}
       />
     </>
   );

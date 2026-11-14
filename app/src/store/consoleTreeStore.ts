@@ -1,4 +1,10 @@
-import { api, unwrapBody, ApiError } from "../api";
+import { api, unwrapBody, ApiError, toErrorMessage } from "../api";
+import { consoleNamePreview, savedAsNotice } from "../lib/console-names";
+import {
+  restoreTrashedFolder,
+  type FolderRestoreOutcome,
+  type TrashedFolder,
+} from "../lib/console-trash";
 import {
   createResourceTreeStore,
   type ResourceTreeEntry,
@@ -64,8 +70,60 @@ export interface ConsoleTreeExtra {
     workspaceId: string,
     consoleId: string,
   ) => Promise<{ id: string; name: string } | null>;
-  /** Undo a soft delete; refetches the tree on success. */
-  restoreConsole: (workspaceId: string, consoleId: string) => Promise<boolean>;
+  /**
+   * Why the last rename, move, delete or restore was refused, in the
+   * server's words (a name already taken, a change of who sees a console
+   * that is not theirs to make). The tree only snaps back; this says why.
+   */
+  actionError: Record<string, string | null>;
+  clearActionError: (workspaceId: string) => void;
+  /** What the last action did when the tree alone does not say it. */
+  actionNotice: Record<string, string | null>;
+  clearActionNotice: (workspaceId: string) => void;
+  /**
+   * Move a console and, optionally, rename it — one request, one commit.
+   * Answers where the console is now (its name as saved), or null when
+   * the move was refused (`actionError` says why).
+   */
+  moveConsole: (
+    workspaceId: string,
+    consoleId: string,
+    folderId: string | null,
+    access?: ConsoleAccessLevel,
+    name?: string,
+  ) => Promise<ConsoleLocation | null>;
+  /**
+   * Delete a folder: its consoles move to the trash. Answers what went
+   * there — what `restoreFolder` puts back — or null when refused.
+   */
+  trashFolder: (
+    workspaceId: string,
+    folderId: string,
+  ) => Promise<TrashedFolder | null>;
+  /**
+   * Undo a delete: the console back in place — or as "name (2)" when its
+   * name was taken — or in `folderId`. Refetches the tree on success.
+   */
+  restoreConsole: (
+    workspaceId: string,
+    consoleId: string,
+    folderId?: string | null,
+  ) => Promise<ConsoleLocation | null>;
+  /** Undo a folder delete: the folder again, its consoles back in it. */
+  restoreFolder: (
+    workspaceId: string,
+    trashed: TrashedFolder,
+    parentId: string | null,
+  ) => Promise<FolderRestoreOutcome>;
+}
+
+/** Where a console is, as a rename, a move or a restore answers. */
+export interface ConsoleLocation {
+  id: string;
+  name: string;
+  path: string;
+  folderId: string | null;
+  access: ConsoleAccessLevel;
 }
 
 const base = "/api/workspaces/{workspaceId}/consoles" as const;
@@ -140,15 +198,19 @@ export const useConsoleTreeStore = createResourceTreeStore<
           }),
         ) as { success: boolean; data?: { id: string; name: string } },
       ).data,
+    // Both answer with the name as saved (`data.name`). A console's inline
+    // rename is ONE name: sent as it will be saved, so a "/" typed in it is
+    // a character with a stand-in, as in the dialogs — the route itself
+    // reads `Folder/name` as a move, which a rename in place is not.
     renameItem: async (workspaceId, id, name) =>
       ok(
         unwrapBody(
           await api.PATCH(`${base}/{id}/rename`, {
             params: { path: { workspaceId, id } },
-            body: { name },
+            body: { name: consoleNamePreview(name, "console").name || name },
           }),
-        ) as { success: boolean },
-      ),
+        ) as { success: boolean; data?: { name?: string } },
+      ).data,
     renameFolder: async (workspaceId, id, name) =>
       ok(
         unwrapBody(
@@ -156,8 +218,8 @@ export const useConsoleTreeStore = createResourceTreeStore<
             params: { path: { workspaceId, id } },
             body: { name },
           }),
-        ) as { success: boolean },
-      ),
+        ) as { success: boolean; data?: { name?: string } },
+      ).data,
     deleteItem: async (workspaceId, id) =>
       ok(
         unwrapBody(
@@ -175,7 +237,115 @@ export const useConsoleTreeStore = createResourceTreeStore<
         ) as { success: boolean },
       ),
   },
+  onActionError: (set, workspaceId, error) => {
+    set(state => {
+      state.actionError[workspaceId] = toErrorMessage(
+        error,
+        "That could not be done",
+      );
+    });
+  },
+  onSavedAs: (set, workspaceId, typed, saved) => {
+    set(state => {
+      state.actionNotice[workspaceId] = savedAsNotice(typed, saved);
+    });
+  },
   extend: (set, get, helpers) => ({
+    actionError: {},
+    clearActionError: workspaceId => {
+      set(state => {
+        state.actionError[workspaceId] = null;
+      });
+    },
+    actionNotice: {},
+    clearActionNotice: workspaceId => {
+      set(state => {
+        state.actionNotice[workspaceId] = null;
+      });
+    },
+
+    moveConsole: async (workspaceId, consoleId, folderId, access, name) => {
+      try {
+        const res = ok(
+          unwrapBody(
+            await api.PATCH(`${base}/{id}/move`, {
+              params: { path: { workspaceId, id: consoleId } },
+              body: { folderId, access, name },
+            }),
+          ) as { success: boolean; data?: ConsoleLocation },
+        );
+        // The tree is the server's: where the console landed, under the
+        // name it was saved as.
+        await get().refresh(workspaceId);
+        return res.data ?? null;
+      } catch (error) {
+        set(state => {
+          state.actionError[workspaceId] = toErrorMessage(
+            error,
+            "The console could not be moved",
+          );
+        });
+        return null;
+      }
+    },
+
+    trashFolder: async (workspaceId, folderId) => {
+      set(state => {
+        helpers.removeFromAnySection(state, workspaceId, folderId);
+      });
+      try {
+        const res = ok(
+          unwrapBody(
+            await api.DELETE(`${base}/folders/{id}`, {
+              params: { path: { workspaceId, id: folderId } },
+            }),
+          ) as { success: boolean; data?: Partial<TrashedFolder> },
+        );
+        return {
+          folders: res.data?.folders ?? [],
+          consoles: res.data?.consoles ?? [],
+        };
+      } catch (error) {
+        set(state => {
+          state.actionError[workspaceId] = toErrorMessage(
+            error,
+            "The folder could not be deleted",
+          );
+        });
+        await get().refresh(workspaceId);
+        return null;
+      }
+    },
+
+    restoreFolder: async (workspaceId, trashed, parentId) => {
+      const outcome = await restoreTrashedFolder(
+        {
+          createFolder: async (name, parent, access) => {
+            try {
+              const res = unwrapBody(
+                await api.POST(`${base}/folders`, {
+                  params: { path: { workspaceId } },
+                  body: { name, parentId: parent || undefined, access },
+                }),
+              ) as { success: boolean; data?: { id: string } };
+              return res.success ? (res.data?.id ?? null) : null;
+            } catch {
+              return null;
+            }
+          },
+          restoreConsole: (id, folderId) =>
+            restoreOne(workspaceId, id, folderId).then(
+              restored => restored !== null,
+              () => false,
+            ),
+        },
+        trashed,
+        parentId,
+      );
+      await get().refresh(workspaceId);
+      return outcome;
+    },
+
     searchQuery: "",
     searchResults: [],
     searchLoading: false,
@@ -290,18 +460,38 @@ export const useConsoleTreeStore = createResourceTreeStore<
       }
     },
 
-    restoreConsole: async (workspaceId, consoleId) => {
+    restoreConsole: async (workspaceId, consoleId, folderId) => {
       try {
-        const res = unwrapBody(
-          await api.PATCH(`${base}/{id}/restore`, {
-            params: { path: { workspaceId, id: consoleId } },
-          }),
-        ) as { success: boolean };
-        if (res.success) await get().refresh(workspaceId);
-        return res.success;
-      } catch {
-        return false;
+        const restored = await restoreOne(workspaceId, consoleId, folderId);
+        if (restored) await get().refresh(workspaceId);
+        return restored;
+      } catch (error) {
+        set(state => {
+          state.actionError[workspaceId] = toErrorMessage(
+            error,
+            "The console could not be restored",
+          );
+        });
+        return null;
       }
     },
   }),
 });
+
+/**
+ * `PATCH /{id}/restore`: back where it was, or in `folderId` (null = the
+ * root). Throws the server's refusal.
+ */
+async function restoreOne(
+  workspaceId: string,
+  consoleId: string,
+  folderId?: string | null,
+): Promise<ConsoleLocation | null> {
+  const res = unwrapBody(
+    await api.PATCH(`${base}/{id}/restore`, {
+      params: { path: { workspaceId, id: consoleId } },
+      ...(folderId === undefined ? {} : { body: { folderId } }),
+    }),
+  ) as { success: boolean; data?: ConsoleLocation };
+  return res.success ? (res.data ?? null) : null;
+}

@@ -149,3 +149,22 @@ export function countItems<T extends ManagedTreeNode>(nodes: T[]): number {
   }
   return count;
 }
+
+/**
+ * The id of the folder that holds `id`: null at the root of `nodes`,
+ * undefined when `id` is not in this tree.
+ */
+export function parentFolderIdOf<T extends ManagedTreeNode>(
+  nodes: T[],
+  id: string,
+  parentId: string | null = null,
+): string | null | undefined {
+  for (const node of nodes) {
+    if (node.id === id) return parentId;
+    if (node.isDirectory && node.children) {
+      const found = parentFolderIdOf(node.children as T[], id, node.id ?? null);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}

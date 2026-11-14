@@ -26,8 +26,17 @@ import {
 import { useNotebookStore } from "./notebookStore";
 import { focusNotebookTab } from "../notebook-runtime/shell";
 import { decideRemoteApply } from "./lib/remoteApplyGate";
+import {
+  consoleLocationsInTree,
+  retargetConsoleTabs,
+} from "../lib/console-tab-location";
+import { computeConsoleStateHash } from "../utils/stateHash";
 import { useConsoleTreeStore } from "./consoleTreeStore";
-import type { ConsoleRevisionsSyncResponse } from "../lib/api-types";
+import type {
+  ConsoleRevisionSyncEntry,
+  ConsoleRevisionsSyncResponse,
+} from "../lib/api-types";
+import type { ConsoleTab } from "./lib/types";
 import {
   dispatchRealtimeEvent,
   onRealtimeEvent,
@@ -135,6 +144,93 @@ function isConsoleTabKind(kind: string | undefined): boolean {
   return kind === undefined || kind === "console";
 }
 
+/**
+ * An open tab says where its console is — title and breadcrumb path — and
+ * the tree is what knows: after any change to the tree (a rename or a drag
+ * in it, here or elsewhere, a refetch) the open tabs follow it. Location
+ * only; unsaved content is not touched (lib/console-tab-location.ts).
+ */
+export function followConsoleTree(): () => void {
+  return useConsoleTreeStore.subscribe((state, previous) => {
+    if (
+      state.myItems === previous.myItems &&
+      state.workspaceItems === previous.workspaceItems
+    ) {
+      return;
+    }
+    const consoles = useConsoleStore.getState();
+    for (const workspaceId of new Set([
+      ...Object.keys(state.myItems),
+      ...Object.keys(state.workspaceItems),
+    ])) {
+      retargetConsoleTabs(
+        consoles.tabs,
+        consoleLocationsInTree(
+          state.myItems[workspaceId] ?? [],
+          state.workspaceItems[workspaceId] ?? [],
+        ),
+        consoles,
+      );
+    }
+  });
+}
+followConsoleTree();
+
+/**
+ * Is the server's SAVED CONTENT still what this tab's unsaved edits started
+ * from? A rename, a move and a restore bump the console's revision — which
+ * is all a poke says — and change nothing a person typed, so they must not
+ * read as "updated elsewhere".
+ *
+ * Two facts from the server answer it. The saved `version` moves on every
+ * explicit save, on a push that changes the file and on a restore from
+ * history, and on nothing else: the same version is the same saved
+ * content. And `contentIsSaved` says the server's working copy IS that
+ * saved content — no draft written over it by another window since. Both
+ * true: what the server holds is what this tab's edits started from.
+ *
+ * Comparing content hashes is NOT reliable here, and is why a rename of
+ * one's own console raised the banner: the tab's saved-state hash and the
+ * server's are taken from different places (the tab's fields at its last
+ * save; the committed file, where the server may have filled in a
+ * connection), so they can differ for one and the same content. They only
+ * add the cases where they do agree. An agent's draft is never
+ * "unchanged": it goes through the diff review before this is asked.
+ */
+export function savedContentUnchanged(
+  tab: Pick<ConsoleTab, "isSaved" | "version" | "savedStateHash">,
+  entry: Pick<
+    ConsoleRevisionSyncEntry,
+    | "version"
+    | "contentIsSaved"
+    | "savedStateHash"
+    | "lastDraftOrigin"
+    | "content"
+    | "connectionId"
+    | "databaseId"
+    | "databaseName"
+  >,
+): boolean {
+  if (!tab.isSaved || entry.lastDraftOrigin === "agent") return false;
+  if (
+    entry.contentIsSaved === true &&
+    typeof tab.version === "number" &&
+    tab.version === entry.version
+  ) {
+    return true;
+  }
+  if (!tab.savedStateHash) return false;
+  return (
+    entry.savedStateHash === tab.savedStateHash ||
+    computeConsoleStateHash(
+      entry.content,
+      entry.connectionId,
+      entry.databaseId,
+      entry.databaseName,
+    ) === tab.savedStateHash
+  );
+}
+
 function isObjectIdLike(id: string): boolean {
   return /^[0-9a-fA-F]{24}$/.test(id);
 }
@@ -179,6 +275,16 @@ export const useRealtimeStore = create<RealtimeStore>()(
       }, DEFERRED_RESYNC_MS);
     };
 
+    /**
+     * Who last changed a console, when that was someone else: the banner
+     * says "by another collaborator" only then. A change of one's own
+     * (another window) is "elsewhere".
+     */
+    const otherUpdater = (consoleId: string): string | undefined => {
+      const by = lastUpdatedByConsole.get(consoleId);
+      return by && by !== get().currentUserId ? by : undefined;
+    };
+
     const handleConsoleUpdated = (
       event: Extract<RealtimeEvent, { type: "console.updated" }>,
     ) => {
@@ -206,6 +312,13 @@ export const useRealtimeStore = create<RealtimeStore>()(
 
       const tab = useConsoleStore.getState().tabs[event.consoleId];
       if (!tab) return; // not open yet — openConsoleFromServer reconciles
+
+      // A tab that says its console was deleted hears from it again (an
+      // Undo): pull, whatever the revisions say, so the banner goes.
+      if (tab.remoteUpdate?.kind === "deleted") {
+        scheduleSync();
+        return;
+      }
 
       // A tab that never synced (no draftRevision) counts as revision 0 so
       // even the server's first revision is pulled.
@@ -610,6 +723,9 @@ export const useRealtimeStore = create<RealtimeStore>()(
               tabRevision: tab?.draftRevision,
               entryRevision: entry.draftRevision,
               contentMatches: tab?.content === entry.content,
+              remoteIsLocalBase: tab
+                ? savedContentUnchanged(tab, entry)
+                : false,
               unsavedLocalEdits: hasUnsavedLocalEdits(entry.id),
             });
             switch (decision) {
@@ -622,6 +738,11 @@ export const useRealtimeStore = create<RealtimeStore>()(
                 // may be ahead by keystrokes that haven't autosaved yet.
                 store.fastForwardRemoteConsoleEntry(entry);
                 break;
+              case "keep-local":
+                // A rename, a move or a restore of a console this tab has
+                // unsaved edits on: no content changed, so no banner.
+                store.keepLocalOverRemoteEntry(entry);
+                break;
               case "banner":
                 // Remote update while this tab holds unsaved local edits
                 // (recent keystrokes, queued/blocked autosave, or an unsaved
@@ -629,7 +750,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
                 // affordance; revision-checked writes backstop the rest.
                 store.setRemoteUpdate(entry.id, {
                   draftRevision: entry.draftRevision,
-                  updatedBy: lastUpdatedByConsole.get(entry.id),
+                  updatedBy: otherUpdater(entry.id),
                   kind: "updated",
                 });
                 // Transient deferral (typing recency / autosave in flight)
@@ -648,6 +769,14 @@ export const useRealtimeStore = create<RealtimeStore>()(
               case "apply":
                 store.applyRemoteConsoleEntry(entry);
                 break;
+            }
+          }
+          // A console that is back (an Undo of its delete, here or in
+          // another window) is no longer "deleted": the banner goes.
+          const gone = new Set(res.deleted);
+          for (const tab of Object.values(store.tabs)) {
+            if (tab.remoteUpdate?.kind === "deleted" && !gone.has(tab.id)) {
+              store.setRemoteUpdate(tab.id, null);
             }
           }
           for (const deletedId of res.deleted) {
