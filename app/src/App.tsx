@@ -144,6 +144,7 @@ function InvitePage() {
 
 import { UrlSync } from "./components/UrlSync";
 import CommandPalette from "./components/CommandPalette";
+import { getActiveWorkspaceId } from "./lib/active-workspace";
 
 // Main application component (extracted from original App)
 
@@ -484,7 +485,7 @@ function MainApp() {
       let prefill = `db.getCollection("${collection.name}").find({}).limit(500)`;
       try {
         const { useSchemaStore } = await import("./store/schemaStore");
-        const workspaceId = localStorage.getItem("activeWorkspaceId");
+        const workspaceId = getActiveWorkspaceId();
         if (workspaceId) {
           const tpl = await useSchemaStore
             .getState()

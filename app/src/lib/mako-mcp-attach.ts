@@ -6,6 +6,7 @@
  * Claude.ai's optional "Mako" connector that requires a separate OAuth dance.
  */
 import { api, unwrapBody } from "../api";
+import { getActiveWorkspaceId } from "./active-workspace";
 
 /** ACP / Claude Agent SDK MCP server name for the attached workspace tools. */
 export const MAKO_WORKSPACE_MCP_NAME = "mako-workspace";
@@ -83,10 +84,4 @@ export async function mintMakoMcpAttach(
   };
 }
 
-export function getActiveWorkspaceId(): string | null {
-  try {
-    return localStorage.getItem("activeWorkspaceId");
-  } catch {
-    return null;
-  }
-}
+export { getActiveWorkspaceId };

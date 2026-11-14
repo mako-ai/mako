@@ -23,6 +23,7 @@ import type {
   ScheduledQueryScheduleResponse,
 } from "../lib/api-types";
 import { realtimeClientId } from "../lib/realtime-client-id";
+import { getActiveWorkspaceId } from "../lib/active-workspace";
 
 export type QueryExecuteResult =
   | QueryExecuteResponse
@@ -565,7 +566,7 @@ function normalizeScheduledRunSnapshotForTab(
 
 /**
  * Tabs are persisted per workspace: `console-store:<workspaceId>`. The active
- * workspace id lives in localStorage (`activeWorkspaceId`, written before the
+ * workspace id is per browser tab (lib/active-workspace, written before the
  * post-switch reload), so each boot rehydrates the bucket that belongs to the
  * workspace being loaded — switching workspaces no longer leaks tabs from
  * another workspace, and switching back restores that workspace's tabs.
@@ -573,7 +574,7 @@ function normalizeScheduledRunSnapshotForTab(
 const CONSOLE_STORE_BASE_KEY = "console-store";
 
 function consoleStoreStorageKey(): string {
-  const workspaceId = localStorage.getItem("activeWorkspaceId");
+  const workspaceId = getActiveWorkspaceId();
   return workspaceId
     ? `${CONSOLE_STORE_BASE_KEY}:${workspaceId}`
     : CONSOLE_STORE_BASE_KEY;

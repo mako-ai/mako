@@ -18,10 +18,10 @@ import createClient, { type Client, type Middleware } from "openapi-fetch";
 
 import { handleUnauthorized } from "../lib/auth-redirect";
 import type { paths } from "./schema";
+import { getActiveWorkspaceId } from "../lib/active-workspace";
 
 function activeWorkspaceId(): string | null {
-  if (typeof localStorage === "undefined") return null;
-  return localStorage.getItem("activeWorkspaceId");
+  return getActiveWorkspaceId();
 }
 
 /** Injects the workspace header and handles `401` like the legacy client. */
