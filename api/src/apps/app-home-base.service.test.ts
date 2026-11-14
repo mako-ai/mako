@@ -110,17 +110,30 @@ async function commit(writes: Record<string, string>, email = "dev@x.test") {
   );
 }
 
-/** Count the queries a block sends to one collection. */
+/** Index and collection maintenance, which is not a query the code under test sent. */
+const NOT_A_QUERY = new Set([
+  "createIndex",
+  "createIndexes",
+  "dropIndex",
+  "listIndexes",
+  "ensureIndex",
+]);
+
+/**
+ * Count the queries a block sends to one collection. `methods` names them,
+ * so a failing count says which call was the extra one.
+ */
 async function countQueries<T>(
   collection: string,
   fn: () => Promise<T>,
-): Promise<{ result: T; queries: number }> {
-  let queries = 0;
-  mongoose.set("debug", (name: string) => {
-    if (name === collection) queries++;
+): Promise<{ result: T; queries: number; methods: string[] }> {
+  const methods: string[] = [];
+  mongoose.set("debug", (name: string, method: string) => {
+    if (name === collection && !NOT_A_QUERY.has(method)) methods.push(method);
   });
   try {
-    return { result: await fn(), queries };
+    const result = await fn();
+    return { result, queries: methods.length, methods };
   } finally {
     mongoose.set("debug", false);
   }
@@ -128,15 +141,17 @@ async function countQueries<T>(
 
 describe("single-flight", () => {
   it("concurrent requests share one build", async () => {
-    const { result, queries } = await countQueries("app_usage_daily", () =>
-      Promise.all([
-        loadHomeBase(WS),
-        loadHomeBase(WS),
-        listHomeDiscoveryApps(WS, USER, "member"),
-        visibleHomeAppIds(WS, USER, "member"),
-      ]),
+    const { result, queries, methods } = await countQueries(
+      "app_usage_daily",
+      () =>
+        Promise.all([
+          loadHomeBase(WS),
+          loadHomeBase(WS),
+          listHomeDiscoveryApps(WS, USER, "member"),
+          visibleHomeAppIds(WS, USER, "member"),
+        ]),
     );
-    expect(queries).toBe(1);
+    expect(queries, `queries sent: ${methods.join(", ")}`).toBe(1);
     expect(result[0]).toBe(result[1]);
     expect(result[2].map(a => a.path).sort()).toEqual(["apps/a", "apps/b"]);
     // And a second wave is served from the memo, no query at all.
