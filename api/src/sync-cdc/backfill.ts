@@ -12,6 +12,7 @@ import {
   WebhookEvent,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { EXECUTION_HEARTBEAT_STALE_MS } from "../services/flow-execution-tracking";
 import { databaseRegistry } from "../databases/registry";
 import { resolveConfiguredEntities } from "./entity-selection";
 import {
@@ -30,7 +31,9 @@ import { resolveOrphanedWebhookApplyStatusForFlow } from "./cdc-orphan-applystat
 
 const log = loggers.sync("cdc.backfill");
 
-const STALE_HEARTBEAT_MS = 10 * 60 * 1000; // 10 minutes
+// Same threshold as cleanup-abandoned-flows (withHeartbeat keeps live runs
+// well inside it).
+const STALE_HEARTBEAT_MS = EXECUTION_HEARTBEAT_STALE_MS;
 
 const CANCEL_WAIT_POLL_MS = 1000;
 const CANCEL_WAIT_TIMEOUT_MS = 30_000;
