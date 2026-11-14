@@ -9,6 +9,7 @@ import { MongoClient, Db, MongoClientOptions, ClientSession } from "mongodb";
 import {
   Client as PgClient,
   Pool as PgPool,
+  type PoolClient,
   type QueryResult as PgQueryResult,
 } from "pg";
 import * as mysql from "mysql2/promise";
@@ -25,7 +26,7 @@ import {
   normalizePostgresFields,
   normalizePostgresRows,
 } from "../databases/drivers/postgresql/pg-type-utils";
-import { Connector } from "@google-cloud/cloud-sql-connector";
+import { pgBackendPid } from "../databases/drivers/postgresql/pg-backend-pid";
 import { loggers } from "../logging";
 import { createBigQueryPollBudget } from "./bigquery-poll-budget";
 import { sshTunnelManager, type SshTunnelConfig } from "./ssh-tunnel.service";
@@ -415,12 +416,15 @@ const READ_ONLY_UNSUPPORTED_TYPES = new Set<string>([
  */
 export class DatabaseConnectionService {
   private connections: Map<string, any> = new Map();
-  private cloudSqlPgConnectors: Map<string, Connector> = new Map();
-  private cloudSqlPgPools: Map<string, PgPool> = new Map();
-  private drivers: Map<string, DatabaseDriver> = new Map();
 
   // MongoDB-specific pooling
   private mongoConnections: Map<string, PooledConnection> = new Map();
+  // First-connect promises, so concurrent callers for one key share a
+  // single MongoClient instead of each connecting and overwriting the map.
+  private mongoConnecting: Map<
+    string,
+    Promise<{ client: MongoClient; db: Db }>
+  > = new Map();
 
   // Track running BigQuery jobs for cancellation
   private runningBigQueryJobs: Map<
@@ -436,7 +440,19 @@ export class DatabaseConnectionService {
   // Track running PostgreSQL queries for cancellation
   private runningPostgresQueries: Map<
     string,
-    { database: IDatabaseConnection; pid: number }
+    { database: IDatabaseConnection; pid: number; cancelled?: boolean }
+  > = new Map();
+
+  // Track running MySQL queries for cancellation (KILL QUERY <threadId>)
+  private runningMySQLQueries: Map<
+    string,
+    {
+      database: IDatabaseConnection;
+      targetDatabase?: string;
+      poolKey: string;
+      threadId: number;
+      cancelled?: boolean;
+    }
   > = new Map();
 
   // Track running MongoDB queries for cancellation
@@ -508,18 +524,43 @@ export class DatabaseConnectionService {
     retryReads: true,
   };
 
-  constructor() {
-    this.drivers.set(
+  // The stateful drivers this service delegates to. They live in the shared
+  // registry (index.ts registers the same slots), never in a private copy:
+  // two instances would mean two sets of pools to one instance, and a
+  // cancelQuery that cannot see queries started through the other one.
+  private get cloudSqlDriver(): CloudSQLPostgresDatabaseDriver {
+    return databaseRegistry.getOrRegister(
       "cloudsql-postgres",
-      new CloudSQLPostgresDatabaseDriver() as any,
+      () => new CloudSQLPostgresDatabaseDriver(),
     );
-    this.drivers.set("cloudflare-d1", new CloudflareD1DatabaseDriver() as any);
-    this.drivers.set("cloudflare-kv", new CloudflareKVDatabaseDriver() as any);
-    // Start cleanup interval for idle connections (MongoDB, PostgreSQL, MySQL)
+  }
+
+  private get d1Driver(): CloudflareD1DatabaseDriver {
+    return databaseRegistry.getOrRegister(
+      "cloudflare-d1",
+      () => new CloudflareD1DatabaseDriver(),
+    );
+  }
+
+  private get kvDriver(): CloudflareKVDatabaseDriver {
+    return databaseRegistry.getOrRegister(
+      "cloudflare-kv",
+      () => new CloudflareKVDatabaseDriver(),
+    );
+  }
+
+  constructor() {
+    // Start cleanup interval for idle connections (MongoDB, PostgreSQL, MySQL,
+    // Cloud SQL)
     this.cleanupInterval = setInterval(() => {
       void this.cleanupIdleMongoConnections();
       void this.cleanupIdlePostgresPools();
       void this.cleanupIdleMySQLPools();
+      void this.cloudSqlDriver
+        .cleanupIdleConnections(this.userDatabaseMaxIdleTime)
+        .catch(error =>
+          logger.error("Error sweeping idle Cloud SQL pools", { error }),
+        );
     }, 60000); // Every minute
     // Housekeeping must not be a reason for the process to stay alive. The
     // singleton below is constructed on IMPORT, so this timer starts in
@@ -554,17 +595,11 @@ export class DatabaseConnectionService {
         case "clickhouse":
           return await this.testClickHouseConnection(database);
         case "cloudsql-postgres":
-          return await (
-            this.drivers.get("cloudsql-postgres") as any
-          ).testConnection(database);
+          return await this.cloudSqlDriver.testConnection(database);
         case "cloudflare-d1":
-          return await (
-            this.drivers.get("cloudflare-d1") as CloudflareD1DatabaseDriver
-          ).testConnection(database);
+          return await this.d1Driver.testConnection(database);
         case "cloudflare-kv":
-          return await (
-            this.drivers.get("cloudflare-kv") as CloudflareKVDatabaseDriver
-          ).testConnection(database);
+          return await this.kvDriver.testConnection(database);
         default:
           return {
             success: false,
@@ -626,13 +661,12 @@ export class DatabaseConnectionService {
         case "postgresql":
         case "redshift":
           return await this.executePostgreSQLQuery(database, query, options);
-        case "cloudsql-postgres": {
-          const cloudSqlDriver = this.drivers.get("cloudsql-postgres");
-          if (!cloudSqlDriver) {
-            return { success: false, error: "CloudSQL driver not available" };
-          }
-          return await cloudSqlDriver.executeQuery(database, query, options);
-        }
+        case "cloudsql-postgres":
+          return await this.cloudSqlDriver.executeQuery(
+            database,
+            query,
+            options,
+          );
         case "mysql":
           return await this.executeMySQLQuery(database, query, options);
         case "mssql":
@@ -641,26 +675,10 @@ export class DatabaseConnectionService {
           return await this.executeBigQueryQuery(database, query, options);
         case "clickhouse":
           return await this.executeClickHouseQuery(database, query, options);
-        case "cloudflare-d1": {
-          const d1Driver = this.drivers.get("cloudflare-d1");
-          if (!d1Driver) {
-            return {
-              success: false,
-              error: "Cloudflare D1 driver not available",
-            };
-          }
-          return await d1Driver.executeQuery(database, query, options);
-        }
-        case "cloudflare-kv": {
-          const kvDriver = this.drivers.get("cloudflare-kv");
-          if (!kvDriver) {
-            return {
-              success: false,
-              error: "Cloudflare KV driver not available",
-            };
-          }
-          return await kvDriver.executeQuery(database, query, options);
-        }
+        case "cloudflare-d1":
+          return await this.d1Driver.executeQuery(database, query, options);
+        case "cloudflare-kv":
+          return await this.kvDriver.executeQuery(database, query, options);
         default:
           return {
             success: false,
@@ -730,16 +748,27 @@ export class DatabaseConnectionService {
    * A Postgres read through a cursor: DECLARE once, FETCH a batch at a time
    * in one transaction (read-only where the caller may not write), so the
    * statement runs once and is one snapshot.
+   *
+   * `onRows` may be async (it is awaited before the next FETCH, so a slow
+   * consumer applies backpressure); `fetchRows` sets the batch size; and
+   * `keepRows: false` streams without accumulating the result in `data`.
    */
   private async executePostgreSQLCursor(
     database: IDatabaseConnection,
     query: string,
     options: QueryExecuteOptions & {
-      onRows: (rows: Record<string, unknown>[]) => void;
+      onRows: (rows: Record<string, unknown>[]) => void | Promise<void>;
       timeoutMs?: number;
+      fetchRows?: number;
+      keepRows?: boolean;
     },
   ): Promise<QueryResult> {
     const { executionId, signal, timeoutMs } = options;
+    const fetchRows = Math.max(
+      1,
+      Math.floor(options.fetchRows ?? CURSOR_FETCH_ROWS),
+    );
+    const keepRows = options.keepRows !== false;
     try {
       if (signal?.aborted) return { success: false, error: "Query cancelled" };
       const pool = await this.getPostgresPool(
@@ -752,14 +781,14 @@ export class DatabaseConnectionService {
         signal,
       });
       let open = false;
+      let release: (() => void) | undefined;
       try {
-        if (executionId) {
-          const pid = (await client.query("SELECT pg_backend_pid()")).rows[0]
-            ?.pg_backend_pid;
-          if (pid) {
-            this.runningPostgresQueries.set(executionId, { database, pid });
-          }
-        }
+        release = await this.trackPostgresQuery(
+          database,
+          client,
+          executionId,
+          signal,
+        );
         await client.query(
           options.readOnly || options.readOnlyTransaction
             ? "BEGIN TRANSACTION READ ONLY"
@@ -776,6 +805,7 @@ export class DatabaseConnectionService {
           `DECLARE _mako_rows NO SCROLL CURSOR FOR\n${query}\n`,
         );
         const rows: Record<string, unknown>[] = [];
+        let rowCount = 0;
         let fields: ReturnType<typeof normalizePostgresFields> | undefined;
         for (;;) {
           if (signal?.aborted) {
@@ -783,7 +813,7 @@ export class DatabaseConnectionService {
           }
           // pg reads query_timeout per query; its types do not list it.
           const batch = await client.query({
-            text: `FETCH ${CURSOR_FETCH_ROWS} FROM _mako_rows`,
+            text: `FETCH ${fetchRows} FROM _mako_rows`,
             ...(timeoutMs ? { query_timeout: timeoutMs } : {}),
           } as { text: string });
           fields ??= normalizePostgresFields(batch.fields);
@@ -791,17 +821,25 @@ export class DatabaseConnectionService {
             batch.rows as Record<string, unknown>[],
             fields,
           );
-          options.onRows(batchRows);
-          rows.push(...batchRows);
-          if (batch.rows.length < CURSOR_FETCH_ROWS) break;
+          if (keepRows || batchRows.length > 0) {
+            await options.onRows(batchRows);
+          }
+          rowCount += batchRows.length;
+          if (keepRows) rows.push(...batchRows);
+          if (batch.rows.length < fetchRows) break;
         }
         await client.query("COMMIT");
         open = false;
-        return { success: true, data: rows, rowCount: rows.length, fields };
+        return {
+          success: true,
+          data: keepRows ? rows : undefined,
+          rowCount,
+          fields,
+        };
       } finally {
         if (open) await client.query("ROLLBACK").catch(() => undefined);
-        client.release();
-        if (executionId) this.runningPostgresQueries.delete(executionId);
+        if (release) release();
+        else client.release();
       }
     } catch (error: any) {
       if (error?.message?.includes("canceling statement due to user request")) {
@@ -964,13 +1002,38 @@ export class DatabaseConnectionService {
       return await this.executeBigQueryStreamingQuery(database, query, options);
     }
 
-    const driver = databaseRegistry.getDriver(database.type);
-    if (
-      !options.readOnly &&
-      typeof query === "string" &&
-      driver?.executeStreamingQuery
-    ) {
-      return await driver.executeStreamingQuery(database, query, options);
+    const batchSize = Math.max(1, Math.floor(options.batchSize || 1000));
+
+    // A Postgres read streams through a real server-side cursor: the query
+    // runs ONCE, in one transaction/snapshot, and batches are FETCHed in the
+    // query's own order. (OFFSET pages re-run the query per page and, with
+    // no ORDER BY, may skip or repeat rows between pages.) Same path with
+    // or without readOnly; the cursor's transaction is READ ONLY when asked.
+    const readable =
+      database.type === "postgresql" && typeof query === "string"
+        ? cursorReadable(query)
+        : null;
+    if (readable !== null) {
+      let streamed = 0;
+      const result = await this.executePostgreSQLCursor(database, readable, {
+        databaseName: options.databaseName,
+        databaseId: options.databaseId,
+        executionId: options.executionId,
+        signal: options.signal,
+        readOnly: options.readOnly,
+        actor: options.actor,
+        writeChecked: true,
+        readOnlyTransaction: options.readOnlyTransaction,
+        fetchRows: batchSize,
+        keepRows: false,
+        onRows: async rows => {
+          await options.onBatch(rows);
+          streamed += rows.length;
+        },
+      });
+      return result.success
+        ? { success: true, totalRows: streamed }
+        : { success: false, totalRows: streamed, error: result.error };
     }
 
     if (
@@ -993,7 +1056,6 @@ export class DatabaseConnectionService {
       return { success: true, totalRows: rows.length };
     }
 
-    const batchSize = Math.max(1, Math.floor(options.batchSize || 1000));
     let totalRows = 0;
     let offset = 0;
 
@@ -1195,12 +1257,9 @@ export class DatabaseConnectionService {
 
     switch (database.type) {
       case "cloudsql-postgres":
-        connection = await (
-          this.drivers.get(
-            "cloudsql-postgres",
-          ) as CloudSQLPostgresDatabaseDriver
-        ).getConnection(database);
-        break;
+        // The driver owns (and caches) its pools; caching here as well
+        // would keep a pool the driver has already closed.
+        return this.cloudSqlDriver.getConnection(database);
       case "mssql":
         connection = await this.createMSSQLConnection(database);
         break;
@@ -1220,27 +1279,53 @@ export class DatabaseConnectionService {
   }
 
   /**
-   * Close database connection
+   * Close database connection. Same as {@link invalidateConnection}.
    */
   async closeConnection(databaseId: string): Promise<void> {
-    // Try to close MongoDB connection through pool
-    await this.closeMongoConnection("datasource", databaseId);
+    await this.invalidateConnection(databaseId);
+  }
 
-    // Close PostgreSQL pools for this database
-    await this.closePostgresPool(databaseId);
-
-    // Close MySQL pools for this database
-    await this.closeMySQLPool(databaseId);
-
-    // Close CloudSQL through driver
-    const cloudSqlDriver = this.drivers.get(
-      "cloudsql-postgres",
-    ) as CloudSQLPostgresDatabaseDriver;
-    if (cloudSqlDriver) {
-      await cloudSqlDriver.closeConnection(databaseId);
+  /**
+   * Drop every cached pool, client, connector and HTTP client held for a
+   * connection, in this service and in every registered driver, so the next
+   * query connects afresh from the saved configuration.
+   *
+   * Call it whenever a connection's configuration changes (edit) or the
+   * connection goes away (delete): all of these caches are keyed by the
+   * connection id alone, so without it an edited host or rotated password
+   * keeps being served by the pool built from the old one.
+   */
+  async invalidateConnection(databaseId: string): Promise<void> {
+    const steps: Array<[string, () => Promise<void> | void]> = [
+      ["mongodb", () => this.closeMongoConnection("datasource", databaseId)],
+      ["postgresql", () => this.closePostgresPool(databaseId)],
+      ["mysql", () => this.closeMySQLPool(databaseId)],
+      ["cached", () => this.closeCachedConnection(databaseId)],
+    ];
+    for (const driver of databaseRegistry.getAllDrivers()) {
+      if (typeof driver.closeConnection === "function") {
+        steps.push([
+          `driver:${driver.getMetadata().type}`,
+          () => driver.closeConnection?.(databaseId),
+        ]);
+      }
     }
+    // One failing cache must not keep the others serving stale config.
+    for (const [cache, close] of steps) {
+      try {
+        await close();
+      } catch (error) {
+        logger.error("Error invalidating cached connection", {
+          databaseId,
+          cache,
+          error,
+        });
+      }
+    }
+  }
 
-    // Also handle any non-MongoDB/non-PostgreSQL connections in the local cache
+  /** Close the generic per-connection cache entry (MSSQL pools). */
+  private async closeCachedConnection(databaseId: string): Promise<void> {
     const connection = this.connections.get(databaseId);
     if (connection) {
       try {
@@ -1255,20 +1340,6 @@ export class DatabaseConnectionService {
         this.connections.delete(databaseId);
       }
     }
-
-    const csConnector = this.cloudSqlPgConnectors.get(databaseId);
-    if (csConnector) {
-      try {
-        await csConnector.close();
-      } catch (error) {
-        logger.error("Error closing Cloud SQL connector", {
-          databaseId,
-          error,
-        });
-      } finally {
-        this.cloudSqlPgConnectors.delete(databaseId);
-      }
-    }
   }
 
   /**
@@ -1281,19 +1352,14 @@ export class DatabaseConnectionService {
       this.cleanupInterval = null;
     }
 
-    const mongoPromises: Promise<void>[] = [];
-    for (const [key, connection] of this.mongoConnections.entries()) {
-      mongoPromises.push(
-        connection.client
-          .close()
-          .then(() => logger.info("Closed MongoDB connection", { key }))
-          .catch(error =>
-            logger.error("Error closing MongoDB connection", { key, error }),
-          ),
-      );
-    }
-    await Promise.all(mongoPromises);
-    this.mongoConnections.clear();
+    // Close MongoDB connections, including ones still connecting
+    const mongoKeys = new Set([
+      ...this.mongoConnections.keys(),
+      ...this.mongoConnecting.keys(),
+    ]);
+    await Promise.all(
+      Array.from(mongoKeys, key => this.closeMongoConnectionByKey(key)),
+    );
 
     // Close PostgreSQL pools
     await this.closeAllPostgresPools();
@@ -1302,36 +1368,22 @@ export class DatabaseConnectionService {
     await this.closeAllMySQLPools();
 
     // Close other connections
-    const otherPromises = Array.from(this.connections.keys()).map(id =>
-      this.closeConnection(id),
+    await Promise.all(
+      Array.from(this.connections.keys(), id => this.closeCachedConnection(id)),
     );
-    await Promise.all(otherPromises);
 
-    // Close Cloud SQL pools first
-    const cloudSqlDriver = this.drivers.get(
-      "cloudsql-postgres",
-    ) as CloudSQLPostgresDatabaseDriver;
-    if (cloudSqlDriver) {
-      await cloudSqlDriver.closeAllConnections();
+    // Close every pool, connector and client the registered drivers hold
+    for (const driver of databaseRegistry.getAllDrivers()) {
+      if (typeof driver.closeAllConnections !== "function") continue;
+      try {
+        await driver.closeAllConnections();
+      } catch (error) {
+        logger.error("Error closing driver connections", {
+          driver: driver.getMetadata().type,
+          error,
+        });
+      }
     }
-    const poolPromises = Array.from(this.cloudSqlPgPools.values()).map(pool =>
-      pool
-        .end()
-        .catch(err =>
-          logger.error("Error closing Cloud SQL pool", { error: err }),
-        ),
-    );
-    await Promise.all(poolPromises);
-    this.cloudSqlPgPools.clear();
-
-    // Then close Cloud SQL connectors
-    const csPromises = Array.from(this.cloudSqlPgConnectors.values()).map(c =>
-      Promise.resolve(c.close()).catch((err: any) =>
-        logger.error("Error closing Cloud SQL connector", { error: err }),
-      ),
-    );
-    await Promise.all(csPromises);
-    this.cloudSqlPgConnectors.clear();
   }
 
   /**
@@ -1374,36 +1426,32 @@ export class DatabaseConnectionService {
   ): Promise<{ client: MongoClient; db: Db }> {
     const key = this.getMongoConnectionKey(context, identifier);
 
-    // Check existing connection
+    // Reuse the pooled client as is. No per-call ping: MongoClient monitors
+    // its topology and reconnects on its own, and a client that does close
+    // removes itself from the map (see createMongoConnection's handlers).
     const existing = this.mongoConnections.get(key);
     if (existing) {
-      try {
-        // Health check with timeout
-        const pingPromise = existing.client.db("admin").command({ ping: 1 });
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Health check timeout")), 2000),
-        );
-        await Promise.race([pingPromise, timeoutPromise]);
-
-        // Update last used time since we're actively using this connection
-        existing.lastUsed = new Date();
-        return { client: existing.client, db: existing.db };
-      } catch (error) {
-        logger.warn("MongoDB connection unhealthy, reconnecting", {
-          key,
-          error,
-        });
-        this.mongoConnections.delete(key);
-        try {
-          await existing.client.close();
-        } catch {
-          // Ignore close errors
-        }
-      }
+      existing.lastUsed = new Date();
+      return { client: existing.client, db: existing.db };
     }
 
-    // Create new connection
-    return this.createMongoConnection(context, identifier, config, options);
+    // Concurrent first calls share one connect; otherwise each would create
+    // a client and all but the last set() would leak, unreachable by the
+    // idle sweep.
+    const pending = this.mongoConnecting.get(key);
+    if (pending) return pending;
+    const connecting = this.createMongoConnection(
+      context,
+      identifier,
+      config,
+      options,
+    ).finally(() => {
+      if (this.mongoConnecting.get(key) === connecting) {
+        this.mongoConnecting.delete(key);
+      }
+    });
+    this.mongoConnecting.set(key, connecting);
+    return connecting;
   }
 
   // -------------------- BigQuery helpers --------------------
@@ -1455,14 +1503,7 @@ export class DatabaseConnectionService {
       );
     }
 
-    const d1Driver = this.drivers.get(
-      "cloudflare-d1",
-    ) as CloudflareD1DatabaseDriver;
-    if (!d1Driver) {
-      throw new Error("D1 driver not initialized");
-    }
-
-    const databases = await d1Driver.listDatabases(database);
+    const databases = await this.d1Driver.listDatabases(database);
     return databases.map(db => ({
       uuid: db.uuid,
       name: db.name,
@@ -2587,17 +2628,32 @@ export class DatabaseConnectionService {
     if (!query) {
       return { success: false, error: "Query not found or already completed" };
     }
+    // Marked first: the query's release then retires its client (see
+    // trackPostgresQuery) rather than pool a backend a cancel is aimed at.
+    query.cancelled = true;
+    const result = await this.cancelPostgresBackend(query.database, query.pid);
+    if (result.success) this.runningPostgresQueries.delete(executionId);
+    return result;
+  }
 
+  /**
+   * `pg_cancel_backend(pid)` from a dedicated connection outside the pool
+   * (a pooled one could deadlock: see cancelPostgresQuery).
+   */
+  private async cancelPostgresBackend(
+    database: IDatabaseConnection,
+    pid: number,
+  ): Promise<{ success: boolean; error?: string }> {
     let cancelClient: PgClient | null = null;
     try {
       // Create a dedicated connection outside the pool for cancellation
       // This avoids deadlock when all pool connections are busy
-      const config = this.buildPostgreSQLConfig(query.database);
+      const config = this.buildPostgreSQLConfig(database);
       cancelClient = new PgClient(config);
       await cancelClient.connect();
       const res = await cancelClient.query<{ cancelled: boolean }>(
         "SELECT pg_cancel_backend($1) as cancelled",
-        [query.pid],
+        [pid],
       );
       const cancelled = res.rows?.[0]?.cancelled;
       if (!cancelled) {
@@ -2606,7 +2662,6 @@ export class DatabaseConnectionService {
           error: "Failed to cancel query (pg_cancel_backend returned false)",
         };
       }
-      this.runningPostgresQueries.delete(executionId);
       return { success: true };
     } catch (error: any) {
       return {
@@ -2818,10 +2873,17 @@ export class DatabaseConnectionService {
       return this.cancelMSSQLQuery(executionId);
     }
 
-    // Delegate to drivers that support cancellation (e.g., cloudsql-postgres)
-    for (const driver of this.drivers.values()) {
-      if (typeof (driver as any).cancelQuery === "function") {
-        const res = await (driver as any).cancelQuery(executionId);
+    // Try MySQL
+    if (this.runningMySQLQueries.has(executionId)) {
+      return this.cancelMySQLQuery(executionId);
+    }
+
+    // Delegate to the drivers this service runs queries through that track
+    // their own (cloudsql-postgres). The same registry instance ran the query.
+    for (const driver of [this.cloudSqlDriver, this.d1Driver, this.kvDriver]) {
+      const cancel = (driver as DatabaseDriver).cancelQuery;
+      if (typeof cancel === "function") {
+        const res = await cancel.call(driver, executionId);
         if (res?.success) return res;
         // If the driver found the executionId but failed to cancel, return that error.
         if (
@@ -3182,24 +3244,39 @@ export class DatabaseConnectionService {
     };
     this.mongoConnections.set(key, pooledConnection);
 
-    // Set up monitoring
+    // Set up monitoring. Each handler only drops the entry while it still
+    // points at THIS client: an old, replaced client closing late must not
+    // evict (and so orphan) the live one that took its key.
+    const forget = () => this.forgetMongoClient(key, client);
     client.on("close", () => {
       logger.info("MongoDB connection closed", { key });
-      this.mongoConnections.delete(key);
+      forget();
     });
 
     client.on("error", error => {
       logger.error("MongoDB connection error", { key, error });
-      this.mongoConnections.delete(key);
+      if (forget()) {
+        client.close().catch(() => undefined);
+      }
     });
 
     client.on("topologyClosed", () => {
       logger.info("MongoDB topology closed", { key });
-      this.mongoConnections.delete(key);
+      forget();
     });
 
     logger.info("MongoDB connected", { key });
     return { client, db };
+  }
+
+  /**
+   * Drop the pool entry for `key` if (and only if) it holds `client`.
+   * Returns whether it did.
+   */
+  private forgetMongoClient(key: string, client: MongoClient): boolean {
+    if (this.mongoConnections.get(key)?.client !== client) return false;
+    this.mongoConnections.delete(key);
+    return true;
   }
 
   private getMongoConnectionKey(
@@ -3230,13 +3307,15 @@ export class DatabaseConnectionService {
         if (idleTime <= this.userDatabaseMaxIdleTime) {
           continue; // Connection was used recently, skip closing
         }
+        // Delete BEFORE closing, so a request arriving meanwhile connects
+        // afresh, and a delete after the await cannot evict that new entry.
+        this.forgetMongoClient(key, connection.client);
         try {
           await connection.client.close();
           logger.info("Closed idle MongoDB connection", { key });
         } catch (error) {
           logger.error("Error closing idle MongoDB connection", { key, error });
         }
-        this.mongoConnections.delete(key);
       }
     }
   }
@@ -3245,17 +3324,38 @@ export class DatabaseConnectionService {
     context: ConnectionContext,
     identifier: string,
   ): Promise<void> {
-    const key = this.getMongoConnectionKey(context, identifier);
-    const connection = this.mongoConnections.get(key);
+    await this.closeMongoConnectionByKey(
+      this.getMongoConnectionKey(context, identifier),
+    );
+  }
 
+  /**
+   * Close the pooled client for `key` and any client still connecting for
+   * it (that one is closed once its connect settles, so it never lands in
+   * the pool with the configuration this call is retiring).
+   */
+  private async closeMongoConnectionByKey(key: string): Promise<void> {
+    const connecting = this.mongoConnecting.get(key);
+    if (connecting) {
+      this.mongoConnecting.delete(key);
+      try {
+        const { client } = await connecting;
+        this.forgetMongoClient(key, client);
+        await client.close();
+      } catch {
+        // A failed connect left nothing to close.
+      }
+    }
+
+    const connection = this.mongoConnections.get(key);
     if (connection) {
+      this.forgetMongoClient(key, connection.client);
       try {
         await connection.client.close();
         logger.info("Closed MongoDB connection", { key });
       } catch (error) {
         logger.error("Error closing MongoDB connection", { key, error });
       }
-      this.mongoConnections.delete(key);
     }
   }
 
@@ -3377,21 +3477,20 @@ export class DatabaseConnectionService {
   private async testMongoDBConnection(
     database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
+    // A throwaway client, closed after: a test is often of an unsaved
+    // candidate (random _id), and pooling it would park a live client under
+    // a key nothing ever uses again for the 15-minute idle window. It also
+    // tests the configuration given, not a pooled client built from an
+    // older one.
+    let client: MongoClient | undefined;
     try {
       const connectionString = this.buildMongoDBConnectionString(database);
-
-      // Use unified pool for testing
-      const connection = await this.getMongoConnection(
-        "datasource",
-        database._id.toString(),
-        {
-          connectionString,
-          database: database.connection.database || "",
-        },
-      );
-
-      // Test the connection
-      await connection.db.admin().ping();
+      client = new MongoClient(connectionString, {
+        ...this.defaultMongoOptions,
+        maxPoolSize: 1,
+      });
+      await client.connect();
+      await client.db("admin").command({ ping: 1 });
       return { success: true };
     } catch (error) {
       return {
@@ -3399,6 +3498,8 @@ export class DatabaseConnectionService {
         error:
           error instanceof Error ? error.message : "MongoDB connection failed",
       };
+    } finally {
+      await client?.close().catch(() => undefined);
     }
   }
 
@@ -3468,6 +3569,24 @@ export class DatabaseConnectionService {
         abortController,
         session,
       });
+    }
+    // The caller's signal stops the await too, with or without an
+    // executionId (and, with one, runs the same session kill as cancelQuery).
+    const callerSignal = options?.signal;
+    const onCallerAbort = () => {
+      if (executionId && this.runningMongoQueries.has(executionId)) {
+        void this.cancelMongoDBQuery(executionId);
+      } else {
+        abortController?.abort();
+      }
+    };
+    if (callerSignal) {
+      abortController ??= new AbortController();
+      if (callerSignal.aborted) {
+        abortController.abort();
+      } else {
+        callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+      }
     }
 
     try {
@@ -3590,6 +3709,7 @@ export class DatabaseConnectionService {
         error: error instanceof Error ? error.message : "MongoDB query failed",
       };
     } finally {
+      callerSignal?.removeEventListener("abort", onCallerAbort);
       // Clean up tracking and end session
       if (executionId) {
         this.runningMongoQueries.delete(executionId);
@@ -4109,6 +4229,60 @@ export class DatabaseConnectionService {
     }
   }
 
+  /**
+   * Make a checked-out client's statements cancellable — by `executionId`
+   * (cancelQuery) and by `signal` on its own — via `pg_cancel_backend` on
+   * the client's backend pid (`client.processID`: no extra round trip).
+   *
+   * Returns the function that MUST replace `client.release()`: it
+   * unregisters, and when a cancel was sent it destroys the client instead
+   * of pooling it, so a cancel still in flight cannot land on whatever
+   * query that backend runs next.
+   */
+  private async trackPostgresQuery(
+    database: IDatabaseConnection,
+    client: PoolClient,
+    executionId?: string,
+    signal?: AbortSignal,
+  ): Promise<() => void> {
+    if (!executionId && !signal) return () => client.release();
+    const pid = await pgBackendPid(client);
+    if (!pid) return () => client.release();
+
+    const entry: {
+      database: IDatabaseConnection;
+      pid: number;
+      cancelled?: boolean;
+    } = { database, pid };
+    if (executionId) this.runningPostgresQueries.set(executionId, entry);
+    const onAbort = () => {
+      if (entry.cancelled) return;
+      entry.cancelled = true;
+      void this.cancelPostgresBackend(database, pid).then(result => {
+        if (!result.success) {
+          logger.warn("PostgreSQL cancel on abort failed", {
+            pid,
+            error: result.error,
+          });
+        }
+      });
+    };
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    }
+    return () => {
+      signal?.removeEventListener("abort", onAbort);
+      if (
+        executionId &&
+        this.runningPostgresQueries.get(executionId) === entry
+      ) {
+        this.runningPostgresQueries.delete(executionId);
+      }
+      client.release(entry.cancelled ? true : undefined);
+    };
+  }
+
   private async executePostgreSQLQuery(
     database: IDatabaseConnection,
     query: string,
@@ -4140,15 +4314,15 @@ export class DatabaseConnectionService {
       });
 
       let readOnlyTransactionStarted = false;
+      let release: (() => void) | undefined;
       try {
-        // Get backend PID for cancellation support
-        if (executionId) {
-          const pidResult = await client.query("SELECT pg_backend_pid()");
-          const pid = pidResult.rows[0]?.pg_backend_pid;
-          if (pid) {
-            this.runningPostgresQueries.set(executionId, { database, pid });
-          }
-        }
+        // Cancellable by executionId (cancelQuery) and by the signal alone.
+        release = await this.trackPostgresQuery(
+          database,
+          client,
+          executionId,
+          signal,
+        );
 
         // Check if already cancelled
         if (signal?.aborted) {
@@ -4182,10 +4356,8 @@ export class DatabaseConnectionService {
           await client.query("ROLLBACK").catch(() => undefined);
         }
         // Always release the client back to the pool
-        client.release();
-        if (executionId) {
-          this.runningPostgresQueries.delete(executionId);
-        }
+        if (release) release();
+        else client.release();
       }
     } catch (error: any) {
       if (error?.message?.includes("canceling statement")) {
@@ -4569,6 +4741,14 @@ export class DatabaseConnectionService {
       });
 
       let readOnlyTransactionStarted = false;
+      // Cancellable by executionId (cancelQuery) and by the signal alone.
+      const untrack = this.trackMySQLQuery(
+        database,
+        targetDatabase,
+        connection,
+        options?.executionId,
+        signal,
+      );
       try {
         if (signal?.aborted) {
           return { success: false, error: "Query cancelled" };
@@ -4613,13 +4793,129 @@ export class DatabaseConnectionService {
         if (readOnlyTransactionStarted) {
           await connection.rollback().catch(() => undefined);
         }
-        connection.release();
+        // A connection a KILL was aimed at is retired, not pooled: a KILL
+        // still in flight must not land on the next query it runs.
+        if (untrack()) connection.destroy();
+        else connection.release();
       }
     } catch (error) {
+      if (
+        signal?.aborted ||
+        (error as { code?: string } | null)?.code === "ER_QUERY_INTERRUPTED"
+      ) {
+        return { success: false, error: "Query cancelled" };
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : "MySQL query failed",
       };
+    }
+  }
+
+  /**
+   * Register a pooled MySQL connection's statement for cancellation by
+   * `executionId` and/or `signal`. Returns the function to call once the
+   * statement settles (before releasing the connection); it returns
+   * whether a cancel was sent, in which case the connection is destroyed.
+   */
+  private trackMySQLQuery(
+    database: IDatabaseConnection,
+    targetDatabase: string | undefined,
+    connection: { threadId: number | null },
+    executionId?: string,
+    signal?: AbortSignal,
+  ): () => boolean {
+    const threadId = connection.threadId;
+    if ((!executionId && !signal) || typeof threadId !== "number") {
+      return () => false;
+    }
+    const poolKey = `${database._id.toString()}:${targetDatabase || ""}`;
+    const entry: {
+      database: IDatabaseConnection;
+      targetDatabase?: string;
+      poolKey: string;
+      threadId: number;
+      cancelled?: boolean;
+    } = { database, targetDatabase, poolKey, threadId };
+    if (executionId) this.runningMySQLQueries.set(executionId, entry);
+    const onAbort = () => {
+      if (entry.cancelled) return;
+      entry.cancelled = true;
+      void this.killMySQLQuery(entry).then(result => {
+        if (!result.success) {
+          logger.warn("MySQL cancel on abort failed", {
+            threadId,
+            error: result.error,
+          });
+        }
+      });
+    };
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    }
+    return () => {
+      signal?.removeEventListener("abort", onAbort);
+      if (executionId && this.runningMySQLQueries.get(executionId) === entry) {
+        this.runningMySQLQueries.delete(executionId);
+      }
+      return entry.cancelled === true;
+    };
+  }
+
+  private async cancelMySQLQuery(
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const running = this.runningMySQLQueries.get(executionId);
+    if (!running) {
+      return { success: false, error: "Query not found or already completed" };
+    }
+    // Marked first: the query's release then retires its connection rather
+    // than pool one a KILL is aimed at (see trackMySQLQuery).
+    running.cancelled = true;
+    const result = await this.killMySQLQuery(running);
+    if (result.success) this.runningMySQLQueries.delete(executionId);
+    return result;
+  }
+
+  /**
+   * `KILL QUERY <threadId>` from a separate, unpooled connection: the pool
+   * (connectionLimit 2) may be fully occupied by the very query being
+   * cancelled. KILL QUERY stops the statement and leaves the connection
+   * usable. Through the pool's own SSH tunnel when it has one.
+   */
+  private async killMySQLQuery(running: {
+    database: IDatabaseConnection;
+    targetDatabase?: string;
+    poolKey: string;
+    threadId: number;
+  }): Promise<{ success: boolean; error?: string }> {
+    let killer: mysql.Connection | undefined;
+    try {
+      const tunnelCfg = this.buildSshTunnelConfig(
+        running.database,
+        running.poolKey,
+      );
+      const tunnelEndpoint = tunnelCfg
+        ? await sshTunnelManager.openTunnel(tunnelCfg)
+        : undefined;
+      killer = await mysql.createConnection(
+        this.buildMySQLConfig(
+          running.database,
+          running.targetDatabase,
+          tunnelEndpoint,
+        ),
+      );
+      await killer.query(`KILL QUERY ${Math.trunc(running.threadId)}`);
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to cancel query",
+      };
+    } finally {
+      await killer?.end().catch(() => undefined);
     }
   }
 

@@ -107,6 +107,7 @@ import {
 } from "./repository.service";
 import { commitBranchFor } from "./branch-policy";
 import { EMPTY_TREE } from "./git";
+import { BoundedMap } from "../utils/bounded-map";
 import {
   NotEntityPathError,
   entityCommitChanges,
@@ -136,7 +137,11 @@ export interface ConsoleDescriptionEventData {
 // Authors
 // ---------------------------------------------------------------------------
 
-const authorCache = new Map<string, GitAuthor | undefined>();
+// Bounded, and expiring so a renamed user's commits pick up the new name.
+const authorCache = new BoundedMap<string, GitAuthor | undefined>({
+  maxEntries: 5_000,
+  ttlMs: 10 * 60_000,
+});
 
 /** Git author for a Mako user id; undefined (→ Mako) when unknown. */
 export async function authorForUser(
@@ -465,10 +470,13 @@ export interface LiveConsole extends ConsoleDefinitionAtMain {
   id: Types.ObjectId;
 }
 
-const consoleDefCache = new Map<
+// Full parsed console definitions per workspace: bounded (LRU) and expiring,
+// so an instance does not keep every workspace it ever served. A miss only
+// re-parses the tree at the (sha-checked) current main.
+const consoleDefCache = new BoundedMap<
   string,
   { sha: string; defs: ConsoleDefinitionAtMain[] }
->();
+>({ maxEntries: 200, ttlMs: 30 * 60_000 });
 const consoleDefLoads = new Map<
   string,
   { sha: string; promise: Promise<ConsoleDefinitionAtMain[]> }

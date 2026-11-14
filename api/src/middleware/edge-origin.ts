@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Context, Next } from "hono";
 import { loggers } from "../logging";
+import { BoundedMap } from "../utils/bounded-map";
 
 const logger = loggers.api("edge-origin");
 
@@ -37,7 +38,11 @@ function matches(given: string | undefined, expected: string): boolean {
 }
 
 // Shadow logging is sampled: one line per path prefix per minute.
-const lastLogged = new Map<string, number>();
+// Bounded: the prefix comes from the request path, which clients choose.
+const lastLogged = new BoundedMap<string, number>({
+  maxEntries: 1_000,
+  ttlMs: 60_000,
+});
 
 export async function edgeOriginMiddleware(c: Context, next: Next) {
   const expected = secret();
