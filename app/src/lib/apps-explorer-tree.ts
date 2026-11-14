@@ -153,3 +153,23 @@ export function resolveAppRef<T extends RefApp>(
   if (matches.length === 1) return matches[0];
   return matches.find(a => appPathOf(a) === `apps/${clean}`) ?? null;
 }
+
+/**
+ * The names already taken beside an app: every other app and folder in
+ * the folder it sits in, as far as the lists say (apps this person cannot
+ * see are the server's to refuse). What the Rename dialog checks a new
+ * link against as it is typed.
+ */
+export function takenNamesBeside(
+  app: RefApp,
+  apps: readonly RefApp[],
+  folders: readonly string[],
+): string[] {
+  const parent = parentPathOf(appPathOf(app));
+  return [
+    ...apps.filter(other => other.id !== app.id).map(appPathOf),
+    ...folders,
+  ]
+    .filter(path => parentPathOf(path) === parent)
+    .map(basenameOf);
+}

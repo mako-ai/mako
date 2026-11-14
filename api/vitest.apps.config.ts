@@ -170,6 +170,10 @@ export default defineConfig({
       // connection handler (real Mongo), and the name rules' two entry points.
       "src/rename/registry.test.ts",
       "src/rename/handlers/connection.test.ts",
+      // Apps: renameProject (one commit, races, a dirty sandbox measured)
+      // and the handler (who may rename, what resolves, reserved links).
+      "src/apps/app-rename.test.ts",
+      "src/rename/handlers/app.test.ts",
       "src/rename/scenarios/name-rules-parity.test.ts",
       // rename_object: kinds per surface, per-kind grants, call results.
       "src/agent-lib/tools/rename-tools.test.ts",

@@ -218,10 +218,16 @@ export interface ResourceTreeProps {
   ) => void;
   onRenameItem?: (id: string, name: string, isDirectory: boolean) => void;
   /**
+   * Asked whenever a rename starts (F2, double-click, the default menu).
+   * Return true when the explorer renames this row itself — an app row
+   * opens its Rename dialog, where name and link are separate and checked
+   * as typed — and the inline box does not open.
+   */
+  onRequestRename?: (node: ResourceTreeNode) => boolean;
+  /**
    * What the inline rename box starts from, when it is not the row's
-   * displayed name — an app row shows its TITLE but renames its folder
-   * (slug). Defaults to `node.name`; the commit compares against the seed,
-   * so an unchanged value is a resort, not a rename.
+   * displayed name. Defaults to `node.name`; the commit compares against
+   * the seed, so an unchanged value is a resort, not a rename.
    */
   getRenameSeed?: (node: ResourceTreeNode) => string;
   onDeleteItem?: (node: ResourceTreeNode) => void;
@@ -284,6 +290,7 @@ function ResourceTreeInner(
     onMoveItem,
     onMoveFolder,
     onRenameItem,
+    onRequestRename,
     getRenameSeed,
     onDeleteItem,
     onDuplicateItem,
@@ -667,11 +674,12 @@ function ResourceTreeInner(
   const startInlineRename = useCallback(
     (item: ResourceTreeNode) => {
       if (!enableRename) return;
+      setContextMenu(null);
+      if (onRequestRename?.(item)) return;
       setRenamingItemId(item.id);
       setRenameValue(getRenameSeed?.(item) ?? item.name);
-      setContextMenu(null);
     },
-    [enableRename, getRenameSeed],
+    [enableRename, getRenameSeed, onRequestRename],
   );
 
   const cancelInlineRename = useCallback(() => {

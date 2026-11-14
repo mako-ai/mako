@@ -45,10 +45,15 @@ import {
 import {
   assignAppIds,
   discoverApps,
+  findAppInSnapshotVia,
   invalidateAppsIndexCache,
   loadAppsIndex,
   resolveAppRef,
+  resolveAppRefVia,
+  settleAliases,
+  type AppIndexRow,
 } from "./app-index.service";
+import { MAX_ALIASES } from "../rename/alias-cap";
 import { derivedAppId, parseAppManifest } from "./app-paths";
 import {
   createAppFolder,
@@ -901,7 +906,7 @@ describe("moves", () => {
         folderSegments: ["Empty"],
         slug: "../x",
       }),
-    ).rejects.toThrow(/Invalid/);
+    ).rejects.toThrow(/Start the link with a letter or a number/);
   });
 });
 
@@ -1270,6 +1275,15 @@ describe("createProject", () => {
       )?.hasManifestId,
     ).toBe(true);
 
+    // A title whose slug the apps routes keep for themselves (or that a
+    // rename would refuse) gets a suffix rather than an unreachable link.
+    const reserved = await createProject({
+      workspaceId: WS,
+      title: "Search",
+      userId: USER,
+    });
+    expect(reserved.path).toBe("apps/search-2");
+
     // A second "Hello" in the same folder gets -2; in another folder, not.
     const second = await createProject({
       workspaceId: WS,
@@ -1288,5 +1302,264 @@ describe("createProject", () => {
     expect((await resolveProjectRef(WS, personal._id.toString()))?.access).toBe(
       "private",
     );
+  });
+});
+
+describe("old links (aliases)", () => {
+  const withAliases = (title: string, id: string, aliases: unknown) =>
+    JSON.stringify({ id, schemaVersion: 1, title, aliases }, null, 2) + "\n";
+  const X_ID = new Types.ObjectId().toHexString();
+  const Y_ID = new Types.ObjectId().toHexString();
+
+  it("an old link in mako.json opens the app, and says it is an old one", async () => {
+    await externalCommit({
+      "apps/pipeline/mako.json": withAliases("Sales", X_ID, ["revenue"]),
+    });
+    for (const ref of ["revenue", "apps/revenue", " /revenue/ "]) {
+      const found = await resolveAppRefVia(WS, ref);
+      expect([ref, found?.app.appId, found?.via]).toEqual([ref, X_ID, "alias"]);
+    }
+    expect((await resolveAppRefVia(WS, "pipeline"))?.via).toBe("current");
+    // Every reader goes through the same lookup: the project resolver too.
+    expect((await resolveProjectRef(WS, "revenue"))?._id.toString()).toBe(X_ID);
+    // A path alias answers the path (with or without apps/), never the bare name.
+    await externalCommit({
+      "apps/pipeline/mako.json": withAliases("Sales", X_ID, ["apps/Old/deck"]),
+    });
+    expect((await resolveAppRef(WS, "Old/deck"))?.appId).toBe(X_ID);
+    expect(await resolveAppRef(WS, "deck")).toBeNull();
+    expect(await resolveAppRef(WS, "revenue")).toBeNull();
+  });
+
+  it("never shadows a live app: a current name beats an alias, wherever the app is", async () => {
+    await externalCommit({
+      "apps/pipeline/mako.json": withAliases("Sales", X_ID, [
+        "a",
+        "b",
+        "fresh",
+      ]),
+    });
+    // `a` is a top-level app and `b` the only app of that name (nested).
+    expect((await resolveAppRefVia(WS, "a"))?.app.path).toBe("apps/a");
+    expect((await resolveAppRefVia(WS, "b"))?.app.appId).toBe(B_ID);
+    expect((await resolveAppRefVia(WS, "fresh"))?.app.appId).toBe(X_ID);
+    // A new app takes the name: the link is its own from then on.
+    await externalCommit({ "apps/fresh/mako.json": manifest("Fresh", Y_ID) });
+    expect(await resolveAppRefVia(WS, "fresh")).toMatchObject({
+      via: "current",
+      app: { appId: Y_ID },
+    });
+    // A name several nested apps share stays ambiguous, alias or not.
+    await externalCommit({
+      "apps/T1/dup/mako.json": manifest("One"),
+      "apps/T2/dup/mako.json": manifest("Two"),
+      "apps/pipeline/mako.json": withAliases("Sales", X_ID, ["dup"]),
+    });
+    expect(await resolveAppRef(WS, "dup")).toBeNull();
+  });
+
+  it("an old link two apps claim opens neither", async () => {
+    await externalCommit({
+      "apps/pipeline/mako.json": withAliases("Sales", X_ID, ["shared", "mine"]),
+      "apps/ops/mako.json": withAliases("Ops", Y_ID, ["shared"]),
+    });
+    expect(await resolveAppRef(WS, "shared")).toBeNull();
+    expect((await resolveAppRef(WS, "mine"))?.appId).toBe(X_ID);
+  });
+
+  it("keeps the newest 24, never the current name, and ignores unusable entries", async () => {
+    const many = Array.from({ length: 30 }, (_, i) => `old-${i}`);
+    await externalCommit({
+      "apps/pipeline/mako.json": withAliases("Sales", X_ID, [
+        ...many,
+        "pipeline",
+        "apps/pipeline",
+        "old-29",
+        "../escape",
+        "",
+        7,
+      ]),
+    });
+    const app = (await resolveAppRef(WS, X_ID))!;
+    expect(app.aliases).toEqual(many.slice(-MAX_ALIASES));
+    expect(await resolveAppRef(WS, "old-5")).toBeNull();
+    expect((await resolveAppRef(WS, "old-6"))?.appId).toBe(X_ID);
+    // Not an array at all: no aliases, and the app is still listed.
+    await externalCommit({
+      "apps/pipeline/mako.json": withAliases("Sales", X_ID, "revenue"),
+    });
+    expect((await resolveAppRef(WS, X_ID))?.aliases).toEqual([]);
+  });
+
+  it("a copy does not inherit its source's old links, and stamping it removes them", async () => {
+    await externalCommit({
+      "apps/pipeline/mako.json": withAliases("Sales", X_ID, ["revenue"]),
+      "apps/pipeline-copy/mako.json": withAliases("Sales", X_ID, ["revenue"]),
+    });
+    const copy = (await loadAppsIndex(WS)).apps.find(
+      a => a.path === "apps/pipeline-copy",
+    )!;
+    expect(copy.duplicateOf).toBe(X_ID);
+    expect(copy.aliases).toEqual([]);
+    expect((await resolveAppRef(WS, "revenue"))?.path).toBe("apps/pipeline");
+    await stampAppId(WS, copy, { userId: USER });
+    const stamped = parseAppManifest(
+      await fileAt("apps/pipeline-copy/mako.json"),
+      "pipeline-copy",
+    );
+    expect(stamped.id).toBe(copy.appId);
+    expect(stamped.aliases).toEqual([]);
+    expect((await resolveAppRef(WS, "revenue"))?.path).toBe("apps/pipeline");
+  });
+
+  it("learns a laptop `git mv` on its own, and keeps it across later syncs and a rebuild", async () => {
+    await externalCommit({
+      "apps/pipeline/mako.json": manifest("Sales", X_ID),
+    });
+    await loadAppsIndex(WS);
+    await externalCommit(
+      { "apps/revenue/mako.json": manifest("Sales", X_ID) },
+      ["apps/pipeline/mako.json"],
+      "git mv apps/pipeline apps/revenue",
+    );
+    expect(await resolveAppRefVia(WS, "pipeline")).toMatchObject({
+      via: "alias",
+      app: { appId: X_ID, path: "apps/revenue", aliases: ["pipeline"] },
+    });
+    // The manifest was not touched: the index holds the name itself.
+    expect(await fileAt("apps/revenue/mako.json")).toBe(
+      manifest("Sales", X_ID),
+    );
+    const row = await AppIndexEntry.findOne({ appId: X_ID }).lean();
+    expect([row?.aliases, row?.indexAliases]).toEqual([[], ["pipeline"]]);
+
+    // Filed into a folder under the SAME name: the old path is the alias,
+    // and the bare name still finds it as its current one.
+    await externalCommit(
+      { "apps/Team/revenue/mako.json": manifest("Sales", X_ID) },
+      ["apps/revenue/mako.json"],
+      "git mv apps/revenue apps/Team/revenue",
+    );
+    expect((await resolveAppRefVia(WS, "apps/revenue"))?.via).toBe("alias");
+    expect((await resolveAppRefVia(WS, "revenue"))?.via).toBe("current");
+    expect((await resolveAppRef(WS, "pipeline"))?.appId).toBe(X_ID);
+
+    // An unrelated push, then a rebuild of an index written before aliases
+    // existed (schema version 4): the learned names are still there.
+    await externalCommit({ "README.md": "y\n" });
+    expect((await resolveAppRef(WS, "pipeline"))?.appId).toBe(X_ID);
+    await AppIndexHead.updateOne(
+      { workspaceId: WS },
+      { $set: { schemaVersion: 4 } },
+    );
+    invalidateAppsIndexCache();
+    expect((await resolveAppRef(WS, "pipeline"))?.appId).toBe(X_ID);
+    expect(
+      (await AppIndexHead.findOne({ workspaceId: WS }).lean())?.schemaVersion,
+    ).toBe(5);
+  });
+
+  it("rebuilds a version-4 index once, so manifests' old links resolve without a push", async () => {
+    await externalCommit({
+      "apps/pipeline/mako.json": withAliases("Sales", X_ID, ["revenue"]),
+    });
+    await loadAppsIndex(WS);
+    // What a version-4 index holds: the same rows, no alias fields.
+    await AppIndexEntry.updateMany(
+      { workspaceId: WS },
+      { $unset: { aliases: 1, indexAliases: 1, supersededAliases: 1 } },
+    );
+    await AppIndexHead.updateOne(
+      { workspaceId: WS },
+      { $set: { schemaVersion: 4 } },
+    );
+    invalidateAppsIndexCache();
+    expect((await resolveAppRef(WS, "revenue"))?.appId).toBe(X_ID);
+    const head = await AppIndexHead.findOne({ workspaceId: WS }).lean();
+    expect(head?.schemaVersion).toBe(5);
+    expect(
+      (await AppIndexEntry.findOne({ appId: X_ID }).lean())?.aliases,
+    ).toEqual(["revenue"]);
+  });
+
+  it("the most recent holder of a name keeps its link; the older claim returns when that app goes", async () => {
+    // X was renamed away from `deck` long ago; Y then took the name.
+    await externalCommit({
+      "apps/pipeline/mako.json": withAliases("Sales", X_ID, ["deck"]),
+      "apps/deck/mako.json": manifest("Deck", Y_ID),
+    });
+    expect((await resolveAppRef(WS, "deck"))?.appId).toBe(Y_ID);
+    // Y is renamed away too: the link follows Y, which held it last.
+    await externalCommit(
+      { "apps/slides/mako.json": withAliases("Deck", Y_ID, ["deck"]) },
+      ["apps/deck/mako.json"],
+    );
+    expect(await resolveAppRefVia(WS, "deck")).toMatchObject({
+      via: "alias",
+      app: { appId: Y_ID },
+    });
+    expect((await resolveAppRef(WS, X_ID))?.aliases).toEqual([]);
+    // …on later syncs too, and X's manifest is never rewritten for it.
+    await externalCommit({ "README.md": "z\n" });
+    expect((await resolveAppRef(WS, "deck"))?.appId).toBe(Y_ID);
+    expect(await fileAt("apps/pipeline/mako.json")).toBe(
+      withAliases("Sales", X_ID, ["deck"]),
+    );
+    // Y is deleted: nobody else holds the name, so X answers to it again.
+    await externalCommit({}, ["apps/slides/mako.json"]);
+    expect((await resolveAppRef(WS, "deck"))?.appId).toBe(X_ID);
+  });
+
+  it("settleAliases and findAppInSnapshotVia are pure", () => {
+    const base = { manifest: [], indexed: [], superseded: [] };
+    const settled = settleAliases([
+      {
+        ...base,
+        appId: "x",
+        path: "apps/pipeline",
+        slug: "pipeline",
+        manifest: ["deck"],
+      },
+      {
+        ...base,
+        appId: "y",
+        path: "apps/S/slides",
+        slug: "slides",
+        movedFrom: "apps/deck",
+      },
+      {
+        ...base,
+        appId: "z",
+        path: "apps/S/keep",
+        slug: "keep",
+        movedFrom: "apps/keep",
+      },
+    ]);
+    expect(settled.get("x")).toEqual({
+      indexAliases: [],
+      supersededAliases: ["deck"],
+    });
+    expect(settled.get("y")).toEqual({
+      indexAliases: ["deck"],
+      supersededAliases: [],
+    });
+    // Same name, new folder: recorded by path.
+    expect(settled.get("z")?.indexAliases).toEqual(["apps/keep"]);
+
+    const row = (appId: string, path: string, aliases: string[] = []) =>
+      ({ appId, path, slug: path.split("/").pop(), aliases }) as AppIndexRow;
+    const snapshot = {
+      sha: "",
+      folders: [],
+      apps: [row("1", "apps/caf\u00e9", ["old"]), row("2", "apps/T/old")],
+    };
+    // NFC: "e" + U+0301 is the same name as "é".
+    expect(findAppInSnapshotVia(snapshot, "cafe\u0301")?.app.appId).toBe("1");
+    // The one live app called `old` wins over app 1's alias.
+    expect(findAppInSnapshotVia(snapshot, "old")).toMatchObject({
+      via: "current",
+      app: { appId: "2" },
+    });
+    expect(findAppInSnapshotVia(snapshot, "apps/old")?.app.appId).toBe("1");
   });
 });

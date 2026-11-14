@@ -10,7 +10,11 @@
  * points to the same answers.
  */
 import {
+  MAX_APP_TITLE_LENGTH,
+  appLinkClash,
+  appNameProblem,
   displayNameError,
+  normalizeAppName,
   normalizeDisplayName,
   renameSlugError,
   type SlugNamedKind,
@@ -36,3 +40,29 @@ export function objectSlugError(
 ): string | null {
   return renameSlugError(kind, raw.trim());
 }
+
+/** Why an app's name (its title), as typed, would be refused — or null. */
+export function appTitleError(raw: string): string | null {
+  return objectNameError(raw, MAX_APP_TITLE_LENGTH);
+}
+
+/**
+ * Why an app's link (its folder name), as typed, would be refused — or
+ * null. With `beside`, also what only the app's surroundings decide: the
+ * link it has now (never the same name in another case) and the names
+ * already taken in its folder, as far as this person can see them.
+ */
+export function appLinkError(
+  raw: string,
+  beside?: { current: string; taken: readonly string[]; topLevel: boolean },
+): string | null {
+  const link = normalizeAppName(raw);
+  return (
+    appNameProblem(link, "link") ??
+    (beside
+      ? appLinkClash(link, beside.current, beside.taken, beside.topLevel)
+      : null)
+  );
+}
+
+export { normalizeAppName };

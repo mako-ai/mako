@@ -111,6 +111,7 @@ function commit(): AppsIndexSnapshot {
           treeOid: tree(p),
           title: p.split("/").pop() ?? p,
           hasManifestId: false,
+          aliases: [],
           schedules: [],
           bindings: [],
           tables: [],

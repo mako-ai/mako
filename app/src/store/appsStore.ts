@@ -1030,7 +1030,10 @@ export const useAppsStore = create<AppsStore>()(
             reconcileAppsTabs(new Set(apps.map(a => a.id)));
             // And keep the survivors' URL handles current: a push that moved
             // an app changes what its tabs' links should say.
-            healAppsTabs(new Map(apps.map(a => [a.id, appUrlSlug(a)])));
+            healAppsTabs(
+              new Map(apps.map(a => [a.id, appUrlSlug(a)])),
+              new Map(apps.map(a => [a.id, a.title])),
+            );
           } catch (e) {
             // GET /apps is 412 without a GitHub binding. That is an empty
             // explorer (disconnect, never linked), not a load failure. Keeping
