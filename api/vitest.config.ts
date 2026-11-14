@@ -21,6 +21,7 @@ export default defineConfig({
       "src/auth/auth-routes.test.ts",
       "src/utils/client-ip.test.ts",
       "src/services/safe-http-client.test.ts",
+      "src/routes/mcp-oauth-base-url.test.ts",
       "src/integrations/github/**/*.test.ts",
       "src/routes/dbt.routes.integration.test.ts",
       "src/routes/connector-reveal-secret.test.ts",
