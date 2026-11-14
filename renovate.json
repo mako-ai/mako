@@ -1,0 +1,47 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":semanticCommitTypeAll(chore)"],
+  "timezone": "Etc/UTC",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 6,
+  "minimumReleaseAge": "1 day",
+  "internalChecksFilter": "strict",
+  "rangeStrategy": "auto",
+  "postUpdateOptions": ["pnpmDedupe"],
+  "lockFileMaintenance": { "enabled": true, "schedule": ["before 6am on monday"] },
+  "vulnerabilityAlerts": { "minimumReleaseAge": null, "schedule": ["at any time"] },
+  "packageRules": [
+    {
+      "description": "Patch and minor updates, one PR per week",
+      "matchUpdateTypes": ["patch", "minor"],
+      "matchCurrentVersion": "!/^0/",
+      "groupName": "non-major dependencies"
+    },
+    {
+      "description": "AI SDK packages are pinned exactly and must move together",
+      "matchPackageNames": ["ai", "@ai-sdk/{/,}**"],
+      "groupName": "AI SDK"
+    },
+    {
+      "description": "The CLI mirrors the workflows runtime image: bump both as one unit, on the AI SDK major they pin",
+      "matchFileNames": ["packages/cli/package.json", "deploy/workflows/runtime/package.json"],
+      "groupName": "CLI + workflows runtime",
+      "matchUpdateTypes": ["patch", "minor"]
+    },
+    {
+      "description": "@types/node tracks the Node runtime (24), not the latest Node",
+      "matchPackageNames": ["@types/node"],
+      "allowedVersions": "<25"
+    },
+    {
+      "description": "Base images and the Node version file move together",
+      "matchManagers": ["dockerfile", "nvm"],
+      "groupName": "Node runtime"
+    },
+    {
+      "description": "GitHub Actions",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    }
+  ]
+}
