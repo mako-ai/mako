@@ -1,10 +1,22 @@
 /**
- * Query building and cursor tracking for database-source flow chunks in
- * "legacy mode" (the source query has no `{{limit}}` / `{{keyset_value}}`
- * templates, so the WHERE / ORDER BY / LIMIT are appended here).
+ * Query building and cursor tracking for database-source flow chunks: the
+ * ONE place a chunk's SQL is built, for the run (executeDbSyncChunk) and the
+ * dry run alike.
+ *
+ * There is a single mode, template mode: the query's `{{limit}}`,
+ * `{{offset}}`, `{{last_sync_value}}` and `{{keyset_value}}` placeholders
+ * are substituted. A query written without placeholders (every flow saved
+ * before templates existed, and any the user writes plain) is translated
+ * into its template equivalent when the chunk is built — paging clauses
+ * appended as `LIMIT {{limit}} OFFSET {{offset}}`, the cursor predicates
+ * the placeholders cannot express spelled out — and then substituted the
+ * same way. Translating at load time, not in a data migration, is
+ * deliberate: flow definitions live in `flows/<slug>.yml` in the workspace
+ * repo, so a rewritten Mongo copy would be resynced away, and the tie-safe
+ * predicates below have no placeholder to be rewritten into.
  *
  * Pure (no drivers, no Mongoose) so the paging contract can be tested
- * against a real SQL engine. The contract it fixes:
+ * against a real SQL engine. The contract for a translated query:
  *
  * - **Incremental ties.** `tracking > lastValue` never picks up a row
  *   committed later with the SAME timestamp as the last synced max — a
@@ -29,6 +41,11 @@ import {
   appendWhereCondition,
   findTopLevelKeyword,
 } from "./sql-query-utils";
+import {
+  detectTemplates,
+  substituteTemplates,
+  type TemplateValues,
+} from "../utils/template-substitution";
 
 export type CursorValueType = "number" | "string";
 
@@ -40,7 +57,7 @@ export interface CursorValue {
   type?: CursorValueType;
 }
 
-export interface LegacyCursorState {
+export interface ChunkCursorState {
   offset: number;
   lastKeysetValue?: string;
   /** Type of `lastKeysetValue`; absent on state written before it existed. */
@@ -49,7 +66,7 @@ export interface LegacyCursorState {
   lastKeysetTiebreaker?: CursorValue[];
 }
 
-export interface LegacyChunkQueryInput {
+export interface ChunkQueryInput {
   sourceQuery: string;
   syncMode: "full" | "incremental";
   incrementalConfig?: {
@@ -62,7 +79,7 @@ export interface LegacyChunkQueryInput {
   keysetDirection: "asc" | "desc";
   keyColumns?: string[];
   maxRowsPerChunk: number;
-  state: LegacyCursorState;
+  state: ChunkCursorState;
   /** The flow's saved keyset value, used when the run has none yet. */
   savedKeysetValue?: string;
 }
@@ -113,7 +130,74 @@ function lexicographicAfter(values: CursorValue[], op: ">" | "<"): string {
   );
 }
 
-export function buildLegacyChunkQuery(input: LegacyChunkQueryInput): string {
+/** True when the query carries its own paging placeholders. */
+export function isTemplateQuery(query: string): boolean {
+  const found = detectTemplates(query);
+  return (
+    found.hasLimit ||
+    found.hasOffset ||
+    found.hasLastSyncValue ||
+    found.hasKeysetValue
+  );
+}
+
+/**
+ * The SQL for one chunk. A template query is substituted as written; a
+ * plain query is first translated by `plainQueryAsTemplate`.
+ */
+export function buildChunkQuery(input: ChunkQueryInput): string {
+  const template = isTemplateQuery(input.sourceQuery)
+    ? input.sourceQuery
+    : plainQueryAsTemplate(input);
+  return substituteTemplates(template, chunkTemplateValues(input));
+}
+
+/**
+ * Placeholder values for a chunk. `last_sync_value` and `keyset_value`
+ * are inserted as written (the query supplies its own quotes); a keyset
+ * value known to be a string stays a string.
+ */
+export function chunkTemplateValues(input: ChunkQueryInput): TemplateValues {
+  const { syncMode, incrementalConfig, paginationMode, state } = input;
+
+  let lastSyncValue: string | null = null;
+  if (
+    syncMode === "incremental" &&
+    incrementalConfig?.trackingColumn &&
+    incrementalConfig?.lastValue
+  ) {
+    lastSyncValue = incrementalConfig.lastValue;
+  }
+
+  let keysetValue: string | number | null = null;
+  const lastKeyset = state.lastKeysetValue || input.savedKeysetValue;
+  if (paginationMode === "keyset" && lastKeyset) {
+    const knownString =
+      Boolean(state.lastKeysetValue) && state.lastKeysetValueType === "string";
+    keysetValue =
+      knownString || isNaN(Number(lastKeyset))
+        ? lastKeyset
+        : Number(lastKeyset);
+  }
+
+  return {
+    limit: input.maxRowsPerChunk,
+    offset: state.offset,
+    last_sync_value: lastSyncValue,
+    keyset_value: keysetValue,
+  };
+}
+
+/**
+ * Translate a query without placeholders into template mode: the
+ * incremental and keyset predicates (from the run's state, as typed
+ * literals) are added to its WHERE, an ORDER BY that is a total order when
+ * it has none, and `LIMIT {{limit}}` (keyset) or `LIMIT {{limit}} OFFSET
+ * {{offset}}`. (The cursor literals are inlined, so a cursor value that
+ * itself contained a `{{limit}}` token would be substituted too; ids and
+ * timestamps do not.)
+ */
+export function plainQueryAsTemplate(input: ChunkQueryInput): string {
   const {
     syncMode,
     incrementalConfig,
@@ -121,7 +205,6 @@ export function buildLegacyChunkQuery(input: LegacyChunkQueryInput): string {
     keysetColumn,
     keysetDirection,
     keyColumns,
-    maxRowsPerChunk,
     state,
   } = input;
   // Strip trailing semicolons to avoid "... ; LIMIT ..." syntax errors
@@ -178,7 +261,7 @@ export function buildLegacyChunkQuery(input: LegacyChunkQueryInput): string {
         .join(", ");
       query = appendSqlClause(query, `ORDER BY ${orderBy}`);
     }
-    return appendSqlClause(query, `LIMIT ${maxRowsPerChunk}`);
+    return appendSqlClause(query, "LIMIT {{limit}}");
   }
 
   if (!hasOrderBy()) {
@@ -192,10 +275,7 @@ export function buildLegacyChunkQuery(input: LegacyChunkQueryInput): string {
       `ORDER BY ${columns.length > 0 ? columns.join(", ") : "1"}`,
     );
   }
-  return appendSqlClause(
-    query,
-    `LIMIT ${maxRowsPerChunk} OFFSET ${state.offset}`,
-  );
+  return appendSqlClause(query, "LIMIT {{limit}} OFFSET {{offset}}");
 }
 
 function toCursorValue(column: string, raw: unknown): CursorValue | null {
@@ -219,7 +299,7 @@ export function keysetCursorAfter(
   keysetColumn: string,
   keyColumns?: string[],
 ): Pick<
-  LegacyCursorState,
+  ChunkCursorState,
   "lastKeysetValue" | "lastKeysetValueType" | "lastKeysetTiebreaker"
 > | null {
   const head = toCursorValue(keysetColumn, lastRow[keysetColumn]);
