@@ -21,6 +21,7 @@ import { hashApiKey } from "../auth/api-key.middleware";
 import { User } from "../database/schema";
 import {
   DatabaseConnection,
+  SavedConsole,
   Workspace,
   WorkspaceMember,
 } from "../database/workspace-schema";
@@ -30,6 +31,7 @@ import {
   workspaceDatabaseRoutes,
   workspaceExecuteRoutes,
 } from "./workspace-databases";
+import { consoleRoutes } from "./consoles";
 
 const PEOPLE = ["owner", "marc", "nina", "vic"] as const;
 type Person = (typeof PEOPLE)[number];
@@ -47,6 +49,7 @@ const app = new OpenAPIHono();
 app.use("*", loggingMiddleware({}));
 app.route("/api/workspaces/:workspaceId/databases", workspaceDatabaseRoutes);
 app.route("/api/workspaces/:workspaceId/execute", workspaceExecuteRoutes);
+app.route("/api/workspaces/:workspaceId/consoles", consoleRoutes);
 
 interface ExecuteBody {
   success: boolean;
@@ -284,6 +287,44 @@ async function main() {
       assert.equal(res.body.success, false, query);
       assert.doesNotMatch(JSON.stringify(res.body), /ENCRYPTION_KEY/, query);
     }
+
+    // ── A saved console runs with the caller's role, not as an admin ──
+    // (the console router gave every API key the admin role).
+    const savedConsole = (code: string) =>
+      SavedConsole.create({
+        workspaceId: ws,
+        name: `c-${code.slice(0, 12)}`,
+        code,
+        language: "mongodb",
+        connectionId: mongoConn._id,
+        createdBy: "owner",
+        access: "workspace",
+      });
+    const runConsole = (p: Person, saved: { _id: unknown }) =>
+      call(
+        p,
+        `/api/workspaces/${ws}/consoles/${String(saved._id)}/execute`,
+        {},
+      );
+    const writeConsole = await savedConsole(
+      "db.users.insertOne({ name: 'from-console' })",
+    );
+    const before = await users();
+    res = await runConsole("vic", writeConsole);
+    assert.equal(res.status, 403, JSON.stringify(res.body));
+    assert.match(
+      res.body.error ?? "",
+      /Viewers can only run queries that read/,
+    );
+    assert.equal(await users(), before, "the viewer's console wrote nothing");
+    res = await runConsole("marc", writeConsole);
+    assert.equal(res.body.success, true, res.body.error);
+    assert.equal(await users(), before + 1);
+    // A viewer's read console runs, capped like the other execute routes.
+    res = await runConsole("vic", await savedConsole("db.big.find({})"));
+    assert.equal(res.body.success, true, res.body.error);
+    assert.equal(res.body.truncated, true);
+    assert.equal(res.body.rowCount, CAP);
 
     console.info("workspace execute access tests passed");
   } finally {

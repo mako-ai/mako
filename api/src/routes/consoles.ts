@@ -63,6 +63,11 @@ import {
   registerSharingSettingsRoutes,
 } from "./lib/collaborator-routes";
 import { FolderChainCache } from "../utils/folder-chain";
+import { viewerWriteRefusal } from "../access/viewer-writes";
+import {
+  executeQueryWithRowCap,
+  resolveExecuteMaxRows,
+} from "../services/query-row-cap";
 
 /**
  * Map console language to query language for tracking
@@ -209,7 +214,21 @@ consoleRoutes.use("*", async (c: AuthenticatedContext, next) => {
           403,
         );
       }
-      c.set("memberRole", "admin");
+      // An API key acts with its owner's role, as in the shared workspace
+      // middleware: a viewer's key must not become an admin here.
+      const owner = user
+        ? await workspaceService.getMember(workspaceId, user.id)
+        : null;
+      if (!owner) {
+        return c.json(
+          {
+            success: false,
+            error: "API key owner no longer has access to workspace",
+          },
+          403,
+        );
+      }
+      c.set("memberRole", owner.role);
     } else if (user) {
       // For session auth, verify user has access to this workspace
       const member = await workspaceService.getMember(workspaceId, user.id);
@@ -2325,11 +2344,35 @@ consoleRoutes.openapi(
         );
       }
 
+      // A viewer only reads: refuse a write before running anything, and
+      // run their reads read-only where the engine can enforce it.
+      const memberRole = c.get("memberRole");
+      const isStructuredMongo =
+        savedConsole.language === "mongodb" &&
+        !!savedConsole.mongoOptions?.collection &&
+        !!savedConsole.mongoOptions?.operation;
+      const viewerRefusal = viewerWriteRefusal(
+        memberRole,
+        database.type,
+        isStructuredMongo
+          ? {
+              collection: savedConsole.mongoOptions?.collection,
+              operation: savedConsole.mongoOptions?.operation,
+              query: savedConsole.code,
+            }
+          : savedConsole.code,
+      );
+      if (viewerRefusal) {
+        return c.json({ success: false, error: viewerRefusal }, 403);
+      }
+      const maxRows = resolveExecuteMaxRows();
+
       // Pass explicit databaseId and databaseName for cluster mode (D1, etc.)
       const executionOptions = {
         databaseId: savedConsole.databaseId,
         databaseName: savedConsole.databaseName,
         readOnly: queryAccess === "read",
+        ...(memberRole === "viewer" ? { readOnlyTransaction: true } : {}),
         labels: {
           mako_source: "console",
           mako_console: consoleId,
@@ -2365,13 +2408,15 @@ consoleRoutes.openapi(
                   cursor: cursorParam || null,
                 },
               )
-            : await databaseConnectionService.executeQuery(
+            : await executeQueryWithRowCap(
+                databaseConnectionService,
                 database,
                 mongoQuery,
                 {
                   ...savedConsole.mongoOptions,
                   ...executionOptions,
                 },
+                maxRows,
               );
         } else {
           // For JavaScript-style MongoDB queries (db.collection.find(), etc.)
@@ -2387,10 +2432,12 @@ consoleRoutes.openapi(
                   cursor: cursorParam || null,
                 },
               )
-            : await databaseConnectionService.executeQuery(
+            : await executeQueryWithRowCap(
+                databaseConnectionService,
                 database,
                 savedConsole.code,
                 executionOptions,
+                maxRows,
               );
         }
       } else {
@@ -2407,10 +2454,12 @@ consoleRoutes.openapi(
                 cursor: cursorParam || null,
               },
             )
-          : await databaseConnectionService.executeQuery(
+          : await executeQueryWithRowCap(
+              databaseConnectionService,
               database,
               savedConsole.code,
               executionOptions,
+              maxRows,
             );
       }
 
@@ -2503,6 +2552,26 @@ consoleRoutes.openapi(
         });
       }
 
+      if (!result.success) {
+        // A failed run is a failure: never `success: true` with no rows,
+        // which an API caller reads as an empty result.
+        return c.json({
+          success: false,
+          error: result.error || "Query failed",
+          console: {
+            id: savedConsole._id,
+            name: savedConsole.name,
+            language: savedConsole.language,
+            executedAt: new Date().toISOString(),
+          },
+        });
+      }
+
+      const cap =
+        "truncated" in result && result.truncated
+          ? { truncated: true, rowLimit: result.rowLimit }
+          : {};
+
       return c.json(
         isPreviewMode
           ? {
@@ -2523,6 +2592,7 @@ consoleRoutes.openapi(
               data: data,
               rowCount: rowCount,
               fields: result.fields || null,
+              ...cap,
               console: {
                 id: savedConsole._id,
                 name: savedConsole.name,
