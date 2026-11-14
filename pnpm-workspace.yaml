@@ -50,3 +50,6 @@ overrides:
   # mssql>tedious pins an @azure/identity whose msal-node (6.x) has a high
   # advisory; identity 4.14 moves to the patched msal-node 7.
   '@azure/identity@>=4.0.0 <4.14.1': ^4.14.1
+  # monaco-editor 0.55 pins dompurify 3.2.7 exactly (high advisory
+  # GHSA-mrv2-3pqr-j5jr); Monaco only uses it to sanitize hover markdown.
+  dompurify@<3.4.17: ^3.4.17
