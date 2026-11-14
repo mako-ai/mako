@@ -35,8 +35,6 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
-        with:
-          version: 9
 
       - name: Setup Node
         uses: actions/setup-node@v5
@@ -44,7 +42,7 @@ jobs:
           # Matches the API image (node:24-bookworm-slim). The workspace-
           # connector specs also need >= 22.18: they import a real connector,
           # which is TypeScript loaded without a build step (type stripping).
-          node-version: 24
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Install dependencies
@@ -86,8 +84,6 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
-        with:
-          version: 9
 
       - name: Setup Node
         uses: actions/setup-node@v5
@@ -95,7 +91,7 @@ jobs:
           # Matches the API image (node:24-bookworm-slim). The workspace-
           # connector specs also need >= 22.18: they import a real connector,
           # which is TypeScript loaded without a build step (type stripping).
-          node-version: 24
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Install dependencies

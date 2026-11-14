@@ -1,10 +1,11 @@
 {
-  "name": "data-analytics-platform",
+  "name": "mako",
   "version": "1.0.0",
-  "description": "Analytics platform syncing data from multiple sources like Close.com, Stripe, and databases",
-  "main": "index.js",
+  "private": true,
+  "description": "Mako, the AI-native SQL client: PNPM workspace root (api, app, docs, packages).",
+  "packageManager": "pnpm@10.28.0",
   "scripts": {
-    "dev": "concurrently \"pnpm --filter app run dev\" \"pnpm --filter api run dev\" \"pnpm dlx inngest-cli@latest dev\" \"./scripts/sandbox-tunnel.sh\"",
+    "dev": "concurrently \"pnpm --filter app run dev\" \"pnpm --filter api run dev\" \"pnpm dlx inngest-cli@1.53.0 dev\" \"./scripts/sandbox-tunnel.sh\"",
     "sandbox:tunnel": "./scripts/sandbox-tunnel.sh",
     "consoles:migrate": "pnpm --filter api exec tsx src/apps/migrate-consoles.cli.ts",
     "flows:export": "pnpm --filter api exec tsx src/services/flow-config-export.cli.ts",
@@ -52,11 +53,11 @@
     "cf:kv:create": "wrangler kv namespace create MAKO_PR_DEPLOYMENTS",
     "cf:kv:list": "wrangler kv key list --namespace-id=$CLOUDFLARE_KV_NAMESPACE_ID",
     "cf:app:test": "node --test cloudflare/app-router/worker.test.mjs",
-    "cf:app:check": "pnpm dlx wrangler@4.110.0 deploy --config cloudflare/app-router/wrangler.jsonc --dry-run",
-    "cf:app:check:canary": "pnpm dlx wrangler@4.110.0 deploy --config cloudflare/app-router/wrangler.canary.jsonc --dry-run",
-    "cf:app:deploy": "pnpm dlx wrangler@4.110.0 deploy --config cloudflare/app-router/wrangler.jsonc",
-    "cf:app:deploy:canary": "pnpm dlx wrangler@4.110.0 deploy --config cloudflare/app-router/wrangler.canary.jsonc",
-    "cf:app:tail": "pnpm dlx wrangler@4.110.0 tail --config cloudflare/app-router/wrangler.jsonc",
+    "cf:app:check": "wrangler deploy --config cloudflare/app-router/wrangler.jsonc --dry-run",
+    "cf:app:check:canary": "wrangler deploy --config cloudflare/app-router/wrangler.canary.jsonc --dry-run",
+    "cf:app:deploy": "wrangler deploy --config cloudflare/app-router/wrangler.jsonc",
+    "cf:app:deploy:canary": "wrangler deploy --config cloudflare/app-router/wrangler.canary.jsonc",
+    "cf:app:tail": "wrangler tail --config cloudflare/app-router/wrangler.jsonc",
     "preview-db:list": "./scripts/manage-preview-db.sh list",
     "preview-db:create": "./scripts/manage-preview-db.sh create",
     "preview-db:delete": "./scripts/manage-preview-db.sh delete",
@@ -71,17 +72,17 @@
     "flows:validate": "pnpm --filter api exec tsx src/services/flow-validate.cli.ts"
   },
   "keywords": [
-    "analytics",
-    "data-sync",
-    "close-crm",
-    "stripe",
+    "mako",
+    "sql-client",
+    "ai",
     "mongodb",
+    "postgresql",
+    "bigquery",
     "typescript"
   ],
-  "author": "",
   "license": "MIT",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=24"
   },
   "dependencies": {
     "dotenv": "^18.0.7"
