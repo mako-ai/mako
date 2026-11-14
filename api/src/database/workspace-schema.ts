@@ -1167,6 +1167,13 @@ export interface IFlow extends Document {
   };
 
   lastRunAt?: Date;
+  /**
+   * When the poll scheduler last dispatched this flow (its atomic claim).
+   * A dispatched run can sit queued behind `concurrency: 1` before it
+   * stamps `lastRunAt`; due-ness counts from the later of the two so the
+   * next tick does not dispatch it again. Runtime state, never in YAML.
+   */
+  lastScheduledDispatchAt?: Date;
   lastSuccessAt?: Date;
   lastError?: string;
   nextRunAt?: Date;
@@ -1606,9 +1613,14 @@ const WorkspaceMemberSchema = new Schema<IWorkspaceMember>({
 // Indexes
 WorkspaceMemberSchema.index({ workspaceId: 1, userId: 1 }, { unique: true });
 WorkspaceMemberSchema.index({ userId: 1 });
-// Prevent duplicate default workspace creation during concurrent onboarding requests
+// Prevent duplicate default workspace creation during concurrent onboarding
+// requests. The key must differ from the plain `{ userId: 1 }` index above:
+// Mongoose drops an unnamed index whose key duplicates an earlier one, so a
+// `{ userId: 1 }` partial index here was silently never created. Existing
+// deployments get it from migration
+// 2026-11-14-195939_workspace_member_default_membership_unique.
 WorkspaceMemberSchema.index(
-  { userId: 1 },
+  { userId: 1, isDefaultMembership: 1 },
   { unique: true, partialFilterExpression: { isDefaultMembership: true } },
 );
 
@@ -2161,6 +2173,10 @@ SavedConsoleSchema.index(
   { workspaceId: 1, "scheduledRun.nextAt": 1 },
   { sparse: true },
 );
+// The every-minute scheduler scan (services/scheduled-run-claim.ts) filters
+// `scheduledRun.nextAt <= now` across ALL workspaces, so the workspace-led
+// index above cannot serve it.
+SavedConsoleSchema.index({ "scheduledRun.nextAt": 1 }, { sparse: true });
 SavedConsoleSchema.index(
   { workspaceId: 1, lastExternalUsedAt: 1 },
   { sparse: true, name: "savedconsoles_workspace_last_external_used" },
@@ -2413,7 +2429,9 @@ const ChatSchema = new Schema<IChat>(
 // Indexes
 ChatSchema.index({ workspaceId: 1 });
 ChatSchema.index({ workspaceId: 1, title: 1 });
-ChatSchema.index({ workspaceId: 1, createdBy: 1 }); // For user-specific chat queries
+// A user's chat list, newest first (routes/chats.ts): the sort is served by
+// the index instead of in memory. Also covers `{ workspaceId, createdBy }`.
+ChatSchema.index({ workspaceId: 1, createdBy: 1, updatedAt: -1 });
 ChatSchema.index(
   { workspaceId: 1, appId: 1, createdBy: 1, updatedAt: -1 },
   { partialFilterExpression: { appId: { $type: "string" } } },
@@ -2810,6 +2828,7 @@ const FlowSchema = new Schema<IFlow>(
       trigger: { type: String, enum: ["scheduled", "manual"] },
     },
     lastRunAt: Date,
+    lastScheduledDispatchAt: Date,
     lastSuccessAt: Date,
     lastError: String,
     nextRunAt: Date,
@@ -2834,6 +2853,8 @@ const FlowSchema = new Schema<IFlow>(
 
 // Indexes
 FlowSchema.index({ workspaceId: 1, "schedule.enabled": 1 });
+// The poll scheduler's scan (buildScheduledFlowSelection) has no workspaceId.
+FlowSchema.index({ "schedule.enabled": 1 });
 // One file per slug per workspace. Sparse so rows awaiting the backfill
 // (no slug yet) do not collide with each other on null.
 FlowSchema.index({ workspaceId: 1, slug: 1 }, { unique: true, sparse: true });
@@ -2891,6 +2912,9 @@ const FlowExecutionSchema = new Schema<IFlowExecution>(
 
 // Indexes
 FlowExecutionSchema.index({ flowId: 1, startedAt: -1 });
+// cleanup-abandoned-flows scans `{ status: "running", lastHeartbeat < t }`
+// every 5 minutes.
+FlowExecutionSchema.index({ status: 1, lastHeartbeat: 1 });
 
 /**
  * WebhookEvent Schema

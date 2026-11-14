@@ -650,7 +650,8 @@ export class WorkspaceService {
       await workspace.save({ session });
 
       // Create workspace member with isDefaultMembership flag
-      // The unique partial index on { userId } where { isDefaultMembership: true }
+      // The unique partial index on { userId, isDefaultMembership } where
+      // { isDefaultMembership: true }
       // ensures only one request succeeds in concurrent scenarios
       const member = new WorkspaceMember({
         workspaceId: workspace._id,
