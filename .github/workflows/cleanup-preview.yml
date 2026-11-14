@@ -60,6 +60,7 @@ jobs:
       # Workflow workers this preview deployed (deploy/workflows). Their
       # Hatchet tenants stay: idle tenants cost nothing and hold no code.
       - name: Get workflows cluster credentials
+        id: gke-credentials
         continue-on-error: true
         uses: google-github-actions/get-gke-credentials@v3
         with:
@@ -68,6 +69,8 @@ jobs:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
       - name: Delete workflow workers
+        id: delete-workers
+        if: steps.gke-credentials.outcome == 'success'
         continue-on-error: true
         run: |
           kubectl -n mako-workflows delete deployment,secret \
@@ -136,7 +139,17 @@ jobs:
           # Drop the database
           mongosh "$STAGING_DATABASE_URL" --eval "db.getSiblingDB('${DB_NAME}').dropDatabase()" || echo "Database not found or already deleted"
 
+      # The steps above continue on error so one failure does not skip the
+      # rest. Fail the job at the end when workers were not deleted, so a
+      # missing permission shows up red instead of leaving pods behind.
+      - name: Fail when workflow workers were not deleted
+        if: steps.gke-credentials.outcome != 'success' || steps.delete-workers.outcome != 'success'
+        run: |
+          echo "::error::Workflow workers for PR #${PR_NUMBER} were not deleted. The CI service account needs roles/container.clusterViewer on ${GCP_PROJECT_ID} and the mako-workflows RBAC in deploy/workflows/k8s/ci-cleanup-rbac.yaml."
+          exit 1
+
       - name: Comment on PR
+        if: always()
         uses: actions/github-script@v8
         with:
           script: |
@@ -253,3 +266,30 @@ jobs:
               --eval "db.getSiblingDB('staging_pr_${pr}').dropDatabase()" \
               || echo "::warning::Failed to drop database staging_pr_${pr}"
           done < /tmp/stale_db_prs.txt
+
+      # Last, so a missing cluster permission fails the sweep without
+      # skipping the cleanups above.
+      - name: Get workflows cluster credentials
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: mako-notebooks
+          location: europe-west1-b
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Delete workflow workers for closed PRs
+        run: |
+          # Each preview labels its workers mako.ai/env=pr-<n> (api/src/workflows/kube.ts).
+          kubectl -n mako-workflows get deployment,secret -l mako.ai/env \
+            -o jsonpath='{range .items[*]}{.metadata.labels.mako\.ai/env}{"\n"}{end}' \
+            | grep '^pr-' | sed 's/^pr-//' | sort -u > /tmp/worker_prs.txt || true
+
+          comm -23 /tmp/worker_prs.txt /tmp/open_prs.txt > /tmp/stale_worker_prs.txt
+          echo "Stale workflow workers: $(wc -l < /tmp/stale_worker_prs.txt)"
+
+          while read -r pr; do
+            [ -z "$pr" ] && continue
+            echo "Deleting workflow workers of PR #${pr}"
+            kubectl -n mako-workflows delete deployment,secret \
+              -l "mako.ai/env=pr-${pr}" --ignore-not-found --wait=false \
+              || echo "::warning::Failed to delete workflow workers of PR #${pr}"
+          done < /tmp/stale_worker_prs.txt
