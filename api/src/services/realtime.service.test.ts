@@ -15,7 +15,11 @@ import {
   subscribeToWorkspaceEvents,
   type RealtimeEvent,
 } from "./realtime.service";
-import { getPubSubBackendKind, createPubSubPublisher } from "./pubsub.service";
+import {
+  getPubSubBackendKind,
+  createPubSubPublisher,
+  type Subscriber,
+} from "./pubsub.service";
 
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
