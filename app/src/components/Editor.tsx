@@ -816,7 +816,21 @@ function Editor({
   // Load Monaco instance for unified SQL autocomplete
   const [monacoInstance, setMonacoInstance] = useState<unknown>(null);
   useEffect(() => {
-    loadMonaco().then(monaco => setMonacoInstance(monaco));
+    // This used to be a bare loader.init().then(): when the CDN script
+    // failed, the loader rejected with the script's error Event and it
+    // surfaced as an unhandled rejection on every load. Monaco is bundled
+    // now, but a failed chunk load must still not go unhandled.
+    let active = true;
+    loadMonaco()
+      .then(monaco => {
+        if (active) setMonacoInstance(monaco);
+      })
+      .catch((error: unknown) => {
+        console.error("[monaco] failed to load the editor", error);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   // Dynamic getters for unified SQL autocomplete
