@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatHistoryMenu } from "./ChatHistoryMenu";
+import { useChatHistoryStore } from "../../store/chatHistoryStore";
 import type { ChatSessionMeta } from "./hooks/useChatSessions";
 
 const HOUR = 3_600_000;
@@ -44,8 +45,13 @@ function noonToday(): number {
   return d.getTime();
 }
 
+const initialHistoryState = useChatHistoryStore.getState();
+
 describe("ChatHistoryMenu", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    useChatHistoryStore.setState(initialHistoryState, true);
+  });
 
   it("renders a session whose title never generated", () => {
     renderMenu([
@@ -160,5 +166,35 @@ describe("ChatHistoryMenu", () => {
     });
     fireEvent.click(button);
     expect(onDelete).toHaveBeenCalledWith("a", expect.anything());
+  });
+
+  it("loads the next page while the end of the list is in view", async () => {
+    const loadMore = vi.fn(async () => undefined);
+    useChatHistoryStore.setState({
+      workspaceId: "ws",
+      loaded: true,
+      nextCursor: "cur-1",
+      loadMore,
+    });
+    renderMenu([
+      session({ _id: "a", title: "One", updatedAt: new Date().toISOString() }),
+    ]);
+    // jsdom has no layout: the sentinel is always "near the bottom".
+    await vi.waitFor(() => expect(loadMore).toHaveBeenCalled());
+  });
+
+  it("does not ask for more at the end of the list", async () => {
+    const loadMore = vi.fn(async () => undefined);
+    useChatHistoryStore.setState({
+      workspaceId: "ws",
+      loaded: true,
+      nextCursor: null,
+      loadMore,
+    });
+    renderMenu([
+      session({ _id: "a", title: "One", updatedAt: new Date().toISOString() }),
+    ]);
+    await new Promise(r => setTimeout(r, 20));
+    expect(loadMore).not.toHaveBeenCalled();
   });
 });
