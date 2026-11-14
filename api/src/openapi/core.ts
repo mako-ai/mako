@@ -25,6 +25,16 @@ export interface AuthVariables {
   mcpOAuthClientId?: string;
   /** Server-generated identity for a Desktop ACP attachment. */
   mcpAgentSessionId?: string;
+  /**
+   * The workflow pass a deployed step called with (workflows/pass.ts),
+   * authType "apiKey" with the worker key it was made for.
+   */
+  workflowPass?: {
+    workspaceId: string;
+    workflow: string;
+    runId: string;
+    step?: string;
+  };
 }
 
 export type AuthEnv = { Variables: AuthVariables };

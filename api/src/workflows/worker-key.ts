@@ -3,9 +3,9 @@
  *
  * Two kinds of key carry `workflows:runtime`: the deployed worker's (one per
  * environment, made on deploy) and a sandbox run's (one per person testing).
- * Workflow code can read the key it runs with, so a workflow name sent by
- * the caller is trusted only from the deployed worker's key, and only when
- * it names a workflow deployed from main. A sandbox run acts as its person.
+ * Deployed workflow code never holds the worker key: it calls Mako with a
+ * workflow pass for its step (pass.ts). A sandbox run's key, which the code
+ * being tested can read, acts as its person.
  */
 import type { WorkspaceApiKeyScope } from "../auth/api-key-scopes";
 import { workflowsNamePrefix } from "./hatchet";
@@ -25,30 +25,16 @@ export const WORKER_KEY_SCOPES: WorkspaceApiKeyScope[] = [
   "workflows:runtime",
 ];
 
-const WORKFLOW_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
-
-export type WorkflowIdentity =
-  /** Not the deployed worker: the key acts as its creator, as any key. */
-  | { kind: "none" }
-  /** The deployed worker, for this deployed workflow. */
-  | { kind: "workflow"; name: string }
-  /**
-   * The deployed worker without a deployed workflow's name: it acts as no
-   * one who can be listed, never as whoever deployed it.
-   */
-  | { kind: "worker" };
-
-/** Which workflow, if any, a request made with `key` runs for. */
-export function workflowIdentity(
+/**
+ * Whether `key` is this environment's deployed worker key. On its own it
+ * acts as no one who can be listed, never as whoever deployed it: a deployed
+ * workflow acts as itself only with a workflow pass (pass.ts), which only the
+ * dispatcher, holding this key, can ask for.
+ */
+export function isWorkerKey(
   key: { name?: string; scopes?: string[] } | undefined,
-  workspace: { workflows?: { live?: { names?: string[] } } } | null,
-  header: string | undefined,
-): WorkflowIdentity {
-  if (!key?.scopes?.includes("workflows:runtime")) return { kind: "none" };
-  if (key.name !== workerKeyName()) return { kind: "none" };
-  const deployed = workspace?.workflows?.live?.names ?? [];
-  if (header && WORKFLOW_NAME.test(header) && deployed.includes(header)) {
-    return { kind: "workflow", name: header };
-  }
-  return { kind: "worker" };
+): boolean {
+  return (
+    !!key?.scopes?.includes("workflows:runtime") && key.name === workerKeyName()
+  );
 }

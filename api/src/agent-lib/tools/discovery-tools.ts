@@ -143,8 +143,11 @@ export const createUnifiedDiscoveryTools = (
       description:
         "Get the schema (column/field types, nullability, sqlDialect for SQL) " +
         "plus up to 25 sample rows/documents for a table, view, or MongoDB " +
-        "collection. For Cloudflare D1 pass the UUID from list_databases 'id' " +
-        "as database.",
+        "collection. A SQL table also gets `description` on the table and " +
+        "its columns when dbt documents it (`descriptionSource: dbt`, " +
+        "`dbtNode` names the model for describe_model) or the warehouse " +
+        "does (BigQuery). For Cloudflare D1 pass the UUID from " +
+        "list_databases 'id' as database.",
       inputSchema: inspectTableSchema,
       execute: async ({ connectionId, database, table }) => {
         try {
