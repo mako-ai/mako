@@ -20,9 +20,10 @@ allowBuilds:
   workerd: false
 ignoredBuiltDependencies:
   - bcrypt
-# 24h supply-chain gate. The Docker build's pnpm (latest) enforces this by
-# default; declaring it here makes local resolution match CI so a fresh
-# install can't pin hours-old releases into the lockfile.
+# 24h supply-chain gate: a fresh resolution can't pin hours-old releases into
+# the lockfile. Needs pnpm >= 10.16; local, CI and the Docker image all run the
+# version pinned by `packageManager` in the root package.json. Renovate's
+# minimumReleaseAge (renovate.json) matches it.
 minimumReleaseAge: 1440
 overrides:
   # `next` is only an optional peer of inngest (its Next.js serve adapter).
