@@ -1,7 +1,7 @@
 import { Types } from "mongoose";
 import {
-  claimScheduledRun,
-  findDueScheduledRuns,
+  claimDueScheduledRuns,
+  scheduledRunEventId,
 } from "../../services/scheduled-run-claim";
 import { inngest } from "../client";
 import {
@@ -32,13 +32,18 @@ export const scheduledQuerySchedulerFunction = inngest.createFunction(
   {
     id: "scheduled-query-scheduler",
     name: "Run Scheduled Queries",
+    // One scan at a time (it runs every minute); the claims make overlap
+    // safe, this keeps a slow scan from stacking up behind itself.
+    concurrency: { limit: 1 },
+    retries: 3,
     triggers: { cron: "*/1 * * * *" },
   },
   async ({ step }) => {
-    const now = new Date();
-
-    const dueConsoles = await step.run("fetch-due-scheduled-queries", () =>
-      findDueScheduledRuns(SavedConsole, now, {
+    // Fetch + claim in one step (not one step per console, which hits the
+    // per-run step limit), with `now` read inside it so a replay sees the
+    // memoized value.
+    const claimed = await step.run("claim-due-scheduled-queries", () =>
+      claimDueScheduledRuns(SavedConsole, new Date(), {
         isSaved: true,
         $or: [
           { is_deleted: { $ne: true } },
@@ -47,31 +52,24 @@ export const scheduledQuerySchedulerFunction = inngest.createFunction(
       }),
     );
 
-    for (const consoleDoc of dueConsoles) {
-      if (!consoleDoc.schedule?.cron || !consoleDoc.schedule?.timezone) {
-        continue;
-      }
-
-      const updateResult = await step.run(
-        `claim-${consoleDoc.id}-${consoleDoc.nextAt?.toString() ?? "none"}`,
-        () => claimScheduledRun(SavedConsole, consoleDoc, now),
+    if (claimed.length > 0) {
+      // Through step.sendEvent (memoized) with an id per claimed
+      // occurrence: a retry of this function cannot re-send.
+      await step.sendEvent(
+        "dispatch-scheduled-queries",
+        claimed.map(consoleDoc => ({
+          id: scheduledRunEventId("scheduled-query", consoleDoc),
+          name: "scheduled_query/execute",
+          data: {
+            workspaceId: consoleDoc.workspaceId,
+            consoleId: consoleDoc.id,
+            triggerType: "schedule",
+          },
+        })),
       );
-
-      if (updateResult.modifiedCount === 0) {
-        continue;
-      }
-
-      await inngest.send({
-        name: "scheduled_query/execute",
-        data: {
-          workspaceId: consoleDoc.workspaceId,
-          consoleId: consoleDoc.id,
-          triggerType: "schedule",
-        },
-      });
     }
 
-    return { checked: dueConsoles.length };
+    return { dispatched: claimed.length };
   },
 );
 

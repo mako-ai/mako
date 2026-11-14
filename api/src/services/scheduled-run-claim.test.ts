@@ -11,7 +11,12 @@ import assert from "node:assert/strict";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Schema, Types } from "mongoose";
 
-import { claimScheduledRun, findDueScheduledRuns } from "./scheduled-run-claim";
+import {
+  claimDueScheduledRuns,
+  claimScheduledRun,
+  findDueScheduledRuns,
+  scheduledRunEventId,
+} from "./scheduled-run-claim";
 
 const TestJob = mongoose.model(
   "ScheduledRunClaimTestJob",
@@ -91,6 +96,40 @@ async function main(): Promise<void> {
     };
     const viaString = await claimScheduledRun(TestJob, serialized, now);
     assert.equal(viaString.modifiedCount, 1);
+
+    // claimDueScheduledRuns: one call claims every due doc, returns only
+    // what it claimed (JSON-safe), and a second call (a step retry) claims
+    // nothing, so the deterministic event ids are the only dispatch key.
+    await TestJob.updateOne(
+      { _id: due._id },
+      { $set: { "scheduledRun.nextAt": new Date("2026-08-31T11:00:00Z") } },
+    );
+    const noTz = await TestJob.create({
+      workspaceId: ws,
+      enabled: true,
+      schedule: { cron: "0 * * * *" },
+      scheduledRun: { nextAt: new Date("2026-08-31T10:00:00Z") },
+    });
+    const batch = await claimDueScheduledRuns(TestJob, now, { enabled: true });
+    assert.deepEqual(batch, [
+      {
+        id: due._id.toString(),
+        workspaceId: ws.toString(),
+        occurrence: "2026-08-31T11:00:00.000Z",
+      },
+    ]);
+    assert.equal(
+      scheduledRunEventId("job", batch[0]),
+      `job:${due._id.toString()}:2026-08-31T11:00:00.000Z`,
+    );
+    const retry = await claimDueScheduledRuns(TestJob, now, { enabled: true });
+    assert.deepEqual(retry, []);
+    // Skipped (no timezone), so not advanced.
+    const untouched = await TestJob.findById(noTz._id).lean();
+    assert.equal(
+      untouched?.scheduledRun?.nextAt?.toISOString(),
+      "2026-08-31T10:00:00.000Z",
+    );
 
     console.log("scheduled-run-claim tests passed");
   } finally {

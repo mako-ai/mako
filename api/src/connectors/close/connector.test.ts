@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import axios from "axios";
 import {
   CLOSE_SEARCH_CUSTOM_SELECTOR_BATCH,
   CloseConnector,
@@ -92,6 +93,69 @@ async function testSyncAndProxyShareTheTrimmedKeysGate() {
   await blocking;
   await sync;
   assert.deepEqual(ran, ["sync"]);
+}
+
+/**
+ * A sustained 429 whose Retry-After is an HTTP-date used to parse to NaN,
+ * sleep(NaN) is 0 ms, and the loop had no cap: a tight loop. Now every
+ * Close request goes through the shared retry policy: the date is honoured
+ * (a past date means "now", never NaN), retries are capped, and a write is
+ * not repeated after a 5xx that may have applied it.
+ */
+async function testCloseRetriesAreCappedAndDateAware() {
+  const connector = new CloseConnector({
+    id: "ds_close_retry",
+    name: "Close",
+    type: "close",
+    config: { api_key: "retry-key" },
+    settings: { rate_limit_delay_ms: 0 },
+  } as any);
+  const delays: number[] = [];
+  (connector as any).sleep = (ms: number) => {
+    delays.push(ms);
+    return Promise.resolve();
+  };
+  const api = (connector as any).getCloseClient();
+  let calls = 0;
+  api.defaults.adapter = async (request: any) => {
+    calls++;
+    const error = new axios.AxiosError("Too Many Requests", "ERR_BAD_REQUEST");
+    error.response = {
+      status: 429,
+      statusText: "Too Many Requests",
+      headers: { "retry-after": "Wed, 21 Oct 2015 07:28:00 GMT" },
+      data: {},
+      config: request,
+    } as any;
+    throw error;
+  };
+  await assert.rejects(api.get("/lead/"), (error: any) => {
+    return error?.response?.status === 429;
+  });
+  assert.equal(calls, 9, "1 attempt + 8 capped retries");
+  assert.ok(
+    delays.every(ms => Number.isFinite(ms) && ms === 0),
+    `past HTTP-date waits 0 ms, never NaN: ${delays.join(",")}`,
+  );
+
+  calls = 0;
+  api.defaults.adapter = async (request: any) => {
+    calls++;
+    const error = new axios.AxiosError("Bad Gateway", "ERR_BAD_RESPONSE");
+    error.response = {
+      status: 502,
+      statusText: "Bad Gateway",
+      headers: {},
+      data: {},
+      config: request,
+    } as any;
+    throw error;
+  };
+  await assert.rejects(api.post("/webhook/", { url: "https://x" }));
+  assert.equal(calls, 1, "a write is not retried after a 5xx");
+  calls = 0;
+  await assert.rejects(api.get("/me/"));
+  assert.equal(calls, 9, "a read is retried after a 5xx");
 }
 
 function testUserWebhookEventsAreSupported() {
@@ -1485,6 +1549,7 @@ async function main() {
   await testActivitySearchRequestsEverySchemaColumn();
   await testCustomActivityReplansWhenCustomFieldDeleted();
   await testSyncAndProxyShareTheTrimmedKeysGate();
+  await testCloseRetriesAreCappedAndDateAware();
   await testCallSearchRequestsTranscripts();
 }
 

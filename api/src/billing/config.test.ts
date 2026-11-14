@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { getEffectiveBillingPlan } from "./config";
+import { getEffectiveBillingPlan, startOfUtcMonth } from "./config";
 
 function testPastDueFallsBackToFree() {
   assert.equal(
@@ -35,7 +35,25 @@ function testMissingPlanDefaultsToFree() {
   assert.equal(getEffectiveBillingPlan(), "free");
 }
 
+function testStartOfUtcMonthIgnoresServerTimezone() {
+  // Just after midnight UTC on the 1st is still that month in UTC, even
+  // where local time is the previous day (and vice versa).
+  assert.equal(
+    startOfUtcMonth(new Date("2026-03-01T00:30:00Z")).toISOString(),
+    "2026-03-01T00:00:00.000Z",
+  );
+  assert.equal(
+    startOfUtcMonth(new Date("2026-02-28T23:30:00-05:00")).toISOString(),
+    "2026-03-01T00:00:00.000Z",
+  );
+  assert.equal(
+    startOfUtcMonth(new Date("2026-12-31T23:59:59Z")).toISOString(),
+    "2026-12-01T00:00:00.000Z",
+  );
+}
+
 function main() {
+  testStartOfUtcMonthIgnoresServerTimezone();
   testPastDueFallsBackToFree();
   testCanceledFallsBackToFree();
   testActivePlanIsPreserved();

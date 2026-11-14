@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import axios, { AxiosError, AxiosInstance } from "axios";
+import axios, { AxiosInstance } from "axios";
 import {
   BaseConnector,
   ConnectionTestResult,
@@ -21,6 +21,7 @@ import {
 } from "../base/BaseConnector";
 import { resolveWiseEntitySchema } from "./schema";
 import { loggers } from "../../logging";
+import { withHttpRetry } from "../base/http-retry";
 
 const logger = loggers.connector("wise");
 
@@ -413,42 +414,30 @@ export class WiseConnector extends BaseConnector {
     return undefined;
   }
 
+  /** Shared policy: backoff with jitter, Retry-After, 429/5xx/network. */
   private async executeWithRetry<T>(
     fn: () => Promise<T>,
     maxRetries = 5,
   ): Promise<T> {
-    let attempt = 0;
-    while (true) {
-      try {
-        return await fn();
-      } catch (error) {
-        const axiosError = error as AxiosError;
-        const status = axiosError.response?.status;
-        const retryable =
-          status === 429 ||
-          (status !== undefined && status >= 500 && status < 600);
-
-        if (!retryable || attempt >= maxRetries) {
-          if (axios.isAxiosError(error)) {
-            error.message = formatWiseApiError(error);
-          }
-          throw error;
-        }
-
-        const retryAfterHeader = axiosError.response?.headers?.["retry-after"];
-        const retryAfterSeconds = parseInt(String(retryAfterHeader ?? "1"), 10);
-        const delayMs = Number.isFinite(retryAfterSeconds)
-          ? retryAfterSeconds * 1000
-          : Math.min(1000 * 2 ** attempt, 60_000);
-
-        logger.warn("Wise API rate limited or server error, retrying", {
-          status,
-          attempt: attempt + 1,
-          delayMs,
-        });
-        await this.sleep(delayMs);
-        attempt++;
+    try {
+      return await withHttpRetry(fn, {
+        maxRetries,
+        sleep: ms => this.sleep(ms),
+        onRetry: ({ status, attempt, delayMs }) =>
+          logger.warn("Wise API rate limited or server error, retrying", {
+            status,
+            attempt,
+            delayMs,
+          }),
+      });
+    } catch (error) {
+      // Surface the API's own error body instead of the opaque "Request
+      // failed with status code 400"; keep it an axios error so callers can
+      // still inspect error.response.status.
+      if (axios.isAxiosError(error)) {
+        error.message = formatWiseApiError(error);
       }
+      throw error;
     }
   }
 

@@ -13,6 +13,10 @@ import {
 import { FetchState } from "../../connectors/base/BaseConnector";
 import { Types } from "mongoose";
 import { cdcBackfillCheckpointService } from "../../sync-cdc/sync-state";
+import {
+  appendExecutionLog,
+  touchExecutionHeartbeat as touchHeartbeat,
+} from "../../services/flow-execution-tracking";
 import { resolveBackfillFetchForEntity } from "../../sync-cdc/backfill-fetch-resolver";
 import {
   resolveCdcDestinationAdapter,
@@ -53,69 +57,6 @@ export interface SyncBackfillEntityPayload {
 export interface SyncBackfillEntityResult {
   completed: boolean;
   rowsWritten: number;
-}
-
-function touchHeartbeat(executionId: string | undefined): Promise<void> {
-  if (!executionId) return Promise.resolve();
-  return Flow.db
-    .collection("flow_executions")
-    .updateOne(
-      { _id: new Types.ObjectId(executionId) },
-      { $set: { lastHeartbeat: new Date() } },
-    )
-    .then(() => {})
-    .catch(() => {});
-}
-
-function appendExecutionLog(
-  executionId: string | undefined,
-  flowId: string,
-  level: "debug" | "info" | "warn" | "error",
-  message: string,
-  metadata?: Record<string, unknown>,
-): void {
-  if (!executionId) return;
-  const db = Flow.db;
-  const collection = db.collection("flow_executions");
-  const entity =
-    metadata && typeof metadata.entity === "string"
-      ? metadata.entity
-      : undefined;
-  const totalProcessed =
-    metadata && typeof metadata.totalProcessed === "number"
-      ? metadata.totalProcessed
-      : undefined;
-
-  const updateDoc: Record<string, unknown> = {
-    $set: { lastHeartbeat: new Date() },
-    $push: {
-      logs: {
-        $each: [
-          {
-            timestamp: new Date(),
-            level,
-            message,
-            metadata: { flowId, executionId, ...metadata },
-          },
-        ],
-        $slice: -200,
-      },
-    },
-  };
-
-  if (entity) {
-    (updateDoc.$set as Record<string, unknown>)["stats.currentEntity"] = entity;
-  }
-  if (entity && totalProcessed !== undefined) {
-    updateDoc.$max = { [`stats.entityStats.${entity}`]: totalProcessed };
-    (updateDoc.$set as Record<string, unknown>)[
-      `stats.entityStatus.${entity}`
-    ] = "syncing";
-  }
-
-  collection
-    .updateOne({ _id: new Types.ObjectId(executionId) }, updateDoc)
-    .catch(() => {});
 }
 
 export const syncBackfillEntityFunction = inngest.createFunction(
@@ -179,7 +120,14 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       level: "debug" | "info" | "warn" | "error",
       message: string,
       metadata?: Record<string, unknown>,
-    ) => appendExecutionLog(executionId, flowId, level, message, metadata);
+    ) =>
+      void appendExecutionLog({
+        executionId,
+        flowId,
+        level,
+        message,
+        metadata,
+      });
 
     // ── Mark entity started ──────────────────────────────────────────
     if (executionId) {

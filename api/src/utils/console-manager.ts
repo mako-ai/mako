@@ -9,6 +9,7 @@ import {
 } from "../database/workspace-schema";
 import { getLogger } from "../logging";
 import { canReadResource, canWriteResource } from "./resource-acl";
+import { FolderChainCache, folderAccess } from "./folder-chain";
 import {
   commitConsoleBatch,
   commitConsoleMoves,
@@ -24,6 +25,14 @@ import { RepoRequiredError } from "../apps/config";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 
 const logger = getLogger(["api", "consoles"]);
+
+/** Options for the folder-inheritance checks. */
+export interface InheritanceOptions {
+  /** Scope for folder lookups when the console row has no workspaceId. */
+  workspaceId?: string;
+  /** A shared, possibly prefetched cache (batch callers). */
+  folders?: FolderChainCache;
+}
 
 export interface ConsoleFile {
   path: string;
@@ -226,12 +235,43 @@ export class ConsoleManager {
   }
 
   /**
+   * The folder cache for an inheritance check: the caller's (shared across
+   * many consoles, see prefetch) or a fresh one scoped to the console's
+   * workspace. Null when no workspace is known — the walk is then skipped
+   * (fail closed) rather than looked up unscoped.
+   */
+  private static folderCacheFor(
+    console: ISavedConsole,
+    options?: InheritanceOptions,
+  ): FolderChainCache | null {
+    if (options?.folders) return options.folders;
+    const workspaceId = options?.workspaceId ?? console.workspaceId;
+    return workspaceId ? FolderChainCache.forWorkspace(workspaceId) : null;
+  }
+
+  /** Whether any folder up the console's chain grants workspace access. */
+  private static async inheritsWorkspaceAccess(
+    console: ISavedConsole,
+    options?: InheritanceOptions,
+  ): Promise<boolean> {
+    const folderId = console.folderId?.toString();
+    if (!folderId) return false;
+    const folders = ConsoleManager.folderCacheFor(console, options);
+    if (!folders) return false;
+    const chain = await folders.chainOf(folderId);
+    return chain.some(folder => folderAccess(folder) === "workspace");
+  }
+
+  /**
    * Check if a user can read a console, considering inherited folder access.
-   * Walks up the folder chain to find the effective access level.
+   * Walks up the folder chain (workspace-scoped, cycle-safe) to find the
+   * effective access level. Pass `options.folders` (prefetched for a batch
+   * of consoles) to avoid a query per level per console.
    */
   async canReadWithInheritance(
     console: ISavedConsole,
     userId: string,
+    options?: InheritanceOptions,
   ): Promise<boolean> {
     const ownerId = (console.owner_id || console.createdBy)?.toString();
     if (ownerId === userId) return true;
@@ -240,24 +280,7 @@ export class ConsoleManager {
     const ownAccess = ConsoleManager.resolveAccess(console);
     if (ownAccess === "workspace") return true;
 
-    let currentFolderId = console.folderId?.toString();
-    while (currentFolderId) {
-      const folder = (await ConsoleFolder.findById(currentFolderId)
-        .select("access isPrivate parentId")
-        .lean()) as {
-        access?: string;
-        isPrivate?: boolean;
-        parentId?: Types.ObjectId;
-      } | null;
-      if (!folder) break;
-
-      const folderAccess =
-        folder.access || (folder.isPrivate ? "private" : "workspace");
-      if (folderAccess === "workspace") return true;
-      currentFolderId = folder.parentId?.toString();
-    }
-
-    return false;
+    return ConsoleManager.inheritsWorkspaceAccess(console, options);
   }
 
   /**
@@ -265,28 +288,13 @@ export class ConsoleManager {
    */
   async resolveAccessWithInheritance(
     console: ISavedConsole,
+    options?: InheritanceOptions,
   ): Promise<ConsoleAccessLevel> {
     const ownAccess = ConsoleManager.resolveAccess(console);
     if (ownAccess === "workspace") return "workspace";
-
-    let currentFolderId = console.folderId?.toString();
-    while (currentFolderId) {
-      const folder = (await ConsoleFolder.findById(currentFolderId)
-        .select("access isPrivate parentId")
-        .lean()) as {
-        access?: ConsoleAccessLevel;
-        isPrivate?: boolean;
-        parentId?: Types.ObjectId;
-      } | null;
-      if (!folder) break;
-
-      const folderAccess =
-        folder.access || (folder.isPrivate ? "private" : "workspace");
-      if (folderAccess === "workspace") return "workspace";
-      currentFolderId = folder.parentId?.toString();
-    }
-
-    return "private";
+    return (await ConsoleManager.inheritsWorkspaceAccess(console, options))
+      ? "workspace"
+      : "private";
   }
 
   /**
@@ -614,6 +622,7 @@ export class ConsoleManager {
       const found = await loadLiveConsoleById(workspaceId, consoleId);
       if (!found) return null;
 
+      const folderCache = FolderChainCache.forWorkspace(workspaceId);
       if ("draft" in found) {
         const savedConsole = found.draft;
         let consolePath = savedConsole.name;
@@ -621,13 +630,16 @@ export class ConsoleManager {
           const folderPath = await this.getFolderPathById(
             savedConsole.folderId.toString(),
             workspaceId,
+            folderCache,
           );
           if (folderPath) {
             consolePath = `${folderPath}/${savedConsole.name}`;
           }
         }
-        const effectiveAccess =
-          await this.resolveAccessWithInheritance(savedConsole);
+        const effectiveAccess = await this.resolveAccessWithInheritance(
+          savedConsole,
+          { folders: folderCache },
+        );
         return {
           ...metadataFromRow(savedConsole, consolePath),
           access: effectiveAccess,
@@ -638,11 +650,14 @@ export class ConsoleManager {
       const folders = await ConsoleFolder.find({
         workspaceId: new Types.ObjectId(workspaceId),
       });
+      folderCache.seed(folders);
       const row = liveConsoleToRow(live, folderIdForLive(live, folders));
       const displayPath = live.location.folderSegments.length
         ? `${live.location.folderSegments.join("/")}/${live.location.name}`
         : live.location.name;
-      const effectiveAccess = await this.resolveAccessWithInheritance(row);
+      const effectiveAccess = await this.resolveAccessWithInheritance(row, {
+        folders: folderCache,
+      });
       return {
         ...metadataFromRow(row, displayPath),
         access: effectiveAccess,
@@ -781,31 +796,23 @@ export class ConsoleManager {
   }
 
   /**
-   * Get folder path by folder ID (for building console paths)
+   * Get folder path by folder ID (for building console paths). Workspace
+   * scoped and cycle-safe (see FolderChainCache).
    */
   private async getFolderPathById(
     folderId: string,
     workspaceId: string,
+    folders: FolderChainCache = FolderChainCache.forWorkspace(workspaceId),
   ): Promise<string | null> {
     try {
-      const folder = await ConsoleFolder.findOne({
-        _id: new Types.ObjectId(folderId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-
-      if (!folder) return null;
-
-      if (folder.parentId) {
-        const parentPath = await this.getFolderPathById(
-          folder.parentId.toString(),
-          workspaceId,
-        );
-        return parentPath ? `${parentPath}/${folder.name}` : folder.name;
-      }
-
-      return folder.name;
+      const chain = await folders.chainOf(folderId);
+      if (chain.length === 0) return null;
+      return chain
+        .map(folder => folder.name)
+        .reverse()
+        .join("/");
     } catch (error) {
-      console.error("Error getting folder path:", error);
+      logger.error("Error getting folder path", { error, folderId });
       return null;
     }
   }
@@ -1405,7 +1412,7 @@ export class ConsoleManager {
       // in case there are duplicate entries
       return await SavedConsole.findOne(query).sort({ updatedAt: -1 });
     } catch (error) {
-      console.error("Error getting console by path:", error);
+      logger.error("Error getting console by path", { error });
       return null;
     }
   }

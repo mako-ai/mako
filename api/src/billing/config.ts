@@ -56,6 +56,16 @@ export const PLAN_DEFINITIONS: Record<BillingPlan, PlanDefinition> = {
   },
 };
 
+/**
+ * Start of the calendar month containing `now`, in UTC. The default billing
+ * period when a workspace has no Stripe `currentPeriodStart`. Server-local
+ * `new Date(y, m, 1)` gave a different boundary on dev machines and desktop
+ * builds than on Cloud Run (UTC), and disagreed with Stripe's periods.
+ */
+export function startOfUtcMonth(now: Date = new Date()): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+}
+
 export function getEffectiveBillingPlan(input?: {
   plan?: BillingPlan | null;
   subscriptionStatus?: SubscriptionStatus;

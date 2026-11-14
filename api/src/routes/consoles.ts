@@ -62,6 +62,7 @@ import {
   registerCollaboratorRoutes,
   registerSharingSettingsRoutes,
 } from "./lib/collaborator-routes";
+import { FolderChainCache } from "../utils/folder-chain";
 
 /**
  * Map console language to query language for tracking
@@ -520,6 +521,10 @@ consoleRoutes.openapi(
         workspaceId: new Types.ObjectId(workspaceId),
       });
       const docsById = new Map(docs.map(d => [d._id.toString(), d]));
+      // Every folder chain the ACL checks below walk, fetched once per tree
+      // level for all docs (not one query per level per console).
+      const folders = FolderChainCache.forWorkspace(workspaceId);
+      await folders.prefetch(docs.map(d => d.folderId?.toString()));
 
       const changed: Array<Record<string, unknown>> = [];
       const deleted: string[] = [];
@@ -529,7 +534,11 @@ consoleRoutes.openapi(
           deleted.push(id);
           continue;
         }
-        if (!(await consoleManager.canReadWithInheritance(doc, user.id))) {
+        if (
+          !(await consoleManager.canReadWithInheritance(doc, user.id, {
+            folders,
+          }))
+        ) {
           // Not readable (e.g. access flipped to private): treat as gone.
           deleted.push(id);
           continue;

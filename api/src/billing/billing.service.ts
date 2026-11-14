@@ -21,6 +21,7 @@ import {
   getModelTier,
   isModelAvailableForPlan,
   PLAN_DEFINITIONS,
+  startOfUtcMonth,
   type BillingPlan,
 } from "./config";
 import { loggers } from "../logging";
@@ -216,11 +217,8 @@ export async function getCurrentPeriodUsage(
   if (periodStart) {
     matchFilter.createdAt = { $gte: periodStart };
   } else {
-    // Default to current calendar month
-    const now = new Date();
-    matchFilter.createdAt = {
-      $gte: new Date(now.getFullYear(), now.getMonth(), 1),
-    };
+    // Default to the current calendar month (UTC)
+    matchFilter.createdAt = { $gte: startOfUtcMonth() };
   }
 
   const [result] = await LlmUsage.aggregate([

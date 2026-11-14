@@ -1,6 +1,7 @@
 import { inngest } from "../client";
 import {
   Flow,
+  FlowExecution,
   IFlow,
   DatabaseConnection,
 } from "../../database/workspace-schema";
@@ -34,13 +35,20 @@ import {
 import { syncBackfillEntityFunction } from "./sync-entity";
 import { emitFlowExecutionTerminalEvent } from "../../services/flow-run-notification.emit";
 import {
-  buildScheduledFlowSelection,
   deriveTriggerSet,
   hasScheduleTrigger,
   hasWebhookTrigger,
   LEGACY_ENGINE_REMOVED,
 } from "../../services/flow-triggers.service";
 import { ensureFlowDerivedCache } from "../../services/flow-sync.service";
+import {
+  claimDueScheduledFlows,
+  scheduledFlowEventId,
+} from "../../services/flow-schedule-claim";
+import {
+  appendExecutionLog as appendFlowExecutionLog,
+  touchExecutionHeartbeat as touchHeartbeat,
+} from "../../services/flow-execution-tracking";
 
 const flowLogger = loggers.inngest("flow");
 
@@ -51,18 +59,6 @@ interface FlowExecutionLog {
   level: "debug" | "info" | "warn" | "error";
   message: string;
   metadata?: any;
-}
-
-function touchHeartbeat(executionId: string | undefined): Promise<void> {
-  if (!executionId) return Promise.resolve();
-  return Flow.db
-    .collection("flow_executions")
-    .updateOne(
-      { _id: new Types.ObjectId(executionId) },
-      { $set: { lastHeartbeat: new Date() } },
-    )
-    .then(() => {})
-    .catch(() => {});
 }
 
 interface FlowExecutionData {
@@ -447,63 +443,13 @@ export const flowFunction = inngest.createFunction(
       message: string,
       metadata?: Record<string, unknown>,
     ) => {
-      if (!executionId) return;
-      const db = Flow.db;
-      const collection = db.collection("flow_executions");
-      const entity =
-        metadata && typeof metadata.entity === "string"
-          ? metadata.entity
-          : undefined;
-      const totalProcessed =
-        metadata && typeof metadata.totalProcessed === "number"
-          ? metadata.totalProcessed
-          : undefined;
-
-      const updateDoc: Record<string, unknown> = {
-        $set: { lastHeartbeat: new Date() },
-        $push: {
-          logs: {
-            $each: [
-              {
-                timestamp: new Date(),
-                level,
-                message,
-                metadata: {
-                  flowId,
-                  executionId,
-                  ...metadata,
-                },
-              },
-            ],
-            $slice: -200,
-          },
-        },
-      };
-
-      if (entity) {
-        (updateDoc.$set as Record<string, unknown>)["stats.currentEntity"] =
-          entity;
-      }
-
-      // Persist per-batch progress immediately so UI counters move while chunk is running.
-      if (entity && totalProcessed !== undefined) {
-        updateDoc.$max = {
-          [`stats.entityStats.${entity}`]: totalProcessed,
-        };
-        (updateDoc.$set as Record<string, unknown>)[
-          `stats.entityStatus.${entity}`
-        ] = "syncing";
-      }
-
-      return collection
-        .updateOne({ _id: new Types.ObjectId(executionId) }, updateDoc)
-        .catch(error => {
-          logger.warn("Failed to append execution log", {
-            flowId,
-            executionId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
+      return appendFlowExecutionLog({
+        executionId,
+        flowId: String(flowId),
+        level,
+        message,
+        metadata,
+      });
     };
 
     const throwIfExecutionCancelled = async (
@@ -1822,133 +1768,47 @@ export const flowSchedulerFunction = inngest.createFunction(
   {
     id: "scheduled-flow",
     name: "Run Scheduled Flows",
+    // One scan at a time; the claim makes overlap safe regardless.
+    concurrency: { limit: 1 },
+    retries: 3,
     triggers: { cron: "*/5 * * * *" },
   },
   // Run every 5 minutes to check for flows to execute
-  async ({ step, logger }) => {
+  async ({ step }) => {
     const scheduleLogger = getSyncLogger("scheduler");
 
-    scheduleLogger.info("Scheduled flow runner triggered", {
-      timestamp: new Date().toISOString(),
-    });
+    // Due check + atomic claim of every due flow in ONE step (not one per
+    // flow), returning only small claim records — see flow-schedule-claim.
+    const { checked, claimed } = await step.run("claim-due-flows", () =>
+      claimDueScheduledFlows(new Date()),
+    );
 
-    // Get all flows with an enabled poll schedule (trigger-based selection:
-    // any flow with an enabled schedule + cron, including hybrids).
-    const flows = (await step.run("fetch-enabled-flows", async () => {
-      const found = await Flow.find(buildScheduledFlowSelection());
-      scheduleLogger.info("Found flows with enabled poll schedules", {
-        count: found.length,
-        // Each flow's triggers, for debugging
-        flowTriggers: found.map(f => ({
-          id: f._id.toString(),
-          ...deriveTriggerSet(f),
-        })),
-      });
-      return found.map(f => f.toObject() as IFlow);
-    })) as unknown as IFlow[];
-
-    const now = new Date();
-    const executedFlows: string[] = [];
-    let schedulingJitter = 0;
-
-    // Check each flow to see if it should run
-    for (const flow of flows) {
-      const shouldRun = await step.run(`check-flow-${flow._id}`, async () => {
-        try {
-          const flowLogger = getSyncLogger(`scheduler.${flow._id}`);
-
-          // Safety check: skip flows without a poll cron (a webhook flow
-          // with an enabled schedule is a valid hybrid and must be polled).
-          if (!flow.schedule?.cron) {
-            flowLogger.warn(
-              "CRITICAL: Flow without poll schedule found in scheduler!",
-              {
-                flowId: flow._id.toString(),
-                triggers: deriveTriggerSet(flow),
-                hasSchedule: !!flow.schedule,
-                hasCron: !!flow.schedule?.cron,
-                schedule: flow.schedule,
-              },
-            );
-            return false;
-          }
-
-          // Due = the schedule has an occurrence after the last run that has
-          // already passed (never ran → due). This replaces three hand-rolled
-          // heuristics ("original", "alternative", "missed run") that were
-          // equivalent to exactly this predicate.
-          if (
-            !isCronDue({
-              cron: flow.schedule.cron,
-              timezone: flow.schedule.timezone || "UTC",
-              lastRunAt: flow.lastRunAt ? new Date(flow.lastRunAt) : null,
-              now,
-            })
-          ) {
-            return false;
-          }
-
-          // Skip dispatch if a previous execution is still running —
-          // prevents pending event pile-up when flows take longer than
-          // their cron interval.
-          const activeExecution = await Flow.db
-            .collection("flow_executions")
-            .findOne({
-              flowId: new Types.ObjectId(flow._id),
-              status: "running",
-            });
-          if (activeExecution) {
-            flowLogger.info(
-              "Skipping dispatch: flow already has active execution",
-              {
-                flowId: flow._id.toString(),
-                activeExecutionId: activeExecution._id.toString(),
-              },
-            );
-            return false;
-          }
-
-          return true;
-        } catch (error) {
-          logger.error(`Failed to parse cron expression for flow ${flow._id}`, {
-            error,
-            flowId: flow._id.toString(),
-          });
-          return false;
-        }
-      });
-
-      if (shouldRun) {
-        // Add small scheduling jitter (0-5 seconds) between flows to spread out the load
-        if (schedulingJitter > 0) {
-          await step.sleep(`scheduling-jitter-${flow._id}`, schedulingJitter);
-        }
-
-        // Trigger the flow (without noJitter flag, so jitter will be applied)
-        await step.sendEvent(`trigger-flow-${flow._id}`, {
+    if (claimed.length > 0) {
+      // One memoized send with a deterministic id per claimed dispatch, so
+      // a retry cannot re-send. No noJitter flag: the flow function applies
+      // its own start jitter, which spreads the load.
+      await step.sendEvent(
+        "trigger-scheduled-flows",
+        claimed.map(flow => ({
+          id: scheduledFlowEventId(flow),
           name: "flow.execute",
           data: {
-            flowId: flow._id.toString(),
+            flowId: flow.flowId,
             triggerType: "schedule",
           },
-        });
-
-        const flowDisplayName = await resolveFlowDisplayName(flow);
-        executedFlows.push(flowDisplayName);
-
-        // Increment jitter for next flow (0-5 seconds)
-        schedulingJitter = Math.floor(Math.random() * 5000);
-      }
+        })),
+      );
     }
 
+    const executedFlows = claimed.map(flow => flow.displayName);
     scheduleLogger.info("Scheduled flow runner completed", {
-      flowsChecked: flows.length,
+      flowsChecked: checked,
       flowsExecuted: executedFlows.length,
-      executedFlows: executedFlows,
+      executedFlows,
     });
 
     return {
-      checked: flows.length,
+      checked,
       executed: executedFlows.length,
       flows: executedFlows,
     };
@@ -1959,111 +1819,148 @@ export const flowSchedulerFunction = inngest.createFunction(
 // backfill for CDC flows that opted into `backfillSchedule`. The live stream
 // stays active between runs; this just kicks `cdcBackfillService.startBackfill`
 // on the configured cadence.
+/** Backfills started per step in the CDC backfill scheduler. */
+const CDC_BACKFILL_START_CHUNK = 10;
+
 export const cdcScheduledBackfillFunction = inngest.createFunction(
   {
     id: "cdc-scheduled-backfill",
     name: "Run Scheduled CDC Backfills",
+    concurrency: { limit: 1 },
+    retries: 3,
     triggers: { cron: "*/5 * * * *" },
   },
   async ({ step, logger }) => {
-    const flows = (await step.run(
-      "fetch-backfill-scheduled-flows",
+    // Select, due-check and claim in one step (not one step per flow, and
+    // no full flow documents as step output). The claim stamps
+    // `backfillSchedule.lastRunAt` with compare-and-swap on the value read,
+    // FIRST, so a slow/failed start doesn't re-trigger every cron tick
+    // (the next attempt waits for the next cron occurrence).
+    const { checked, claimed } = await step.run(
+      "claim-due-backfills",
       async () => {
+        const now = new Date();
         const found = await Flow.find({
           syncEngine: "cdc",
           "backfillSchedule.enabled": true,
           enabled: { $ne: false },
-        }).lean();
-        return found;
-      },
-    )) as unknown as IFlow[];
+        })
+          .select("_id workspaceId backfillSchedule backfillState streamState")
+          .lean();
 
-    const now = new Date();
-    const triggered: string[] = [];
-
-    for (const flow of flows) {
-      const flowId = flow._id.toString();
-      const workspaceId = String(flow.workspaceId);
-      const schedule = flow.backfillSchedule;
-      const cron = schedule?.cron;
-      if (!cron) continue;
-
-      const shouldRun = await step.run(`check-backfill-${flowId}`, async () => {
-        const backfillLogger = getSyncLogger(
-          `cdc-backfill-scheduler.${flowId}`,
-        );
-        try {
-          // Don't pile up: skip if a backfill is already in flight, the
-          // stream is paused, or an execution is currently running.
-          if (flow.backfillState?.status === "running") {
-            return false;
-          }
-          if (flow.streamState === "paused") {
-            return false;
-          }
-          const activeExecution = await Flow.db
-            .collection("flow_executions")
-            .findOne({
-              flowId: new Types.ObjectId(flowId),
-              status: "running",
+        const due = found.filter(flow => {
+          const schedule = flow.backfillSchedule;
+          if (!schedule?.cron) return false;
+          // Don't pile up: skip if a backfill is already in flight or the
+          // stream is paused.
+          if (flow.backfillState?.status === "running") return false;
+          if (flow.streamState === "paused") return false;
+          try {
+            return isCronDue({
+              cron: schedule.cron,
+              timezone: schedule.timezone,
+              lastRunAt: schedule.lastRunAt
+                ? new Date(schedule.lastRunAt)
+                : null,
+              now,
             });
-          if (activeExecution) {
+          } catch (error) {
+            logger.error("Failed to evaluate CDC backfill schedule", {
+              flowId: String(flow._id),
+              cron: schedule.cron,
+              error: error instanceof Error ? error.message : String(error),
+            });
             return false;
           }
-
-          return isCronDue({
-            cron,
-            timezone: schedule?.timezone,
-            lastRunAt: schedule?.lastRunAt
-              ? new Date(schedule.lastRunAt)
-              : null,
-            now,
-          });
-        } catch (error) {
-          backfillLogger.error("Failed to evaluate CDC backfill schedule", {
-            flowId,
-            cron,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return false;
-        }
-      });
-
-      if (!shouldRun) continue;
-
-      await step.run(`trigger-backfill-${flowId}`, async () => {
-        // Stamp lastRunAt first so a slow/failed start doesn't re-trigger every
-        // cron tick (next attempt waits for the next cron occurrence).
-        await Flow.updateOne(
-          { _id: new Types.ObjectId(flowId) },
-          { $set: { "backfillSchedule.lastRunAt": now } },
-        );
-        const entities = schedule?.entities?.length
-          ? schedule.entities
-          : undefined;
-        // trigger "scheduled": entities whose source can filter on update
-        // time fetch only what changed since their last completed backfill
-        // (with an overlap), and fall back to a full fetch at least weekly —
-        // see sync-cdc/backfill-fetch-mode.ts.
-        await cdcBackfillService.startBackfill(workspaceId, flowId, {
-          entities,
-          trigger: "scheduled",
-          reason: entities
-            ? `Scheduled backfill (${entities.join(", ")})`
-            : "Scheduled full backfill",
         });
-      });
 
-      triggered.push(flowId);
+        const running = new Set(
+          due.length === 0
+            ? []
+            : (
+                (await FlowExecution.collection.distinct("flowId", {
+                  flowId: { $in: due.map(flow => flow._id) },
+                  status: "running",
+                })) as unknown[]
+              ).map(id => String(id)),
+        );
+
+        const claims: Array<{
+          flowId: string;
+          workspaceId: string;
+          entities?: string[];
+        }> = [];
+        for (const flow of due) {
+          const flowId = String(flow._id);
+          if (running.has(flowId)) continue;
+          const res = await Flow.updateOne(
+            {
+              _id: flow._id,
+              workspaceId: flow.workspaceId,
+              "backfillSchedule.lastRunAt":
+                flow.backfillSchedule?.lastRunAt ?? null,
+            },
+            { $set: { "backfillSchedule.lastRunAt": now } },
+          );
+          if (res.modifiedCount === 0) continue;
+          const entities = flow.backfillSchedule?.entities;
+          claims.push({
+            flowId,
+            workspaceId: String(flow.workspaceId),
+            ...(entities?.length ? { entities: [...entities] } : {}),
+          });
+        }
+        return { checked: found.length, claimed: claims };
+      },
+    );
+
+    const triggered: string[] = [];
+    for (let i = 0; i < claimed.length; i += CDC_BACKFILL_START_CHUNK) {
+      const chunk = claimed.slice(i, i + CDC_BACKFILL_START_CHUNK);
+      const started = await step.run(
+        `trigger-backfills-${i / CDC_BACKFILL_START_CHUNK}`,
+        async () => {
+          const ok: string[] = [];
+          for (const claim of chunk) {
+            try {
+              // trigger "scheduled": entities whose source can filter on
+              // update time fetch only what changed since their last
+              // completed backfill (with an overlap), and fall back to a
+              // full fetch at least weekly (see backfill-fetch-mode.ts).
+              await cdcBackfillService.startBackfill(
+                claim.workspaceId,
+                claim.flowId,
+                {
+                  entities: claim.entities,
+                  trigger: "scheduled",
+                  reason: claim.entities
+                    ? `Scheduled backfill (${claim.entities.join(", ")})`
+                    : "Scheduled full backfill",
+                },
+              );
+              ok.push(claim.flowId);
+            } catch (error) {
+              // Already claimed (lastRunAt stamped): the next attempt is the
+              // next cron occurrence, as before.
+              logger.error("Failed to start scheduled CDC backfill", {
+                flowId: claim.flowId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          return ok;
+        },
+      );
+      triggered.push(...started);
     }
 
     logger.info("Scheduled CDC backfill runner completed", {
-      checked: flows.length,
+      checked,
       triggered: triggered.length,
       flowIds: triggered,
     });
 
-    return { checked: flows.length, triggered: triggered.length };
+    return { checked, triggered: triggered.length };
   },
 );
 
@@ -2158,6 +2055,9 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
   {
     id: "cleanup-abandoned-flows",
     name: "Cleanup Abandoned Flows",
+    // One sweep at a time: overlapping sweeps would race on the same rows.
+    concurrency: { limit: 1 },
+    retries: 2,
     triggers: { cron: "*/5 * * * *" },
   },
   async ({ step, logger }) => {
@@ -2173,25 +2073,28 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
       let abandonedCount = 0;
       let staleLockCount = 0;
 
-      // 1. Find and mark abandoned flow executions
-      const abandonedExecutions = await executionsCollection
-        .find({
-          status: "running",
-          $or: [
-            { lastHeartbeat: { $lt: heartbeatTimeout } },
-            {
-              lastHeartbeat: { $exists: false },
-              startedAt: { $lt: heartbeatTimeout },
-            },
-          ],
-        })
+      // 1. Find and mark abandoned flow executions. The staleness predicate
+      //    is repeated in the updateMany filter: a heartbeat or completion
+      //    that lands between the find and the update must win, not be
+      //    overwritten with "abandoned".
+      const staleRunningFilter = {
+        status: "running",
+        $or: [
+          { lastHeartbeat: { $lt: heartbeatTimeout } },
+          {
+            lastHeartbeat: { $exists: false },
+            startedAt: { $lt: heartbeatTimeout },
+          },
+        ],
+      };
+      const candidates = await executionsCollection
+        .find(staleRunningFilter, { projection: { _id: 1 } })
         .toArray();
 
-      if (abandonedExecutions.length > 0) {
+      if (candidates.length > 0) {
+        const candidateIds = candidates.map(e => e._id);
         await executionsCollection.updateMany(
-          {
-            _id: { $in: abandonedExecutions.map(e => e._id) },
-          },
+          { _id: { $in: candidateIds }, ...staleRunningFilter },
           {
             $set: {
               status: "abandoned",
@@ -2204,25 +2107,40 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
             },
           },
         );
+        // Only the executions this update actually marked (same completedAt).
+        const abandonedExecutions = await executionsCollection
+          .find(
+            {
+              _id: { $in: candidateIds },
+              status: "abandoned",
+              completedAt: now,
+            },
+            { projection: { _id: 1, flowId: 1 } },
+          )
+          .toArray();
         abandonedCount = abandonedExecutions.length;
 
-        logger.warn("Marked abandoned flow executions", {
-          count: abandonedCount,
-          executionIds: abandonedExecutions.map(e => e._id.toString()),
-        });
+        if (abandonedCount > 0) {
+          logger.warn("Marked abandoned flow executions", {
+            count: abandonedCount,
+            executionIds: abandonedExecutions.map(e => e._id.toString()),
+          });
+        }
 
         // Clear stale backfill gates and recover CDC state for flows
         // that no longer have any running execution.
         const abandonedFlowIds = Array.from(
-          new Set(
+          new Map(
             abandonedExecutions
-              .map(e =>
-                e.flowId instanceof Types.ObjectId
-                  ? e.flowId
-                  : new Types.ObjectId(String(e.flowId)),
-              )
-              .filter(Boolean),
-          ),
+              .filter(e => e.flowId != null)
+              .map(e => {
+                const id =
+                  e.flowId instanceof Types.ObjectId
+                    ? e.flowId
+                    : new Types.ObjectId(String(e.flowId));
+                return [id.toString(), id] as const;
+              }),
+          ).values(),
         );
 
         if (abandonedFlowIds.length > 0) {
@@ -2242,22 +2160,62 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
           );
 
           if (staleGateFlowIds.length > 0) {
-            const gateResetResult = await Flow.updateMany(
+            const gatedFlows = await Flow.find(
               {
                 _id: { $in: staleGateFlowIds },
                 "backfillState.status": "running",
               },
-              {
-                $set: {
-                  "backfillState.status": "error",
-                },
-              },
-            );
+              { _id: 1, workspaceId: 1, syncEngine: 1 },
+            ).lean();
+
+            // Through the state machine (running -FAIL-> error, CAS): a
+            // backfill the user paused, or that completed, since the read
+            // above is left alone.
+            const resetFlowIds: string[] = [];
+            for (const gated of gatedFlows) {
+              const fId = String(gated._id);
+              try {
+                if (gated.syncEngine === "cdc") {
+                  const transition =
+                    await syncMachineService.applyBackfillTransition({
+                      workspaceId: String(gated.workspaceId),
+                      flowId: fId,
+                      event: {
+                        type: "FAIL",
+                        reason:
+                          "Flow execution abandoned due to worker crash or timeout",
+                        errorCode: "WORKER_TIMEOUT",
+                      },
+                      onlyFrom: ["running"],
+                    });
+                  if (transition.changed) resetFlowIds.push(fId);
+                } else {
+                  // Not a state-machine flow: same CAS, by hand.
+                  const res = await Flow.updateOne(
+                    {
+                      _id: gated._id,
+                      workspaceId: gated.workspaceId,
+                      "backfillState.status": "running",
+                    },
+                    { $set: { "backfillState.status": "error" } },
+                  );
+                  if (res.modifiedCount > 0) resetFlowIds.push(fId);
+                }
+              } catch (gateErr) {
+                logger.error("Failed to reset stale backfill gate", {
+                  flowId: fId,
+                  error:
+                    gateErr instanceof Error
+                      ? gateErr.message
+                      : String(gateErr),
+                });
+              }
+            }
 
             logger.warn("Reset stale backfill gates", {
-              matched: gateResetResult.matchedCount,
-              modified: gateResetResult.modifiedCount,
-              flowIds: staleGateFlowIds.map(id => id.toString()),
+              matched: gatedFlows.length,
+              modified: resetFlowIds.length,
+              flowIds: resetFlowIds,
             });
             // CDC restart is handled by the unified recovery loop below
             // (Section 3) which picks up flows in "error" state with runId.

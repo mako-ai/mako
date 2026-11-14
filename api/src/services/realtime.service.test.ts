@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 delete process.env.REDIS_URL;
 
 import {
+  __setRealtimeSubscriberForTest,
   publishRealtimeEvent,
   subscribeToWorkspaceEvents,
   type RealtimeEvent,
@@ -17,6 +18,7 @@ import {
 import {
   getPubSubBackendKind,
   createPubSubPublisher,
+  type Subscriber,
 } from "./pubsub.service";
 
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
@@ -37,9 +39,7 @@ function consoleUpdated(consoleId: string, draftRevision: number) {
 /** Publish must reach a subscriber on the same workspace channel. */
 async function testPublishReachesSubscriber() {
   const received: RealtimeEvent[] = [];
-  const dispose = await subscribeToWorkspaceEvents(WS_A, e =>
-    received.push(e),
-  );
+  const dispose = await subscribeToWorkspaceEvents(WS_A, e => received.push(e));
 
   publishRealtimeEvent(WS_A, consoleUpdated("c1", 2));
   await delay(10);
@@ -107,9 +107,7 @@ async function testRefCountedListeners() {
 /** Malformed JSON on the channel is dropped without breaking the listener. */
 async function testMalformedEventDropped() {
   const received: RealtimeEvent[] = [];
-  const dispose = await subscribeToWorkspaceEvents(WS_A, e =>
-    received.push(e),
-  );
+  const dispose = await subscribeToWorkspaceEvents(WS_A, e => received.push(e));
 
   // Publish raw garbage straight through the backend.
   await createPubSubPublisher().publish(
@@ -150,6 +148,91 @@ async function testThrowingListenerIsolated() {
   await disposeOk();
 }
 
+/** A scripted subscriber that records the calls it gets. */
+function fakeSubscriber(opts: {
+  failSubscribes?: number;
+  unsubscribeMs?: number;
+}) {
+  const calls: string[] = [];
+  const handlers = new Map<string, (message: string) => void>();
+  let failures = opts.failSubscribes ?? 0;
+  const sub: Subscriber = {
+    connect: async () => undefined,
+    subscribe: async (channel, callback) => {
+      calls.push(`subscribe`);
+      if (failures > 0) {
+        failures--;
+        throw new Error("redis over quota");
+      }
+      handlers.set(channel, callback);
+    },
+    unsubscribe: async channel => {
+      calls.push(`unsubscribe:start`);
+      if (opts.unsubscribeMs) await delay(opts.unsubscribeMs);
+      handlers.delete(channel);
+      calls.push(`unsubscribe:end`);
+    },
+  };
+  const deliver = (event: RealtimeEvent) => {
+    for (const handler of handlers.values()) handler(JSON.stringify(event));
+  };
+  return { sub, calls, handlers, deliver };
+}
+
+/**
+ * A failed backend subscribe must not leave a dead registry entry: the next
+ * subscriber retries the backend subscribe and receives events.
+ */
+async function testFailedSubscribeDoesNotPoisonRegistry() {
+  const fake = fakeSubscriber({ failSubscribes: 1 });
+  __setRealtimeSubscriberForTest(fake.sub);
+  try {
+    await assert.rejects(
+      subscribeToWorkspaceEvents(WS_A, () => {}),
+      /over quota/,
+    );
+    const received: RealtimeEvent[] = [];
+    const dispose = await subscribeToWorkspaceEvents(WS_A, e =>
+      received.push(e),
+    );
+    assert.deepEqual(fake.calls, ["subscribe", "subscribe"]);
+    fake.deliver(consoleUpdated("c-retry", 1));
+    assert.equal(received.length, 1, "second subscriber must be live");
+    await dispose();
+  } finally {
+    __setRealtimeSubscriberForTest(null);
+  }
+}
+
+/**
+ * The last listener leaving while a new one arrives: the pending
+ * unsubscribe must not remove the new subscription.
+ */
+async function testUnsubscribeRacingSubscribeIsSerialized() {
+  const fake = fakeSubscriber({ unsubscribeMs: 20 });
+  __setRealtimeSubscriberForTest(fake.sub);
+  try {
+    const first = await subscribeToWorkspaceEvents(WS_A, () => {});
+    const disposing = first();
+    const received: RealtimeEvent[] = [];
+    const second = subscribeToWorkspaceEvents(WS_A, e => received.push(e));
+    await Promise.all([disposing, second]);
+    assert.deepEqual(fake.calls, [
+      "subscribe",
+      "unsubscribe:start",
+      "unsubscribe:end",
+      "subscribe",
+    ]);
+    fake.deliver(consoleUpdated("c-race", 1));
+    assert.equal(received.length, 1, "new subscription must survive");
+    await (
+      await second
+    )();
+  } finally {
+    __setRealtimeSubscriberForTest(null);
+  }
+}
+
 async function main() {
   assert.equal(
     getPubSubBackendKind(),
@@ -161,6 +244,8 @@ async function main() {
   await testRefCountedListeners();
   await testMalformedEventDropped();
   await testThrowingListenerIsolated();
+  await testFailedSubscribeDoesNotPoisonRegistry();
+  await testUnsubscribeRacingSubscribeIsSerialized();
   // eslint-disable-next-line no-console
   console.log("realtime.service.test.ts: all tests passed");
 }
