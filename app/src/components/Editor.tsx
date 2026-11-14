@@ -4,6 +4,7 @@ import React, {
   useMemo,
   useState,
   useCallback,
+  type ComponentProps,
 } from "react";
 import { DndContext, closestCenter, type DragEndEvent } from "@dnd-kit/core";
 import { useDragSensors } from "../hooks/useDragSensors";
@@ -60,30 +61,11 @@ function TabKindGlyph({ kind }: { kind: TabKind | undefined }) {
 }
 import { Group, Panel, Separator, type Layout } from "react-resizable-panels";
 import { loadMonaco } from "../lib/monaco/load";
+import { lazyWithSuspense } from "../lib/lazy-component";
 import Console, { ConsoleRef } from "./Console";
-import ResultsTable from "./ResultsTable";
-import Settings from "../pages/Settings";
-import SourceConnectionTab from "./SourceConnectionTab";
-import { WorkspaceMembers } from "./WorkspaceMembers";
-import { FlowEditor } from "./FlowEditor";
-import NotebookRenderer from "./NotebookRenderer";
-import AppWorkspace from "./AppWorkspace";
 import { useAppsStore } from "../store/appsStore";
-import AppFileEditor from "./AppFileEditor";
-import AppDiffTab from "./AppDiffTab";
-import HistoryDiffTab from "./HistoryDiffTab";
 import type { HistoryEntityKind } from "../store/entityHistoryStore";
-import RepoDiffTab from "./RepoDiffTab";
 import EntityHistoryPopover from "./EntityHistoryPopover";
-import AppBindingEditor from "./AppBindingEditor";
-import PlanDocumentTab from "./PlanDocumentTab";
-import DbtFileEditor from "./DbtFileEditor";
-import DbtJobView from "./DbtJobView";
-import DbtConsoleView from "./DbtConsoleView";
-import DbtRunsView from "./DbtRunsView";
-import AppsHome from "./apps-home/AppsHome";
-import WorkflowView from "./WorkflowView";
-import TableDataView from "./TableDataView";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
 import EntityLoadErrorState from "./EntityLoadErrorState";
 import { tabKindEntityLabel } from "../lib/entity-labels";
@@ -109,7 +91,6 @@ import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
-import ShareDialog from "./ShareDialog";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { isDbFlowQueryModelUri } from "../lib/sql-autocomplete/modelScope";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -132,6 +113,38 @@ import {
   useRenderCount,
   useWhyChanged,
 } from "../utils/renderDebug";
+
+// Heavy tab bodies are split out of the entry chunk (xterm, MUI X data
+// grid, notebooks, dbt, settings): each loads when its tab first renders.
+const Settings = lazyWithSuspense(() => import("../pages/Settings"));
+const SourceConnectionTab = lazyWithSuspense(
+  () => import("./SourceConnectionTab"),
+);
+const NotebookRenderer = lazyWithSuspense(() => import("./NotebookRenderer"));
+const AppWorkspace = lazyWithSuspense(() => import("./AppWorkspace"));
+const AppFileEditor = lazyWithSuspense(() => import("./AppFileEditor"));
+const AppDiffTab = lazyWithSuspense(() => import("./AppDiffTab"));
+const HistoryDiffTab = lazyWithSuspense(() => import("./HistoryDiffTab"));
+const RepoDiffTab = lazyWithSuspense(() => import("./RepoDiffTab"));
+const AppBindingEditor = lazyWithSuspense(() => import("./AppBindingEditor"));
+const PlanDocumentTab = lazyWithSuspense(() => import("./PlanDocumentTab"));
+const DbtFileEditor = lazyWithSuspense(() => import("./DbtFileEditor"));
+const DbtJobView = lazyWithSuspense(() => import("./DbtJobView"));
+const DbtConsoleView = lazyWithSuspense(() => import("./DbtConsoleView"));
+const DbtRunsView = lazyWithSuspense(() => import("./DbtRunsView"));
+const AppsHome = lazyWithSuspense(() => import("./apps-home/AppsHome"));
+const WorkflowView = lazyWithSuspense(() => import("./WorkflowView"));
+const TableDataView = lazyWithSuspense(() => import("./TableDataView"));
+// The results grid (MUI X DataGridPremium) is only needed once a console
+// has results, so it stays out of the initial load too.
+const ResultsTable = lazyWithSuspense(() => import("./ResultsTable"));
+const WorkspaceMembers = lazyWithSuspense<Record<string, never>>(() =>
+  import("./WorkspaceMembers").then(m => ({ default: m.WorkspaceMembers })),
+);
+const FlowEditor = lazyWithSuspense<
+  ComponentProps<(typeof import("./FlowEditor"))["FlowEditor"]>
+>(() => import("./FlowEditor").then(m => ({ default: m.FlowEditor })));
+const ShareDialog = lazyWithSuspense(() => import("./ShareDialog"), null);
 
 interface QueryPageInfo {
   pageSize: number;

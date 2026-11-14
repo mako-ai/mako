@@ -588,7 +588,12 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
     [handleDownloadMenuClose, onDownload],
   );
 
-  const jsonContent = JSON.stringify(results, null, 2);
+  // Serializing a large result set is expensive: only do it for the JSON
+  // view, and only when the results change (not on every render).
+  const jsonContent = useMemo(
+    () => (viewMode === "json" ? JSON.stringify(results, null, 2) : ""),
+    [viewMode, results],
+  );
 
   // Data columns excluding the synthetic row-index column, used by the mobile
   // record-card view.

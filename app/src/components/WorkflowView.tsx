@@ -92,13 +92,6 @@ const statusOf = (status?: string) =>
 
 const short = (sha: string | null | undefined) => (sha ?? "").slice(0, 7);
 
-export const SMALL_CHIP_SX = {
-  height: 16,
-  fontSize: "0.62rem",
-  flexShrink: 0,
-  "& .MuiChip-label": { px: 0.5 },
-} as const;
-
 function Note({ children }: { children: string }) {
   return (
     <Box sx={{ p: 2 }}>

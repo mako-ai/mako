@@ -6,7 +6,7 @@ import React, {
   useMemo,
 } from "react";
 import { Box } from "@mui/material";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { SyntaxHighlighter } from "../lib/syntax-highlighter";
 import {
   prism,
   tomorrow,

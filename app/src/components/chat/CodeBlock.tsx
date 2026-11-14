@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Button, IconButton, Typography } from "@mui/material";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { SyntaxHighlighter } from "../../lib/syntax-highlighter";
 import {
   prism,
   tomorrow,

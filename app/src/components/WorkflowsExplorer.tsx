@@ -35,7 +35,7 @@ import { useConsoleStore } from "../store/consoleStore";
 import { useWorkflowsStore } from "../store/workflowsStore";
 import ExplorerShell from "./ExplorerShell";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
-import { SMALL_CHIP_SX } from "./WorkflowView";
+import { SMALL_CHIP_SX } from "./workflow-chip-sx";
 
 const WorkflowIcon = EXPLORER_ICONS.workflows;
 const POLL_INTERVAL_MS = 8_000;

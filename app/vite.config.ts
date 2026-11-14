@@ -41,6 +41,29 @@ export default defineConfig(({ mode }) => {
       emitVersionJson(buildId),
     ],
     envDir: "..",
+    build: {
+      rolldownOptions: {
+        output: {
+          // Long-lived vendor chunks: React and the MUI core change far less
+          // often than app code, so splitting them out lets a deploy reuse
+          // the cached copies. Only libraries the entry needs anyway go
+          // here — a group that captured a lazily used library (data grid,
+          // xterm, Monaco) would pull it back into the initial load.
+          codeSplitting: {
+            groups: [
+              {
+                name: "vendor-react",
+                test: /[\\/]node_modules[\\/](react|react-dom|scheduler|react-router)[\\/]/,
+              },
+              {
+                name: "vendor-mui",
+                test: /[\\/]node_modules[\\/](@mui[\\/](material|system|utils|styled-engine|private-theming|core-downloads-tracker)|@emotion[\\/][^\\/]+|@popperjs[\\/]core)[\\/]/,
+              },
+            ],
+          },
+        },
+      },
+    },
     // Tailwind v4 runs through the @tailwindcss/vite plugin above, so no
     // PostCSS plugins are needed. Pinning an empty config stops Vite's
     // upward search from picking up a stray postcss.config.js in an
