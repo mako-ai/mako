@@ -47,6 +47,18 @@ const state = vi.hoisted(() => ({
   connector: null as unknown,
   recorded: [] as Array<Record<string, unknown>>,
   dataSourceType: "stripe",
+  roles: {} as Record<string, string>,
+}));
+
+vi.mock("../services/workspace.service", () => ({
+  workspaceService: {
+    getMember: vi.fn(async (_ws: string, userId: string) =>
+      state.roles[userId] ? { role: state.roles[userId] } : null,
+    ),
+    getOwnerIds: vi.fn(async () =>
+      Object.keys(state.roles).filter(id => state.roles[id] === "owner"),
+    ),
+  },
 }));
 
 vi.mock("../sync/connector-registry", () => ({
@@ -86,6 +98,7 @@ vi.mock("./workspace/reconcile.service", () => ({
 }));
 
 import { Connector } from "../database/workspace-schema";
+import { requestContextStorage } from "../logging/context";
 import {
   PROBE_MAX_LIMIT,
   ProbeError,
@@ -205,6 +218,7 @@ beforeEach(async () => {
   state.connector = fake;
   state.recorded = [];
   state.dataSourceType = "stripe";
+  state.roles = { u1: "member", u2: "member", u3: "viewer", boss: "owner" };
 });
 
 const probe = (input: Partial<Parameters<typeof probeConnection>[0]> = {}) =>
@@ -401,5 +415,86 @@ describe("no credential leaves", () => {
       secretValuesOf({ apiKey: SECRET, region: "eu", port: 5432 }),
     ).toEqual([SECRET]);
     expect(redactSecrets("region eu", ["eu"])).toBe("region [redacted]");
+  });
+});
+
+describe("who may probe records", () => {
+  const as = <T>(principal: Record<string, unknown>, fn: () => Promise<T>) =>
+    requestContextStorage.run({ requestId: "r", ...principal }, fn);
+  const access = (fields: Record<string, unknown>) =>
+    Connector.updateOne({ _id: mine }, { $set: fields });
+
+  beforeEach(() => {
+    fake.page = [{ day: "2026-11-01" }];
+  });
+
+  it("with live reads off, only a manager or the owner reads records", async () => {
+    // u1 created the connection, so manages it.
+    expect(
+      (await as({ userId: "u1" }, () => probe({ entity: "models" }))).entity
+        ?.count,
+    ).toBe(1);
+    expect(
+      (await as({ userId: "boss" }, () => probe({ entity: "models" }))).entity
+        ?.count,
+    ).toBe(1);
+    const refused = await failure(
+      as({ userId: "u2" }, () => probe({ entity: "models" })),
+    );
+    expect(refused.code).toBe("forbidden");
+    expect(refused.status).toBe(403);
+    expect(refused.message).toContain("Live reads are off");
+    expect(fake.calls).toHaveLength(2);
+  });
+
+  it("a credential-only check stays open to every member", async () => {
+    const result = await as({ userId: "u2" }, () => probe());
+    expect(result.check.success).toBe(true);
+  });
+
+  it("with live reads on and no list, every member reads records", async () => {
+    await access({ liveReads: true });
+    expect(
+      (await as({ userId: "u2" }, () => probe({ entity: "models" }))).entity
+        ?.count,
+    ).toBe(1);
+  });
+
+  it("with a live readers list, only the listed, writers and managers read records", async () => {
+    await access({
+      liveReads: true,
+      liveReaders: [{ principal: "user:u3" }],
+      writers: [{ principal: "workflow:*" }],
+    });
+    expect(
+      (await as({ userId: "u3" }, () => probe({ entity: "models" }))).entity
+        ?.count,
+    ).toBe(1);
+    expect(
+      (await as({ userId: "u1" }, () => probe({ entity: "models" }))).entity
+        ?.count,
+    ).toBe(1);
+    expect(
+      (await as({ workflow: "daily" }, () => probe({ entity: "models" })))
+        .entity?.count,
+    ).toBe(1);
+    const refused = await failure(
+      as({ userId: "u2" }, () => probe({ entity: "models" })),
+    );
+    expect(refused.code).toBe("forbidden");
+    expect(refused.message).toContain("user:u2 is not allowed");
+    const worker = await failure(
+      as({ workflowWorker: true }, () => probe({ entity: "models" })),
+    );
+    expect(worker.code).toBe("forbidden");
+    expect(fake.calls).toHaveLength(3);
+  });
+
+  it("refuses someone who is no longer a member", async () => {
+    await access({ liveReads: true });
+    const refused = await failure(
+      as({ userId: "gone" }, () => probe({ entity: "models" })),
+    );
+    expect(refused.message).toContain("not a member");
   });
 });

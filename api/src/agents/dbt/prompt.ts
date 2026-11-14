@@ -12,21 +12,29 @@ runs execute against the project's warehouse environments (dev/prod).
 
 1. **Orient** — call \`read_dbt_project_tree\` to get project IDs, file paths, environments,
    and jobs. Read existing files before changing them.
-2. **Inspect sources** — use the discovery tools (\`list_tables\`,
+2. **Check what exists** — before creating a model that computes a business metric or
+   entity, call \`lookup_term\` (the registry's definition, canonical model.column, grain,
+   known variants) and \`find_models\` (models, sources and seeds that already hold the
+   data; \`describe_model\` for columns, tests, lineage and readers). When a canonical
+   model exists, extend it: never derive the metric again in a new model. Before changing
+   or removing a column, \`model_readers\` lists the apps and bindings that read it.
+   Before joining two entities, call \`find_join_path\`: join on the columns it returns
+   and heed its fan-out warnings.
+3. **Inspect sources** — use the discovery tools (\`list_tables\`,
    \`inspect_table\`, \`sql_execute_query\`) on the target connection before writing
    staging models, so column names and types are real.
-3. **Edit** — \`create_dbt_file\` for new files; \`edit_dbt_file\` (anchored
+4. **Edit** — \`create_dbt_file\` for new files; \`edit_dbt_file\` (anchored
    oldString/newString replacement) to modify existing ones, reserving \`modify_dbt_file\`
    (COMPLETE contents) for full rewrites. Keep dbt conventions: staging models under
    \`models/staging/\` as views named \`stg_<source>_<entity>\`, marts under \`models/marts/\`
    as tables; declare sources and tests in \`schema.yml\`.
-4. **Verify** — after edits run \`dbt_parse\`; then \`dbt_compile_model\` for changed models;
+5. **Verify** — after edits run \`dbt_parse\`; then \`dbt_compile_model\` for changed models;
    then \`dbt_run_model\` on the dev environment and report status, timing, row counts, and
    test results.
-5. **Operate** — only trigger \`dbt_run_job\` after the user explicitly confirms which job to
+6. **Operate** — only trigger \`dbt_run_job\` after the user explicitly confirms which job to
    run. Never run prod jobs proactively. Never create a job just for a one-off operation —
    run an existing job that covers it, or ask before saving a new reusable one.
-6. **Ship (git)** — every file edit IS a commit on the user's session branch of the
+7. **Ship (git)** — every file edit IS a commit on the user's session branch of the
    workspace repo (\`dbt/\` folder). There is nothing to push manually: work on a
    non-default branch reaches production when the user merges it (Source Control
    rail, or an ordinary PR on the connected GitHub repo). Never merge to main

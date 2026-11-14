@@ -98,3 +98,97 @@ export const clientDbtTools = {};
 export type DbtCreateFileInput = z.infer<typeof createDbtFileSchema>;
 export type DbtModifyFileInput = z.infer<typeof modifyDbtFileSchema>;
 export type DbtEditFileInput = z.infer<typeof editDbtFileSchema>;
+
+// Ontology lookups (api/src/agent-lib/tools/dbt-ontology-tools.ts): read the
+// last production manifest and the workspace's term registry, never a file.
+const ontologyProjectIdField = z
+  .string()
+  .optional()
+  .describe(
+    "dbt project ID. Omit to cover every dbt project in the workspace (usually one).",
+  );
+
+export const findModelsSchema = z.object({
+  query: z
+    .string()
+    .min(1)
+    .max(200)
+    .describe(
+      'What the data is about: a business term ("monthly recurring revenue"), a column ("account_id") or part of a model name ("renewals").',
+    ),
+  layer: z
+    .string()
+    .max(64)
+    .optional()
+    .describe(
+      'Keep one layer: "staging", "intermediate", "marts", "source", "seed", or a folder under models/.',
+    ),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(25)
+    .optional()
+    .describe("Maximum results (default 10)."),
+  projectId: ontologyProjectIdField,
+});
+
+export const describeModelSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .max(300)
+    .describe(
+      'A model or seed name ("fct_orders"), a source as "<source>.<table>", or a warehouse relation ("dataset.table").',
+    ),
+  projectId: ontologyProjectIdField,
+});
+
+export const lookupTermSchema = z.object({
+  query: z
+    .string()
+    .min(1)
+    .max(200)
+    .describe(
+      'A business term or entity, by name, label or synonym: "MRR", "paying customers", "account".',
+    ),
+});
+
+export const modelReadersSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .max(300)
+    .describe(
+      'A dbt model, seed or source name, or a raw warehouse table as "dataset.table" or "project.dataset.table".',
+    ),
+  projectId: ontologyProjectIdField,
+});
+
+export const findJoinPathSchema = z.object({
+  from: z
+    .string()
+    .min(1)
+    .max(300)
+    .describe(
+      'Where the join starts: an entity name or synonym ("subscription", "customer"), a dbt model ("dim_account") or a raw table ("crm_public.users").',
+    ),
+  to: z
+    .string()
+    .min(1)
+    .max(300)
+    .describe("Where the join ends: same forms as `from`."),
+  maxHops: z
+    .number()
+    .int()
+    .positive()
+    .max(6)
+    .optional()
+    .describe("Longest path to search, in joins (default 4, at most 6)."),
+});
+
+export type FindJoinPathInput = z.infer<typeof findJoinPathSchema>;
+export type FindModelsInput = z.infer<typeof findModelsSchema>;
+export type DescribeModelInput = z.infer<typeof describeModelSchema>;
+export type LookupTermInput = z.infer<typeof lookupTermSchema>;
+export type ModelReadersInput = z.infer<typeof modelReadersSchema>;

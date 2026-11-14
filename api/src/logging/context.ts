@@ -23,16 +23,22 @@ export interface RequestContext {
   /** User ID if authenticated */
   userId?: string;
   /**
-   * The workflow a workflow worker's request runs for (X-Mako-Workflow,
-   * trusted only on the worker's own key): it acts as itself, not as the
-   * person who deployed it, when writing (access/connection-writes.ts).
+   * The deployed workflow a request runs for, as its workflow pass names it
+   * (workflows/pass.ts): it acts as itself, not as the person who deployed
+   * it (access/connection-writes.ts).
    */
   workflow?: string;
   /**
-   * The deployed workflow worker's key, without a deployed workflow's name:
-   * it writes as no one, not as the person who deployed it.
+   * The deployed workflow worker's key, without a pass: it writes as no
+   * one, not as the person who deployed it.
    */
   workflowWorker?: boolean;
+  /**
+   * The run and step a workflow pass names (workflows/pass.ts), with
+   * `workflow`: what a model call's cost is counted against, and the run a
+   * write is recorded under.
+   */
+  workflowRun?: { runId: string; step?: string };
   /**
    * Mako's own work, not a person's or a workflow's: an Inngest function (a
    * sync, a flow run, dbt), a flow writing its own destination. Its writes
@@ -305,6 +311,14 @@ export function enrichContextWithUser(userId: string): void {
 export function enrichContextWithWorkflow(workflow: string): void {
   const context = requestContextStorage.getStore();
   if (context) context.workflow = workflow;
+}
+
+export function enrichContextWithWorkflowRun(
+  runId: string,
+  step?: string,
+): void {
+  const context = requestContextStorage.getStore();
+  if (context) context.workflowRun = { runId, ...(step ? { step } : {}) };
 }
 
 export function enrichContextWithWorkflowWorker(): void {

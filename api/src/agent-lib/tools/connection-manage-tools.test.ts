@@ -138,7 +138,7 @@ describe("inspect_connection: plain settings and access, never a secret", () => 
     expect(result.secretsSet).toContain("token");
     expect(result.access).toMatchObject({
       liveReads: true,
-      writers: ["workflow:*", "user:manager1"],
+      writers: ["workflow:send-digest", "user:manager1"],
       callable: true,
     });
     expect(String((result.access as { changeIn: string }).changeIn)).toContain(

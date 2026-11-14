@@ -61,8 +61,10 @@ const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 // thumbnail (discovery).
 // 3: rows carry `bindings` (the names on main), so freshness ignores state
 // rows left behind by deleted or renamed bindings.
-// 4: rows carry `aliases` (an app's old links); a v3 index is rebuilt once.
-const INDEX_SCHEMA_VERSION = 4;
+// 4: rows carry `bindingTables` (which binding reads which table), and
+// `tables` keeps `{{ dbt_schema }}.model` references the extraction dropped.
+// 5: rows carry `aliases` (an app's old links); a v4 index is rebuilt once.
+const INDEX_SCHEMA_VERSION = 5;
 
 export interface AppSchedule {
   binding: string;
@@ -100,6 +102,11 @@ export interface AppIndexRow {
   /** Tables the app's bindings read (`FROM`/`JOIN`), for search. */
   tables: string[];
   /**
+   * The same tables per binding, so "who reads this model" can name the
+   * binding file (model_readers). Absent on rows built before version 4.
+   */
+  bindingTables?: AppBindingTables[];
+  /**
    * Who committed the app's `mako.json` first, and when — the closest thing
    * a folder-only app has to an author and a creation date. Absent when git
    * could not say (history rewritten, a shallow clone).
@@ -108,6 +115,11 @@ export interface AppIndexRow {
   firstCommitAt?: string;
   /** The app's own thumbnail image at its root (see APP_THUMBNAIL_FILES). */
   thumbnail?: AppThumbnailRef;
+}
+
+export interface AppBindingTables {
+  binding: string;
+  tables: string[];
 }
 
 export interface AppThumbnailRef {
@@ -360,6 +372,7 @@ export async function readAppsAt(
     manifests: Map<string, ReturnType<typeof parseAppManifest>>;
     schedules: Map<string, AppSchedule[]>;
     tables: Map<string, string[]>;
+    bindingTables: Map<string, AppBindingTables[]>;
   }
 > {
   const discovery = discoverApps(await listAppTrees(repoDir, sha));
@@ -374,6 +387,7 @@ export async function readAppsAt(
   const manifests = new Map<string, ReturnType<typeof parseAppManifest>>();
   const schedules = new Map<string, AppSchedule[]>();
   const tables = new Map<string, string[]>();
+  const bindingTables = new Map<string, AppBindingTables[]>();
   for (const app of discovery.apps) {
     const manifest = blobs.get(`${app.path}/${APP_MANIFEST}`);
     manifests.set(
@@ -382,11 +396,14 @@ export async function readAppsAt(
     );
     const list: AppSchedule[] = [];
     const reads = new Map<string, string>();
+    const perBinding: AppBindingTables[] = [];
     for (const name of [...app.bindingBlobs.keys()].sort()) {
       const blob = blobs.get(`${app.path}/bindings/${name}.sql`);
       if (!blob) continue;
       const sql = blob.toString("utf8");
-      for (const t of extractTables(sql)) {
+      const read = extractTables(sql);
+      if (read.length > 0) perBinding.push({ binding: name, tables: read });
+      for (const t of read) {
         if (!reads.has(t.toLowerCase())) reads.set(t.toLowerCase(), t);
       }
       const meta = parseBindingFrontMatter(sql);
@@ -400,8 +417,9 @@ export async function readAppsAt(
     }
     schedules.set(app.path, list);
     tables.set(app.path, [...reads.values()]);
+    bindingTables.set(app.path, perBinding);
   }
-  return { ...discovery, manifests, schedules, tables };
+  return { ...discovery, manifests, schedules, tables, bindingTables };
 }
 
 // ---------------------------------------------------------------------------
@@ -780,6 +798,10 @@ function rowToIndex(
       ...(s.timezone ? { timezone: s.timezone } : {}),
     })),
     tables: row.tables ?? [],
+    bindingTables: (row.bindingTables ?? []).map(b => ({
+      binding: b.binding,
+      tables: [...(b.tables ?? [])],
+    })),
     bindings: row.bindings ?? [],
     authorEmail: row.authorEmail ?? undefined,
     firstCommitAt: row.firstCommitAt
@@ -914,7 +936,7 @@ async function syncNow(
 ): Promise<AppsIndexSnapshot | null> {
   const repoDir = await boundRepoDirIfExists(workspaceId);
   if (repoDir == null) return null;
-  const sha = await resolveCommit(repoDir, MAIN);
+  let sha = await resolveCommit(repoDir, MAIN);
   if (!sha) return null;
   const ws = new Types.ObjectId(workspaceId);
   const head = await AppIndexHead.findOne({ workspaceId: ws }).lean();
@@ -957,6 +979,27 @@ async function syncNow(
         apps: rows.map(rowToIndex),
         folders: head.folders,
       };
+    }
+  }
+
+  // A schema bump rebuilds the rows, and must not rebuild them BACKWARDS
+  // either: while old and new revisions run side by side, an instance on
+  // the new schema whose clone is behind the indexed commit rebuilds AT the
+  // indexed commit, not at its own stale main.
+  if (
+    head &&
+    head.schemaVersion !== INDEX_SCHEMA_VERSION &&
+    !options.force &&
+    head.sha !== sha
+  ) {
+    let headKnown = await commitExists(repoDir, head.sha);
+    if (!headKnown) {
+      await freshenForServe(workspaceId, 0).catch(() => undefined);
+      headKnown = await commitExists(repoDir, head.sha);
+      sha = (await resolveCommit(repoDir, MAIN)) ?? sha;
+    }
+    if (headKnown && (await isAncestor(repoDir, sha, head.sha))) {
+      sha = head.sha;
     }
   }
 
@@ -1063,6 +1106,7 @@ async function syncNow(
       aliases: identity.duplicateOf ? [] : manifest.aliases,
       schedules: read.schedules.get(app.path) ?? [],
       tables: read.tables.get(app.path) ?? [],
+      bindingTables: read.bindingTables.get(app.path) ?? [],
       bindings: [...app.bindingBlobs.keys()].sort(),
       authorEmail: first?.email || undefined,
       firstCommitAt: first?.at,
@@ -1130,6 +1174,7 @@ async function syncNow(
                 settled.get(row.appId)?.supersededAliases ?? [],
               schedules: row.schedules,
               tables: row.tables,
+              bindingTables: row.bindingTables ?? [],
               bindings: row.bindings,
               authorEmail: row.authorEmail ?? null,
               firstCommitAt: row.firstCommitAt

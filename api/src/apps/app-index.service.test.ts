@@ -357,6 +357,10 @@ describe("discovery facts", () => {
     const snapshot = await loadAppsIndex(WS);
     const b = snapshot.apps.find(a => a.path === "apps/Sales/CH/b");
     expect(b?.tables).toEqual(["analytics.fct_leads", "dim_agents"]);
+    // Which binding reads which table (model_readers); `rows` reads none.
+    expect(b?.bindingTables).toEqual([
+      { binding: "leads", tables: ["analytics.fct_leads", "dim_agents"] },
+    ]);
     expect(b?.bindings).toEqual(["leads", "rows"]);
     const d = snapshot.apps.find(a => a.path === "apps/d");
     expect(d?.authorEmail).toBe("laptop@example.com");
@@ -1084,6 +1088,28 @@ describe("identity across laptop moves", () => {
   });
 });
 
+describe("schema bump during a rolling deploy", () => {
+  it("rebuilds at the indexed commit, not backwards, when this clone is behind", async () => {
+    const before = (await resolveCommit(repoDirFor(WS), MAIN))!;
+    await externalCommit({ "apps/new/mako.json": manifest("New") });
+    const fresh = await loadAppsIndex(WS);
+    // An older revision wrote the head: its schema version is not ours.
+    await AppIndexHead.updateOne(
+      { workspaceId: WS },
+      { $set: { schemaVersion: 3 } },
+    );
+    // This instance's clone is still on the older commit.
+    await runGit(["-C", repoDirFor(WS), "update-ref", MAIN, before]);
+    invalidateAppsIndexCache(WS);
+    const rebuilt = await loadAppsIndex(WS);
+    expect(rebuilt.sha).toBe(fresh.sha);
+    expect(rebuilt.apps.some(a => a.path === "apps/new")).toBe(true);
+    const head = await AppIndexHead.findOne({ workspaceId: WS });
+    expect(head?.sha).toBe(fresh.sha);
+    expect(head?.schemaVersion).not.toBe(3);
+  });
+});
+
 describe("identity across laptop moves, second round", () => {
   it("follows an unstamped legacy app that was moved AND edited in one push (git rename detection)", async () => {
     const aId = derivedAppId(WS, "a").toHexString();
@@ -1419,38 +1445,38 @@ describe("old links (aliases)", () => {
     expect((await resolveAppRef(WS, "pipeline"))?.appId).toBe(X_ID);
 
     // An unrelated push, then a rebuild of an index written before aliases
-    // existed (schema version 3): the learned names are still there.
+    // existed (schema version 4): the learned names are still there.
     await externalCommit({ "README.md": "y\n" });
     expect((await resolveAppRef(WS, "pipeline"))?.appId).toBe(X_ID);
     await AppIndexHead.updateOne(
       { workspaceId: WS },
-      { $set: { schemaVersion: 3 } },
+      { $set: { schemaVersion: 4 } },
     );
     invalidateAppsIndexCache();
     expect((await resolveAppRef(WS, "pipeline"))?.appId).toBe(X_ID);
     expect(
       (await AppIndexHead.findOne({ workspaceId: WS }).lean())?.schemaVersion,
-    ).toBe(4);
+    ).toBe(5);
   });
 
-  it("rebuilds a version-3 index once, so manifests' old links resolve without a push", async () => {
+  it("rebuilds a version-4 index once, so manifests' old links resolve without a push", async () => {
     await externalCommit({
       "apps/pipeline/mako.json": withAliases("Sales", X_ID, ["revenue"]),
     });
     await loadAppsIndex(WS);
-    // What a version-3 index holds: the same rows, no alias fields.
+    // What a version-4 index holds: the same rows, no alias fields.
     await AppIndexEntry.updateMany(
       { workspaceId: WS },
       { $unset: { aliases: 1, indexAliases: 1, supersededAliases: 1 } },
     );
     await AppIndexHead.updateOne(
       { workspaceId: WS },
-      { $set: { schemaVersion: 3 } },
+      { $set: { schemaVersion: 4 } },
     );
     invalidateAppsIndexCache();
     expect((await resolveAppRef(WS, "revenue"))?.appId).toBe(X_ID);
     const head = await AppIndexHead.findOne({ workspaceId: WS }).lean();
-    expect(head?.schemaVersion).toBe(4);
+    expect(head?.schemaVersion).toBe(5);
     expect(
       (await AppIndexEntry.findOne({ appId: X_ID }).lean())?.aliases,
     ).toEqual(["revenue"]);

@@ -14,6 +14,7 @@ export {
   enrichContextWithUser,
   enrichContextWithWorkspace,
   enrichContextWithWorkflow,
+  enrichContextWithWorkflowRun,
   enrichContextWithWorkflowWorker,
   getRequestContext,
 } from "./context";

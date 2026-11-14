@@ -14,9 +14,8 @@ import assert from "node:assert/strict";
 import { isEncryptedValue } from "../services/crypto.service";
 
 async function main(): Promise<void> {
-  const { applySchemaEncryption, SecretEncryptionError } = await import(
-    "./sources"
-  );
+  const { applySchemaEncryption, SecretEncryptionError } =
+    await import("./sources");
   const schema = {
     fields: [
       { name: "account", type: "text" },
