@@ -36,7 +36,7 @@ import {
 import { jsonSchemaToEntitySchema } from "./spec-translation";
 import {
   ensureConnectorRuntime,
-  loadConnectorDefinition,
+  loadConnectorDefinitionFor,
   readConnectorFolder,
   type LoadedConnector,
 } from "./resolver";
@@ -96,7 +96,12 @@ export class SandboxedConnector extends BaseConnector {
   /** The indexed definition, loaded once per instance. */
   private async definition(): Promise<LoadedConnector> {
     if (!this.loaded) {
-      this.loaded = await loadConnectorDefinition(this.workspaceId, this.slug);
+      // Through the connection's binding, never by name alone: this
+      // decides which code runs with this connection's config.
+      this.loaded = await loadConnectorDefinitionFor(this.workspaceId, {
+        type: this.dataSource.type,
+        connectorDefinitionId: this.dataSource.connectorDefinitionId,
+      });
     }
     return this.loaded;
   }
@@ -217,6 +222,11 @@ export class SandboxedConnector extends BaseConnector {
    */
   async sourceShaForConnectionCheck(): Promise<string> {
     return (await this.definition()).sourceSha;
+  }
+
+  /** The definition this instance resolved to: what a check is recorded on. */
+  async definitionId(): Promise<string> {
+    return (await this.definition()).id;
   }
 
   private async catalog(): Promise<ProtocolMessage | null> {

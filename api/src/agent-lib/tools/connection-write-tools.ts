@@ -306,7 +306,7 @@ const OBJECT_ID = /^[0-9a-f]{24}$/i;
 async function findOwnSourceConnection(workspaceId: string, ref: string) {
   const workspace = new Types.ObjectId(workspaceId);
   const fields =
-    "_id name type description isActive createdBy managers config keyRequest";
+    "_id name type connectorDefinitionId description isActive createdBy managers config keyRequest";
   if (OBJECT_ID.test(ref)) {
     const row = await SourceConnection.findOne({
       workspaceId: workspace,
@@ -611,9 +611,12 @@ export function createConnectionWriteTools(
             set.isActive = active;
           }
           if (config && Object.keys(config).length > 0) {
+            // Through the connection's binding (resolver.ts): which
+            // fields are plain is its own connector's answer.
             const schema = await syncConnectorRegistry.getConfigSchemaForType(
               row.type,
               workspaceId,
+              row,
             );
             const problem = configUpdateProblem(
               config,

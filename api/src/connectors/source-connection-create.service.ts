@@ -15,6 +15,7 @@ import {
   SourceConnection,
   type ISourceConnectionKeyRequest,
 } from "../database/workspace-schema";
+import type { Types } from "mongoose";
 import { encryptString } from "../services/crypto.service";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 
@@ -172,31 +173,34 @@ export interface CreateSourceConnectionInput {
 }
 
 /**
- * Refuse a connector type this workspace cannot use. A `ws:` type is one the
+ * Refuse a connector type this workspace cannot use, and answer the type a
+ * connection stores with what it is bound to. A `ws:` type is one the
  * workspace wrote, so the answer comes from its index rather than from the
- * global registry, and a blocked connector is refused here rather than at
- * the first sync.
+ * global registry: a blocked connector is refused here rather than at the
+ * first sync, an old name is stored as the connector's current one, and
+ * the connection is bound to that definition by id.
  */
 export async function assertConnectorTypeUsable(
   type: string,
   workspaceId: string,
-): Promise<void> {
+): Promise<{ type: string; connectorDefinitionId?: Types.ObjectId }> {
   if (isWorkspaceConnectorType(type)) {
     const exists = await connectorTypeExists(type, workspaceId);
     if (!exists.ok) throw new SourceConnectionInputError(exists.reason);
-    return;
+    return exists;
   }
   if (!connectorRegistry.hasConnector(type)) {
     throw new SourceConnectionInputError(`Unsupported source type: ${type}`);
   }
+  return { type };
 }
 
 /** Validate, encrypt and store a new source connection; returns the saved document. */
 export async function createSourceConnection(
   input: CreateSourceConnectionInput,
 ) {
-  const { workspaceId, name, type } = input;
-  if (!name || !type) {
+  const { workspaceId, name } = input;
+  if (!name || !input.type) {
     throw new SourceConnectionInputError("Name and type are required");
   }
   // Every connection records the person who created it: they are its first
@@ -206,12 +210,17 @@ export async function createSourceConnection(
       "A source connection is created by a person",
     );
   }
-  await assertConnectorTypeUsable(type, workspaceId);
+  const { type, connectorDefinitionId } = await assertConnectorTypeUsable(
+    input.type,
+    workspaceId,
+  );
 
-  // Load connector schema for schema-driven encryption
+  // Load connector schema for schema-driven encryption: the schema of the
+  // definition the connection is bound to.
   const schema = await syncConnectorRegistry.getConfigSchemaForType(
     type,
     workspaceId,
+    { connectorDefinitionId },
   );
   assertCredentialCharacters(input.config, schema);
   const refusal = callableFor(type)?.configRefusal?.(input.config ?? {});
@@ -222,6 +231,7 @@ export async function createSourceConnection(
     workspaceId,
     name,
     type,
+    connectorDefinitionId,
     description: input.description,
     config: applySchemaEncryption(input.config || {}, schema),
     settings: {

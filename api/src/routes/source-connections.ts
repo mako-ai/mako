@@ -26,9 +26,15 @@ import {
   type ConnectorFieldSchema,
   SourceConnectionInputError,
   applySchemaEncryption,
+  assertConnectorTypeUsable,
   assertCredentialCharacters,
   createSourceConnection,
 } from "../connectors/source-connection-create.service";
+import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
+import {
+  ConnectorBindingError,
+  resolveConnectionBinding,
+} from "../connectors/workspace/resolver";
 import {
   KeyRequestError,
   type KeyLinkAuthorizer,
@@ -251,17 +257,33 @@ async function publicSourceConnection(
 ): Promise<Record<string, unknown>> {
   const record = asSourceRecord(doc);
   let schema: { fields: ConnectorFieldSchema[] } | null = null;
+  // Set when the connection's connector binding does not resolve: the form
+  // shows the message, and offers the bind when `rebindable`.
+  let connectorBinding:
+    | {
+        ok: false;
+        problem: ConnectorBindingError["problem"];
+        message: string;
+        rebindable: boolean;
+      }
+    | undefined;
   try {
     schema = await syncConnectorRegistry.getConfigSchemaForType(
       String(record.type ?? ""),
       workspaceId,
+      record,
     );
   } catch (error) {
-    logger.warn("Could not load connector schema while redacting config", {
-      type: record.type,
-      workspaceId,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    if (error instanceof ConnectorBindingError) {
+      const { problem, message, rebindable } = error;
+      connectorBinding = { ok: false, problem, message, rebindable };
+    } else {
+      logger.warn("Could not load connector schema while redacting config", {
+        type: record.type,
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
   // Only the managers who can act today: a creator recorded as `system`
   // (seeded or imported connections), someone who left, or a member since
@@ -272,7 +294,56 @@ async function publicSourceConnection(
     config: redactSourceConfig(record.config, schema),
     managers,
     canEdit: await mayChangeSourceConnection(caller, record, managers),
+    ...(connectorBinding ? { connectorBinding } : {}),
   };
+}
+
+/**
+ * A connection whose connector binding does not resolve cannot have its
+ * config encrypted, decrypted or run. That is a state to fix (re-bind or
+ * delete), not a server fault: 409 with the resolver's words on how. The
+ * message names connectors and the connection's type, never a config value.
+ */
+function connectorBindingConflict(error: unknown) {
+  return error instanceof ConnectorBindingError
+    ? {
+        success: false as const,
+        error: error.message,
+        code: "connector_binding" as const,
+        problem: error.problem,
+        rebindable: error.rebindable,
+      }
+    : null;
+}
+
+/**
+ * The definition a save that names the connection's OWN `ws:` type re-binds
+ * it to, or null when there is nothing to re-bind. Naming the type is the
+ * deliberate act; it applies only when the connection has no live binding
+ * to keep: its definition is gone, or it was never bound. A binding to a
+ * live definition is never moved by naming the same type; that takes a
+ * type change.
+ */
+async function rebindTarget(
+  workspaceId: string,
+  connection: { type: string; connectorDefinitionId?: Types.ObjectId },
+): Promise<{ id: Types.ObjectId; wasClosed: boolean } | null> {
+  const current = await resolveConnectionBinding(workspaceId, connection);
+  if (
+    current.ok ? current.via === "binding" : current.problem === "name-moved"
+  ) {
+    return null;
+  }
+  // Only a connector that holds this slug today: never an alias claimant.
+  const named = await resolveConnectionBinding(workspaceId, {
+    type: connection.type,
+  });
+  if (!named.ok || named.row.status === "blocked") return null;
+  const id = named.row._id as Types.ObjectId;
+  return String(connection.connectorDefinitionId ?? "") === String(id)
+    ? null
+    : // Not closed: it already resolved to this definition, by its slug.
+      { id, wasClosed: !current.ok };
 }
 
 sourceConnectionRoutes.openapi(
@@ -545,9 +616,53 @@ sourceConnectionRoutes.openapi(
         sourceConnection.description = body.description;
         hasChanges = true;
       }
-      if (body.type !== undefined && body.type !== currentValues.type) {
-        sourceConnection.type = body.type;
-        hasChanges = true;
+      if (typeof body.type === "string") {
+        if (body.type !== currentValues.type) {
+          // Re-pointed at another connector: one that exists and runs, the
+          // same bar as a create, stored under its current name and bound
+          // to it (a built-in connector has no binding).
+          let next: Awaited<ReturnType<typeof assertConnectorTypeUsable>>;
+          try {
+            next = await assertConnectorTypeUsable(body.type, workspaceId);
+          } catch (error) {
+            if (error instanceof SourceConnectionInputError) {
+              return c.json({ success: false, error: error.message }, 400);
+            }
+            throw error;
+          }
+          if (
+            next.type !== currentValues.type ||
+            String(next.connectorDefinitionId ?? "") !==
+              String(currentValues.connectorDefinitionId ?? "")
+          ) {
+            sourceConnection.type = next.type;
+            sourceConnection.connectorDefinitionId = next.connectorDefinitionId;
+            hasChanges = true;
+          }
+        } else if (isWorkspaceConnectorType(body.type)) {
+          const target = await rebindTarget(workspaceId, sourceConnection);
+          if (target?.wasClosed && c.get("authType") !== "session") {
+            // Which connector a stored key goes to is a person's choice.
+            return c.json(
+              {
+                success: false,
+                error:
+                  "A connection is re-bound to its connector only in the app",
+              },
+              403,
+            );
+          }
+          if (target) {
+            logger.info("Re-bound a source connection to its connector", {
+              workspaceId,
+              connectionId: id,
+              type: body.type,
+              to: String(target.id),
+            });
+            sourceConnection.connectorDefinitionId = target.id;
+            hasChanges = true;
+          }
+        }
       }
       if (
         body.isActive !== undefined &&
@@ -587,6 +702,7 @@ sourceConnectionRoutes.openapi(
           const schema = await syncConnectorRegistry.getConfigSchemaForType(
             sourceConnection.type,
             workspaceId,
+            sourceConnection,
           );
           // Only what this call changes: a stored value stays as it is.
           const changed = Object.fromEntries(
@@ -695,6 +811,8 @@ sourceConnectionRoutes.openapi(
           : "No changes detected",
       });
     } catch (error) {
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict, 409);
       return c.json(
         {
           success: false,
@@ -854,6 +972,8 @@ sourceConnectionRoutes.openapi(
         data: result,
       });
     } catch (error) {
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict, 409);
       return c.json(
         {
           success: false,
@@ -963,6 +1083,8 @@ sourceConnectionRoutes.openapi(
       });
       return c.json({ success: true, data });
     } catch (error) {
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict, 409);
       if (error instanceof ProbeError) {
         return c.json(
           { success: false, error: error.message, code: error.code },
@@ -1225,6 +1347,8 @@ sourceConnectionRoutes.openapi(
         data: entityData,
       });
     } catch (error) {
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict, 409);
       return c.json(
         {
           success: false,
@@ -1338,9 +1462,12 @@ sourceConnectionRoutes.openapi(
 
       // Only fields the connector's schema declares secret may be revealed,
       // so this cannot be used to walk arbitrary config.
+      // Through the connection's binding: a connection whose connector is
+      // gone, or whose name another connector took, reveals nothing (409).
       const schema = await syncConnectorRegistry.getConfigSchemaForType(
         (sourceConnection as { type: string }).type,
         workspaceId,
+        sourceConnection,
       );
       const declared = (schema?.fields ?? []).find(
         (f: ConnectorFieldSchema) => f.name === field,
@@ -1400,6 +1527,8 @@ sourceConnectionRoutes.openapi(
         return c.json({ success: false, error: "Decryption failed" }, 400);
       }
     } catch (error) {
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict, 409);
       logger.error("Reveal-secret endpoint error", { error });
       return c.json(
         {
@@ -1432,6 +1561,7 @@ const KEY_REQUEST_HTTP_STATUS = {
   forbidden: 403,
   invalid_input: 400,
   check_failed: 422,
+  conflict: 409,
 } as const;
 
 /** Refusal for a caller who may not use a key link at all, or null. */

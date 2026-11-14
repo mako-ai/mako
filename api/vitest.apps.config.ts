@@ -162,6 +162,9 @@ export default defineConfig({
       // Workspace connectors: real git, real Mongo, and a real child process
       // per protocol command via the local sandbox provider.
       "src/connectors/workspace/workspace-connectors.test.ts",
+      // connector.yaml `aliases`: parsed, written by a rename, left out of
+      // the content hash.
+      "src/connectors/workspace/connector-file.test.ts",
       "src/connectors/workspace/resolver.test.ts",
       "src/connectors/workspace/sync-box.test.ts",
       "src/apps/repository.service.test.ts",
@@ -171,6 +174,9 @@ export default defineConfig({
       "src/rename/registry.test.ts",
       "src/rename/handlers/connection.test.ts",
       "src/rename/scenarios/name-rules-parity.test.ts",
+      // Workspace connectors: every connection runs on the definition it is
+      // bound to, or is closed, across every rename, delete and restore.
+      "src/rename/scenarios/connector-credentials.scenarios.test.ts",
       // rename_object: kinds per surface, per-kind grants, call results.
       "src/agent-lib/tools/rename-tools.test.ts",
       // /objects/resolve and /objects/{kind}/rename: who may call them.

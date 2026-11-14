@@ -433,7 +433,10 @@ function SourceConnectionForm({
 
     const payload: Record<string, unknown> = {};
 
-    if (isNewConnector || dirtyFields.type) {
+    // A connection whose connector binding does not resolve is re-bound by a
+    // save that names its type: saving with the connector still selected is
+    // that deliberate act, so the type is sent even when it did not change.
+    if (isNewConnector || dirtyFields.type || connector?.connectorBinding) {
       payload.type = values.type;
     }
 
@@ -1201,6 +1204,12 @@ function SourceConnectionForm({
       {errorMessage && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {errorMessage}
+        </Alert>
+      )}
+
+      {connector?.connectorBinding?.message && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {connector.connectorBinding.message}
         </Alert>
       )}
 

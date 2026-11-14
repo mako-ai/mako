@@ -353,6 +353,17 @@ export interface ISourceConnection extends Document {
   workspaceId: Types.ObjectId;
   name: string;
   type: string;
+  /**
+   * For a workspace connector (`type` = `ws:<slug>`): the ConnectorDefinition
+   * this connection was saved under, by id. The slug in `type` is a name that
+   * renames and aliases move; the id never changes. Its config schema (which
+   * fields are secret), its decryption and the code that runs it all resolve
+   * through this id (connectors/workspace/resolver.ts), and fail closed when
+   * the definition is gone or `type` names another one. Absent on a
+   * connection saved before the binding existed and not yet stamped: it
+   * resolves by its current slug only, never through an alias.
+   */
+  connectorDefinitionId?: Types.ObjectId;
   description?: string;
   config: {
     // API sources
@@ -1760,6 +1771,10 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
       type: String,
       required: true,
     },
+    connectorDefinitionId: {
+      type: Schema.Types.ObjectId,
+      ref: "ConnectorDefinition",
+    },
     description: {
       type: String,
       trim: true,
@@ -1847,6 +1862,7 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
 // Indexes
 SourceConnectionSchema.index({ workspaceId: 1 });
 SourceConnectionSchema.index({ workspaceId: 1, type: 1 });
+SourceConnectionSchema.index({ workspaceId: 1, connectorDefinitionId: 1 });
 
 /**
  * ConsoleFolder Schema
@@ -3849,6 +3865,32 @@ export interface IConnectorDefinition extends Document {
   blockedReason?: string;
   entities: string[];
   hasIcon: boolean;
+  /**
+   * Previous slugs: `connector.yaml`'s `aliases`, plus `detectedAliases`.
+   * `ws:<alias>` resolves here for the catalog, links and new writes while
+   * no live definition holds the slug and no other one lists it.
+   */
+  aliases: string[];
+  /**
+   * Slugs this definition answered to and must not again: another connector
+   * took the name, or two folders claimed it. The file may still list them
+   * (a sync cannot edit the file), so every pass subtracts this list.
+   */
+  retiredAliases: string[];
+  /**
+   * Old slugs the index learned from git on a push whose `connector.yaml`
+   * carried none (a bare `git mv`). Kept apart from the file's list, so
+   * editing the file removes only what the file added.
+   */
+  detectedAliases: string[];
+  /**
+   * Set when the folder left main: the row is kept as a tombstone, so a
+   * folder that comes back at the SAME slug is the same definition (same
+   * id) and its connections work again. While set, nothing resolves to
+   * this row. The tombstone is dropped when another definition takes its
+   * slug; connections bound to it then stay closed until re-saved.
+   */
+  removedAt?: Date;
   lastCheckedAt?: Date;
   /**
    * Why the last real connection test failed. Distinct from `blockedReason`
@@ -3882,6 +3924,10 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
     blockedReason: { type: String, maxlength: 4000 },
     entities: { type: [String], default: [] },
     hasIcon: { type: Boolean, default: false },
+    aliases: { type: [String], default: [] },
+    retiredAliases: { type: [String], default: [] },
+    detectedAliases: { type: [String], default: [] },
+    removedAt: { type: Date },
     lastCheckedAt: { type: Date },
     lastCheckError: { type: String, maxlength: 4000 },
   },
@@ -3889,6 +3935,7 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
 );
 
 ConnectorDefinitionSchema.index({ workspaceId: 1, slug: 1 }, { unique: true });
+ConnectorDefinitionSchema.index({ workspaceId: 1, aliases: 1 });
 
 export const ConnectorDefinition = mongoose.model<IConnectorDefinition>(
   "ConnectorDefinition",

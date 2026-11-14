@@ -37,6 +37,7 @@ import {
 import { loggers } from "../logging";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { probeConnection } from "./probe.service";
+import { ConnectorBindingError } from "./workspace/resolver";
 import {
   SourceConnectionInputError,
   applySchemaEncryption,
@@ -127,7 +128,13 @@ export function describeKeyStatus(
 export class KeyRequestError extends Error {
   constructor(
     public readonly code:
-      "not_found" | "expired" | "forbidden" | "invalid_input" | "check_failed",
+      | "not_found"
+      | "expired"
+      | "forbidden"
+      | "invalid_input"
+      | "check_failed"
+      /** The connection's connector binding does not resolve. */
+      | "conflict",
     message: string,
   ) {
     super(message);
@@ -153,6 +160,7 @@ interface PendingRow {
   _id: Types.ObjectId;
   name: string;
   type: string;
+  connectorDefinitionId?: Types.ObjectId;
   config?: Record<string, unknown>;
   createdBy?: string;
   managers?: string[];
@@ -179,7 +187,9 @@ async function findPending(
     workspaceId: new Types.ObjectId(workspaceId),
     "keyRequest.tokenHash": hashKeyToken(token),
   })
-    .select("_id name type config createdBy managers keyRequest")
+    .select(
+      "_id name type connectorDefinitionId config createdBy managers keyRequest",
+    )
     .lean()) as PendingRow | null;
   if (!row?.keyRequest) {
     throw new KeyRequestError("not_found", KEY_LINK_NOT_FOUND);
@@ -192,14 +202,24 @@ async function findPending(
   return row;
 }
 
+/** The schema of the connector the connection is bound to (resolver.ts). */
 async function schemaFor(
-  type: string,
+  row: PendingRow,
   workspaceId: string,
 ): Promise<{ fields: ConnectorFieldSchema[] } | null> {
-  return (await syncConnectorRegistry.getConfigSchemaForType(
-    type,
-    workspaceId,
-  )) as { fields: ConnectorFieldSchema[] } | null;
+  try {
+    return (await syncConnectorRegistry.getConfigSchemaForType(
+      row.type,
+      workspaceId,
+      row,
+    )) as { fields: ConnectorFieldSchema[] } | null;
+  } catch (error) {
+    // Its connector is gone or its name moved: the key is not stored.
+    if (error instanceof ConnectorBindingError) {
+      throw new KeyRequestError("conflict", error.message);
+    }
+    throw error;
+  }
 }
 
 type RawField = ConnectorFieldSchema & {
@@ -276,7 +296,7 @@ export async function loadKeyRequest(
   authorize?: KeyLinkAuthorizer,
 ) {
   const row = await findPending(workspaceId, token, authorize);
-  const schema = await schemaFor(row.type, workspaceId);
+  const schema = await schemaFor(row, workspaceId);
   const byName = new Map(
     ((schema?.fields ?? []) as RawField[]).map(field => [field.name, field]),
   );
@@ -357,7 +377,7 @@ export async function submitKey(input: {
     values[key] = value;
   }
 
-  const schema = await schemaFor(row.type, workspaceId);
+  const schema = await schemaFor(row, workspaceId);
   const fields = (schema?.fields ?? []) as RawField[];
   const missing = fields
     .filter(field => requested.has(field.name) && field.required === true)
