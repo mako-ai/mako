@@ -111,6 +111,7 @@ import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import ShareDialog from "./ShareDialog";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
+import { isDbFlowQueryModelUri } from "../lib/sql-autocomplete/modelScope";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
@@ -851,6 +852,8 @@ function Editor({
     getWorkspaceId,
     getConnectionId,
     getConnectionType,
+    // DB flow query editors run their own provider (flow source connection).
+    acceptsModel: uri => !isDbFlowQueryModelUri(uri),
   });
 
   // NOTE: the legacy "console-modification" event (agent diff preview) is
