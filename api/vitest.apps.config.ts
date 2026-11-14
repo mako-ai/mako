@@ -171,6 +171,11 @@ export default defineConfig({
       "src/rename/registry.test.ts",
       "src/rename/handlers/connection.test.ts",
       "src/rename/scenarios/name-rules-parity.test.ts",
+      // Flows and dbt jobs, end to end (real git, a mirror, two instances):
+      // the pairing rules, then every way a rename reaches a stream.
+      "src/rename/slug-files.test.ts",
+      "src/rename/scenarios/flow-rename.scenarios.test.ts",
+      "src/rename/scenarios/dbt-job-rename.scenarios.test.ts",
       // rename_object: kinds per surface, per-kind grants, call results.
       "src/agent-lib/tools/rename-tools.test.ts",
       // /objects/resolve and /objects/{kind}/rename: who may call them.

@@ -67,6 +67,7 @@ import {
   commitDbtEnvironmentsFile,
   commitDbtJobFile,
   deleteDbtJobFile,
+  removeDbtJobRow,
   loadLiveJobs,
   liveJobToPlain,
   reserveJobSlug,
@@ -1552,8 +1553,8 @@ export const createDbtServerTools = (
           if (!resolved.ok) return { success: false, error: resolved.error };
           const job = resolved.row;
           const name = job.name;
-          await deleteDbtJobFile(project, job.slug, actingUserId);
-          await DbtJob.deleteOne({ _id: job._id, projectId: project._id });
+          await deleteDbtJobFile(project, job, actingUserId);
+          await removeDbtJobRow(job);
           publishJobUpdated(projectId);
           return { success: true, jobId: job._id.toString(), name };
         } catch (error) {

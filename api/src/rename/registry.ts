@@ -6,6 +6,8 @@
  * surface, instead of a 404 that reads as "your object is gone".
  */
 import { connectionRenameHandler } from "./handlers/connection";
+import { dbtJobRenameHandler } from "./handlers/dbt-job";
+import { flowRenameHandler } from "./handlers/flow";
 import { normalizeDisplayName } from "./title-rules";
 import {
   RENAME_KINDS,
@@ -20,6 +22,8 @@ import {
 } from "./types";
 
 export const RENAME_HANDLERS: Partial<Record<RenameKind, RenameHandler>> = {
+  flow: flowRenameHandler,
+  dbt_job: dbtJobRenameHandler,
   connection: connectionRenameHandler,
 };
 

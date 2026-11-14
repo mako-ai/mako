@@ -47,6 +47,7 @@ import {
 } from "../apps/cloud-repo.service";
 import { resolveConfiguredEntities } from "./entity-selection";
 import { isWebhookFlow } from "../services/flow-triggers.service";
+import { retireObjectId } from "../rename/slug-files";
 import type { FlowFile } from "../services/flow-config-files";
 
 const log = loggers.api("cdc-flow-reconcile");
@@ -207,6 +208,9 @@ export async function teardownFlow(flow: IFlow): Promise<{
       CdcStateTransition.deleteMany(childFilter),
     ]);
   await Flow.deleteOne({ _id: flowOid, workspaceId: workspaceOid });
+  // The id is spent: a file later pushed at this flow's name (or an old
+  // name of it) is another flow, with another id and webhook URL.
+  await retireObjectId(workspaceOid, "flow", flowOid);
 
   const counts = {
     webhookEvents: webhooks.deletedCount ?? 0,

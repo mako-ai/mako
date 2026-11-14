@@ -273,6 +273,7 @@ export {
 
 export {
   RENAME_CAPABILITIES,
+  RENAME_KIND_MINIMUM_ROLE,
   renameKindAllowedOn,
   type RenameCapabilityDefinition,
   type RenameCapabilityPack,

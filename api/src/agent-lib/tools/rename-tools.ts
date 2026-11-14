@@ -9,7 +9,12 @@
  * Per-kind grants are in @mako/agent-tools (rename-capabilities.ts), and
  * each handler checks the caller's live role and access itself.
  */
-import { renameKindAllowedOn, type AgentSurface } from "@mako/agent-tools";
+import {
+  RENAME_KIND_MINIMUM_ROLE,
+  hasMinimumWorkspaceRole,
+  renameKindAllowedOn,
+  type AgentSurface,
+} from "@mako/agent-tools";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { workspaceService } from "../../services/workspace.service";
@@ -60,6 +65,15 @@ export function createRenameTools(
           const role = userId
             ? (await workspaceService.getMember(workspaceId, userId))?.role
             : undefined;
+          // The role the kind's own write tools take (flow_update: owner or
+          // admin). A key with no person behind it is not asked, as there.
+          const minimum = RENAME_KIND_MINIMUM_ROLE[kind];
+          if (minimum && userId && !hasMinimumWorkspaceRole(role, minimum)) {
+            return {
+              success: false,
+              error: `Renaming a ${kind} requires at least the ${minimum} workspace role${role ? ` (you are a ${role})` : ""}.`,
+            };
+          }
           const result = await renameObject(
             { workspaceId, userId, role },
             kind,

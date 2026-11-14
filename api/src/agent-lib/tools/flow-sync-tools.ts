@@ -134,7 +134,16 @@ async function findFlow(workspaceId: string, ref: string) {
     (f.name ?? "").split("→")[0].trim().toLowerCase();
   const bySource = all.filter(f => source(f) === wanted);
   const byPart = all.filter(f => (f.name ?? "").toLowerCase().includes(wanted));
-  const matches = exact.length ? exact : bySource.length ? bySource : byPart;
+  // An old slug (a renamed sync) names it too, when no current name does
+  // and exactly one sync used to have it.
+  const byAlias = all.filter(f => (f.aliases ?? []).includes(ref));
+  const matches = exact.length
+    ? exact
+    : byAlias.length === 1
+      ? byAlias
+      : bySource.length
+        ? bySource
+        : byPart;
   if (matches.length === 1) return matches[0];
   if (matches.length > 1) {
     throw new Error(

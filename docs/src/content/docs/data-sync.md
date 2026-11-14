@@ -139,9 +139,14 @@ Cursor, etc.) uses to add, edit, or remove flows without touching the UI.
   reconfigures the corresponding stream; a push that removes the file tears the
   stream down and disposes its checkpoints — re-adding the file backfills from
   scratch. Pushes to other branches have no effect.
-- **The filename slug is the flow's identity**, minted once and never changed.
-  Renaming a file is a delete-plus-create (new stream, new webhook URL if
-  applicable); the in-file `name:` field is the free-to-change display name.
+- **The filename slug is the flow's identity**; the in-file `name:` field is
+  the free-to-change display name. To rename the file, use "Rename…" in the
+  Flows explorer (or `rename_object`), or move it yourself and list the old
+  slug in the new file (`aliases: [old-slug]`): the flow is re-keyed in place
+  and keeps its id, checkpoints, run history and webhook URL. A pushed move
+  that git recognises as a rename, or a file with the same definition, is
+  re-keyed too. Anything else that deletes one file and adds another is a
+  delete-plus-create: a new stream that backfills from scratch.
 - **Credentials never live in the file.** A flow names its source
   *connection* by ObjectId (`source.connection_id`) — a connection is a
   credential configured with a connector, and a connector is code (a built-in

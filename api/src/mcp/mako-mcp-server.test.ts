@@ -994,6 +994,22 @@ async function main() {
       false,
       "the desktop agent holds every grant, so the kind itself is withheld",
     );
+
+    // Flows and dbt jobs are offered here. Their gate is the one their own
+    // write tools have: the `warehouse-write` grant, which an external MCP
+    // session holds for what its owner's ROLE allows, and that role (owner
+    // or admin), checked when the call runs (rename-tools.test.ts, the
+    // scenario suites).
+    for (const kind of ["flow", "dbt_job"]) {
+      assert.ok(listed.inputSchema?.properties?.kind?.enum?.includes(kind));
+      const reachedKind = await callWith(["mcp", "query:read"], { kind });
+      assert.match(reachedKind.content[0].text, /Invalid arguments/);
+    }
+    assert.equal(
+      onDesktop?.inputSchema?.properties?.kind?.enum?.includes("flow") ?? false,
+      false,
+      "flows have no agent tool outside external MCP",
+    );
   }
 
   // 3a2. git:write is a legacy scope (dbt git tools died with apps.md §20):
