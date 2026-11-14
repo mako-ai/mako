@@ -494,10 +494,16 @@ would fall through to the SPA fallback and poison client discovery.
 ### Token model
 
 - Opaque tokens, stored as SHA-256 hashes: access `mcpat_*` (8 h TTL),
-  refresh `mcprt_*` (no expiry for CLI / external MCP grants, rotated on every
-  refresh). Sign-ins last until revoked, including after long periods of
-  inactivity. Access tokens renew silently; auth codes live 10 minutes and
-  are consumed atomically. Session-minted Desktop ACP grants remain expiring.
+  refresh `mcprt_*` (rotated on every refresh, with a SLIDING idle expiry:
+  30 days by default, `MCP_REFRESH_TOKEN_IDLE_DAYS` to change it, `0` for
+  none). A client in regular use never re-signs in; a grant left unused for
+  the whole window lapses, so a leaked refresh token is not a permanent
+  foothold. Access tokens renew silently; auth codes live 10 minutes and
+  are consumed atomically. Session-minted Desktop ACP grants expire 30 days
+  after minting.
+- A refresh never widens a grant: it carries exactly the scopes consented to.
+- Removing a workspace member revokes every MCP grant they hold in that
+  workspace and the workspace API keys they created.
 - `unifiedAuthMiddleware` recognizes the `mcpat_` Bearer prefix and sets
   `authType: "mcpOAuth"` with the grant's workspace binding and scopes.
 - Every browser OAuth grant carries the full MCP scope set

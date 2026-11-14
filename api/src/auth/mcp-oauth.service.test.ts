@@ -17,9 +17,13 @@ import {
   refreshAccessToken,
   registerOAuthClient,
   revokeMcpConnection,
+  revokeMcpGrantsForMember,
   validateMcpAccessToken,
 } from "./mcp-oauth.service";
 import { up } from "../migrations/2026-09-06-230000_persistent_mcp_oauth_grants";
+import { up as upIdleExpiry } from "../migrations/2026-11-14-120000_mcp_oauth_refresh_idle_expiry";
+
+const DAY = 24 * 60 * 60 * 1000;
 
 let mongo: MongoMemoryServer;
 const hash = (value: string) =>
@@ -76,16 +80,20 @@ async function authorize(clientName = "Mako CLI") {
 }
 
 it.each(["Mako CLI", "External MCP client"])(
-  "%s stays renewable after years of inactivity and remains revocable",
+  "%s: the refresh token slides while used, lapses when idle, and is revocable",
   async clientName => {
     const grant = await authorize(clientName);
     const original = await McpOAuthToken.findOne({
       clientId: grant.clientId,
     }).lean();
-    expect(original?.refreshExpiresAt).toBeUndefined();
+    const firstExpiry = original?.refreshExpiresAt?.getTime() ?? 0;
+    expect(firstExpiry).toBeGreaterThan(Date.now() + 29 * DAY);
+    expect(firstExpiry).toBeLessThanOrEqual(Date.now() + 30 * DAY);
     expect(grant.expiresInSeconds).toBe(8 * 60 * 60);
+
+    // Used again after 29 days: still renewable, and the window slides.
     vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2040-01-01T00:00:00Z"));
+    vi.setSystemTime(new Date(Date.now() + 29 * DAY));
     expect(await validateMcpAccessToken(grant.accessToken)).toBeNull();
     expect(await listMcpConnections("workspace")).toHaveLength(1);
     const renewed = await refreshAccessToken({
@@ -99,15 +107,20 @@ it.each(["Mako CLI", "External MCP client"])(
     const stored = await McpOAuthToken.findOne({
       clientId: grant.clientId,
     }).lean();
-    expect(stored?.refreshExpiresAt).toBeUndefined();
+    expect(stored?.refreshExpiresAt?.getTime()).toBeGreaterThan(
+      Date.now() + 29 * DAY,
+    );
     expect(stored?._id).toEqual(original?._id);
     expect(stored?.createdAt).toEqual(original?.createdAt);
+    // The consumed token is dead.
     await expect(
       refreshAccessToken({
         clientId: grant.clientId,
         refreshToken: grant.refreshToken,
       }),
     ).rejects.toThrow("invalid_grant");
+
+    // Revocable at any time.
     expect(
       await revokeMcpConnection({
         workspaceId: "workspace",
@@ -125,6 +138,61 @@ it.each(["Mako CLI", "External MCP client"])(
     expect(await listMcpConnections("workspace")).toHaveLength(0);
   },
 );
+
+it("a refresh token left idle past the window cannot be used", async () => {
+  const grant = await authorize();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(Date.now() + 31 * DAY));
+  await expect(
+    refreshAccessToken({
+      clientId: grant.clientId,
+      refreshToken: grant.refreshToken,
+    }),
+  ).rejects.toThrow("invalid_grant");
+  expect(await listMcpConnections("workspace")).toHaveLength(0);
+});
+
+it("MCP_REFRESH_TOKEN_IDLE_DAYS=0 restores never-expiring grants", async () => {
+  process.env.MCP_REFRESH_TOKEN_IDLE_DAYS = "0";
+  try {
+    const grant = await authorize();
+    expect(
+      (await McpOAuthToken.findOne({ clientId: grant.clientId }).lean())
+        ?.refreshExpiresAt,
+    ).toBeUndefined();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2040-01-01T00:00:00Z"));
+    await expect(
+      refreshAccessToken({
+        clientId: grant.clientId,
+        refreshToken: grant.refreshToken,
+      }),
+    ).resolves.toHaveProperty("accessToken");
+  } finally {
+    delete process.env.MCP_REFRESH_TOKEN_IDLE_DAYS;
+  }
+});
+
+it("removing a member revokes every grant they hold in that workspace only", async () => {
+  const a = await authorize("Client A");
+  const b = await authorize("Client B");
+  // The same user's grant in another workspace survives.
+  await McpOAuthToken.updateOne(
+    { clientId: b.clientId },
+    { $set: { workspaceId: "other-workspace" } },
+  );
+  expect(
+    await revokeMcpGrantsForMember({
+      workspaceId: "workspace",
+      userId: "user",
+    }),
+  ).toBe(1);
+  expect(await validateMcpAccessToken(a.accessToken)).toBeNull();
+  await expect(
+    refreshAccessToken({ clientId: a.clientId, refreshToken: a.refreshToken }),
+  ).rejects.toThrow("invalid_grant");
+  expect(await validateMcpAccessToken(b.accessToken)).not.toBeNull();
+});
 
 it("a wrong client or failed rotation leaves the original grant usable", async () => {
   const grant = await authorize();
@@ -229,11 +297,11 @@ it("migration preserves live logins without reviving expired grants or extending
   ).toBe(0);
 });
 
-it("refreshing a live legacy grant upgrades it without requiring migration first", async () => {
+it("refreshing a legacy never-expiring grant gives it the sliding expiry", async () => {
   const grant = await authorize();
   await McpOAuthToken.updateOne(
     { refreshTokenHash: hash(grant.refreshToken) },
-    { $set: { refreshExpiresAt: new Date(Date.now() + 86_400_000) } },
+    { $unset: { refreshExpiresAt: "" } },
   );
   const renewed = await refreshAccessToken({
     clientId: grant.clientId,
@@ -244,13 +312,46 @@ it("refreshing a live legacy grant upgrades it without requiring migration first
       await McpOAuthToken.findOne({
         refreshTokenHash: hash(renewed.refreshToken),
       }).lean()
-    )?.refreshExpiresAt,
-  ).toBeUndefined();
+    )?.refreshExpiresAt?.getTime(),
+  ).toBeGreaterThan(Date.now() + 29 * DAY);
 });
 
-it("refresh widens a grant made before a scope existed to today's MCP scopes", async () => {
+it("the idle-expiry migration dates legacy grants without touching dated or ACP ones", async () => {
+  const legacy = await authorize();
+  const dated = await authorize();
+  await mintMcpAccessTokenForUser({ userId: "user", workspaceId: "workspace" });
+  await McpOAuthToken.updateOne(
+    { clientId: legacy.clientId },
+    { $unset: { refreshExpiresAt: "" } },
+  );
+  const datedBefore = (
+    await McpOAuthToken.findOne({ clientId: dated.clientId }).lean()
+  )?.refreshExpiresAt;
+  const acpBefore = (
+    await McpOAuthToken.findOne({ clientId: ACP_MCP_CLIENT_ID }).lean()
+  )?.refreshExpiresAt;
+  const db = mongoose.connection.db;
+  if (!db) throw new Error("Test database missing");
+  await upIdleExpiry(db);
+  await upIdleExpiry(db);
+  expect(
+    (
+      await McpOAuthToken.findOne({ clientId: legacy.clientId }).lean()
+    )?.refreshExpiresAt?.getTime(),
+  ).toBeGreaterThan(Date.now() + 29 * DAY);
+  expect(
+    (await McpOAuthToken.findOne({ clientId: dated.clientId }).lean())
+      ?.refreshExpiresAt,
+  ).toEqual(datedBefore);
+  expect(
+    (await McpOAuthToken.findOne({ clientId: ACP_MCP_CLIENT_ID }).lean())
+      ?.refreshExpiresAt,
+  ).toEqual(acpBefore);
+});
+
+it("refresh never widens a grant beyond what was consented", async () => {
   const grant = await authorize();
-  // A grant from before `workflows:run` and `connections:write` existed.
+  // A grant consented before `workflows:run` and `connections:write` existed.
   await McpOAuthToken.updateOne(
     { refreshTokenHash: hash(grant.refreshToken) },
     { $set: { scopes: ["mcp", "query:read", "warehouse:write"] } },
@@ -259,16 +360,13 @@ it("refresh widens a grant made before a scope existed to today's MCP scopes", a
     clientId: grant.clientId,
     refreshToken: grant.refreshToken,
   });
-  expect([...renewed.scopes].sort()).toEqual([...MCP_OAUTH_SCOPES].sort());
-  const validated = await validateMcpAccessToken(renewed.accessToken);
-  expect(validated?.scopes).toContain("workflows:run");
-  expect(validated?.scopes).not.toContain("workflows:runtime");
-  const stored = await McpOAuthToken.findOne({
-    refreshTokenHash: hash(renewed.refreshToken),
-  }).lean();
-  expect([...(stored?.scopes ?? [])].sort()).toEqual(
-    [...MCP_OAUTH_SCOPES].sort(),
+  expect([...renewed.scopes].sort()).toEqual(
+    ["mcp", "query:read", "warehouse:write"].sort(),
   );
+  const validated = await validateMcpAccessToken(renewed.accessToken);
+  expect(validated?.scopes).not.toContain("workflows:run");
+  expect(validated?.scopes).not.toContain("connections:write");
+  expect(MCP_OAUTH_SCOPES).toContain("workflows:run");
 });
 
 it("refresh never adds or keeps internal scopes", async () => {
@@ -282,4 +380,38 @@ it("refresh never adds or keeps internal scopes", async () => {
     refreshToken: grant.refreshToken,
   });
   expect(renewed.scopes).not.toContain("workflows:runtime");
+});
+
+it("workspaceService.removeMember revokes the member's MCP grants and API keys", async () => {
+  const { Workspace, WorkspaceMember } =
+    await import("../database/workspace-schema");
+  const { workspaceService } = await import("../services/workspace.service");
+  const workspaceId = new mongoose.Types.ObjectId();
+  await Workspace.collection.insertOne({
+    _id: workspaceId,
+    name: "ws",
+    apiKeys: [
+      { name: "mine", keyHash: "h1", prefix: "p1", createdBy: "user" },
+      { name: "theirs", keyHash: "h2", prefix: "p2", createdBy: "owner" },
+    ],
+  });
+  await WorkspaceMember.collection.insertOne({
+    workspaceId,
+    userId: "user",
+    role: "member",
+  });
+  const grant = await authorize();
+  await McpOAuthToken.updateMany(
+    {},
+    { $set: { workspaceId: String(workspaceId) } },
+  );
+
+  expect(await workspaceService.removeMember(String(workspaceId), "user")).toBe(
+    true,
+  );
+  expect(await validateMcpAccessToken(grant.accessToken)).toBeNull();
+  const ws = await Workspace.collection.findOne({ _id: workspaceId });
+  expect((ws?.apiKeys as Array<{ name: string }>).map(k => k.name)).toEqual([
+    "theirs",
+  ]);
 });

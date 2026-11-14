@@ -52,10 +52,11 @@ url = "https://your-mako-host/api/mcp"
 
 Verify the connection (Claude Code): `claude mcp list` should show `mako … ✓ Connected`.
 
-CLI and external MCP sign-ins stay connected until you revoke them, even after
-long periods of inactivity. Access tokens last 8 hours and clients renew them
-automatically with a rotating refresh token that has no expiry. You can revoke
-a connection from your workspace settings.
+CLI and external MCP sign-ins stay connected while you use them. Access tokens
+last 8 hours and clients renew them automatically with a rotating refresh
+token; each renewal extends the sign-in, and a connection left unused for 30
+days expires and asks you to sign in again. You can revoke a connection from
+your workspace settings, and removing someone from a workspace revokes theirs.
 
 Under the hood this is standard OAuth 2.1 for MCP: RFC 9728 protected-resource discovery, dynamic client registration, PKCE, and rotating refresh tokens. Every grant carries `mcp query:read warehouse:write connections:write connections:manage workflows:run`, whatever the client requests; workspace roles decide what a viewer can do.
 
