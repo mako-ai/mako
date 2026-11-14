@@ -34,6 +34,7 @@ import {
 } from "../services/artifact-delivery.service";
 import { snapshotArtifactKey } from "../services/binding-snapshot";
 import { readPreviewAsset, resolvePreviewGrant } from "../apps/preview.service";
+import { publishedGrantAllowed } from "../apps/published-grant-access";
 import {
   appIdFromHost,
   requestHost,
@@ -64,6 +65,10 @@ async function serveAsset(c: Context): Promise<Response> {
       { success: false, error: "Preview expired — rebuild to get a new link" },
       404,
     );
+  }
+  // A published token lives long; access is decided here, on every use.
+  if (grant.publishedSha && !(await publishedGrantAllowed(grant))) {
+    return c.json({ success: false, error: "Not found" }, 404);
   }
   // `POST __data/<name>/refresh` — the SDK's `refresh()`. Unless a share
   // minted it (below), the token was minted by a workspace member who could
