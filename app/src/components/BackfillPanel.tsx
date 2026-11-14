@@ -816,11 +816,11 @@ export function BackfillPanel({
 
   const connectorName =
     typeof flow?.dataSourceId === "object"
-      ? (flow.dataSourceId as any).name
+      ? (flow.dataSourceId as any)?.name
       : undefined;
   const destName =
     typeof flow?.destinationDatabaseId === "object"
-      ? (flow.destinationDatabaseId as any).name
+      ? (flow.destinationDatabaseId as any)?.name
       : undefined;
   const dataset = flow?.tableDestination?.schema;
 

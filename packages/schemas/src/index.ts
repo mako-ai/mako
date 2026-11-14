@@ -49,6 +49,7 @@ export {
 
 export {
   RENAME_SLUG_MAX_LENGTH,
+  SLUG_NAMED_KIND_NAME_MAX_LENGTH,
   displayNameError,
   displayNameProblem,
   displayNameTooLong,

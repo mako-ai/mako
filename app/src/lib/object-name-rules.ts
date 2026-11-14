@@ -10,6 +10,7 @@
  * points to the same answers.
  */
 import {
+  SLUG_NAMED_KIND_NAME_MAX_LENGTH,
   displayNameError,
   normalizeDisplayName,
   renameSlugError,
@@ -17,6 +18,9 @@ import {
 } from "@mako/schemas";
 
 export type { SlugNamedKind };
+
+/** How long a flow's or a dbt job's name may be. */
+export const OBJECT_NAME_MAX_LENGTH = SLUG_NAMED_KIND_NAME_MAX_LENGTH;
 
 /** NFC, trimmed — the form the server compares and stores a name in. */
 export const normalizeObjectName = normalizeDisplayName;

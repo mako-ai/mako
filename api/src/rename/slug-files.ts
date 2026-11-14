@@ -32,6 +32,7 @@ import path from "node:path";
 import * as yaml from "js-yaml";
 import { Types, type Model } from "mongoose";
 
+import { SLUG_NAMED_KIND_NAME_MAX_LENGTH } from "@mako/schemas";
 import { runGit } from "../apps/git";
 import { DbtJob, Flow, RetiredObjectId } from "../database/workspace-schema";
 import {
@@ -95,7 +96,7 @@ export const FLOW_FILES: SlugKind = {
   get model() {
     return Flow;
   },
-  nameMaxLength: 200,
+  nameMaxLength: SLUG_NAMED_KIND_NAME_MAX_LENGTH.flow,
   filePath: flowFilePath,
   slugOf: slugFromFlowFilePath,
   read(contents) {
@@ -112,7 +113,7 @@ export const DBT_JOB_FILES: SlugKind = {
   get model() {
     return DbtJob;
   },
-  nameMaxLength: 128,
+  nameMaxLength: SLUG_NAMED_KIND_NAME_MAX_LENGTH.dbt_job,
   filePath: jobFilePath,
   slugOf: slugFromJobFilePath,
   read(contents) {
