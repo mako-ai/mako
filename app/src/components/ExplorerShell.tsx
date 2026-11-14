@@ -36,6 +36,9 @@ export interface ExplorerShellProps {
   searchDebounceMs?: number;
   error?: string | null;
   onErrorClose?: () => void;
+  /** Something to know that is not a failure; shown under the error. */
+  notice?: { message: string; severity: "info" | "warning" } | null;
+  onNoticeClose?: () => void;
   loading?: boolean;
   skeleton?: ReactNode;
   /**
@@ -81,6 +84,17 @@ export function ExplorerSkeleton({ rows = 6 }: { rows?: number }) {
   );
 }
 
+const ALERT_SX = {
+  mx: 2,
+  mt: 2,
+  // An error can quote a whole failed command — one once carried a
+  // thousand file paths. It must scroll inside its own box, not
+  // push the tree off screen; and paths have no spaces to wrap at,
+  // so let them break anywhere rather than force the rail wide.
+  wordBreak: "break-word",
+  "& .MuiAlert-message": { maxHeight: 240, overflowY: "auto" },
+} as const;
+
 export default function ExplorerShell({
   title,
   titleContent,
@@ -90,6 +104,8 @@ export default function ExplorerShell({
   searchDebounceMs = 400,
   error,
   onErrorClose,
+  notice,
+  onNoticeClose,
   loading = false,
   skeleton,
   children,
@@ -208,21 +224,13 @@ export default function ExplorerShell({
       </Box>
 
       {error && (
-        <Alert
-          severity="error"
-          onClose={onErrorClose}
-          sx={{
-            mx: 2,
-            mt: 2,
-            // An error can quote a whole failed command — one once carried a
-            // thousand file paths. It must scroll inside its own box, not
-            // push the tree off screen; and paths have no spaces to wrap at,
-            // so let them break anywhere rather than force the rail wide.
-            wordBreak: "break-word",
-            "& .MuiAlert-message": { maxHeight: 240, overflowY: "auto" },
-          }}
-        >
+        <Alert severity="error" onClose={onErrorClose} sx={ALERT_SX}>
           {error}
+        </Alert>
+      )}
+      {notice && (
+        <Alert severity={notice.severity} onClose={onNoticeClose} sx={ALERT_SX}>
+          {notice.message}
         </Alert>
       )}
 

@@ -22,7 +22,7 @@
  * before the push, silently and forever. So activation drains the stale set,
  * and that is tested too.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const calls: string[] = [];
 
@@ -57,6 +57,7 @@ vi.mock("../apps-runtime/shell", () => ({
   focusAppsTab: vi.fn(),
   focusAppsFileTab: vi.fn(),
   reconcileAppsTabs: vi.fn(),
+  healAppsTabs: vi.fn(),
 }));
 
 import { ApiError, api, unwrapBody } from "../api";
@@ -349,5 +350,76 @@ describe("the view token", () => {
     expect(useAppsStore.getState().viewUrlErrorByApp.renewals).toBeUndefined();
     await useAppsStore.getState().fetchViewUrl(WS, APP, { reuseFresh: true });
     expect(useAppsStore.getState().viewUrlErrorByApp[APP]).toBeDefined();
+  });
+});
+
+describe("a sandbox catch-up notice", () => {
+  const notice = {
+    at: 1_000,
+    message:
+      "Not carried over: apps/a/src/main.tsx (main changed it too). Your versions are saved on the branch mako-drafts/20261007T120000",
+    draftsBranch: "mako-drafts/20261007T120000",
+  };
+  const snapshot = (extra: object = {}) => ({
+    branch: "main",
+    changes: null,
+    devServers: null,
+    notice,
+    updatedAt: 1,
+    ...extra,
+  });
+  const shown = () => useAppsStore.getState().boxNotice;
+
+  beforeEach(() => {
+    // Some jsdom/Node pairings ship no localStorage; the store must work
+    // with it and without it.
+    const data = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => data.get(k) ?? null,
+      setItem: (k: string, v: string) => void data.set(k, String(v)),
+      removeItem: (k: string) => void data.delete(k),
+      key: () => null,
+      length: 0,
+    });
+    useAppsStore.setState({ boxNotice: null, boxNoticeSeenAt: 0 });
+    useAppsStore.getState().setCurrentUserId("me");
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("is shown to the box's owner, never to a teammate", () => {
+    useAppsStore.getState().applyBoxState("teammate", snapshot());
+    expect(shown()).toBeNull();
+    useAppsStore.getState().applyBoxState("me", snapshot());
+    expect(shown()).toEqual(notice);
+  });
+
+  it("stays through a refresh of the apps list, which clears errors", async () => {
+    useAppsStore.getState().applyBoxState("me", snapshot());
+    useAppsStore.setState({ error: "boom" });
+    await useAppsStore.getState().fetchApps(WS, { fresh: true });
+    expect(useAppsStore.getState().error).toBeNull();
+    expect(shown()).toEqual(notice);
+  });
+
+  it("once dismissed is not shown again — by a later snapshot, after a reload, or without localStorage — but a newer one is", () => {
+    const store = useAppsStore.getState();
+    store.applyBoxState("me", snapshot());
+    store.dismissBoxNotice();
+    expect(shown()).toBeNull();
+    // Every snapshot (a heartbeat) repeats the notice.
+    store.applyBoxState("me", snapshot({ updatedAt: 2 }));
+    expect(shown()).toBeNull();
+    // A reload: the tab's memory is gone, the browser's is not.
+    useAppsStore.setState({ boxNoticeSeenAt: 0 });
+    store.applyBoxState("me", snapshot({ updatedAt: 3 }));
+    expect(shown()).toBeNull();
+    const newer = { at: 2_000, message: "Your 2 changes followed it." };
+    store.applyBoxState("me", snapshot({ notice: newer }));
+    expect(shown()).toEqual(newer);
+    // No localStorage at all: the tab alone remembers.
+    vi.stubGlobal("localStorage", undefined);
+    store.dismissBoxNotice();
+    store.applyBoxState("me", snapshot({ notice: newer, updatedAt: 4 }));
+    expect(shown()).toBeNull();
   });
 });

@@ -161,6 +161,21 @@ export type RealtimeEvent =
       title?: string;
     };
 
+/**
+ * An event as `viewerId` may receive it. The channel is the workspace's, and
+ * most events are for every member; a box's notice is not — it quotes its
+ * owner's uncommitted file names and how to recover them — so it is taken
+ * out of the box state anyone else is sent.
+ */
+export function realtimeEventFor(
+  event: RealtimeEvent,
+  viewerId: string,
+): RealtimeEvent {
+  if (event.type !== "app.box-state" || event.userId === viewerId) return event;
+  if (!event.state.notice) return event;
+  return { ...event, state: { ...event.state, notice: null } };
+}
+
 function channelFor(workspaceId: string): string {
   return `${CHANNEL_PREFIX}${workspaceId}`;
 }

@@ -77,8 +77,23 @@ export interface BoxState {
   status: "online" | "offline";
   /** Open terminal session ids, so shells opened in one tab show in another. */
   terminals: string[] | null;
+  /**
+   * The latest thing the box's owner must know about their working copy: a
+   * catch-up carried their uncommitted work across a rename on main, or
+   * saved what it could not carry on a branch (box-catch-up.ts). Kept until
+   * replaced, and sent to the owner's tabs only (realtimeEventFor).
+   */
+  notice?: BoxNotice | null;
   /** Server receipt time of the newest patch (ms). */
   updatedAt: number;
+}
+
+export interface BoxNotice {
+  /** When it was raised (ms): a tab shows each notice once. */
+  at: number;
+  message: string;
+  /** The branch holding drafts that could not be carried, if any. */
+  draftsBranch?: string;
 }
 
 /** What a box process may send. Partial on purpose: each sender knows one thing. */
@@ -104,6 +119,11 @@ export interface BoxStatePatch {
   sandboxId?: string;
   /** Open terminal session ids (the full list — replaces). */
   terminals?: string[];
+  /**
+   * A message for the box's owner (replaces the previous one). Only the API
+   * says this: the box's own reports cannot (routes/apps-box.ts strips it).
+   */
+  notice?: BoxNotice;
 }
 
 // --------------------------------------------------------------------------
@@ -372,6 +392,7 @@ function applyPatch(prev: BoxState | null, patch: BoxStatePatch): BoxState {
   if (Array.isArray(patch.terminals)) {
     next.terminals = patch.terminals.filter(t => typeof t === "string");
   }
+  if (patch.notice) next.notice = patch.notice;
   // Any patch is a live report, so the box is online. Recycle is the only
   // thing that flips this, and it publishes offline through markBoxOffline.
   next.status = "online";

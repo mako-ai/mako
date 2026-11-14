@@ -11,13 +11,11 @@ delete process.env.REDIS_URL;
 
 import {
   publishRealtimeEvent,
+  realtimeEventFor,
   subscribeToWorkspaceEvents,
   type RealtimeEvent,
 } from "./realtime.service";
-import {
-  getPubSubBackendKind,
-  createPubSubPublisher,
-} from "./pubsub.service";
+import { getPubSubBackendKind, createPubSubPublisher } from "./pubsub.service";
 
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
@@ -37,9 +35,7 @@ function consoleUpdated(consoleId: string, draftRevision: number) {
 /** Publish must reach a subscriber on the same workspace channel. */
 async function testPublishReachesSubscriber() {
   const received: RealtimeEvent[] = [];
-  const dispose = await subscribeToWorkspaceEvents(WS_A, e =>
-    received.push(e),
-  );
+  const dispose = await subscribeToWorkspaceEvents(WS_A, e => received.push(e));
 
   publishRealtimeEvent(WS_A, consoleUpdated("c1", 2));
   await delay(10);
@@ -107,9 +103,7 @@ async function testRefCountedListeners() {
 /** Malformed JSON on the channel is dropped without breaking the listener. */
 async function testMalformedEventDropped() {
   const received: RealtimeEvent[] = [];
-  const dispose = await subscribeToWorkspaceEvents(WS_A, e =>
-    received.push(e),
-  );
+  const dispose = await subscribeToWorkspaceEvents(WS_A, e => received.push(e));
 
   // Publish raw garbage straight through the backend.
   await createPubSubPublisher().publish(
@@ -150,6 +144,35 @@ async function testThrowingListenerIsolated() {
   await disposeOk();
 }
 
+/** A box's notice is its owner's: nobody else's stream carries it. */
+function testBoxNoticeReachesItsOwnerOnly() {
+  const notice = { at: 1, message: "Not carried over: apps/a/src/x.ts" };
+  const event = {
+    type: "app.box-state",
+    userId: "owner",
+    state: {
+      branch: "main",
+      head: null,
+      ahead: null,
+      changes: null,
+      devServers: null,
+      sandboxId: null,
+      status: "online",
+      terminals: null,
+      notice,
+      updatedAt: 1,
+    },
+  } satisfies RealtimeEvent;
+  assert.deepEqual(realtimeEventFor(event, "owner"), event);
+  const other = realtimeEventFor(event, "teammate");
+  assert.ok(other.type === "app.box-state");
+  assert.equal(other.state.notice, null, "a teammate must not get the notice");
+  assert.equal(other.state.branch, "main", "the rest of the state is theirs");
+  assert.equal(event.state.notice, notice, "the event itself is not changed");
+  const plain = consoleUpdated("c6", 1);
+  assert.equal(realtimeEventFor(plain, "teammate"), plain);
+}
+
 async function main() {
   assert.equal(
     getPubSubBackendKind(),
@@ -161,6 +184,7 @@ async function main() {
   await testRefCountedListeners();
   await testMalformedEventDropped();
   await testThrowingListenerIsolated();
+  testBoxNoticeReachesItsOwnerOnly();
   // eslint-disable-next-line no-console
   console.log("realtime.service.test.ts: all tests passed");
 }
