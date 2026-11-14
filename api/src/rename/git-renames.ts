@@ -149,3 +149,28 @@ export async function findRenamedPath(
     .catch(() => false);
   return exists ? next : null;
 }
+
+/**
+ * The folder a folder moved to, for kinds that are a directory with a
+ * marker file (`skills/<name>/SKILL.md`): the rename of
+ * `<dir>/<old>/<marker>` to `<dir>/<new>/<marker>` names the folder rename.
+ */
+export async function findRenamedFolder(
+  repoDir: string,
+  ref: string,
+  dir: string,
+  oldFolder: string,
+  marker: string,
+  options: RenameScanOptions = {},
+): Promise<string | null> {
+  const next = await findRenamedPath(
+    repoDir,
+    ref,
+    `${dir}/${oldFolder}/${marker}`,
+    dir,
+    options,
+  );
+  if (!next?.startsWith(`${dir}/`) || !next.endsWith(`/${marker}`)) return null;
+  const folder = next.slice(dir.length + 1, -marker.length - 1);
+  return folder && !folder.includes("/") ? folder : null;
+}

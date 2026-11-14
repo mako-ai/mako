@@ -9,7 +9,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runGit } from "../apps/git";
-import { findRenamedPath, followRenames, parseRenameLog } from "./git-renames";
+import {
+  findRenamedFolder,
+  findRenamedPath,
+  followRenames,
+  parseRenameLog,
+} from "./git-renames";
 
 let root: string;
 let repo: string;
@@ -88,6 +93,26 @@ describe("findRenamedPath", () => {
     await git("rm", "-q", "dbt/models/other.sql");
     await commit("delete other");
     expect(await moved("p.sql")).toBe("dbt/models/q.sql");
+  });
+});
+
+describe("findRenamedFolder", () => {
+  it("names the folder a marker file moved to, and nothing for a file that left the shape", async () => {
+    const md = "---\ndescription: when asked\n---\n\nA body long enough.\n";
+    await write("skills/alpha/SKILL.md", md);
+    await write("skills/alpha/notes.md", "notes\n");
+    await commit("a skill");
+    await git("mv", "skills/alpha", "skills/beta");
+    await commit("alpha to beta");
+    const folder = (old: string) =>
+      findRenamedFolder(repo, "main", "skills", old, "SKILL.md");
+    expect(await folder("alpha")).toBe("beta");
+    expect(await folder("nope")).toBeNull();
+    // Moved out of `skills/<name>/SKILL.md`: not a skill folder any more.
+    await fs.mkdir(path.join(repo, "skills/beta/deep"));
+    await git("mv", "skills/beta/SKILL.md", "skills/beta/deep/SKILL.md");
+    await commit("nested");
+    expect(await folder("alpha")).toBeNull();
   });
 });
 

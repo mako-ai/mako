@@ -131,7 +131,17 @@ Settings → Skills lists every skill in the workspace. For each skill you can:
 - **Edit** -- rewrite the `loadWhen`, body, or entities. Takes effect on the next agent turn
 - **Pin** -- include a budgeted body excerpt in every prompt
 - **Suppress** -- keep the file but exclude the skill from the prompt index and keyword search
+- **Rename** -- move the skill's folder to a new name. The old name is kept in the file (`aliases` in the front matter), so `load_skill("<old name>")` and anything else that names it keeps working
 - **Delete** -- remove the current file; git history remains available for recovery
+
+### Renaming a skill
+
+A rename is one commit on main: `skills/<old>/` moves to `skills/<new>/` with every file in it, and the old name is added to `aliases` in the SKILL.md front matter. Nothing else in the file changes. The agent renames with `rename_object` (`kind: "skill"`).
+
+- A skill answers to its old names until something else takes them. A name in use always wins over an old one, and an old name that two skills claim (a folder copied with its front matter) opens neither.
+- A new skill saved under an old name takes that name for good; the renamed skill drops it from its `aliases` in the same commit. A skill the agent proposed takes nothing until you approve it.
+- Renaming onto another skill's name or old name is refused.
+- A folder moved with `git mv` from a clone, with no `aliases` written, is still found by its old name: git's own rename history answers. A skill keeps its newest 24 old names in the file.
 
 API-created skills are capped at 200 per workspace. Files that do not parse or exceed the body/file limits are shown as invalid and are never offered to the agent. See [Hidden Skills](#hidden-skills).
 

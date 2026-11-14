@@ -12,13 +12,16 @@
  * the tools record a read after serving it, and the listings show the totals.
  */
 import {
+  aliasClaimantsOf,
   commitSkillDelete,
   commitSkillFlags,
+  commitSkillRename,
   commitSkillSave,
   findSkill,
   findSkillById,
   findSkillTwins,
-  resolveSkill,
+  resolveSkillRef,
+  resolveSkillThroughHistory,
   loadSkillCatalog,
   readWorkspaceSkillResource,
   skillId,
@@ -27,6 +30,8 @@ import {
   type SkillCatalog,
   type WorkspaceSkill,
 } from "../apps/workspace-skills.service";
+import { SKILL_NAME_MAX_LENGTH, skillNameError } from "@mako/schemas";
+import { RepoRequiredError } from "../apps/config";
 import { type GitAuthor } from "../apps/repository.service";
 import {
   MAX_SKILL_BODY_CHARS,
@@ -53,7 +58,7 @@ import {
 
 const logger = loggers.app();
 
-const MAX_NAME_LENGTH = 80;
+const MAX_NAME_LENGTH = SKILL_NAME_MAX_LENGTH;
 /** The description is in every prompt: keep it a trigger line, not a summary. */
 export const MAX_LOAD_WHEN_LENGTH = 300;
 /** What the index shows per skill; longer descriptions are cut with an ellipsis. */
@@ -144,6 +149,12 @@ async function skillCommitAuthor(
  * the Skills panel or by flipping `suppressed: false` in the file (apps.md
  * §22); proposals cost nothing until someone approves them. Updates keep
  * the existing flags unless the caller sets them.
+ *
+ * A save acts on the skill whose CURRENT name it is given. A name that is
+ * only a previous name of another skill (it was renamed away from it) is
+ * free: the save creates a new skill there, and a live one takes the name
+ * for good, so the other skill drops it from its old names in the same
+ * commit. A proposal takes nothing until it is approved.
  */
 export async function saveSkill(
   workspaceId: string,
@@ -176,6 +187,10 @@ export async function saveSkill(
     }
   }
   const pendingApproval = options.origin === "agent" && !existing;
+  const retireAliasFrom =
+    existing || pendingApproval
+      ? undefined
+      : (await aliasClaimantsOf(workspaceId, name)).map(skill => skill.name);
   if (!existing) {
     const catalog = await loadSkillCatalog(workspaceId);
     if (catalog.skills.length >= MAX_WORKSPACE_SKILLS) {
@@ -194,9 +209,11 @@ export async function saveSkill(
         entities: normalizeEntities(input.entities ?? existing?.entities),
         suppressed: pendingApproval || !!existing?.suppressed,
         pinned: input.pinned ?? existing?.pinned ?? false,
+        // The record of its renames: an edit must not forget them.
+        aliases: existing?.aliases,
         body: input.body.trim(),
       },
-      { author: await skillCommitAuthor(createdBy) },
+      { author: await skillCommitAuthor(createdBy), retireAliasFrom },
     );
   } catch (error) {
     logger.error("Skill save: git commit failed", { workspaceId, error });
@@ -222,6 +239,76 @@ export async function skillExists(
 ): Promise<boolean> {
   // A twin spelling (`foo-bar` for `foo_bar`) counts: a save would refuse it.
   return (await findSkillTwins(workspaceId, name)).length > 0;
+}
+
+/**
+ * Rename a skill (api/src/rename): the folder moves and the old name is
+ * kept as an alias, one commit on main. The one path for the Skills panel
+ * and `rename_object`. `ref` is whatever names the skill: its id, its
+ * name, an old name, or a name only git history knows (a bare `git mv`
+ * from a laptop), so a reference that still opens the skill can rename it.
+ */
+export async function renameSkill(
+  workspaceId: string,
+  ref: string,
+  to: string,
+  actorId?: string,
+): Promise<
+  | {
+      success: true;
+      skill: { id: string; name: string };
+      before: { id: string; name: string };
+      aliasesAdded: string[];
+      commit: string;
+    }
+  | { success: false; status: 400 | 404 | 409; error: string }
+> {
+  const refuse = (status: 400 | 404 | 409, error: string) =>
+    ({ success: false, status, error }) as const;
+  const name = to.trim();
+  // The rule the Skills panel applies as the name is typed.
+  const problem = skillNameError(name);
+  if (problem) return refuse(400, problem);
+  const existing = await resolveSkillForRename(workspaceId, ref.trim());
+  if (!existing) return refuse(404, `skill "${ref}" not found`);
+  if (existing.name === name) {
+    return refuse(400, "The skill already has that name.");
+  }
+  try {
+    const outcome = await commitSkillRename(
+      workspaceId,
+      existing.name,
+      name,
+      await skillCommitAuthor(actorId),
+    );
+    if (!outcome.ok) return refuse(outcome.status, outcome.error);
+    return {
+      success: true,
+      skill: { id: skillId(workspaceId, name), name },
+      before: { id: existing.id, name: existing.name },
+      aliasesAdded: outcome.aliasesAdded,
+      commit: outcome.commitOid,
+    };
+  } catch (error) {
+    if (error instanceof RepoRequiredError) throw error;
+    logger.error("Skill rename: git commit failed", { workspaceId, error });
+    return refuse(
+      400,
+      `Could not commit the rename to the workspace repository: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/** Id, then current name, then an old name, then git history. */
+export async function resolveSkillForRename(
+  workspaceId: string,
+  ref: string,
+): Promise<WorkspaceSkill | null> {
+  return (
+    (await findSkillById(workspaceId, ref)) ??
+    (await resolveSkillRef(workspaceId, ref))?.skill ??
+    (await resolveSkillThroughHistory(workspaceId, ref))
+  );
 }
 
 export async function deleteSkill(
@@ -250,7 +337,13 @@ export async function deleteSkill(
   }
 }
 
-/** A skill by name: the workspace file at main, else a system skill. */
+/**
+ * A skill by name: the workspace skill called that, else the system skill
+ * called that, else the workspace skill it is an old name of, else the one
+ * git history says it was renamed to. A workspace skill may shadow a system
+ * skill by taking its name; once renamed away the system skill shows again:
+ * an old name is a courtesy to old references, never a claim on a live one.
+ */
 export async function loadSkill(
   workspaceId: string,
   name: string,
@@ -275,24 +368,28 @@ export async function loadSkill(
   if (!name || name.trim().length === 0) {
     return { success: false, error: "name is required" };
   }
-  const skill = await resolveSkill(workspaceId, name);
-  if (skill) {
-    return {
-      success: true,
-      skill: {
-        id: skill.id,
-        name: skill.name,
-        loadWhen: skill.loadWhen,
-        body: skill.body,
-        suppressed: skill.suppressed,
-        pinned: skill.pinned,
-        resources: skill.resources,
-      },
-    };
+  const found = (skill: WorkspaceSkill) => ({
+    success: true as const,
+    skill: {
+      id: skill.id,
+      name: skill.name,
+      loadWhen: skill.loadWhen,
+      body: skill.body,
+      suppressed: skill.suppressed,
+      pinned: skill.pinned,
+      resources: skill.resources,
+    },
+  });
+  const resolved = await resolveSkillRef(workspaceId, name);
+  if (resolved?.via === "current") return found(resolved.skill);
+  const systemSkill = getSystemSkill(name.trim());
+  if (!systemSkill) {
+    const renamed =
+      resolved?.skill ?? (await resolveSkillThroughHistory(workspaceId, name));
+    if (renamed) return found(renamed);
   }
   // The name may be a workspace file that is hidden: say so, with the reason.
   const hidden = await findInvalidSkillByName(workspaceId, name);
-  const systemSkill = getSystemSkill(name.trim());
   if (!systemSkill) {
     return {
       success: false,
@@ -362,7 +459,14 @@ export async function readSkillResource(
   if (!name || name.trim().length === 0) {
     return { success: false, error: "name is required" };
   }
-  const skill = await resolveSkill(workspaceId, name);
+  // The same lookup as loadSkill: a live name, then a system skill, then an
+  // old name (an alias, or a folder git renamed).
+  const resolved = await resolveSkillRef(workspaceId, name);
+  let skill = resolved?.via === "current" ? resolved.skill : null;
+  if (!skill && !getSystemSkill(name.trim())) {
+    skill =
+      resolved?.skill ?? (await resolveSkillThroughHistory(workspaceId, name));
+  }
   if (skill) {
     const read = await readWorkspaceSkillResource(workspaceId, skill, relPath);
     if (read.success) return { ...read, scope: "workspace" };
@@ -665,6 +769,8 @@ export interface AdminSkillSummary {
   entities: string[];
   suppressed: boolean;
   pinned: boolean;
+  /** Previous names (a rename records them); they still resolve. */
+  aliases: string[];
   definitionInvalid: { reason: string; path: string } | null;
   /** Problems that do not hide the skill: a cut description, a refused resource. */
   warnings: string[];
@@ -687,13 +793,49 @@ export interface AdminSkillDetail extends AdminSkillSummary {
 function usageFields(
   usage: Map<string, SkillUsageSummary>,
   scope: "workspace" | "system",
-  name: string,
+  names: string[],
 ): { loads30d: number; lastLoadedAt: string | null } {
-  const entry = usage.get(skillUsageKey(scope, name));
-  return {
-    loads30d: entry?.loads30d ?? 0,
-    lastLoadedAt: entry?.lastLoadedAt?.toISOString() ?? null,
-  };
+  let loads30d = 0;
+  let lastLoadedAt: Date | null = null;
+  for (const name of new Set(names)) {
+    const entry = usage.get(skillUsageKey(scope, name));
+    if (!entry) continue;
+    loads30d += entry.loads30d;
+    if (
+      entry.lastLoadedAt &&
+      (!lastLoadedAt || entry.lastLoadedAt > lastLoadedAt)
+    ) {
+      lastLoadedAt = entry.lastLoadedAt;
+    }
+  }
+  return { loads30d, lastLoadedAt: lastLoadedAt?.toISOString() ?? null };
+}
+
+/**
+ * The names a workspace skill's usage is recorded under: usage is keyed by
+ * name, so a renamed skill's earlier reads sit under its old names. An old
+ * name counts only while this skill alone claims it and no skill holds it
+ * live, the same rule that lets it resolve.
+ */
+function usageNamesBySkill(catalog: SkillCatalog): Map<string, string[]> {
+  const live = new Set(catalog.skills.map(skill => skill.name));
+  const claims = new Map<string, number>();
+  for (const skill of catalog.skills) {
+    for (const alias of new Set(skill.aliases ?? [])) {
+      claims.set(alias, (claims.get(alias) ?? 0) + 1);
+    }
+  }
+  return new Map(
+    catalog.skills.map(skill => [
+      skill.name,
+      [
+        skill.name,
+        ...(skill.aliases ?? []).filter(
+          alias => !live.has(alias) && claims.get(alias) === 1,
+        ),
+      ],
+    ]),
+  );
 }
 
 /**
@@ -711,7 +853,13 @@ export async function skillUsageForIndex(
 > {
   const usage = await getSkillUsageOrNull(workspaceId);
   if (!usage) return null;
-  return (scope, name) => usageFields(usage, scope, name);
+  const namesOf = usageNamesBySkill(await loadSkillCatalog(workspaceId));
+  return (scope, name) =>
+    usageFields(
+      usage,
+      scope,
+      scope === "workspace" ? (namesOf.get(name) ?? [name]) : [name],
+    );
 }
 
 /** A skill's warnings as lines: the SKILL.md ones bare, the others with their file. */
@@ -729,6 +877,7 @@ function summaryOf(
   skill: WorkspaceSkill,
   warnings: string[] = [],
   usage: Map<string, SkillUsageSummary> | null = null,
+  usageNames: string[] = [skill.name],
 ): AdminSkillSummary {
   return {
     id: skill.id,
@@ -740,10 +889,11 @@ function summaryOf(
     entities: skill.entities,
     suppressed: skill.suppressed,
     pinned: skill.pinned,
+    aliases: skill.aliases ?? [],
     definitionInvalid: null,
     warnings,
     resources: skill.resources,
-    ...(usage ? usageFields(usage, "workspace", skill.name) : {}),
+    ...(usage ? usageFields(usage, "workspace", usageNames) : {}),
   };
 }
 
@@ -753,9 +903,15 @@ export async function listSkillsForAdmin(
 ): Promise<AdminSkillSummary[]> {
   const catalog = await loadSkillCatalog(workspaceId);
   const usage = await getSkillUsageOrNull(workspaceId);
+  const namesOf = usageNamesBySkill(catalog);
   return [
     ...catalog.skills.map(skill =>
-      summaryOf(skill, warningTexts(catalog, skill.name), usage),
+      summaryOf(
+        skill,
+        warningTexts(catalog, skill.name),
+        usage,
+        namesOf.get(skill.name),
+      ),
     ),
     ...catalog.invalid.map(file => ({
       id: skillId(workspaceId, file.name),
@@ -766,6 +922,7 @@ export async function listSkillsForAdmin(
       entities: [],
       suppressed: false,
       pinned: false,
+      aliases: [],
       definitionInvalid: { reason: file.reason, path: file.path },
       warnings: [],
       resources: [],
@@ -783,7 +940,12 @@ export async function getSkillForAdmin(
   const catalog = await loadSkillCatalog(workspaceId);
   const usage = await getSkillUsageOrNull(workspaceId);
   return {
-    ...summaryOf(skill, warningTexts(catalog, skill.name), usage),
+    ...summaryOf(
+      skill,
+      warningTexts(catalog, skill.name),
+      usage,
+      usageNamesBySkill(catalog).get(skill.name),
+    ),
     body: skill.body,
   };
 }
@@ -796,11 +958,20 @@ export async function toggleSkillSuppressed(
 ): Promise<boolean> {
   const skill = await findSkillById(workspaceId, id);
   if (!skill) return false;
+  // Approving a proposal saved under a name another skill was renamed away
+  // from: now it takes the name, and the other skill drops it from its old
+  // names in the same commit.
+  const claimants = suppressed
+    ? []
+    : (await aliasClaimantsOf(workspaceId, skill.name)).filter(
+        other => other.name !== skill.name,
+      );
   return commitSkillFlags(
     workspaceId,
     skill.name,
     { suppressed },
     await skillCommitAuthor(actorId),
+    { retireAliasFrom: claimants.map(other => other.name) },
   );
 }
 

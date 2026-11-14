@@ -11,6 +11,7 @@
  *   entities: [mrr, france]        # optional author-declared triggers
  *   suppressed: true               # optional soft-disable, omitted when false
  *   pinned: true                   # optional: budgeted body excerpt in every prompt
+ *   aliases: [old_name]            # optional: previous names (a rename records them)
  *   ---
  *   <body — the playbook>
  *
@@ -22,6 +23,8 @@
  * repo lives in workspace-skills.service.ts.
  */
 import * as yaml from "js-yaml";
+import { SKILL_NAME_RE, SKILL_NAME_RULE } from "@mako/schemas";
+import { setTopLevelScalar, yamlScalar } from "../rename/yaml-name-aliases";
 import { loadYaml } from "../utils/yaml";
 
 export const SKILLS_DIR = "skills";
@@ -85,20 +88,9 @@ commit gets a failed \`mako/skills\` status that names it, and
 \`list_skills\` returns it under \`invalid\`.
 `;
 
-/**
- * A skill name is its folder: lowercase letters, digits, `-` and `_`, starting
- * with a letter or digit. That keeps it one safe path segment (no `/`, no `.`,
- * so no `..`; no leading `-` that a shell could read as a flag) and accepts the
- * hyphenated names Claude Code skills and Mako's system skills use
- * (`app-ui-conventions`, `dialect-postgresql`). Until 2026-11 only snake_case
- * passed, and hyphenated folders committed from a clone never reached the
- * agent.
- */
-export const SKILL_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
-
-/** The rule above in words, for error messages. */
-export const SKILL_NAME_RULE =
-  "lowercase a-z, 0-9, '-' and '_', starting with a letter or digit";
+// The skill-name rule lives in `@mako/schemas` (skill-names.ts), where the
+// Skills panel reads it too.
+export { SKILL_NAME_RE, SKILL_NAME_RULE };
 
 /**
  * `app-ui-conventions` and `app_ui_conventions` are one name to a person.
@@ -117,6 +109,12 @@ export interface WorkspaceSkillFile {
   suppressed: boolean;
   /** A budgeted body excerpt rides in every prompt. */
   pinned: boolean;
+  /**
+   * Previous names, written by a rename so `load_skill("old")` keeps
+   * resolving (api/src/rename). They travel with the file, so a clone or a
+   * laptop `git mv` that keeps the front matter behaves the same.
+   */
+  aliases?: string[];
   body: string;
 }
 
@@ -142,6 +140,7 @@ export function serializeSkillFile(skill: WorkspaceSkillFile): string {
   if (skill.entities.length > 0) frontmatter.entities = skill.entities;
   if (skill.suppressed) frontmatter.suppressed = true;
   if (skill.pinned) frontmatter.pinned = true;
+  if (skill.aliases?.length) frontmatter.aliases = skill.aliases;
   const head = yaml.dump(frontmatter, { lineWidth: 100 }).trimEnd();
   return `---\n${head}\n---\n\n${skill.body.trim()}\n`;
 }
@@ -248,6 +247,19 @@ export function parseSkillFileDetailed(
     return { ok: false, reason: "the body under the front matter is empty" };
   }
 
+  // An alias is a name too: one that could never have been a folder, or
+  // that is this skill's own name, is dropped rather than carried along.
+  const aliases = Array.isArray(data.aliases)
+    ? [
+        ...new Set(
+          data.aliases
+            .filter((alias): alias is string => typeof alias === "string")
+            .map(alias => alias.trim())
+            .filter(alias => SKILL_NAME_RE.test(alias) && alias !== name),
+        ),
+      ]
+    : [];
+
   return {
     ok: true,
     skill: {
@@ -256,9 +268,115 @@ export function parseSkillFileDetailed(
       entities,
       suppressed: data.suppressed === true,
       pinned: data.pinned === true,
+      ...(aliases.length > 0 ? { aliases } : {}),
       body,
     },
   };
+}
+
+const FRONT_MATTER = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?/;
+
+/** The front matter of a SKILL.md as a mapping, or null. */
+function frontMatterOf(contents: string): Record<string, unknown> | null {
+  const match = FRONT_MATTER.exec(contents.replace(/^\uFEFF/, ""));
+  if (!match) return null;
+  try {
+    const data = loadYaml(match[1]);
+    return data && typeof data === "object" && !Array.isArray(data)
+      ? (data as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Set `name` and/or the `aliases` list in a SKILL.md's front matter IN
+ * PLACE: every other line (comments, `license`, `allowed-tools`, keys this
+ * code does not know) and the body stay byte for byte. Names are written
+ * with `yamlScalar`, so `2026`, `true` or `no` stay strings; the list is
+ * written in flow style, and an empty list removes the key.
+ *
+ * A line edit is never trusted: the result is parsed again, as front
+ * matter and as a skill under `folderName`, and must say exactly what was
+ * intended with every other key as it was. Anything else (no front matter,
+ * a multi-line flow list, an anchor) answers with the fix to make by hand,
+ * and the caller commits nothing.
+ */
+export function editSkillFrontMatter(
+  folderName: string,
+  contents: string,
+  edit: { name?: string; aliases?: string[] },
+): { ok: true; contents: string } | { ok: false; reason: string } {
+  const refused = {
+    ok: false as const,
+    reason: `skills/${folderName}/SKILL.md could not be edited in place without breaking it. Edit its front matter by hand: set ${[
+      ...(edit.name === undefined ? [] : [`\`name: ${edit.name}\``]),
+      ...(edit.aliases === undefined
+        ? []
+        : [`\`aliases: [${edit.aliases.join(", ")}]\``]),
+    ].join(" and ")}.`,
+  };
+  const original = contents.replace(/^\uFEFF/, "");
+  const eol = original.includes("\r\n") ? "\r\n" : "\n";
+  const lines = original.split(eol);
+  const close = lines.findIndex((line, i) => i > 0 && /^---\s*$/.test(line));
+  if (!/^---\s*$/.test(lines[0] ?? "") || close < 0) return refused;
+  const head = lines.slice(1, close);
+
+  if (edit.name !== undefined) {
+    if (head.some(line => /^name\s*:/.test(line))) {
+      // The line's own comment (`name: x  # shown in the index`) stays.
+      const named = setTopLevelScalar(head.join("\n"), "name", edit.name);
+      if (named === null) return refused;
+      head.splice(0, head.length, ...named.replace(/\n$/, "").split("\n"));
+    } else {
+      const scalar = yamlScalar(edit.name);
+      if (scalar === null) return refused;
+      head.unshift(`name: ${scalar}`);
+    }
+  }
+  if (edit.aliases !== undefined) {
+    const at = head.findIndex(line => /^aliases\s*:/.test(line));
+    if (at >= 0) {
+      let end = at + 1;
+      // A block list's items, at ANY indent: `- old` directly under the key
+      // with no indent is valid YAML, and what people type by hand.
+      if (!/^aliases\s*:\s*\[/.test(head[at])) {
+        while (end < head.length && /^\s*-\s/.test(head[end])) end++;
+      }
+      head.splice(at, end - at);
+    }
+    const scalars = edit.aliases.map(alias => yamlScalar(alias));
+    if (scalars.includes(null)) return refused;
+    if (scalars.length > 0) head.push(`aliases: [${scalars.join(", ")}]`);
+  }
+  const edited = ["---", ...head, ...lines.slice(close)].join(eol);
+
+  const before = frontMatterOf(original);
+  const after = frontMatterOf(edited);
+  const parsed = parseSkillFile(folderName, edited);
+  if (!before || !after || !parsed) return refused;
+  if (edit.name !== undefined && after.name !== edit.name) return refused;
+  if (edit.aliases !== undefined) {
+    const want = [...new Set(edit.aliases)].sort();
+    const raw = after.aliases === undefined ? [] : after.aliases;
+    if (
+      !Array.isArray(raw) ||
+      JSON.stringify([...raw].sort()) !== JSON.stringify(want) ||
+      JSON.stringify([...(parsed.aliases ?? [])].sort()) !==
+        JSON.stringify(want.filter(alias => alias !== folderName))
+    ) {
+      return refused;
+    }
+  }
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (key === "name" || key === "aliases") continue;
+    if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) {
+      return refused;
+    }
+  }
+  return { ok: true, contents: edited };
 }
 
 // ---------------------------------------------------------------------------
