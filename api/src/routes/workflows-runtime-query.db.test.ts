@@ -28,12 +28,24 @@ import {
 } from "../database/workspace-schema";
 import { loggingMiddleware } from "../logging";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { encryptString } from "../services/crypto.service";
+import { keyIdOf, mintPass } from "../workflows/pass";
+import { setFirstReadRetryForTests } from "../workflows/runs";
 import { WORKER_KEY_SCOPES, workerKeyName } from "../workflows/worker-key";
 import { workflowRuntimeRoutes } from "./workflows";
 
 const WORKER_KEY = "revops_worker_query_route_key_tests";
 const OTHER_KEY = "revops_person_query_route_key_tests";
 const DRY_RUN_KEY = "revops_dry_run_query_route_key_tests";
+const TENANT = "11111111-1111-1111-1111-111111111111";
+const HATCHET_TOKEN = `x.${Buffer.from(
+  JSON.stringify({ sub: TENANT, server_url: "https://hatchet.example" }),
+).toString("base64url")}.y`;
+/** An executing run of each deployed workflow, as Hatchet answers it. */
+const RUN_OF: Record<string, string> = {
+  "crm-chat-classifier": "0f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+  "other-flow": "1f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+};
 const ROWS = 650;
 const LONG = "x".repeat(5000);
 const SCHEMA = `mako_wq_${Date.now().toString(36)}`;
@@ -58,12 +70,26 @@ const app = new Hono();
 app.use("*", loggingMiddleware({}));
 app.route("/api/workflows/runtime", workflowRuntimeRoutes);
 
+let workspaceId = "";
+/**
+ * A step of `workflow` calls with its pass, as step.mjs does; any other key
+ * (or the worker key with no workflow) as it is, the workflow it names sent
+ * along and believed by no one.
+ */
 const post = async (
   key: string,
   body: unknown,
   workflow?: string,
 ): Promise<{ status: number; answer: Answer; ms: number }> => {
   const started = Date.now();
+  if (key === WORKER_KEY && workflow && RUN_OF[workflow]) {
+    key = mintPass({
+      workspaceId,
+      workflow,
+      runId: RUN_OF[workflow],
+      keyId: keyIdOf(hashApiKey(WORKER_KEY)),
+    }).token;
+  }
   const res = await app.request("/api/workflows/runtime/query", {
     method: "POST",
     headers: {
@@ -168,7 +194,26 @@ async function main() {
   await mongoose.connect(mongo.getUri());
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
   const ws = new Types.ObjectId();
+  workspaceId = ws.toString();
   let db: { _id: Types.ObjectId } | null = null;
+  setFirstReadRetryForTests([0, 0, 0]);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    const href = String(input instanceof Request ? input.url : input);
+    if (!href.startsWith("https://hatchet.example/")) {
+      return realFetch(input, init);
+    }
+    const id = href.match(/workflow-runs\/([0-9a-f-]{36})/)?.[1] ?? "";
+    const workflow = Object.keys(RUN_OF).find(w => RUN_OF[w] === id);
+    if (!workflow) return Response.json({}, { status: 404 });
+    return Response.json({
+      run: { metadata: { id }, status: "RUNNING", additionalMetadata: {} },
+      tasks: [{ actionId: `${workflow}:step`, status: "RUNNING" }],
+    });
+  }) as typeof fetch;
   try {
     await User.create({ _id: "deployer", email: "deployer@example.com" });
     await WorkspaceMember.create({
@@ -207,6 +252,7 @@ async function main() {
         },
       ],
       workflows: {
+        hatchetToken: encryptString(HATCHET_TOKEN),
         live: {
           sha: "a".repeat(40),
           tree: "t",
@@ -388,6 +434,24 @@ async function main() {
       "the refused write ran nowhere",
     );
 
+    // The worker key alone, naming the listed workflow, is no one: what
+    // another workflow's code borrowing the key would get.
+    const borrowed = await app.request("/api/workflows/runtime/query", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${WORKER_KEY}`,
+        "content-type": "application/json",
+        "x-mako-workflow": "crm-chat-classifier",
+        "x-mako-run": RUN_OF["crm-chat-classifier"],
+      },
+      body: JSON.stringify({ connectionId, query: RETURNING }),
+    });
+    assert.equal(borrowed.status, 400);
+    assert.match(
+      ((await borrowed.json()) as Answer).error ?? "",
+      /^worker:workflows is not allowed to write to local_pg/,
+    );
+
     // The listed workflow writes through query(): its RETURNING rows come
     // back.
     const returning = await post(
@@ -463,6 +527,7 @@ async function main() {
     }
     // Query tracking is written without waiting: let it land.
     await new Promise(resolve => setTimeout(resolve, 300));
+    globalThis.fetch = realFetch;
     await mongoose.disconnect();
     await mongo.stop();
   }

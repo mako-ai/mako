@@ -33,6 +33,8 @@ import {
 import { loggingMiddleware } from "../logging";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { setKey } from "../workflows/on-push";
+import { keyIdOf, mintPass } from "../workflows/pass";
+import { setFirstReadRetryForTests } from "../workflows/runs";
 import { WORKER_KEY_SCOPES, workerKeyName } from "../workflows/worker-key";
 import { workflowRuntimeRoutes } from "./workflows";
 
@@ -41,6 +43,12 @@ const NO_RUN_KEY = "revops_person_without_run_scope_xx";
 const MARC_RUN_KEY = "revops_marc_run_key_person_tests_";
 const OWN_RUN_KEY = "revops_marc_own_sandbox_run_key_xx";
 const AGENT_RUN_KEY = "revops_marc_agent_sandbox_run_key";
+const TENANT = "11111111-1111-1111-1111-111111111111";
+const HATCHET_TOKEN = `x.${Buffer.from(
+  JSON.stringify({ sub: TENANT, server_url: "https://hatchet.example" }),
+).toString("base64url")}.y`;
+/** An executing run of billing-sync, as Hatchet answers it. */
+const BILLING_RUN = "0f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
 const SCHEMA = `mako_rp_${Date.now().toString(36)}`;
 const WRITE = (table: string) =>
   `INSERT INTO ${SCHEMA}.${table} (id) VALUES (1)`;
@@ -79,6 +87,22 @@ async function main() {
   process.env.AI_GATEWAY_API_KEY = "gateway-key";
   const ws = new Types.ObjectId();
   let db: { _id: Types.ObjectId } | null = null;
+  setFirstReadRetryForTests([0, 0, 0]);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    const href = String(input instanceof Request ? input.url : input);
+    if (!href.startsWith("https://hatchet.example/")) {
+      return realFetch(input, init);
+    }
+    if (!href.includes(BILLING_RUN)) return Response.json({}, { status: 404 });
+    return Response.json({
+      run: { metadata: { id: BILLING_RUN }, status: "RUNNING" },
+      tasks: [{ actionId: "billing-sync:step", status: "RUNNING" }],
+    });
+  }) as typeof fetch;
   try {
     for (const id of ["deployer", "marc"]) {
       await User.create({ _id: id, email: `${id}@example.com` });
@@ -120,6 +144,7 @@ async function main() {
         ),
       ],
       workflows: {
+        hatchetToken: encryptString(HATCHET_TOKEN),
         live: { sha: "a".repeat(40), tree: "t", names: ["billing-sync"] },
       },
     });
@@ -159,11 +184,20 @@ async function main() {
       service.executePostgreSQLQuery = service.executePostgreSQLCursor =
         async () => ({ success: true, data: [{ one: 1 }], rowCount: 1 });
     }
+    // A deployed step of billing-sync calls with its pass (step.mjs);
+    // anyone else sends the workflow's name, which grants nothing.
     const query = (key: string, sql: string, workflow?: string) =>
       call(
         "POST",
         "/query",
-        key,
+        key === WORKER_KEY && workflow === "billing-sync"
+          ? mintPass({
+              workspaceId: String(ws),
+              workflow,
+              runId: BILLING_RUN,
+              keyId: keyIdOf(hashApiKey(WORKER_KEY)),
+            }).token
+          : key,
         { connectionId, query: sql },
         workflow ? { "x-mako-workflow": workflow } : {},
       );
@@ -311,7 +345,7 @@ async function main() {
       setTransportForTests(null);
     }
 
-    // The deployed worker is unchanged: the workflow's rights.
+    // A deployed step, with its pass: the workflow's rights.
     res = await query(WORKER_KEY, WRITE("workflows"), "billing-sync");
     assert.equal(res.status, 200, JSON.stringify(res.body));
     if (postgresUrl) {
@@ -353,6 +387,7 @@ async function main() {
       ).catch(() => undefined);
     }
     await databaseConnectionService.closeAllConnections();
+    globalThis.fetch = realFetch;
     await mongoose.disconnect();
     await mongo.stop();
   }

@@ -298,7 +298,17 @@ export function syncRepoBackedResources(
       error: error instanceof Error ? error.message : String(error),
     });
   });
-  // Skills are files only (apps.md §27): nothing to reconcile on push.
+  // Skills are files only (apps.md §27): nothing to reconcile on push. A
+  // file that stopped loading is reported on the commit instead (a failed
+  // `mako/skills` status), so a hidden skill is seen where it was pushed.
+  void import("./skill-commit-status")
+    .then(m => m.reportSkillsCommitStatus(workspaceId))
+    .catch(error => {
+      logger.warn("Skills commit status after push failed", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   // dbt orchestration config (jobs/environments YAML — apps.md §23):
   // external edits re-register schedules on the next push.
   void import("../dbt/dbt-config.service")
