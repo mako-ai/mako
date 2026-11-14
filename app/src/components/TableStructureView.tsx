@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Box, Alert, Button, CircularProgress } from "@mui/material";
-import Editor from "@monaco-editor/react";
+import Editor from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useSchemaStore } from "../store/schemaStore";
 import { useWorkspace } from "../contexts/workspace-context";

@@ -71,6 +71,14 @@ const STATUS_LABELS: Record<McpServerInfo["status"], string> = {
 };
 
 /** Favicon for a custom MCP server, derived from its URL's host. */
+/** Custom header row; the id is a stable React key (not the index). */
+type HeaderRow = { id: number; key: string; value: string };
+let headerRowSeq = 0;
+function newHeaderRow(): HeaderRow {
+  headerRowSeq += 1;
+  return { id: headerRowSeq, key: "", value: "" };
+}
+
 function faviconForUrl(url: string): string | null {
   try {
     const host = new URL(url).hostname;
@@ -702,9 +710,9 @@ function CredentialsForm({
   const fields = preset?.headerFields ?? [];
   const isCustom = fields.length === 0;
   const [values, setValues] = useState<Record<string, string>>({});
-  const [customHeaders, setCustomHeaders] = useState<
-    Array<{ key: string; value: string }>
-  >([{ key: "", value: "" }]);
+  const [customHeaders, setCustomHeaders] = useState<Array<HeaderRow>>(() => [
+    newHeaderRow(),
+  ]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -729,7 +737,7 @@ function CredentialsForm({
           );
       await saveCredentials(currentWorkspace.id, server.id, headers);
       setValues({});
-      setCustomHeaders([{ key: "", value: "" }]);
+      setCustomHeaders([newHeaderRow()]);
       onSaved();
     } catch (err) {
       setError(
@@ -766,7 +774,7 @@ function CredentialsForm({
       {isCustom ? (
         <>
           {customHeaders.map((h, i) => (
-            <Stack key={i} direction="row" spacing={1}>
+            <Stack key={h.id} direction="row" spacing={1}>
               <TextField
                 label="Header name"
                 size="small"
@@ -800,9 +808,7 @@ function CredentialsForm({
           ))}
           <Button
             size="small"
-            onClick={() =>
-              setCustomHeaders(prev => [...prev, { key: "", value: "" }])
-            }
+            onClick={() => setCustomHeaders(prev => [...prev, newHeaderRow()])}
             sx={{ alignSelf: "flex-start" }}
           >
             Add header
@@ -939,15 +945,13 @@ function ServerDetail({
 }) {
   const { currentWorkspace } = useWorkspace();
   const confirm = useConfirm();
-  const {
-    testServer,
-    updateServer,
-    deleteServer,
-    fetchGrants,
-    revokeGrant,
-    saveGrant,
-    grants,
-  } = useMcpStore();
+  const testServer = useMcpStore(s => s.testServer);
+  const updateServer = useMcpStore(s => s.updateServer);
+  const deleteServer = useMcpStore(s => s.deleteServer);
+  const fetchGrants = useMcpStore(s => s.fetchGrants);
+  const revokeGrant = useMcpStore(s => s.revokeGrant);
+  const saveGrant = useMcpStore(s => s.saveGrant);
+  const grants = useMcpStore(s => s.grants);
   const [testing, setTesting] = useState(false);
   const myGrants = grants[server.id] ?? [];
   const hasAvailableTools =
@@ -1635,16 +1639,14 @@ export function McpServersSection() {
   const { currentWorkspace, loading: workspaceLoading } = useWorkspace();
   const muiTheme = useTheme();
   const fullScreenDialog = useMediaQuery(muiTheme.breakpoints.down("sm"));
-  const {
-    servers,
-    presets,
-    loading,
-    error,
-    fetchServers,
-    fetchPresets,
-    oauthReturn,
-    clearOAuthReturn,
-  } = useMcpStore();
+  const servers = useMcpStore(s => s.servers);
+  const presets = useMcpStore(s => s.presets);
+  const loading = useMcpStore(s => s.loading);
+  const error = useMcpStore(s => s.error);
+  const fetchServers = useMcpStore(s => s.fetchServers);
+  const fetchPresets = useMcpStore(s => s.fetchPresets);
+  const oauthReturn = useMcpStore(s => s.oauthReturn);
+  const clearOAuthReturn = useMcpStore(s => s.clearOAuthReturn);
   const [addOpen, setAddOpen] = useState(false);
   const [addPreset, setAddPreset] = useState<string | undefined>(undefined);
   const [detailId, setDetailId] = useState<string | null>(null);

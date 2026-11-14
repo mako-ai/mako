@@ -72,6 +72,7 @@ import { focusAppsFileTab, focusRepoDiffTab } from "../apps-runtime/shell";
 import VSScrollArea from "./VSScrollArea";
 import { basename, dirname } from "../utils/path";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { clickableProps } from "../lib/a11y";
 
 const EMPTY_FILES: Record<string, AppCommitFile[]> = {};
 
@@ -193,6 +194,7 @@ function ChangeRow({
     <Box
       title={`${change.status}: ${change.path}`}
       onClick={onOpen}
+      {...clickableProps(onOpen)}
       sx={{
         display: "flex",
         alignItems: "center",

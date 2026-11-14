@@ -46,16 +46,17 @@ interface SourceConnectionRow {
 
 function SourceConnectionExplorer() {
   const { currentWorkspace } = useWorkspace();
-  const { tabs, activeTabId, openTab, setActiveTab } = useConsoleStore();
+  const tabs = useConsoleStore(s => s.tabs);
+  const activeTabId = useConsoleStore(s => s.activeTabId);
+  const openTab = useConsoleStore(s => s.openTab);
+  const setActiveTab = useConsoleStore(s => s.setActiveTab);
   const consoleTabs = Object.values(tabs);
   const activeConsoleId = activeTabId;
-  const {
-    entities,
-    loading,
-    init,
-    refresh,
-    delete: deleteSource,
-  } = useSourceConnectionEntitiesStore();
+  const entities = useSourceConnectionEntitiesStore(s => s.entities);
+  const loading = useSourceConnectionEntitiesStore(s => s.loading);
+  const init = useSourceConnectionEntitiesStore(s => s.init);
+  const refresh = useSourceConnectionEntitiesStore(s => s.refresh);
+  const deleteSource = useSourceConnectionEntitiesStore(s => s.delete);
 
   const connectors: SourceConnectionRow[] = useMemo(() => {
     if (!currentWorkspace) return [];

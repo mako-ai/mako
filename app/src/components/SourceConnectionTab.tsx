@@ -23,14 +23,12 @@ const SourceConnectionTab: React.FC<SourceConnectionTabProps> = ({
   tabId,
 }) => {
   const { currentWorkspace } = useWorkspace();
-  const {
-    closeTab,
-    updateTitle,
-    updateIcon,
-    updateContent,
-    tabs,
-    updateDirty,
-  } = useConsoleStore();
+  const closeTab = useConsoleStore(s => s.closeTab);
+  const updateTitle = useConsoleStore(s => s.updateTitle);
+  const updateIcon = useConsoleStore(s => s.updateIcon);
+  const updateContent = useConsoleStore(s => s.updateContent);
+  const tabs = useConsoleStore(s => s.tabs);
+  const updateDirty = useConsoleStore(s => s.updateDirty);
   const consoleTabs = Object.values(tabs);
 
   // Draft store
@@ -40,14 +38,13 @@ const SourceConnectionTab: React.FC<SourceConnectionTabProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   /* ------------------ global catalog ------------------ */
-  const { types: connectorTypes, fetchCatalog } = useConnectorCatalogStore();
+  const connectorTypes = useConnectorCatalogStore(s => s.types);
+  const fetchCatalog = useConnectorCatalogStore(s => s.fetchCatalog);
 
   /* ------------------ entity cache -------------------- */
-  const {
-    fetchOne: fetchConnector,
-    upsert: upsertConnector,
-    entities,
-  } = useSourceConnectionEntitiesStore();
+  const fetchConnector = useSourceConnectionEntitiesStore(s => s.fetchOne);
+  const upsertConnector = useSourceConnectionEntitiesStore(s => s.upsert);
+  const entities = useSourceConnectionEntitiesStore(s => s.entities);
 
   const [localSourceId, setLocalSourceId] = useState<string | undefined>(
     initialSourceId,

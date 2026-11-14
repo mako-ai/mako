@@ -24,6 +24,39 @@ export function focusDbtFileTab(projectId: string, path: string): string {
   return tabId;
 }
 
+/**
+ * Point the open editor tab for `from` at `to` after a rename: metadata.path
+ * drives the editor's file key, the tab URL and the breadcrumbs, so leaving it
+ * on the old path orphaned the tab (and Cmd+S wrote to the old path).
+ */
+export function retargetDbtFileTab(
+  projectId: string,
+  from: string,
+  to: string,
+): void {
+  const consoleStore = useConsoleStore.getState();
+  const tab = findTab({
+    kind: "dbt-file",
+    metadata: { projectId, path: from },
+  })(consoleStore);
+  if (!tab) return;
+  consoleStore.updateMetadata(tab.id, {
+    ...tab.metadata,
+    projectId,
+    path: to,
+  });
+  consoleStore.updateTitle(tab.id, basename(to));
+}
+
+/** Close the editor tab for a dbt file that no longer exists. */
+export function closeDbtFileTab(projectId: string, path: string): void {
+  const consoleStore = useConsoleStore.getState();
+  const tab = findTab({ kind: "dbt-file", metadata: { projectId, path } })(
+    consoleStore,
+  );
+  if (tab) consoleStore.closeTab(tab.id);
+}
+
 /** Open (or focus) the project Console tab (command bar + problems). */
 export function focusDbtConsoleTab(projectId: string, title: string): string {
   const tabId = useConsoleStore.getState().focusOrOpenTab(

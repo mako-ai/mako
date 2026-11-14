@@ -8,6 +8,7 @@ import {
 import { SETTINGS_SECTION_ICONS } from "../lib/entity-icons";
 import type { SettingsSection } from "../store/lib/types";
 import { SECTION_LABELS, SECTION_ORDER } from "../pages/settings/sections";
+import { clickableProps } from "../lib/a11y";
 
 export default function SettingsExplorer() {
   const { user } = useAuth();
@@ -48,6 +49,7 @@ export default function SettingsExplorer() {
               <Box
                 key={section}
                 onClick={() => openSection(section)}
+                {...clickableProps(() => openSection(section))}
                 sx={{
                   display: "flex",
                   alignItems: "center",

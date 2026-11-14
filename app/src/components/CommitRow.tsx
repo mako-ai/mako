@@ -22,6 +22,7 @@ import {
   MoreHorizontal as MoreIcon,
 } from "lucide-react";
 import type { AppCommit, AppCommitFile } from "../store/appsStore";
+import { clickableProps } from "../lib/a11y";
 
 const STATUS_LETTER: Record<string, string> = {
   added: "A",
@@ -64,6 +65,7 @@ export function CommitRow({
     <Box sx={{ borderBottom: dense ? 0 : 1, borderColor: "divider" }}>
       <Box
         onClick={onToggle}
+        {...clickableProps(onToggle)}
         sx={{
           display: "flex",
           alignItems: "flex-start",
@@ -188,6 +190,7 @@ export function CommitRow({
                     e.stopPropagation();
                     onFileClick?.(f);
                   }}
+                  {...(openable ? clickableProps(() => onFileClick?.(f)) : {})}
                   sx={{
                     display: "flex",
                     alignItems: "center",

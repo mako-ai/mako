@@ -549,6 +549,7 @@ export default function DbtJobView({
                   sx={{ flex: 1 }}
                 />
                 <IconButton
+                  aria-label="Remove command"
                   size="small"
                   disabled={formCommands.length <= 1}
                   onClick={() =>

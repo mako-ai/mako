@@ -1,4 +1,4 @@
-import type { Monaco } from "@monaco-editor/react";
+import type { Monaco } from "../lib/monaco/load";
 
 /**
  * Configure Monaco's TS/JS language services so `.tsx` files parse as JSX.
@@ -11,7 +11,9 @@ import type { Monaco } from "@monaco-editor/react";
  * IntelliSense is a future WebContainer-runtime concern.
  */
 export function configureMonacoForJsx(monaco: Monaco) {
-  const ts = monaco.languages.typescript;
+  // monaco-editor >= 0.55: top-level namespace (languages.typescript is a
+  // deprecated alias).
+  const ts = monaco.typescript;
   const compilerOptions = {
     jsx: ts.JsxEmit.React,
     jsxFactory: "React.createElement",

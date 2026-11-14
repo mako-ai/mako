@@ -43,6 +43,10 @@ import {
 } from "@mui/icons-material";
 import { useFlowStore } from "../store/flowStore";
 import {
+  useLatestRequest,
+  useOnDocumentVisible,
+} from "../hooks/useLatestRequest";
+import {
   pillToneForMuiColor,
   ResultBadge,
   SpinnerRingBadge,
@@ -51,6 +55,7 @@ import {
 import { BUI_MONO_FONT_FAMILY } from "./chat/bui-styles";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EntityHistoryButton } from "./EntityHistoryButton";
+import { clickableProps } from "../lib/a11y";
 
 interface BackfillPanelProps {
   workspaceId: string;
@@ -272,29 +277,31 @@ export function BackfillPanel({
   flowId,
   onEdit,
 }: BackfillPanelProps) {
-  const {
-    flows: flowsMap,
-    startCdcBackfill,
-    fetchCdcStatus,
-    fetchCdcDestinationCounts,
-    fetchFlowStatus,
-    fetchExecutionDetails,
-    fetchFlowHistory,
-    fetchWebhookEvents,
-    fetchEntitySchema,
-    fetchEntitySchemaHealth,
-    startCdcStream,
-    pauseCdcStream,
-    pauseCdcFlow,
-    cancelCdcBackfill,
-    resumeCdcFlow,
-    resetCdcEntityTable,
-    resyncCdcFlow,
-    recoverCdcStream,
-    recoverCdcBackfill,
-    reprocessStaleEvents,
-    retryAllFailedWebhookEvents,
-  } = useFlowStore();
+  const flowsMap = useFlowStore(s => s.flows);
+  const startCdcBackfill = useFlowStore(s => s.startCdcBackfill);
+  const fetchCdcStatus = useFlowStore(s => s.fetchCdcStatus);
+  const fetchCdcDestinationCounts = useFlowStore(
+    s => s.fetchCdcDestinationCounts,
+  );
+  const fetchFlowStatus = useFlowStore(s => s.fetchFlowStatus);
+  const fetchExecutionDetails = useFlowStore(s => s.fetchExecutionDetails);
+  const fetchFlowHistory = useFlowStore(s => s.fetchFlowHistory);
+  const fetchWebhookEvents = useFlowStore(s => s.fetchWebhookEvents);
+  const fetchEntitySchema = useFlowStore(s => s.fetchEntitySchema);
+  const fetchEntitySchemaHealth = useFlowStore(s => s.fetchEntitySchemaHealth);
+  const startCdcStream = useFlowStore(s => s.startCdcStream);
+  const pauseCdcStream = useFlowStore(s => s.pauseCdcStream);
+  const pauseCdcFlow = useFlowStore(s => s.pauseCdcFlow);
+  const cancelCdcBackfill = useFlowStore(s => s.cancelCdcBackfill);
+  const resumeCdcFlow = useFlowStore(s => s.resumeCdcFlow);
+  const resetCdcEntityTable = useFlowStore(s => s.resetCdcEntityTable);
+  const resyncCdcFlow = useFlowStore(s => s.resyncCdcFlow);
+  const recoverCdcStream = useFlowStore(s => s.recoverCdcStream);
+  const recoverCdcBackfill = useFlowStore(s => s.recoverCdcBackfill);
+  const reprocessStaleEvents = useFlowStore(s => s.reprocessStaleEvents);
+  const retryAllFailedWebhookEvents = useFlowStore(
+    s => s.retryAllFailedWebhookEvents,
+  );
 
   const [expandedEntity, setExpandedEntity] = useState<string | null>(null);
   const [entitySchemaCache, setEntitySchemaCache] = useState<
@@ -433,7 +440,29 @@ export function BackfillPanel({
   const isActive =
     streamState === "active" || bfStatus === "running" || executionId !== null;
 
+  // Each poller: only the newest call applies its response, and interval
+  // ticks skip while a call is in flight or the browser tab is hidden.
+  const cdcRequest = useLatestRequest();
+  const logsRequest = useLatestRequest();
+  const countsRequest = useLatestRequest();
+
   const pollCdc = useCallback(async () => {
+    const ticket = cdcRequest.begin();
+    try {
+      await pollCdcOnce(ticket.isLatest);
+    } finally {
+      ticket.done();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    fetchCdcStatus,
+    fetchWebhookEvents,
+    fetchFlowHistory,
+    workspaceId,
+    flowId,
+  ]);
+
+  async function pollCdcOnce(isLatest: () => boolean) {
     const activeTab = tabRef.current;
     const promises: Promise<unknown>[] = [fetchCdcStatus(workspaceId, flowId)];
     const shouldPollEvents = activeTab === 2;
@@ -451,6 +480,7 @@ export function BackfillPanel({
     }
 
     const results = await Promise.all(promises);
+    if (!isLatest()) return;
     const status = results[0] as Awaited<ReturnType<typeof fetchCdcStatus>>;
     if (status) setCdc(status);
     if (shouldPollEvents) {
@@ -470,15 +500,19 @@ export function BackfillPanel({
       >;
       if (history) setRuns(history as typeof runs);
     }
-  }, [
-    fetchCdcStatus,
-    fetchWebhookEvents,
-    fetchFlowHistory,
-    workspaceId,
-    flowId,
-  ]);
+  }
 
   const fetchEventCounts = useCallback(async () => {
+    const ticket = countsRequest.begin();
+    try {
+      await fetchEventCountsOnce(ticket.isLatest);
+    } finally {
+      ticket.done();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchWebhookEvents, workspaceId, flowId]);
+
+  async function fetchEventCountsOnce(isLatest: () => boolean) {
     const [
       allResult,
       appliedResult,
@@ -492,6 +526,7 @@ export function BackfillPanel({
       fetchWebhookEvents(workspaceId, flowId, 1, 0, { applyStatus: "failed" }),
       fetchWebhookEvents(workspaceId, flowId, 1, 0, { applyStatus: "dropped" }),
     ]);
+    if (!isLatest()) return;
 
     const all = allResult?.total ?? 0;
     const applied = appliedResult?.total ?? 0;
@@ -501,12 +536,23 @@ export function BackfillPanel({
 
     setEventCounts({ all, applied, pending, failed, dropped });
     setWebhookEventsTotalAll(all);
-  }, [fetchWebhookEvents, workspaceId, flowId]);
+  }
 
   const pollLogs = useCallback(async () => {
+    const ticket = logsRequest.begin();
+    try {
+      await pollLogsOnce(ticket.isLatest);
+    } finally {
+      ticket.done();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, flowId, fetchFlowStatus, fetchExecutionDetails]);
+
+  async function pollLogsOnce(isLatest: () => boolean) {
     const currentExecId = executionIdRef.current;
     if (!currentExecId) {
       const statusResp = await fetchFlowStatus(workspaceId, flowId);
+      if (!isLatest()) return;
       if (statusResp?.isRunning && statusResp.runningExecution) {
         setExecutionId(statusResp.runningExecution.executionId);
         setLiveLogs([]);
@@ -518,6 +564,7 @@ export function BackfillPanel({
       flowId,
       currentExecId,
     );
+    if (!isLatest() || executionIdRef.current !== currentExecId) return;
     if (details?.logs && details.logs.length > 0) {
       setLiveLogs(details.logs as LogEntry[]);
     }
@@ -536,7 +583,7 @@ export function BackfillPanel({
     if (details?.status && details.status !== "running") {
       setExecutionId(null);
     }
-  }, [workspaceId, flowId, fetchFlowStatus, fetchExecutionDetails]);
+  }
 
   const loadRunLogs = useCallback(
     async (runId: string) => {
@@ -555,11 +602,13 @@ export function BackfillPanel({
   useEffect(() => {
     pollCdc();
     const interval = isActive ? 3_000 : 8_000;
-    cdcPollRef.current = setInterval(pollCdc, interval);
+    cdcPollRef.current = setInterval(() => {
+      if (cdcRequest.shouldTick()) void pollCdc();
+    }, interval);
     return () => {
       if (cdcPollRef.current) clearInterval(cdcPollRef.current);
     };
-  }, [pollCdc, isActive]);
+  }, [pollCdc, isActive, cdcRequest]);
 
   useEffect(() => {
     let cancelled = false;
@@ -584,22 +633,39 @@ export function BackfillPanel({
   useEffect(() => {
     if (!isActive) return;
     pollLogs();
-    logPollRef.current = setInterval(pollLogs, 2_000);
+    logPollRef.current = setInterval(() => {
+      if (logsRequest.shouldTick()) void pollLogs();
+    }, 2_000);
     return () => {
       if (logPollRef.current) clearInterval(logPollRef.current);
     };
-  }, [pollLogs, isActive]);
+  }, [pollLogs, isActive, logsRequest]);
 
+  // Re-poll when the tab or filter changes — but not on mount, where the
+  // interval effect above already polled (it used to poll twice).
+  const skipFirstFilterPollRef = useRef(true);
   useEffect(() => {
+    if (skipFirstFilterPollRef.current) {
+      skipFirstFilterPollRef.current = false;
+      return;
+    }
     pollCdc();
   }, [tab, eventsFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Polling pauses while the browser tab is hidden; catch up on return.
+  useOnDocumentVisible(() => {
+    void pollCdc();
+    if (isActive) void pollLogs();
+  });
 
   useEffect(() => {
     if (tab !== 2) return;
     fetchEventCounts();
-    const id = setInterval(fetchEventCounts, 15000);
+    const id = setInterval(() => {
+      if (countsRequest.shouldTick()) void fetchEventCounts();
+    }, 15000);
     return () => clearInterval(id);
-  }, [tab, fetchEventCounts]);
+  }, [tab, fetchEventCounts, countsRequest]);
 
   const pollDestCounts = useCallback(async () => {
     setDestCountsLoading(true);
@@ -2033,6 +2099,7 @@ export function BackfillPanel({
                       <Box
                         key={run.executionId}
                         onClick={() => loadRunLogs(run.executionId)}
+                        {...clickableProps(() => loadRunLogs(run.executionId))}
                         sx={{
                           px: 1,
                           py: 0.75,

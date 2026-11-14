@@ -38,6 +38,7 @@ import { workspaceClient } from "../lib/workspace-client";
 import { useAuth } from "../contexts/auth-context";
 import { trackEvent } from "../lib/analytics";
 import { useConfirm } from "./ConfirmDialog";
+import { useTransientMessage } from "../hooks/useTransientMessage";
 
 interface MemberRow {
   id: string;
@@ -70,7 +71,11 @@ export function WorkspaceMembers() {
   );
   const [inviting, setInviting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const {
+    message: successMessage,
+    show: showSuccess,
+    clear: clearSuccess,
+  } = useTransientMessage();
 
   const handleInviteMember = async () => {
     if (!inviteEmail.trim()) {
@@ -92,8 +97,7 @@ export function WorkspaceMembers() {
       setInviteDialogOpen(false);
       setInviteEmail("");
       setInviteRole("member");
-      setSuccessMessage("Invitation sent successfully");
-      setTimeout(() => setSuccessMessage(null), 5000);
+      showSuccess("Invitation sent successfully", 5000);
     } catch (error: any) {
       setError(error.message || "Failed to send invitation");
     } finally {
@@ -151,8 +155,7 @@ export function WorkspaceMembers() {
   const copyInviteLink = (token: string) => {
     const inviteUrl = `${window.location.origin}/invite/${token}`;
     navigator.clipboard.writeText(inviteUrl);
-    setSuccessMessage("Invite link copied to clipboard");
-    setTimeout(() => setSuccessMessage(null), 3000);
+    showSuccess("Invite link copied to clipboard", 3000);
   };
 
   const getRoleBadgeColor = (role: string) => {
@@ -232,11 +235,7 @@ export function WorkspaceMembers() {
       )}
 
       {successMessage && (
-        <Alert
-          severity="success"
-          sx={{ mb: 2 }}
-          onClose={() => setSuccessMessage(null)}
-        >
+        <Alert severity="success" sx={{ mb: 2 }} onClose={clearSuccess}>
           {successMessage}
         </Alert>
       )}
@@ -464,7 +463,11 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
   const [domains, setDomains] = useState("");
   const [role, setRole] = useState<"member" | "viewer">("viewer");
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const {
+    message,
+    show: showMessage,
+    clear: clearMessage,
+  } = useTransientMessage();
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -486,7 +489,7 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
   const save = async () => {
     setSaving(true);
     setError(null);
-    setMessage(null);
+    clearMessage();
     try {
       const list = domains
         .split(/[,\s]+/)
@@ -496,12 +499,12 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
         domains: list,
         role,
       });
-      setMessage(
+      showMessage(
         saved
           ? `Anyone with an email on ${saved.domains.join(", ")} now joins as ${saved.role} the first time they open the workspace or one of its apps.`
           : "Auto-join is off.",
+        6000,
       );
-      setTimeout(() => setMessage(null), 6000);
     } catch (e: any) {
       setError(e.message || "Failed to save auto-join");
     } finally {
@@ -541,11 +544,7 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
         </Alert>
       )}
       {message && (
-        <Alert
-          severity="success"
-          sx={{ mb: 1.5 }}
-          onClose={() => setMessage(null)}
-        >
+        <Alert severity="success" sx={{ mb: 1.5 }} onClose={clearMessage}>
           {message}
         </Alert>
       )}

@@ -61,15 +61,17 @@ const StyledHorizontalResizeHandle = styled(Separator)(({ theme }) => ({
 
 export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
   const { currentWorkspace } = useWorkspace();
-  const {
-    fetchFlowHistory,
-    fetchFlowStatus,
-    cancelFlowExecution,
-    fetchFlowDetails,
-    fetchExecutionDetails,
-  } = useFlowStore();
+  const fetchFlowHistory = useFlowStore(s => s.fetchFlowHistory);
+  const fetchFlowStatus = useFlowStore(s => s.fetchFlowStatus);
+  const cancelFlowExecution = useFlowStore(s => s.cancelFlowExecution);
+  const fetchFlowDetails = useFlowStore(s => s.fetchFlowDetails);
+  const fetchExecutionDetails = useFlowStore(s => s.fetchExecutionDetails);
   const [history, setHistory] = useState<FlowExecutionHistory[]>([]);
-  const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+  // Select by execution id, not array index: a history refresh prepends the
+  // newest run, which used to shift the highlight and logs to another run.
+  const [selectedExecutionId, setSelectedExecutionId] = useState<string | null>(
+    null,
+  );
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<any[]>([]);
@@ -173,21 +175,25 @@ export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
     checkFlowStatus();
   }, [currentWorkspace?.id, flowId, fetchHistory, checkFlowStatus]);
 
-  const selectedHistory =
-    selectedIndex >= 0 && selectedIndex < history.length
-      ? history[selectedIndex]
-      : null;
+  const selectedHistory = selectedExecutionId
+    ? (history.find(h => h.executionId === selectedExecutionId) ?? null)
+    : null;
+  const selectedStatus = selectedHistory?.status;
 
-  // Fetch logs and full execution details when a history item is selected
+  // Fetch logs and full execution details when a history item is selected.
+  // `active` drops a slow response for a run the user already clicked away
+  // from (A then B quickly used to leave A's logs under B's highlight).
   useEffect(() => {
+    let active = true;
     const loadExecutionDetails = async () => {
-      if (!selectedHistory || !currentWorkspace?.id) return;
+      if (!selectedExecutionId || !currentWorkspace?.id) return;
       try {
         const data = await fetchExecutionDetails(
           currentWorkspace.id,
           flowId,
-          selectedHistory.executionId,
+          selectedExecutionId,
         );
+        if (!active) return;
         if (data) {
           setFullExecutionDetails(data as FlowExecutionHistory);
           setLogs(data.logs || []);
@@ -196,14 +202,25 @@ export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
           setLogs([]);
         }
       } catch (err) {
+        if (!active) return;
         console.error("Failed to fetch execution details", err);
         setFullExecutionDetails(null);
         setLogs([]);
       }
     };
 
-    loadExecutionDetails();
-  }, [selectedHistory, currentWorkspace?.id, flowId, fetchExecutionDetails]);
+    void loadExecutionDetails();
+    return () => {
+      active = false;
+    };
+    // selectedStatus: re-read details when a refresh shows the run moved on.
+  }, [
+    selectedExecutionId,
+    selectedStatus,
+    currentWorkspace?.id,
+    flowId,
+    fetchExecutionDetails,
+  ]);
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -426,11 +443,11 @@ export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
             ) : (
               <List dense>
                 {/* BUI task rows: badge + timestamp + status pill */}
-                {history.map((h, idx) => (
+                {history.map(h => (
                   <ListItemButton
-                    key={idx}
-                    selected={idx === selectedIndex}
-                    onClick={() => setSelectedIndex(idx)}
+                    key={h.executionId}
+                    selected={h.executionId === selectedExecutionId}
+                    onClick={() => setSelectedExecutionId(h.executionId)}
                     sx={{ borderRadius: "8px", gap: 1.25 }}
                   >
                     {h.status === "running" ? (

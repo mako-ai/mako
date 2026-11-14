@@ -114,7 +114,8 @@ export default function NotebooksExplorer() {
 
   const reveal = useExplorerRevealStore(selectRevealFor("notebooks"));
 
-  const { activeTabId, tabs } = useConsoleStore();
+  const activeTabId = useConsoleStore(s => s.activeTabId);
+  const tabs = useConsoleStore(s => s.tabs);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 

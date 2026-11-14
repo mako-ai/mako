@@ -9,7 +9,7 @@
 
 import { useDbtStore } from "../store/dbtStore";
 import { getCurrentWorkspaceId } from "../store/uiStore";
-import { focusDbtFileTab } from "./shell";
+import { closeDbtFileTab, focusDbtFileTab } from "./shell";
 
 type ToolResult = Record<string, unknown>;
 
@@ -122,6 +122,7 @@ export async function executeDbtAgentTool(
       if (!projectId || !path) return fail("projectId and path are required");
       const ok = await store.deleteFile(workspaceId, projectId, path);
       if (!ok) return fail(`Failed to delete ${path}`);
+      closeDbtFileTab(projectId, path);
       return { success: true, path };
     }
 

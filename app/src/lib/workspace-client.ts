@@ -9,6 +9,7 @@
  */
 
 import { api, unwrap } from "../api";
+import { setActiveWorkspaceId } from "./active-workspace";
 
 // Types
 export interface WorkspaceBilling {
@@ -170,7 +171,7 @@ class WorkspaceClient {
       }),
     );
     // Update local storage
-    localStorage.setItem("activeWorkspaceId", id);
+    setActiveWorkspaceId(id);
   }
 
   /**

@@ -23,6 +23,7 @@ import type {
   ScheduledQueryScheduleResponse,
 } from "../lib/api-types";
 import { realtimeClientId } from "../lib/realtime-client-id";
+import { getActiveWorkspaceId } from "../lib/active-workspace";
 
 export type QueryExecuteResult =
   | QueryExecuteResponse
@@ -565,7 +566,7 @@ function normalizeScheduledRunSnapshotForTab(
 
 /**
  * Tabs are persisted per workspace: `console-store:<workspaceId>`. The active
- * workspace id lives in localStorage (`activeWorkspaceId`, written before the
+ * workspace id is per browser tab (lib/active-workspace, written before the
  * post-switch reload), so each boot rehydrates the bucket that belongs to the
  * workspace being loaded — switching workspaces no longer leaks tabs from
  * another workspace, and switching back restores that workspace's tabs.
@@ -573,7 +574,7 @@ function normalizeScheduledRunSnapshotForTab(
 const CONSOLE_STORE_BASE_KEY = "console-store";
 
 function consoleStoreStorageKey(): string {
-  const workspaceId = localStorage.getItem("activeWorkspaceId");
+  const workspaceId = getActiveWorkspaceId();
   return workspaceId
     ? `${CONSOLE_STORE_BASE_KEY}:${workspaceId}`
     : CONSOLE_STORE_BASE_KEY;
@@ -620,6 +621,70 @@ function consoleStoreWriteKey(): string | null {
     return key;
   }
   return null;
+}
+
+/**
+ * Persisted writes are coalesced: `persist` calls setItem on EVERY store set
+ * (each keystroke flush, each status change), and each call serialized every
+ * tab synchronously. Writes now land at most once per
+ * CONSOLE_PERSIST_THROTTLE_MS, plus a flush when the page is hidden/unloaded
+ * so the last edit is never lost.
+ */
+const CONSOLE_PERSIST_THROTTLE_MS = 500;
+let pendingConsoleWrite: { key: string; value: unknown } | null = null;
+let consoleWriteTimer: ReturnType<typeof setTimeout> | null = null;
+let warnedConsoleQuota = false;
+
+function writeConsoleStoreNow(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (error) {
+    // QuotaExceededError (or storage disabled) must not throw out of the
+    // store action that triggered the write; tabs stay in memory.
+    if (!warnedConsoleQuota) {
+      warnedConsoleQuota = true;
+      console.warn("[consoleStore] could not persist tabs", error);
+    }
+  }
+}
+
+function flushConsoleStoreWrite(): void {
+  if (consoleWriteTimer) {
+    clearTimeout(consoleWriteTimer);
+    consoleWriteTimer = null;
+  }
+  const pending = pendingConsoleWrite;
+  pendingConsoleWrite = null;
+  if (pending) writeConsoleStoreNow(pending.key, pending.value);
+}
+
+function scheduleConsoleStoreWrite(key: string, value: unknown): void {
+  // A different bucket must not swallow the previous bucket's last write.
+  if (pendingConsoleWrite && pendingConsoleWrite.key !== key) {
+    flushConsoleStoreWrite();
+  }
+  pendingConsoleWrite = { key, value };
+  if (!consoleWriteTimer) {
+    consoleWriteTimer = setTimeout(
+      flushConsoleStoreWrite,
+      CONSOLE_PERSIST_THROTTLE_MS,
+    );
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushConsoleStoreWrite);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushConsoleStoreWrite();
+  });
+}
+
+/** Persisted tab shape: result sample rows are server artifacts (lastRun is
+ * re-synced on load) and can be large, so they are not written to storage. */
+function tabForPersistence(tab: ConsoleTab): ConsoleTab {
+  if (!tab.lastRun?.sampleRows) return tab;
+  const { sampleRows: _sampleRows, ...lastRun } = tab.lastRun;
+  return { ...tab, lastRun };
 }
 
 export const useConsoleStore = create<ConsoleStore>()(
@@ -2104,7 +2169,12 @@ export const useConsoleStore = create<ConsoleStore>()(
     {
       name: "console-store",
       partialize: state => ({
-        tabs: state.tabs,
+        tabs: Object.fromEntries(
+          Object.entries(state.tabs).map(([id, tab]) => [
+            id,
+            tabForPersistence(tab),
+          ]),
+        ),
         tabOrder: state.tabOrder,
         activeTabId: state.activeTabId,
       }),
@@ -2212,11 +2282,17 @@ export const useConsoleStore = create<ConsoleStore>()(
         },
         setItem: (_name, value) => {
           const key = consoleStoreWriteKey();
-          if (key) localStorage.setItem(key, JSON.stringify(value));
+          if (key) scheduleConsoleStoreWrite(key, value);
         },
         removeItem: () => {
           const key = consoleStoreWriteKey();
-          if (key) localStorage.removeItem(key);
+          if (!key) return;
+          if (pendingConsoleWrite?.key === key) pendingConsoleWrite = null;
+          try {
+            localStorage.removeItem(key);
+          } catch {
+            // storage unavailable
+          }
         },
       },
     },

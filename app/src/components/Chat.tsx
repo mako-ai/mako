@@ -114,6 +114,7 @@ import { ChatInputArea } from "./chat/ChatInputArea";
 import { ChatEmptyState } from "./chat/ChatEmptyState";
 import { useSessionUsageCounter } from "./chat/hooks/useSessionUsageCounter";
 import { AcpPermissionBanner } from "./AcpPermissionBanner";
+import { ChatPanelErrorBoundary } from "./chat/ChatPanelErrorBoundary";
 import { AcpWorkspaceToolsBanner } from "./AcpWorkspaceToolsBanner";
 import {
   onRenderDebug,
@@ -1576,44 +1577,49 @@ const Chat: React.FC<ChatProps> = ({
           docked above the composer like the prompt queue. The chat itself
           only shows a read-only summary once the user has responded. */}
       {pendingInteractiveTool && (
-        <Box
-          sx={
-            pendingInteractiveTool.toolName === "ask_clarifying_questions"
-              ? { mx: 3.25, mt: 1, mb: -1 }
-              : { mx: 2, mt: 1, mb: -0.5 }
-          }
-          key={pendingInteractiveTool.toolCallId}
+        <ChatPanelErrorBoundary
+          panel="pending question or plan"
+          resetKey={pendingInteractiveTool.toolCallId}
         >
-          {pendingInteractiveTool.toolName === "ask_clarifying_questions" ? (
-            <ClarifyingQuestionsCard
-              docked
-              input={
-                pendingInteractiveTool.input as AskClarifyingQuestionsInput
-              }
-              onResolve={output =>
-                handleResolveInteractiveTool({
-                  tool: pendingInteractiveTool.toolName,
-                  toolCallId: pendingInteractiveTool.toolCallId,
-                  output: output as unknown as Record<string, unknown>,
-                  viaAcpBridge: pendingInteractiveTool.viaAcpBridge,
-                })
-              }
-            />
-          ) : (
-            <PlanCard
-              toolCallId={pendingInteractiveTool.toolCallId}
-              chatId={chatId}
-              streaming={pendingInteractiveTool.streaming}
-              // While streaming the input is partial — the card reads live
-              // data from planStore instead (fed by setStreamingInput).
-              input={
-                pendingInteractiveTool.streaming
-                  ? undefined
-                  : (pendingInteractiveTool.input as SubmitPlanInput)
-              }
-            />
-          )}
-        </Box>
+          <Box
+            sx={
+              pendingInteractiveTool.toolName === "ask_clarifying_questions"
+                ? { mx: 3.25, mt: 1, mb: -1 }
+                : { mx: 2, mt: 1, mb: -0.5 }
+            }
+            key={pendingInteractiveTool.toolCallId}
+          >
+            {pendingInteractiveTool.toolName === "ask_clarifying_questions" ? (
+              <ClarifyingQuestionsCard
+                docked
+                input={
+                  pendingInteractiveTool.input as AskClarifyingQuestionsInput
+                }
+                onResolve={output =>
+                  handleResolveInteractiveTool({
+                    tool: pendingInteractiveTool.toolName,
+                    toolCallId: pendingInteractiveTool.toolCallId,
+                    output: output as unknown as Record<string, unknown>,
+                    viaAcpBridge: pendingInteractiveTool.viaAcpBridge,
+                  })
+                }
+              />
+            ) : (
+              <PlanCard
+                toolCallId={pendingInteractiveTool.toolCallId}
+                chatId={chatId}
+                streaming={pendingInteractiveTool.streaming}
+                // While streaming the input is partial — the card reads live
+                // data from planStore instead (fed by setStreamingInput).
+                input={
+                  pendingInteractiveTool.streaming
+                    ? undefined
+                    : (pendingInteractiveTool.input as SubmitPlanInput)
+                }
+              />
+            )}
+          </Box>
+        </ChatPanelErrorBoundary>
       )}
 
       <Collapse
@@ -1623,23 +1629,34 @@ const Chat: React.FC<ChatProps> = ({
         unmountOnExit
         sx={{ mb: -1 }}
       >
-        <QueuedPromptList
-          prompts={queuedPrompts}
-          editingId={editingPromptId}
-          onStartEdit={handleStartEditQueuedPrompt}
-          onSendNow={handleSendQueuedPromptNow}
-          onRemove={handleRemoveQueuedPrompt}
-        />
+        <ChatPanelErrorBoundary panel="queued prompts" resetKey={chatId}>
+          <QueuedPromptList
+            prompts={queuedPrompts}
+            editingId={editingPromptId}
+            onStartEdit={handleStartEditQueuedPrompt}
+            onSendNow={handleSendQueuedPromptNow}
+            onRemove={handleRemoveQueuedPrompt}
+          />
+        </ChatPanelErrorBoundary>
       </Collapse>
 
       {/* Local Claude/Codex: activate workspace MCP + HITL for Bash/edits. */}
       {isLocalAcp ? (
-        <AcpWorkspaceToolsBanner
-          modelId={selectedModelId}
-          workspaceId={currentWorkspace?.id}
-        />
+        <ChatPanelErrorBoundary
+          panel="local agent tools banner"
+          resetKey={chatId}
+        >
+          <AcpWorkspaceToolsBanner
+            modelId={selectedModelId}
+            workspaceId={currentWorkspace?.id}
+          />
+        </ChatPanelErrorBoundary>
       ) : null}
-      {isLocalAcp ? <AcpPermissionBanner /> : null}
+      {isLocalAcp ? (
+        <ChatPanelErrorBoundary panel="permission request" resetKey={chatId}>
+          <AcpPermissionBanner />
+        </ChatPanelErrorBoundary>
+      ) : null}
 
       {/* Input — isolated component so keystrokes don't re-render messages */}
       <ChatInputArea

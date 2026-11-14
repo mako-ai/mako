@@ -140,6 +140,23 @@ function ServerIcon({ src }: { src?: string | null }) {
   );
 }
 
+/**
+ * Pending approval ids in the order their cards went pending. Every pending
+ * card installs a window key listener, so exactly one of them must claim each
+ * Enter/Escape: the card that contains keyboard focus, else the oldest.
+ * Without this, one Enter approved every parallel tool call at once.
+ */
+const pendingApprovalOrder: string[] = [];
+
+function keyboardOwnerFor(target: EventTarget | null): string | undefined {
+  if (target instanceof Element) {
+    const card = target.closest<HTMLElement>("[data-mcp-approval-id]");
+    const id = card?.dataset.mcpApprovalId;
+    if (id && pendingApprovalOrder.includes(id)) return id;
+  }
+  return pendingApprovalOrder[0];
+}
+
 export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
   toolName,
   input,
@@ -211,6 +228,12 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
 
   const pending = resolution === "pending";
   const primaryIsAlways = pending && canAlwaysAllow;
+  // The key listener below is installed once per pending period; read the
+  // live `respond` (it closes over toolInfo / onRespond) through a ref.
+  const respondRef = useRef(respond);
+  respondRef.current = respond;
+  const primaryIsAlwaysRef = useRef(primaryIsAlways);
+  primaryIsAlwaysRef.current = primaryIsAlways;
 
   // Claude-style keyboard shortcuts: Enter = primary allow, Esc = deny.
   // Focus usually sits in the chat composer, so inputs are only exempted
@@ -219,7 +242,10 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
   // always denies — it has no competing meaning while a card is pending.
   useEffect(() => {
     if (!pending) return;
+    pendingApprovalOrder.push(approvalId);
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Enter" && event.key !== "Escape") return;
+      if (keyboardOwnerFor(event.target) !== approvalId) return;
       const target = event.target as HTMLElement | null;
       const isTextInput =
         !!target &&
@@ -233,18 +259,21 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
         if (isTextInput && inputText.trim().length > 0) return;
         event.preventDefault();
         event.stopPropagation();
-        void respond(true, primaryIsAlways, "tool");
-      } else if (event.key === "Escape") {
+        void respondRef.current(true, primaryIsAlwaysRef.current, "tool");
+      } else {
         event.preventDefault();
-        void respond(false, false);
+        void respondRef.current(false, false);
       }
     };
     // Capture phase: beat the composer's own Enter handler for the
     // empty-composer case.
     window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending, primaryIsAlways, approvalId]);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      const index = pendingApprovalOrder.indexOf(approvalId);
+      if (index !== -1) pendingApprovalOrder.splice(index, 1);
+    };
+  }, [pending, approvalId]);
 
   const statusChip = isDestructive ? (
     <Pill tone="red">Destructive</Pill>
@@ -288,6 +317,7 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
             : "var(--bui-shadow-card)",
       }}
       data-testid="mcp-approval-card"
+      data-mcp-approval-id={approvalId}
     >
       <Stack
         direction="row"

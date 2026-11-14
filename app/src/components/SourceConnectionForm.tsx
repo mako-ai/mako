@@ -263,7 +263,8 @@ function SourceConnectionForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connector?._id]);
 
-  const { schemas, fetchSchema } = useConnectorCatalogStore();
+  const schemas = useConnectorCatalogStore(s => s.schemas);
+  const fetchSchema = useConnectorCatalogStore(s => s.fetchSchema);
 
   useEffect(() => {
     if (!selectedType) {
@@ -834,6 +835,7 @@ function SourceConnectionForm({
                 {field.label} {index + 1}
               </Typography>
               <IconButton
+                aria-label="Remove"
                 size="small"
                 color="error"
                 disabled={readOnly}

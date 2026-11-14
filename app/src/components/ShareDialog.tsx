@@ -47,6 +47,7 @@ import {
   type PublicShareInfo,
   type SharingSettings,
 } from "../store/shareStore";
+import { clickableProps } from "../lib/a11y";
 
 export interface ShareDialogProps {
   open: boolean;
@@ -669,6 +670,7 @@ export default function ShareDialog({
       <DialogTitle sx={{ pr: 7, fontSize: 18, fontWeight: 500 }}>
         Share {resourceName ? `"${resourceName}"` : `this ${label}`}
         <IconButton
+          aria-label="Close"
           size="small"
           onClick={onClose}
           sx={{ position: "absolute", right: 14, top: 14 }}
@@ -1194,6 +1196,10 @@ export default function ShareDialog({
                     >
                       <Box
                         onClick={() => void handleCopyLink()}
+                        {...clickableProps(
+                          () => void handleCopyLink(),
+                          "Copy link",
+                        )}
                         sx={{
                           flex: 1,
                           display: "flex",

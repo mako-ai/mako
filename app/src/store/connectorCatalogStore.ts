@@ -167,6 +167,14 @@ export const useConnectorCatalogStore = create<CatalogState>()(
       // v4: Wise's SCA private key became a multi-line field; from v4 on,
       // fetchSchema revalidates persisted schemas once per page load.
       version: 4,
+      // Explicit migrate (zustand otherwise logs an error and drops state on
+      // a bump). Schemas cached before v3 carry the stale PostHog
+      // required:true, so they go; v3 schemas are kept because v4's
+      // fetchSchema revalidates persisted schemas once per page load.
+      migrate: (persisted, version) => {
+        const state = (persisted ?? {}) as { schemas?: unknown };
+        return (version < 3 ? { schemas: {} } : state) as never;
+      },
       partialize: state => ({ schemas: state.schemas }), // Only persist schemas, not types
     },
   ),

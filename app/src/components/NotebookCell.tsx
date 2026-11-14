@@ -12,7 +12,7 @@ import {
   TextField,
   Tooltip,
 } from "@mui/material";
-import Editor from "@monaco-editor/react";
+import Editor from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { ChevronDown, ChevronUp, Play, Trash2 } from "lucide-react";
 
@@ -28,6 +28,7 @@ import { runCell } from "../notebook-runtime/run";
 import KernelOutputView from "./KernelOutputView";
 import ResultsTable from "./ResultsTable";
 import { StreamingMarkdown } from "./StreamingMarkdown";
+import { clickableProps } from "../lib/a11y";
 
 const MONACO_LANGUAGE: Record<NotebookBlockType, string | null> = {
   code: "python",
@@ -401,6 +402,7 @@ export default function NotebookCell({
       ) : (
         <Box
           onClick={() => setEditingMarkdown(true)}
+          {...clickableProps(() => setEditingMarkdown(true), "Edit markdown")}
           sx={{
             p: 1,
             cursor: "text",
