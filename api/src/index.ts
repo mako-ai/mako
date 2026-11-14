@@ -12,6 +12,7 @@ import fs from "fs";
 import path from "path";
 import type { Context } from "hono";
 import { connectDatabase } from "./database/schema";
+import { ensureFlowExecutionTtlIndex } from "./database/flow-execution-retention";
 import {
   injectOgTags,
   ogTagsForPath,
@@ -419,6 +420,22 @@ async function main(): Promise<void> {
   } catch (error) {
     logger.error("Failed to connect to database", { error });
     throw error;
+  }
+
+  // Run-history TTL: apply a changed FLOW_EXECUTION_RETENTION_DAYS to the
+  // existing index (autoIndex cannot change a TTL; this collMods it).
+  if (mongoose.connection.db) {
+    ensureFlowExecutionTtlIndex(mongoose.connection.db)
+      .then(result => {
+        if (result.action !== "unchanged") {
+          logger.info("flow_executions TTL index reconciled", { ...result });
+        }
+      })
+      .catch(err => {
+        logger.warn("Could not reconcile the flow_executions TTL index", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
   }
 
   // Log Inngest configuration status (after logging is initialized)

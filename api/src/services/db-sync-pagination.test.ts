@@ -1,8 +1,10 @@
 /**
- * Legacy-mode DB-source paging (db-sync-pagination.ts) against a real SQL
- * engine (node:sqlite, in memory): no row is lost when the incremental
- * watermark or the keyset column has ties, offset pages have a total
- * order, and a numeric-looking string cursor stays a string.
+ * DB-source chunk paging (db-sync-pagination.ts) against a real SQL engine
+ * (node:sqlite, in memory). A plain query (no placeholders) is translated to
+ * template mode: no row is lost when the incremental watermark or the keyset
+ * column has ties, offset pages have a total order, and a numeric-looking
+ * string cursor stays a string. A template query is substituted as written,
+ * through the same entry point.
  *
  * The loop below mirrors executeDbSyncChunk: build the chunk query, run it,
  * upsert the rows into the "destination" by key, advance the cursor.
@@ -13,12 +15,14 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 
 import {
-  buildLegacyChunkQuery,
+  buildChunkQuery,
   cursorLiteral,
+  isTemplateQuery,
   keysetCursorAfter,
   maxTrackingValue,
-  type LegacyChunkQueryInput,
-  type LegacyCursorState,
+  plainQueryAsTemplate,
+  type ChunkQueryInput,
+  type ChunkCursorState,
 } from "./db-sync-pagination";
 
 type Row = Record<string, unknown>;
@@ -40,15 +44,15 @@ function makeDb(
 /** Run one sync to completion; returns the rows seen and the watermark. */
 function runSync(
   db: DatabaseSync,
-  options: Omit<LegacyChunkQueryInput, "state" | "sourceQuery"> & {
+  options: Omit<ChunkQueryInput, "state" | "sourceQuery"> & {
     sourceQuery?: string;
   },
   destination: Map<unknown, Row>,
 ): { pages: number; maxTracking?: string } {
-  let state: LegacyCursorState = { offset: 0 };
+  let state: ChunkCursorState = { offset: 0 };
   let maxTracking: string | undefined;
   for (let pages = 1; pages < 1000; pages++) {
-    const query = buildLegacyChunkQuery({
+    const query = buildChunkQuery({
       sourceQuery: options.sourceQuery ?? "SELECT * FROM items",
       ...options,
       state,
@@ -180,7 +184,7 @@ function incrementalTieWithLateCommit(): void {
   assert.equal(destination.size, 4, "re-read tied rows are deduped by key");
 
   // Append (no key columns) keeps `>`: re-reading would duplicate.
-  const appendQuery = buildLegacyChunkQuery({
+  const appendQuery = buildChunkQuery({
     ...base,
     keyColumns: [],
     sourceQuery: "SELECT * FROM items",
@@ -195,7 +199,7 @@ function incrementalTieWithLateCommit(): void {
 }
 
 function offsetOrderIsTotal(): void {
-  const withKeys = buildLegacyChunkQuery({
+  const withKeys = buildChunkQuery({
     sourceQuery: "SELECT * FROM items;",
     syncMode: "incremental",
     incrementalConfig: { trackingColumn: "updated_at" },
@@ -207,7 +211,7 @@ function offsetOrderIsTotal(): void {
   });
   assert.match(withKeys, /ORDER BY updated_at, id\s+LIMIT 100 OFFSET 200$/);
 
-  const fullWithKeys = buildLegacyChunkQuery({
+  const fullWithKeys = buildChunkQuery({
     sourceQuery: "SELECT * FROM items",
     syncMode: "full",
     paginationMode: "offset",
@@ -219,7 +223,7 @@ function offsetOrderIsTotal(): void {
   assert.match(fullWithKeys, /ORDER BY tenant, id\s+LIMIT 10 OFFSET 0$/);
 
   // A user's own ORDER BY is respected.
-  const own = buildLegacyChunkQuery({
+  const own = buildChunkQuery({
     sourceQuery: "SELECT * FROM items ORDER BY code DESC",
     syncMode: "full",
     paginationMode: "offset",
@@ -234,7 +238,7 @@ function offsetOrderIsTotal(): void {
 function numericLookingStringCursorStaysString(): void {
   assert.equal(cursorLiteral("00123", "string"), "'00123'");
   assert.equal(cursorLiteral("123", "number"), "123");
-  // Legacy (untyped) state keeps the old heuristic.
+  // Untyped state (written before types were recorded): old heuristic.
   assert.equal(cursorLiteral("123"), "123");
   assert.equal(cursorLiteral("it's"), "'it''s'");
 
@@ -280,6 +284,114 @@ function maxTrackingIgnoresRowOrder(): void {
   assert.equal(maxTrackingValue([{ n: 9 }, { n: 10 }], "n"), "10");
 }
 
+function plainQueryIsTranslatedToTemplateMode(): void {
+  const input: ChunkQueryInput = {
+    sourceQuery: "SELECT * FROM items",
+    syncMode: "full",
+    paginationMode: "offset",
+    keysetDirection: "asc",
+    keyColumns: ["id"],
+    maxRowsPerChunk: 50,
+    state: { offset: 100 },
+  };
+  assert.equal(isTemplateQuery(input.sourceQuery), false);
+  const template = plainQueryAsTemplate(input);
+  assert.match(
+    template,
+    /ORDER BY id LIMIT \{\{limit\}\} OFFSET \{\{offset\}\}$/,
+  );
+  assert.ok(isTemplateQuery(template), "the translation is a template query");
+  assert.equal(
+    buildChunkQuery(input),
+    "SELECT * FROM items ORDER BY id LIMIT 50 OFFSET 100",
+  );
+
+  const keyset = plainQueryAsTemplate({
+    ...input,
+    paginationMode: "keyset",
+    keysetColumn: "code",
+  });
+  assert.match(keyset, /ORDER BY code ASC, id ASC LIMIT \{\{limit\}\}$/);
+}
+
+function templateQueryIsSubstituted(): void {
+  const base = {
+    syncMode: "incremental" as const,
+    incrementalConfig: {
+      trackingColumn: "updated_at",
+      trackingType: "timestamp",
+      lastValue: T2,
+    },
+    paginationMode: "offset" as const,
+    keysetDirection: "asc" as const,
+    keyColumns: ["id"],
+    maxRowsPerChunk: 2,
+  };
+  const offsetTemplate =
+    "SELECT * FROM items WHERE updated_at > '{{last_sync_value}}' ORDER BY id LIMIT {{limit}} OFFSET {{ offset }}";
+  assert.equal(
+    buildChunkQuery({
+      ...base,
+      sourceQuery: offsetTemplate,
+      state: { offset: 4 },
+    }),
+    `SELECT * FROM items WHERE updated_at > '${T2}' ORDER BY id LIMIT 2 OFFSET 4`,
+    "placeholders substituted, nothing appended",
+  );
+
+  // Keyset: a string cursor stays a string, a numeric one is bare.
+  const keysetTemplate =
+    "SELECT * FROM items WHERE code > {{keyset_value}} ORDER BY code LIMIT {{limit}}";
+  const keysetInput = {
+    ...base,
+    syncMode: "full" as const,
+    paginationMode: "keyset" as const,
+    keysetColumn: "code",
+    sourceQuery: keysetTemplate,
+  };
+  assert.equal(
+    buildChunkQuery({
+      ...keysetInput,
+      state: {
+        offset: 0,
+        lastKeysetValue: "00123",
+        lastKeysetValueType: "string",
+      },
+    }),
+    "SELECT * FROM items WHERE code > 00123 ORDER BY code LIMIT 2",
+  );
+  assert.equal(
+    buildChunkQuery({
+      ...keysetInput,
+      state: { offset: 0 },
+      savedKeysetValue: "41",
+    }),
+    "SELECT * FROM items WHERE code > 41 ORDER BY code LIMIT 2",
+  );
+
+  // Against the engine: a template query pages to completion.
+  const { db } = makeDb([
+    { id: 1, updated_at: T1 },
+    { id: 2, updated_at: T2 },
+    { id: 3, updated_at: T3 },
+    { id: 4, updated_at: T3 },
+    { id: 5, updated_at: T3 },
+  ]);
+  const seen = new Map<unknown, Row>();
+  let state: ChunkCursorState = { offset: 0 };
+  for (let page = 0; page < 10; page++) {
+    const rows = db
+      .prepare(buildChunkQuery({ ...base, sourceQuery: offsetTemplate, state }))
+      .all() as Row[];
+    for (const row of rows) seen.set(row.id, row);
+    state = { offset: state.offset + rows.length };
+    if (rows.length < base.maxRowsPerChunk) break;
+  }
+  assert.deepEqual([...seen.keys()], [3, 4, 5]);
+}
+
+plainQueryIsTranslatedToTemplateMode();
+templateQueryIsSubstituted();
 keysetTiesAcrossPageBoundaries();
 incrementalTieWithLateCommit();
 offsetOrderIsTotal();

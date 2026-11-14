@@ -47,7 +47,8 @@ import {
 } from "../../services/flow-schedule-claim";
 import {
   appendExecutionLog as appendFlowExecutionLog,
-  touchExecutionHeartbeat as touchHeartbeat,
+  EXECUTION_HEARTBEAT_STALE_MS,
+  withHeartbeat,
 } from "../../services/flow-execution-tracking";
 
 const flowLogger = loggers.inngest("flow");
@@ -733,69 +734,71 @@ export const flowFunction = inngest.createFunction(
           });
           const chunkResult = await step.run(
             `db-sync-chunk-${chunkIndex}`,
-            async () => {
-              logger.info("Executing database sync chunk", {
-                flowId,
-                chunkIndex,
-                offset: chunkState?.offset || 0,
-                totalProcessed: chunkState?.totalProcessed || 0,
-              });
+            // One chunk is up to 5k rows read + written: keep the run alive.
+            () =>
+              withHeartbeat(executionId, async () => {
+                logger.info("Executing database sync chunk", {
+                  flowId,
+                  chunkIndex,
+                  offset: chunkState?.offset || 0,
+                  totalProcessed: chunkState?.totalProcessed || 0,
+                });
 
-              // Re-create destination writer for this chunk
-              const sourceConnection = await DatabaseConnection.findById(
-                dbSource.connectionId,
-              );
-              if (!sourceConnection) {
-                throw new Error("Source connection not found");
-              }
+                // Re-create destination writer for this chunk
+                const sourceConnection = await DatabaseConnection.findById(
+                  dbSource.connectionId,
+                );
+                if (!sourceConnection) {
+                  throw new Error("Source connection not found");
+                }
 
-              const destinationWriter = await createDestinationWriter(
-                {
-                  destinationDatabaseId: flow.destinationDatabaseId,
-                  destinationDatabaseName: flow.destinationDatabaseName,
-                  tableDestination: flow.tableDestination,
-                  dataSourceId: dbSource.connectionId,
-                },
-                sourceConnection.name,
-              );
+                const destinationWriter = await createDestinationWriter(
+                  {
+                    destinationDatabaseId: flow.destinationDatabaseId,
+                    destinationDatabaseName: flow.destinationDatabaseName,
+                    tableDestination: flow.tableDestination,
+                    dataSourceId: dbSource.connectionId,
+                  },
+                  sourceConnection.name,
+                );
 
-              if (!flow.tableDestination?.tableName) {
-                (destinationWriter as any).config.collectionName =
-                  `${sourceConnection.name}_sync`;
-              }
+                if (!flow.tableDestination?.tableName) {
+                  (destinationWriter as any).config.collectionName =
+                    `${sourceConnection.name}_sync`;
+                }
 
-              // Execute chunk with pagination and type coercions
-              const result = await executeDbSyncChunk({
-                sourceConnection,
-                sourceQuery: dbSource.query,
-                sourceDatabase: dbSource.database,
-                destinationWriter,
-                batchSize: flow.batchSize || 2000,
-                syncMode: flow.syncMode,
-                incrementalConfig: flow.incrementalConfig,
-                paginationConfig: flow.paginationConfig,
-                typeCoercions: flow.typeCoercions,
-                keyColumns: flow.conflictConfig?.keyColumns,
-                state: chunkState,
-                maxRowsPerChunk: 5000, // Process 5k rows per Inngest step to stay within 2GB memory
-                onProgress: (processed, estimated) => {
-                  const progress = estimated
-                    ? `${processed}/${estimated} (${Math.round((processed / estimated) * 100)}%)`
-                    : `${processed} rows`;
-                  logger.info(`Progress: ${progress}`, {
-                    flowId,
-                    rowsProcessed: processed,
-                    estimatedTotal: estimated,
-                  });
-                },
-              });
+                // Execute chunk with pagination and type coercions
+                const result = await executeDbSyncChunk({
+                  sourceConnection,
+                  sourceQuery: dbSource.query,
+                  sourceDatabase: dbSource.database,
+                  destinationWriter,
+                  batchSize: flow.batchSize || 2000,
+                  syncMode: flow.syncMode,
+                  incrementalConfig: flow.incrementalConfig,
+                  paginationConfig: flow.paginationConfig,
+                  typeCoercions: flow.typeCoercions,
+                  keyColumns: flow.conflictConfig?.keyColumns,
+                  state: chunkState,
+                  maxRowsPerChunk: 5000, // Process 5k rows per Inngest step to stay within 2GB memory
+                  onProgress: (processed, estimated) => {
+                    const progress = estimated
+                      ? `${processed}/${estimated} (${Math.round((processed / estimated) * 100)}%)`
+                      : `${processed} rows`;
+                    logger.info(`Progress: ${progress}`, {
+                      flowId,
+                      rowsProcessed: processed,
+                      estimatedTotal: estimated,
+                    });
+                  },
+                });
 
-              if (result.error) {
-                throw new Error(result.error);
-              }
+                if (result.error) {
+                  throw new Error(result.error);
+                }
 
-              return result;
-            },
+                return result;
+              }),
           );
           await throwIfExecutionCancelled("db-sync-after-chunk", {
             chunkIndex,
@@ -869,36 +872,38 @@ export const flowFunction = inngest.createFunction(
         // Finalize staging table swap for full sync
         if (flow.syncMode === "full") {
           await throwIfExecutionCancelled("db-sync-before-finalize-staging");
-          await step.run("finalize-staging-swap", async () => {
-            logger.info("Finalizing full sync (staging table swap)", {
-              flowId,
-            });
+          await step.run("finalize-staging-swap", () =>
+            withHeartbeat(executionId, async () => {
+              logger.info("Finalizing full sync (staging table swap)", {
+                flowId,
+              });
 
-            const sourceConnection = await DatabaseConnection.findById(
-              dbSource.connectionId,
-            );
+              const sourceConnection = await DatabaseConnection.findById(
+                dbSource.connectionId,
+              );
 
-            const destinationWriter = await createDestinationWriter(
-              {
-                destinationDatabaseId: flow.destinationDatabaseId,
-                destinationDatabaseName: flow.destinationDatabaseName,
-                tableDestination: flow.tableDestination,
-                dataSourceId: dbSource.connectionId,
-              },
-              sourceConnection?.name,
-            );
+              const destinationWriter = await createDestinationWriter(
+                {
+                  destinationDatabaseId: flow.destinationDatabaseId,
+                  destinationDatabaseName: flow.destinationDatabaseName,
+                  tableDestination: flow.tableDestination,
+                  dataSourceId: dbSource.connectionId,
+                },
+                sourceConnection?.name,
+              );
 
-            if (!flow.tableDestination?.tableName && sourceConnection) {
-              (destinationWriter as any).config.collectionName =
-                `${sourceConnection.name}_sync`;
-            }
+              if (!flow.tableDestination?.tableName && sourceConnection) {
+                (destinationWriter as any).config.collectionName =
+                  `${sourceConnection.name}_sync`;
+              }
 
-            // Mark staging as active and finalize
-            (destinationWriter as any).stagingActive = true;
-            await destinationWriter.finalize();
+              // Mark staging as active and finalize
+              (destinationWriter as any).stagingActive = true;
+              await destinationWriter.finalize();
 
-            logger.info("Staging table swap completed", { flowId });
-          });
+              logger.info("Staging table swap completed", { flowId });
+            }),
+          );
         }
 
         // Update incremental tracking value
@@ -908,50 +913,52 @@ export const flowFunction = inngest.createFunction(
           totalRowsProcessed > 0
         ) {
           const trackingColumn = flow.incrementalConfig.trackingColumn;
-          await step.run("update-incremental-tracking", async () => {
-            logger.info("Updating incremental tracking value", { flowId });
+          await step.run("update-incremental-tracking", () =>
+            withHeartbeat(executionId, async () => {
+              logger.info("Updating incremental tracking value", { flowId });
 
-            if (flow.tableDestination?.connectionId) {
-              // SQL table destination: query the destination table for max tracking value
-              const destConnection = await DatabaseConnection.findById(
-                flow.tableDestination.connectionId,
-              );
-
-              if (destConnection) {
-                const maxValueResult = await getMaxTrackingValue(
-                  destConnection,
-                  flow.tableDestination.tableName,
-                  trackingColumn,
-                  flow.tableDestination.schema,
-                  flow.tableDestination.database,
+              if (flow.tableDestination?.connectionId) {
+                // SQL table destination: query the destination table for max tracking value
+                const destConnection = await DatabaseConnection.findById(
+                  flow.tableDestination.connectionId,
                 );
 
-                if (maxValueResult.success && maxValueResult.maxValue) {
-                  await Flow.findByIdAndUpdate(flowId, {
-                    "incrementalConfig.lastValue": maxValueResult.maxValue,
-                  });
-
-                  logger.info("Incremental tracking updated", {
-                    flowId,
+                if (destConnection) {
+                  const maxValueResult = await getMaxTrackingValue(
+                    destConnection,
+                    flow.tableDestination.tableName,
                     trackingColumn,
-                    newLastValue: maxValueResult.maxValue,
-                  });
-                }
-              }
-            } else if (chunkState?.lastTrackingValue) {
-              // MongoDB destination: use the last tracking value from chunk state
-              // (since we can't easily query MongoDB for MAX of an arbitrary column)
-              await Flow.findByIdAndUpdate(flowId, {
-                "incrementalConfig.lastValue": chunkState.lastTrackingValue,
-              });
+                    flow.tableDestination.schema,
+                    flow.tableDestination.database,
+                  );
 
-              logger.info("Incremental tracking updated (from chunk state)", {
-                flowId,
-                trackingColumn,
-                newLastValue: chunkState.lastTrackingValue,
-              });
-            }
-          });
+                  if (maxValueResult.success && maxValueResult.maxValue) {
+                    await Flow.findByIdAndUpdate(flowId, {
+                      "incrementalConfig.lastValue": maxValueResult.maxValue,
+                    });
+
+                    logger.info("Incremental tracking updated", {
+                      flowId,
+                      trackingColumn,
+                      newLastValue: maxValueResult.maxValue,
+                    });
+                  }
+                }
+              } else if (chunkState?.lastTrackingValue) {
+                // MongoDB destination: use the last tracking value from chunk state
+                // (since we can't easily query MongoDB for MAX of an arbitrary column)
+                await Flow.findByIdAndUpdate(flowId, {
+                  "incrementalConfig.lastValue": chunkState.lastTrackingValue,
+                });
+
+                logger.info("Incremental tracking updated (from chunk state)", {
+                  flowId,
+                  trackingColumn,
+                  newLastValue: chunkState.lastTrackingValue,
+                });
+              }
+            }),
+          );
         }
 
         // Skip connector-based execution
@@ -1349,13 +1356,14 @@ export const flowFunction = inngest.createFunction(
             workspaceId: String(flow.workspaceId),
           });
         });
-        await step.run("drain-cdc-pending-events", async () => {
-          await touchHeartbeat(executionId);
-          await forceDrainCdcFlow({
-            workspaceId: String(flow.workspaceId),
-            flowId: String(flowId),
-          });
-        });
+        await step.run("drain-cdc-pending-events", () =>
+          withHeartbeat(executionId, () =>
+            forceDrainCdcFlow({
+              workspaceId: String(flow.workspaceId),
+              flowId: String(flowId),
+            }),
+          ),
+        );
         await step.run("cdc-transition-backfill-complete", async () => {
           await syncMachineService.applyBackfillTransition({
             workspaceId: String(flow.workspaceId),
@@ -1377,12 +1385,15 @@ export const flowFunction = inngest.createFunction(
             },
           });
         });
-        await step.run("purge-soft-deletes-after-backfill", async () => {
-          await purgeSoftDeletesAfterBackfill({
-            workspaceId: String(flow.workspaceId),
-            flowId: String(flowId),
-          });
-        });
+        // One DELETE per entity table on the destination: can be slow.
+        await step.run("purge-soft-deletes-after-backfill", () =>
+          withHeartbeat(executionId, () =>
+            purgeSoftDeletesAfterBackfill({
+              workspaceId: String(flow.workspaceId),
+              flowId: String(flowId),
+            }),
+          ),
+        );
         await step.run("finalize-cdc-backfill-run", async () => {
           // markCdcBackfillCompletedForFlow already set status=completed,
           // completedAt, and unset runId. Only reset the failure counter
@@ -1573,42 +1584,49 @@ export const flowFunction = inngest.createFunction(
       ) {
         const cleanupFlow = flowRef; // Capture for closure
         const cleanupDbSource = flowRef.databaseSource;
-        await step.run("cleanup-staging-on-failure", async () => {
-          try {
-            logger.info("Cleaning up staging table after failure", { flowId });
+        await step.run("cleanup-staging-on-failure", () =>
+          withHeartbeat(executionId, async () => {
+            try {
+              logger.info("Cleaning up staging table after failure", {
+                flowId,
+              });
 
-            const sourceConnection = await DatabaseConnection.findById(
-              cleanupDbSource.connectionId,
-            );
+              const sourceConnection = await DatabaseConnection.findById(
+                cleanupDbSource.connectionId,
+              );
 
-            const destinationWriter = await createDestinationWriter(
-              {
-                destinationDatabaseId: cleanupFlow.destinationDatabaseId,
-                destinationDatabaseName: cleanupFlow.destinationDatabaseName,
-                tableDestination: cleanupFlow.tableDestination,
-                dataSourceId: cleanupDbSource.connectionId,
-              },
-              sourceConnection?.name,
-            );
+              const destinationWriter = await createDestinationWriter(
+                {
+                  destinationDatabaseId: cleanupFlow.destinationDatabaseId,
+                  destinationDatabaseName: cleanupFlow.destinationDatabaseName,
+                  tableDestination: cleanupFlow.tableDestination,
+                  dataSourceId: cleanupDbSource.connectionId,
+                },
+                sourceConnection?.name,
+              );
 
-            if (!cleanupFlow.tableDestination?.tableName && sourceConnection) {
-              (destinationWriter as any).config.collectionName =
-                `${sourceConnection.name}_sync`;
+              if (
+                !cleanupFlow.tableDestination?.tableName &&
+                sourceConnection
+              ) {
+                (destinationWriter as any).config.collectionName =
+                  `${sourceConnection.name}_sync`;
+              }
+
+              (destinationWriter as any).stagingActive = true;
+              await destinationWriter.cleanup();
+              logger.info("Staging table cleanup completed", { flowId });
+            } catch (cleanupError) {
+              logger.error("Failed to cleanup staging table", {
+                flowId,
+                error:
+                  cleanupError instanceof Error
+                    ? cleanupError.message
+                    : String(cleanupError),
+              });
             }
-
-            (destinationWriter as any).stagingActive = true;
-            await destinationWriter.cleanup();
-            logger.info("Staging table cleanup completed", { flowId });
-          } catch (cleanupError) {
-            logger.error("Failed to cleanup staging table", {
-              flowId,
-              error:
-                cleanupError instanceof Error
-                  ? cleanupError.message
-                  : String(cleanupError),
-            });
-          }
-        });
+          }),
+        );
       }
 
       // Complete execution logging in a step to ensure it runs
@@ -2064,7 +2082,9 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
     const result = await step.run("cleanup-abandoned-flows", async () => {
       const db = Flow.db;
       const now = new Date();
-      const heartbeatTimeout = new Date(now.getTime() - 600000); // 10 minutes ago
+      const heartbeatTimeout = new Date(
+        now.getTime() - EXECUTION_HEARTBEAT_STALE_MS,
+      );
 
       const executionsCollection = db.collection("flow_executions");
       const locksCollection = db.collection("flow_execution_locks");
@@ -2224,7 +2244,9 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
       }
 
       // 2. Clean up stale flow locks
-      const heartbeatStaleThreshold = new Date(now.getTime() - 600000); // 10 minutes ago
+      const heartbeatStaleThreshold = new Date(
+        now.getTime() - EXECUTION_HEARTBEAT_STALE_MS,
+      );
       const staleLocks = await locksCollection
         .find({
           $or: [

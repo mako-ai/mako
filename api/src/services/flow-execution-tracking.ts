@@ -9,6 +9,11 @@
  * quietly stop landing (pool exhaustion, a Mongo blip) turn a healthy long
  * run into an "abandoned" one and reset its backfill gate. Failures are
  * logged at warn, throttled so a sustained outage does not flood the log.
+ *
+ * Long work inside ONE step (a page loop, a bulk flush, a merge) has no
+ * natural write between its start and its end, so it is wrapped in
+ * `withHeartbeat`, which keeps touching the heartbeat on a timer well below
+ * the staleness threshold. Both numbers derive from one constant.
  */
 import { Types } from "mongoose";
 
@@ -16,6 +21,19 @@ import { FlowExecution } from "../database/workspace-schema";
 import { loggers } from "../logging";
 
 const log = loggers.inngest("execution-tracking");
+
+/**
+ * A running execution whose heartbeat is older than this is considered
+ * dead: `cleanup-abandoned-flows` and backfill recovery mark it abandoned.
+ */
+export const EXECUTION_HEARTBEAT_STALE_MS = 10 * 60_000;
+
+/**
+ * How often `withHeartbeat` touches the heartbeat during long work: a fifth
+ * of the threshold, so four consecutive missed touches (a Mongo blip, a
+ * blocked event loop) still do not make a live run look abandoned.
+ */
+export const EXECUTION_HEARTBEAT_INTERVAL_MS = EXECUTION_HEARTBEAT_STALE_MS / 5;
 
 /** At most one warn per kind per window; the rest are counted. */
 const WARN_WINDOW_MS = 60_000;
@@ -145,5 +163,42 @@ export async function appendExecutionLog(params: {
     await FlowExecution.collection.updateOne({ _id }, updateDoc);
   } catch (error) {
     warnWriteFailed("log", executionId, error, { flowId });
+  }
+}
+
+/**
+ * Run `fn` while keeping the execution's heartbeat alive: one touch up
+ * front, then one every `intervalMs` until `fn` settles. The timer is
+ * unref'd (it never keeps the process alive) and always cleared, on success
+ * and on throw. A failed touch never fails `fn`: `touchExecutionHeartbeat`
+ * does not reject (it logs, throttled), and a touch still in flight when the
+ * next tick fires is not doubled up.
+ */
+export async function withHeartbeat<T>(
+  executionId: string | undefined,
+  fn: () => Promise<T>,
+  intervalMs: number = EXECUTION_HEARTBEAT_INTERVAL_MS,
+): Promise<T> {
+  if (!executionId) return fn();
+
+  let inFlight: Promise<void> | null = null;
+  const touch = (): void => {
+    if (inFlight) return;
+    inFlight = touchExecutionHeartbeat(executionId)
+      .catch(() => {
+        // Never rejects today; belt and braces for the timer callback.
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+  };
+
+  touch();
+  const timer = setInterval(touch, intervalMs);
+  timer.unref?.();
+  try {
+    return await fn();
+  } finally {
+    clearInterval(timer);
   }
 }

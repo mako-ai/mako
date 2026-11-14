@@ -39,6 +39,15 @@ Queries should use template placeholders that get replaced at runtime:
 | `{{last_sync_value}}` | Last value of tracking column (incremental sync) | `WHERE updated_at > '{{last_sync_value}}'` |
 | `{{keyset_value}}` | Last keyset column value (keyset pagination) | `WHERE id > {{keyset_value}}` |
 
+A query with **no** placeholders still runs: it is translated to template mode
+at run time (the tracking/keyset predicate, an ORDER BY on the tracking or
+keyset column plus the conflict key columns, and `LIMIT {{limit}} OFFSET
+{{offset}}` are added for you). That translation is tie-safe (rows sharing the
+last timestamp or keyset value are not skipped when key columns are set), which
+hand-written `> {{keyset_value}}` predicates are not, so a plain `SELECT ... FROM
+table` with key columns configured is a good default. Once a query contains any
+placeholder it is used exactly as written.
+
 **Example Query with Offset Pagination:**
 ```sql
 SELECT id, name, email, updated_at

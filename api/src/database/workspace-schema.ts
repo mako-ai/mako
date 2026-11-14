@@ -6,6 +6,12 @@ import {
   WORKSPACE_API_KEY_SCOPES,
   type WorkspaceApiKeyScope,
 } from "../auth/api-key-scopes";
+import {
+  FLOW_EXECUTION_TTL_INDEX_NAME,
+  FLOW_EXECUTION_TTL_KEY,
+  FLOW_EXECUTION_TTL_PARTIAL_FILTER,
+  flowExecutionRetentionSeconds,
+} from "./flow-execution-retention";
 
 // Encryption: ONE implementation, in services/crypto.service. These names
 // are kept for the many callers that import them from here.
@@ -2916,6 +2922,14 @@ FlowExecutionSchema.index({ flowId: 1, startedAt: -1 });
 // cleanup-abandoned-flows scans `{ status: "running", lastHeartbeat < t }`
 // every 5 minutes.
 FlowExecutionSchema.index({ status: 1, lastHeartbeat: 1 });
+// Run-history retention: finished runs expire FLOW_EXECUTION_RETENTION_DAYS
+// (default 90) after completedAt; running ones never (partial on terminal
+// statuses). See flow-execution-retention.ts.
+FlowExecutionSchema.index(FLOW_EXECUTION_TTL_KEY, {
+  name: FLOW_EXECUTION_TTL_INDEX_NAME,
+  expireAfterSeconds: flowExecutionRetentionSeconds(),
+  partialFilterExpression: FLOW_EXECUTION_TTL_PARTIAL_FILTER,
+});
 
 /**
  * WebhookEvent Schema

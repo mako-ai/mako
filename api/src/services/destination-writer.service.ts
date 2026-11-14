@@ -33,11 +33,7 @@ import {
   databaseConnectionService,
   ConnectionConfig,
 } from "./database-connection.service";
-import {
-  prepareQueryForValidation,
-  substituteTemplates,
-  detectTemplates,
-} from "../utils/template-substitution";
+import { prepareQueryForValidation } from "../utils/template-substitution";
 /**
  * Helper function to infer JavaScript type from a value
  */
@@ -1127,9 +1123,9 @@ export async function validateQuery(
   }
 }
 
-// Legacy-mode paging (pure, tested against SQLite in db-sync-pagination.test.ts)
+// Chunk paging (pure, tested against SQLite in db-sync-pagination.test.ts)
 import {
-  buildLegacyChunkQuery,
+  buildChunkQuery,
   keysetCursorAfter,
   maxTrackingValue,
   type CursorValue,
@@ -1498,69 +1494,22 @@ export async function executeDbSyncChunk(options: {
   const keysetColumn = paginationConfig?.keysetColumn;
   const keysetDirection = paginationConfig?.keysetDirection || "asc";
 
-  // Check if the query uses template placeholders
-  const queryTemplates = detectTemplates(sourceQuery);
-  const usesTemplates =
-    queryTemplates.hasLimit ||
-    queryTemplates.hasOffset ||
-    queryTemplates.hasLastSyncValue ||
-    queryTemplates.hasKeysetValue;
-
-  // Build paginated query
-  let paginatedQuery: string;
-
-  if (usesTemplates) {
-    // Template-based query: substitute placeholders with runtime values
-    const lastKeyset =
-      currentState.lastKeysetValue || paginationConfig?.lastKeysetValue;
-
-    // Prepare last_sync_value: format based on tracking type
-    let lastSyncValue: string | number | null = null;
-    if (
-      syncMode === "incremental" &&
-      incrementalConfig?.trackingColumn &&
-      incrementalConfig?.lastValue
-    ) {
-      lastSyncValue =
-        incrementalConfig.trackingType === "timestamp"
-          ? incrementalConfig.lastValue // Keep as string for timestamps
-          : incrementalConfig.lastValue;
-    }
-
-    // Prepare keyset_value: preserve type (string vs number)
-    let keysetValue: string | number | null = null;
-    if (paginationMode === "keyset" && lastKeyset) {
-      const knownString =
-        currentState.lastKeysetValue &&
-        currentState.lastKeysetValueType === "string";
-      keysetValue =
-        knownString || isNaN(Number(lastKeyset))
-          ? lastKeyset
-          : Number(lastKeyset);
-    }
-
-    paginatedQuery = substituteTemplates(sourceQuery, {
-      limit: maxRowsPerChunk,
-      offset: currentState.offset,
-      last_sync_value: lastSyncValue,
-      keyset_value: keysetValue,
-    });
-  } else {
-    // Legacy mode: append WHERE / ORDER BY / LIMIT (see db-sync-pagination
-    // for the tie-safe incremental, keyset and offset contract).
-    paginatedQuery = buildLegacyChunkQuery({
-      sourceQuery,
-      syncMode,
-      incrementalConfig,
-      paginationMode: paginationMode === "keyset" ? "keyset" : "offset",
-      keysetColumn,
-      keysetDirection: keysetDirection === "desc" ? "desc" : "asc",
-      keyColumns,
-      maxRowsPerChunk,
-      state: currentState,
-      savedKeysetValue: paginationConfig?.lastKeysetValue,
-    });
-  }
+  // One path for every query: template placeholders are substituted; a
+  // query written without them is translated to template mode first (see
+  // db-sync-pagination for the tie-safe incremental, keyset and offset
+  // contract).
+  const paginatedQuery = buildChunkQuery({
+    sourceQuery,
+    syncMode,
+    incrementalConfig,
+    paginationMode: paginationMode === "keyset" ? "keyset" : "offset",
+    keysetColumn,
+    keysetDirection: keysetDirection === "desc" ? "desc" : "asc",
+    keyColumns,
+    maxRowsPerChunk,
+    state: currentState,
+    savedKeysetValue: paginationConfig?.lastKeysetValue,
+  });
 
   let rowsProcessedInChunk = 0;
   let lastTrackingValue: string | undefined;
@@ -1747,8 +1696,9 @@ export async function dryRunDbSync(options: {
   try {
     // Execute specified number of pages
     for (let page = 0; page < pages; page++) {
-      // Same paging as a real run (db-sync-pagination), page by page.
-      const paginatedQuery = buildLegacyChunkQuery({
+      // Same paging as a real run (db-sync-pagination), page by page:
+      // a template query is substituted, a plain one translated.
+      const paginatedQuery = buildChunkQuery({
         sourceQuery,
         syncMode: "full",
         paginationMode: paginationMode === "keyset" ? "keyset" : "offset",
