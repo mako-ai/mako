@@ -34100,7 +34100,7 @@
           "Webhooks"
         ],
         "summary": "Receive an inbound connector webhook",
-        "description": "Inbound webhook receiver for connector flows. Public — authenticated via the connector's signature, not session/API key.",
+        "description": "Inbound webhook receiver for connector flows. Public — authenticated via the connector's signature, or, for connectors without one, the flow's shared secret (X-Mako-Webhook-Token header, Bearer token or ?token=). Not session/API key.",
         "security": [],
         "parameters": [
           {

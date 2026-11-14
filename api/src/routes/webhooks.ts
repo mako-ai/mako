@@ -9,6 +9,11 @@ import {
 import { randomUUID } from "crypto";
 import { connectorRegistry } from "../connectors/registry";
 import { isWebhookFlow } from "../services/flow-triggers.service";
+import {
+  presentedWebhookToken,
+  redactWebhookSecretHeaders,
+  webhookTokenMatches,
+} from "../utils/webhook-token";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { enrichContextWithWorkspace, loggers } from "../logging";
@@ -75,7 +80,7 @@ router.openapi(
     tags: ["Webhooks"],
     summary: "Receive an inbound connector webhook",
     description:
-      "Inbound webhook receiver for connector flows. Public — authenticated via the connector's signature, not session/API key.",
+      "Inbound webhook receiver for connector flows. Public — authenticated via the connector's signature, or, for connectors without one, the flow's shared secret (X-Mako-Webhook-Token header, Bearer token or ?token=). Not session/API key.",
     security: [],
     request: { params: WebhookParam },
     responses: { ...OPEN_RESPONSES },
@@ -145,6 +150,30 @@ router.openapi(
 
         event = verificationResult.event;
       } else {
+        // No native signature verification: fail closed unless the sender
+        // presents the flow's shared secret (utils/webhook-token.ts). A flow
+        // without a secret configured takes no deliveries at all.
+        if (!flow.webhookConfig.secret) {
+          logger.warn("Webhook refused: flow has no shared secret", {
+            flowId,
+          });
+          return c.json(
+            {
+              error:
+                "Webhook secret not configured for this flow. Set one and send it as the X-Mako-Webhook-Token header.",
+            },
+            401,
+          );
+        }
+        if (
+          !webhookTokenMatches(
+            presentedWebhookToken(headers, query),
+            flow.webhookConfig.secret,
+          )
+        ) {
+          logger.warn("Webhook refused: missing or invalid token", { flowId });
+          return c.json({ error: "Invalid webhook token" }, 401);
+        }
         try {
           event = JSON.parse(rawBodyText);
         } catch (e) {
@@ -173,7 +202,8 @@ router.openapi(
         status: "pending",
         attempts: 0,
         rawPayload: event,
-        signature: JSON.stringify(headers),
+        // Minus any shared-secret header: a token must never sit in Mongo.
+        signature: JSON.stringify(redactWebhookSecretHeaders(headers)),
       });
 
       await webhookEvent.save();
