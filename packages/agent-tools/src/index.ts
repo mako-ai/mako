@@ -122,11 +122,22 @@ export {
   deleteDbtFileSchema,
   readDbtTreeSchema,
   readDbtFileSchema,
+  // Ontology lookups (api/src/agent-lib/tools/dbt-ontology-tools.ts).
+  findModelsSchema,
+  describeModelSchema,
+  lookupTermSchema,
+    modelReadersSchema,
+  findJoinPathSchema,
 } from "./dbt-tools";
 export type {
   DbtCreateFileInput,
   DbtModifyFileInput,
   DbtEditFileInput,
+  FindModelsInput,
+  DescribeModelInput,
+  LookupTermInput,
+    ModelReadersInput,
+  FindJoinPathInput,
 } from "./dbt-tools";
 
 export { clientDataSourceTools } from "./data-source-tools";

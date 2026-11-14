@@ -61,6 +61,7 @@ import {
   setFirstReadRetryForTests,
   workflowOfRunDetail,
 } from "../workflows/runs";
+import { installPassFetch } from "../workflows/pass-fetch.test-helper";
 import capturedRun from "./fixtures/hatchet-workflow-run.json";
 import capturedOnFailure from "./fixtures/hatchet-workflow-run-on-failure.json";
 
@@ -372,11 +373,25 @@ async function main() {
     };
     const running = new AsyncLocalStorage<string>();
     (globalThis as { makoWorkflow?: unknown }).makoWorkflow = running;
-    // The run each step runs in, as worker.mjs sets it: a person's, unless
-    // a test says otherwise.
+    // The run each step runs in, as step.mjs names it: a person's run of
+    // the workflow, unless a test says otherwise (its pass is for that run).
     const runStep = new AsyncLocalStorage<{ runId?: string }>();
-    (globalThis as { makoRun?: unknown }).makoRun = runStep;
-    runStep.enterWith({ runId: PERSON_RUN });
+    const RUN_OF: Record<string, string> = {
+      "fr-offer-to-cash": PERSON_RUN,
+      "other-flow": OTHER_RUN,
+      [CAPTURED_WORKFLOW]: CAPTURED_RUN.run.metadata.id,
+    };
+    (globalThis as { makoRun?: unknown }).makoRun = {
+      getStore: () =>
+        // A workflow not deployed gets no pass: it calls with the worker key.
+        runStep.getStore() ?? { runId: RUN_OF[running.getStore() ?? ""] },
+    };
+    // As step.mjs: a step calls Mako with its pass, never the worker key.
+    installPassFetch({
+      workerKey: WORKER_KEY,
+      workspaceId: () => ws.toString(),
+      makoOrigin: () => `http://127.0.0.1:${port}`,
+    });
     const load = async (apiKey: string): Promise<Mako> => {
       process.env.MAKO_URL = `http://127.0.0.1:${port}`;
       process.env.MAKO_API_KEY = apiKey;
@@ -436,7 +451,7 @@ async function main() {
     );
     assert.equal(
       refused,
-      "workflow:other-flow is not allowed to write to ch_close. Ask one of this connection's managers or the workspace owner to allow All deployed workflows on the connection's Access tab.",
+      "workflow:other-flow is not allowed to write to ch_close. Ask one of this connection's managers or the workspace owner to allow workflow:other-flow on the connection's Access tab.",
     );
     assert.equal(sent.length, before);
     let recorded = await events(1);
@@ -618,16 +633,16 @@ async function main() {
       ),
       "ok",
     );
-    for (const store of [{ runId: UNKNOWN_RUN }, {}]) {
-      assert.match(
-        await runStep.run(store, () =>
-          running.run("fr-offer-to-cash", () =>
-            attempt(() => worker.connection("ch_close").post("/task/", {})),
-          ),
+    // A step's pass is for a run Hatchet must know: one it does not lends
+    // nothing, and is refused before the connection is even looked at.
+    assert.match(
+      await runStep.run({ runId: UNKNOWN_RUN }, () =>
+        running.run("fr-offer-to-cash", () =>
+          attempt(() => worker.connection("ch_close").post("/task/", {})),
         ),
-        /^Mako could not tell which run of fr-offer-to-cash/,
-      );
-    }
+      ),
+      /no longer executing/,
+    );
     assert.equal(
       sent.length,
       sentBeforeAgentRun + 3,
@@ -635,12 +650,11 @@ async function main() {
     );
     const refusedRows = await ConnectionWriteEvent.find({ allowed: false })
       .sort({ at: -1 })
-      .limit(7)
+      .limit(5)
       .lean();
     assert.deepEqual(refusedRows.map(r => r.principal).reverse(), [
       ...Array(2).fill("agent:workflow:fr-offer-to-cash"),
       ...Array(3).fill("dry-run:workflow:fr-offer-to-cash"),
-      ...Array(2).fill("workflow:fr-offer-to-cash"),
     ]);
     // A scheduled run writes; who started a run is asked once.
     const askedBefore = hatchetAsked.length;
@@ -656,15 +670,16 @@ async function main() {
     }
     assert.deepEqual(hatchetAsked.slice(askedBefore), [SCHEDULED_RUN]);
 
-    // The run named must be one executing this workflow: deployed code holds
-    // the worker key and could name any run, an old scheduled one's above all.
+    // The run a pass names must be one executing its workflow: a pass for
+    // an old scheduled run, or another workflow's, lends nothing (it is
+    // refused when it is used, and the dispatcher is never given one).
     const write = (runId: string, workflow = "fr-offer-to-cash") =>
       runStep.run({ runId }, () =>
         running.run(workflow, () =>
           attempt(() => worker.connection("ch_close").post("/task/", {})),
         ),
       );
-    const notTold = /^Mako could not tell which run of /;
+    const notTold = /no longer executing/;
     const sentBeforeBinding = sent.length;
     // A run that ended long ago lends nothing, nor does a run of another
     // workflow, even one that runs now.
@@ -1115,6 +1130,139 @@ async function main() {
       request: { method: "GET", path: "/lead/" },
     });
     assert.equal(byId.status, 200);
+
+    // Live readers listed: only they, and the writers, read live.
+    const limited = await SourceConnection.create({
+      ...twin,
+      name: "ch_limited",
+      liveReaders: [{ principal: "user:deployer" }],
+    });
+    const readAs = (actor?: string, readOnly?: boolean) =>
+      attempt(() =>
+        connectionRequest({
+          workspaceId: String(ws),
+          connection: "ch_limited",
+          request: { method: "GET", path: "/lead/" },
+          ...(actor ? { actor } : {}),
+          ...(readOnly ? { readOnly } : {}),
+        }),
+      );
+    const sentBeforeLimited = sent.length;
+    assert.equal(await readAs("user:deployer"), "ok");
+    // An agent reads as the person it acts for.
+    assert.equal(await readAs("user:deployer", true), "ok");
+    assert.equal(sent.length, sentBeforeLimited + 2);
+    // A deployed workflow on no list is refused, through the worker too.
+    assert.match(
+      await running.run("other-flow", () =>
+        attempt(() => worker.connection("ch_limited").get("/lead/")),
+      ),
+      /^workflow:other-flow is not allowed to read ch_limited live\. .*allow workflow:other-flow/,
+    );
+    // One workflow listed by name reads; another, on the same worker, not.
+    await SourceConnection.updateOne(
+      { _id: limited._id },
+      {
+        $set: {
+          liveReaders: [
+            { principal: "user:deployer" },
+            { principal: "workflow:fr-offer-to-cash" },
+          ],
+        },
+      },
+    );
+    assert.equal(
+      await running.run("fr-offer-to-cash", () =>
+        attempt(() => worker.connection("ch_limited").get("/lead/")),
+      ),
+      "ok",
+    );
+    assert.match(
+      await running.run("other-flow", () =>
+        attempt(() => worker.connection("ch_limited").get("/lead/")),
+      ),
+      /^workflow:other-flow is not allowed to read ch_limited live/,
+    );
+    // Its code using the worker key to pass for the listed one is no one.
+    const borrowedKey = await fetch(
+      `http://127.0.0.1:${port}/api/workflows/runtime/connections/ch_limited/request`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${WORKER_KEY}`,
+          "Content-Type": "application/json",
+          "X-Mako-Workflow": "fr-offer-to-cash",
+          "X-Mako-Run": PERSON_RUN,
+        },
+        body: JSON.stringify({ method: "GET", path: "/lead/" }),
+      },
+    );
+    assert.equal(borrowedKey.status, 403);
+    assert.match(
+      ((await borrowedKey.json()) as { error: string }).error,
+      /^worker:workflows is not allowed to read ch_limited live/,
+    );
+    await SourceConnection.updateOne(
+      { _id: limited._id },
+      { $set: { liveReaders: [{ principal: "user:deployer" }] } },
+    );
+    // The worker naming no deployed workflow is no one a list can hold.
+    assert.match(
+      await readAs("worker:workflows"),
+      /^worker:workflows is not allowed to read ch_limited live/,
+    );
+    // No one identified reads nothing on a limited connection.
+    assert.match(await readAs(), /Mako could not tell who is reading/);
+    assert.equal(
+      sent.length,
+      sentBeforeLimited + 3,
+      "a refused read is never sent",
+    );
+    assert.equal(
+      await ConnectionWriteEvent.countDocuments({
+        connectionId: limited._id,
+      }),
+      0,
+      "reads are not in the write log",
+    );
+    // A writer reads what it writes to: deployed workflows as one.
+    await SourceConnection.updateOne(
+      { _id: limited._id },
+      { $set: { writers: [{ principal: "workflow:*" }] } },
+    );
+    assert.equal(
+      await running.run("other-flow", () =>
+        attempt(() => worker.connection("ch_limited").get("/lead/")),
+      ),
+      "ok",
+    );
+    // An empty list: only the writers.
+    await SourceConnection.updateOne(
+      { _id: limited._id },
+      { $set: { liveReaders: [] } },
+    );
+    assert.match(
+      await readAs("user:deployer"),
+      /^user:deployer is not allowed to read ch_limited live/,
+    );
+    assert.equal(await readAs("workflow:other-flow"), "ok");
+    // No list: everyone again, the unidentified included (as before lists).
+    await SourceConnection.updateOne(
+      { _id: limited._id },
+      { $unset: { liveReaders: 1 } },
+    );
+    assert.equal(await readAs(), "ok");
+    // Live reads off wins over any list.
+    await SourceConnection.updateOne(
+      { _id: limited._id },
+      {
+        $set: {
+          liveReads: false,
+          liveReaders: [{ principal: "user:deployer" }],
+        },
+      },
+    );
+    assert.match(await readAs("user:deployer"), /^Live reads are off/);
 
     // Live reads turned off again: reads are refused.
     await SourceConnection.updateOne(

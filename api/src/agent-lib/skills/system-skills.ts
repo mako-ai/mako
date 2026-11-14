@@ -207,6 +207,26 @@ export function getSystemSkill(name: string): SystemSkill | null {
   return getRegistry().skills.get(trimmedName) ?? null;
 }
 
+/** A system skill's reference files with their size in bytes. */
+export function getSystemSkillResources(
+  name: string,
+): Array<{ path: string; size: number }> {
+  const skill = getSystemSkill(name);
+  if (!skill) return [];
+  return skill.references.flatMap(relPath => {
+    try {
+      return [
+        {
+          path: relPath,
+          size: fs.statSync(path.join(skill.dir, relPath)).size,
+        },
+      ];
+    } catch {
+      return [];
+    }
+  });
+}
+
 export function getSystemSkillFullText(name: string): string {
   const skill = getSystemSkill(name);
   if (!skill) return "";

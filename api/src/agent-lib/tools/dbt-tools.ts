@@ -82,6 +82,7 @@ import { dbtWorkingTreeUserFor } from "../../dbt/rbac";
 import { validateScheduledConsoleSchedule } from "../../services/scheduled-query-schedule.service";
 import type { DbtLogLine } from "../../dbt/runner.service";
 import { describeQueuedRun } from "../../dbt/dbt-run-queue";
+import { createDbtOntologyTools } from "./dbt-ontology-tools";
 import {
   FULL_STEPS_THRESHOLD,
   FULL_TREE_THRESHOLD,
@@ -361,6 +362,10 @@ export const createDbtServerTools = (
     );
 
   return {
+    // find_models / describe_model / lookup_term / model_readers: what the
+    // last production build and the term registry say, before any SQL.
+    ...createDbtOntologyTools(workspaceId, userId),
+
     read_dbt_project_tree: tool({
       description:
         "List dbt projects in the workspace, or the file tree + jobs of one " +
