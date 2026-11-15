@@ -505,7 +505,7 @@ function assistantWithNamedTool(
         state: "output-available",
       },
     ],
-  } as UIMessage;
+  } as unknown as UIMessage;
 }
 
 t(
