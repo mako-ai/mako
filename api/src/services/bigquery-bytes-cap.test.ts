@@ -117,7 +117,7 @@ function testOtherErrors(): void {
 async function main(): Promise<void> {
   await testRequestBody();
   testOtherErrors();
-  console.log("bigquery bytes cap tests passed");
+  console.info("bigquery bytes cap tests passed");
 }
 
 main().catch(error => {
