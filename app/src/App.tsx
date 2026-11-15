@@ -96,6 +96,7 @@ import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { useAuth } from "./contexts/auth-context";
 import { OnboardingFlow } from "./components/OnboardingFlow";
 import { UpdateNotification } from "./components/UpdateNotification";
+import { Notifier } from "./components/Notifier";
 
 // Draggable divider between a side pane and the flexible center. A real
 // react-resizable-panels handle so it participates in the library's global
@@ -1040,6 +1041,7 @@ function App() {
       <CheckoutSuccessTracker />
       <DesktopAuthResume />
       <UpdateNotification />
+      <Notifier />
       <Routes>
         {/* Invite route - no authentication required */}
         <Route path="/invite/:token" element={<InvitePage />} />

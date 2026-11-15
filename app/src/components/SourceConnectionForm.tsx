@@ -15,7 +15,6 @@ import {
   CircularProgress,
   IconButton,
   Tooltip,
-  Snackbar,
   Tab,
   Tabs,
 } from "@mui/material";
@@ -40,6 +39,22 @@ import { EntityHistoryButton } from "./EntityHistoryButton";
 import ConnectionManagersPanel from "./ConnectionManagersPanel";
 import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
 import ConnectionWritersPanel from "./ConnectionWritersPanel";
+import { notify } from "../store/notificationStore";
+
+/** Form notices: a plain bottom-center message. */
+function setSnackbarMessage(message: string) {
+  notify.message(message, {
+    anchorOrigin: { vertical: "bottom", horizontal: "center" },
+  });
+}
+
+/** Save confirmation: a filled bottom-right success toast. */
+function setSuccessMessage(message: string) {
+  notify.success(message, {
+    anchorOrigin: { vertical: "bottom", horizontal: "right" },
+    variant: "filled",
+  });
+}
 
 /** `ws:acme` — a connector defined in the workspace repo (`connectors/acme/`). */
 const WORKSPACE_TYPE_PREFIX = "ws:";
@@ -160,8 +175,6 @@ function SourceConnectionForm({
   const [showDecryptedFields, setShowDecryptedFields] = useState<
     Record<string, boolean>
   >({});
-  const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
@@ -1384,30 +1397,6 @@ function SourceConnectionForm({
       ) : (
         formContent
       )}
-
-      <Snackbar
-        open={!!snackbarMessage}
-        autoHideDuration={4000}
-        onClose={() => setSnackbarMessage(null)}
-        message={snackbarMessage}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-      />
-
-      <Snackbar
-        open={!!successMessage}
-        autoHideDuration={4000}
-        onClose={() => setSuccessMessage(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
-      >
-        <Alert
-          onClose={() => setSuccessMessage(null)}
-          severity="success"
-          variant="filled"
-          sx={{ width: "100%" }}
-        >
-          {successMessage}
-        </Alert>
-      </Snackbar>
     </Box>
   );
 }

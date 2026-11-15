@@ -22,7 +22,6 @@ import {
   InputLabel,
   MenuItem,
   Select,
-  Snackbar,
   Stack,
   TextField,
   Tooltip,
@@ -45,6 +44,7 @@ import {
   type McpWriteScope,
   useMcpStore,
 } from "../store/mcpStore";
+import { notify as notifyToast } from "../store/notificationStore";
 import { useConfirm } from "./ConfirmDialog";
 
 const WRITE_SCOPE_LABELS: Record<McpWriteScope, string> = {
@@ -1652,11 +1652,6 @@ export function McpServersSection() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [autoDiscoverId, setAutoDiscoverId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [snackbar, setSnackbar] = useState<{
-    open: boolean;
-    message: string;
-    severity: "success" | "error";
-  }>({ open: false, message: "", severity: "success" });
 
   const isAdmin =
     currentWorkspace?.role === "owner" || currentWorkspace?.role === "admin";
@@ -1668,8 +1663,9 @@ export function McpServersSection() {
     }
   }, [workspaceLoading, currentWorkspace, fetchServers, fetchPresets]);
 
-  const notify = (message: string, severity: "success" | "error") =>
-    setSnackbar({ open: true, message, severity });
+  // Plain snackbar messages; the severity only ever chose the wording.
+  const notify = (message: string, _severity: "success" | "error") =>
+    notifyToast.message(message);
 
   // Fallback capture for entry paths that skip UrlSync hydration — normally
   // UrlSync already moved the query flags into the store on page load.
@@ -1937,13 +1933,6 @@ export function McpServersSection() {
           </>
         )}
       </Dialog>
-
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={4000}
-        onClose={() => setSnackbar(s => ({ ...s, open: false }))}
-        message={snackbar.message}
-      />
     </Box>
   );
 }

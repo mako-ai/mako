@@ -15,7 +15,6 @@ import {
   Tooltip,
   Chip,
   Skeleton,
-  Snackbar,
   Stack,
   Tab,
   Tabs,
@@ -26,6 +25,7 @@ import {
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useMcpStore } from "../store/mcpStore";
+import { notify as notifyToast } from "../store/notificationStore";
 import {
   selectTabBySettingsSection,
   useConsoleStore,
@@ -520,14 +520,9 @@ export function McpConnectedAgents({
 
 /** Full "Connect Agents" settings page body: how to connect + what is. */
 export function McpAgentsPanel() {
-  const [snackbar, setSnackbar] = useState<{
-    open: boolean;
-    message: string;
-    severity: "success" | "error";
-  }>({ open: false, message: "", severity: "success" });
-
-  const notify = (message: string, severity: "success" | "error") =>
-    setSnackbar({ open: true, message, severity });
+  // Plain snackbar messages; the severity only ever chose the wording.
+  const notify = (message: string, _severity: "success" | "error") =>
+    notifyToast.message(message, { autoHideDuration: 3000 });
 
   const copyToClipboard = (text: string) => {
     void navigator.clipboard.writeText(text);
@@ -564,12 +559,6 @@ export function McpAgentsPanel() {
       </Alert>
       <McpAgentConnectCard onCopy={copyToClipboard} />
       <McpConnectedAgents onNotify={notify} />
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={3000}
-        onClose={() => setSnackbar(s => ({ ...s, open: false }))}
-        message={snackbar.message}
-      />
     </Box>
   );
 }
