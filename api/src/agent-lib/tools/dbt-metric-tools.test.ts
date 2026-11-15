@@ -67,6 +67,8 @@ vi.mock("./sql-tools", async importOriginal => ({
   executeQueryImpl: executor.run,
 }));
 
+import { compileMetricSchema } from "@mako/agent-tools";
+import { sqlReadOnlyAccessError } from "../../services/read-only-query.service";
 import { createDbtServerTools } from "./dbt-tools";
 import { NO_SEMANTIC_MANIFEST, createDbtMetricTools } from "./dbt-metric-tools";
 import {
@@ -399,7 +401,8 @@ describe("compile_metric", () => {
       {
         metrics: ["average_order_value"],
         groupBy: ["metric_time__month"],
-        where: ["{{ Dimension('customer__region') }} = 'EU'"],
+        // Each filter reaches MetricFlow in parentheses, even a single one.
+        where: ["({{ Dimension('customer__region') }} = 'EU')"],
         orderBy: ["-metric_time__month"],
         limit: 12,
         startTime: "2026-01-01",
@@ -491,6 +494,80 @@ describe("compile_metric", () => {
       error:
         "The given input does not match any of the available group-by-items",
     });
+  });
+
+  it("refuses compiled SQL that is not read-only, as query_metric does", async () => {
+    await seedProject();
+    engine.compile.mockResolvedValue(
+      "SELECT SUM(revenue) AS revenue FROM t WHERE (1=1; drop table x)",
+    );
+    const input = { metrics: ["revenue"], where: ["1=1; drop table x"] };
+    const compiled = await run<Record<string, unknown>>(
+      tools.compile_metric,
+      input,
+    );
+    expect(compiled.success).toBe(false);
+    expect(compiled.error).toBe(
+      sqlReadOnlyAccessError(
+        "SELECT SUM(revenue) AS revenue FROM t WHERE (1=1; drop table x)",
+        "postgresql",
+      ),
+    );
+    expect(compiled.error).toMatch(/Mako MCP access is read-only/);
+    // The statement is not handed back.
+    expect(compiled).not.toHaveProperty("sql");
+    expect(JSON.stringify(compiled)).not.toMatch(/drop table/);
+
+    const queried = await run<Record<string, unknown>>(
+      tools.query_metric,
+      input,
+    );
+    expect(queried.error).toBe(compiled.error);
+    expect(executor.run).not.toHaveBeenCalled();
+  });
+
+  it("refuses a range that ends before it starts, before compiling", async () => {
+    await seedProject();
+    const result = await run(tools.compile_metric, {
+      metrics: ["revenue"],
+      startTime: "2026-03-31",
+      endTime: "2026-01-01T00:00:00",
+    });
+    expect(result).toEqual({
+      success: false,
+      error:
+        "startTime (2026-03-31) is after endTime (2026-01-01T00:00:00): the range holds no rows. Swap them.",
+    });
+    expect(engine.compile).not.toHaveBeenCalled();
+  });
+
+  it("takes dates and naive datetimes only for the range", () => {
+    for (const startTime of [
+      "2026-01-01",
+      "2026-01-01T00:00:00",
+      "2026-01-01 08:30",
+      "2026-01-01T08:30:15.250",
+    ]) {
+      expect(
+        compileMetricSchema.safeParse({ metrics: ["revenue"], startTime })
+          .success,
+      ).toBe(true);
+    }
+    for (const endTime of [
+      "2026-01-01T00:00:00+02:00",
+      "2026-01-01T00:00:00Z",
+      "not-a-date",
+      "01/02/2026",
+    ]) {
+      const parsed = compileMetricSchema.safeParse({
+        metrics: ["revenue"],
+        endTime,
+      });
+      expect(parsed.success).toBe(false);
+      expect(parsed.error?.issues[0].message).toMatch(
+        /endTime must be a date \("2026-01-01"\) or a datetime without a timezone/,
+      );
+    }
   });
 
   it("says so when the workspace has no semantic manifest", async () => {

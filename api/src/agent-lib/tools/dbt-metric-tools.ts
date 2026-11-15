@@ -52,6 +52,7 @@ import {
   type SemanticProject,
 } from "../../dbt/semantic/semantic-manifest.service";
 import { loggers } from "../../logging";
+import { sqlReadOnlyAccessError } from "../../services/read-only-query.service";
 import { getDialect } from "./shared/sql-dialects";
 import { isAgentToolAbortError } from "./shared/truncation";
 import { executeQueryImpl } from "./sql-tools";
@@ -142,6 +143,22 @@ function describedMetric(metric: CatalogMetric) {
   };
 }
 
+/** A metric_time bound as epoch ms: a date or a naive datetime, read as UTC. */
+function metricTimeMs(value: string): number {
+  const iso = value.trim().replace(" ", "T");
+  return Date.parse(`${iso.length === 10 ? `${iso}T00:00:00` : iso}Z`);
+}
+
+/** Refuse a range that can hold no rows, before MetricFlow is started. */
+function assertTimeRange(startTime?: string, endTime?: string): void {
+  if (!startTime || !endTime) return;
+  if (metricTimeMs(startTime) > metricTimeMs(endTime)) {
+    throw new Error(
+      `startTime (${startTime}) is after endTime (${endTime}): the range holds no rows. Swap them.`,
+    );
+  }
+}
+
 /**
  * The one project that defines every metric asked for. Throws with what to
  * do when none or several do.
@@ -195,6 +212,7 @@ export const createDbtMetricTools = (
 
   /** A metric query compiled for the warehouse its project builds into. */
   const compile = async (input: CompileMetricInput) => {
+    assertTimeRange(input.startTime, input.endTime);
     const projects = await loadSemanticProjects(workspaceId, {
       projectId: input.projectId,
       environment: input.environment,
@@ -237,7 +255,9 @@ export const createDbtMetricTools = (
       {
         metrics: input.metrics,
         groupBy: input.groupBy,
-        where: input.where,
+        // MetricFlow parenthesises each filter only when there are several:
+        // alone, "a = 1 or 1=1" would reach the WHERE clause bare.
+        where: input.where?.map(filter => `(${filter})`),
         orderBy: input.orderBy,
         limit: input.limit,
         startTime: input.startTime,
@@ -245,6 +265,11 @@ export const createDbtMetricTools = (
       },
       toolExecutionContext?.signal,
     );
+    // A where filter is raw SQL: the compiled statement gets the same
+    // read-only check as a query that runs, so compile_metric never hands
+    // back SQL that query_metric would refuse.
+    const accessError = sqlReadOnlyAccessError(sql, connection.type);
+    if (accessError) throw new Error(accessError);
     return {
       sql,
       project,

@@ -171,13 +171,68 @@ describe.skipIf(!ENABLED)(
       expect((failure as Error).message).toMatch(/'revenue'/);
     }, 300_000);
 
-    it("refuses a group-by no join path reaches", async () => {
-      await expect(
-        compileMetricQuery(KEY, "bigquery", {
-          metrics: ["revenue"],
-          groupBy: ["customer__country"],
-        }),
-      ).rejects.toThrow(MetricflowQueryError);
+    it("refuses a group-by no join path reaches, without MetricFlow's call path", async () => {
+      const failure = await compileMetricQuery(KEY, "bigquery", {
+        metrics: ["revenue"],
+        groupBy: ["customer__country"],
+      }).catch(error => error as Error);
+      expect(failure).toBeInstanceOf(MetricflowQueryError);
+      const message = (failure as Error).message;
+      expect(message).toMatch(
+        /^The given input does not match any of the available group-by-items/,
+      );
+      expect(message).toMatch(/Suggestions:/);
+      expect(message).toMatch(/Query Input:\s+customer__country/);
+      expect(message).not.toMatch(/Issue Location|Error #1|Got error/);
+    }, 300_000);
+
+    it("reports a bad Jinja filter by its cause, not by three tracebacks", async () => {
+      const failure = await compileMetricQuery(KEY, "postgres", {
+        metrics: ["revenue"],
+        where: ["{{ Dimension('customer__region' }} = 'x'"],
+      }).catch(error => error as Error);
+      expect(failure).toBeInstanceOf(MetricflowQueryError);
+      const message = (failure as Error).message;
+      expect(message).toMatch(/^Error parsing where filter:/);
+      expect(message).toContain("{{ Dimension('customer__region' }} = 'x'");
+      expect(message).toMatch(/TemplateSyntaxError: unexpected '}'/);
+      expect(message).not.toMatch(/Traceback|site-packages|File "/);
+      expect(message.length).toBeLessThan(400);
+    }, 300_000);
+
+    it("keeps a parenthesised filter in the WHERE clause", async () => {
+      const sql = await compileMetricQuery(KEY, "postgres", {
+        metrics: ["revenue"],
+        where: ["({{ Dimension('customer__region') }} = 'ch' or 1=1)"],
+      });
+      expect(sql).toMatch(/WHERE \(customer__region = 'ch' or 1=1\)/);
+    }, 300_000);
+
+    it("drops a timezone offset from the range and names a value that is no date", async () => {
+      const sql = await compileMetricQuery(KEY, "postgres", {
+        metrics: ["revenue"],
+        groupBy: ["metric_time__day"],
+        startTime: "2026-01-01T00:00:00+02:00",
+        endTime: "2026-03-31T00:00:00Z",
+      });
+      expect(sql).toMatch(/BETWEEN '2026-01-01' AND '2026-03-31'/);
+
+      const failure = await compileMetricQuery(KEY, "postgres", {
+        metrics: ["revenue"],
+        startTime: "not-a-date",
+      }).catch(error => error as Error);
+      expect((failure as Error).message).toMatch(
+        /^startTime "not-a-date" is not a date/,
+      );
+
+      const reversed = await compileMetricQuery(KEY, "postgres", {
+        metrics: ["revenue"],
+        startTime: "2026-03-31",
+        endTime: "2026-01-01",
+      }).catch(error => error as Error);
+      expect((reversed as Error).message).toMatch(
+        /^startTime \(2026-03-31T00:00:00\) is after endTime/,
+      );
     }, 300_000);
   },
 );
