@@ -83,6 +83,7 @@ export type StartDetachedConsoleRunResult =
       completion: Promise<ExecuteSavedConsoleResult>;
     };
 
+/** A console's language as query-execution telemetry records it. */
 export function mapConsoleLanguageToQueryLanguage(
   language: "sql" | "javascript" | "mongodb",
 ): QueryLanguage {
@@ -91,6 +92,7 @@ export function mapConsoleLanguageToQueryLanguage(
   return "sql";
 }
 
+/** Bucket a failed run's error message into a telemetry status + type. */
 export function classifyError(errorMessage: string | undefined): {
   status: QueryStatus;
   errorType: string;
