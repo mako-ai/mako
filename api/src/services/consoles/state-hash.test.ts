@@ -18,4 +18,4 @@ assert.equal(
   computeConsoleStateHash("select * from t"),
 );
 
-console.log("console state-hash tests passed");
+console.info("console state-hash tests passed");

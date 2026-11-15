@@ -73,7 +73,7 @@ export async function saveConsole(
     // Fallback: look up by name + folder for path-based PUT requests
     // Only match saved consoles (isSaved: true), not drafts
     if (!savedConsole) {
-      const query: any = {
+      const query: Record<string, unknown> = {
         name: consoleName,
         workspaceId: new Types.ObjectId(workspaceId),
         isSaved: true, // Only match saved consoles, not drafts
@@ -149,7 +149,7 @@ export async function saveConsole(
       const access =
         options?.access ?? (options?.isPrivate ? "private" : "workspace");
       const isPrivate = access === "private";
-      const consoleData: any = {
+      const consoleData: Record<string, unknown> = {
         workspaceId: new Types.ObjectId(workspaceId),
         folderId: folderId ? new Types.ObjectId(folderId) : undefined,
         connectionId: connectionId
@@ -219,7 +219,7 @@ export async function renameConsole(
       );
     }
 
-    const updateFields: any = {
+    const updateFields: Record<string, unknown> = {
       name: consoleName,
       updatedAt: new Date(),
     };
@@ -282,7 +282,7 @@ export async function moveConsole(
     : null;
   if (!objectId) return false;
 
-  const updateFields: Record<string, any> = {
+  const updateFields: Record<string, unknown> = {
     updatedAt: new Date(),
   };
 
@@ -512,7 +512,7 @@ export async function getConsoleByPath(
 
     // Build query for console with same name in same folder (or root if no folder)
     // Only match explicitly saved consoles (isSaved: true) - not drafts
-    const query: any = {
+    const query: Record<string, unknown> = {
       name: consoleName,
       workspaceId: new Types.ObjectId(workspaceId),
       isSaved: true, // Only match saved consoles, not drafts

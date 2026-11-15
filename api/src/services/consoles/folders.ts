@@ -344,7 +344,7 @@ export async function moveConsoleFolder(
     }
   }
 
-  const updateFields: Record<string, any> = {};
+  const updateFields: Record<string, unknown> = {};
   if (newParentId) {
     updateFields.parentId = new Types.ObjectId(newParentId);
   } else {

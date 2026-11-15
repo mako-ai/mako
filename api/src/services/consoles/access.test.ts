@@ -44,4 +44,4 @@ assert.ok(ConsoleManager.canWrite(shared, "someone", true));
 assert.ok(!ConsoleManager.canWrite(shared, "someone", true, "viewer"));
 assert.ok(!ConsoleManager.canWrite(shared, "someone", false));
 
-console.log("console access tests passed");
+console.info("console access tests passed");
