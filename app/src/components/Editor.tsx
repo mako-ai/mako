@@ -1,216 +1,42 @@
-import React, {
-  useRef,
-  useEffect,
-  useMemo,
-  useState,
-  useCallback,
-  type ComponentProps,
-} from "react";
-import { DndContext, closestCenter, type DragEndEvent } from "@dnd-kit/core";
-import { useDragSensors } from "../hooks/useDragSensors";
-import {
-  SortableContext,
-  useSortable,
-  horizontalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
-import {
-  Box,
-  Tabs,
-  Tab,
-  IconButton,
-  Button,
-  Typography,
-  styled,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  Alert,
-  Tooltip,
-  Menu,
-  MenuItem,
-  ListItemIcon,
-  ListItemText,
-  Divider,
-  ToggleButton,
-  ToggleButtonGroup,
-} from "@mui/material";
-import { Close as CloseIcon } from "@mui/icons-material";
-import {
-  Clock as ScheduleIcon,
-  Webhook as WebhookIcon,
-  CirclePause as PauseIcon,
-  ChevronDown as ChevronDownIcon,
-  SquareTerminal as QueryPaneIcon,
-  Table as ResultsPaneIcon,
-  AppWindow as PreviewPaneIcon,
-  TerminalSquare as TerminalPaneIcon,
-  Plus as PlusIcon,
-  X as CloseTabIcon,
-} from "lucide-react";
-import { tabKindIcon } from "../lib/entity-icons";
-import type { TabKind } from "../store/lib/types";
-import { useConfirm } from "./ConfirmDialog";
-
-/** Renders the canonical icon for a tab kind (see lib/entity-icons.ts). */
-function TabKindGlyph({ kind }: { kind: TabKind | undefined }) {
-  const Icon = tabKindIcon(kind);
-  return <Icon size={18} strokeWidth={1.5} />;
-}
-import { Group, Panel, Separator, type Layout } from "react-resizable-panels";
-import { loadMonaco } from "../lib/monaco/load";
-import { lazyWithSuspense } from "../lib/lazy-component";
-import Console, { ConsoleRef } from "./Console";
-import { useAppsStore } from "../store/appsStore";
-import { notify } from "../store/notificationStore";
-import type { HistoryEntityKind } from "../store/entityHistoryStore";
-import EntityHistoryPopover from "./EntityHistoryPopover";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Box, Button, Typography } from "@mui/material";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
-import EntityLoadErrorState from "./EntityLoadErrorState";
-import { tabKindEntityLabel } from "../lib/entity-labels";
-import type { LoadError } from "../api";
-import ScheduleConsoleModal from "./ScheduleConsoleModal";
-import ConsoleRemoteUpdateBanner from "./ConsoleRemoteUpdateBanner";
-import ScheduledRunsPanel from "./ScheduledRunsPanel";
-import ConsoleExecutionsPanel, {
-  type ConsoleExecutionRow,
-} from "./ConsoleExecutionsPanel";
 import type { DbFlowFormRef } from "./DbFlowForm";
-import ConflictResolutionDialog, {
-  ConflictData,
-} from "./ConflictResolutionDialog";
-import FileExplorerDialog from "./FileExplorerDialog";
-import { SaveCommentDialog } from "./SaveCommentDialog";
-import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
 import { useConsoleStore, selectConsoleTabs } from "../store/consoleStore";
 import { useShallow } from "zustand/react/shallow";
 import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
-import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
+import { useConnectionIconById } from "../hooks/useConnectionIconById";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
-import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
-import { isDbFlowQueryModelUri } from "../lib/sql-autocomplete/modelScope";
 import { useIsMobile } from "../hooks/useIsMobile";
-import { trackEvent } from "../lib/analytics";
-import { separatorDragRef } from "../lib/iframe-drag-guard";
-import { consoleLeafName } from "../lib/console-name";
-import { generateObjectId } from "../utils/objectId";
-import { isTabMounted, useMountedTabs } from "../lib/tab-mount-policy";
-import { computeConsoleStateHash } from "../utils/stateHash";
-import type {
-  ScheduledQueryRunItem,
-  ConsoleVersionConflict,
-} from "../lib/api-types";
-import VersionConflictDialog from "./VersionConflictDialog";
+import { useMountedTabs } from "../lib/tab-mount-policy";
+import type { ConsoleTab } from "../store/lib/types";
+import { useRenderCount, useWhyChanged } from "../utils/renderDebug";
+import { EditorTabBar } from "./editor/EditorTabBar";
+import { MobileEditorHeader } from "./editor/MobileEditorHeader";
+import { EditorTabPanels } from "./editor/EditorTabPanels";
 import {
-  logRenderDebug,
-  onRenderDebug,
-  renderDebugEnabled,
-  useRenderCount,
-  useWhyChanged,
-} from "../utils/renderDebug";
+  ConsoleTabPanel,
+  type ConsoleTabActions,
+} from "./editor/ConsoleTabPanel";
+import { EditorDialogs } from "./editor/EditorDialogs";
+import { FILL_COLUMN_SX } from "./editor/styles";
+import { useEditorFeedback } from "./editor/hooks/useEditorFeedback";
+import { useConsoleRuns } from "./editor/hooks/useConsoleRuns";
+import { useConsoleExecution } from "./editor/hooks/useConsoleExecution";
+import { useResultsViewState } from "./editor/hooks/useResultsViewState";
+import { useConsoleSave } from "./editor/hooks/useConsoleSave";
+import { useConsoleRefs } from "./editor/hooks/useConsoleRefs";
+import { useEditorSqlAutocomplete } from "./editor/hooks/useEditorSqlAutocomplete";
+import { useStableCallback } from "./editor/hooks/useStableCallback";
+import type {
+  ChartSpecChangePayload,
+  ConsoleResultsContext,
+} from "./editor/types";
 
-/** Editor success toasts: bottom-right, 6s. */
-function showEditorToast(message: string) {
-  return notify.success(message, {
-    autoHideDuration: 6000,
-    anchorOrigin: { vertical: "bottom", horizontal: "right" },
-  });
-}
-
-// Heavy tab bodies are split out of the entry chunk (xterm, MUI X data
-// grid, notebooks, dbt, settings): each loads when its tab first renders.
-const Settings = lazyWithSuspense(() => import("../pages/Settings"));
-const SourceConnectionTab = lazyWithSuspense(
-  () => import("./SourceConnectionTab"),
-);
-const NotebookRenderer = lazyWithSuspense(() => import("./NotebookRenderer"));
-const AppWorkspace = lazyWithSuspense(() => import("./AppWorkspace"));
-const AppFileEditor = lazyWithSuspense(() => import("./AppFileEditor"));
-const AppDiffTab = lazyWithSuspense(() => import("./AppDiffTab"));
-const HistoryDiffTab = lazyWithSuspense(() => import("./HistoryDiffTab"));
-const RepoDiffTab = lazyWithSuspense(() => import("./RepoDiffTab"));
-const AppBindingEditor = lazyWithSuspense(() => import("./AppBindingEditor"));
-const PlanDocumentTab = lazyWithSuspense(() => import("./PlanDocumentTab"));
-const DbtFileEditor = lazyWithSuspense(() => import("./DbtFileEditor"));
-const DbtJobView = lazyWithSuspense(() => import("./DbtJobView"));
-const DbtConsoleView = lazyWithSuspense(() => import("./DbtConsoleView"));
-const DbtRunsView = lazyWithSuspense(() => import("./DbtRunsView"));
-const AppsHome = lazyWithSuspense(() => import("./apps-home/AppsHome"));
-const WorkflowView = lazyWithSuspense(() => import("./WorkflowView"));
-const TableDataView = lazyWithSuspense(() => import("./TableDataView"));
-// The results grid (MUI X DataGridPremium) is only needed once a console
-// has results, so it stays out of the initial load too.
-const ResultsTable = lazyWithSuspense(() => import("./ResultsTable"));
-const WorkspaceMembers = lazyWithSuspense<Record<string, never>>(() =>
-  import("./WorkspaceMembers").then(m => ({ default: m.WorkspaceMembers })),
-);
-const FlowEditor = lazyWithSuspense<
-  ComponentProps<(typeof import("./FlowEditor"))["FlowEditor"]>
->(() => import("./FlowEditor").then(m => ({ default: m.FlowEditor })));
-const ShareDialog = lazyWithSuspense(() => import("./ShareDialog"), null);
-
-interface QueryPageInfo {
-  pageSize: number;
-  hasMore: boolean;
-  nextCursor: string | null;
-  returnedRows: number;
-  capApplied: boolean;
-}
-
-interface QueryResult {
-  results: any[];
-  executedAt: string;
-  resultCount: number;
-  executionTime?: number;
-  fields?: Array<{ name?: string; originalName?: string } | string>;
-  pageInfo?: QueryPageInfo | null;
-  currentPage?: number;
-}
-
-interface TabPaginationState {
-  currentPage: number;
-  cursorHistory: Array<string | null>;
-  nextCursor: string | null;
-  hasMore: boolean;
-  pageSize: number;
-  capApplied: boolean;
-}
-
-// Makes iframes ignore the pointer while a divider is dragged (a cross-
-// origin preview would otherwise swallow the drag). Stable: see separatorDragRef.
-const guardSeparatorDrag = separatorDragRef();
-
-// Styled Separator components
-const StyledVerticalResizeHandle = styled(Separator)(({ theme }) => ({
-  height: "4px",
-  background: theme.palette.divider,
-  transition: "background-color 0.2s ease",
-  // The library flags hover/drag via a data attribute (its hit area extends
-  // beyond the 4px strip), so key the highlight off that instead of :hover.
-  "&[data-separator='hover'], &[data-separator='active']": {
-    backgroundColor: theme.palette.primary.main,
-  },
-}));
-
-type ResultsViewMode = "table" | "json" | "chart";
-
-export interface ChartSpecChangePayload {
-  spec: import("../lib/chart-spec").MakoChartSpec;
-  onRenderResult?: (result: { success: boolean; error?: string }) => void;
-}
-
-export interface ConsoleResultsContext {
-  viewMode: ResultsViewMode;
-  chartSpec: import("../lib/chart-spec").MakoChartSpec | null;
-  hasResults: boolean;
-  rowCount: number;
-  columns: string[];
-  sampleRows: Record<string, unknown>[];
-}
+export type { ChartSpecChangePayload, ConsoleResultsContext };
 
 interface EditorProps {
   dbFlowFormRef?: React.RefObject<DbFlowFormRef | null>;
@@ -220,133 +46,7 @@ interface EditorProps {
   resultsContextRef?: React.MutableRefObject<ConsoleResultsContext | null>;
 }
 
-/**
- * MUI <Tabs> clones its direct children to inject props (selected, onChange,
- * textColor, indicator, ...). This wrapper accepts all Tab props (plus MUI's
- * clone-injected extras), wires up dnd-kit's useSortable for drag-to-reorder,
- * and forwards everything to an underlying <Tab>.
- *
- * UX:
- * - Dragged tab stays in place (only dimmed); no translation or layout shift.
- * - A thin vertical bar (drop indicator) is rendered on the leading or
- *   trailing edge of the tab currently under the pointer, showing where the
- *   dragged tab will land on drop.
- *
- * Implementation notes:
- * - We intentionally do NOT spread dnd-kit's `attributes` onto the Tab — they
- *   include role="button"/tabIndex which would clobber MUI Tab's own
- *   role="tab"/tabIndex logic and break tab selection + cause a feedback
- *   loop with MUI Tabs' indicator ResizeObserver.
- * - We use inline `style` (not `sx`) for the drag opacity so emotion doesn't
- *   churn className hashes on every pointer move during a drag.
- */
-function SortableConsoleTab(props: React.ComponentProps<typeof Tab>) {
-  const id = props.value as string;
-  const { listeners, setNodeRef, isDragging, isOver, activeIndex, overIndex } =
-    useSortable({ id });
-
-  // Show a drop indicator on the hovered tab, but not on the dragged tab
-  // itself and not when dropping would be a no-op (same index).
-  const showIndicator =
-    isOver && !isDragging && activeIndex !== -1 && activeIndex !== overIndex;
-  // Leading edge when moving the tab to the left, trailing edge when moving
-  // it to the right.
-  const indicatorSide: "left" | "right" =
-    activeIndex > overIndex ? "left" : "right";
-
-  const dragStyle: React.CSSProperties = {
-    opacity: isDragging ? 0.4 : 1,
-  };
-
-  const indicatorSx = showIndicator
-    ? {
-        "&::after": {
-          content: '""',
-          position: "absolute",
-          top: 0,
-          bottom: 0,
-          [indicatorSide]: -3,
-          width: "6px",
-          backgroundColor: (theme: import("@mui/material").Theme) =>
-            theme.palette.mode === "dark"
-              ? theme.palette.common.white
-              : theme.palette.common.black,
-          pointerEvents: "none",
-          zIndex: 2,
-        },
-      }
-    : undefined;
-
-  const mergedSx = indicatorSx
-    ? ([props.sx, indicatorSx] as React.ComponentProps<typeof Tab>["sx"])
-    : props.sx;
-
-  return (
-    <Tab
-      {...props}
-      {...listeners}
-      ref={setNodeRef as unknown as React.Ref<HTMLDivElement>}
-      sx={mergedSx}
-      style={{ ...(props.style || {}), ...dragStyle }}
-    />
-  );
-}
-
-// Claude-style floating round button for the mobile editor header — paper fill,
-// blur and a hairline so it reads as floating chrome over the editor content.
-const MOBILE_FLOAT_BTN_SX = {
-  width: 38,
-  height: 38,
-  flexShrink: 0,
-  borderRadius: "50%",
-  color: "text.secondary",
-  bgcolor: "background.paper",
-  border: 1,
-  borderColor: "divider",
-  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
-  backdropFilter: "blur(8px)",
-  "&:hover": { bgcolor: "action.hover" },
-} as const;
-
-// Centered "current window" pill that opens the open-tabs switcher menu.
-const MOBILE_WINDOW_PILL_SX = {
-  flex: 1,
-  minWidth: 0,
-  maxWidth: 320,
-  height: 38,
-  px: 1.5,
-  textTransform: "none",
-  borderRadius: 999,
-  color: "text.primary",
-  bgcolor: "background.paper",
-  border: 1,
-  borderColor: "divider",
-  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
-  backdropFilter: "blur(8px)",
-  "&:hover": { bgcolor: "action.hover" },
-} as const;
-
-// Icon-only pane switch that sits beside the window pill on mobile (query /
-// results for a console, preview / terminal for an app in dev mode). Same
-// height and pill shape as its neighbours so the header stays one row.
-const MOBILE_PANE_TOGGLE_SX = {
-  height: 38,
-  flexShrink: 0,
-  borderRadius: 999,
-  overflow: "hidden",
-  bgcolor: "background.paper",
-  border: 1,
-  borderColor: "divider",
-  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
-  "& .MuiToggleButtonGroup-grouped": {
-    border: 0,
-    borderRadius: 0,
-    minWidth: 40,
-    px: 0,
-    color: "text.secondary",
-    "&.Mui-selected": { color: "text.primary" },
-  },
-} as const;
+const EMPTY_LIST: never[] = [];
 
 function Editor({
   dbFlowFormRef,
@@ -354,233 +54,20 @@ function Editor({
   resultsContextRef,
 }: EditorProps = {}) {
   const { currentWorkspace } = useWorkspace();
-  const confirm = useConfirm();
+  const workspaceId = currentWorkspace?.id;
   const { user } = useAuth();
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
-  const [tabResults, setTabResults] = useState<
-    Record<string, QueryResult | null>
-  >({});
-  const [tabPagination, setTabPagination] = useState<
-    Record<string, TabPaginationState | null>
-  >({});
-  const tabs = useConsoleStore(state => state.tabs);
-  const [tabChartSpecs, setTabChartSpecs] = useState<
-    Record<string, import("../lib/chart-spec").MakoChartSpec | null>
-  >(() => {
-    const initial: Record<
-      string,
-      import("../lib/chart-spec").MakoChartSpec | null
-    > = {};
-    for (const tab of Object.values(tabs)) {
-      if (tab.chartSpec) {
-        initial[tab.id] =
-          tab.chartSpec as import("../lib/chart-spec").MakoChartSpec;
-      }
-    }
-    return initial;
-  });
-  const [tabViewModes, setTabViewModes] = useState<
-    Record<string, ResultsViewMode>
-  >(() => {
-    const initial: Record<string, ResultsViewMode> = {};
-    for (const tab of Object.values(tabs)) {
-      if (tab.resultsViewMode) {
-        initial[tab.id] = tab.resultsViewMode;
-      }
-    }
-    return initial;
-  });
-  const pendingRenderCallbackRef = useRef<
-    Record<
-      string,
-      ((result: { success: boolean; error?: string }) => void) | undefined
-    >
-  >({});
-  // Per-tab execution state to allow parallel queries across tabs
-  const [executingTabs, setExecutingTabs] = useState<Record<string, boolean>>(
-    {},
-  );
-  const [cancellingTabs, setCancellingTabs] = useState<Record<string, boolean>>(
-    {},
-  );
-  const [isSaving, setIsSaving] = useState(false);
-  const [windowMenuAnchor, setWindowMenuAnchor] = useState<null | HTMLElement>(
-    null,
-  );
-  const [errorModalOpen, setErrorModalOpen] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string>("");
-  const [errorPreviewRetry, setErrorPreviewRetry] = useState<{
-    tabId: string;
-    contentToExecute: string;
-    connectionId: string;
-    options?: {
-      databaseId?: string;
-      databaseName?: string;
-      cursor?: string | null;
-      currentPage?: number;
-      cursorHistory?: Array<string | null>;
-      pageSize?: number;
-    };
-  } | null>(null);
-  const connectionsMap = useSchemaStore(state => state.connections);
-  const ensureConnections = useSchemaStore(state => state.ensureConnections);
-  const availableDatabases = React.useMemo(
-    () => (currentWorkspace ? connectionsMap[currentWorkspace.id] || [] : []),
-    [currentWorkspace, connectionsMap],
-  );
-
-  // Database type → iconUrl map for rendering per-connection icons in console tabs.
-  const dbTypes = useDatabaseCatalogStore(state => state.types);
-  const fetchDbTypes = useDatabaseCatalogStore(state => state.fetchTypes);
-  useEffect(() => {
-    fetchDbTypes().catch(() => undefined);
-  }, [fetchDbTypes]);
-  const connectionIconById = React.useMemo(() => {
-    const typeToIcon = new Map<string, string>();
-    for (const t of dbTypes || []) {
-      if (t.iconUrl) typeToIcon.set(t.type, t.iconUrl);
-    }
-    const map = new Map<string, string>();
-    for (const c of availableDatabases) {
-      const icon = typeToIcon.get(c.type);
-      if (icon) map.set(c.id, icon);
-    }
-    return map;
-  }, [dbTypes, availableDatabases]);
-
-  // Save dialog state (folder navigator)
-  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
-  const [saveDialogTabId, setSaveDialogTabId] = useState<string | null>(null);
-  const [saveDialogContent, setSaveDialogContent] = useState("");
-  // Which flow opened the dialog:
-  //   "new"           — first-time save of a draft tab (POST with the tab's own id)
-  //   "save-as-copy"  — create a brand-new console record (POST with a fresh id),
-  //                     leaving the current tab untouched.
-  //   "rename-move"   — relocate an already-saved console (PUT via saveConsole)
-  //                     to a new path; current tab updates to the new path.
-  const [saveDialogMode, setSaveDialogMode] = useState<
-    "new" | "save-as-copy" | "rename-move"
-  >("new");
-  // Id that will be sent to the API. Same as saveDialogTabId for "new" and
-  // "rename-move"; a freshly-generated id for "save-as-copy".
-  const [saveDialogTargetId, setSaveDialogTargetId] = useState<string | null>(
-    null,
-  );
-
-  // Save comment dialog state (version commit message)
-  const [commentDialogOpen, setCommentDialogOpen] = useState(false);
-  const saveSuggestion = useSaveCommentSuggestion();
-  const [pendingCommentSave, setPendingCommentSave] = useState<{
-    tabId: string;
-    content: string;
-    path: string;
-    resolve: (success: boolean) => void;
-  } | null>(null);
-
-  // Console history popover (git-backed, apps.md §16) — anchored to the
-  // toolbar button of the tab that opened it.
-  const [consoleHistory, setConsoleHistory] = useState<{
-    anchor: HTMLElement;
-    tabId: string;
-  } | null>(null);
-
-  // Unified share dialog state (consoles)
-  const [shareConsoleTabId, setShareConsoleTabId] = useState<string | null>(
-    null,
-  );
-  const shareConsoleTab = useConsoleStore(s =>
-    shareConsoleTabId ? s.tabs[shareConsoleTabId] : undefined,
-  );
-
-  const [scheduleModalTabId, setScheduleModalTabId] = useState<string | null>(
-    null,
-  );
-  const [scheduleModalMode, setScheduleModalMode] = useState<
-    "create" | "update"
-  >("create");
-  const [tabBottomPanel, setTabBottomPanel] = useState<
-    Record<string, "results" | "runs">
-  >({});
-  const [tabScheduledRuns, setTabScheduledRuns] = useState<
-    Record<string, ScheduledQueryRunItem[]>
-  >({});
-  const [tabScheduledRunsLoading, setTabScheduledRunsLoading] = useState<
-    Record<string, boolean>
-  >({});
-  const [tabScheduledRunsError, setTabScheduledRunsError] = useState<
-    Record<string, string | null>
-  >({});
-  const [tabExecutions, setTabExecutions] = useState<
-    Record<string, ConsoleExecutionRow[]>
-  >({});
-  const [tabExecutionsLoading, setTabExecutionsLoading] = useState<
-    Record<string, boolean>
-  >({});
-  const [tabExecutionsError, setTabExecutionsError] = useState<
-    Record<string, string | null>
-  >({});
-
-  // Conflict resolution state
-  const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
-  const [conflictData, setConflictData] = useState<ConflictData | null>(null);
-
-  // Concurrent-edit (optimistic concurrency) conflict state
-  const [versionConflictData, setVersionConflictData] =
-    useState<ConsoleVersionConflict | null>(null);
-
-  const [pendingSaveData, setPendingSaveData] = useState<{
-    tabId: string;
-    content: string;
-    path: string;
-    connectionId?: string;
-    databaseId?: string;
-    databaseName?: string;
-    comment?: string;
-    access?: "private" | "workspace";
-  } | null>(null);
-
-  // Refs for query cancellation (per-tab to support parallel queries)
-  const abortControllersRef = useRef<Record<string, AbortController | null>>(
-    {},
-  );
-  const executionIdsRef = useRef<Record<string, string | null>>({});
+  const isMobile = useIsMobile();
 
   // Tab store — individual selectors to avoid full-store re-renders
+  const tabs = useConsoleStore(state => state.tabs);
   const activeTabId = useConsoleStore(state => state.activeTabId);
   const closeTab = useConsoleStore(state => state.closeTab);
   const updateContent = useConsoleStore(state => state.updateContent);
   const updateConnection = useConsoleStore(state => state.updateConnection);
   const updateDatabase = useConsoleStore(state => state.updateDatabase);
-  const updateFilePath = useConsoleStore(state => state.updateFilePath);
-  const updateAccess = useConsoleStore(state => state.updateAccess);
-  const updateTitle = useConsoleStore(state => state.updateTitle);
   const updateDirty = useConsoleStore(state => state.updateDirty);
-  const updateSavedState = useConsoleStore(state => state.updateSavedState);
-  const updateChartSpec = useConsoleStore(state => state.updateChartSpec);
-  const updateVersion = useConsoleStore(state => state.updateVersion);
-  const updateResultsViewMode = useConsoleStore(
-    state => state.updateResultsViewMode,
-  );
-  const updateMetadata = useConsoleStore(state => state.updateMetadata);
   const setActiveTab = useConsoleStore(state => state.setActiveTab);
-  const getVersionManager = useConsoleStore(state => state.getVersionManager);
-  const generateSaveComment = useConsoleStore(
-    state => state.generateSaveComment,
-  );
-  const executeQuery = useConsoleStore(state => state.executeQuery);
-  const cancelQuery = useConsoleStore(state => state.cancelQuery);
-  const saveConsole = useConsoleStore(state => state.saveConsole);
-  const deleteConsole = useConsoleStore(state => state.deleteConsole);
-  const setSchedule = useConsoleStore(state => state.setSchedule);
-  const removeSchedule = useConsoleStore(state => state.removeSchedule);
-  const runScheduledNow = useConsoleStore(state => state.runScheduledNow);
-  const listScheduledRuns = useConsoleStore(state => state.listScheduledRuns);
-  const fetchConsoleExecutions = useConsoleStore(
-    state => state.fetchConsoleExecutions,
-  );
-  const updateTabScheduledRun = useConsoleStore(
-    state => state.updateTabScheduledRun,
-  );
   const openTab = useConsoleStore(state => state.openTab);
   const reorderTabs = useConsoleStore(state => state.reorderTabs);
   const reloadConsole = useConsoleStore(state => state.reloadConsole);
@@ -593,18 +80,91 @@ function Editor({
   // mounted; app tabs are capped (lib/tab-mount-policy). Only one tab is on
   // screen in this Editor, so the active tab is the visible set.
   const mountedLazyTabs = useMountedTabs(consoleTabs, [activeConsoleId]);
-  const scheduleModalTab = scheduleModalTabId ? tabs[scheduleModalTabId] : null;
-  const scheduleModalHasSchedule = Boolean(
-    scheduleModalTab?.schedule?.cron?.trim() &&
-    scheduleModalTab?.schedule?.timezone?.trim(),
-  );
   const activeTab = activeConsoleId ? tabs[activeConsoleId] : undefined;
+
+  const connectionsMap = useSchemaStore(state => state.connections);
+  const ensureConnections = useSchemaStore(state => state.ensureConnections);
+  const availableDatabases = useMemo(
+    () => (workspaceId ? connectionsMap[workspaceId] || [] : []),
+    [workspaceId, connectionsMap],
+  );
+
+  // Database type → iconUrl map for rendering per-connection icons in console tabs.
+  const connectionIconById = useConnectionIconById(availableDatabases);
+
+  // Fetch connections when workspace changes
+  useEffect(() => {
+    if (workspaceId) {
+      ensureConnections(workspaceId);
+    }
+  }, [workspaceId, ensureConnections]);
+
+  useEditorSqlAutocomplete(workspaceId, availableDatabases);
+
+  const mobileConsolePane = useUIStore(state => state.mobileConsolePane);
+  const setMobileConsolePane = useUIStore(state => state.setMobileConsolePane);
+  const mobileResultsView = isMobile && mobileConsolePane === "results";
+
+  const { getConsoleRef, dropConsoleRef, setActiveEditorContent } =
+    useConsoleRefs(activeConsoleId, consoleTabs.length);
+
+  const feedback = useEditorFeedback();
+  const runs = useConsoleRuns({
+    workspaceId,
+    activeTabId,
+    tabs,
+    feedback,
+  });
+  const { refreshExecutionsIfOpen } = runs;
+  const onExecuted = useStableCallback((tabId: string) => {
+    // On mobile, flip the console to its results pane so the answer is
+    // visible without the user having to switch manually.
+    if (isMobile) {
+      setMobileConsolePane("results");
+    }
+    refreshExecutionsIfOpen(tabId);
+  });
+  const execution = useConsoleExecution({
+    workspaceId,
+    consoleTabs,
+    feedback,
+    onExecuted,
+  });
+  const { tabResults, executingTabs, cancellingTabs } = execution;
+  const view = useResultsViewState({
+    tabs,
+    consoleTabs,
+    activeTabId,
+    tabResults,
+    onChartSpecChangeRef,
+    resultsContextRef,
+  });
+  const save = useConsoleSave({
+    workspaceId,
+    tabChartSpecs: view.tabChartSpecs,
+    tabViewModes: view.tabViewModes,
+    getConsoleRef,
+    feedback,
+    openScheduleModal: runs.openScheduleModal,
+  });
+
+  // Console history popover (git-backed, apps.md §16) — anchored to the
+  // toolbar button of the tab that opened it.
+  const [consoleHistory, setConsoleHistory] = useState<{
+    anchor: HTMLElement;
+    tabId: string;
+  } | null>(null);
+  // Unified share dialog state (consoles)
+  const [shareConsoleTabId, setShareConsoleTabId] = useState<string | null>(
+    null,
+  );
+
   useRenderCount("Editor", {
     activeConsoleId,
     tabCount: consoleTabs.length,
   });
   useWhyChanged("Editor", {
-    currentWorkspaceId: currentWorkspace?.id,
+    currentWorkspaceId: workspaceId,
     tabsRef: tabs,
     consoleTabsRef: consoleTabs,
     tabCount: consoleTabs.length,
@@ -617,199 +177,11 @@ function Editor({
       : undefined,
     executingTabsRef: executingTabs,
     cancellingTabsRef: cancellingTabs,
-    isSaving,
-    tabViewModesRef: tabViewModes,
-    tabChartSpecsRef: tabChartSpecs,
+    isSaving: save.isSaving,
+    tabViewModesRef: view.tabViewModes,
+    tabChartSpecsRef: view.tabChartSpecs,
     availableDatabasesRef: availableDatabases,
   });
-
-  const setChartSpecForTab = useCallback(
-    (tabId: string, spec: import("../lib/chart-spec").MakoChartSpec | null) => {
-      setTabChartSpecs(prev => ({ ...prev, [tabId]: spec }));
-      updateChartSpec(tabId, spec as Record<string, unknown> | null);
-    },
-    [updateChartSpec],
-  );
-
-  const setViewModeForTab = useCallback(
-    (tabId: string, mode: ResultsViewMode) => {
-      setTabViewModes(prev => ({ ...prev, [tabId]: mode }));
-      updateResultsViewMode(tabId, mode);
-    },
-    [updateResultsViewMode],
-  );
-  const handlePanelLayout = useCallback((tabId: string, layout: Layout) => {
-    logRenderDebug("Editor.panel-layout", { tabId, layout });
-  }, []);
-
-  // Refs for each Console instance
-  const consoleRefs = useRef<
-    Record<string, React.RefObject<ConsoleRef | null>>
-  >({});
-
-  // Ensure refs exist for every tab
-  useEffect(() => {
-    consoleTabs.forEach(tab => {
-      if (!consoleRefs.current[tab.id]) {
-        consoleRefs.current[tab.id] = React.createRef<ConsoleRef>();
-      }
-    });
-  }, [consoleTabs]);
-
-  // Seed local chart spec / view mode state when tabs are loaded from the server
-  useEffect(() => {
-    for (const tab of consoleTabs) {
-      if (tab.chartSpec) {
-        setTabChartSpecs(prev => {
-          if (prev[tab.id]) return prev;
-          return {
-            ...prev,
-            [tab.id]:
-              tab.chartSpec as import("../lib/chart-spec").MakoChartSpec,
-          };
-        });
-      }
-      if (tab.resultsViewMode) {
-        const viewMode = tab.resultsViewMode;
-        setTabViewModes(prev => {
-          if (prev[tab.id]) return prev;
-          return { ...prev, [tab.id]: viewMode };
-        });
-      }
-    }
-  }, [consoleTabs]);
-
-  // Keep activeEditorContent in app store updated so Chat can use it
-  const setActiveEditorContent = useUIStore(
-    state => state.setActiveEditorContent,
-  );
-
-  // Mobile (< md): a console tab shows EITHER its editor or its results, and
-  // an app tab in dev mode EITHER its preview or its terminal — switched by
-  // the icon toggle beside the window pill, never by the (fixed) bottom nav.
-  const isMobile = useIsMobile();
-  const mobileConsolePane = useUIStore(state => state.mobileConsolePane);
-  const setMobileConsolePane = useUIStore(state => state.setMobileConsolePane);
-  const mobileAppPane = useUIStore(state => state.mobileAppPane);
-  const setMobileAppPane = useUIStore(state => state.setMobileAppPane);
-  const mobileResultsView = isMobile && mobileConsolePane === "results";
-  // Which toggle (if any) the active tab gets. Apps only have two panes while
-  // a dev session is open; a merely viewed app is just its published build.
-  const activeMobileKind = activeConsoleId
-    ? (tabs[activeConsoleId]?.kind ?? "console")
-    : null;
-  const activeMobileAppId =
-    activeMobileKind === "app" && activeConsoleId
-      ? (tabs[activeConsoleId]?.metadata?.appId as string | undefined)
-      : undefined;
-  const activeMobileAppEditing = useAppsStore(state =>
-    activeMobileAppId
-      ? (state.editingByApp[activeMobileAppId] ?? false)
-      : false,
-  );
-
-  // Tabs whose editing surfaces are not usable on a phone; we show a dismissible
-  // notice instead of the cramped desktop UI.
-  const DESKTOP_ONLY_KINDS = useMemo(() => new Set(["flow-editor"]), []);
-  const [dismissedDesktopOnly, setDismissedDesktopOnly] = useState<
-    Record<string, boolean>
-  >({});
-
-  // Update active editor content when tab focus changes AND focus the Monaco editor
-  useEffect(() => {
-    if (activeConsoleId && consoleRefs.current[activeConsoleId]?.current) {
-      const consoleRef = consoleRefs.current[activeConsoleId].current;
-      const content = consoleRef.getCurrentContent();
-      setActiveEditorContent(content);
-
-      // Focus the Monaco editor in the active console
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          consoleRef.focus();
-        });
-      });
-    } else {
-      setActiveEditorContent(undefined);
-    }
-  }, [activeConsoleId, consoleTabs.length, setActiveEditorContent]);
-
-  // Expose chart spec change handler so Chat can set the spec for the active tab
-  useEffect(() => {
-    if (onChartSpecChangeRef) {
-      onChartSpecChangeRef.current = (payload: ChartSpecChangePayload) => {
-        const tabId = activeTabId;
-        if (!tabId) return;
-        if (payload.onRenderResult) {
-          pendingRenderCallbackRef.current[tabId] = payload.onRenderResult;
-        }
-        setChartSpecForTab(tabId, payload.spec);
-        setViewModeForTab(tabId, "chart");
-      };
-    }
-    return () => {
-      if (onChartSpecChangeRef) {
-        onChartSpecChangeRef.current = undefined;
-      }
-    };
-  }, [
-    activeTabId,
-    onChartSpecChangeRef,
-    setChartSpecForTab,
-    setViewModeForTab,
-  ]);
-
-  // Keep resultsContextRef up to date so Chat can read results state at request time
-  useEffect(() => {
-    if (!resultsContextRef) return;
-    const tabId = activeTabId;
-    if (!tabId) {
-      resultsContextRef.current = null;
-      return;
-    }
-    const result = tabResults[tabId];
-    const viewMode = tabViewModes[tabId] ?? "table";
-    const chartSpec = tabChartSpecs[tabId] ?? null;
-
-    if (!result || !result.results) {
-      resultsContextRef.current = {
-        viewMode,
-        chartSpec,
-        hasResults: false,
-        rowCount: 0,
-        columns: [],
-        sampleRows: [],
-      };
-      return;
-    }
-
-    const rows = Array.isArray(result.results)
-      ? result.results
-      : [result.results];
-    const columns: string[] = [];
-    if (result.fields && Array.isArray(result.fields)) {
-      for (const f of result.fields) {
-        const name = typeof f === "string" ? f : f?.name;
-        if (name) columns.push(name);
-      }
-    }
-    if (
-      columns.length === 0 &&
-      rows.length > 0 &&
-      typeof rows[0] === "object" &&
-      rows[0]
-    ) {
-      columns.push(...Object.keys(rows[0]));
-    }
-
-    resultsContextRef.current = {
-      viewMode,
-      chartSpec,
-      hasResults: true,
-      rowCount: rows.length,
-      columns,
-      sampleRows: rows.slice(0, 5),
-    };
-  }, [activeTabId, tabResults, tabViewModes, tabChartSpecs, resultsContextRef]);
 
   // Update the page title based on the active tab
   useEffect(() => {
@@ -824,2136 +196,171 @@ function Editor({
       : baseTitle;
   }, [activeConsoleId, consoleTabs]);
 
-  // Fetch connections when workspace changes
-  useEffect(() => {
-    if (currentWorkspace?.id) {
-      ensureConnections(currentWorkspace.id);
-    }
-  }, [currentWorkspace?.id, ensureConnections]);
-
-  // Load Monaco instance for unified SQL autocomplete
-  const [monacoInstance, setMonacoInstance] = useState<unknown>(null);
-  useEffect(() => {
-    // This used to be a bare loader.init().then(): when the CDN script
-    // failed, the loader rejected with the script's error Event and it
-    // surfaced as an unhandled rejection on every load. Monaco is bundled
-    // now, but a failed chunk load must still not go unhandled.
-    let active = true;
-    loadMonaco()
-      .then(monaco => {
-        if (active) setMonacoInstance(monaco);
-      })
-      .catch((error: unknown) => {
-        console.error("[monaco] failed to load the editor", error);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  // Dynamic getters for unified SQL autocomplete
-  const getWorkspaceId = useCallback(
-    () => currentWorkspace?.id,
-    [currentWorkspace?.id],
-  );
-
-  const availableDatabasesRef = useRef(availableDatabases);
-  useEffect(() => {
-    availableDatabasesRef.current = availableDatabases;
-  }, [availableDatabases]);
-
-  const getConnectionId = useCallback(() => {
-    const state = useConsoleStore.getState();
-    const activeTab = state.activeTabId ? state.tabs[state.activeTabId] : null;
-    return activeTab?.connectionId;
-  }, []);
-
-  const getConnectionType = useCallback(() => {
-    const state = useConsoleStore.getState();
-    const activeTab = state.activeTabId ? state.tabs[state.activeTabId] : null;
-    const connectionId = activeTab?.connectionId;
-    const connection = availableDatabasesRef.current.find(
-      db => db.id === connectionId,
-    );
-    return connection?.type;
-  }, []);
-
-  // Unified SQL autocomplete - single global provider for all consoles
-  useSqlAutocomplete({
-    monaco: monacoInstance,
-    getWorkspaceId,
-    getConnectionId,
-    getConnectionType,
-    // DB flow query editors run their own provider (flow source connection).
-    acceptsModel: uri => !isDbFlowQueryModelUri(uri),
+  /* ------------------------ Console Actions ------------------------ */
+  const closeConsole = useStableCallback((tabId: string) => {
+    closeTab(tabId);
+    dropConsoleRef(tabId);
+    execution.dropTab(tabId);
   });
 
-  // NOTE: the legacy "console-modification" event (agent diff preview) is
-  // gone — console tools execute server-side (issue #475) and edits arrive
-  // through the realtime channel as "console-remote-content" below.
-
-  // Realtime sync: push server-authoritative content into the mounted Monaco
-  // editor (store content is updated by consoleStore/realtimeStore before
-  // this event fires). setRemoteContent is quiet — no dirty flag, no
-  // autosave echo, no focus steal.
-  useEffect(() => {
-    const handleRemoteContent = (event: Event) => {
-      const { consoleId, content } = (
-        event as CustomEvent<{ consoleId: string; content: string }>
-      ).detail;
-      if (!consoleId) return;
-      consoleRefs.current[consoleId]?.current?.setRemoteContent(content);
-    };
-
-    window.addEventListener("console-remote-content", handleRemoteContent);
-    return () => {
-      window.removeEventListener("console-remote-content", handleRemoteContent);
-    };
-  }, []);
-
-  // Agent (modify_console) edits arrive server-authoritative (issue #475) but
-  // are surfaced as a reviewable Accept/Reject diff instead of replacing the
-  // buffer silently. consoleStore.beginAgentReview dispatches this with the
-  // proposed content; the editor keeps the pre-agent baseline until resolved.
-  useEffect(() => {
-    const handleAgentDiff = (event: Event) => {
-      const { consoleId, content } = (
-        event as CustomEvent<{ consoleId: string; content: string }>
-      ).detail;
-      if (!consoleId) return;
-      consoleRefs.current[consoleId]?.current?.showRemoteDiff(content);
-    };
-
-    window.addEventListener("console-agent-diff", handleAgentDiff);
-    return () => {
-      window.removeEventListener("console-agent-diff", handleAgentDiff);
-    };
-  }, []);
-
-  // Listen for console execution events from AI (run_console tool)
-  useEffect(() => {
-    const handleExecutionStart = (event: Event) => {
-      const { consoleId } = (event as CustomEvent<{ consoleId: string }>)
-        .detail;
-      if (consoleId) {
-        setExecutingTabs(prev => ({ ...prev, [consoleId]: true }));
-      }
-    };
-
-    const handleExecutionResult = (event: Event) => {
-      const customEvent = event as CustomEvent<{
-        consoleId: string;
-        result: QueryResult | null;
-      }>;
-      const { consoleId, result } = customEvent.detail;
-      if (consoleId) {
-        setTabResults(prev => ({ ...prev, [consoleId]: result }));
-        setExecutingTabs(prev => ({ ...prev, [consoleId]: false }));
-      }
-    };
-
-    window.addEventListener("console-execution-start", handleExecutionStart);
-    window.addEventListener("console-execution-result", handleExecutionResult);
-    return () => {
-      window.removeEventListener(
-        "console-execution-start",
-        handleExecutionStart,
-      );
-      window.removeEventListener(
-        "console-execution-result",
-        handleExecutionResult,
-      );
-    };
-  }, []);
-
-  // Persisted server-side run artifact (tab.lastRun) -> results panel.
-  //
-  // Two cases, both driven by the revision sync that keeps tab.lastRun fresh:
-  //   1. Detached return: a console opened with a persisted artifact (the agent
-  //      ran it while no window was attached) renders results without re-running.
-  //   2. Missed live event catch-up: the agent ran the console while this window
-  //      was backgrounded/disconnected, so the ephemeral console.run.completed
-  //      event never landed — but the reconnect sync refreshed tab.lastRun. Show
-  //      the newer agent run instead of leaving stale results on screen.
-  //
-  // In-memory results from a LOCAL run always win: they hold the full row set
-  // while the artifact is capped (~50 rows), so we only override a displayed
-  // result for AGENT runs that are strictly newer than what's shown. The live
-  // console-execution-result path already handles connected windows; this is the
-  // durable backstop for when that event is missed.
-  useEffect(() => {
-    for (const tab of consoleTabs) {
-      const lastRun = tab.lastRun;
-      if (!lastRun || lastRun.status !== "success" || !lastRun.sampleRows) {
-        continue;
-      }
-      const lastRunAt = new Date(lastRun.at).getTime();
-      setTabResults(prev => {
-        const shown = prev[tab.id];
-        if (shown !== undefined) {
-          // Only catch up agent runs (the user never holds full agent results
-          // locally) that are strictly newer than the displayed run. Never
-          // clobber an equal/older artifact or a local run's full results.
-          const shownAt = shown?.executedAt
-            ? new Date(shown.executedAt).getTime()
-            : NaN;
-          if (lastRun.source !== "agent" || !(lastRunAt > shownAt)) {
-            return prev;
-          }
-        }
-        return {
-          ...prev,
-          [tab.id]: {
-            results: lastRun.sampleRows ?? [],
-            executedAt: lastRun.at,
-            resultCount: lastRun.rowCount ?? lastRun.sampleRows?.length ?? 0,
-            executionTime: lastRun.durationMs,
-            fields: (lastRun.fields as QueryResult["fields"]) ?? null,
-            pageInfo: null,
-          } as QueryResult,
-        };
-      });
-    }
-  }, [consoleTabs]);
-
-  /* ------------------------ Console Actions ------------------------ */
-  const handleTabChange = (_: React.SyntheticEvent, newValue: string) => {
-    setActiveTab(newValue);
-  };
-
-  // Drag-to-reorder tabs
-  // Keep click-to-select working: a mouse drag starts after 4px; on touch a
-  // long-press, so the tab bar still swipes sideways.
-  const dndSensors = useDragSensors(4);
-  const sortableTabIds = useMemo(
-    () => consoleTabs.map(t => t.id),
-    [consoleTabs],
-  );
-  const handleTabDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event;
-      if (!over || active.id === over.id) return;
-      reorderTabs(String(active.id), String(over.id));
-    },
-    [reorderTabs],
+  const pinTab = useCallback(
+    (tabId: string) => updateDirty(tabId, true),
+    [updateDirty],
   );
 
-  const cleanupTab = (tabId: string) => {
-    closeTab(tabId);
-    delete consoleRefs.current[tabId];
-    setTabResults(prev => {
-      const next = { ...prev };
-      delete next[tabId];
-      return next;
-    });
-    setTabPagination(prev => {
-      const next = { ...prev };
-      delete next[tabId];
-      return next;
-    });
-  };
+  const openNewConsole = useCallback(() => {
+    openTab({ title: "New Console", content: "" });
+  }, [openTab]);
 
-  const closeConsole = (id: string) => {
-    cleanupTab(id);
-  };
-
-  const handleConsoleExecute = async (
-    tabId: string,
-    contentToExecute: string,
-    connectionId?: string,
-    options?: {
-      databaseId?: string;
-      databaseName?: string;
-      cursor?: string | null;
-      currentPage?: number;
-      cursorHistory?: Array<string | null>;
-      pageSize?: number;
-      confirmUnsafe?: boolean;
-    },
-  ) => {
-    if (!contentToExecute.trim()) return;
-
-    if (!currentWorkspace) {
-      setErrorMessage("No workspace selected");
-      setErrorModalOpen(true);
-      return;
+  const contentChange = useStableCallback((tabId: string, content: string) => {
+    updateContent(tabId, content);
+    if (!useConsoleStore.getState().tabs[tabId]?.isDirty) {
+      updateDirty(tabId, true);
     }
-
-    if (!connectionId) {
-      setErrorMessage("No database connection selected");
-      setErrorModalOpen(true);
-      return;
+    // Also refresh activeEditorContent for Chat consumers
+    const ref = getConsoleRef(tabId).current;
+    if (activeConsoleId === tabId && ref) {
+      setActiveEditorContent(ref.getCurrentContent());
     }
+  });
 
-    // Create per-tab abort controller and execution ID
-    const abortController = new AbortController();
-    const executionId = `exec-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    abortControllersRef.current[tabId] = abortController;
-    executionIdsRef.current[tabId] = executionId;
-
-    setExecutingTabs(prev => ({ ...prev, [tabId]: true }));
-    setCancellingTabs(prev => ({ ...prev, [tabId]: false }));
-    const startTime = Date.now();
-    try {
-      const consoleTab = tabs[tabId];
-      const result = await executeQuery(
-        currentWorkspace.id,
-        connectionId,
-        contentToExecute,
-        {
-          ...options,
-          executionId,
-          signal: abortController.signal,
-          pageSize: options?.pageSize ?? 500,
-          cursor: options?.cursor ?? null,
-          confirmUnsafe: options?.confirmUnsafe,
-          // Console tab ids are Mongo ObjectIds (generateObjectId / server id).
-          ...(consoleTab?.kind === "console" || consoleTab?.kind === undefined
-            ? { consoleId: tabId }
-            : {}),
-        },
-      );
-      const executionTime = Date.now() - startTime;
-      if (result.success) {
-        trackEvent("query_executed", {
-          connection_id: connectionId,
-          success: true,
-          duration_ms: executionTime,
-        });
-
-        const fields =
-          "fields" in result
-            ? (
-                result as {
-                  fields?: Array<
-                    { name?: string; originalName?: string } | string
-                  >;
-                }
-              ).fields
-            : undefined;
-
-        setTabResults(prev => ({
-          ...prev,
-          [tabId]: {
-            results: result.rows || [],
-            executedAt: new Date().toISOString(),
-            resultCount: Array.isArray(result.rows) ? result.rows.length : 0,
-            executionTime,
-            fields,
-            pageInfo: result.pageInfo || null,
-            currentPage: options?.currentPage ?? 1,
-          },
-        }));
-        setTabPagination(prev => ({
-          ...prev,
-          [tabId]: {
-            currentPage: options?.currentPage ?? 1,
-            cursorHistory: options?.cursorHistory ?? [null],
-            nextCursor: result.pageInfo?.nextCursor ?? null,
-            hasMore: result.pageInfo?.hasMore ?? false,
-            pageSize: result.pageInfo?.pageSize ?? options?.pageSize ?? 500,
-            capApplied: result.pageInfo?.capApplied ?? false,
-          },
-        }));
-        // On mobile, flip the console to its results pane so the answer is
-        // visible without the user having to switch manually.
-        if (isMobile) {
-          setMobileConsolePane("results");
-        }
-        // Keep the Runs panel fresh when it's open (fire-and-forget).
-        if (currentWorkspace && tabBottomPanel[tabId] === "runs") {
-          void fetchConsoleExecutions(currentWorkspace.id, tabId, {
-            limit: 25,
-          }).then(rows => {
-            setTabExecutions(prev => ({ ...prev, [tabId]: rows }));
-          });
-        }
-      } else if (result.error !== "Query cancelled") {
-        const errText =
-          typeof result.error === "string"
-            ? result.error
-            : JSON.stringify(result.error, null, 2);
-        setErrorMessage(errText);
-        if (
-          "code" in result &&
-          result.code === "PREVIEW_BLOCKED" &&
-          !options?.confirmUnsafe
-        ) {
-          setErrorPreviewRetry({
-            tabId,
-            contentToExecute,
-            connectionId,
-            options: {
-              databaseId: options?.databaseId,
-              databaseName: options?.databaseName,
-              cursor: options?.cursor,
-              currentPage: options?.currentPage,
-              cursorHistory: options?.cursorHistory,
-              pageSize: options?.pageSize,
-            },
-          });
-        } else {
-          setErrorPreviewRetry(null);
-        }
-        setErrorModalOpen(true);
-        setTabResults(prev => ({ ...prev, [tabId]: null }));
-        setTabPagination(prev => ({ ...prev, [tabId]: null }));
-      }
-    } catch (e: any) {
-      if (e?.name !== "AbortError") {
-        setErrorMessage(JSON.stringify(e, null, 2));
-        setErrorModalOpen(true);
-        setTabResults(prev => ({ ...prev, [tabId]: null }));
-        setTabPagination(prev => ({ ...prev, [tabId]: null }));
-      }
-    } finally {
-      setExecutingTabs(prev => ({ ...prev, [tabId]: false }));
-      setCancellingTabs(prev => ({ ...prev, [tabId]: false }));
-      delete abortControllersRef.current[tabId];
-      delete executionIdsRef.current[tabId];
-    }
-  };
-
-  const handleNextResultsPage = async (tabId: string) => {
-    const pagination = tabPagination[tabId];
-    const tab = tabs[tabId];
-    if (!pagination?.nextCursor || !tab?.connectionId) {
-      return;
-    }
-
-    await handleConsoleExecute(tabId, tab.content, tab.connectionId, {
-      databaseId: tab.databaseId,
-      databaseName: tab.databaseName,
-      cursor: pagination.nextCursor,
-      currentPage: pagination.currentPage + 1,
-      cursorHistory: [...pagination.cursorHistory, pagination.nextCursor],
-      pageSize: pagination.pageSize,
-    });
-  };
-
-  const handlePreviousResultsPage = async (tabId: string) => {
-    const pagination = tabPagination[tabId];
-    const tab = tabs[tabId];
-    if (!pagination || pagination.currentPage <= 1 || !tab?.connectionId) {
-      return;
-    }
-
-    const previousHistory = pagination.cursorHistory.slice(0, -1);
-    const previousCursor = previousHistory[previousHistory.length - 1] ?? null;
-
-    await handleConsoleExecute(tabId, tab.content, tab.connectionId, {
-      databaseId: tab.databaseId,
-      databaseName: tab.databaseName,
-      cursor: previousCursor,
-      currentPage: pagination.currentPage - 1,
-      cursorHistory: previousHistory.length > 0 ? previousHistory : [null],
-      pageSize: pagination.pageSize,
-    });
-  };
-
-  const handleDownloadResults = useCallback(
-    async (tabId: string, format: "csv" | "ndjson") => {
-      const tab = tabs[tabId];
-      if (!currentWorkspace) {
-        setErrorMessage("No workspace selected");
-        setErrorModalOpen(true);
-        return;
-      }
-
-      if (!tab?.connectionId) {
-        setErrorMessage("No database connection selected");
-        setErrorModalOpen(true);
-        return;
-      }
-
-      const baseName = tab.title || "query-results";
-
-      const preparingToast = showEditorToast(
-        format === "csv" ? "Preparing CSV…" : "Preparing NDJSON…",
-      );
-
-      try {
-        // Read the export as a blob through the store (not a hidden-iframe
-        // form POST) so server-side errors — preview-safety rejections,
-        // BigQuery auth/permission failures, etc. — throw here and surface
-        // to the user instead of being swallowed by an invisible iframe.
-        const blob = await useConsoleStore
-          .getState()
-          .exportQueryResults(currentWorkspace.id, {
-            connectionId: tab.connectionId,
-            databaseId: tab.databaseId,
-            databaseName: tab.databaseName,
-            query: tab.content,
-            format,
-            filename: baseName,
-          });
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = `${baseName}.${format === "csv" ? "csv" : "ndjson"}`;
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        URL.revokeObjectURL(url);
-
-        showEditorToast(
-          format === "csv" ? "CSV downloaded" : "NDJSON downloaded",
-        );
-      } catch (error) {
-        notify.dismiss(preparingToast);
-        setErrorMessage(
-          error instanceof Error
-            ? error.message
-            : "Failed to download query results",
-        );
-        setErrorModalOpen(true);
-      }
-    },
-    [currentWorkspace, tabs],
-  );
-
-  const handleConsoleCancel = async (tabId: string) => {
-    const executionId = executionIdsRef.current[tabId];
-    if (!currentWorkspace || !executionId) return;
-    setCancellingTabs(prev => ({ ...prev, [tabId]: true }));
-    abortControllersRef.current[tabId]?.abort();
-    await cancelQuery(currentWorkspace.id, executionId);
-  };
-
-  const executeConsoleSave = async (
-    tabId: string,
-    contentToSave: string,
-    savePath: string,
-    comment: string,
-  ): Promise<boolean> => {
-    if (!currentWorkspace) return false;
-    setIsSaving(true);
-    let success = false;
-    try {
-      const currentTab = tabs[tabId];
-      const connectionId = currentTab?.connectionId;
-      const databaseId = currentTab?.databaseId;
-      const databaseName = currentTab?.databaseName;
-
-      const result = await saveConsole(
-        currentWorkspace.id,
-        tabId,
-        contentToSave,
-        savePath,
-        connectionId,
-        databaseName,
-        databaseId,
-        tabChartSpecs[tabId] ?? undefined,
-        tabViewModes[tabId],
-        comment,
-        currentTab?.access,
-      );
-
-      // Handle conflict - show resolution dialog
-      if (result.error === "conflict" && result.conflict) {
-        setPendingSaveData({
-          tabId,
-          content: contentToSave,
-          path: savePath,
-          connectionId,
-          databaseId,
-          databaseName,
-          comment,
-          access: currentTab?.access,
-        });
-        setConflictData(result.conflict);
-        setConflictDialogOpen(true);
-        setIsSaving(false);
-        return false;
-      }
-
-      // Handle concurrent-edit conflict — someone else saved this console
-      // since we loaded it. Show a diff so the user resolves it explicitly
-      // instead of silently overwriting the other person's save.
-      if (result.error === "version_conflict" && result.versionConflict) {
-        setPendingSaveData({
-          tabId,
-          content: contentToSave,
-          path: savePath,
-          connectionId,
-          databaseId,
-          databaseName,
-          comment,
-          access: currentTab?.access,
-        });
-        setVersionConflictData(result.versionConflict);
-        setIsSaving(false);
-        return false;
-      }
-
-      if (result.success) {
-        // Update file path and title (title = canonical leaf name)
-        updateFilePath(tabId, savePath);
-        updateTitle(tabId, consoleLeafName(savePath));
-        updateAccess(tabId, currentTab?.access);
-        updateDirty(tabId, true);
-
-        // Update saved state (isSaved=true, new savedStateHash)
-        const newHash = computeConsoleStateHash(
-          contentToSave,
-          connectionId,
-          databaseId,
-          databaseName,
-        );
-        updateSavedState(tabId, true, newHash);
-
-        trackEvent("console_saved", {
-          console_id: tabId,
-        });
-
-        showEditorToast(`Console saved to '${savePath}.js'`);
-        success = true;
-
-        // Add the console to the tree
-        if (!currentTab?.filePath) {
-          const { useConsoleTreeStore } =
-            await import("../store/consoleTreeStore");
-          useConsoleTreeStore
-            .getState()
-            .addConsole(currentWorkspace.id, savePath ?? "", tabId);
-        }
-
-        if (currentTab?.metadata?.openScheduleOnSave) {
-          useConsoleStore.setState(state => {
-            const tab = state.tabs[tabId];
-            if (tab?.metadata) {
-              delete tab.metadata.openScheduleOnSave;
-            }
-          });
-          setScheduleModalTabId(tabId);
-          setScheduleModalMode("create");
-        }
-      } else if (result.code === "github_required") {
-        // Production gate (apps.md §17): saves live in the workspace's own
-        // GitHub repo. Take the user straight to the connect screen.
-        const state = useConsoleStore.getState();
-        const existing = Object.values(state.tabs).find(
-          t => t.kind === "settings" && t.settingsSection === "github",
-        );
-        if (existing) {
-          state.setActiveTab(existing.id);
-        } else {
-          const id = state.openTab({
-            title: "GitHub",
-            content: "",
-            kind: "settings",
-            settingsSection: "github",
-          });
-          state.setActiveTab(id);
-        }
-        showEditorToast(
-          "Connect a GitHub repository to save consoles — Mako keeps your work in your own repo.",
-        );
-      } else {
-        setErrorMessage(JSON.stringify(result.error, null, 2));
-        setErrorModalOpen(true);
-      }
-    } catch (e: any) {
-      setErrorMessage(JSON.stringify(e, null, 2));
-      setErrorModalOpen(true);
-    } finally {
-      setIsSaving(false);
-    }
-    return success;
-  };
-
-  const handleConsoleSave = async (
-    tabId: string,
-    contentToSave: string,
-    currentPath?: string,
-  ): Promise<boolean> => {
-    if (!currentWorkspace) {
-      setErrorMessage("No workspace selected");
-      setErrorModalOpen(true);
-      return false;
-    }
-
-    if (!currentPath) {
-      setSaveDialogMode("new");
-      setSaveDialogTabId(tabId);
-      setSaveDialogTargetId(tabId);
-      setSaveDialogContent(contentToSave);
-      setSaveDialogOpen(true);
-      return false;
-    }
-
-    // Comments already attached to recent AI edits win over a fresh
-    // AI-generated suggestion (they carry the user's intent directly).
-    const vm = getVersionManager(tabId);
-    const aiComments = vm?.getRecentAiComments() ?? [];
-    const existingComment =
-      aiComments.length > 0 ? aiComments.join("; ") : undefined;
-
-    saveSuggestion.begin(
-      currentWorkspace?.id
-        ? signal =>
-            generateSaveComment(
-              currentWorkspace.id,
-              tabId,
-              { newContent: contentToSave, source: "user" },
-              signal,
-            )
-        : undefined,
-      existingComment,
-    );
-
-    return new Promise<boolean>(resolve => {
-      setPendingCommentSave({
-        tabId,
-        content: contentToSave,
-        path: currentPath,
-        resolve,
-      });
-      setCommentDialogOpen(true);
-    });
-  };
-
-  const handleCommentSaveConfirm = async (comment: string) => {
-    setCommentDialogOpen(false);
-    saveSuggestion.cancel();
-    const pending = pendingCommentSave;
-    setPendingCommentSave(null);
-    if (!pending) return;
-    const success = await executeConsoleSave(
-      pending.tabId,
-      pending.content,
-      pending.path,
-      comment,
-    );
-    pending.resolve(success);
-  };
-
-  const handleCommentSaveCancel = () => {
-    setCommentDialogOpen(false);
-    saveSuggestion.cancel();
-    const pending = pendingCommentSave;
-    setPendingCommentSave(null);
-    pending?.resolve(false);
-  };
-
-  const loadScheduledRunsForTab = useCallback(
-    async (tabId: string) => {
-      if (!currentWorkspace) return;
-
-      setTabScheduledRunsLoading(prev => ({ ...prev, [tabId]: true }));
-      setTabScheduledRunsError(prev => ({ ...prev, [tabId]: null }));
-
-      const response = await listScheduledRuns(currentWorkspace.id, tabId, 50);
-      if (response.success) {
-        setTabScheduledRuns(prev => ({ ...prev, [tabId]: response.runs }));
-        updateTabScheduledRun(tabId, response.scheduledRun);
-      } else {
-        setTabScheduledRunsError(prev => ({
-          ...prev,
-          [tabId]: response.error || "Failed to load scheduled runs",
-        }));
-      }
-
-      setTabScheduledRunsLoading(prev => ({ ...prev, [tabId]: false }));
-    },
-    [currentWorkspace, listScheduledRuns, updateTabScheduledRun],
-  );
-
-  const loadExecutionsForTab = useCallback(
-    async (tabId: string) => {
-      if (!currentWorkspace) return;
-
-      setTabExecutionsLoading(prev => ({ ...prev, [tabId]: true }));
-      setTabExecutionsError(prev => ({ ...prev, [tabId]: null }));
-
-      try {
-        const rows = await fetchConsoleExecutions(currentWorkspace.id, tabId, {
-          limit: 25,
-        });
-        setTabExecutions(prev => ({ ...prev, [tabId]: rows }));
-      } catch (error) {
-        setTabExecutionsError(prev => ({
-          ...prev,
-          [tabId]:
-            error instanceof Error
-              ? error.message
-              : "Failed to load executions",
-        }));
-      }
-
-      setTabExecutionsLoading(prev => ({ ...prev, [tabId]: false }));
-    },
-    [currentWorkspace, fetchConsoleExecutions],
-  );
-
-  const loadRunsPanelForTab = useCallback(
-    async (tabId: string) => {
-      const tab = useConsoleStore.getState().tabs[tabId];
-      await loadExecutionsForTab(tabId);
-      if (tab?.schedule) {
-        await loadScheduledRunsForTab(tabId);
-      }
-    },
-    [loadExecutionsForTab, loadScheduledRunsForTab],
-  );
-
-  useEffect(() => {
-    if (!activeTabId) return;
-
-    const activeTab = tabs[activeTabId];
-    if (!activeTab?.metadata?.openScheduledRuns) return;
-
-    setTabBottomPanel(prev =>
-      prev[activeTabId] === "runs" ? prev : { ...prev, [activeTabId]: "runs" },
-    );
-    void loadRunsPanelForTab(activeTabId);
-
-    const nextMetadata = { ...(activeTab.metadata || {}) };
-    delete nextMetadata.openScheduledRuns;
-    updateMetadata(
-      activeTabId,
-      Object.keys(nextMetadata).length > 0 ? nextMetadata : undefined,
-    );
-  }, [activeTabId, tabs, loadRunsPanelForTab, updateMetadata]);
-
-  const handleOpenScheduleModal = useCallback(
-    (tabId: string, mode: "create" | "update") => {
-      setScheduleModalTabId(tabId);
-      setScheduleModalMode(mode);
-    },
+  const openHistory = useCallback(
+    (tabId: string, anchor: HTMLElement) =>
+      setConsoleHistory({ anchor, tabId }),
     [],
   );
 
-  const handleSaveSchedule = useCallback(
-    async (input: { cron: string; timezone: string }) => {
-      if (!currentWorkspace || !scheduleModalTabId) {
-        throw new Error("No workspace selected");
-      }
-
-      const response = await setSchedule(
-        currentWorkspace.id,
-        scheduleModalTabId,
-        input,
-      );
-      if (!response.success) {
-        throw new Error(response.error || "Failed to save schedule");
-      }
-
-      if (tabBottomPanel[scheduleModalTabId] === "runs") {
-        await loadScheduledRunsForTab(scheduleModalTabId);
-      }
-    },
+  const consoleActions = useMemo<ConsoleTabActions>(
+    () => ({
+      execute: execution.execute,
+      cancel: execution.cancel,
+      nextPage: execution.nextPage,
+      previousPage: execution.previousPage,
+      download: execution.download,
+      save: save.handleConsoleSave,
+      saveAsCopy: save.handleSaveAsCopy,
+      renameMove: save.handleRenameMove,
+      contentChange,
+      changeConnection: updateConnection,
+      changeDatabase: updateDatabase,
+      openHistory,
+      openShare: setShareConsoleTabId,
+      openScheduleModal: runs.openScheduleModal,
+      selectBottomPanel: runs.selectBottomPanel,
+      setChartSpec: view.setChartSpecForTab,
+      setViewMode: view.setViewModeForTab,
+      reportChartRender: view.reportChartRender,
+    }),
     [
-      currentWorkspace,
-      scheduleModalTabId,
-      setSchedule,
-      tabBottomPanel,
-      loadScheduledRunsForTab,
+      execution.execute,
+      execution.cancel,
+      execution.nextPage,
+      execution.previousPage,
+      execution.download,
+      save.handleConsoleSave,
+      save.handleSaveAsCopy,
+      save.handleRenameMove,
+      contentChange,
+      updateConnection,
+      updateDatabase,
+      openHistory,
+      runs.openScheduleModal,
+      runs.selectBottomPanel,
+      view.setChartSpecForTab,
+      view.setViewModeForTab,
+      view.reportChartRender,
     ],
   );
 
-  const handleRemoveSchedule = useCallback(
-    async (tabId: string) => {
-      if (!currentWorkspace) return;
-      const response = await removeSchedule(currentWorkspace.id, tabId);
-      if (!response.success) {
-        throw new Error(response.error || "Failed to remove schedule");
-      }
-    },
-    [currentWorkspace, removeSchedule],
+  const renderConsole = (tab: ConsoleTab) => (
+    <ConsoleTabPanel
+      tab={tab}
+      workspaceId={workspaceId}
+      consoleRef={getConsoleRef(tab.id)}
+      isMobile={isMobile}
+      mobileResultsView={mobileResultsView}
+      isExecuting={executingTabs[tab.id] || false}
+      isCancelling={cancellingTabs[tab.id] || false}
+      isSaving={save.isSaving}
+      databases={availableDatabases}
+      bottomPanel={runs.tabBottomPanel[tab.id] || "results"}
+      results={tabResults[tab.id] || null}
+      chartSpec={view.tabChartSpecs[tab.id] ?? null}
+      viewMode={view.tabViewModes[tab.id] ?? "table"}
+      actions={consoleActions}
+      executions={runs.tabExecutions[tab.id] || EMPTY_LIST}
+      executionsLoading={runs.tabExecutionsLoading[tab.id] || false}
+      executionsError={runs.tabExecutionsError[tab.id]}
+      scheduledRuns={runs.tabScheduledRuns[tab.id] || EMPTY_LIST}
+      scheduledRunsLoading={runs.tabScheduledRunsLoading[tab.id] || false}
+      scheduledRunsError={runs.tabScheduledRunsError[tab.id]}
+    />
   );
 
-  const handleRunScheduledNow = useCallback(
-    async (tabId: string) => {
-      if (!currentWorkspace) return;
-      const response = await runScheduledNow(currentWorkspace.id, tabId);
-      if (!response.success) {
-        throw new Error(response.error || "Failed to run scheduled query");
-      }
-      setTabBottomPanel(prev => ({ ...prev, [tabId]: "runs" }));
-      showEditorToast("Async query run queued");
-      await loadRunsPanelForTab(tabId);
-    },
-    [currentWorkspace, runScheduledNow, loadRunsPanelForTab],
-  );
-
-  // Conflict resolution handlers
-  const handleConflictOverwrite = async () => {
-    if (!pendingSaveData || !currentWorkspace || !conflictData) return;
-
-    const existingId = conflictData.existingId;
-
-    // Check if the target console has an open tab
-    const existingTab = tabs[existingId];
-    if (existingTab) {
-      // Check if the existing tab has unsaved changes by comparing current state to saved state
-      const existingHash = existingTab.savedStateHash;
-      const currentHash = computeConsoleStateHash(
-        existingTab.content,
-        existingTab.connectionId,
-        existingTab.databaseId,
-        existingTab.databaseName,
-      );
-      const hasChanges = !existingHash || currentHash !== existingHash;
-
-      if (hasChanges) {
-        const confirmed = await confirm({
-          title: "Overwrite with unsaved changes?",
-          body: `The file "${existingTab.title || conflictData.existingName}" is open in another tab with unsaved changes. If you proceed, those unsaved changes will be lost. Do you want to continue with the overwrite?`,
-          confirmLabel: "Overwrite",
-          destructive: true,
-        });
-        if (!confirmed) {
-          return;
-        }
-      }
-      // Close the existing tab since we're deleting that console
-      closeTab(existingId);
-    }
-
-    setIsSaving(true);
-    setConflictDialogOpen(false);
-
-    try {
-      // Step 1: Delete the existing console at the conflicting path
-      const deleteResult = await deleteConsole(currentWorkspace.id, existingId);
-
-      if (!deleteResult.success) {
-        setErrorMessage(
-          deleteResult.error || "Failed to delete existing console",
-        );
-        setErrorModalOpen(true);
-        setIsSaving(false);
-        setPendingSaveData(null);
-        setConflictData(null);
-        return;
-      }
-
-      // Step 2: Save our console with the path (same ID as before)
-      const result = await saveConsole(
-        currentWorkspace.id,
-        pendingSaveData.tabId,
-        pendingSaveData.content,
-        pendingSaveData.path,
-        pendingSaveData.connectionId,
-        pendingSaveData.databaseName,
-        pendingSaveData.databaseId,
-        tabChartSpecs[pendingSaveData.tabId] ?? undefined,
-        tabViewModes[pendingSaveData.tabId],
-        pendingSaveData.comment,
-        pendingSaveData.access,
-      );
-
-      if (result.success) {
-        const tabId = pendingSaveData.tabId;
-
-        // Update the tab properties
-        updateFilePath(tabId, pendingSaveData.path);
-        updateTitle(tabId, consoleLeafName(pendingSaveData.path));
-        updateAccess(tabId, pendingSaveData.access);
-        updateDirty(tabId, true);
-
-        // Update saved state (isSaved=true, new savedStateHash)
-        const newHash = computeConsoleStateHash(
-          pendingSaveData.content,
-          pendingSaveData.connectionId,
-          pendingSaveData.databaseId,
-          pendingSaveData.databaseName,
-        );
-        updateSavedState(tabId, true, newHash);
-
-        // Update console tree
-        const { useConsoleTreeStore } =
-          await import("../store/consoleTreeStore");
-        useConsoleTreeStore
-          .getState()
-          .addConsole(currentWorkspace.id, pendingSaveData.path, tabId);
-
-        showEditorToast(`Console saved at '${pendingSaveData.path}.js'`);
-
-        trackEvent("console_saved", {
-          console_id: tabId,
-          is_new: true,
-          was_overwrite: true,
-        });
-      } else {
-        setErrorMessage(result.error || "Failed to save after overwrite");
-        setErrorModalOpen(true);
-      }
-    } catch (error: any) {
-      setErrorMessage(error?.message || "Failed to overwrite");
-      setErrorModalOpen(true);
-    }
-
-    setPendingSaveData(null);
-    setConflictData(null);
-    setIsSaving(false);
-  };
-
-  const handleSaveDialogConfirm = async (
-    name: string,
-    folderId: string | null,
-    section: "my" | "workspace",
-  ) => {
-    if (!saveDialogTabId || !currentWorkspace) return;
-    setSaveDialogOpen(false);
-
-    // Build the path: if folderId is provided the API will handle folder association via the path or directly
-    const savePath = name.endsWith(".js") ? name.slice(0, -3) : name;
-    const targetId = saveDialogTargetId ?? saveDialogTabId;
-    const mode = saveDialogMode;
-
-    setIsSaving(true);
-    try {
-      // Source tab (for connection/chart/view-mode). Even in "save-as-copy",
-      // the new record inherits these from the source tab.
-      const sourceTab = tabs[saveDialogTabId];
-      const connectionId = sourceTab?.connectionId;
-      const databaseId = sourceTab?.databaseId;
-      const databaseName = sourceTab?.databaseName;
-
-      if (mode === "rename-move") {
-        // PUT /consoles/:id — updates the existing console's path.
-        const result = await saveConsole(
-          currentWorkspace.id,
-          targetId,
-          saveDialogContent,
-          savePath,
-          connectionId,
-          databaseName,
-          databaseId,
-          tabChartSpecs[saveDialogTabId] ?? undefined,
-          tabViewModes[saveDialogTabId],
-          undefined,
-          section === "workspace" ? "workspace" : "private",
-        );
-
-        if (result.error === "conflict" && result.conflict) {
-          setPendingSaveData({
-            tabId: targetId,
-            content: saveDialogContent,
-            path: savePath,
-            connectionId,
-            databaseId,
-            databaseName,
-            access: section === "workspace" ? "workspace" : "private",
-          });
-          setConflictData(result.conflict);
-          setConflictDialogOpen(true);
-          setIsSaving(false);
-          return;
-        }
-
-        if (result.success) {
-          updateFilePath(targetId, savePath);
-          updateTitle(targetId, consoleLeafName(savePath));
-          updateAccess(
-            targetId,
-            section === "workspace" ? "workspace" : "private",
-          );
-          updateDirty(targetId, true);
-
-          const newHash = computeConsoleStateHash(
-            saveDialogContent,
-            connectionId,
-            databaseId,
-            databaseName,
-          );
-          updateSavedState(targetId, true, newHash);
-
-          trackEvent("console_renamed", {
-            console_id: targetId,
-            new_path: savePath,
-          });
-
-          showEditorToast(`Renamed to '${savePath}.js'`);
-
-          const { useConsoleTreeStore } =
-            await import("../store/consoleTreeStore");
-          useConsoleTreeStore.getState().refresh(currentWorkspace.id);
-        } else {
-          setErrorMessage(JSON.stringify(result.error, null, 2));
-          setErrorModalOpen(true);
-        }
-
-        return;
-      }
-
-      // Both "new" and "save-as-copy" use POST to create a new record.
-      const { status, body: result } = await useConsoleStore
-        .getState()
-        .createConsoleRecord(currentWorkspace.id, {
-          id: targetId,
-          path: savePath,
-          content: saveDialogContent,
-          connectionId,
-          databaseName,
-          databaseId,
-          folderId: folderId || undefined,
-          access: section === "workspace" ? "workspace" : "private",
-          isPrivate: section !== "workspace",
-          chartSpec: tabChartSpecs[saveDialogTabId] ?? null,
-          resultsViewMode: tabViewModes[saveDialogTabId],
-          comment: "",
-        });
-
-      if (status === 409 && result.error === "conflict") {
-        setPendingSaveData({
-          tabId: targetId,
-          content: saveDialogContent,
-          path: savePath,
-          connectionId,
-          databaseId,
-          databaseName,
-          access: section === "workspace" ? "workspace" : "private",
-        });
-        setConflictData(result.conflict ?? null);
-        setConflictDialogOpen(true);
-        setIsSaving(false);
-        return;
-      }
-
-      if (result.success) {
-        if (mode === "save-as-copy") {
-          // Do NOT mutate the source tab. Just refresh the tree so the copy
-          // shows up. Optionally we could also open the new console as a tab,
-          // but keep the UX conservative: user stays focused on their work.
-          trackEvent("console_saved_as_copy", {
-            source_console_id: saveDialogTabId,
-            new_console_id: targetId,
-          });
-          showEditorToast(`Saved a copy as '${savePath}.js'`);
-        } else {
-          // "new" — first-time save of a draft; update the originating tab.
-          updateFilePath(targetId, savePath);
-          updateTitle(targetId, consoleLeafName(savePath));
-          updateAccess(
-            targetId,
-            section === "workspace" ? "workspace" : "private",
-          );
-          updateDirty(targetId, true);
-
-          const newHash = computeConsoleStateHash(
-            saveDialogContent,
-            connectionId,
-            databaseId,
-            databaseName,
-          );
-          updateSavedState(targetId, true, newHash);
-
-          trackEvent("console_saved", {
-            console_id: targetId,
-            is_new: true,
-          });
-
-          showEditorToast(`Console saved as '${savePath}'`);
-        }
-
-        const { useConsoleTreeStore } =
-          await import("../store/consoleTreeStore");
-        useConsoleTreeStore.getState().refresh(currentWorkspace.id);
-      } else {
-        setErrorMessage(JSON.stringify(result.error, null, 2));
-        setErrorModalOpen(true);
-      }
-    } catch (e: any) {
-      setErrorMessage(JSON.stringify(e, null, 2));
-      setErrorModalOpen(true);
-    } finally {
-      setIsSaving(false);
-      setSaveDialogTabId(null);
-      setSaveDialogTargetId(null);
-      setSaveDialogMode("new");
-      setSaveDialogContent("");
-    }
-  };
-
-  // "Save a Copy..." — POST a brand-new console record with a fresh id; the
-  // currently open tab keeps pointing at the original file.
-  const handleSaveAsCopy = (tabId: string, contentToSave: string) => {
-    if (!currentWorkspace) {
-      setErrorMessage("No workspace selected");
-      setErrorModalOpen(true);
-      return;
-    }
-    const newId = generateObjectId();
-    setSaveDialogMode("save-as-copy");
-    setSaveDialogTabId(tabId);
-    setSaveDialogTargetId(newId);
-    setSaveDialogContent(contentToSave);
-    setSaveDialogOpen(true);
-  };
-
-  // "Rename / Move..." — relocate the existing console (same id) to a new path.
-  const handleRenameMove = (
-    tabId: string,
-    contentToSave: string,
-    currentPath?: string,
-  ) => {
-    if (!currentWorkspace) {
-      setErrorMessage("No workspace selected");
-      setErrorModalOpen(true);
-      return;
-    }
-    if (!currentPath) {
-      // Nothing to rename yet — fall back to first-time save flow.
-      setSaveDialogMode("new");
-      setSaveDialogTabId(tabId);
-      setSaveDialogTargetId(tabId);
-      setSaveDialogContent(contentToSave);
-      setSaveDialogOpen(true);
-      return;
-    }
-    setSaveDialogMode("rename-move");
-    setSaveDialogTabId(tabId);
-    setSaveDialogTargetId(tabId);
-    setSaveDialogContent(contentToSave);
-    setSaveDialogOpen(true);
-  };
-
-  const handleConflictSaveAsNew = () => {
-    setConflictDialogOpen(false);
-    setConflictData(null);
-
-    if (pendingSaveData) {
-      // Re-open the dialog to let the user pick a new name.
-      setSaveDialogMode("new");
-      setSaveDialogTabId(pendingSaveData.tabId);
-      setSaveDialogTargetId(pendingSaveData.tabId);
-      setSaveDialogContent(pendingSaveData.content);
-      setSaveDialogOpen(true);
-    }
-    setPendingSaveData(null);
-  };
-
-  const handleConflictClose = () => {
-    setConflictDialogOpen(false);
-    setConflictData(null);
-    setPendingSaveData(null);
-  };
-
-  // ── Concurrent-edit (version) conflict resolution ──────────────────
-
-  const handleVersionConflictOverwrite = async () => {
-    if (!pendingSaveData || !versionConflictData) return;
-    const { tabId, content, path, comment } = pendingSaveData;
-    // Fast-forward to the server's bases so the retried save passes BOTH
-    // guards (unless someone saves yet again in the meantime).
-    updateVersion(tabId, versionConflictData.currentVersion);
-    if (typeof versionConflictData.currentDraftRevision === "number") {
-      useConsoleStore
-        .getState()
-        .updateDraftRevision(tabId, versionConflictData.currentDraftRevision);
-    }
-    setVersionConflictData(null);
-    const success = await executeConsoleSave(
-      tabId,
-      content,
-      path,
-      comment ?? "",
+  // The admin "Execute anyway" re-run of a PREVIEW_BLOCKED query.
+  const executeAnyway = () => {
+    const retry = feedback.errorPreviewRetry;
+    if (!retry) return;
+    feedback.closeError();
+    void execution.execute(
+      retry.tabId,
+      retry.contentToExecute,
+      retry.connectionId,
+      { ...retry.options, confirmUnsafe: true },
     );
-    if (success) {
-      setPendingSaveData(null);
-    }
   };
 
-  const handleVersionConflictLoadLatest = () => {
-    if (!pendingSaveData || !versionConflictData) return;
-    const { tabId } = pendingSaveData;
-    const serverContent = versionConflictData.content;
-    // Replace the editor buffer with the server copy (the previous local
-    // content stays reachable via Monaco undo) and reset the baseline.
-    consoleRefs.current[tabId]?.current?.applyModification({
-      action: "replace",
-      content: serverContent,
-    });
-    updateContent(tabId, serverContent);
-    updateVersion(tabId, versionConflictData.currentVersion);
-    if (typeof versionConflictData.currentDraftRevision === "number") {
-      useConsoleStore
-        .getState()
-        .updateDraftRevision(tabId, versionConflictData.currentDraftRevision);
-    }
-    const currentTab = tabs[tabId];
-    const newHash = computeConsoleStateHash(
-      serverContent,
-      currentTab?.connectionId,
-      currentTab?.databaseId,
-      currentTab?.databaseName,
-    );
-    updateSavedState(tabId, true, newHash);
-    setVersionConflictData(null);
-    setPendingSaveData(null);
-  };
-
-  const handleVersionConflictClose = () => {
-    setVersionConflictData(null);
-    setPendingSaveData(null);
-  };
-
-  const handleCloseErrorModal = () => {
-    setErrorModalOpen(false);
-    setErrorMessage("");
-    setErrorPreviewRetry(null);
-  };
+  // Breadcrumb path (Cursor-style) — one consistent bar for every tab kind.
+  // Views that embed their own actions in the bar (table data, dbt files and
+  // runs) render EntityBreadcrumbs themselves. On a phone the window pill
+  // already carries the title; a second row repeating it is the space the
+  // editor needs.
+  const rendersOwnBreadcrumbs =
+    activeTab?.kind === "table-data" ||
+    activeTab?.kind === "dbt-file" ||
+    activeTab?.kind === "dbt-runs";
+  const showBreadcrumbs = !!activeTab && !isMobile && !rendersOwnBreadcrumbs;
 
   /* ----------------------------- Render ---------------------------- */
   return (
-    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+    <Box sx={FILL_COLUMN_SX}>
       {consoleTabs.length > 0 ? (
-        <Box
-          sx={{
-            height: "100%",
-            overflow: "hidden",
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
-          {/* Tab bar (desktop) / Claude-style floating window switcher
-              (mobile): window pill + per-kind pane toggle + new-console. The
-              explorer is the Browse tab, so there is no hamburger here. */}
+        <Box sx={{ ...FILL_COLUMN_SX, overflow: "hidden" }}>
           {isMobile ? (
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 1,
-                px: 1,
-                py: 0.75,
-                minHeight: 52,
-              }}
-            >
-              <Button
-                aria-label="Switch window"
-                onClick={e => setWindowMenuAnchor(e.currentTarget)}
-                endIcon={<ChevronDownIcon size={16} />}
-                sx={MOBILE_WINDOW_PILL_SX}
-              >
-                <Box
-                  component="span"
-                  sx={{
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {(activeConsoleId && tabs[activeConsoleId]?.title) ||
-                    "Console"}
-                </Box>
-              </Button>
-              {activeMobileKind === "console" ? (
-                <ToggleButtonGroup
-                  exclusive
-                  size="small"
-                  value={mobileConsolePane}
-                  onChange={(_event, value) => {
-                    if (value) setMobileConsolePane(value);
-                  }}
-                  aria-label="Console pane"
-                  sx={MOBILE_PANE_TOGGLE_SX}
-                >
-                  <ToggleButton value="query" aria-label="Query">
-                    <QueryPaneIcon size={19} strokeWidth={1.5} />
-                  </ToggleButton>
-                  <ToggleButton value="results" aria-label="Results">
-                    <ResultsPaneIcon size={19} strokeWidth={1.5} />
-                  </ToggleButton>
-                </ToggleButtonGroup>
-              ) : activeMobileKind === "app" && activeMobileAppEditing ? (
-                <ToggleButtonGroup
-                  exclusive
-                  size="small"
-                  value={mobileAppPane}
-                  onChange={(_event, value) => {
-                    if (value) setMobileAppPane(value);
-                  }}
-                  aria-label="App pane"
-                  sx={MOBILE_PANE_TOGGLE_SX}
-                >
-                  <ToggleButton value="preview" aria-label="Preview">
-                    <PreviewPaneIcon size={19} strokeWidth={1.5} />
-                  </ToggleButton>
-                  <ToggleButton value="terminal" aria-label="Terminal">
-                    <TerminalPaneIcon size={19} strokeWidth={1.5} />
-                  </ToggleButton>
-                </ToggleButtonGroup>
-              ) : null}
-              <Tooltip title="New console">
-                <IconButton
-                  aria-label="New console"
-                  onClick={() => openTab({ title: "New Console", content: "" })}
-                  sx={MOBILE_FLOAT_BTN_SX}
-                >
-                  <PlusIcon size={20} />
-                </IconButton>
-              </Tooltip>
-            </Box>
+            <MobileEditorHeader
+              consoleTabs={consoleTabs}
+              activeTab={activeTab}
+              onSelect={setActiveTab}
+              onClose={closeConsole}
+              onNewConsole={openNewConsole}
+            />
           ) : (
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                minHeight: 36,
-                borderBottom: 1,
-                borderColor: "divider",
-              }}
-            >
-              <DndContext
-                sensors={dndSensors}
-                collisionDetection={closestCenter}
-                modifiers={[restrictToHorizontalAxis]}
-                onDragEnd={handleTabDragEnd}
-              >
-                <SortableContext
-                  items={sortableTabIds}
-                  strategy={horizontalListSortingStrategy}
-                >
-                  <Tabs
-                    value={activeConsoleId}
-                    onChange={handleTabChange}
-                    variant="scrollable"
-                    scrollButtons={false}
-                    sx={{
-                      minHeight: 36,
-                      "& .MuiTabs-indicator": { height: 2 },
-                    }}
-                  >
-                    {consoleTabs.map((tab, index) => {
-                      const isActiveTab = activeConsoleId === tab.id;
-                      const connectionIconUrl = tab.connectionId
-                        ? connectionIconById.get(tab.connectionId)
-                        : undefined;
-                      // Canonical per-kind icon (see lib/entity-icons.ts);
-                      // overridden below by connector favicons, connection
-                      // icons, and flow-editor subtype icons.
-                      const KindIcon = tabKindIcon(tab.kind);
-                      const nextTab = consoleTabs[index + 1];
-                      const isLastTab = index === consoleTabs.length - 1;
-                      // Cursor-style separator: thin vertical rule on the trailing
-                      // edge of every tab, hidden when this tab or the next one is
-                      // active, and hidden on the very last tab.
-                      const showSeparator =
-                        !isActiveTab &&
-                        !isLastTab &&
-                        nextTab?.id !== activeConsoleId;
-                      return (
-                        <SortableConsoleTab
-                          key={tab.id}
-                          value={tab.id}
-                          sx={{
-                            minHeight: 36,
-                            py: 0.25,
-                            px: 1.25,
-                            textTransform: "none",
-                            position: "relative",
-                            "& .tab-close-btn": {
-                              visibility: isActiveTab ? "visible" : "hidden",
-                            },
-                            "&:hover .tab-close-btn": {
-                              visibility: "visible",
-                            },
-                            "&::after": showSeparator
-                              ? {
-                                  content: '""',
-                                  position: "absolute",
-                                  right: 0,
-                                  top: 0,
-                                  bottom: 0,
-                                  width: "1px",
-                                  backgroundColor: "divider",
-                                  pointerEvents: "none",
-                                }
-                              : {},
-                          }}
-                          label={
-                            <Box
-                              sx={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 0.5,
-                                minWidth: 0,
-                                maxWidth: "100%",
-                              }}
-                            >
-                              {tab.icon ? (
-                                <Box
-                                  component="img"
-                                  src={tab.icon}
-                                  alt="tab icon"
-                                  sx={{ width: 18, height: 18 }}
-                                />
-                              ) : tab.kind === "flow-editor" ? (
-                                tab.metadata?.flowType === "webhook" ? (
-                                  <WebhookIcon size={18} strokeWidth={1.5} />
-                                ) : tab.metadata?.enabled === false ? (
-                                  <PauseIcon size={18} strokeWidth={1.5} />
-                                ) : (
-                                  <ScheduleIcon size={18} strokeWidth={1.5} />
-                                )
-                              ) : (tab.kind ?? "console") === "console" &&
-                                connectionIconUrl ? (
-                                <Box
-                                  component="img"
-                                  src={connectionIconUrl}
-                                  alt="db icon"
-                                  sx={{
-                                    width: 18,
-                                    height: 18,
-                                    objectFit: "contain",
-                                  }}
-                                />
-                              ) : (
-                                <KindIcon size={18} strokeWidth={1.5} />
-                              )}
-                              <span
-                                style={{
-                                  fontStyle: tab.isDirty ? "normal" : "italic",
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                  display: "inline-block",
-                                  maxWidth: "150px",
-                                }}
-                                onDoubleClick={e => {
-                                  e.stopPropagation();
-                                  updateDirty(tab.id, true);
-                                }}
-                                title={tab.title}
-                              >
-                                {tab.title}
-                              </span>
-                              <IconButton
-                                aria-label={`Close ${tab.title}`}
-                                component="span"
-                                size="small"
-                                className="tab-close-btn"
-                                onClick={e => {
-                                  e.stopPropagation();
-                                  closeConsole(tab.id);
-                                }}
-                                onPointerDown={e => {
-                                  // Prevent the Tab's drag listener from starting
-                                  // a drag when the user clicks the close button.
-                                  e.stopPropagation();
-                                }}
-                                sx={{ p: 0.25, ml: 0 }}
-                              >
-                                <CloseIcon fontSize="inherit" />
-                              </IconButton>
-                            </Box>
-                          }
-                        />
-                      );
-                    })}
-                  </Tabs>
-                </SortableContext>
-              </DndContext>
-            </Box>
+            <EditorTabBar
+              consoleTabs={consoleTabs}
+              activeConsoleId={activeConsoleId}
+              connectionIconById={connectionIconById}
+              onSelect={setActiveTab}
+              onReorder={reorderTabs}
+              onClose={closeConsole}
+              onPin={pinTab}
+            />
           )}
 
-          {/* Mobile window switcher menu — lists open tabs + new console. */}
-          <Menu
-            anchorEl={windowMenuAnchor}
-            open={Boolean(windowMenuAnchor)}
-            onClose={() => setWindowMenuAnchor(null)}
-            anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-            transformOrigin={{ vertical: "top", horizontal: "center" }}
-            slotProps={{ paper: { sx: { maxHeight: 360, minWidth: 240 } } }}
-          >
-            {consoleTabs.map(tab => (
-              <MenuItem
-                key={tab.id}
-                selected={tab.id === activeConsoleId}
-                onClick={() => {
-                  setActiveTab(tab.id);
-                  setWindowMenuAnchor(null);
-                }}
-                sx={{ pr: 1 }}
-              >
-                <ListItemIcon>
-                  {tab.icon ? (
-                    <Box
-                      component="img"
-                      src={tab.icon}
-                      alt=""
-                      sx={{ width: 18, height: 18 }}
-                    />
-                  ) : (
-                    <TabKindGlyph kind={tab.kind} />
-                  )}
-                </ListItemIcon>
-                <ListItemText
-                  primary={tab.title}
-                  slotProps={{
-                    primary: {
-                      noWrap: true,
-                      sx: { maxWidth: 180 },
-                    },
-                  }}
-                />
-                <IconButton
-                  size="small"
-                  aria-label={`Close ${tab.title}`}
-                  onClick={e => {
-                    e.stopPropagation();
-                    cleanupTab(tab.id);
-                  }}
-                  sx={{ ml: 1 }}
-                >
-                  <CloseTabIcon size={16} />
-                </IconButton>
-              </MenuItem>
-            ))}
-            <Divider />
-            <MenuItem
-              onClick={() => {
-                openTab({ title: "New Console", content: "" });
-                setWindowMenuAnchor(null);
-              }}
-            >
-              <ListItemIcon>
-                <PlusIcon size={18} strokeWidth={1.5} />
-              </ListItemIcon>
-              <ListItemText primary="New console" />
-            </MenuItem>
-          </Menu>
+          {showBreadcrumbs && <EntityBreadcrumbs tabId={activeTab.id} />}
 
-          {/* Breadcrumb path (Cursor-style) — one consistent bar for every
-              tab kind. Views that embed their own actions in the bar
-              (table data, dbt files and runs)
-              render EntityBreadcrumbs themselves. */}
-          {(() => {
-            const activeTab = activeConsoleId ? tabs[activeConsoleId] : null;
-            if (!activeTab) return null;
-            // On a phone the window pill already carries the title; a second
-            // row repeating it is the space the editor needs.
-            if (isMobile) return null;
-            const rendersOwnBreadcrumbs =
-              activeTab.kind === "table-data" ||
-              activeTab.kind === "dbt-file" ||
-              activeTab.kind === "dbt-runs";
-            if (rendersOwnBreadcrumbs) return null;
-            return <EntityBreadcrumbs tabId={activeTab.id} />;
-          })()}
-
-          {/* Unified tab rendering: a mounted tab stays mounted, visibility toggled
-              with CSS. Lazy kinds mount on first show (lib/tab-mount-policy). */}
-          <Box sx={{ flexGrow: 1, overflow: "hidden" }}>
-            {consoleTabs.map(tab => {
-              // An unshown lazy tab keeps its slot and renders nothing.
-              const panelMounted = isTabMounted(tab, mountedLazyTabs);
-              const showDesktopOnlyNotice =
-                isMobile &&
-                !!tab.kind &&
-                DESKTOP_ONLY_KINDS.has(tab.kind) &&
-                !dismissedDesktopOnly[tab.id];
-
-              // Top (editor) and bottom (results) panes of a console tab.
-              // Extracted so the desktop vertical split and the mobile
-              // single-pane view can share the exact same children.
-              const consolePane = (
-                <Box
-                  sx={{
-                    height: "100%",
-                    display: "flex",
-                    flexDirection: "column",
-                  }}
-                >
-                  {tab.remoteUpdate && (
-                    <ConsoleRemoteUpdateBanner
-                      remoteUpdate={tab.remoteUpdate}
-                      onLoadLatest={() => {
-                        if (!currentWorkspace?.id) return;
-                        void useConsoleStore
-                          .getState()
-                          .applyRemoteConsoleUpdate(
-                            currentWorkspace.id,
-                            tab.id,
-                          );
-                      }}
-                      onKeepMine={() => {
-                        if (!currentWorkspace?.id) return;
-                        // Use the LIVE Monaco buffer, not the store
-                        // copy — it may lag keystrokes by a debounce.
-                        const live =
-                          consoleRefs.current[
-                            tab.id
-                          ]?.current?.getCurrentContent().content;
-                        void useConsoleStore
-                          .getState()
-                          .resolveRemoteUpdateKeepMine(
-                            currentWorkspace.id,
-                            tab.id,
-                            live ?? tab.content,
-                          );
-                      }}
-                      onDismiss={() =>
-                        useConsoleStore.getState().dismissRemoteUpdate(tab.id)
-                      }
-                      onCloseTab={() =>
-                        useConsoleStore.getState().closeTab(tab.id)
-                      }
-                    />
-                  )}
-                  <Box sx={{ flex: 1, minHeight: 0 }}>
-                    <Console
-                      ref={consoleRefs.current[tab.id]}
-                      consoleId={tab.id}
-                      initialContent={tab.content}
-                      title={tab.title}
-                      onExecute={(content, connectionId, databaseId) =>
-                        handleConsoleExecute(tab.id, content, connectionId, {
-                          databaseId: databaseId || tab.databaseId,
-                          databaseName: tab.databaseName,
-                        })
-                      }
-                      onCancel={() => handleConsoleCancel(tab.id)}
-                      onSave={(content, currentPath) =>
-                        handleConsoleSave(tab.id, content, currentPath)
-                      }
-                      onSaveAsCopy={content =>
-                        handleSaveAsCopy(tab.id, content)
-                      }
-                      onRenameMove={(content, currentPath) =>
-                        handleRenameMove(tab.id, content, currentPath)
-                      }
-                      isExecuting={executingTabs[tab.id] || false}
-                      isCancelling={cancellingTabs[tab.id] || false}
-                      isSaving={isSaving}
-                      onContentChange={content => {
-                        updateContent(tab.id, content);
-                        if (!tab.isDirty) {
-                          updateDirty(tab.id, true);
-                        }
-                        // Also refresh activeEditorContent for Chat consumers
-                        const ref = consoleRefs.current[tab.id]?.current;
-                        if (activeConsoleId === tab.id && ref) {
-                          setActiveEditorContent(ref.getCurrentContent());
-                        }
-                      }}
-                      connectionId={tab.connectionId}
-                      databaseId={tab.databaseId}
-                      databaseName={tab.databaseName}
-                      databases={availableDatabases}
-                      onDatabaseChange={connId =>
-                        updateConnection(tab.id, connId)
-                      }
-                      onDatabaseNameChange={(dbId, dbName) =>
-                        updateDatabase(tab.id, dbId, dbName)
-                      }
-                      filePath={tab.filePath}
-                      enableVersionControl={true}
-                      onHistoryClick={anchor =>
-                        setConsoleHistory({ anchor, tabId: tab.id })
-                      }
-                      historyAvailable={tab.isSaved}
-                      onShareClick={() => setShareConsoleTabId(tab.id)}
-                      shareAvailable={tab.isSaved}
-                      schedule={tab.schedule}
-                      onCreateSchedule={() =>
-                        handleOpenScheduleModal(tab.id, "create")
-                      }
-                      onUpdateSchedule={() =>
-                        handleOpenScheduleModal(tab.id, "update")
-                      }
-                    />
-                  </Box>
-                </Box>
-              );
-
-              const resultsPane = (
-                <Box
-                  sx={{
-                    height: "100%",
-                    overflow: "hidden",
-                    display: "flex",
-                    flexDirection: "column",
-                  }}
-                >
-                  <Box
-                    sx={{
-                      px: 1.5,
-                      borderBottom: 1,
-                      borderColor: "divider",
-                      minHeight: 36,
-                      display: "flex",
-                      alignItems: "center",
-                    }}
-                  >
-                    <Tabs
-                      value={tabBottomPanel[tab.id] || "results"}
-                      onChange={(_event, value: "results" | "runs") => {
-                        setTabBottomPanel(prev => ({
-                          ...prev,
-                          [tab.id]: value,
-                        }));
-                        if (value === "runs") {
-                          void loadRunsPanelForTab(tab.id);
-                        }
-                      }}
-                      sx={{
-                        minHeight: 36,
-                        "& .MuiTabs-indicator": {
-                          height: 2,
-                        },
-                      }}
-                    >
-                      <Tab
-                        value="results"
-                        label="Results"
-                        disableRipple
-                        sx={{
-                          minHeight: 36,
-                          py: 0.25,
-                          px: 1.25,
-                          minWidth: 0,
-                          textTransform: "none",
-                          fontSize: "0.875rem",
-                          fontWeight: 600,
-                          color: "text.secondary",
-                          "&.Mui-selected": {
-                            color: "text.primary",
-                          },
-                        }}
-                      />
-                      <Tab
-                        value="runs"
-                        label="Runs"
-                        disabled={!tab.isSaved}
-                        disableRipple
-                        sx={{
-                          minHeight: 36,
-                          py: 0.25,
-                          px: 1.25,
-                          minWidth: 0,
-                          textTransform: "none",
-                          fontSize: "0.875rem",
-                          fontWeight: 600,
-                          color: "text.secondary",
-                          "&.Mui-selected": {
-                            color: "text.primary",
-                          },
-                          "&.Mui-disabled": {
-                            opacity: 0.5,
-                          },
-                        }}
-                      />
-                    </Tabs>
-                  </Box>
-                  <Box sx={{ flexGrow: 1, minHeight: 0 }}>
-                    {(tabBottomPanel[tab.id] || "results") === "runs" ? (
-                      <Box
-                        sx={{
-                          height: "100%",
-                          display: "flex",
-                          flexDirection: "column",
-                          minHeight: 0,
-                        }}
-                      >
-                        <Box sx={{ flex: 1, minHeight: 0 }}>
-                          <ConsoleExecutionsPanel
-                            loading={tabExecutionsLoading[tab.id] || false}
-                            error={tabExecutionsError[tab.id]}
-                            executions={tabExecutions[tab.id] || []}
-                          />
-                        </Box>
-                        {tab.schedule ? (
-                          <Box
-                            sx={{
-                              borderTop: 1,
-                              borderColor: "divider",
-                              maxHeight: "45%",
-                              minHeight: 120,
-                              display: "flex",
-                              flexDirection: "column",
-                            }}
-                          >
-                            <Typography
-                              variant="caption"
-                              sx={{
-                                color: "text.secondary",
-                                px: 1.5,
-                                py: 0.75,
-                                fontWeight: 600,
-                              }}
-                            >
-                              Scheduled runs
-                            </Typography>
-                            <Box sx={{ flex: 1, minHeight: 0 }}>
-                              <ScheduledRunsPanel
-                                loading={
-                                  tabScheduledRunsLoading[tab.id] || false
-                                }
-                                error={tabScheduledRunsError[tab.id]}
-                                runs={tabScheduledRuns[tab.id] || []}
-                              />
-                            </Box>
-                          </Box>
-                        ) : null}
-                      </Box>
-                    ) : (
-                      <ResultsTable
-                        results={tabResults[tab.id] || null}
-                        chartSpec={tabChartSpecs[tab.id] ?? null}
-                        onChartSpecChange={spec =>
-                          setChartSpecForTab(tab.id, spec)
-                        }
-                        viewMode={tabViewModes[tab.id] ?? "table"}
-                        onViewModeChange={mode =>
-                          setViewModeForTab(tab.id, mode)
-                        }
-                        onChartRenderError={error => {
-                          const cb = pendingRenderCallbackRef.current[tab.id];
-                          if (cb) {
-                            cb({ success: false, error });
-                            delete pendingRenderCallbackRef.current[tab.id];
-                          }
-                        }}
-                        onChartRenderSuccess={() => {
-                          const cb = pendingRenderCallbackRef.current[tab.id];
-                          if (cb) {
-                            cb({ success: true });
-                            delete pendingRenderCallbackRef.current[tab.id];
-                          }
-                        }}
-                        onPreviousPage={() => handlePreviousResultsPage(tab.id)}
-                        onNextPage={() => handleNextResultsPage(tab.id)}
-                        onDownload={format =>
-                          void handleDownloadResults(tab.id, format)
-                        }
-                      />
-                    )}
-                  </Box>
-                </Box>
-              );
-
-              return (
-                <Box
-                  key={tab.id}
-                  data-mako-tab-id={tab.id}
-                  data-mako-tab-kind={tab.kind}
-                  data-mako-active-tab-content={
-                    activeConsoleId === tab.id ? "true" : undefined
-                  }
-                  sx={{
-                    height: "100%",
-                    display: activeConsoleId === tab.id ? "block" : "none",
-                    overflow: "hidden",
-                  }}
-                >
-                  {!panelMounted ? null : showDesktopOnlyNotice ? (
-                    <Box sx={{ p: 2 }}>
-                      <Alert
-                        severity="info"
-                        onClose={() =>
-                          setDismissedDesktopOnly(prev => ({
-                            ...prev,
-                            [tab.id]: true,
-                          }))
-                        }
-                      >
-                        This view is designed for a larger screen and may be
-                        hard to use on a phone. Open Mako on a desktop for the
-                        full experience.
-                      </Alert>
-                    </Box>
-                  ) : tab.metadata?.loadError ? (
-                    /* Placeholder tab for an entity that failed to load (e.g.
-                       a /c/:id deep link into a workspace that doesn't have
-                       that console): explicit not-found / no-access copy
-                       instead of a silent redirect. Any tab kind may carry
-                       `metadata.loadError`; the label comes from the shared
-                       entity-label map. */
-                    <EntityLoadErrorState
-                      error={tab.metadata.loadError as LoadError}
-                      entityLabel={tabKindEntityLabel(tab.kind)}
-                      onRetry={
-                        (tab.kind ?? "console") === "console"
-                          ? () => {
-                              if (currentWorkspace?.id) {
-                                void useConsoleStore
-                                  .getState()
-                                  .loadConsole(currentWorkspace.id, tab.id);
-                              }
-                            }
-                          : undefined
-                      }
-                    />
-                  ) : tab.kind === "settings" ? (
-                    <Settings section={tab.settingsSection} />
-                  ) : tab.kind === "members" ? (
-                    <WorkspaceMembers />
-                  ) : tab.kind === "connectors" ? (
-                    <SourceConnectionTab
-                      tabId={tab.id}
-                      sourceId={
-                        typeof tab.content === "string"
-                          ? tab.content
-                          : undefined
-                      }
-                    />
-                  ) : tab.kind === "flow-editor" ? (
-                    <FlowEditor
-                      tabId={tab.id}
-                      flowId={tab.metadata?.flowId as string | undefined}
-                      isNew={tab.metadata?.isNew as boolean | undefined}
-                      flowType={
-                        tab.metadata?.flowType as
-                          | "webhook"
-                          | "scheduled"
-                          | "db-scheduled"
-                          | "sync"
-                          | undefined
-                      }
-                      onSave={() => {
-                        // The FlowEditor already handles refreshing the flows list
-                      }}
-                      onCancel={() => {
-                        closeConsole(tab.id);
-                      }}
-                      dbFlowFormRef={dbFlowFormRef}
-                    />
-                  ) : tab.kind === "table-data" ? (
-                    <TableDataView tabId={tab.id} />
-                  ) : tab.kind === "notebook" ? (
-                    <NotebookRenderer
-                      notebookId={tab.metadata?.notebookId as string}
-                      tabId={tab.id}
-                    />
-                  ) : tab.kind === "app" ? (
-                    <AppWorkspace
-                      tabId={tab.id}
-                      appId={tab.metadata?.appId as string}
-                    />
-                  ) : tab.kind === "app-file" &&
-                    /^bindings\/[^/]+\.sql$/.test(
-                      (tab.metadata?.path as string) ?? "",
-                    ) ? (
-                    <AppBindingEditor
-                      tabId={tab.id}
-                      appId={tab.metadata?.appId as string}
-                      path={tab.metadata?.path as string}
-                    />
-                  ) : tab.kind === "history-diff" ? (
-                    <HistoryDiffTab
-                      entity={tab.metadata?.entity as HistoryEntityKind}
-                      id={tab.metadata?.id as string}
-                      path={tab.metadata?.path as string}
-                      sha={tab.metadata?.sha as string}
-                    />
-                  ) : tab.kind === "repo-diff" ? (
-                    <RepoDiffTab
-                      path={tab.metadata?.path as string}
-                      mode={
-                        (tab.metadata?.mode as
-                          "working" | "index" | "commit") ?? "working"
-                      }
-                      sha={tab.metadata?.sha as string | undefined}
-                    />
-                  ) : tab.kind === "app-diff" ? (
-                    <AppDiffTab
-                      appId={tab.metadata?.appId as string}
-                      path={tab.metadata?.path as string}
-                      mode={
-                        (tab.metadata?.mode as
-                          "working" | "index" | "commit") ?? "working"
-                      }
-                      sha={tab.metadata?.sha as string | undefined}
-                    />
-                  ) : tab.kind === "app-file" ? (
-                    <AppFileEditor
-                      tabId={tab.id}
-                      appId={tab.metadata?.appId as string}
-                      path={tab.metadata?.path as string}
-                    />
-                  ) : tab.kind === "plan" ? (
-                    <PlanDocumentTab
-                      toolCallId={tab.metadata?.toolCallId as string}
-                    />
-                  ) : tab.kind === "dbt-file" ? (
-                    <DbtFileEditor
-                      tabId={tab.id}
-                      projectId={tab.metadata?.projectId as string}
-                      path={tab.metadata?.path as string}
-                    />
-                  ) : tab.kind === "dbt-job" ? (
-                    <DbtJobView
-                      projectId={tab.metadata?.projectId as string}
-                      jobId={tab.metadata?.jobId as string}
-                      autoEdit={tab.metadata?.autoEdit as boolean | undefined}
-                    />
-                  ) : tab.kind === "dbt-console" ? (
-                    <DbtConsoleView
-                      projectId={tab.metadata?.projectId as string}
-                    />
-                  ) : tab.kind === "apps-home" ? (
-                    <AppsHome />
-                  ) : tab.kind === "dbt-runs" ? (
-                    <DbtRunsView
-                      tabId={tab.id}
-                      projectId={tab.metadata?.projectId as string}
-                      focusRunId={
-                        tab.metadata?.focusRunId as string | undefined
-                      }
-                    />
-                  ) : tab.kind === "workflow" ? (
-                    <WorkflowView
-                      workflowId={
-                        tab.metadata?.workflowId as string | undefined
-                      }
-                      path={tab.metadata?.path as string | undefined}
-                    />
-                  ) : (
-                    /* Console tab: editor + results split (desktop) or a single
-                     full-screen pane switched by the bottom nav (mobile). */
-                    <React.Profiler
-                      id={`Editor.console-panels.${tab.id}`}
-                      onRender={onRenderDebug}
-                    >
-                      {isMobile ? (
-                        <Box sx={{ height: "100%" }}>
-                          {mobileResultsView ? resultsPane : consolePane}
-                        </Box>
-                      ) : (
-                        <Group
-                          orientation="vertical"
-                          style={{ height: "100%", width: "100%" }}
-                          onLayoutChange={
-                            renderDebugEnabled
-                              ? layout => handlePanelLayout(tab.id, layout)
-                              : undefined
-                          }
-                        >
-                          <Panel defaultSize="60%" minSize="1%">
-                            {consolePane}
-                          </Panel>
-
-                          <StyledVerticalResizeHandle
-                            elementRef={guardSeparatorDrag}
-                          />
-
-                          <Panel defaultSize="40%" minSize="1%">
-                            {resultsPane}
-                          </Panel>
-                        </Group>
-                      )}
-                    </React.Profiler>
-                  )}
-                </Box>
-              );
-            })}
-          </Box>
+          <EditorTabPanels
+            consoleTabs={consoleTabs}
+            activeConsoleId={activeConsoleId}
+            mountedLazyTabs={mountedLazyTabs}
+            isMobile={isMobile}
+            workspaceId={workspaceId}
+            dbFlowFormRef={dbFlowFormRef}
+            onCloseTab={closeConsole}
+            renderConsole={renderConsole}
+          />
         </Box>
       ) : (
-        <Box
-          sx={{
-            flexGrow: 1,
-            height: "100%",
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
+        <Box sx={{ ...FILL_COLUMN_SX, flexGrow: 1 }}>
           <Box
             sx={{
               flexGrow: 1,
@@ -2968,12 +375,7 @@ function Editor({
             <Button
               variant="contained"
               disableElevation
-              onClick={() => {
-                openTab({
-                  title: "New Console",
-                  content: "",
-                });
-              }}
+              onClick={openNewConsole}
             >
               Open Console
             </Button>
@@ -2981,197 +383,24 @@ function Editor({
         </Box>
       )}
 
-      {/* Error Modal */}
-      <Dialog
-        open={errorModalOpen}
-        onClose={handleCloseErrorModal}
-        maxWidth="md"
-        fullWidth
-        slotProps={{
-          paper: { sx: { maxHeight: "80vh" } },
+      <EditorDialogs
+        tabs={tabs}
+        workspace={currentWorkspace}
+        userId={user?.id}
+        isWorkspaceAdmin={isWorkspaceAdmin}
+        availableDatabases={availableDatabases}
+        feedback={feedback}
+        save={save}
+        runs={runs}
+        onExecuteAnyway={executeAnyway}
+        consoleHistory={consoleHistory}
+        onCloseHistory={() => setConsoleHistory(null)}
+        onHistoryRestored={tabId => {
+          if (workspaceId) void reloadConsole(workspaceId, tabId);
         }}
-      >
-        <DialogTitle
-          sx={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
-          <Typography variant="h6" color="error">
-            Operation Error
-          </Typography>
-          <IconButton aria-label="close" onClick={handleCloseErrorModal}>
-            <CloseIcon />
-          </IconButton>
-        </DialogTitle>
-        <DialogContent dividers>
-          <Box component="pre" sx={{ p: 2, overflow: "auto" }}>
-            {errorMessage}
-          </Box>
-        </DialogContent>
-        <DialogActions>
-          {isWorkspaceAdmin && errorPreviewRetry && (
-            <Button
-              onClick={() => {
-                const retry = errorPreviewRetry;
-                setErrorPreviewRetry(null);
-                setErrorModalOpen(false);
-                setErrorMessage("");
-                void handleConsoleExecute(
-                  retry.tabId,
-                  retry.contentToExecute,
-                  retry.connectionId,
-                  { ...retry.options, confirmUnsafe: true },
-                );
-              }}
-              color="error"
-              variant="contained"
-              disableElevation
-            >
-              Execute anyway
-            </Button>
-          )}
-          <Button
-            onClick={handleCloseErrorModal}
-            variant="contained"
-            disableElevation
-          >
-            Close
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Conflict Resolution Dialog */}
-      <ConflictResolutionDialog
-        open={conflictDialogOpen}
-        onClose={handleConflictClose}
-        conflict={conflictData}
-        newContent={pendingSaveData?.content || ""}
-        onOverwrite={handleConflictOverwrite}
-        onSaveAsNew={handleConflictSaveAsNew}
-        isProcessing={isSaving}
+        shareConsoleTabId={shareConsoleTabId}
+        onCloseShare={() => setShareConsoleTabId(null)}
       />
-
-      {/* Concurrent-edit (version) Conflict Dialog */}
-      <VersionConflictDialog
-        open={Boolean(versionConflictData)}
-        onClose={handleVersionConflictClose}
-        conflict={versionConflictData}
-        newContent={pendingSaveData?.content || ""}
-        onOverwrite={handleVersionConflictOverwrite}
-        onLoadLatest={handleVersionConflictLoadLatest}
-        isProcessing={isSaving}
-      />
-
-      {/* Save Dialog (folder navigator) */}
-      <FileExplorerDialog
-        open={saveDialogOpen}
-        onClose={() => {
-          setSaveDialogOpen(false);
-          setSaveDialogTabId(null);
-          setSaveDialogTargetId(null);
-          setSaveDialogMode("new");
-          setSaveDialogContent("");
-        }}
-        mode="save"
-        onSave={handleSaveDialogConfirm}
-        defaultName={(() => {
-          if (!saveDialogTabId) return "";
-          const tab = tabs[saveDialogTabId];
-          if (!tab) return "";
-          if (saveDialogMode === "save-as-copy") {
-            const base = tab.filePath || tab.title || "";
-            return base ? `${base} (copy)` : "";
-          }
-          if (saveDialogMode === "rename-move") {
-            return tab.filePath || tab.title || "";
-          }
-          return tab.title || "";
-        })()}
-        initialSection={
-          saveDialogTabId && tabs[saveDialogTabId]?.access === "workspace"
-            ? "workspace"
-            : "my"
-        }
-        isSaving={isSaving}
-      />
-
-      {/* Save comment dialog (version commit message) */}
-      <SaveCommentDialog
-        open={commentDialogOpen}
-        onSave={handleCommentSaveConfirm}
-        onCancel={handleCommentSaveCancel}
-        title="Save console version"
-        defaultComment={saveSuggestion.comment}
-        loading={saveSuggestion.loading}
-        diff={saveSuggestion.diff}
-      />
-
-      {consoleHistory && currentWorkspace && (
-        <EntityHistoryPopover
-          anchorEl={consoleHistory.anchor}
-          onClose={() => setConsoleHistory(null)}
-          workspaceId={currentWorkspace.id}
-          entity="console"
-          id={consoleHistory.tabId}
-          onRestored={() =>
-            reloadConsole(currentWorkspace.id, consoleHistory.tabId)
-          }
-        />
-      )}
-
-      {shareConsoleTab && (
-        <ShareDialog
-          open={!!shareConsoleTabId}
-          onClose={() => setShareConsoleTabId(null)}
-          resourceType="console"
-          resourceId={shareConsoleTab.id}
-          resourceName={shareConsoleTab.title}
-          ownerId={shareConsoleTab.owner_id}
-          access={shareConsoleTab.access ?? "private"}
-          workspaceRole={shareConsoleTab.workspaceRole ?? "viewer"}
-          canManage={shareConsoleTab.owner_id === user?.id || isWorkspaceAdmin}
-          onSharingChanged={changes => {
-            if (changes.access && shareConsoleTabId) {
-              useConsoleStore
-                .getState()
-                .updateAccess(shareConsoleTabId, changes.access);
-            }
-          }}
-        />
-      )}
-
-      {scheduleModalTab && (
-        <ScheduleConsoleModal
-          open={Boolean(scheduleModalTab)}
-          mode={scheduleModalMode}
-          initialName={scheduleModalTab.title}
-          initialSchedule={scheduleModalTab.schedule}
-          connectionLabel={
-            availableDatabases.find(
-              connection => connection.id === scheduleModalTab.connectionId,
-            )?.displayName || scheduleModalTab.databaseName
-          }
-          workspaceId={currentWorkspace?.id}
-          notificationConsoleId={
-            scheduleModalTab.isSaved ? scheduleModalTab.id : undefined
-          }
-          workspaceRole={currentWorkspace?.role}
-          onClose={() => setScheduleModalTabId(null)}
-          onSave={handleSaveSchedule}
-          onRemove={
-            scheduleModalMode === "update" && scheduleModalHasSchedule
-              ? async () => handleRemoveSchedule(scheduleModalTab.id)
-              : undefined
-          }
-          onRunNow={
-            scheduleModalTab.isSaved
-              ? async () => handleRunScheduledNow(scheduleModalTab.id)
-              : undefined
-          }
-        />
-      )}
     </Box>
   );
 }

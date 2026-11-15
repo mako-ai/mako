@@ -16,45 +16,8 @@
  * tab. Sharing is changed from the Share dialog, not by dragging.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Box,
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-  IconButton,
-  ListItemIcon,
-  MenuItem,
-  TextField,
-  Tooltip,
-  Typography,
-} from "@mui/material";
-import {
-  Globe as GlobeIcon,
-  User as UserIcon,
-  Users as SharedIcon,
-  Braces as JsonFileIcon,
-  Clock as RecentIcon,
-  TrendingUp as PopularIcon,
-  Database as BindingIcon,
-  File as PlainFileIcon,
-  FileCode as CodeFileIcon,
-  FileText as TextFileIcon,
-  Folder as FolderIcon,
-  FolderOpen as FolderOpenIcon,
-  FolderPlus as FolderPlusIcon,
-  KeyRound as EnvIcon,
-  Pencil as RenameIcon,
-  Plus as AddIcon,
-  RefreshCw as RefreshIcon,
-  Star as StarIcon,
-  Trash2 as DeleteIcon,
-  UserPlus as ShareMenuIcon,
-  Wand2 as StampIcon,
-  BadgeCheck as VerifiedIcon,
-  Share2 as ShareWorkspaceIcon,
-} from "lucide-react";
+import { Box, Button, IconButton, Tooltip, Typography } from "@mui/material";
+import { Plus as AddIcon, RefreshCw as RefreshIcon } from "lucide-react";
 import LinkIcon from "./icons/GithubIcon";
 import { useWorkspace } from "../contexts/workspace-context";
 import {
@@ -63,15 +26,11 @@ import {
 } from "../store/consoleStore";
 import { SECTION_LABELS } from "../pages/settings/sections";
 import {
-  appRootOf,
   appUrlRef,
   devServerKeyMatches,
   useAppsStore,
-  type AppFileEntry,
-  type AppMeta,
 } from "../store/appsStore";
 import {
-  favouriteFor,
   selectFavourites,
   starredRefs,
   useFavouritesStore,
@@ -85,25 +44,12 @@ import {
   useExplorerRevealStore,
   selectRevealFor,
 } from "../store/explorerRevealStore";
-import { APP_DIR_SEP, APP_FILE_SEP } from "../lib/explorer-reveal";
-import { TAB_KIND_ICONS } from "../lib/entity-icons";
-import {
-  basenameOf,
-  buildAppTree,
-  folderNodeId,
-  folderPathFromNodeId,
-  parentPathOf,
-} from "../lib/apps-explorer-tree";
+import { APP_FILE_SEP } from "../lib/explorer-reveal";
+import { folderNodeId, parentPathOf } from "../lib/apps-explorer-tree";
 import ExplorerShell from "./ExplorerShell";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import { useConfirm } from "./ConfirmDialog";
-import AccessIcon from "./AccessIcon";
-import { resolveAccessState } from "./access-state";
-import StarToggle from "./starred/StarToggle";
 import {
-  STARRED_SECTION_KEY,
-  buildStarredSection,
-  entityIdFromStarredRow,
   favouriteIdFromFolderRow,
   starredFolderId,
 } from "./starred/starred-section";
@@ -112,160 +58,32 @@ import {
   isValidFolderName,
 } from "./apps-explorer/AppFolderDialogs";
 import {
-  buildShortcutSection,
-  parseShortcutRow,
-} from "./starred/shortcut-section";
-import {
   selectDiscovery,
   useAppsDiscoveryStore,
 } from "../store/appsDiscoveryStore";
-import { popularApps } from "../lib/apps-discovery";
 import {
   focusAppsFileTab,
   focusAppsHomeTab,
   focusAppsTab,
 } from "../apps-runtime/shell";
 import { whenAppOpenSettled } from "../lib/app-open-gate";
-
-const AppIcon = TAB_KIND_ICONS["app"];
-const AppsHomeIcon = TAB_KIND_ICONS["apps-home"];
-
-const WORKSPACE_ROOT = "apps";
-const WORKSPACE_SECTION = "workspace";
-const PERSONAL_SECTION = "personal";
-const SHARED_SECTION = "shared-with-me";
-
-const RECENT_SECTION = "recently-viewed";
-const POPULAR_SECTION = "popular";
-/** Rows per shortcut section: a glance, not a second tree. */
-const SHORTCUT_LIMIT = 5;
-
-type ParsedNode =
-  /** `pinned`: a Starred copy; `shortcut`: a Recently viewed / Popular one. */
-  | { kind: "app"; appId: string; pinned: boolean; shortcut?: boolean }
-  | { kind: "dir" | "file"; appId: string; path: string }
-  | { kind: "folder"; folderPath: string }
-  | { kind: "starfolder"; favId: string };
-
-function parseNodeId(id: string): ParsedNode {
-  const shortcut = parseShortcutRow(id);
-  if (shortcut) {
-    return { kind: "app", appId: shortcut.refId, pinned: true, shortcut: true };
-  }
-  const folderPath = folderPathFromNodeId(id);
-  if (folderPath !== null) return { kind: "folder", folderPath };
-  const favId = favouriteIdFromFolderRow(id);
-  if (favId !== null) return { kind: "starfolder", favId };
-  const pinned = entityIdFromStarredRow(id);
-  if (pinned !== null) return { kind: "app", appId: pinned, pinned: true };
-  if (id.includes(APP_FILE_SEP)) {
-    const [appId, path] = id.split(APP_FILE_SEP);
-    return { kind: "file", appId, path };
-  }
-  if (id.includes(APP_DIR_SEP)) {
-    const [appId, path] = id.split(APP_DIR_SEP);
-    return { kind: "dir", appId, path };
-  }
-  return { kind: "app", appId: id, pinned: false };
-}
-
-// Per-extension file icons — the same mapping the legacy explorer used, so the
-// two trees read identically. A binding (bindings/*.sql) gets the database
-// icon: it IS a data binding, the .sql is just its serialization.
-const CODE_FILE_EXTENSIONS = new Set([
-  "ts",
-  "tsx",
-  "js",
-  "jsx",
-  "css",
-  "scss",
-  "html",
-  "sql",
-]);
-function fileIcon(name: string, path: string) {
-  if (/^bindings\//.test(path) && name.endsWith(".sql")) {
-    return <BindingIcon size={16} strokeWidth={1.5} />;
-  }
-  const ext = name.split(".").pop()?.toLowerCase() ?? "";
-  if (CODE_FILE_EXTENSIONS.has(ext)) {
-    return <CodeFileIcon size={16} strokeWidth={1.5} />;
-  }
-  if (ext === "md" || ext === "mdx" || ext === "txt") {
-    return <TextFileIcon size={16} strokeWidth={1.5} />;
-  }
-  if (ext === "json") {
-    return <JsonFileIcon size={16} strokeWidth={1.5} />;
-  }
-  return <PlainFileIcon size={16} strokeWidth={1.5} />;
-}
-
-/** Build nested folder/file nodes for one app. */
-function buildFileNodes(
-  appId: string,
-  files: AppFileEntry[],
-): ResourceTreeNode[] {
-  const root: ResourceTreeNode = {
-    id: `${appId}${APP_DIR_SEP}`,
-    name: "",
-    path: "",
-    isDirectory: true,
-    children: [],
-  };
-  for (const file of files) {
-    const segments = file.path.split("/").filter(Boolean);
-    let cursor = root;
-    segments.forEach((segment, index) => {
-      const isLeaf = index === segments.length - 1;
-      const path = segments.slice(0, index + 1).join("/");
-      const id = isLeaf
-        ? `${appId}${APP_FILE_SEP}${path}`
-        : `${appId}${APP_DIR_SEP}${path}`;
-      let child = cursor.children?.find(c => c.id === id);
-      if (!child) {
-        child = {
-          id,
-          name: segment,
-          path,
-          isDirectory: !isLeaf,
-          children: isLeaf ? undefined : [],
-        };
-        cursor.children?.push(child);
-      }
-      cursor = child;
-    });
-  }
-  const sort = (nodes: ResourceTreeNode[]) => {
-    nodes.sort((a, b) => {
-      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-    nodes.forEach(n => n.children && sort(n.children));
-  };
-  sort(root.children || []);
-  return root.children || [];
-}
-
-/** A folder path as a person reads it: `apps/Sales/CH` → `Workspace / Sales / CH`. */
-function folderLabel(path: string, personalRoot: string | null): string {
-  if (path === WORKSPACE_ROOT) return "Workspace";
-  if (personalRoot && path === personalRoot) return "Personal";
-  if (path.startsWith(`${WORKSPACE_ROOT}/`)) {
-    return `Workspace / ${path.slice(WORKSPACE_ROOT.length + 1).replace(/\//g, " / ")}`;
-  }
-  if (personalRoot && path.startsWith(`${personalRoot}/`)) {
-    return `Personal / ${path.slice(personalRoot.length + 1).replace(/\//g, " / ")}`;
-  }
-  return path;
-}
-
-interface FolderDialogState {
-  mode: "create" | "rename";
-  /** create: the parent folder; rename: the folder itself. */
-  path: string;
-  /** rename of a favourites folder instead of a git one. */
-  favId?: string;
-  initialName?: string;
-}
+import {
+  AppsHomeIcon,
+  WORKSPACE_ROOT,
+  buildFileNodes,
+  folderLabel,
+  folderOptionsFor,
+  parseNodeId,
+  type FolderDialogState,
+} from "./apps-explorer/node-model";
+import { buildAppsSections } from "./apps-explorer/build-sections";
+import { useAppsTreeActions } from "./apps-explorer/useAppsTreeActions";
+import { useAppsExplorerMenus } from "./apps-explorer/AppsExplorerMenus";
+import {
+  AppRowAdornment,
+  appsTreeItemIcon,
+} from "./apps-explorer/AppRowDecorations";
+import { CreateAppDialog } from "./apps-explorer/CreateAppDialog";
 
 export default function AppsExplorer() {
   const { currentWorkspace } = useWorkspace();
@@ -300,16 +118,12 @@ export default function AppsExplorer() {
   const createAppFolder = useAppsStore(s => s.createAppFolder);
   const moveAppFolder = useAppsStore(s => s.moveAppFolder);
   const deleteAppFolder = useAppsStore(s => s.deleteAppFolder);
-  const stampAppId = useAppsStore(s => s.stampAppId);
-  const setAppVerified = useAppsStore(s => s.setAppVerified);
   const shareAppWithWorkspace = useAppsStore(s => s.shareAppWithWorkspace);
 
   const favourites = useFavouritesStore(selectFavourites(workspaceId));
   const fetchFavourites = useFavouritesStore(s => s.fetch);
-  const toggleFavourite = useFavouritesStore(s => s.toggle);
   const createFavouriteFolder = useFavouritesStore(s => s.createFolder);
   const renameFavourite = useFavouritesStore(s => s.rename);
-  const moveFavourite = useFavouritesStore(s => s.move);
   const removeFavourite = useFavouritesStore(s => s.remove);
   const favouritesError = useFavouritesStore(s => s.error);
   const clearFavouritesError = useFavouritesStore(s => s.clearError);
@@ -429,346 +243,46 @@ export default function AppsExplorer() {
     [filesByApp],
   );
 
-  const sections = useMemo(() => {
-    const treeApps = (list: AppMeta[]) =>
-      list.map(a => ({
-        id: a.id,
-        title: a.title,
-        path: appRootOf(a),
-        access: a.access,
-        owner_id: a.owner_id,
-      }));
-    const workspaceApps = apps.filter(
-      a => (a.scope ?? "workspace") === "workspace",
-    );
-    const personalApps = personalRoot
-      ? apps.filter(a => appRootOf(a).startsWith(`${personalRoot}/`))
-      : [];
-    // Someone else's personal app that they shared with you: the list
-    // returns it (you can read it), but it lives in THEIR tree, which is
-    // never rendered here. Flat rows, no folder chrome, not a drop target —
-    // only the owner can move it, so a drag here has nothing to do.
-    const sharedWithMe = apps.filter(
-      a =>
-        a.scope === "private" &&
-        !!a.owner_id &&
-        a.owner_id !== userId &&
-        !(personalRoot && appRootOf(a).startsWith(`${personalRoot}/`)),
-    );
-    const starredSection = buildStarredSection(
-      favourites,
-      "app",
-      appId => {
-        const app = appById.get(appId);
-        return app
-          ? {
-              name: app.title,
-              path: appRootOf(app),
-              entityType: "app",
-              access: app.access,
-              owner_id: app.owner_id,
-            }
-          : undefined;
-      },
-      { droppable: true },
-    );
-    // Shortcuts, resolved against the same listing (so a private app the
-    // usage API mentions but this person cannot see never shows).
-    const shortcutRow = (appId: string) => {
-      const app = appById.get(appId);
-      return app
-        ? {
-            name: app.title,
-            path: appRootOf(app),
-            entityType: "app",
-            access: app.access,
-            owner_id: app.owner_id,
-          }
-        : undefined;
-    };
-    const recentSection = buildShortcutSection({
-      key: RECENT_SECTION,
-      label: "Recently viewed",
-      icon: <RecentIcon size={16} strokeWidth={1.5} />,
-      refIds: discovery.recent.map(r => r.appId),
-      resolve: shortcutRow,
-      limit: SHORTCUT_LIMIT,
-    });
-    const popularSection = buildShortcutSection({
-      key: POPULAR_SECTION,
-      label: "Popular",
-      icon: <PopularIcon size={16} strokeWidth={1.5} />,
-      refIds: popularApps(apps, discovery.usage, SHORTCUT_LIMIT).map(a => a.id),
-      resolve: shortcutRow,
-      limit: SHORTCUT_LIMIT,
-    });
-    return [
-      ...starredSection,
-      ...recentSection,
-      ...popularSection,
-      ...(personalRoot
-        ? [
-            {
-              key: PERSONAL_SECTION,
-              label: "Personal",
-              icon: <UserIcon size={16} strokeWidth={1.5} />,
-              nodes: buildAppTree({
-                root: personalRoot,
-                folders,
-                apps: treeApps(personalApps),
-                appChildren,
-              }),
-              droppableId: "__section_personal",
-            },
-          ]
-        : []),
-      {
-        key: WORKSPACE_SECTION,
-        label: "Workspace",
-        icon: <GlobeIcon size={16} strokeWidth={1.5} />,
-        nodes: buildAppTree({
-          root: WORKSPACE_ROOT,
-          folders,
-          apps: treeApps(workspaceApps),
-          appChildren,
-        }),
-        droppableId: "__section_workspace",
-      },
-      ...(sharedWithMe.length > 0
-        ? [
-            {
-              key: SHARED_SECTION,
-              label: "Shared with me",
-              icon: <SharedIcon size={16} strokeWidth={1.5} />,
-              nodes: sharedWithMe
-                .map(app => ({
-                  id: app.id,
-                  name: app.title,
-                  path: appRootOf(app),
-                  isDirectory: true,
-                  children: appChildren(app.id),
-                  ...(app.access ? { access: app.access } : {}),
-                  ...(app.owner_id ? { owner_id: app.owner_id } : {}),
-                }))
-                .sort((a, b) =>
-                  a.name.localeCompare(b.name, undefined, {
-                    sensitivity: "base",
-                  }),
-                ),
-            },
-          ]
-        : []),
-    ];
-  }, [
-    apps,
-    folders,
-    favourites,
-    appById,
-    appChildren,
-    personalRoot,
-    userId,
-    discovery.recent,
-    discovery.usage,
-  ]);
-
-  /** An app in someone else's personal tree: readable, never movable here. */
-  const isSharedWithMe = useCallback(
-    (appId: string): boolean => {
-      const app = appById.get(appId);
-      return (
-        !!app &&
-        app.scope === "private" &&
-        !!app.owner_id &&
-        app.owner_id !== userId
-      );
-    },
-    [appById, userId],
-  );
-
-  // -------------------------------------------------------------------------
-  // Actions
-  // -------------------------------------------------------------------------
-
-  const setError = useCallback((message: string) => {
-    useAppsStore.setState(s => {
-      s.error = message;
-    });
-  }, []);
-
-  /** Where a target folder path may be written to by this person. */
-  const mayWriteTo = useCallback(
-    (folderPath: string): boolean => {
-      if (
-        personalRoot &&
-        (folderPath === personalRoot ||
-          folderPath.startsWith(`${personalRoot}/`))
-      ) {
-        return true;
-      }
-      if (!canOrganize) {
-        setError("Only workspace editors can reorganise the Workspace tree.");
-        return false;
-      }
-      return true;
-    },
-    [canOrganize, personalRoot, setError],
-  );
-
-  const handleToggleStar = useCallback(
-    (appId: string, parentId: string | null = null) => {
-      if (!workspaceId) return;
-      void toggleFavourite(
-        workspaceId,
-        "app",
-        appId,
-        !starred.has(appId),
-        parentId,
-      );
-    },
-    [workspaceId, toggleFavourite, starred],
-  );
-
-  /** The folder an app or file row sits in (its parent directory). */
-  const folderOfApp = useCallback(
-    (appId: string): string | null => {
-      const app = appById.get(appId);
-      return app ? parentPathOf(appRootOf(app)) : null;
-    },
-    [appById],
-  );
-
-  /** A drop onto a section header: the root of that tree. */
-  const handleSectionDrop = useCallback(
-    (sectionKey: string, nodeId: string): boolean => {
-      if (!workspaceId) return true;
-      const dragged = parseNodeId(nodeId);
-      if (sectionKey === STARRED_SECTION_KEY) {
-        if (dragged.kind === "app") {
-          const row = favouriteFor(favourites, "app", dragged.appId);
-          if (row) void moveFavourite(workspaceId, row.id, null);
-          else {
-            void toggleFavourite(workspaceId, "app", dragged.appId, true, null);
-          }
-        } else if (dragged.kind === "starfolder") {
-          void moveFavourite(workspaceId, dragged.favId, null);
-        }
-        return true;
-      }
-      const root =
-        sectionKey === PERSONAL_SECTION ? personalRoot : WORKSPACE_ROOT;
-      if (!root || !mayWriteTo(root)) return true;
-      if (dragged.kind === "app" && !dragged.pinned) {
-        if (
-          folderOfApp(dragged.appId) !== root &&
-          !isSharedWithMe(dragged.appId)
-        ) {
-          void moveApp(workspaceId, dragged.appId, root);
-        }
-      } else if (dragged.kind === "folder") {
-        const to = `${root}/${basenameOf(dragged.folderPath)}`;
-        if (to !== dragged.folderPath && mayWriteTo(dragged.folderPath)) {
-          void moveAppFolder(workspaceId, dragged.folderPath, to);
-        }
-      }
-      return true;
-    },
+  const sections = useMemo(
+    () =>
+      buildAppsSections({
+        apps,
+        folders,
+        favourites,
+        appById,
+        appChildren,
+        personalRoot,
+        userId,
+        discovery,
+      }),
     [
-      workspaceId,
+      apps,
+      folders,
       favourites,
-      moveFavourite,
-      toggleFavourite,
+      appById,
+      appChildren,
       personalRoot,
-      mayWriteTo,
-      folderOfApp,
-      moveApp,
-      moveAppFolder,
-      isSharedWithMe,
+      userId,
+      discovery,
     ],
   );
 
-  /** A drop onto a row: file the dragged thing next to / inside it. */
-  const handleMoveNode = useCallback(
-    (nodeId: string, targetId: string | null) => {
-      if (!workspaceId || !targetId) return;
-      const dragged = parseNodeId(nodeId);
-      const target = parseNodeId(targetId);
-      // Shortcut rows are views of a row below: nothing to drop onto.
-      if (target.kind === "app" && target.shortcut) return;
-      if (dragged.kind === "app" && dragged.shortcut) return;
-      // A shared app can be starred (a pinned row is a view of it), never
-      // filed: it is the owner's to move, and the server would refuse.
-      if (
-        dragged.kind === "app" &&
-        !dragged.pinned &&
-        isSharedWithMe(dragged.appId) &&
-        target.kind !== "starfolder" &&
-        !(target.kind === "app" && target.pinned)
-      ) {
-        return;
-      }
-
-      // Destination: a git folder path, or a favourites folder id (null =
-      // the Starred root when the target is a pinned row at the root).
-      let destPath: string | null = null;
-      let destFav: string | null | undefined;
-      if (target.kind === "folder") destPath = target.folderPath;
-      else if (target.kind === "starfolder") destFav = target.favId;
-      else if (target.kind === "app" && target.pinned) {
-        destFav =
-          favouriteFor(favourites, "app", target.appId)?.parentId ?? null;
-      } else if (target.kind === "app") destPath = folderOfApp(target.appId);
-      else destPath = folderOfApp(target.appId);
-
-      if (dragged.kind === "app") {
-        if (destFav !== undefined) {
-          const row = favouriteFor(favourites, "app", dragged.appId);
-          if (row) void moveFavourite(workspaceId, row.id, destFav);
-          else {
-            void toggleFavourite(
-              workspaceId,
-              "app",
-              dragged.appId,
-              true,
-              destFav,
-            );
-          }
-          return;
-        }
-        // A pinned copy dragged into a real folder is a misdrop, not a move.
-        if (dragged.pinned || !destPath) return;
-        if (folderOfApp(dragged.appId) === destPath) return;
-        if (!mayWriteTo(destPath)) return;
-        const from = folderOfApp(dragged.appId);
-        if (from && !mayWriteTo(from)) return;
-        void moveApp(workspaceId, dragged.appId, destPath);
-        return;
-      }
-      if (dragged.kind === "folder") {
-        if (!destPath || destPath === dragged.folderPath) return;
-        if (destPath.startsWith(`${dragged.folderPath}/`)) return;
-        const to = `${destPath}/${basenameOf(dragged.folderPath)}`;
-        if (!mayWriteTo(destPath) || !mayWriteTo(dragged.folderPath)) return;
-        void moveAppFolder(workspaceId, dragged.folderPath, to);
-        return;
-      }
-      if (dragged.kind === "starfolder" && destFav !== undefined) {
-        if (destFav !== dragged.favId) {
-          void moveFavourite(workspaceId, dragged.favId, destFav);
-        }
-      }
-    },
-    [
-      workspaceId,
-      favourites,
-      folderOfApp,
-      isSharedWithMe,
-      mayWriteTo,
-      moveApp,
-      moveAppFolder,
-      moveFavourite,
-      toggleFavourite,
-    ],
-  );
+  const {
+    isSharedWithMe,
+    mayWriteTo,
+    handleToggleStar,
+    folderOfApp,
+    handleSectionDrop,
+    handleMoveNode,
+  } = useAppsTreeActions({
+    workspaceId,
+    userId,
+    personalRoot,
+    canOrganize,
+    appById,
+    starred,
+    favourites,
+  });
 
   const handleLoadChildren = useCallback(
     async (node: ResourceTreeNode) => {
@@ -1021,298 +535,27 @@ export default function AppsExplorer() {
     [workspaceId, createFavouriteFolder],
   );
 
-  const appMenuItems = useCallback(
-    (appId: string, pinned: boolean, helpers: { closeMenu: () => void }) => {
-      const app = appById.get(appId);
-      const isStarred = starred.has(appId);
-      const items = [
-        <MenuItem
-          key="star"
-          onClick={() => {
-            helpers.closeMenu();
-            handleToggleStar(appId);
-          }}
-        >
-          <ListItemIcon>
-            <StarIcon size={16} fill={isStarred ? "currentColor" : "none"} />
-          </ListItemIcon>
-          {isStarred ? "Unstar" : "Star"}
-        </MenuItem>,
-        <MenuItem
-          key="share"
-          onClick={() => {
-            helpers.closeMenu();
-            setShareAppId(appId);
-          }}
-        >
-          <ListItemIcon>
-            <ShareMenuIcon size={16} />
-          </ListItemIcon>
-          Share…
-        </MenuItem>,
-      ];
-      if (pinned) return items;
-      items.push(
-        <MenuItem
-          key="env"
-          onClick={() => {
-            helpers.closeMenu();
-            setEnvAppId(appId);
-          }}
-        >
-          <ListItemIcon>
-            <EnvIcon size={16} />
-          </ListItemIcon>
-          Environment variables…
-        </MenuItem>,
-      );
-      // Lifecycle + curation (app-lifecycle.service.ts on the API).
-      if (app?.scope === "private" && app.owner_id === user?.id) {
-        items.push(
-          <MenuItem
-            key="share-workspace"
-            onClick={() => {
-              helpers.closeMenu();
-              setShareWsAppId(appId);
-            }}
-          >
-            <ListItemIcon>
-              <ShareWorkspaceIcon size={16} />
-            </ListItemIcon>
-            Share with workspace…
-          </MenuItem>,
-        );
-      }
-      if (isWorkspaceAdmin && app?.scope === "workspace") {
-        items.push(
-          <MenuItem
-            key="verified"
-            onClick={() => {
-              helpers.closeMenu();
-              if (workspaceId) {
-                void setAppVerified(workspaceId, appId, !app.verified);
-              }
-            }}
-          >
-            <ListItemIcon>
-              <VerifiedIcon size={16} />
-            </ListItemIcon>
-            {app.verified ? "Remove verified mark" : "Mark as verified"}
-          </MenuItem>,
-        );
-      }
-      if (app?.duplicateOf) {
-        items.push(
-          <MenuItem
-            key="stamp"
-            onClick={() => {
-              helpers.closeMenu();
-              if (workspaceId) void stampAppId(workspaceId, appId);
-            }}
-          >
-            <ListItemIcon>
-              <StampIcon size={16} />
-            </ListItemIcon>
-            Give this copy its own id
-          </MenuItem>,
-        );
-      }
-      items.push(
-        <MenuItem
-          key="delete"
-          onClick={() => {
-            helpers.closeMenu();
-            void handleDelete(appId);
-          }}
-        >
-          <ListItemIcon>
-            <DeleteIcon size={16} />
-          </ListItemIcon>
-          Delete app
-        </MenuItem>,
-      );
-      return items;
-    },
-    [
+  const { getContextMenuItems, getSectionContextMenuItems } =
+    useAppsExplorerMenus({
+      workspaceId,
+      user,
+      isWorkspaceAdmin,
+      personalRoot,
       appById,
       starred,
+      favourites,
       handleToggleStar,
-      workspaceId,
-      stampAppId,
       handleDelete,
-      user?.id,
-      isWorkspaceAdmin,
-      setAppVerified,
-    ],
-  );
-
-  const folderMenuItems = useCallback(
-    (folderPath: string, helpers: { closeMenu: () => void }) => [
-      <MenuItem
-        key="new-app"
-        onClick={() => {
-          helpers.closeMenu();
-          setCreateFolder(folderPath);
-          setCreateOpen(true);
-        }}
-      >
-        <ListItemIcon>
-          <AddIcon size={16} />
-        </ListItemIcon>
-        New app here…
-      </MenuItem>,
-      <MenuItem
-        key="new-folder"
-        onClick={() => {
-          helpers.closeMenu();
-          setFolderDialog({ mode: "create", path: folderPath });
-        }}
-      >
-        <ListItemIcon>
-          <FolderPlusIcon size={16} />
-        </ListItemIcon>
-        New folder…
-      </MenuItem>,
-      ...(folderPath !== WORKSPACE_ROOT && folderPath !== personalRoot
-        ? [
-            <MenuItem
-              key="rename"
-              onClick={() => {
-                helpers.closeMenu();
-                setFolderDialog({
-                  mode: "rename",
-                  path: folderPath,
-                  initialName: basenameOf(folderPath),
-                });
-              }}
-            >
-              <ListItemIcon>
-                <RenameIcon size={16} />
-              </ListItemIcon>
-              Rename…
-            </MenuItem>,
-            <MenuItem
-              key="delete"
-              onClick={() => {
-                helpers.closeMenu();
-                void handleDeleteFolder(folderPath);
-              }}
-            >
-              <ListItemIcon>
-                <DeleteIcon size={16} />
-              </ListItemIcon>
-              Delete folder
-            </MenuItem>,
-          ]
-        : []),
-    ],
-    [personalRoot, handleDeleteFolder],
-  );
-
-  const starFolderMenuItems = useCallback(
-    (favId: string, helpers: { closeMenu: () => void }) => {
-      const row = favourites.find(f => f.id === favId);
-      return [
-        <MenuItem
-          key="new-folder"
-          onClick={() => {
-            helpers.closeMenu();
-            setFolderDialog({
-              mode: "create",
-              path: "",
-              favId: undefined,
-              initialName: "",
-            });
-            // A Starred subfolder is created on the spot; the dialog is not
-            // needed. Mirror what the section header does.
-            setFolderDialog(null);
-            void handleCreateStarFolder(favId);
-          }}
-        >
-          <ListItemIcon>
-            <FolderPlusIcon size={16} />
-          </ListItemIcon>
-          New folder
-        </MenuItem>,
-        <MenuItem
-          key="rename"
-          onClick={() => {
-            helpers.closeMenu();
-            setFolderDialog({
-              mode: "rename",
-              path: "",
-              favId,
-              initialName: row?.title ?? "",
-            });
-          }}
-        >
-          <ListItemIcon>
-            <RenameIcon size={16} />
-          </ListItemIcon>
-          Rename…
-        </MenuItem>,
-        <MenuItem
-          key="delete"
-          onClick={() => {
-            helpers.closeMenu();
-            void handleDeleteStarFolder(favId);
-          }}
-        >
-          <ListItemIcon>
-            <DeleteIcon size={16} />
-          </ListItemIcon>
-          Remove folder
-        </MenuItem>,
-      ];
-    },
-    [favourites, handleCreateStarFolder, handleDeleteStarFolder],
-  );
-
-  const getContextMenuItems = useCallback(
-    (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
-      const parsed = parseNodeId(node.id);
-      if (parsed.kind === "app") {
-        return appMenuItems(parsed.appId, parsed.pinned, helpers);
-      }
-      if (parsed.kind === "folder") {
-        return folderMenuItems(parsed.folderPath, helpers);
-      }
-      if (parsed.kind === "starfolder") {
-        return starFolderMenuItems(parsed.favId, helpers);
-      }
-      return null;
-    },
-    [appMenuItems, folderMenuItems, starFolderMenuItems],
-  );
-
-  const getSectionContextMenuItems = useCallback(
-    (sectionKey: string, helpers: { closeMenu: () => void }) => {
-      if (sectionKey === STARRED_SECTION_KEY) {
-        return [
-          <MenuItem
-            key="new-folder"
-            onClick={() => {
-              helpers.closeMenu();
-              void handleCreateStarFolder(null);
-            }}
-          >
-            <ListItemIcon>
-              <FolderPlusIcon size={16} />
-            </ListItemIcon>
-            New folder
-          </MenuItem>,
-        ];
-      }
-      if (sectionKey !== WORKSPACE_SECTION && sectionKey !== PERSONAL_SECTION) {
-        return null;
-      }
-      const root =
-        sectionKey === PERSONAL_SECTION ? personalRoot : WORKSPACE_ROOT;
-      if (!root) return null;
-      return folderMenuItems(root, helpers);
-    },
-    [handleCreateStarFolder, personalRoot, folderMenuItems],
-  );
+      handleDeleteFolder,
+      handleCreateStarFolder,
+      handleDeleteStarFolder,
+      setShareAppId,
+      setEnvAppId,
+      setShareWsAppId,
+      setCreateFolder,
+      setCreateOpen,
+      setFolderDialog,
+    });
 
   const shareApp = shareAppId ? apps.find(a => a.id === shareAppId) : null;
   const shareWsApp = shareWsAppId
@@ -1320,23 +563,10 @@ export default function AppsExplorer() {
     : null;
   const envApp = envAppId ? apps.find(a => a.id === envAppId) : null;
 
-  const folderOptions = useMemo(() => {
-    const out: Array<{ path: string; label: string }> = [
-      { path: WORKSPACE_ROOT, label: "Workspace" },
-      ...folders
-        .filter(f => f.startsWith(`${WORKSPACE_ROOT}/`))
-        .map(f => ({ path: f, label: folderLabel(f, personalRoot) })),
-    ];
-    if (personalRoot) {
-      out.push({ path: personalRoot, label: "Personal" });
-      out.push(
-        ...folders
-          .filter(f => f.startsWith(`${personalRoot}/`))
-          .map(f => ({ path: f, label: folderLabel(f, personalRoot) })),
-      );
-    }
-    return out;
-  }, [folders, personalRoot]);
+  const folderOptions = useMemo(
+    () => folderOptionsFor(folders, personalRoot),
+    [folders, personalRoot],
+  );
 
   const actions = (
     <>
@@ -1467,92 +697,23 @@ export default function AppsExplorer() {
                     const parsed = parseNodeId(node.id);
                     if (parsed.kind !== "app") return null;
                     const app = appById.get(parsed.appId);
-                    const running =
-                      !!app &&
-                      runningDevApps.some(k => devServerKeyMatches(k, app));
                     const p = previewByApp[parsed.appId];
-                    // Tri-state dot: amber while a boot is in flight, green
-                    // when the box says it serves, red when the last start
-                    // failed. Nothing → no dot.
-                    const booting = !!p?.building;
-                    const failed = !running && !booting && !!p?.error;
-                    const dot =
-                      running || booting || failed ? (
-                        <Tooltip
-                          title={
-                            booting
-                              ? "Dev server starting…"
-                              : running
-                                ? "Dev server running"
-                                : "Last dev start failed"
-                          }
-                        >
-                          <Box
-                            component="span"
-                            sx={{
-                              width: 7,
-                              height: 7,
-                              borderRadius: "50%",
-                              bgcolor: booting
-                                ? "warning.main"
-                                : running
-                                  ? "success.main"
-                                  : "error.main",
-                              display: "inline-block",
-                              flexShrink: 0,
-                            }}
-                          />
-                        </Tooltip>
-                      ) : null;
                     return (
-                      <Box
-                        component="span"
-                        sx={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 0.5,
-                        }}
-                      >
-                        {dot}
-                        <StarToggle
-                          starred={starred.has(parsed.appId)}
-                          onToggle={() => handleToggleStar(parsed.appId)}
-                        />
-                      </Box>
+                      <AppRowAdornment
+                        running={
+                          !!app &&
+                          runningDevApps.some(k => devServerKeyMatches(k, app))
+                        }
+                        booting={!!p?.building}
+                        lastStartFailed={!!p?.error}
+                        starred={starred.has(parsed.appId)}
+                        onToggleStar={() => handleToggleStar(parsed.appId)}
+                      />
                     );
                   }}
-                  getItemIcon={(node, ctx) => {
-                    const parsed = parseNodeId(node.id);
-                    if (parsed.kind === "app") {
-                      const state = resolveAccessState(node, userId);
-                      // The overlay says who can see it, wherever the row
-                      // sits — a folder header no longer does.
-                      if (parsed.pinned || state !== "workspace") {
-                        return (
-                          <AccessIcon
-                            Glyph={AppIcon}
-                            state={
-                              node.access === "private" &&
-                              node.owner_id === userId &&
-                              node.path?.startsWith("users/")
-                                ? "private"
-                                : state
-                            }
-                            kindLabel="App"
-                          />
-                        );
-                      }
-                      return <AppIcon size={16} strokeWidth={1.5} />;
-                    }
-                    if (parsed.kind === "file") {
-                      return fileIcon(node.name, node.path ?? node.name);
-                    }
-                    return ctx?.isExpanded ? (
-                      <FolderOpenIcon size={16} strokeWidth={1.5} />
-                    ) : (
-                      <FolderIcon size={16} strokeWidth={1.5} />
-                    );
-                  }}
+                  getItemIcon={(node, ctx) =>
+                    appsTreeItemIcon(node, ctx, userId)
+                  }
                   onItemClick={handleItemClick}
                   shouldFolderClickActivate={node =>
                     parseNodeId(node.id).kind === "app"
@@ -1622,66 +783,18 @@ export default function AppsExplorer() {
         )}
       </ExplorerShell>
 
-      <Dialog
+      <CreateAppDialog
         open={createOpen}
-        onClose={() => !creating && setCreateOpen(false)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>New app</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            margin="dense"
-            label="Title"
-            value={newTitle}
-            onChange={e => setNewTitle(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter") void handleCreate();
-            }}
-            disabled={creating}
-          />
-          <TextField
-            select
-            fullWidth
-            margin="dense"
-            label="Folder"
-            value={createFolder}
-            onChange={e => setCreateFolder(e.target.value)}
-            disabled={creating}
-            slotProps={{ select: { native: true } }}
-          >
-            {folderOptions.map(o => (
-              <option key={o.path} value={o.path}>
-                {o.label}
-              </option>
-            ))}
-          </TextField>
-          <Typography
-            variant="caption"
-            sx={{
-              color: "text.secondary",
-            }}
-          >
-            {repos.length > 0
-              ? `Creates a real Vite + React project in the connected GitHub repo (${repos[0].owner}/${repos[0].repo}).`
-              : "Creates a real Vite + React project in the workspace repo."}
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setCreateOpen(false)} disabled={creating}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            onClick={() => void handleCreate()}
-            disabled={creating || !newTitle.trim()}
-          >
-            {creating ? "Creating..." : "Create"}
-          </Button>
-        </DialogActions>
-      </Dialog>
+        creating={creating}
+        title={newTitle}
+        onTitleChange={setNewTitle}
+        folder={createFolder}
+        onFolderChange={setCreateFolder}
+        folderOptions={folderOptions}
+        repo={repos[0]}
+        onClose={() => setCreateOpen(false)}
+        onCreate={() => void handleCreate()}
+      />
 
       <FolderNameDialog
         open={!!folderDialog}

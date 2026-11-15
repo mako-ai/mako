@@ -7,169 +7,50 @@ import React, {
   useCallback,
   useMemo,
 } from "react";
-import {
-  Box,
-  Button,
-  Select,
-  MenuItem,
-  Menu,
-  FormControl,
-  Tooltip,
-  IconButton,
-  Divider,
-  Alert,
-  Badge,
-  Chip,
-  Fab,
-  CircularProgress,
-  ListItemIcon,
-  ListItemText,
-} from "@mui/material";
-import { PlayArrow as PlayIcon } from "@mui/icons-material";
-import {
-  Check as CheckIcon,
-  X as CloseIcon,
-  Save as SaveIcon,
-  Undo as UndoIcon,
-  Redo as RedoIcon,
-  History as HistoryIcon,
-  Info as InfoOutlineIcon,
-  Square as StopIcon,
-  ChevronDown as ChevronDownIcon,
-  Copy as CopyIcon,
-  FolderInput as MoveIcon,
-  Clock3 as ScheduleIcon,
-  Share2 as Share2Icon,
-  MoreHorizontal as MoreIcon,
-} from "lucide-react";
+import { Box } from "@mui/material";
 import Editor, { DiffEditor } from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useTheme } from "../contexts/ThemeContext";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useSchemaStore, TreeNode } from "../store/schemaStore";
-import {
-  useMonacoConsole,
-  ConsoleModification,
-} from "../hooks/useMonacoConsole";
+import { useMonacoConsole } from "../hooks/useMonacoConsole";
 import ConsoleInfoModal from "./ConsoleInfoModal";
-import {
-  useConsoleStore,
-  markUserEditActivity,
-  getPendingAgentReview,
-} from "../store/consoleStore";
+import { useConsoleStore, markUserEditActivity } from "../store/consoleStore";
 import { computeConsoleStateHash } from "../utils/stateHash";
-import { applyModification as applyConsoleModification } from "../utils/consoleModification";
-import { ConnectionSelector } from "./ConnectionSelector";
 import { useIsMobile } from "../hooks/useIsMobile";
 import {
   onRenderDebug,
   useRenderCount,
   useWhyChanged,
 } from "../utils/renderDebug";
+import { consoleEditorLanguage } from "./console/console-utils";
+import { useSqlTableValidation } from "./console/hooks/useSqlTableValidation";
+import { useConsoleDiff } from "./console/hooks/useConsoleDiff";
+import { MobileConsoleToolbar } from "./console/MobileConsoleToolbar";
+import { DesktopConsoleToolbar } from "./console/DesktopConsoleToolbar";
+import { ConsoleDiffBar, ConsoleRunFab } from "./console/ConsoleDiffBar";
+import type { ConsoleToolbarProps } from "./console/toolbar-props";
+import type { ConsoleProps, ConsoleRef } from "./console/types";
 
-interface DatabaseConnection {
-  id: string;
-  connectionId?: string; // Optional for backward compatibility
-  name: string;
-  description: string;
-  database: string;
-  databaseName?: string;
-  type: string;
-  active: boolean;
-  lastConnectedAt?: string;
-  isClusterMode?: boolean; // Optional for backward compatibility
-  displayName: string;
-  hostKey: string;
-  hostName: string;
+export type { ConsoleRef };
+
+/** Keep a ref pointing at the latest value (for Monaco command closures). */
+function useLatestRef<T>(value: T) {
+  const ref = useRef(value);
+  useEffect(() => {
+    ref.current = value;
+  }, [value]);
+  return ref;
 }
 
-interface ConsoleProps {
-  consoleId: string;
-  initialContent: string;
-  title?: string;
-  onExecute: (
-    content: string,
-    connectionId?: string,
-    databaseId?: string, // Sub-database ID for cluster mode (e.g., D1 UUID)
-  ) => void;
-  onCancel?: () => void;
-  onSave?: (content: string, currentPath?: string) => Promise<boolean>;
-  /** Save the current buffer as a NEW console at a chosen path (original untouched). */
-  onSaveAsCopy?: (content: string) => void;
-  /** Move/rename the current console to a new path. */
-  onRenameMove?: (content: string, currentPath?: string) => void;
-  isExecuting: boolean;
-  isCancelling?: boolean;
-  isSaving?: boolean;
-  onContentChange?: (content: string) => void;
-  databases?: DatabaseConnection[];
-  // Current database selection (from store, single source of truth)
-  connectionId?: string;
-  databaseId?: string; // D1 database UUID for cluster mode
-  databaseName?: string; // D1 database human-readable name for cluster mode
-  // Callbacks for database changes
-  onDatabaseChange?: (connectionId: string) => void;
-  onDatabaseNameChange?: (
-    databaseId: string | undefined,
-    databaseName: string | undefined,
-  ) => void;
-  filePath?: string;
-  /** Receives the History button, so a popover can anchor to it. */
-  onHistoryClick?: (anchor: HTMLElement) => void;
-  /**
-   * When false, the history button is rendered but disabled (e.g. for
-   * unsaved drafts that have no versions yet). Defaults to true so existing
-   * callers that already gate via `onHistoryClick` keep working.
-   */
-  historyAvailable?: boolean;
-  /** Opens the unified ShareDialog for this console. */
-  onShareClick?: () => void;
-  /** When false, the share button renders disabled (unsaved drafts). */
-  shareAvailable?: boolean;
-  enableVersionControl?: boolean;
-  schedule?: {
-    cron: string;
-    timezone: string;
-  };
-  onCreateSchedule?: () => void;
-  onUpdateSchedule?: () => void;
-  /**
-   * Surface this console UI is rendering. "console" (default) is a saved query
-   * console; "data-source" reuses the same toolbar/editor for an app
-   * data binding (run/save/connection are identical; callers supply
-   * `headerExtras` for surface-specific controls like materialization).
-   */
-  variant?: "console" | "data-source";
-  /** Extra controls rendered inline in the left toolbar group. */
-  headerExtras?: React.ReactNode;
-}
-
-export interface ConsoleRef {
-  getCurrentContent: () => {
-    content: string;
-    fileName?: string;
-    language?: string;
-  };
-  applyModification: (modification: ConsoleModification) => void;
-  /**
-   * Quietly replace the editor content with the server-authoritative copy
-   * (realtime sync). Unlike applyModification it does not fire
-   * onContentChange (no dirty flag, no autosave echo), does not flash and
-   * does not steal focus — the store is updated by the realtime layer.
-   */
-  setRemoteContent: (content: string) => void;
-  undo: () => void;
-  redo: () => void;
-  canUndo: boolean;
-  canRedo: boolean;
-  showDiff: (modification: ConsoleModification) => void;
-  /**
-   * Show an agent (modify_console) edit as a reviewable Accept/Reject diff.
-   * The proposed content is the server-authoritative copy; the editor keeps
-   * the pre-agent baseline until the user resolves the review.
-   */
-  showRemoteDiff: (proposedContent: string) => void;
-  focus: () => void;
+/** Move the cursor to the end of the editor's content. */
+function moveCursorToEnd(editor: any, model: any) {
+  const lineCount = model.getLineCount();
+  const lastLineLength = model.getLineLength(lineCount);
+  editor.setPosition({
+    lineNumber: lineCount,
+    column: lastLineLength + 1,
+  });
 }
 
 const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
@@ -215,7 +96,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const monacoTheme = useMonacoTheme();
   const { currentWorkspace } = useWorkspace();
   const autoSaveConsole = useConsoleStore(state => state.autoSaveConsole);
-  const resolveAgentReview = useConsoleStore(state => state.resolveAgentReview);
   const tabs = useConsoleStore(state => state.tabs);
 
   // Get tab state for savedStateHash (used for dirty tracking)
@@ -230,15 +110,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // State for info modal
   const [infoModalOpen, setInfoModalOpen] = useState(false);
   const [monacoInstance, setMonacoInstance] = useState<any>(null);
-  // Save split-button menu anchor
-  const [saveMenuAnchor, setSaveMenuAnchor] = useState<null | HTMLElement>(
-    null,
-  );
-  const saveMenuOpen = Boolean(saveMenuAnchor);
-  // Mobile overflow menu: everything the one-row phone toolbar cannot show.
-  const [mobileMenuAnchor, setMobileMenuAnchor] = useState<null | HTMLElement>(
-    null,
-  );
 
   // Compute dirty state by comparing current state hash vs saved state hash
   const hasUnsavedChanges = useMemo(() => {
@@ -256,22 +127,17 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // State to track Monaco's undo/redo availability
   const [monacoCanUndo, setMonacoCanUndo] = useState(false);
   const [monacoCanRedo, setMonacoCanRedo] = useState(false);
+  const syncUndoRedo = useCallback((model: any) => {
+    setMonacoCanUndo(model.canUndo());
+    setMonacoCanRedo(model.canRedo());
+  }, []);
 
-  // State for diff mode
-  const [isDiffMode, setIsDiffMode] = useState(false);
-  const [originalContent, setOriginalContent] = useState("");
-  const [modifiedContent, setModifiedContent] = useState("");
-  const [pendingModification, setPendingModification] =
-    useState<ConsoleModification | null>(null);
-  // True while the active diff is an agent (modify_console) edit awaiting
-  // review — resolved against the server draft via the console store rather
-  // than the legacy local-modification path.
-  const isRemoteDiffRef = useRef(false);
   // Flips true once Monaco has mounted; used to surface a pending agent diff
   // when this tab becomes active after the edit landed in the background.
   const [editorMounted, setEditorMounted] = useState(false);
   // Editor key to force remount when needed
   const [editorKey, setEditorKey] = useState(0);
+  const remountEditor = useCallback(() => setEditorKey(prev => prev + 1), []);
 
   // Refs for tracking state without triggering re-renders
   const isProgrammaticUpdateRef = useRef(false);
@@ -284,13 +150,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const contentFlushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const filePathRef = useRef(filePath);
+  const filePathRef = useLatestRef(filePath);
   const monacoRef = useRef<any>(null);
-
-  // Update filePathRef when props change
-  useEffect(() => {
-    filePathRef.current = filePath;
-  }, [filePath]);
 
   // Use unified schema store
   const ensureTreeRoot = useSchemaStore(s => s.ensureTreeRoot);
@@ -317,6 +178,76 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     workspaceId: currentWorkspace?.id,
     title,
   });
+
+  // Track if we've saved the initial version
+  const hasInitialVersionRef = useRef(false);
+
+  // Reset initial version flag when console changes
+  useEffect(() => {
+    hasInitialVersionRef.current = false;
+  }, [consoleId]);
+
+  // Keep refs of the latest callbacks and props to avoid stale closures in Monaco commands
+  const onExecuteRef = useLatestRef(onExecute);
+  const onSaveRef = useLatestRef(onSave);
+  const onSaveAsCopyRef = useLatestRef(onSaveAsCopy);
+  const onRenameMoveRef = useLatestRef(onRenameMove);
+  const connectionIdRef = useLatestRef(connectionId);
+  const databaseIdRef = useLatestRef(databaseId);
+
+  /**
+   * Draft autosave (debounced internally by autoSaveConsole). Skipped once
+   * the console is explicitly saved (isSaved=true).
+   */
+  const autoSaveContent = useCallback(
+    (content: string) => {
+      if (!isSaved && currentWorkspace?.id && consoleId && content.trim()) {
+        autoSaveConsole(
+          currentWorkspace.id,
+          consoleId,
+          content,
+          title,
+          connectionIdRef.current,
+          databaseIdRef.current,
+          databaseName,
+        );
+      }
+    },
+    [
+      isSaved,
+      currentWorkspace?.id,
+      consoleId,
+      title,
+      databaseName,
+      autoSaveConsole,
+      connectionIdRef,
+      databaseIdRef,
+    ],
+  );
+
+  const {
+    isDiffMode,
+    originalContent,
+    modifiedContent,
+    getFullEditorContent,
+    showDiff,
+    showRemoteDiff,
+    acceptChanges,
+    rejectChanges,
+  } = useConsoleDiff({
+    consoleId,
+    workspaceId: currentWorkspace?.id,
+    editorRef,
+    isProgrammaticUpdateRef,
+    lastInitialContentRef,
+    remountEditor,
+    editorMounted,
+    enableVersionControl,
+    saveUserEdit,
+    onContentChange,
+    autoSaveContent,
+  });
+
   useRenderCount("Console", {
     consoleId,
     title,
@@ -349,44 +280,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     effectiveMode,
   });
 
-  // Track if we've saved the initial version
-  const hasInitialVersionRef = useRef(false);
-
-  // Reset initial version flag when console changes
-  useEffect(() => {
-    hasInitialVersionRef.current = false;
-  }, [consoleId]);
-
-  // Keep refs of the latest callbacks and props to avoid stale closures in Monaco commands
-  const onExecuteRef = useRef(onExecute);
-  const onSaveRef = useRef(onSave);
-  const onSaveAsCopyRef = useRef(onSaveAsCopy);
-  const onRenameMoveRef = useRef(onRenameMove);
-  const connectionIdRef = useRef(connectionId);
-  const databaseIdRef = useRef(databaseId);
-
-  // Update refs whenever the callbacks/props change
-  useEffect(() => {
-    onExecuteRef.current = onExecute;
-  }, [onExecute]);
-
-  useEffect(() => {
-    onSaveRef.current = onSave;
-  }, [onSave]);
-
-  useEffect(() => {
-    onSaveAsCopyRef.current = onSaveAsCopy;
-  }, [onSaveAsCopy]);
-
-  useEffect(() => {
-    onRenameMoveRef.current = onRenameMove;
-  }, [onRenameMove]);
-
-  useEffect(() => {
-    connectionIdRef.current = connectionId;
-    databaseIdRef.current = databaseId;
-  }, [connectionId, databaseId]);
-
   // Derived state for databases
   const selectedConnection = useMemo(
     () => databases.find(db => db.id === connectionId),
@@ -396,9 +289,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // Get available databases (sub-databases for cluster mode) from tree nodes
   const availableDatabases: TreeNode[] = useMemo(() => {
     if (!connectionId) return [];
-    const rootNodes = treeNodes[connectionId]?.["root"] || [];
     // For cluster mode, root nodes are databases
-    return rootNodes;
+    return treeNodes[connectionId]?.["root"] || [];
   }, [treeNodes, connectionId]);
 
   const isLoadingDatabases =
@@ -430,149 +322,30 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     selectedConnection?.type,
   ]);
 
-  // SQL autocomplete is now handled at the Editor level (single global provider)
-
-  // Debounced validation for error highlighting
-  useEffect(() => {
-    if (!monacoInstance || !connectionId || !editorRef.current) return;
-
-    const schema = autocompleteSchemas[connectionId];
-    if (!schema) return;
-
-    // Use a separate timeout ref for validation so we don't interfere with the main save/undo debounce
-    const validationTimeoutRef = { current: null as NodeJS.Timeout | null };
-
-    const validateContent = () => {
-      const model = editorRef.current?.getModel();
-      if (!model) return;
-
-      const content = model.getValue();
-      const markers: any[] = [];
-
-      // Simple regex to find table references in FROM/JOIN clauses
-      const tableRegex = /(?:FROM|JOIN)\s+([^\s,;()]+)(?:\s+AS\s+\w+)?/gi;
-      let match;
-
-      while ((match = tableRegex.exec(content)) !== null) {
-        const fullMatch = match[0];
-        const tableNameRaw = match[1];
-
-        // Skip if it contains template variables or special chars
-        if (tableNameRaw.includes("{") || tableNameRaw.includes("$")) continue;
-
-        const cleanRaw = tableNameRaw.replace(/`/g, "");
-        const parts = cleanRaw.split(".");
-
-        let isValid = false;
-
-        if (parts.length === 1) {
-          const table = parts[0];
-          for (const ds of Object.keys(schema)) {
-            if (schema[ds][table]) {
-              isValid = true;
-              break;
-            }
-          }
-        } else if (parts.length === 2) {
-          const [ds, table] = parts;
-          if (schema[ds] && schema[ds][table]) {
-            isValid = true;
-          }
-        } else if (parts.length === 3) {
-          const [_, ds, table] = parts;
-          if (schema[ds] && schema[ds][table]) {
-            isValid = true;
-          }
-        }
-
-        if (!isValid && parts.length <= 3) {
-          const tableIndex = fullMatch.indexOf(tableNameRaw);
-          if (tableIndex !== -1) {
-            const startPos = model.getPositionAt(match.index + tableIndex);
-            const endPos = model.getPositionAt(
-              match.index + tableIndex + tableNameRaw.length,
-            );
-
-            markers.push({
-              severity: monacoInstance.MarkerSeverity.Warning,
-              startLineNumber: startPos.lineNumber,
-              startColumn: startPos.column,
-              endLineNumber: endPos.lineNumber,
-              endColumn: endPos.column,
-              message: `Table '${cleanRaw}' not found in schema`,
-            });
-          }
-        }
-      }
-
-      monacoInstance.editor.setModelMarkers(model, "sql-validation", markers);
-    };
-
-    // Run validation initially
-    validateContent();
-
-    // Set up debounced validation on change
-    const disposer = editorRef.current.onDidChangeModelContent(() => {
-      if (validationTimeoutRef.current) {
-        clearTimeout(validationTimeoutRef.current);
-      }
-      validationTimeoutRef.current = setTimeout(validateContent, 1000);
-    });
-
-    return () => {
-      disposer.dispose();
-      if (validationTimeoutRef.current) {
-        clearTimeout(validationTimeoutRef.current);
-      }
-      const model = editorRef.current?.getModel();
-      if (model) {
-        monacoInstance.editor.setModelMarkers(model, "sql-validation", []);
-      }
-    };
-  }, [connectionId, autocompleteSchemas, monacoInstance]);
-
-  // Helper function to get full editor content (ignores selection)
-  const getFullEditorContent = useCallback(() => {
-    if (isDiffMode) {
-      return modifiedContent || "";
-    }
-    return editorRef.current?.getValue() || "";
-  }, [isDiffMode, modifiedContent]);
+  // SQL autocomplete is handled at the Editor level (single global provider);
+  // this only adds the debounced unknown-table warnings.
+  useSqlTableValidation(
+    monacoInstance,
+    editorRef,
+    connectionId,
+    autocompleteSchemas,
+  );
 
   // Helper function to get content for execution (selected text if there's a selection, otherwise full content)
   const getExecutionContent = useCallback(() => {
-    if (isDiffMode) {
-      const modifiedEditor = diffEditorRef.current?.getModifiedEditor();
-      if (modifiedEditor) {
-        const selection = modifiedEditor.getSelection();
-        const model = modifiedEditor.getModel();
-        if (selection && !selection.isEmpty() && model) {
-          return model.getValueInRange(selection);
-        }
-      }
-      return modifiedContent || "";
-    }
-
-    if (editorRef.current) {
-      const selection = editorRef.current.getSelection();
-      const model = editorRef.current.getModel();
+    const editor = isDiffMode
+      ? diffEditorRef.current?.getModifiedEditor()
+      : editorRef.current;
+    if (editor) {
+      const selection = editor.getSelection();
+      const model = editor.getModel();
       if (selection && !selection.isEmpty() && model) {
         return model.getValueInRange(selection);
       }
-      return editorRef.current.getValue() || "";
     }
-    return "";
+    if (isDiffMode) return modifiedContent || "";
+    return editorRef.current?.getValue() || "";
   }, [isDiffMode, modifiedContent]);
-
-  // Handler for opening info modal
-  const handleInfoClick = useCallback(() => {
-    setInfoModalOpen(true);
-  }, []);
-
-  // Handler for closing info modal
-  const handleInfoModalClose = useCallback(() => {
-    setInfoModalOpen(false);
-  }, []);
 
   // Execute handler
   const handleExecute = useCallback(() => {
@@ -584,7 +357,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         databaseIdRef.current,
       );
     }
-  }, [getExecutionContent]);
+  }, [getExecutionContent, onExecuteRef, connectionIdRef, databaseIdRef]);
 
   // Save handler - always saves full content regardless of selection
   const handleSave = useCallback(async () => {
@@ -593,34 +366,31 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       await onSaveRef.current(content, filePathRef.current);
       // Editor.tsx handles updating savedStateHash on success
     }
-  }, [getFullEditorContent]);
+  }, [getFullEditorContent, onSaveRef, filePathRef]);
 
   const handleSaveAsCopy = useCallback(() => {
     if (onSaveAsCopyRef.current) {
       const content = getFullEditorContent();
       onSaveAsCopyRef.current(content);
     }
-  }, [getFullEditorContent]);
+  }, [getFullEditorContent, onSaveAsCopyRef]);
 
   const handleRenameMove = useCallback(() => {
     if (onRenameMoveRef.current) {
       const content = getFullEditorContent();
       onRenameMoveRef.current(content, filePathRef.current);
     }
-  }, [getFullEditorContent]);
+  }, [getFullEditorContent, onRenameMoveRef, filePathRef]);
 
   // Calculate editor language
-  const editorLanguage = useMemo(() => {
-    if (filePath?.endsWith(".sql")) return "sql";
-    if (filePath?.endsWith(".json")) return "json";
-    if (filePath?.endsWith(".js") || filePath?.endsWith(".ts")) {
-      return "javascript";
-    }
-
-    const selectedDb = databases.find(db => db.id === connectionId);
-    const dbType = selectedDb?.type;
-    return dbType === "mongodb" ? "javascript" : "sql";
-  }, [filePath, databases, connectionId]);
+  const editorLanguage = useMemo(
+    () =>
+      consoleEditorLanguage(
+        filePath,
+        databases.find(db => db.id === connectionId)?.type,
+      ),
+    [filePath, databases, connectionId],
+  );
 
   // Track the console ID to detect when we switch to a different console
   const lastConsoleIdRef = useRef(consoleId);
@@ -630,7 +400,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       lastConsoleIdRef.current = consoleId;
 
       if (!editorRef.current) {
-        setEditorKey(prev => prev + 1);
+        remountEditor();
         return;
       }
 
@@ -640,18 +410,13 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         model.setValue(initialContent);
         isProgrammaticUpdateRef.current = false;
 
-        const lineCount = model.getLineCount();
-        const lastLineLength = model.getLineLength(lineCount);
-        editorRef.current.setPosition({
-          lineNumber: lineCount,
-          column: lastLineLength + 1,
-        });
+        moveCursorToEnd(editorRef.current, model);
 
         setMonacoCanUndo(false);
         setMonacoCanRedo(false);
       }
     }
-  }, [consoleId, initialContent]);
+  }, [consoleId, initialContent, remountEditor]);
 
   // Apply new initialContent from props when background fetch finishes
   useEffect(() => {
@@ -664,11 +429,10 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     if (isPlaceholder && initialContent && current !== initialContent) {
       isProgrammaticUpdateRef.current = true;
       model.setValue(initialContent);
-      setMonacoCanUndo(model.canUndo());
-      setMonacoCanRedo(model.canRedo());
+      syncUndoRedo(model);
       isProgrammaticUpdateRef.current = false;
     }
-  }, [initialContent]);
+  }, [initialContent, syncUndoRedo]);
 
   // On unmount, FLUSH a pending content change instead of dropping it: the
   // debounce is 500ms, and a tab switch inside that window used to lose the
@@ -737,12 +501,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       // Position cursor at the end of the content
       const model = editor.getModel();
       if (model) {
-        const lineCount = model.getLineCount();
-        const lastLineLength = model.getLineLength(lineCount);
-        editor.setPosition({
-          lineNumber: lineCount,
-          column: lastLineLength + 1,
-        });
+        moveCursorToEnd(editor, model);
 
         const currentContent = model.getValue();
 
@@ -778,8 +537,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           hasInitialVersionRef.current = true;
         }
 
-        setMonacoCanUndo(model.canUndo());
-        setMonacoCanRedo(model.canRedo());
+        syncUndoRedo(model);
       }
     },
     [
@@ -798,6 +556,9 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       databaseId,
       databaseName,
       autoSaveConsole,
+      onSaveAsCopyRef,
+      onSaveRef,
+      syncUndoRedo,
     ],
   );
 
@@ -807,13 +568,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       const content = value || "";
 
       // Update Monaco undo/redo state
-      if (editorRef.current) {
-        const model = editorRef.current.getModel();
-        if (model) {
-          setMonacoCanUndo(model.canUndo());
-          setMonacoCanRedo(model.canRedo());
-        }
-      }
+      const model = editorRef.current?.getModel();
+      if (model) syncUndoRedo(model);
 
       // Skip the rest if this is a programmatic update (to prevent feedback loops)
       if (isProgrammaticUpdateRef.current) {
@@ -864,236 +620,18 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       }
 
       // Auto-save console when content changes (debounced internally by autoSaveConsole)
-      // Skip if console is already explicitly saved (isSaved=true)
-      if (!isSaved && currentWorkspace?.id && consoleId && content.trim()) {
-        autoSaveConsole(
-          currentWorkspace.id,
-          consoleId,
-          content,
-          title,
-          connectionIdRef.current,
-          databaseIdRef.current,
-          databaseName,
-        );
-      }
+      autoSaveContent(content);
     },
     [
       onContentChange,
       enableVersionControl,
       saveUserEdit,
       isApplyingModification,
-      currentWorkspace?.id,
       consoleId,
-      title,
-      databaseName,
-      isSaved,
-      autoSaveConsole,
+      autoSaveContent,
+      syncUndoRedo,
     ],
   );
-
-  // Show diff instead of applying modification immediately
-  // When already in diff mode (follow-up request), preserve the original baseline
-  // and apply the new modification to the current modified content
-  const showDiff = useCallback(
-    (modification: ConsoleModification) => {
-      const currentContent = getFullEditorContent();
-      const newContent = applyConsoleModification(currentContent, modification);
-
-      // Only set originalContent if NOT already in diff mode
-      // This preserves the true baseline for cumulative agent changes
-      if (!isDiffMode) {
-        setOriginalContent(currentContent);
-      }
-
-      isRemoteDiffRef.current = false;
-      setModifiedContent(newContent);
-      setPendingModification(modification);
-      setIsDiffMode(true);
-    },
-    [getFullEditorContent, isDiffMode],
-  );
-
-  // Surface an agent (modify_console) edit as a reviewable diff. The change is
-  // already persisted to the server draft; the editor keeps the pre-agent
-  // baseline (originalContent) until the user accepts/rejects. Cumulative
-  // agent edits preserve the baseline and just refresh the modified side.
-  const showRemoteDiff = useCallback(
-    (proposedContent: string) => {
-      if (!isDiffMode) {
-        setOriginalContent(getFullEditorContent());
-      }
-      isRemoteDiffRef.current = true;
-      setPendingModification(null);
-      setModifiedContent(proposedContent);
-      setIsDiffMode(true);
-    },
-    [getFullEditorContent, isDiffMode],
-  );
-
-  // Accept the changes
-  const acceptChanges = useCallback(() => {
-    // Agent diff: the server already holds the proposed content — adopt it in
-    // the editor and let the store reconcile revision/baseline.
-    if (isRemoteDiffRef.current) {
-      const proposed = modifiedContent;
-      const base = originalContent;
-      setIsDiffMode(false);
-      setEditorKey(prev => prev + 1);
-      isRemoteDiffRef.current = false;
-      isProgrammaticUpdateRef.current = true;
-      lastInitialContentRef.current = proposed;
-      setPendingModification(null);
-      setOriginalContent("");
-      setModifiedContent("");
-
-      if (enableVersionControl) {
-        saveUserEdit(base, "Before AI modification");
-        saveUserEdit(proposed, "AI modification");
-      }
-
-      setTimeout(() => {
-        const model = editorRef.current?.getModel();
-        if (model && model.getValue() !== proposed) {
-          model.setValue(proposed);
-        }
-        isProgrammaticUpdateRef.current = false;
-      }, 100);
-
-      if (currentWorkspace?.id) {
-        void resolveAgentReview(currentWorkspace.id, consoleId, "accept");
-      }
-      return;
-    }
-
-    if (pendingModification && modifiedContent) {
-      setIsDiffMode(false);
-      setEditorKey(prev => prev + 1);
-
-      isProgrammaticUpdateRef.current = true;
-      lastInitialContentRef.current = modifiedContent;
-
-      const savedModifiedContent = modifiedContent;
-      const savedOriginalContent = originalContent;
-      const savedModification = pendingModification;
-
-      setPendingModification(null);
-      setOriginalContent("");
-      setModifiedContent("");
-
-      setTimeout(() => {
-        if (editorRef.current) {
-          const model = editorRef.current.getModel();
-          if (model) {
-            model.setValue(savedModifiedContent);
-
-            if (enableVersionControl) {
-              saveUserEdit(savedOriginalContent, "Before AI modification");
-              saveUserEdit(
-                savedModifiedContent,
-                `AI ${savedModification.action}`,
-              );
-            }
-
-            if (onContentChange) {
-              onContentChange(savedModifiedContent);
-            }
-
-            // Auto-save agent modifications (debounced internally)
-            // Skip if console is already explicitly saved (isSaved=true)
-            if (
-              !isSaved &&
-              currentWorkspace?.id &&
-              consoleId &&
-              savedModifiedContent.trim()
-            ) {
-              autoSaveConsole(
-                currentWorkspace.id,
-                consoleId,
-                savedModifiedContent,
-                title,
-                connectionIdRef.current,
-                databaseIdRef.current,
-                databaseName,
-              );
-            }
-          }
-        }
-        isProgrammaticUpdateRef.current = false;
-      }, 100);
-    }
-  }, [
-    pendingModification,
-    modifiedContent,
-    originalContent,
-    onContentChange,
-    enableVersionControl,
-    saveUserEdit,
-    currentWorkspace,
-    consoleId,
-    title,
-    databaseName,
-    isSaved,
-    autoSaveConsole,
-    resolveAgentReview,
-  ]);
-
-  // Reject the changes and restore the original baseline
-  const rejectChanges = useCallback(() => {
-    // Agent diff: the server holds the agent's content — restore the editor to
-    // the pre-agent baseline and let the store revert the server draft.
-    if (isRemoteDiffRef.current) {
-      const base = originalContent;
-      setIsDiffMode(false);
-      setEditorKey(prev => prev + 1);
-      isRemoteDiffRef.current = false;
-      isProgrammaticUpdateRef.current = true;
-      lastInitialContentRef.current = base;
-      setPendingModification(null);
-      setOriginalContent("");
-      setModifiedContent("");
-
-      setTimeout(() => {
-        const model = editorRef.current?.getModel();
-        if (model && model.getValue() !== base) {
-          model.setValue(base);
-        }
-        isProgrammaticUpdateRef.current = false;
-      }, 100);
-
-      if (currentWorkspace?.id) {
-        void resolveAgentReview(currentWorkspace.id, consoleId, "reject");
-      }
-      return;
-    }
-
-    // Restore editor content to original baseline and sync store
-    if (originalContent && onContentChange) {
-      onContentChange(originalContent);
-    }
-
-    setIsDiffMode(false);
-    setPendingModification(null);
-    setOriginalContent("");
-    setModifiedContent("");
-  }, [
-    originalContent,
-    onContentChange,
-    currentWorkspace,
-    consoleId,
-    resolveAgentReview,
-  ]);
-
-  // Surface a pending agent diff when this tab mounts/activates after the edit
-  // landed while it was in the background (the dispatch from beginAgentReview
-  // is idempotent and won't re-fire once a review is recorded, so a freshly
-  // mounted editor pulls the proposal from the store itself).
-  useEffect(() => {
-    if (!editorMounted || isDiffMode) return;
-    const review = getPendingAgentReview(consoleId);
-    if (review) {
-      showRemoteDiff(review.proposedContent);
-    }
-  }, [editorMounted, isDiffMode, consoleId, showRemoteDiff]);
 
   // DiffEditor mount handler - set up CMD+Enter and store ref
   const handleDiffEditorDidMount = useCallback(
@@ -1117,7 +655,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         );
       }
     },
-    [getExecutionContent],
+    [getExecutionContent, onExecuteRef, connectionIdRef, databaseIdRef],
   );
 
   // Realtime sync: replace content as a single ranged edit (keeps the undo
@@ -1189,28 +727,25 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
   // Undo/redo go through Monaco's own stack so the toolbar (desktop) and the
   // overflow menu (mobile) behave identically to the keyboard shortcuts.
-  const runUndo = useCallback(() => {
-    if (!editorRef.current) return;
-    editorRef.current.trigger("keyboard", "undo", null);
-    setTimeout(() => {
-      const model = editorRef.current?.getModel();
-      if (model) {
-        setMonacoCanUndo(model.canUndo());
-        setMonacoCanRedo(model.canRedo());
-      }
-    }, 0);
-  }, []);
-  const runRedo = useCallback(() => {
-    if (!editorRef.current) return;
-    editorRef.current.trigger("keyboard", "redo", null);
-    setTimeout(() => {
-      const model = editorRef.current?.getModel();
-      if (model) {
-        setMonacoCanUndo(model.canUndo());
-        setMonacoCanRedo(model.canRedo());
-      }
-    }, 0);
-  }, []);
+  const runEditorCommand = useCallback(
+    (command: "undo" | "redo") => {
+      if (!editorRef.current) return;
+      editorRef.current.trigger("keyboard", command, null);
+      setTimeout(() => {
+        const model = editorRef.current?.getModel();
+        if (model) syncUndoRedo(model);
+      }, 0);
+    },
+    [syncUndoRedo],
+  );
+  const runUndo = useCallback(
+    () => runEditorCommand("undo"),
+    [runEditorCommand],
+  );
+  const runRedo = useCallback(
+    () => runEditorCommand("redo"),
+    [runEditorCommand],
+  );
 
   const handleConnectionChange = useCallback(
     (newConnectionId: string) => {
@@ -1235,7 +770,53 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     [databases, onDatabaseChange, onDatabaseNameChange],
   );
 
-  const closeMobileMenu = () => setMobileMenuAnchor(null);
+  const handleDatabaseSelect = (dbId: string | undefined) => {
+    const db = availableDatabases.find(d => d.id === dbId);
+    if (onDatabaseNameChange) {
+      onDatabaseNameChange(dbId, db?.label);
+    }
+  };
+
+  const toolbarProps: ConsoleToolbarProps = {
+    connectionId,
+    databaseId,
+    isClusterMode: Boolean(selectedConnection?.isClusterMode),
+    clusterDatabases: availableDatabases,
+    isLoadingDatabases,
+    onConnectionChange: handleConnectionChange,
+    onDatabaseSelect: handleDatabaseSelect,
+    isReadOnly,
+    isSaved,
+    hasSchedule,
+    hasUnsavedChanges,
+    hasFilePath: Boolean(filePathRef.current),
+    isSaving,
+    isExecuting,
+    isCancelling,
+    isDiffMode,
+    canUndo: monacoCanUndo,
+    canRedo: monacoCanRedo,
+    enableVersionControl,
+    historyAvailable,
+    shareAvailable,
+    onExecute: handleExecute,
+    onCancel,
+    onSave: onSave ? handleSave : undefined,
+    canSaveAsCopy: Boolean(onSaveAsCopy),
+    onSaveAsCopy: handleSaveAsCopy,
+    canRenameMove: Boolean(onRenameMove),
+    onRenameMove: handleRenameMove,
+    onUndo: runUndo,
+    onRedo: runRedo,
+    onHistoryClick,
+    onShareClick,
+    onSchedule:
+      onCreateSchedule || onUpdateSchedule
+        ? () => (hasSchedule ? onUpdateSchedule?.() : onCreateSchedule?.())
+        : undefined,
+    onInfo: () => setInfoModalOpen(true),
+    headerExtras,
+  };
 
   return (
     <Box
@@ -1246,662 +827,12 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         position: "relative",
       }}
     >
-      {/* Mobile toolbar — ONE row: connection, save, overflow. Everything
-          else (undo, redo, history, share, schedule, info, save-as) lives in
-          the overflow menu; the run affordance is the FAB. This is what gets
-          the first line of SQL back above the fold on a phone. */}
-      {isMobile && (
-        <Box
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            gap: 1,
-            px: 1,
-            pb: 1,
-            backgroundColor: "background.paper",
-          }}
-        >
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            <ConnectionSelector
-              value={connectionId || ""}
-              onChange={handleConnectionChange}
-              size="compact"
-              showLabel={false}
-              placeholder="Select connection"
-              fullWidth
-            />
-          </Box>
-          {selectedConnection?.isClusterMode && (
-            <FormControl size="small" variant="outlined" sx={{ minWidth: 96 }}>
-              <Select
-                value={databaseId || ""}
-                onChange={e => {
-                  const dbId = e.target.value || undefined;
-                  const db = availableDatabases.find(d => d.id === dbId);
-                  if (onDatabaseNameChange) {
-                    onDatabaseNameChange(dbId, db?.label);
-                  }
-                }}
-                disabled={isLoadingDatabases || availableDatabases.length === 0}
-                displayEmpty
-                aria-label="Database"
-              >
-                {availableDatabases.map(db => (
-                  <MenuItem key={db.id} value={db.id}>
-                    {db.label || db.id}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          )}
-          {onSave && !isReadOnly && (
-            <Tooltip title={!hasUnsavedChanges ? "No changes to save" : "Save"}>
-              <span>
-                <IconButton
-                  aria-label="Save"
-                  onClick={handleSave}
-                  disabled={isSaving || isExecuting || !hasUnsavedChanges}
-                  sx={{
-                    width: 40,
-                    height: 40,
-                    border: 1,
-                    borderColor: "divider",
-                    borderRadius: 1,
-                  }}
-                >
-                  <SaveIcon strokeWidth={1.75} size={20} />
-                </IconButton>
-              </span>
-            </Tooltip>
-          )}
-          <IconButton
-            aria-label="More actions"
-            aria-haspopup="menu"
-            aria-expanded={mobileMenuAnchor ? "true" : undefined}
-            onClick={e => setMobileMenuAnchor(e.currentTarget)}
-            sx={{
-              width: 40,
-              height: 40,
-              border: 1,
-              borderColor: "divider",
-              borderRadius: 1,
-            }}
-          >
-            <MoreIcon strokeWidth={1.75} size={20} />
-          </IconButton>
-          <Menu
-            anchorEl={mobileMenuAnchor}
-            open={Boolean(mobileMenuAnchor)}
-            onClose={closeMobileMenu}
-            anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
-            transformOrigin={{ vertical: "top", horizontal: "right" }}
-          >
-            {enableVersionControl && (
-              <MenuItem
-                disabled={isDiffMode || !monacoCanUndo}
-                onClick={() => {
-                  closeMobileMenu();
-                  runUndo();
-                }}
-              >
-                <ListItemIcon>
-                  <UndoIcon size={18} strokeWidth={2} />
-                </ListItemIcon>
-                <ListItemText primary="Undo" />
-              </MenuItem>
-            )}
-            {enableVersionControl && (
-              <MenuItem
-                disabled={isDiffMode || !monacoCanRedo}
-                onClick={() => {
-                  closeMobileMenu();
-                  runRedo();
-                }}
-              >
-                <ListItemIcon>
-                  <RedoIcon size={18} strokeWidth={2} />
-                </ListItemIcon>
-                <ListItemText primary="Redo" />
-              </MenuItem>
-            )}
-            {enableVersionControl && onHistoryClick && (
-              <MenuItem
-                disabled={isDiffMode || !historyAvailable}
-                onClick={() => {
-                  const anchor = mobileMenuAnchor;
-                  closeMobileMenu();
-                  if (anchor) onHistoryClick(anchor);
-                }}
-              >
-                <ListItemIcon>
-                  <HistoryIcon size={18} strokeWidth={2} />
-                </ListItemIcon>
-                <ListItemText
-                  primary="Version history"
-                  secondary={
-                    historyAvailable ? undefined : "Save the console first"
-                  }
-                />
-              </MenuItem>
-            )}
-            {enableVersionControl && onShareClick && (
-              <MenuItem
-                disabled={isDiffMode || !shareAvailable}
-                onClick={() => {
-                  closeMobileMenu();
-                  onShareClick();
-                }}
-              >
-                <ListItemIcon>
-                  <Share2Icon size={18} strokeWidth={2} />
-                </ListItemIcon>
-                <ListItemText
-                  primary="Share"
-                  secondary={
-                    shareAvailable ? undefined : "Save the console first"
-                  }
-                />
-              </MenuItem>
-            )}
-            {!isReadOnly && (onCreateSchedule || onUpdateSchedule) && (
-              <MenuItem
-                disabled={!isSaved}
-                onClick={() => {
-                  closeMobileMenu();
-                  if (hasSchedule) onUpdateSchedule?.();
-                  else onCreateSchedule?.();
-                }}
-              >
-                <ListItemIcon>
-                  <ScheduleIcon size={18} strokeWidth={2} />
-                </ListItemIcon>
-                <ListItemText
-                  primary={hasSchedule ? "Update schedule" : "Schedule"}
-                  secondary={isSaved ? undefined : "Save the console first"}
-                />
-              </MenuItem>
-            )}
-            {onSave && !isReadOnly && <Divider />}
-            {onSave && !isReadOnly && (
-              <MenuItem
-                disabled={isSaving || isExecuting || !onSaveAsCopy}
-                onClick={() => {
-                  closeMobileMenu();
-                  handleSaveAsCopy();
-                }}
-              >
-                <ListItemIcon>
-                  <CopyIcon size={18} strokeWidth={2} />
-                </ListItemIcon>
-                <ListItemText primary="Save a copy…" />
-              </MenuItem>
-            )}
-            {onSave && !isReadOnly && (
-              <MenuItem
-                disabled={
-                  isSaving ||
-                  isExecuting ||
-                  !onRenameMove ||
-                  !filePathRef.current
-                }
-                onClick={() => {
-                  closeMobileMenu();
-                  handleRenameMove();
-                }}
-              >
-                <ListItemIcon>
-                  <MoveIcon size={18} strokeWidth={2} />
-                </ListItemIcon>
-                <ListItemText primary="Rename / Move…" />
-              </MenuItem>
-            )}
-            <Divider />
-            <MenuItem
-              onClick={() => {
-                closeMobileMenu();
-                handleInfoClick();
-              }}
-            >
-              <ListItemIcon>
-                <InfoOutlineIcon size={18} strokeWidth={2} />
-              </ListItemIcon>
-              <ListItemText primary="Console info" />
-            </MenuItem>
-          </Menu>
-        </Box>
-      )}
-      {isMobile && headerExtras && (
-        <Box sx={{ px: 1, pb: 1, backgroundColor: "background.paper" }}>
-          {headerExtras}
-        </Box>
-      )}
-      {/* Desktop toolbar. Hidden (not unmounted) on phones, where the one-row
-          toolbar above replaces it. */}
-      <Box
-        sx={{
-          display: isMobile ? "none" : "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          backgroundColor: "background.paper",
-          p: 0.5,
-          gap: 0.5,
-          // Let the connection selector wrap below the actions on narrow screens
-          flexWrap: { xs: "wrap", md: "nowrap" },
-        }}
-      >
-        <Box
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            gap: 1,
-            // Wrap the action buttons onto a second line on phones instead of
-            // clipping them off the right edge.
-            flexWrap: { xs: "wrap", md: "nowrap" },
-          }}
-        >
-          {/* On mobile the run/cancel affordance is the floating FAB, so the
-            inline toolbar button is desktop-only to save horizontal space. */}
-          {!isMobile &&
-            (isExecuting ? (
-              <Button
-                variant="contained"
-                size="small"
-                color="error"
-                startIcon={<StopIcon size={18} />}
-                onClick={onCancel}
-                disabled={isCancelling}
-                disableElevation
-                sx={{ minWidth: "120px" }}
-              >
-                {isCancelling ? "Cancelling..." : "Cancel"}
-              </Button>
-            ) : (
-              <Tooltip
-                title={
-                  !connectionId
-                    ? "Select a database connection to run queries"
-                    : ""
-                }
-              >
-                <span>
-                  <Button
-                    variant="contained"
-                    size="small"
-                    startIcon={<PlayIcon />}
-                    onClick={handleExecute}
-                    disabled={!connectionId}
-                    disableElevation
-                    sx={{
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      maxWidth: "200px",
-                      minWidth: "120px",
-                    }}
-                  >
-                    Run (⌘/Ctrl+Enter)
-                  </Button>
-                </span>
-              </Tooltip>
-            ))}
-
-          {isReadOnly && (
-            <Chip
-              label="Read-only"
-              size="small"
-              variant="outlined"
-              sx={{ ml: 1, height: 24, fontSize: "0.75rem" }}
-            />
-          )}
-
-          {!isReadOnly && (onCreateSchedule || onUpdateSchedule) && (
-            <Tooltip
-              title={
-                !isSaved
-                  ? "Save this console before scheduling it"
-                  : hasSchedule
-                    ? "Update scheduled query"
-                    : "Create scheduled query"
-              }
-            >
-              <span>
-                <Button
-                  size="small"
-                  variant="outlined"
-                  startIcon={
-                    isMobile ? undefined : (
-                      <Badge
-                        color="success"
-                        variant="dot"
-                        invisible={!hasSchedule}
-                        overlap="circular"
-                      >
-                        <ScheduleIcon size={16} />
-                      </Badge>
-                    )
-                  }
-                  onClick={() =>
-                    hasSchedule ? onUpdateSchedule?.() : onCreateSchedule?.()
-                  }
-                  disabled={!isSaved}
-                  sx={{
-                    ml: 1,
-                    whiteSpace: "nowrap",
-                    minWidth: isMobile ? 0 : undefined,
-                    px: isMobile ? 1 : undefined,
-                  }}
-                >
-                  {isMobile ? (
-                    <Badge
-                      color="success"
-                      variant="dot"
-                      invisible={!hasSchedule}
-                      overlap="circular"
-                    >
-                      <ScheduleIcon size={16} />
-                    </Badge>
-                  ) : (
-                    "Schedule"
-                  )}
-                </Button>
-              </span>
-            </Tooltip>
-          )}
-
-          {onSave && !isReadOnly && (
-            <Box
-              sx={{
-                ml: 1,
-                display: "inline-flex",
-                alignItems: "center",
-              }}
-            >
-              <Tooltip
-                title={
-                  !hasUnsavedChanges
-                    ? "No changes to save"
-                    : filePathRef.current
-                      ? "Save (⌘/Ctrl+S)"
-                      : "Save (first save) (⌘/Ctrl+S)"
-                }
-              >
-                <span>
-                  <IconButton
-                    size="small"
-                    onClick={handleSave}
-                    disabled={isSaving || isExecuting || !hasUnsavedChanges}
-                    sx={{
-                      borderTopRightRadius: 0,
-                      borderBottomRightRadius: 0,
-                      pr: 0.5,
-                    }}
-                  >
-                    <SaveIcon strokeWidth={2} size={22} />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip title="More save options">
-                <span>
-                  <IconButton
-                    size="small"
-                    onClick={e => setSaveMenuAnchor(e.currentTarget)}
-                    disabled={isSaving || isExecuting}
-                    sx={{
-                      borderTopLeftRadius: 0,
-                      borderBottomLeftRadius: 0,
-                      pl: 0,
-                      pr: 0.5,
-                    }}
-                    aria-haspopup="menu"
-                    aria-expanded={saveMenuOpen ? "true" : undefined}
-                  >
-                    <ChevronDownIcon strokeWidth={2} size={14} />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Menu
-                anchorEl={saveMenuAnchor}
-                open={saveMenuOpen}
-                onClose={() => setSaveMenuAnchor(null)}
-                anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-                transformOrigin={{ vertical: "top", horizontal: "left" }}
-              >
-                <MenuItem
-                  disabled={isSaving || isExecuting || !onSaveAsCopy}
-                  onClick={() => {
-                    setSaveMenuAnchor(null);
-                    handleSaveAsCopy();
-                  }}
-                >
-                  <ListItemIcon>
-                    <CopyIcon size={16} strokeWidth={2} />
-                  </ListItemIcon>
-                  <ListItemText
-                    primary="Save a Copy..."
-                    secondary="⌘/Ctrl+Shift+S"
-                  />
-                </MenuItem>
-                <MenuItem
-                  disabled={
-                    isSaving ||
-                    isExecuting ||
-                    !onRenameMove ||
-                    !filePathRef.current
-                  }
-                  onClick={() => {
-                    setSaveMenuAnchor(null);
-                    handleRenameMove();
-                  }}
-                >
-                  <ListItemIcon>
-                    <MoveIcon size={16} strokeWidth={2} />
-                  </ListItemIcon>
-                  <ListItemText
-                    primary="Rename / Move..."
-                    secondary={
-                      !filePathRef.current ? "Save the file first" : undefined
-                    }
-                  />
-                </MenuItem>
-              </Menu>
-            </Box>
-          )}
-
-          {headerExtras}
-
-          {enableVersionControl && (
-            <>
-              <Divider orientation="vertical" flexItem />
-
-              <Tooltip title="Undo (⌘/Ctrl+Z)">
-                <span>
-                  <IconButton
-                    size="small"
-                    onClick={runUndo}
-                    disabled={isDiffMode || !monacoCanUndo}
-                  >
-                    <UndoIcon strokeWidth={2} size={22} />
-                  </IconButton>
-                </span>
-              </Tooltip>
-
-              <Tooltip title="Redo (⌘/Ctrl+Shift+Z)">
-                <span>
-                  <IconButton
-                    size="small"
-                    onClick={runRedo}
-                    disabled={isDiffMode || !monacoCanRedo}
-                  >
-                    <RedoIcon strokeWidth={2} size={22} />
-                  </IconButton>
-                </span>
-              </Tooltip>
-
-              {onHistoryClick && (
-                <Tooltip
-                  title={
-                    historyAvailable
-                      ? "Version History"
-                      : "Save this console to start tracking version history"
-                  }
-                >
-                  <span>
-                    <IconButton
-                      size="small"
-                      onClick={e => onHistoryClick(e.currentTarget)}
-                      disabled={isDiffMode || !historyAvailable}
-                    >
-                      <HistoryIcon strokeWidth={2} size={22} />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-              )}
-
-              {onShareClick && (
-                <Tooltip
-                  title={
-                    shareAvailable
-                      ? "Share"
-                      : "Save this console before sharing it"
-                  }
-                >
-                  <span>
-                    <IconButton
-                      size="small"
-                      onClick={onShareClick}
-                      disabled={isDiffMode || !shareAvailable}
-                    >
-                      <Share2Icon strokeWidth={2} size={22} />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-              )}
-            </>
-          )}
-          <Divider orientation="vertical" flexItem />
-          <IconButton
-            aria-label="Console info"
-            onClick={handleInfoClick}
-            size="small"
-          >
-            <InfoOutlineIcon strokeWidth={2} size={22} />
-          </IconButton>
-        </Box>
-
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          {/* Connection selector */}
-          <ConnectionSelector
-            value={connectionId || ""}
-            onChange={handleConnectionChange}
-            size="compact"
-            showLabel={false}
-            placeholder="Select connection"
-            width={160}
-          />
-
-          {/* Database selector (only shown for cluster mode connections) */}
-          {selectedConnection?.isClusterMode && (
-            <>
-              <Divider orientation="vertical" flexItem />
-              <FormControl
-                size="small"
-                variant="standard"
-                sx={{ minWidth: 80, m: 0, p: 0 }}
-              >
-                <Select
-                  variant="standard"
-                  disableUnderline
-                  labelId="database-name-select-label"
-                  value={databaseId || ""}
-                  onChange={e => {
-                    const dbId = e.target.value || undefined;
-                    const db = availableDatabases.find(d => d.id === dbId);
-                    if (onDatabaseNameChange) {
-                      onDatabaseNameChange(dbId, db?.label);
-                    }
-                  }}
-                  disabled={
-                    isLoadingDatabases || availableDatabases.length === 0
-                  }
-                  displayEmpty
-                >
-                  {isLoadingDatabases ? (
-                    <MenuItem value="" disabled>
-                      Loading...
-                    </MenuItem>
-                  ) : availableDatabases.length === 0 ? (
-                    <MenuItem value="" disabled>
-                      No databases
-                    </MenuItem>
-                  ) : (
-                    availableDatabases.map(db => (
-                      <MenuItem key={db.id} value={db.id}>
-                        {db.label || db.id}
-                      </MenuItem>
-                    ))
-                  )}
-                </Select>
-              </FormControl>
-            </>
-          )}
-        </Box>
-      </Box>
+      {isMobile && <MobileConsoleToolbar {...toolbarProps} />}
+      <DesktopConsoleToolbar {...toolbarProps} isMobile={isMobile} />
 
       {/* Diff mode action bar - shown below the main toolbar */}
       {isDiffMode && (
-        <Box
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            px: 1,
-            pb: 1,
-            backgroundColor: "background.paper",
-            gap: 0.5,
-            justifyContent: "space-between",
-          }}
-        >
-          <Alert
-            severity="info"
-            sx={{
-              p: 0,
-              pl: 1,
-              pr: 2,
-              "& .MuiAlert-icon": {
-                fontSize: "1.25rem",
-              },
-            }}
-          >
-            AI suggested changes - Review the diff below
-          </Alert>
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              gap: 1,
-            }}
-          >
-            <Button
-              variant="contained"
-              color="success"
-              size="small"
-              startIcon={<CheckIcon strokeWidth={2} size={22} />}
-              onClick={acceptChanges}
-              disableElevation
-            >
-              Accept
-            </Button>
-            <Button
-              variant="outlined"
-              color="error"
-              size="small"
-              startIcon={<CloseIcon strokeWidth={2} size={22} />}
-              onClick={rejectChanges}
-              disableElevation
-            >
-              Reject
-            </Button>
-          </Box>
-        </Box>
+        <ConsoleDiffBar onAccept={acceptChanges} onReject={rejectChanges} />
       )}
 
       <Box ref={containerRef} sx={{ flexGrow: 1, height: 0 }}>
@@ -1949,37 +880,19 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       {/* Info Modal */}
       <ConsoleInfoModal
         open={infoModalOpen}
-        onClose={handleInfoModalClose}
+        onClose={() => setInfoModalOpen(false)}
         consoleId={consoleId}
         workspaceId={currentWorkspace?.id}
       />
 
-      {/* Mobile run FAB — the primary "execute" affordance on a phone, where
-          the toolbar Run button is compact and the keyboard shortcut is
-          unavailable. */}
       {isMobile && !isDiffMode && (
-        <Fab
-          color={isExecuting ? "error" : "primary"}
-          aria-label={isExecuting ? "Cancel query" : "Run query"}
-          onClick={isExecuting ? onCancel : handleExecute}
-          disabled={isExecuting ? isCancelling : !connectionId}
-          sx={{
-            position: "absolute",
-            right: 16,
-            bottom: "calc(16px + env(safe-area-inset-bottom))",
-            zIndex: 5,
-          }}
-        >
-          {isExecuting ? (
-            isCancelling ? (
-              <CircularProgress size={24} color="inherit" />
-            ) : (
-              <StopIcon size={22} />
-            )
-          ) : (
-            <PlayIcon />
-          )}
-        </Fab>
+        <ConsoleRunFab
+          isExecuting={isExecuting}
+          isCancelling={isCancelling}
+          canRun={Boolean(connectionId)}
+          onExecute={handleExecute}
+          onCancel={onCancel}
+        />
       )}
     </Box>
   );

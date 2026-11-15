@@ -2,89 +2,24 @@
  * Chat Component - Using Vercel AI SDK useChat hook
  * Native AI SDK streaming protocol for improved compatibility
  */
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  useRef,
-} from "react";
-import {
-  Box,
-  IconButton,
-  Typography,
-  Alert,
-  Collapse,
-  Tooltip,
-} from "@mui/material";
-import { ChevronDown, Copy, Check, History, Plus, X } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
+import { Box, Collapse } from "@mui/material";
 import { useTheme as useMuiTheme } from "@mui/material/styles";
 import { useChat } from "@ai-sdk/react";
 import { Virtuoso, type VirtuosoHandle, type Components } from "react-virtuoso";
-import {
-  DefaultChatTransport,
-  lastAssistantMessageIsCompleteWithApprovalResponses,
-  lastAssistantMessageIsCompleteWithToolCalls,
-  type FileUIPart,
-} from "ai";
 import { useMcpStore } from "../store/mcpStore";
 import { useChatHistoryStore } from "../store/chatHistoryStore";
+import { notify } from "../store/notificationStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
-import type { ConsoleTab } from "../store/lib/types";
-import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
-import { useAcpStore } from "../store/acpStore";
-import { selectActiveExplorer, useUIStore } from "../store/uiStore";
-import { useRealtimeStore } from "../store/realtimeStore";
+import { useUIStore } from "../store/uiStore";
 import { useIsMobile } from "../hooks/useIsMobile";
-import { generateObjectId } from "../utils/objectId";
-import {
-  isLocalAcpModelId,
-  localAcpModelIdToProviderId,
-} from "../lib/local-acp-models";
-import { runLocalAcpChatTurn } from "../lib/local-acp-chat";
-import { resumeLocalAcpChatTurn } from "../lib/resume-local-acp-chat";
-import { clearLocalAcpChatBinding } from "../lib/persist-local-acp-chat";
-import {
-  completeDesktopHitlJob,
-  startDesktopAcpBridge,
-} from "../lib/desktop-acp-bridge";
+import { isLocalAcpModelId } from "../lib/local-acp-models";
+import { startDesktopAcpBridge } from "../lib/desktop-acp-bridge";
 import { DbFlowFormRef } from "./DbFlowForm";
-import { safeStringify, toJsonSafe } from "../lib/json-safe";
-import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
-import { PlanCard } from "./PlanCard";
-import {
-  focusPlanTab,
-  syncPlanTabTitle,
-  usePlanStore,
-  type PartialSubmitPlanInput,
-} from "../store/planStore";
-import { useDesktopHitlStore } from "../store/desktopHitlStore";
-import type {
-  AskClarifyingQuestionsInput,
-  SubmitPlanInput,
-} from "@mako/agent-tools";
 import { type ChatMessageRowProps } from "./chat-message-comparator";
-import {
-  buildChatRequestBody,
-  type ActiveConsoleResultsContext,
-} from "../agent-runtime/request-context";
-import { consumePendingScreenshotVisionAttachments } from "../agent-runtime/screenshot-agent-tools";
-import { UpgradePrompt } from "./UpgradePrompt";
-import { useConfirm } from "./ConfirmDialog";
-import {
-  readStoredChatSession,
-  writeStoredChatSession,
-  type StoredChatSession,
-} from "./chat/session-storage";
-import {
-  isToolPartType,
-  toolNameFromPartType,
-  type AutoSendPredicateArgs,
-  type ToolInvocationInfo,
-} from "./chat/tool-presentation";
 import {
   useClientToolRegistry,
   type AddToolOutputFn,
@@ -112,21 +47,32 @@ import { useSessionUsageCounter } from "./chat/hooks/useSessionUsageCounter";
 import { AcpPermissionBanner } from "./AcpPermissionBanner";
 import { ChatPanelErrorBoundary } from "./chat/ChatPanelErrorBoundary";
 import { AcpWorkspaceToolsBanner } from "./AcpWorkspaceToolsBanner";
+import { useChatTransport } from "./chat/hooks/useChatTransport";
+import {
+  useChatIdentity,
+  useChatSessionActions,
+} from "./chat/hooks/useChatSessionActions";
+import { openConsoleFromChat } from "./chat/open-console-from-chat";
+import { useConnectionIconById } from "../hooks/useConnectionIconById";
+import { useLocalAcpTurns } from "./chat/hooks/useLocalAcpTurns";
+import { settleDanglingToolParts } from "./chat/chat-helpers";
+import {
+  useAutoSendPredicates,
+  useCopyChatHistory,
+  useToolDetailsDialog,
+} from "./chat/hooks/useChatPanelState";
+import { usePendingInteractiveTool } from "./chat/hooks/usePendingInteractiveTool";
+import {
+  ChatErrorBanner,
+  ChatHeader,
+  ScrollToLatestButton,
+} from "./chat/ChatChrome";
+import { PendingInteractiveToolDock } from "./chat/PendingInteractiveToolDock";
 import {
   onRenderDebug,
   useRenderCount,
   useWhyChanged,
 } from "../utils/renderDebug";
-import { notify } from "../store/notificationStore";
-
-/** Failed user actions surface as a filled error toast. */
-function notifyActionError(message: string) {
-  notify.error(message, {
-    autoHideDuration: 5000,
-    anchorOrigin: { vertical: "bottom", horizontal: "center" },
-    variant: "filled",
-  });
-}
 
 // Virtuoso's `Components['List']` types `ref` as a `LegacyRef` (string refs
 // allowed), which is contravariant with forwardRef's `Ref`. The component is
@@ -149,27 +95,17 @@ interface ChatProps {
   >;
 }
 
-type ChatActiveView = "flow-editor" | "console" | "empty";
-
-function normalizeChatActiveView(kind: ConsoleTab["kind"]): ChatActiveView {
-  return kind === "flow-editor" || kind === "console" ? kind : "empty";
+/**
+ * One-off feedback for user-initiated actions that fail quietly otherwise
+ * (clipboard, session delete): a filled error toast.
+ */
+function notifyActionError(message: string) {
+  notify.error(message, {
+    autoHideDuration: 5000,
+    anchorOrigin: { vertical: "bottom", horizontal: "center" },
+    variant: "filled",
+  });
 }
-
-// Claude-style floating round button used in the mobile pane headers. Each
-// control carries its own paper fill + blur + hairline so it reads as floating
-// chrome over the content rather than sitting in a solid app bar.
-const MOBILE_FLOAT_BTN_SX = {
-  width: 38,
-  height: 38,
-  borderRadius: "50%",
-  color: "text.secondary",
-  bgcolor: "background.paper",
-  border: 1,
-  borderColor: "divider",
-  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
-  backdropFilter: "blur(8px)",
-  "&:hover": { bgcolor: "action.hover" },
-} as const;
 
 const Chat: React.FC<ChatProps> = ({
   dbFlowFormRef,
@@ -177,9 +113,6 @@ const Chat: React.FC<ChatProps> = ({
   resultsContextRef,
 }) => {
   const paletteMode = useMuiTheme().palette.mode;
-  const confirm = useConfirm();
-  // One-off feedback for user-initiated actions that fail quietly otherwise
-  // (clipboard, session delete).
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
 
@@ -196,11 +129,6 @@ const Chat: React.FC<ChatProps> = ({
 
   // Connection metadata is only needed to decorate completed console tool cards.
   const connections = useSchemaStore(s => s.connections);
-  const dbTypes = useDatabaseCatalogStore(s => s.types);
-  const fetchDbTypes = useDatabaseCatalogStore(s => s.fetchTypes);
-  useEffect(() => {
-    void fetchDbTypes();
-  }, [fetchDbTypes]);
 
   // Local Agent mako-desktop MCP → iframe run_app / previewErrors.
   useEffect(() => startDesktopAcpBridge(), []);
@@ -208,46 +136,21 @@ const Chat: React.FC<ChatProps> = ({
     () => (currentWorkspace ? connections[currentWorkspace.id] || [] : []),
     [connections, currentWorkspace],
   );
-  const connectionIconById = useMemo(() => {
-    const iconByType = new Map<string, string>();
-    for (const dbType of dbTypes ?? []) {
-      if (dbType.iconUrl) iconByType.set(dbType.type, dbType.iconUrl);
-    }
+  const connectionIconById = useConnectionIconById(workspaceConnections);
 
-    const iconByConnectionId = new Map<string, string>();
-    for (const connection of workspaceConnections) {
-      const iconUrl = iconByType.get(connection.type);
-      if (iconUrl) iconByConnectionId.set(connection.id, iconUrl);
-    }
-    return iconByConnectionId;
-  }, [dbTypes, workspaceConnections]);
-
-  // The chat persisted for this tab (if any), read once per mount. Restoring
-  // it means a page refresh reopens — and reattaches to — the same chat.
-  const initialStoredSessionRef = useRef<StoredChatSession | null | undefined>(
-    undefined,
-  );
-  if (initialStoredSessionRef.current === undefined) {
-    initialStoredSessionRef.current = readStoredChatSession();
-  }
-  // chatId is a MongoDB ObjectId generated locally - frontend owns the ID (AI SDK best practice)
-  const [chatId, setChatId] = useState<string>(
-    () => initialStoredSessionRef.current?.chatId ?? generateObjectId(),
-  );
+  const {
+    initialStoredSession,
+    chatId,
+    setChatId,
+    isExistingChat,
+    setIsExistingChat,
+  } = useChatIdentity();
   // Virtualized message list (react-virtuoso). Replaces use-stick-to-bottom:
   // Virtuoso owns its own scroller and bottom-anchoring (`followOutput`), and
   // only mounts visible rows + overscan so long chats stay light on
   // DOM/memory/paint — critical on mobile. `isAtBottom` drives both the
   // "scroll to bottom" button and whether streaming auto-follows the tail.
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-
-  // Track if we're viewing an existing chat from history (vs a new chat)
-  // Moved before useChat so onFinish callback can access it
-  // A chat restored from sessionStorage is treated as existing so its
-  // persisted messages are loaded before reattaching to the live stream.
-  const [isExistingChat, setIsExistingChat] = useState(() =>
-    Boolean(initialStoredSessionRef.current),
-  );
 
   // Refs for accessing current values in callbacks (avoids stale closures)
   const isExistingChatRef = useRef(isExistingChat);
@@ -275,10 +178,7 @@ const Chat: React.FC<ChatProps> = ({
   } = useChatSessions({ workspaceId: currentWorkspace?.id });
 
   // Tool debug dialog
-  const [toolDialogOpen, setToolDialogOpen] = useState(false);
-  const [selectedTool, setSelectedTool] = useState<ToolInvocationInfo | null>(
-    null,
-  );
+  const toolDialog = useToolDetailsDialog();
 
   // Keep the active console ID fresh without subscribing the whole chat panel
   // to every console switch. This avoids disrupting chat streaming when users
@@ -296,23 +196,6 @@ const Chat: React.FC<ChatProps> = ({
   const chatIdRef = useRef(chatId);
   const manualStopRequestedRef = useRef(false);
   const drainQueuedPromptAfterTurnRef = useRef<(() => void) | null>(null);
-  const sendViaLocalAcpRef = useRef<
-    ((text: string, files?: FileUIPart[]) => Promise<boolean>) | null
-  >(null);
-  const localAcpAbortRef = useRef<AbortController | null>(null);
-  const localAcpBindingRef = useRef<{
-    providerId: string;
-    sessionId: string;
-    modelId: string;
-  } | null>(null);
-  /** Bumps on each ACP send so overlapping finally blocks don't clear busy early. */
-  const localAcpGenerationRef = useRef(0);
-  /** In-flight refresh/wake reattach to a Local Agent turn (see resume below). */
-  const localAcpResumeAbortRef = useRef<AbortController | null>(null);
-  const requestLocalAcpResumeRef = useRef<(() => void) | undefined>(undefined);
-  const [localAcpBusy, setLocalAcpBusy] = useState(false);
-  const localAcpBusyRef = useRef(false);
-  localAcpBusyRef.current = localAcpBusy;
   // Client-tool registry: in-flight executions, cancel/interrupt plumbing,
   // and the per-chat toolCallId dispatch dedupe gate (the triplicate-tool
   // fix). Created before useChat — its register/settle callbacks are wired
@@ -381,101 +264,19 @@ const Chat: React.FC<ChatProps> = ({
   modelIdRef.current = selectedModelId;
   chatIdRef.current = chatId;
 
-  const autoSendWhenComplete = useCallback((options: AutoSendPredicateArgs) => {
-    if (manualStopRequestedRef.current) {
-      return false;
-    }
-    // Approval responses (MCP allow/deny) resume the turn just like settled
-    // client tool calls do.
-    return (
-      lastAssistantMessageIsCompleteWithToolCalls(options) ||
-      lastAssistantMessageIsCompleteWithApprovalResponses(options)
-    );
-  }, []);
-
-  // The predicate handed to useChat. Split from `autoSendWhenComplete` (also
-  // used by the queued-prompt drain as a soft-block mirror) so the one-shot
-  // plan-feedback latch is only ever consumed by the SDK's own check.
-  const sdkAutoSendWhen = useCallback(
-    (options: AutoSendPredicateArgs) => {
-      if (suppressNextAutoSendRef.current) {
-        suppressNextAutoSendRef.current = false;
-        return false;
-      }
-      return autoSendWhenComplete(options);
-    },
-    [autoSendWhenComplete],
+  const { autoSendWhenComplete, sdkAutoSendWhen } = useAutoSendPredicates(
+    manualStopRequestedRef,
+    suppressNextAutoSendRef,
   );
 
-  // Create transport once — prepareSendMessagesRequest reads all dynamic
-  // values from getState() / refs at request time, so the transport identity
-  // is stable for the lifetime of the component.
-  const transport = useMemo(
-    () =>
-      new DefaultChatTransport({
-        api: "/api/agent/chat",
-        prepareSendMessagesRequest: ({ messages }) => {
-          // Get fresh console state at request time
-          const store = useConsoleStore.getState();
-          const tabs = Object.values(store.tabs) as ConsoleTab[];
-          const activeTab = tabs.find(t => t.id === store.activeTabId);
-          const computedActiveView = normalizeChatActiveView(activeTab?.kind);
-          const workspaceId = workspaceIdRef.current;
-
-          const flowFormState = dbFlowFormRefCurrent.current?.current
-            ? dbFlowFormRefCurrent.current.current.getFormState()
-            : undefined;
-
-          // Read results context from Editor at request time
-          const resultsCtx = resultsContextRef?.current ?? null;
-          const activeConsoleResults: ActiveConsoleResultsContext | undefined =
-            resultsCtx
-              ? {
-                  viewMode: resultsCtx.viewMode,
-                  hasResults: resultsCtx.hasResults,
-                  rowCount: resultsCtx.rowCount,
-                  columns: resultsCtx.columns,
-                  sampleRows: resultsCtx.sampleRows,
-                  chartSpec: resultsCtx.chartSpec,
-                }
-              : undefined;
-
-          const screenshotVisionAttachments =
-            consumePendingScreenshotVisionAttachments();
-          const requestBody = buildChatRequestBody({
-            messages,
-            workspaceId,
-            modelId: modelIdRef.current,
-            chatId: chatIdRef.current,
-            tabs,
-            activeTabId: store.activeTabId,
-            activeTab,
-            activeView: computedActiveView,
-            activeExplorer: selectActiveExplorer(useUIStore.getState()),
-            activeConsoleId: activeConsoleIdRef.current,
-            activeConsoleResults,
-            flowFormState,
-          });
-
-          return {
-            body: toJsonSafe(
-              screenshotVisionAttachments.length > 0
-                ? {
-                    ...requestBody,
-                    screenshotVisionAttachments,
-                  }
-                : requestBody,
-            ) as Record<string, unknown>,
-          };
-        },
-        // Where `resume: true` reattaches to an in-flight turn (page refresh,
-        // another device/viewer). 204 means nothing is streaming.
-        prepareReconnectToStreamRequest: ({ id }) => ({
-          api: `/api/agent/chat/${id}/stream`,
-        }),
-      }),
-    [resultsContextRef],
-  );
+  const transport = useChatTransport({
+    workspaceIdRef,
+    modelIdRef,
+    chatIdRef,
+    activeConsoleIdRef,
+    dbFlowFormRefCurrent,
+    resultsContextRef,
+  });
 
   // Note: We use useConsoleStore.getState() inside callbacks to avoid stale closure issues
 
@@ -582,22 +383,27 @@ const Chat: React.FC<ChatProps> = ({
     >,
   });
 
-  // Leaving local Claude/Codex must drop the persisted ACP binding so History
-  // reopen doesn't force a dead session (Bugbot: stale localAcp).
-  useEffect(() => {
-    if (isLocalAcpModelId(selectedModelId)) return;
-    if (!localAcpBindingRef.current) return;
-    const workspaceId = workspaceIdRef.current;
-    const id = chatIdRef.current;
-    const transcript = messagesRef.current;
-    localAcpBindingRef.current = null;
-    if (!workspaceId || !id || transcript.length === 0) return;
-    void clearLocalAcpChatBinding({
-      workspaceId,
-      chatId: id,
-      messages: transcript,
-    });
-  }, [selectedModelId]);
+  // Local Agent (Claude Code / Codex over ACP) sends + reattach.
+  const {
+    localAcpBusy,
+    localAcpBusyRef,
+    localAcpBindingRef,
+    sendViaLocalAcpRef,
+    requestLocalAcpResumeRef,
+    abortLocalAcp,
+  } = useLocalAcpTurns({
+    chatId,
+    selectedModelId,
+    workspaceIdRef,
+    chatIdRef,
+    modelIdRef,
+    messagesRef,
+    isLoadingRef,
+    drainQueuedPromptAfterTurnRef,
+    fetchSessionsRef,
+    setMessages,
+    setIsExistingChat,
+  });
 
   // Give the registry (created before useChat) the live addToolOutput. Client
   // tools execute outside the API process, so report domain failures before
@@ -667,35 +473,7 @@ const Chat: React.FC<ChatProps> = ({
   // any dangling ones to "error" — otherwise a force-send after an interrupt
   // would hang.
   const settleDanglingAssistantToolCalls = useCallback(() => {
-    setMessages(prev =>
-      prev.map(msg => {
-        if (msg.role !== "assistant") return msg;
-        const hasPending = msg.parts?.some(p => {
-          const pt = p.type as string;
-          if (!isToolPartType(pt)) return false;
-          const s = (p as Record<string, unknown>).state as string;
-          return s !== "output-available" && s !== "error";
-        });
-        if (!hasPending) return msg;
-        return {
-          ...msg,
-          parts: msg.parts.map(p => {
-            const pt = p.type as string;
-            if (!isToolPartType(pt)) return p;
-            const s = (p as Record<string, unknown>).state as string;
-            if (s === "output-available" || s === "error") return p;
-            return {
-              ...p,
-              state: "error" as const,
-              output: {
-                success: false,
-                error: "Tool cancelled (chat stopped)",
-              },
-            };
-          }) as any,
-        };
-      }),
-    );
+    setMessages(prev => settleDanglingToolParts(prev));
   }, [setMessages]);
 
   // Interrupt the in-flight turn: abort client tools, abort server-side
@@ -705,15 +483,7 @@ const Chat: React.FC<ChatProps> = ({
     manualStopRequestedRef.current = true;
 
     // Abort an in-flight local ACP (Claude Code / Codex) turn if any.
-    localAcpAbortRef.current?.abort();
-    localAcpAbortRef.current = null;
-    localAcpResumeAbortRef.current?.abort();
-    localAcpResumeAbortRef.current = null;
-    setLocalAcpBusy(false);
-    void useAcpStore
-      .getState()
-      .cancelActive()
-      .catch(() => undefined);
+    abortLocalAcp();
 
     interruptActiveClientToolCalls();
     // With resumable streams, disconnecting no longer cancels the turn — the
@@ -724,7 +494,12 @@ const Chat: React.FC<ChatProps> = ({
     }
     stop();
     settleDanglingAssistantToolCalls();
-  }, [interruptActiveClientToolCalls, stop, settleDanglingAssistantToolCalls]);
+  }, [
+    abortLocalAcp,
+    interruptActiveClientToolCalls,
+    stop,
+    settleDanglingAssistantToolCalls,
+  ]);
 
   const isLoading =
     status === "streaming" ||
@@ -732,148 +507,6 @@ const Chat: React.FC<ChatProps> = ({
     activeClientToolCallCount > 0 ||
     localAcpBusy;
   isLoadingRef.current = isLoading;
-
-  // Main Chat → Local Agent ACP when the dropdown selection is a local model.
-  // Generation counter: overlapping send/abort must not clear busy while an
-  // older turn is still awaiting the Local Agent (that race poisoned Skill
-  // cards as "Interrupted" and surfaced "Session is already processing").
-  sendViaLocalAcpRef.current = async (text: string, files?: FileUIPart[]) => {
-    const modelId = modelIdRef.current;
-    if (!modelId || !isLocalAcpModelId(modelId)) return false;
-
-    localAcpAbortRef.current?.abort();
-    // A refresh-reattach must yield to a fresh user send (it would otherwise
-    // race this turn's assistant bubble with replayed events).
-    localAcpResumeAbortRef.current?.abort();
-    localAcpResumeAbortRef.current = null;
-    // Cancel the in-flight ACP prompt so the next turn can start cleanly.
-    void useAcpStore
-      .getState()
-      .cancelActive()
-      .catch(() => undefined);
-
-    const abort = new AbortController();
-    localAcpAbortRef.current = abort;
-    const generation = ++localAcpGenerationRef.current;
-    setLocalAcpBusy(true);
-    isLoadingRef.current = true;
-    try {
-      const binding = localAcpBindingRef.current;
-      const providerId = localAcpModelIdToProviderId(modelId);
-      // Reuse the ACP process session across Terra/Luna/Sol picks for the same
-      // provider. Exact modelId equality used to drop the binding on every
-      // picker change, which forced set_config / reconnect mid-chat and made
-      // the user's turn look like it disappeared ("Conversation interrupted").
-      await runLocalAcpChatTurn({
-        modelId,
-        text,
-        files,
-        workspaceId: workspaceIdRef.current,
-        chatId: chatIdRef.current,
-        preferredSessionId:
-          binding && providerId && binding.providerId === providerId
-            ? binding.sessionId
-            : undefined,
-        setMessages,
-        signal: abort.signal,
-        onPersisted: binding => {
-          if (binding) localAcpBindingRef.current = binding;
-          setIsExistingChat(true);
-          void fetchSessionsRef.current?.();
-        },
-      });
-    } catch {
-      // Transcript already includes the error text.
-    } finally {
-      if (localAcpGenerationRef.current === generation) {
-        if (localAcpAbortRef.current === abort) {
-          localAcpAbortRef.current = null;
-        }
-        setLocalAcpBusy(false);
-        isLoadingRef.current = false;
-        queueMicrotask(() => drainQueuedPromptAfterTurnRef.current?.());
-      }
-    }
-    return true;
-  };
-
-  // Refresh / History-reopen / tab-wake reattach for Local ACP: the Local
-  // Agent keeps running the turn (and buffering events for replay) while the
-  // page is gone, but nothing re-subscribed — the chat froze at the last
-  // checkpoint. Rebuild the in-flight turn from the replay backlog, stream
-  // the rest live, and persist the finished turn. Cheap no-op when idle.
-  requestLocalAcpResumeRef.current = () => {
-    const binding = localAcpBindingRef.current;
-    const workspaceId = workspaceIdRef.current;
-    const targetChatId = chatIdRef.current;
-    if (!binding || !workspaceId || !targetChatId) return;
-    // An in-page turn (or an already-attached resume) is streaming — leave it.
-    if (localAcpBusyRef.current) return;
-    localAcpResumeAbortRef.current?.abort();
-    const abort = new AbortController();
-    localAcpResumeAbortRef.current = abort;
-    let attached = false;
-    void resumeLocalAcpChatTurn({
-      binding,
-      workspaceId,
-      chatId: targetChatId,
-      setMessages,
-      getMessages: () => messagesRef.current,
-      signal: abort.signal,
-      onLiveAttach: () => {
-        if (abort.signal.aborted) return;
-        attached = true;
-        // Ref first: the state flush lags, and the wake handler must not
-        // start a second resume in that window.
-        localAcpBusyRef.current = true;
-        setLocalAcpBusy(true);
-        isLoadingRef.current = true;
-      },
-      onPersisted: b => {
-        if (b) localAcpBindingRef.current = b;
-        setIsExistingChat(true);
-        void fetchSessionsRef.current?.();
-      },
-    })
-      .catch(() => undefined)
-      .finally(() => {
-        if (localAcpResumeAbortRef.current === abort) {
-          localAcpResumeAbortRef.current = null;
-        }
-        // Clear busy only if no in-page send took over after aborting us.
-        if (attached && !localAcpAbortRef.current) {
-          localAcpBusyRef.current = false;
-          setLocalAcpBusy(false);
-          isLoadingRef.current = false;
-          queueMicrotask(() => drainQueuedPromptAfterTurnRef.current?.());
-        }
-      });
-  };
-
-  // Drop a stale reattach when the user switches chats (the loader kicks off
-  // a fresh one for the next chat if its binding warrants it) or unmounts.
-  useEffect(() => {
-    return () => {
-      localAcpResumeAbortRef.current?.abort();
-      localAcpResumeAbortRef.current = null;
-    };
-  }, [chatId]);
-
-  // Tab wake / network back: if the resume (or its SSE) died while the
-  // machine slept, reattach to a still-running local ACP turn. No-ops fast
-  // when there is no binding or a turn is already streaming in-page.
-  useEffect(() => {
-    const onWake = () => {
-      if (document.visibilityState !== "visible") return;
-      requestLocalAcpResumeRef.current?.();
-    };
-    document.addEventListener("visibilitychange", onWake);
-    window.addEventListener("online", onWake);
-    return () => {
-      document.removeEventListener("visibilitychange", onWake);
-      window.removeEventListener("online", onWake);
-    };
-  }, []);
 
   // Bottom-pin / streaming-follow machinery (see useChatScroll).
   const { isAtBottom, setIsAtBottom, scrollerElRef, handleListHeightChanged } =
@@ -899,34 +532,29 @@ const Chat: React.FC<ChatProps> = ({
     connectionIconById,
   });
 
-  // Validate the restored per-tab chat once the workspace resolves: a chat
-  // persisted for a different workspace must not leak into this one.
-  const sessionRestoreCheckedRef = useRef(false);
-  useEffect(() => {
-    const workspaceId = currentWorkspace?.id;
-    if (!workspaceId || sessionRestoreCheckedRef.current) return;
-    sessionRestoreCheckedRef.current = true;
-    const stored = initialStoredSessionRef.current;
-    if (stored && stored.workspaceId !== workspaceId) {
-      setChatId(generateObjectId());
-      setMessages([]);
-      setIsExistingChat(false);
-    }
-  }, [currentWorkspace?.id, setMessages]);
-
-  // Keep the per-tab session pointer current so a refresh restores this chat.
-  useEffect(() => {
-    const workspaceId = currentWorkspace?.id;
-    if (!workspaceId) return;
-    writeStoredChatSession({ chatId, workspaceId });
-    // Register the active chat with the realtime store so chat.ui-intent
-    // events (e.g. the agent opening a console) only act on the chat this
-    // window is actually viewing.
-    useRealtimeStore.getState().setActiveChatId(chatId);
-    return () => {
-      useRealtimeStore.getState().setActiveChatId(null);
-    };
-  }, [chatId, currentWorkspace?.id]);
+  // Restore validation + session pointer, and new / open / delete chat.
+  const {
+    composerDraft,
+    createNewSession,
+    handleSelectSession,
+    handleDeleteSession,
+  } = useChatSessionActions({
+    workspaceId: currentWorkspace?.id,
+    chatId,
+    initialStoredSession,
+    setChatId,
+    setIsExistingChat,
+    resetTurnState: () => {
+      cancelActiveClientToolCalls("session-change");
+      manualStopRequestedRef.current = false;
+      clearQueuedPrompts();
+      localAcpBindingRef.current = null;
+    },
+    setMessages,
+    deleteSession,
+    onHistoryMenuClose: handleHistoryMenuClose,
+    onError: notifyActionError,
+  });
 
   // In-band reconciliation of server-executed tool results (console open /
   // revision sync + app/dbt refetch) — see useServerToolSync. The returned
@@ -959,225 +587,25 @@ const Chat: React.FC<ChatProps> = ({
     localAcpBusyRef,
   });
 
-  // Create new chat session - just generate a new ID locally (no API call needed)
-  const createNewSession = () => {
-    cancelActiveClientToolCalls("session-change");
-    manualStopRequestedRef.current = false;
-    clearQueuedPrompts();
-    localAcpBindingRef.current = null;
-    setChatId(generateObjectId());
-    setMessages([]);
-    setIsExistingChat(false);
-  };
+  const {
+    pendingInteractiveTool,
+    handleResolveInteractiveTool,
+    isPlanAwaitingFeedback,
+  } = usePendingInteractiveTool({
+    messages,
+    chatId,
+    addToolOutput,
+    pendingPlanToolCallIdRef,
+  });
 
-  // A screen asked for a new chat with a first message written
-  // ("Ask Mako to fix"): start one and put the message in the composer.
-  const chatDraft = useUIStore(s => s.chatDraft);
-  const [composerDraft, setComposerDraft] = useState<typeof chatDraft>(null);
-  const createNewSessionRef = useRef(createNewSession);
-  createNewSessionRef.current = createNewSession;
-  useEffect(() => {
-    if (!chatDraft) return;
-    createNewSessionRef.current();
-    setComposerDraft(chatDraft);
-    useUIStore.getState().clearChatDraft();
-  }, [chatDraft]);
-
-  const handleSelectSession = (id: string) => {
-    cancelActiveClientToolCalls("session-change");
-    manualStopRequestedRef.current = false;
-    clearQueuedPrompts();
-    localAcpBindingRef.current = null;
-    setChatId(id);
-    setMessages([]);
-    setIsExistingChat(true);
-    handleHistoryMenuClose();
-  };
-
-  const handleDeleteSession = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    // Deleting a chat is irreversible and the control sits one row away from
-    // "open this chat", so it must be confirmed.
-    const ok = await confirm({
-      title: "Delete this chat?",
-      body: "The conversation and its history are removed for good.",
-      confirmLabel: "Delete",
-      destructive: true,
-    });
-    if (!ok) return;
-    const deleted = await deleteSession(id);
-    if (!deleted) {
-      notifyActionError("Could not delete that chat. Please try again.");
-      return;
-    }
-    // If we deleted the current chat, start a new one.
-    if (chatId === id) {
-      createNewSession();
-    }
-  };
-
-  // Tool debug dialog handlers
-  const handleToolClick = useCallback((tool: ToolInvocationInfo) => {
-    setSelectedTool(tool);
-    setToolDialogOpen(true);
-  }, []);
-
-  // Local ACP HITL: mako-desktop ask_clarifying_questions / submit_plan park
-  // here while Claude's MCP call waits on the Desktop bridge.
-  const desktopHitlPending = useDesktopHitlStore(s => s.pending);
-
-  // Resolve a deferred interactive tool (clarifying questions / plan) with the
-  // user's answer. Stable identity so the docked card doesn't remount.
-  const handleResolveInteractiveTool = useCallback(
-    (args: {
-      tool: string;
-      toolCallId: string;
-      output: Record<string, unknown>;
-      viaAcpBridge?: boolean;
-    }) => {
-      if (args.viaAcpBridge) {
-        void completeDesktopHitlJob(args.toolCallId, args.output);
-        return;
-      }
-      void addToolOutput({
-        tool: args.tool,
-        toolCallId: args.toolCallId,
-        output: args.output,
-      });
-    },
-    [addToolOutput],
+  const handleConsoleTitleClick = useCallback(
+    (consoleId: string) =>
+      openConsoleFromChat(consoleId, {
+        isMobile: isMobileRef.current,
+        workspaceId: workspaceIdRef.current,
+      }),
+    [],
   );
-
-  // The deferred interactive tool call currently awaiting the user, if any.
-  // Rendered as a docked panel above the composer (Cursor-style) rather than
-  // inline in the chat; the inline summary only appears once resolved.
-  const pendingInteractiveTool = useMemo(() => {
-    if (desktopHitlPending) {
-      return {
-        toolName: desktopHitlPending.toolName,
-        toolCallId: desktopHitlPending.jobId,
-        input: desktopHitlPending.input,
-        streaming: false,
-        viaAcpBridge: true as const,
-      };
-    }
-    const last = messages.at(-1);
-    if (!last || last.role !== "assistant") return null;
-    for (const part of (last.parts ?? []) as Array<Record<string, unknown>>) {
-      const partType = part.type as string | undefined;
-      const dynamicName =
-        partType === "dynamic-tool" ? String(part.toolName || "") : "";
-      const isClarify =
-        partType === "tool-ask_clarifying_questions" ||
-        dynamicName === "ask_clarifying_questions";
-      const isPlan =
-        partType === "tool-submit_plan" || dynamicName === "submit_plan";
-      if (!isClarify && !isPlan) continue;
-      // submit_plan also surfaces while its input is still streaming so the
-      // plan tab and dock card can render the plan as the model writes it.
-      const isStreamingPlan = isPlan && part.state === "input-streaming";
-      if (part.state !== "input-available" && !isStreamingPlan) continue;
-      return {
-        toolName: (isPlan ? "submit_plan" : "ask_clarifying_questions") as
-          "ask_clarifying_questions" | "submit_plan",
-        toolCallId: (part.toolCallId as string) || "",
-        input: part.input,
-        streaming: isStreamingPlan,
-        viaAcpBridge: false as const,
-      };
-    }
-    return null;
-  }, [messages, desktopHitlPending]);
-
-  // While a submit_plan awaits review (input fully available, unresolved),
-  // the chat composer becomes the plan-iteration channel: a sent message is
-  // routed to the tool output as request_changes feedback instead of a normal
-  // user message. Ref (declared above useChat) keeps handleChatSubmit's
-  // identity stable (perf rules).
-  const isPlanAwaitingFeedback =
-    pendingInteractiveTool?.toolName === "submit_plan" &&
-    !pendingInteractiveTool.streaming;
-  pendingPlanToolCallIdRef.current = isPlanAwaitingFeedback
-    ? pendingInteractiveTool.toolCallId
-    : null;
-
-  // Pending submit_plan: register the plan + its resolver in planStore and
-  // auto-open the main-view plan tab (once per toolCallId, as soon as
-  // streaming starts). While the input streams, each delta only does a cheap
-  // store write (setStreamingInput) — no tab re-open, no resolver churn. The
-  // resolver re-registers whenever handleResolveInteractiveTool changes so it
-  // always settles the tool through the live useChat instance.
-  const autoOpenedPlanTabsRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    if (
-      !pendingInteractiveTool ||
-      pendingInteractiveTool.toolName !== "submit_plan"
-    ) {
-      return;
-    }
-    const { toolCallId, streaming } = pendingInteractiveTool;
-    if (!toolCallId) return;
-
-    const planStore = usePlanStore.getState();
-    if (streaming) {
-      planStore.setStreamingInput(
-        toolCallId,
-        chatId,
-        pendingInteractiveTool.input as PartialSubmitPlanInput | undefined,
-      );
-    } else {
-      const input = pendingInteractiveTool.input as SubmitPlanInput;
-      planStore.registerPlan(toolCallId, chatId, input);
-      planStore.registerResolver(toolCallId, output => {
-        handleResolveInteractiveTool({
-          tool: "submit_plan",
-          toolCallId,
-          output: output as unknown as Record<string, unknown>,
-          viaAcpBridge: pendingInteractiveTool.viaAcpBridge,
-        });
-      });
-    }
-
-    if (!autoOpenedPlanTabsRef.current.has(toolCallId)) {
-      autoOpenedPlanTabsRef.current.add(toolCallId);
-      const title = usePlanStore.getState().plans[toolCallId]?.draft.title;
-      focusPlanTab(toolCallId, chatId, title || "Plan");
-    } else {
-      // Keep the tab title in sync as the title streams in / finalizes
-      // (no-op unless it actually changed).
-      const title = usePlanStore.getState().plans[toolCallId]?.draft.title;
-      if (title) syncPlanTabTitle(toolCallId, chatId, title);
-    }
-  }, [pendingInteractiveTool, chatId, handleResolveInteractiveTool]);
-
-  const handleConsoleTitleClick = useCallback(async (consoleId: string) => {
-    const store = useConsoleStore.getState();
-    // On mobile the console lives behind the View tab — surface it so
-    // tapping a console reference in chat ("view SQL") shows the query.
-    if (isMobileRef.current) {
-      useUIStore.getState().setMobileConsolePane("query");
-      useUIStore.getState().setMobileTab("view");
-    }
-    const existingTab = store.tabs[consoleId];
-    if (existingTab) {
-      store.setActiveTab(consoleId);
-      return;
-    }
-
-    const workspaceId = workspaceIdRef.current;
-    if (!workspaceId) return;
-
-    try {
-      await store.openConsoleFromServer(workspaceId, consoleId);
-    } catch {
-      /* ignore focus failures */
-    }
-  }, []);
-
-  const handleCloseToolDialog = () => {
-    setToolDialogOpen(false);
-    setSelectedTool(null);
-  };
 
   // Resolve an MCP tool approval request. Stable identity: reads the live
   // useChat function via ref so ChatMessageRow memoization holds.
@@ -1236,52 +664,7 @@ const Chat: React.FC<ChatProps> = ({
     clearQueuedPrompts();
   }, [interruptActiveTurn, clearQueuedPrompts]);
 
-  // Copy chat history handler
-  const [copiedChat, setCopiedChat] = useState(false);
-  const handleCopyChatHistory = async () => {
-    const history = messages.map(msg => {
-      const parts = (msg.parts || []).map((part: Record<string, unknown>) => {
-        const partType = part.type as string;
-        if (partType === "text") {
-          return { type: "text", text: part.text };
-        }
-        if (partType === "reasoning") {
-          return {
-            type: "reasoning",
-            text: (part as Record<string, unknown>).text,
-          };
-        }
-        if (isToolPartType(partType)) {
-          return {
-            type: partType,
-            toolCallId: part.toolCallId,
-            toolName:
-              partType === "dynamic-tool"
-                ? part.toolName
-                : toolNameFromPartType(partType),
-            state: part.state,
-            input: part.input,
-            output: part.output,
-          };
-        }
-        return { type: partType, ...part };
-      });
-      return {
-        id: msg.id,
-        role: msg.role,
-        parts,
-      };
-    });
-    try {
-      await navigator.clipboard.writeText(safeStringify(history, 2));
-      setCopiedChat(true);
-      setTimeout(() => setCopiedChat(false), 2000);
-    } catch {
-      // Clipboard can be unavailable (insecure context, denied permission).
-      // Silently doing nothing looks like a broken button.
-      notifyActionError("Could not copy the chat history to the clipboard.");
-    }
-  };
+  const copyChat = useCopyChatHistory(notifyActionError);
 
   const isLocalAcp = isLocalAcpModelId(selectedModelId);
 
@@ -1296,109 +679,15 @@ const Chat: React.FC<ChatProps> = ({
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Header with history and new chat. On mobile this is Claude-style
-          floating chrome: a transparent strip with round buttons (hamburger
-          left, actions right). Desktop keeps the bordered title bar. */}
-      <Box
-        sx={{
-          px: 1,
-          py: isMobile ? 0.75 : 0.25,
-          minHeight: isMobile ? 52 : 37,
-          borderBottom: isMobile ? 0 : 1,
-          borderColor: "divider",
-        }}
-      >
-        <Box
-          sx={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            height: "100%",
-            minHeight: 32,
-          }}
-        >
-          <Box
-            sx={{
-              flexGrow: 1,
-              overflow: "hidden",
-              display: "flex",
-              alignItems: "center",
-              gap: 1,
-            }}
-          >
-            {/* On mobile the explorer is the Browse tab, so the header's
-                left side is empty: floating actions on the right only. */}
-            {!isMobile && (
-              <Typography
-                variant="h6"
-                sx={{
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                Chat
-              </Typography>
-            )}
-          </Box>
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              gap: isMobile ? 1 : 0.5,
-            }}
-          >
-            <Tooltip
-              title={copiedChat ? "Copied!" : "Copy chat history as JSON"}
-            >
-              <span>
-                <IconButton
-                  size={isMobile ? "medium" : "small"}
-                  aria-label="Copy chat history as JSON"
-                  onClick={handleCopyChatHistory}
-                  disabled={messages.length === 0}
-                  sx={isMobile ? MOBILE_FLOAT_BTN_SX : undefined}
-                >
-                  {copiedChat ? <Check size={20} /> : <Copy size={20} />}
-                </IconButton>
-              </span>
-            </Tooltip>
-            <Tooltip title="New chat">
-              <IconButton
-                size={isMobile ? "medium" : "small"}
-                aria-label="New chat"
-                onClick={createNewSession}
-                sx={isMobile ? MOBILE_FLOAT_BTN_SX : undefined}
-              >
-                <Plus size={20} />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="Chat history">
-              <IconButton
-                size={isMobile ? "medium" : "small"}
-                aria-label="Chat history"
-                onClick={handleHistoryMenuOpen}
-                sx={isMobile ? MOBILE_FLOAT_BTN_SX : undefined}
-              >
-                <History size={20} />
-              </IconButton>
-            </Tooltip>
-            {/* Desktop only: on mobile the chat is a tab, not a pane. The
-                sidebar shows an "Open Chat" button while the pane is closed. */}
-            {!isMobile && (
-              <Tooltip title="Close chat">
-                <IconButton
-                  size="small"
-                  aria-label="Close chat"
-                  onClick={() => useUIStore.getState().closeRightPane()}
-                >
-                  <X size={20} />
-                </IconButton>
-              </Tooltip>
-            )}
-          </Box>
-        </Box>
-      </Box>
+      <ChatHeader
+        isMobile={isMobile}
+        copied={copyChat.copied}
+        canCopy={messages.length > 0}
+        onCopy={() => void copyChat.copy(messages)}
+        onNewChat={createNewSession}
+        onOpenHistory={handleHistoryMenuOpen}
+        onClose={() => useUIStore.getState().closeRightPane()}
+      />
 
       {/* History Menu */}
       <ChatHistoryMenu
@@ -1412,57 +701,8 @@ const Chat: React.FC<ChatProps> = ({
         onDelete={handleDeleteSession}
       />
 
-      {/* Error display — billing errors get an upgrade prompt */}
       {error && (
-        <Box sx={{ p: 1 }}>
-          {(() => {
-            let displayMessage = error.message;
-            try {
-              const parsed = JSON.parse(error.message);
-              if (
-                parsed.code === "usage_limit_exceeded" ||
-                parsed.code === "model_not_available"
-              ) {
-                return (
-                  <UpgradePrompt
-                    errorCode={parsed.code}
-                    message={parsed.message}
-                    plan={parsed.plan}
-                    currentUsageUsd={parsed.currentUsageUsd}
-                    quotaUsd={parsed.quotaUsd}
-                  />
-                );
-              }
-              // Other structured server errors (model auth / rate limit /
-              // stream failures): show the human-readable message, not the
-              // raw JSON envelope.
-              if (
-                typeof parsed?.code === "string" &&
-                typeof parsed?.message === "string"
-              ) {
-                displayMessage = parsed.message;
-              }
-            } catch {
-              // not JSON, fall through to generic
-            }
-            return (
-              <Alert
-                severity="error"
-                onClose={clearError}
-                sx={{
-                  fontSize: "0.875rem",
-                  maxHeight: 200,
-                  overflowY: "auto",
-                  "& .MuiAlert-message": {
-                    overflow: "auto",
-                  },
-                }}
-              >
-                {displayMessage}
-              </Alert>
-            );
-          })()}
-        </Box>
+        <ChatErrorBanner message={error.message} onClose={clearError} />
       )}
 
       {/* Messages — Virtuoso owns the scroller; this Box is just a relative,
@@ -1528,7 +768,7 @@ const Chat: React.FC<ChatProps> = ({
                   isLastMessage={msgIdx === messages.length - 1}
                   isStreaming={status === "streaming" || localAcpBusy}
                   collapseEmptyReasoningWhileStreaming={localAcpBusy}
-                  onToolClick={handleToolClick}
+                  onToolClick={toolDialog.openTool}
                   onConsoleTitleClick={handleConsoleTitleClick}
                   onMcpApprovalResponse={handleMcpApprovalResponse}
                   connectionIconById={connectionIconById}
@@ -1542,85 +782,24 @@ const Chat: React.FC<ChatProps> = ({
         {/* An empty thread has nothing to scroll to — the button used to sit
             over the intro screen on a brand-new chat. */}
         {!isAtBottom && messages.length > 0 && (
-          <Tooltip title="Scroll to latest" placement="top">
-            <IconButton
-              aria-label="Scroll to latest message"
-              onClick={() =>
-                virtuosoRef.current?.scrollToIndex({
-                  index: messages.length - 1,
-                  align: "end",
-                  behavior: "smooth",
-                })
-              }
-              size="small"
-              sx={{
-                position: "absolute",
-                bottom: 8,
-                left: "50%",
-                transform: "translateX(-50%)",
-                zIndex: 1,
-                backgroundColor: "background.paper",
-                border: 1,
-                borderColor: "divider",
-                boxShadow: 2,
-                "&:hover": { backgroundColor: "action.hover" },
-                width: 32,
-                height: 32,
-              }}
-            >
-              <ChevronDown size={18} />
-            </IconButton>
-          </Tooltip>
+          <ScrollToLatestButton
+            onClick={() =>
+              virtuosoRef.current?.scrollToIndex({
+                index: messages.length - 1,
+                align: "end",
+                behavior: "smooth",
+              })
+            }
+          />
         )}
       </Box>
 
-      {/* Pending interactive tool (clarifying questions / plan approval) —
-          docked above the composer like the prompt queue. The chat itself
-          only shows a read-only summary once the user has responded. */}
       {pendingInteractiveTool && (
-        <ChatPanelErrorBoundary
-          panel="pending question or plan"
-          resetKey={pendingInteractiveTool.toolCallId}
-        >
-          <Box
-            sx={
-              pendingInteractiveTool.toolName === "ask_clarifying_questions"
-                ? { mx: 3.25, mt: 1, mb: -1 }
-                : { mx: 2, mt: 1, mb: -0.5 }
-            }
-            key={pendingInteractiveTool.toolCallId}
-          >
-            {pendingInteractiveTool.toolName === "ask_clarifying_questions" ? (
-              <ClarifyingQuestionsCard
-                docked
-                input={
-                  pendingInteractiveTool.input as AskClarifyingQuestionsInput
-                }
-                onResolve={output =>
-                  handleResolveInteractiveTool({
-                    tool: pendingInteractiveTool.toolName,
-                    toolCallId: pendingInteractiveTool.toolCallId,
-                    output: output as unknown as Record<string, unknown>,
-                    viaAcpBridge: pendingInteractiveTool.viaAcpBridge,
-                  })
-                }
-              />
-            ) : (
-              <PlanCard
-                toolCallId={pendingInteractiveTool.toolCallId}
-                chatId={chatId}
-                streaming={pendingInteractiveTool.streaming}
-                // While streaming the input is partial — the card reads live
-                // data from planStore instead (fed by setStreamingInput).
-                input={
-                  pendingInteractiveTool.streaming
-                    ? undefined
-                    : (pendingInteractiveTool.input as SubmitPlanInput)
-                }
-              />
-            )}
-          </Box>
-        </ChatPanelErrorBoundary>
+        <PendingInteractiveToolDock
+          pending={pendingInteractiveTool}
+          chatId={chatId}
+          onResolve={handleResolveInteractiveTool}
+        />
       )}
 
       <Collapse
@@ -1677,9 +856,9 @@ const Chat: React.FC<ChatProps> = ({
 
       {/* Tool Debug Dialog */}
       <ToolDetailsDialog
-        open={toolDialogOpen}
-        tool={selectedTool}
-        onClose={handleCloseToolDialog}
+        open={toolDialog.open}
+        tool={toolDialog.tool}
+        onClose={toolDialog.close}
         paletteMode={paletteMode}
       />
     </Box>
