@@ -211,6 +211,11 @@ export class BigQueryEngine implements QueryEngine {
       if (configuredLocation) startBody.location = configuredLocation;
       const labels = this.jobLabels(database, api_base_url, options);
       if (labels) startBody.labels = labels;
+      // An int64 travels as a string in the BigQuery REST API.
+      const bytesCap = options?.maximumBytesBilled;
+      if (typeof bytesCap === "number" && bytesCap > 0) {
+        startBody.maximumBytesBilled = String(Math.floor(bytesCap));
+      }
       checkAborted();
       let response = await client.post(
         `/projects/${project_id}/queries`,

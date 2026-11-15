@@ -100,6 +100,11 @@ export interface QueryExecuteOptions {
    */
   bigQueryJobMaxWaitMs?: number;
   /**
+   * BigQuery only: fail the job rather than bill more than this many bytes
+   * (`maximumBytesBilled`). Unset: no cap. Set for agent and MCP reads.
+   */
+  maximumBytesBilled?: number;
+  /**
    * The most rows to read, where the engine can stop early (MongoDB shell
    * queries read their cursor up to it). Engines that cannot ignore it; the
    * caller cuts their result (query-row-cap.ts).

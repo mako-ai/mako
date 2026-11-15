@@ -48,6 +48,23 @@ export const AGENT_DIRECT_QUERY_TIMEOUT_MS = envInt(
 );
 
 /**
+ * The most bytes one read-only BigQuery query from an agent tool or the MCP
+ * server (`sql_execute_query`, `query_metric`) may bill. BigQuery fails the
+ * job before it runs when it would bill more, at no charge. 1 TiB by
+ * default (6.25 USD at on-demand pricing): BigQuery checks the cap against
+ * its upper-bound estimate, which overstates clustered tables, so a tight
+ * default would refuse queries that bill little. `0` removes the cap.
+ * Consoles, apps, flows and dbt builds are not capped.
+ */
+export const AGENT_BIGQUERY_MAX_BYTES_BILLED = ((): number => {
+  const fallback = 1024 ** 4;
+  const raw = process.env.AGENT_BIGQUERY_MAX_BYTES_BILLED;
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+})();
+
+/**
  * Backoff schedule (ms) the agent uses when auto-polling `check_query_status`.
  * The last value repeats once the schedule is exhausted.
  */
