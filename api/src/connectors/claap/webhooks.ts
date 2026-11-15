@@ -9,6 +9,7 @@ import type {
   WebhookVerificationResult,
 } from "../base/BaseConnector";
 import { headerValue } from "../base/http-client";
+import { timingSafeEqualString } from "../base/webhook-signature";
 import { loggers } from "../../logging";
 import {
   extractClaapResult,
@@ -200,7 +201,8 @@ export async function provisionClaapWebhook(
 
 /**
  * Claap does not sign deliveries: it echoes the webhook's secret in
- * `X-Claap-Webhook-Secret`, compared with the flow's stored secret.
+ * `X-Claap-Webhook-Secret`, compared with the flow's stored secret in
+ * constant time.
  */
 export function verifyClaapWebhook(
   options: WebhookHandlerOptions,
@@ -220,7 +222,7 @@ export function verifyClaapWebhook(
     };
   }
 
-  if (webhookSecret !== secret) {
+  if (!timingSafeEqualString(secret, webhookSecret)) {
     return { valid: false, error: "Invalid webhook secret" };
   }
 
