@@ -74,8 +74,9 @@ export function abandonedSuffix(cancelled: boolean): string {
 const GIB = 1024 ** 3;
 
 function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * GIB)
+  if (bytes >= 1024 * GIB) {
     return `${Number((bytes / (1024 * GIB)).toFixed(1))} TiB`;
+  }
   if (bytes >= GIB) return `${Number((bytes / GIB).toFixed(1))} GiB`;
   return `${Number((bytes / 1024 ** 2).toFixed(1))} MiB`;
 }
