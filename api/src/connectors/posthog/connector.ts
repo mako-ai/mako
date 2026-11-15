@@ -11,6 +11,7 @@ import {
 import axios, { AxiosInstance } from "axios";
 import { resolvePosthogEntitySchema } from "./schema";
 import { withHttpRetry } from "../base/http-retry";
+import { filterRecordsSince } from "../base/incremental";
 import { loggers } from "../../logging";
 
 const logger = loggers.connector("posthog");
@@ -403,14 +404,7 @@ export class PosthogConnector extends BaseConnector {
       // filter on created_at only (misses later edits — declared as
       // created-anchor).
       if (since instanceof Date) {
-        const sinceMs = since.getTime();
-        records = records.filter(record => {
-          const created =
-            typeof record.created_at === "string"
-              ? new Date(record.created_at).getTime()
-              : NaN;
-          return Number.isFinite(created) ? created >= sinceMs : false;
-        });
+        records = filterRecordsSince(records, since, "created_at");
       }
 
       if (records.length > 0) {
