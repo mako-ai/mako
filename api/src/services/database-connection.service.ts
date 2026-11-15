@@ -1,7 +1,6 @@
 import { checkConnectionWrite, isWrite } from "../access/connection-writes";
 import { createClient } from "@clickhouse/client";
 import { MongoClient, Db, MongoClientOptions, ClientSession } from "mongodb";
-import * as mysql from "mysql2/promise";
 import { ConnectionPool, Request as MSSQLRequest } from "mssql";
 import { IDatabaseConnection } from "../database/workspace-schema";
 import axios, { AxiosInstance } from "axios";
@@ -22,13 +21,13 @@ import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-po
 import { CloudflareD1DatabaseDriver } from "../databases/drivers/cloudflare-d1/driver";
 import { CloudflareKVDatabaseDriver } from "../databases/drivers/cloudflare-kv/driver";
 import { mapPostgresOidToType } from "../databases/drivers/postgresql/pg-type-utils";
+import { mysqlEngine } from "../databases/drivers/mysql/engine";
 import {
   cursorReadable,
   postgresEngine,
 } from "../databases/drivers/postgresql/engine";
 import { loggers } from "../logging";
 import { createBigQueryPollBudget } from "./bigquery-poll-budget";
-import { sshTunnelManager, type SshTunnelConfig } from "./ssh-tunnel.service";
 import { databaseRegistry } from "../databases/registry";
 import { isLocalBigQueryEmulator } from "../utils/bigquery-emulator";
 import { bigQueryJobLabels } from "./bigquery-labels";
@@ -182,18 +181,6 @@ export class DatabaseConnectionService {
     }
   > = new Map();
 
-  // Track running MySQL queries for cancellation (KILL QUERY <threadId>)
-  private runningMySQLQueries: Map<
-    string,
-    {
-      database: IDatabaseConnection;
-      targetDatabase?: string;
-      poolKey: string;
-      threadId: number;
-      cancelled?: boolean;
-    }
-  > = new Map();
-
   // Track running MongoDB queries for cancellation
   private runningMongoQueries: Map<
     string,
@@ -294,7 +281,7 @@ export class DatabaseConnectionService {
     this.cleanupInterval = setInterval(() => {
       void this.cleanupIdleMongoConnections();
       void postgresEngine.sweepIdleConnections(this.userDatabaseMaxIdleTime);
-      void this.cleanupIdleMySQLPools();
+      void mysqlEngine.sweepIdleConnections(this.userDatabaseMaxIdleTime);
       void this.cloudSqlDriver
         .cleanupIdleConnections(this.userDatabaseMaxIdleTime)
         .catch(error =>
@@ -326,7 +313,7 @@ export class DatabaseConnectionService {
         case "redshift":
           return await postgresEngine.testConnection(database);
         case "mysql":
-          return await this.testMySQLConnection(database);
+          return await mysqlEngine.testConnection(database);
         case "mssql":
           return await this.testMSSQLConnection(database);
         case "bigquery":
@@ -407,7 +394,7 @@ export class DatabaseConnectionService {
             options,
           );
         case "mysql":
-          return await this.executeMySQLQuery(database, query, options);
+          return await mysqlEngine.executeQuery(database, query, options);
         case "mssql":
           return await this.executeMSSQLQuery(database, query, options);
         case "bigquery":
@@ -877,7 +864,7 @@ export class DatabaseConnectionService {
 
     // For MySQL, use dedicated pool management
     if (database.type === "mysql") {
-      return this.getMySQLPool(database);
+      return mysqlEngine.getPool(database);
     }
 
     // For other database types, use basic caching
@@ -931,7 +918,7 @@ export class DatabaseConnectionService {
     const steps: Array<[string, () => Promise<void> | void]> = [
       ["mongodb", () => this.closeMongoConnection("datasource", databaseId)],
       ["postgresql", () => postgresEngine.closeConnection(databaseId)],
-      ["mysql", () => this.closeMySQLPool(databaseId)],
+      ["mysql", () => mysqlEngine.closeConnection(databaseId)],
       ["cached", () => this.closeCachedConnection(databaseId)],
     ];
     for (const driver of databaseRegistry.getAllDrivers()) {
@@ -997,7 +984,7 @@ export class DatabaseConnectionService {
     await postgresEngine.closeAllConnections();
 
     // Close MySQL pools
-    await this.closeAllMySQLPools();
+    await mysqlEngine.closeAllConnections();
 
     // Close other connections
     await Promise.all(
@@ -2466,8 +2453,8 @@ export class DatabaseConnectionService {
     }
 
     // Try MySQL
-    if (this.runningMySQLQueries.has(executionId)) {
-      return this.cancelMySQLQuery(executionId);
+    if (mysqlEngine.runningQueries.has(executionId)) {
+      return mysqlEngine.cancelQuery(executionId);
     }
 
     // Delegate to the drivers this service runs queries through that track
@@ -3450,558 +3437,6 @@ export class DatabaseConnectionService {
 
   // PostgreSQL specific methods
 
-  // MySQL connection pools with lastUsed tracking (keyed by databaseId:databaseName)
-  private mysqlPools: Map<string, { pool: mysql.Pool; lastUsed: Date }> =
-    new Map();
-
-  // MySQL specific methods
-
-  /**
-   * Build an SshTunnelConfig from the saved connection, or null when SSH is disabled.
-   * Throws on invalid/incomplete configuration so callers get a clear error.
-   */
-  private buildSshTunnelConfig(
-    database: IDatabaseConnection,
-    tunnelKey: string,
-  ): SshTunnelConfig | null {
-    const tunnel = database.connection.sshTunnel;
-    if (!tunnel?.enabled) return null;
-
-    if (!tunnel.host) {
-      throw new Error("SSH tunnel host is required");
-    }
-    if (!tunnel.username) {
-      throw new Error("SSH tunnel username is required");
-    }
-    const authMethod = tunnel.authMethod || "password";
-    if (authMethod === "password" && !tunnel.password) {
-      throw new Error(
-        "SSH tunnel password is required when using password auth",
-      );
-    }
-    if (authMethod === "privateKey" && !tunnel.privateKey) {
-      throw new Error("SSH private key is required when using key auth");
-    }
-
-    // Strip port suffix from host fields if the user accidentally entered host:port
-    const parseHost = (
-      raw: string,
-    ): { host: string; port: number | undefined } => {
-      // Bracketed IPv6: [::1]:3306
-      const bracketMatch = raw.match(/^\[([^\]]+)\](?::(\d+))?$/);
-      if (bracketMatch) {
-        return {
-          host: bracketMatch[1],
-          port: bracketMatch[2] ? Number(bracketMatch[2]) : undefined,
-        };
-      }
-      // Non-bracketed host:port — use lastIndexOf so IPv4 like 127.0.0.1:22 works
-      const lastColon = raw.lastIndexOf(":");
-      if (lastColon > 0) {
-        const maybePart = raw.slice(lastColon + 1);
-        if (/^\d+$/.test(maybePart)) {
-          return { host: raw.slice(0, lastColon), port: Number(maybePart) };
-        }
-      }
-      return { host: raw, port: undefined };
-    };
-
-    const rawRemote = parseHost(database.connection.host || "127.0.0.1");
-    const remoteHost = rawRemote.host;
-    const remotePort = database.connection.port || rawRemote.port || 3306;
-
-    const rawSsh = parseHost(tunnel.host);
-    const sshHost = rawSsh.host;
-    const sshPort = tunnel.port ?? rawSsh.port ?? 22;
-
-    return {
-      key: tunnelKey,
-      sshHost,
-      sshPort,
-      sshUsername: tunnel.username,
-      authMethod,
-      sshPassword: tunnel.password,
-      privateKey: tunnel.privateKey,
-      passphrase: tunnel.passphrase,
-      remoteHost,
-      remotePort,
-    };
-  }
-
-  private buildMySQLConfig(
-    database: IDatabaseConnection,
-    targetDatabase?: string,
-    tunnelEndpoint?: { host: string; port: number },
-  ) {
-    const conn = database.connection;
-    const baseConfig = {
-      connectTimeout: this.mysqlConnectionTimeoutMs,
-    };
-
-    if (conn.connectionString) {
-      try {
-        let urlString = conn.connectionString;
-        if (!urlString.startsWith("mysql://")) {
-          urlString = `mysql://${urlString}`;
-        }
-        const url = new URL(urlString);
-        if (targetDatabase) {
-          url.pathname = `/${targetDatabase}`;
-        }
-
-        const sslParam = url.searchParams.get("ssl");
-        const sslMode = url.searchParams.get("sslmode");
-        const ssl =
-          conn.ssl ||
-          sslParam === "true" ||
-          sslParam === "1" ||
-          sslMode === "require" ||
-          sslMode === "verify-ca" ||
-          sslMode === "verify-full" ||
-          sslMode === "prefer";
-
-        return {
-          host: tunnelEndpoint?.host ?? (url.hostname || undefined),
-          port:
-            tunnelEndpoint?.port ??
-            (url.port ? Number.parseInt(url.port, 10) : 3306),
-          database: url.pathname.slice(1)
-            ? decodeURIComponent(url.pathname.slice(1))
-            : undefined,
-          user: url.username ? decodeURIComponent(url.username) : undefined,
-          password: url.password ? decodeURIComponent(url.password) : undefined,
-          ssl: ssl ? { rejectUnauthorized: false } : undefined,
-          ...baseConfig,
-        };
-      } catch (error) {
-        logger.warn("Failed to parse MySQL connection string", { error });
-      }
-    }
-
-    let host = conn.host;
-    let port = conn.port || 3306;
-    if (host && host.includes(":")) {
-      const idx = host.lastIndexOf(":");
-      const maybePart = host.slice(idx + 1);
-      if (/^\d+$/.test(maybePart)) {
-        port = conn.port || Number(maybePart);
-        host = host.slice(0, idx);
-      }
-    }
-
-    return {
-      host: tunnelEndpoint?.host ?? host,
-      port: tunnelEndpoint?.port ?? port,
-      database: targetDatabase || conn.database,
-      user: conn.username,
-      password: conn.password,
-      ssl: conn.ssl ? { rejectUnauthorized: false } : undefined,
-      ...baseConfig,
-    };
-  }
-
-  private async getMySQLPool(
-    database: IDatabaseConnection,
-    targetDatabase?: string,
-  ): Promise<mysql.Pool> {
-    const dbName = targetDatabase || database.connection.database || "";
-    const key = `${database._id.toString()}:${dbName}`;
-
-    const existing = this.mysqlPools.get(key);
-    if (existing) {
-      existing.lastUsed = new Date();
-      return existing.pool;
-    }
-
-    const tunnelCfg = this.buildSshTunnelConfig(database, key);
-    const tunnelEndpoint = tunnelCfg
-      ? await sshTunnelManager.openTunnel(tunnelCfg)
-      : undefined;
-
-    const config = this.buildMySQLConfig(
-      database,
-      targetDatabase,
-      tunnelEndpoint,
-    );
-    const pool = mysql.createPool({
-      ...config,
-      waitForConnections: true,
-      connectionLimit: 2,
-      maxIdle: 2,
-      idleTimeout: 10000,
-      enableKeepAlive: true,
-      keepAliveInitialDelay: 30000,
-    });
-
-    pool.on("connection", connection => {
-      connection.on("error", err => {
-        logger.error("MySQL pool connection error", {
-          key,
-          error: err instanceof Error ? err.message : err,
-        });
-        const entry = this.mysqlPools.get(key);
-        if (entry?.pool === pool) {
-          this.mysqlPools.delete(key);
-        }
-        pool.end().catch(endErr => {
-          logger.error("Error closing MySQL pool after error", {
-            key,
-            error: endErr,
-          });
-        });
-        sshTunnelManager.closeTunnel(key).catch(() => {});
-      });
-    });
-
-    this.mysqlPools.set(key, { pool, lastUsed: new Date() });
-    logger.debug("Created MySQL pool", { key });
-    return pool;
-  }
-
-  private async closeMySQLPool(databaseId: string): Promise<void> {
-    const poolsToClose: Array<{ key: string; pool: mysql.Pool }> = [];
-    for (const [key, { pool }] of this.mysqlPools.entries()) {
-      if (key.startsWith(`${databaseId}:`)) {
-        poolsToClose.push({ key, pool });
-      }
-    }
-
-    for (const { key } of poolsToClose) {
-      this.mysqlPools.delete(key);
-    }
-
-    for (const { key, pool } of poolsToClose) {
-      try {
-        await pool.end();
-        logger.debug("Closed MySQL pool", { key });
-      } catch (error) {
-        logger.error("Error closing MySQL pool", { key, error });
-      }
-      await sshTunnelManager.closeTunnel(key).catch(err => {
-        logger.error("Error closing SSH tunnel for MySQL pool", {
-          key,
-          error: err,
-        });
-      });
-    }
-  }
-
-  private async closeAllMySQLPools(): Promise<void> {
-    const poolsToClose = Array.from(this.mysqlPools.entries());
-    this.mysqlPools.clear();
-
-    const promises = poolsToClose.map(async ([key, { pool }]) => {
-      try {
-        await pool.end();
-        logger.debug("Closed MySQL pool", { key });
-      } catch (error) {
-        logger.error("Error closing MySQL pool", { key, error });
-      }
-      await sshTunnelManager.closeTunnel(key).catch(() => {});
-    });
-    await Promise.all(promises);
-  }
-
-  private async cleanupIdleMySQLPools(): Promise<void> {
-    const now = new Date();
-    const toRemove: string[] = [];
-
-    for (const [key, { lastUsed }] of this.mysqlPools.entries()) {
-      const idleTime = now.getTime() - lastUsed.getTime();
-      if (idleTime > this.userDatabaseMaxIdleTime) {
-        toRemove.push(key);
-      }
-    }
-
-    for (const key of toRemove) {
-      const entry = this.mysqlPools.get(key);
-      if (entry) {
-        const idleTime = now.getTime() - entry.lastUsed.getTime();
-        if (idleTime <= this.userDatabaseMaxIdleTime) {
-          continue;
-        }
-        this.mysqlPools.delete(key);
-        try {
-          await entry.pool.end();
-          logger.info("Closed idle MySQL pool", { key });
-        } catch (error) {
-          logger.error("Error closing idle MySQL pool", { key, error });
-        }
-        await sshTunnelManager.closeTunnel(key).catch(() => {});
-      }
-    }
-  }
-
-  private async testMySQLConnection(
-    database: IDatabaseConnection,
-  ): Promise<{ success: boolean; error?: string }> {
-    const ephemeralKey = `test:${Date.now()}`;
-    let connection: mysql.Connection | null = null;
-    try {
-      const tunnelCfg = this.buildSshTunnelConfig(database, ephemeralKey);
-      const tunnelEndpoint = tunnelCfg
-        ? await sshTunnelManager.openTunnel(tunnelCfg)
-        : undefined;
-
-      const config = this.buildMySQLConfig(database, undefined, tunnelEndpoint);
-      connection = await mysql.createConnection(config);
-      await connection.ping();
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "MySQL connection failed",
-      };
-    } finally {
-      if (connection) {
-        await connection.end();
-      }
-      await sshTunnelManager.closeTunnel(ephemeralKey).catch(() => {});
-    }
-  }
-
-  private normalizeMySQLValue(value: unknown): unknown {
-    if (Buffer.isBuffer(value)) {
-      const text = value.toString("utf8");
-      const trimmed = text.trim();
-      if (
-        (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
-        (trimmed.startsWith("[") && trimmed.endsWith("]"))
-      ) {
-        try {
-          return JSON.parse(trimmed);
-        } catch {
-          return text;
-        }
-      }
-      return text;
-    }
-
-    if (Array.isArray(value)) {
-      return value.map(item => this.normalizeMySQLValue(item));
-    }
-
-    // Handle Date objects before generic object check - mysql2 returns
-    // DATETIME, TIMESTAMP, and DATE columns as JavaScript Date objects.
-    // Date passes typeof === "object" but Object.entries() returns [] since
-    // Date has no enumerable own properties, which would convert dates to {}.
-    if (value instanceof Date) {
-      return value.toISOString();
-    }
-
-    if (value && typeof value === "object") {
-      const record = value as Record<string, unknown>;
-      const normalized: Record<string, unknown> = {};
-      for (const [key, entry] of Object.entries(record)) {
-        normalized[key] = this.normalizeMySQLValue(entry);
-      }
-      return normalized;
-    }
-
-    return value;
-  }
-
-  private async executeMySQLQuery(
-    database: IDatabaseConnection,
-    query: string,
-    options?: QueryExecuteOptions,
-  ): Promise<QueryResult> {
-    const signal = options?.signal;
-    const targetDatabase =
-      options?.databaseName || database.connection.database;
-
-    try {
-      if (signal?.aborted) {
-        return { success: false, error: "Query cancelled" };
-      }
-
-      const pool = await this.getMySQLPool(database, targetDatabase);
-      const connection = await withRetry(async () => pool.getConnection(), {
-        maxRetries: this.mysqlMaxRetries,
-        baseDelayMs: this.mysqlRetryBaseDelayMs,
-        signal,
-      });
-
-      let readOnlyTransactionStarted = false;
-      // Cancellable by executionId (cancelQuery) and by the signal alone.
-      const untrack = this.trackMySQLQuery(
-        database,
-        targetDatabase,
-        connection,
-        options?.executionId,
-        signal,
-      );
-      try {
-        if (signal?.aborted) {
-          return { success: false, error: "Query cancelled" };
-        }
-
-        if (options?.readOnly || options?.readOnlyTransaction) {
-          await connection.query("START TRANSACTION READ ONLY");
-          readOnlyTransactionStarted = true;
-        }
-        const [rows, fields] = await connection.execute(query);
-        if (readOnlyTransactionStarted) {
-          await connection.commit();
-          readOnlyTransactionStarted = false;
-        }
-        const normalizedRows = Array.isArray(rows)
-          ? rows.map(row => this.normalizeMySQLValue(row))
-          : rows;
-        const normalizedFields = Array.isArray(fields)
-          ? fields.map(field => {
-              const fieldPacket =
-                field && typeof field === "object"
-                  ? (field as mysql.FieldPacket)
-                  : undefined;
-              return {
-                name: fieldPacket?.name,
-                type: fieldPacket?.type ?? fieldPacket?.columnType,
-                columnType: fieldPacket?.columnType,
-                columnLength: fieldPacket?.columnLength,
-                decimals: fieldPacket?.decimals,
-                flags: fieldPacket?.flags,
-                characterSet: fieldPacket?.characterSet,
-                encoding: fieldPacket?.encoding,
-              };
-            })
-          : fields;
-        return {
-          success: true,
-          data: normalizedRows,
-          fields: normalizedFields,
-        };
-      } finally {
-        if (readOnlyTransactionStarted) {
-          await connection.rollback().catch(() => undefined);
-        }
-        // A connection a KILL was aimed at is retired, not pooled: a KILL
-        // still in flight must not land on the next query it runs.
-        if (untrack()) connection.destroy();
-        else connection.release();
-      }
-    } catch (error) {
-      if (
-        signal?.aborted ||
-        (error as { code?: string } | null)?.code === "ER_QUERY_INTERRUPTED"
-      ) {
-        return { success: false, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "MySQL query failed",
-      };
-    }
-  }
-
-  /**
-   * Register a pooled MySQL connection's statement for cancellation by
-   * `executionId` and/or `signal`. Returns the function to call once the
-   * statement settles (before releasing the connection); it returns
-   * whether a cancel was sent, in which case the connection is destroyed.
-   */
-  private trackMySQLQuery(
-    database: IDatabaseConnection,
-    targetDatabase: string | undefined,
-    connection: { threadId: number | null },
-    executionId?: string,
-    signal?: AbortSignal,
-  ): () => boolean {
-    const threadId = connection.threadId;
-    if ((!executionId && !signal) || typeof threadId !== "number") {
-      return () => false;
-    }
-    const poolKey = `${database._id.toString()}:${targetDatabase || ""}`;
-    const entry: {
-      database: IDatabaseConnection;
-      targetDatabase?: string;
-      poolKey: string;
-      threadId: number;
-      cancelled?: boolean;
-    } = { database, targetDatabase, poolKey, threadId };
-    if (executionId) this.runningMySQLQueries.set(executionId, entry);
-    const onAbort = () => {
-      if (entry.cancelled) return;
-      entry.cancelled = true;
-      void this.killMySQLQuery(entry).then(result => {
-        if (!result.success) {
-          logger.warn("MySQL cancel on abort failed", {
-            threadId,
-            error: result.error,
-          });
-        }
-      });
-    };
-    if (signal) {
-      signal.addEventListener("abort", onAbort, { once: true });
-      if (signal.aborted) onAbort();
-    }
-    return () => {
-      signal?.removeEventListener("abort", onAbort);
-      if (executionId && this.runningMySQLQueries.get(executionId) === entry) {
-        this.runningMySQLQueries.delete(executionId);
-      }
-      return entry.cancelled === true;
-    };
-  }
-
-  private async cancelMySQLQuery(
-    executionId: string,
-  ): Promise<{ success: boolean; error?: string }> {
-    const running = this.runningMySQLQueries.get(executionId);
-    if (!running) {
-      return { success: false, error: "Query not found or already completed" };
-    }
-    // Marked first: the query's release then retires its connection rather
-    // than pool one a KILL is aimed at (see trackMySQLQuery).
-    running.cancelled = true;
-    const result = await this.killMySQLQuery(running);
-    if (result.success) this.runningMySQLQueries.delete(executionId);
-    return result;
-  }
-
-  /**
-   * `KILL QUERY <threadId>` from a separate, unpooled connection: the pool
-   * (connectionLimit 2) may be fully occupied by the very query being
-   * cancelled. KILL QUERY stops the statement and leaves the connection
-   * usable. Through the pool's own SSH tunnel when it has one.
-   */
-  private async killMySQLQuery(running: {
-    database: IDatabaseConnection;
-    targetDatabase?: string;
-    poolKey: string;
-    threadId: number;
-  }): Promise<{ success: boolean; error?: string }> {
-    let killer: mysql.Connection | undefined;
-    try {
-      const tunnelCfg = this.buildSshTunnelConfig(
-        running.database,
-        running.poolKey,
-      );
-      const tunnelEndpoint = tunnelCfg
-        ? await sshTunnelManager.openTunnel(tunnelCfg)
-        : undefined;
-      killer = await mysql.createConnection(
-        this.buildMySQLConfig(
-          running.database,
-          running.targetDatabase,
-          tunnelEndpoint,
-        ),
-      );
-      await killer.query(`KILL QUERY ${Math.trunc(running.threadId)}`);
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to cancel query",
-      };
-    } finally {
-      await killer?.end().catch(() => undefined);
-    }
-  }
-
   // MSSQL specific methods
   private async testMSSQLConnection(
     database: IDatabaseConnection,
@@ -4147,11 +3582,6 @@ export class DatabaseConnectionService {
   private readonly clickHouseRequestTimeout = 120_000; // 120 seconds for cold starts
   private readonly clickHouseMaxRetries = 3;
   private readonly clickHouseRetryBaseDelayMs = 1000; // 1 second base delay
-
-  // MySQL client configuration constants
-  private readonly mysqlConnectionTimeoutMs = 30_000; // 30 seconds connection timeout
-  private readonly mysqlMaxRetries = 3;
-  private readonly mysqlRetryBaseDelayMs = 1000; // 1 second base delay
 
   /**
    * Build ClickHouse client config from database connection

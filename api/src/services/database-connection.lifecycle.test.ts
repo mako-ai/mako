@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { DatabaseConnectionService } from "./database-connection.service";
 import { databaseRegistry } from "../databases/registry";
 import type { DatabaseDriver } from "../databases/driver";
+import { mysqlEngine } from "../databases/drivers/mysql/engine";
 import { postgresEngine } from "../databases/drivers/postgresql/engine";
 
 const ID = "6577f0f0f0f0f0f0f0f0f0f0";
@@ -66,10 +67,7 @@ async function testInvalidateConnection() {
   pgPools.set(`${ID}:app`, closable("pg:app"));
   pgPools.set(`${ID}:other`, closable("pg:other"));
   pgPools.set(`${OTHER}:app`, closable("pg:keep"));
-  svc.mysqlPools.set(`${ID}:app`, {
-    pool: closable("mysql:app"),
-    lastUsed: new Date(),
-  });
+  (mysqlEngine.pools as any).set(`${ID}:app`, closable("mysql:app"));
   svc.mongoConnections.set(`datasource:${ID}`, {
     client: closable("mongo"),
     db: {},
@@ -102,7 +100,7 @@ async function testInvalidateConnection() {
     ["mongo", "mssql", "mysql:app", "pg:app", "pg:other"].sort(),
   );
   assert.deepEqual(pgPools.keys(), [`${OTHER}:app`]);
-  assert.equal(svc.mysqlPools.size, 0);
+  assert.equal(mysqlEngine.pools.size, 0);
   assert.equal(svc.mongoConnections.size, 0);
   assert.equal(svc.connections.size, 0);
   assert.ok(driverCalls.includes(`lifecycle-failing:${ID}`));
@@ -387,25 +385,34 @@ async function testMySQLCancel() {
     };
   };
   let connection = makeConnection();
-  svc.getMySQLPool = async () => ({ getConnection: async () => connection });
+  const restorePool = stub(mysqlEngine, "getPool", async () => ({
+    getConnection: async () => connection,
+  }));
   const kills: number[] = [];
-  svc.killMySQLQuery = async (running: { threadId: number }) => {
-    kills.push(running.threadId);
-    const error = Object.assign(new Error("Query execution was interrupted"), {
-      code: "ER_QUERY_INTERRUPTED",
-    });
-    connection.kill.reject(error);
-    return { success: true };
-  };
+  const restoreKill = stub(
+    mysqlEngine,
+    "killQuery",
+    async (running: { threadId: number }) => {
+      kills.push(running.threadId);
+      const error = Object.assign(
+        new Error("Query execution was interrupted"),
+        {
+          code: "ER_QUERY_INTERRUPTED",
+        },
+      );
+      connection.kill.reject(error);
+      return { success: true };
+    },
+  );
 
   // By executionId (agent Stop / detached hard cap → cancelQuery).
-  const running = svc.executeMySQLQuery(conn("mysql"), "SELECT SLEEP(100)", {
+  const running = mysqlEngine.executeQuery(conn("mysql"), "SELECT SLEEP(100)", {
     executionId: "exec-mysql",
   });
   await tick();
   await tick();
   assert.equal(
-    svc.runningMySQLQueries.get("exec-mysql")?.threadId,
+    mysqlEngine.runningQueries.get("exec-mysql")?.threadId,
     77,
     "a running MySQL query is registered",
   );
@@ -413,16 +420,20 @@ async function testMySQLCancel() {
   assert.deepEqual(cancel, { success: true });
   assert.deepEqual(await running, { success: false, error: "Query cancelled" });
   assert.deepEqual(kills, [77]);
-  assert.equal(svc.runningMySQLQueries.size, 0);
+  assert.equal(mysqlEngine.runningQueries.size, 0);
   assert.equal(connection.destroyed, 1, "a killed connection is retired");
   assert.equal(connection.released, 0);
 
   // By signal alone.
   connection = makeConnection();
   const controller = new AbortController();
-  const bySignal = svc.executeMySQLQuery(conn("mysql"), "SELECT SLEEP(100)", {
-    signal: controller.signal,
-  });
+  const bySignal = mysqlEngine.executeQuery(
+    conn("mysql"),
+    "SELECT SLEEP(100)",
+    {
+      signal: controller.signal,
+    },
+  );
   await tick();
   await tick();
   controller.abort();
@@ -435,12 +446,14 @@ async function testMySQLCancel() {
   // A query that finishes normally releases its connection to the pool.
   connection = makeConnection();
   connection.execute = async () => [[{ a: 1 }], []] as never;
-  const ok = await svc.executeMySQLQuery(conn("mysql"), "SELECT 1", {
+  const ok = await mysqlEngine.executeQuery(conn("mysql"), "SELECT 1", {
     executionId: "exec-ok",
   });
   assert.equal(ok.success, true);
   assert.equal(connection.released, 1);
-  assert.equal(svc.runningMySQLQueries.size, 0);
+  assert.equal(mysqlEngine.runningQueries.size, 0);
+  restorePool();
+  restoreKill();
   await svc.closeAllConnections();
 }
 
