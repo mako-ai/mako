@@ -30,11 +30,7 @@ import {
 import { resolveCloseEntitySchema } from "./schema";
 import axios, { AxiosInstance } from "axios";
 import { loggers } from "../../logging";
-import {
-  createCloseClient,
-  CLOSE_DEFAULT_BASE_URL,
-  type CloseLogLevel,
-} from "./client";
+import { createCloseClient, type CloseLogLevel } from "./client";
 import {
   CLOSE_SIMPLE_ENTITY_ENDPOINTS,
   closeAvailableEntities,
@@ -152,13 +148,6 @@ export class CloseConnector extends BaseConnector {
           type: "password",
           required: true,
           helperText: "Close API Key (generate in Close settings)",
-        },
-        {
-          name: "api_base_url",
-          label: "API Base URL",
-          type: "string",
-          required: false,
-          default: CLOSE_DEFAULT_BASE_URL,
         },
       ],
     };
