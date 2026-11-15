@@ -18,9 +18,10 @@ import { tool, type ToolSet } from "ai";
 import { Types } from "mongoose";
 import { z } from "zod";
 import { canSeeIndexedApp } from "../../apps/app-authorization";
+import { listArchivedApps } from "../../apps/app-archive.service";
 import { loadAppsIndex } from "../../apps/app-index.service";
 import { freshenForServe } from "../../apps/cloud-repo.service";
-import { assertSafeRelPath } from "../../apps/git";
+import { assertSafeRelPath, runGit } from "../../apps/git";
 import {
   DEFAULT_BRANCH,
   globTree,
@@ -50,17 +51,13 @@ export const REPO_GLOB_MAX_PATHS = 200;
 /** A file larger than this is refused by repo_read_file: grep it instead. */
 export const REPO_READ_MAX_BYTES = 2 * 1024 * 1024;
 
-interface RepoView {
+export interface RepoView {
   repoDir: string;
   /** The ref every read uses. */
   ref: string;
   /** The branch name, for the result. */
   branch: string;
   isVisible: (path: string) => boolean;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -72,6 +69,12 @@ export function repoPathVisibility(input: {
   hiddenAppRoots: readonly string[];
   /** App roots the actor may see. */
   visibleAppRoots: readonly string[];
+  /**
+   * Archived app folders (`archive/...`) the actor may see, as
+   * listArchivedApps decides from the original location. Everything else
+   * under `archive/` is hidden.
+   */
+  visibleArchivedRoots?: readonly string[];
   /** The actor's own `users/<handle>` segment, when they have one. */
   ownHandle?: string;
   /** No user (a workspace API key without one): everything is visible. */
@@ -81,6 +84,12 @@ export function repoPathVisibility(input: {
     path === root || path.startsWith(`${root}/`);
   return path => {
     if (input.everything) return true;
+    // A quoted path (git's escaping of non-ASCII names) matches no rule
+    // below, so it would pass as visible: refuse it outright.
+    if (path.startsWith('"')) return false;
+    if (path === "archive" || path.startsWith("archive/")) {
+      return (input.visibleArchivedRoots ?? []).some(root => under(path, root));
+    }
     if (input.hiddenAppRoots.some(root => under(path, root))) return false;
     if (path === "users" || path.startsWith("users/")) {
       const handle = path.split("/")[1];
@@ -117,10 +126,13 @@ async function openRepoView(
     const member = await workspaceService.getMember(workspaceId, userId);
     const role = member?.role;
     if (!role) return { error: "You are not a member of this workspace." };
-    const [snapshot, docs, directory] = await Promise.all([
+    const [snapshot, docs, directory, archived] = await Promise.all([
       loadAppsIndex(workspaceId),
       AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) }),
       loadOwnerDirectory(workspaceId, { forUserId: userId }),
+      // The Archived chip's rule: canSeeIndexedApp over the original
+      // location. A failure hides the whole archive.
+      listArchivedApps(workspaceId, userId, role).catch(() => []),
     ]);
     const stateById = new Map(docs.map(doc => [doc._id.toString(), doc]));
     const hiddenAppRoots: string[] = [];
@@ -137,6 +149,7 @@ async function openRepoView(
     isVisible = repoPathVisibility({
       hiddenAppRoots,
       visibleAppRoots,
+      visibleArchivedRoots: archived.map(app => app.path),
       ownHandle: directory.handleOf(userId) ?? undefined,
     });
   }
@@ -176,6 +189,170 @@ export function safePathspec(pathspec: string | undefined): string | undefined {
   return assertSafeRelPath(trimmed);
 }
 
+const SEARCH_FAILED =
+  "The search failed or was too broad: narrow the pattern or pass a pathspec.";
+
+type ToolResult = { success: false; error: string } | Record<string, unknown>;
+
+/** repo_glob over an opened view. */
+export async function globRepo(
+  view: RepoView,
+  pattern: string,
+): Promise<ToolResult> {
+  // Over-fetch: hidden paths are dropped after the match.
+  const fetched = REPO_GLOB_MAX_PATHS * 5;
+  const matched = await globTree(view.repoDir, view.ref, pattern, fetched);
+  const visible = matched.filter(view.isVisible);
+  const paths = visible.slice(0, REPO_GLOB_MAX_PATHS);
+  return {
+    success: true,
+    branch: view.branch,
+    count: paths.length,
+    paths,
+    ...(visible.length > paths.length || matched.length >= fetched
+      ? {
+          truncated: true,
+          note: `Stopped at ${REPO_GLOB_MAX_PATHS} paths. Narrow the pattern.`,
+        }
+      : {}),
+  };
+}
+
+/** repo_grep over an opened view. Never returns raw git output. */
+export async function grepRepo(
+  view: RepoView,
+  input: { pattern: string; ignoreCase?: boolean; pathspec?: string },
+  /** Tests force an overflow with a tiny buffer. */
+  options: { maxBufferBytes?: number } = {},
+): Promise<ToolResult> {
+  let pathspec: string | undefined;
+  try {
+    pathspec = safePathspec(input.pathspec);
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Invalid pathspec",
+    };
+  }
+  // A hidden folder is refused before git runs, so nothing of it is read.
+  if (pathspec && !view.isVisible(pathspec)) {
+    return {
+      success: false,
+      error: `${pathspec} not found on ${view.branch}.`,
+    };
+  }
+  const fetched = GREP_MAX_MATCHES * 4;
+  let found;
+  try {
+    found = await grepTree(view.repoDir, view.ref, input.pattern, {
+      ignoreCase: input.ignoreCase,
+      pathspec,
+      // Over-fetch: hidden paths are dropped after the match.
+      maxMatches: fetched,
+      maxBufferBytes: options.maxBufferBytes,
+    });
+  } catch {
+    // The git error carries the first lines of output, unfiltered.
+    return { success: false, error: SEARCH_FAILED };
+  }
+  const visible = found.filter(m => view.isVisible(m.path));
+  const truncated =
+    visible.length > GREP_MAX_MATCHES || found.length >= fetched;
+  const matches = visible
+    .slice(0, GREP_MAX_MATCHES)
+    .map(m => ({ ...m, text: capLine(m.text, GREP_MAX_LINE_CHARS) }));
+  return {
+    success: true,
+    branch: view.branch,
+    count: matches.length,
+    matches,
+    ...(truncated
+      ? {
+          truncated: true,
+          note: `Stopped at ${matches.length} visible matches. Narrow the pattern or pass a pathspec.`,
+        }
+      : {}),
+  };
+}
+
+/** repo_read_file over an opened view. Files only: a folder reads as missing. */
+export async function readRepoFile(
+  view: RepoView,
+  input: { path: string; offset?: number; limit?: number },
+): Promise<ToolResult> {
+  let relPath: string;
+  try {
+    relPath = assertSafeRelPath(input.path);
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Invalid path",
+    };
+  }
+  const missing = {
+    success: false as const,
+    error: `${relPath} not found on ${view.branch}. Use repo_glob to find the path.`,
+  };
+  // A hidden path reads as missing, so a private app never leaks.
+  if (!view.isVisible(relPath)) return missing;
+  // Only a blob: `git show` on a folder lists its children, hidden apps
+  // included.
+  try {
+    const { stdout } = await runGit([
+      "-C",
+      view.repoDir,
+      "cat-file",
+      "-t",
+      `${view.ref}:${relPath}`,
+    ]);
+    if (stdout.trim() !== "blob") return missing;
+  } catch {
+    return missing;
+  }
+  let blob;
+  try {
+    blob = await readBlob(view.repoDir, view.ref, relPath);
+  } catch {
+    return missing;
+  }
+  if (blob.isBinary) {
+    return {
+      success: false,
+      error: `${relPath} is binary (${blob.size} bytes)`,
+    };
+  }
+  if (blob.size > REPO_READ_MAX_BYTES) {
+    return {
+      success: false,
+      error: `${relPath} is ${blob.size} bytes, over the ${REPO_READ_MAX_BYTES}-byte read cap. Use repo_grep with pathspec "${relPath}".`,
+    };
+  }
+  const page = pageLines(blob.contents, {
+    offset: input.offset,
+    limit: input.limit,
+    maxLineChars: READ_MAX_LINE_CHARS,
+  });
+  const contents = page.lines
+    .map((l, i) => `${String(page.startLine + i).padStart(5)}\u2502${l}`)
+    .join("\n");
+  return {
+    success: true,
+    branch: view.branch,
+    path: relPath,
+    contents,
+    ...(page.nextOffset !== undefined || page.startLine > 1
+      ? {
+          startLine: page.startLine,
+          endLine: page.endLine,
+          totalLines: page.totalLines,
+          ...(page.nextOffset !== undefined
+            ? { nextOffset: page.nextOffset }
+            : {}),
+        }
+      : {}),
+  };
+}
+
 export function createRepoTools(options: {
   workspaceId: string;
   userId?: string;
@@ -186,7 +363,7 @@ export function createRepoTools(options: {
   return {
     repo_glob: tool({
       description:
-        "Find files anywhere in the workspace repo by glob (read-only): dbt models and YAML (`dbt/models/**/*.sql`), the ontology registry (`dbt/ontology/*.yml`), skills, flows, workflows, any app's bindings (`apps/**/bindings/*.sql`). Reads your session branch, else main.",
+        "Find files anywhere in the workspace repo by glob (read-only): dbt models and YAML (`dbt/models/**/*.sql`), the ontology registry (`dbt/ontology/*.yml`), skills, flows, workflows, any app's bindings, personal apps included (`**/apps/**/bindings/*.sql`). Reads your session branch, else main.",
       inputSchema: z.object({
         pattern: z
           .string()
@@ -197,31 +374,14 @@ export function createRepoTools(options: {
         try {
           const opened = await view();
           if ("error" in opened) return { success: false, error: opened.error };
-          // Over-fetch: hidden paths are dropped after the match.
-          const matched = await globTree(
-            opened.repoDir,
-            opened.ref,
-            pattern,
-            REPO_GLOB_MAX_PATHS * 5,
-          );
-          const visible = matched.filter(opened.isVisible);
-          const paths = visible.slice(0, REPO_GLOB_MAX_PATHS);
-          return {
-            success: true,
-            branch: opened.branch,
-            count: paths.length,
-            paths,
-            ...(visible.length > paths.length ||
-            matched.length >= REPO_GLOB_MAX_PATHS * 5
-              ? {
-                  truncated: true,
-                  note: `Stopped at ${REPO_GLOB_MAX_PATHS} paths. Narrow the pattern.`,
-                }
-              : {}),
-          };
+          return await globRepo(opened, pattern);
         } catch (error) {
           logger.warn("repo_glob failed", { workspaceId, error });
-          return { success: false, error: errorMessage(error) };
+          return {
+            success: false,
+            error:
+              "Could not list the repo right now: try again or narrow the pattern.",
+          };
         }
       },
     }),
@@ -237,37 +397,14 @@ export function createRepoTools(options: {
           .optional()
           .describe("Repo-relative folder or file to search, e.g. dbt/models"),
       }),
-      execute: async ({ pattern, ignoreCase, pathspec }) => {
+      execute: async input => {
         try {
           const opened = await view();
           if ("error" in opened) return { success: false, error: opened.error };
-          const found = await grepTree(opened.repoDir, opened.ref, pattern, {
-            ignoreCase,
-            pathspec: safePathspec(pathspec),
-            // Over-fetch: hidden paths are dropped after the match, and one
-            // extra visible match says whether the cap cut anything.
-            maxMatches: GREP_MAX_MATCHES * 4,
-          });
-          const visible = found.filter(m => opened.isVisible(m.path));
-          const truncated = visible.length > GREP_MAX_MATCHES;
-          const matches = visible
-            .slice(0, GREP_MAX_MATCHES)
-            .map(m => ({ ...m, text: capLine(m.text, GREP_MAX_LINE_CHARS) }));
-          return {
-            success: true,
-            branch: opened.branch,
-            count: matches.length,
-            matches,
-            ...(truncated
-              ? {
-                  truncated: true,
-                  note: `Stopped at ${GREP_MAX_MATCHES} matches. Narrow the pattern or pass a pathspec.`,
-                }
-              : {}),
-          };
+          return await grepRepo(opened, input);
         } catch (error) {
           logger.warn("repo_grep failed", { workspaceId, error });
-          return { success: false, error: errorMessage(error) };
+          return { success: false, error: SEARCH_FAILED };
         }
       },
     }),
@@ -294,66 +431,17 @@ export function createRepoTools(options: {
             `Maximum lines to return (default ${READ_DEFAULT_LIMIT_LINES})`,
           ),
       }),
-      execute: async ({ path: givenPath, offset, limit }) => {
+      execute: async input => {
         try {
-          const relPath = assertSafeRelPath(givenPath);
           const opened = await view();
           if ("error" in opened) return { success: false, error: opened.error };
-          // A hidden path reads as missing, so a private app never leaks.
-          if (!opened.isVisible(relPath)) {
-            return {
-              success: false,
-              error: `${relPath} not found on ${opened.branch}.`,
-            };
-          }
-          let blob;
-          try {
-            blob = await readBlob(opened.repoDir, opened.ref, relPath);
-          } catch {
-            return {
-              success: false,
-              error: `${relPath} not found on ${opened.branch}. Use repo_glob to find the path.`,
-            };
-          }
-          if (blob.isBinary) {
-            return {
-              success: false,
-              error: `${relPath} is binary (${blob.size} bytes)`,
-            };
-          }
-          if (blob.size > REPO_READ_MAX_BYTES) {
-            return {
-              success: false,
-              error: `${relPath} is ${blob.size} bytes, over the ${REPO_READ_MAX_BYTES}-byte read cap. Use repo_grep with pathspec "${relPath}".`,
-            };
-          }
-          const page = pageLines(blob.contents, {
-            offset,
-            limit,
-            maxLineChars: READ_MAX_LINE_CHARS,
-          });
-          const contents = page.lines
-            .map((l, i) => `${String(page.startLine + i).padStart(5)}│${l}`)
-            .join("\n");
-          return {
-            success: true,
-            branch: opened.branch,
-            path: relPath,
-            contents,
-            ...(page.nextOffset !== undefined || page.startLine > 1
-              ? {
-                  startLine: page.startLine,
-                  endLine: page.endLine,
-                  totalLines: page.totalLines,
-                  ...(page.nextOffset !== undefined
-                    ? { nextOffset: page.nextOffset }
-                    : {}),
-                }
-              : {}),
-          };
+          return await readRepoFile(opened, input);
         } catch (error) {
           logger.warn("repo_read_file failed", { workspaceId, error });
-          return { success: false, error: errorMessage(error) };
+          return {
+            success: false,
+            error: "Could not read the file right now: try again.",
+          };
         }
       },
     }),
