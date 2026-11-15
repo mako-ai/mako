@@ -256,7 +256,7 @@ export const createDbtMetricTools = (
 
   return {
     list_metrics: tool({
-      description: `The metrics the dbt project defines (MetricFlow semantic layer): business numbers such as revenue or churn rate, each defined once. Without \`metrics\`: all of them, or those matching \`query\`. With \`metrics\`: their definition and the dimensions and entities they can be grouped by together. Call it BEFORE writing SQL for a business number: when a metric exists, use query_metric (or compile_metric for the SQL) instead of aggregating by hand. Metadata only.`,
+      description: `The metrics the dbt project defines (MetricFlow semantic layer): business numbers such as revenue or churn rate, each defined once. Without \`metrics\`: all of them, or those matching \`query\`. With \`metrics\`: their definition and the dimensions and entities they can be grouped by together. Call it BEFORE writing SQL for a business number: when a metric exists, do not aggregate by hand: use query_metric for the rows or compile_metric for the SQL, whichever tool you have. Metadata only.`,
       inputSchema: listMetricsSchema,
       execute: async ({ query, metrics, projectId, environment }) => {
         try {
@@ -322,7 +322,7 @@ export const createDbtMetricTools = (
                     warning:
                       "The project declares no time spine, so cumulative metrics and joins to the time spine do not compile. The dbt skill's semantic-layer reference shows how to add one.",
                   }),
-              next: "query_metric({ metrics, groupBy, where }) returns the rows; compile_metric returns the SQL for a binding or a console.",
+              next: "query_metric({ metrics, groupBy, where }) returns the rows; compile_metric returns the SQL for a binding or a console. Use the one you have.",
             };
           }
 
@@ -376,7 +376,7 @@ export const createDbtMetricTools = (
     }),
 
     compile_metric: tool({
-      description: `The SQL MetricFlow writes for a metric query, in the warehouse's dialect, with the connectionId to run it on. Nothing runs. Use it when the SQL is the deliverable: an app binding, a console, a dbt model. Do NOT edit its aggregation or joins: a wrong number is fixed in the metric's definition. For rows, call query_metric.`,
+      description: `The SQL MetricFlow writes for a metric query, in the warehouse's dialect, with the connectionId to run it on. Nothing runs. Use it when the SQL is the deliverable: an app binding, a console, a dbt model. Do NOT edit its aggregation or joins: a wrong number is fixed in the metric's definition. For rows, call query_metric, or run this SQL with sql_execute_query.`,
       inputSchema: compileMetricSchema,
       execute: async input => {
         try {

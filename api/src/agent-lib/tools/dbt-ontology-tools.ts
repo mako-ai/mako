@@ -122,7 +122,7 @@ function metricFor(projects: SemanticProject[], phrases: readonly string[]) {
 }
 
 const METRIC_NEXT =
-  "A match with `metric` is defined in the semantic layer: compute it with query_metric({ metrics: [metric.name] }) (list_metrics({ metrics }) names its group-bys) instead of aggregating by hand.";
+  "A match with `metric` is defined in the semantic layer. Do not aggregate it by hand: get the rows with query_metric({ metrics: [metric.name] }), or its SQL (for a binding) with compile_metric and the same input, whichever tool you have. list_metrics({ metrics }) names its group-bys.";
 
 function registryNote(registry: OntologyRegistry) {
   const message = registryStatusMessage(registry);
@@ -709,7 +709,7 @@ export const createDbtOntologyTools = (
     }),
 
     lookup_term: tool({
-      description: `Resolve a business term or entity ("MRR", "paying customers", "account") from the workspace's ontology registry (${ONTOLOGY_REGISTRY_PATH}), by name, label or synonym. Returns the definition, owner, status, the canonical model and column, the grain, known variants and forbidden patterns; for an entity also its primary key, its identities in other systems and its relationships to other entities. A term the dbt project also defines as a metric carries \`metric\`: compute it with query_metric. Call this BEFORE writing SQL that computes a business metric: when a metric exists, query it; when a canonical model exists, read it. With no match it returns the closest registry names and points to find_models.`,
+      description: `Resolve a business term or entity ("MRR", "paying customers", "account") from the workspace's ontology registry (${ONTOLOGY_REGISTRY_PATH}), by name, label or synonym. Returns the definition, owner, status, the canonical model and column, the grain, known variants and forbidden patterns; for an entity also its primary key, its identities in other systems and its relationships to other entities. A term the dbt project also defines as a metric carries \`metric\`: get its rows with query_metric or its SQL with compile_metric, whichever tool you have. Call this BEFORE writing SQL that computes a business metric: when a metric exists, use it; when a canonical model exists, read it. With no match it returns the closest registry names and points to find_models.`,
       inputSchema: lookupTermSchema,
       execute: async ({ query }) => {
         try {
@@ -768,7 +768,7 @@ export const createDbtOntologyTools = (
             ...(metric ? { metric } : {}),
             closest,
             suggestion: metric
-              ? `No registry term or entity matches "${query}", but the semantic layer defines the metric "${metric.name}": compute it with query_metric({ metrics: ["${metric.name}"] }).`
+              ? `No registry term or entity matches "${query}", but the semantic layer defines the metric "${metric.name}": get its rows with query_metric({ metrics: ["${metric.name}"] }), or its SQL with compile_metric and the same input, whichever tool you have.`
               : `No registry term or entity matches "${query}". Call find_models({ query: "${query}" }) to search models by name, description and columns, or list_metrics({ query: "${query}" }) to search the semantic layer.`,
             ...registryNote(registry),
           };
