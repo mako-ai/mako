@@ -1,5 +1,13 @@
-import { promises as fs } from "fs";
-import { BigQuery, type JobLoadMetadata } from "@google-cloud/bigquery";
+/**
+ * BigQuery CDC destination adapter. The class orchestrates; the work lives
+ * in sibling modules:
+ *
+ * - bigquery-sql.ts    pure SQL: type contract, MERGE, partition pruning, DDL
+ * - bigquery-schema.ts schema cache, INFORMATION_SCHEMA discovery, evolution
+ * - bigquery-load.ts   Parquet staging loads, expiry, drop
+ * - bigquery-target.ts resolved client type, quota retry, logger
+ */
+import { BigQuery } from "@google-cloud/bigquery";
 import {
   isLocalBigQueryEmulator,
   bigQueryEmulatorEndpoint,
@@ -10,14 +18,7 @@ import {
   type IFlow,
   type IDatabaseConnection,
 } from "../../database/workspace-schema";
-import { databaseConnectionService } from "../../services/database-connection.service";
-import { bigQueryJobLabels } from "../../services/bigquery-labels";
-import { canLabelLoadJobs, enableLoadJobLabels } from "./bigquery-load-labels";
-import { loggers } from "../../logging";
-import {
-  buildParquetFromBatches,
-  type FieldMeta,
-} from "../../utils/streaming-parquet-builder";
+import { enableLoadJobLabels } from "./bigquery-load-labels";
 import {
   normalizePayloadKeys,
   resolveSourceTimestamp,
@@ -26,471 +27,53 @@ import {
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
-import { createHash } from "crypto";
-import type {
-  ConnectorEntitySchema,
-  ConnectorLogicalType,
-} from "../../connectors/base/BaseConnector";
+import type { ConnectorEntitySchema } from "../../connectors/base/BaseConnector";
+import {
+  MERGE_PRUNE_MAX_PARTITIONS,
+  bigQueryStagingTableName,
+  buildBigQueryRepartitionStatements,
+  buildLivePartitionFilter,
+  buildLivePartitionProbeQuery,
+  buildMergeStatement,
+  escId,
+  sqlString,
+} from "./bigquery-sql";
+import {
+  addMissingLiveColumns,
+  createLiveTableFromStaging,
+  discoverMergeSchemas,
+  evolveSchemaIfNeeded,
+  getSchemaCacheKey,
+  hashEntitySchema,
+  invalidateCachedSchema,
+  setCachedSchema,
+} from "./bigquery-schema";
+import {
+  buildCdcParquet,
+  dropStagingTable,
+  expireStagingTable,
+  loadParquetToStaging,
+} from "./bigquery-load";
+import {
+  bqLog as log,
+  fullTableName,
+  retryOnQuota,
+  runBigQuery,
+  type BigQueryTarget,
+} from "./bigquery-target";
 
-// ---------------------------------------------------------------------------
-// Schema cache — avoids redundant INFORMATION_SCHEMA queries across runs.
-//
-// Key: "projectId.dataset.tableName", Value: column→type map + timestamp.
-// TTL default 5 min (same as scheduler interval). Entries auto-evict on read.
-// ---------------------------------------------------------------------------
-
-const SCHEMA_CACHE_TTL_MS = 5 * 60 * 1000;
-/** A per-batch staging table outlives its batch only if the worker died. */
-const STAGING_TTL_MS = 24 * 60 * 60 * 1000;
-
-interface SchemaCacheEntry {
-  columns: Map<string, string>;
-  fetchedAt: number;
-  schemaHash?: string;
-}
-
-const schemaCache = new Map<string, SchemaCacheEntry>();
-
-function getSchemaCacheKey(
-  projectId: string,
-  dataset: string,
-  table: string,
-): string {
-  return `${projectId}.${dataset}.${table}`;
-}
-
-function getCachedSchema(key: string): SchemaCacheEntry | undefined {
-  const entry = schemaCache.get(key);
-  if (!entry) return undefined;
-  if (Date.now() - entry.fetchedAt > SCHEMA_CACHE_TTL_MS) {
-    schemaCache.delete(key);
-    return undefined;
-  }
-  return entry;
-}
-
-function setCachedSchema(
-  key: string,
-  columns: Map<string, string>,
-  schemaHash?: string,
-): void {
-  schemaCache.set(key, { columns, fetchedAt: Date.now(), schemaHash });
-}
-
-function invalidateCachedSchema(key: string): void {
-  schemaCache.delete(key);
-}
-
-function hashEntitySchema(schema: ConnectorEntitySchema): string {
-  const sorted = Object.entries(schema.fields)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, f]) => `${name}:${f.type}`)
-    .join("|");
-  return createHash("md5").update(sorted).digest("hex");
-}
-
-// ---------------------------------------------------------------------------
-// Retry helper for BigQuery quota / rate-limit errors (HTTP 403 rateLimitExceeded,
-// 429 quotaExceeded, or error messages mentioning "quota").
-// ---------------------------------------------------------------------------
-
-function isQuotaError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const msg = err.message.toLowerCase();
-  return (
-    msg.includes("quota") ||
-    msg.includes("rate limit") ||
-    msg.includes("ratelimitexceeded") ||
-    msg.includes("exceeded") ||
-    /exceeded.*quota|quota.*exceeded/i.test(err.message)
-  );
-}
-
-async function retryOnQuota<T>(
-  fn: () => Promise<T>,
-  opts: { label: string; maxRetries?: number } = { label: "BigQuery op" },
-): Promise<T> {
-  const maxRetries = opts.maxRetries ?? 4;
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (attempt >= maxRetries || !isQuotaError(err)) throw err;
-      const backoffMs = Math.min(30_000, 5_000 * 2 ** attempt);
-      log.warn(`${opts.label}: quota error, retrying in ${backoffMs}ms`, {
-        attempt: attempt + 1,
-        maxRetries,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      await new Promise(r => setTimeout(r, backoffMs));
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Schema contract: one source of truth for BigQuery column types.
-// Staging is always VARCHAR (from Parquet). Live table uses these types.
-// INSERT SELECT casts VARCHAR staging → typed live columns.
-// ---------------------------------------------------------------------------
-
-export function mapLogicalTypeToBigQuery(
-  logicalType: ConnectorLogicalType,
-): string {
-  switch (logicalType) {
-    case "string":
-      return "STRING";
-    case "number":
-      return "FLOAT64";
-    case "integer":
-      return "INT64";
-    case "boolean":
-      return "BOOL";
-    case "timestamp":
-      return "TIMESTAMP";
-    case "json":
-      return "JSON";
-    default:
-      return "STRING";
-  }
-}
-
-const SYSTEM_COLUMN_TYPES: Record<string, string> = {
-  _syncedAt: "TIMESTAMP",
-  _mako_ingest_seq: "INT64",
-  _mako_source_ts: "TIMESTAMP",
-  _mako_deleted_at: "TIMESTAMP",
-  is_deleted: "BOOL",
-  deleted_at: "TIMESTAMP",
-};
-
-function resolveTargetBqType(
-  column: string,
-  entitySchema: ConnectorEntitySchema | undefined,
-  liveType: string | undefined,
-): string {
-  // After evolveSchemaIfNeeded(), liveType already reflects the corrected type.
-  if (liveType) return liveType;
-  const schemaField = entitySchema?.fields[column];
-  if (schemaField) return mapLogicalTypeToBigQuery(schemaField.type);
-  if (SYSTEM_COLUMN_TYPES[column]) return SYSTEM_COLUMN_TYPES[column];
-  return "STRING";
-}
-
-function buildCastExpression(colRef: string, targetType: string): string {
-  switch (targetType.toUpperCase()) {
-    case "JSON":
-      return `SAFE.PARSE_JSON(${colRef})`;
-    case "TIMESTAMP":
-      return `SAFE_CAST(${colRef} AS TIMESTAMP)`;
-    case "BOOL":
-      return `SAFE_CAST(${colRef} AS BOOL)`;
-    case "INT64":
-      return `SAFE_CAST(${colRef} AS INT64)`;
-    case "FLOAT64":
-      return `SAFE_CAST(${colRef} AS FLOAT64)`;
-    case "STRING":
-      return `SAFE_CAST(${colRef} AS STRING)`;
-    default:
-      return colRef;
-  }
-}
-
-function buildColumnSelectExpr(
-  column: string,
-  escId: (id: string) => string,
-  entitySchema: ConnectorEntitySchema | undefined,
-  liveType: string | undefined,
-): string {
-  const colRef = escId(column);
-  const targetType = resolveTargetBqType(column, entitySchema, liveType);
-  return `${buildCastExpression(colRef, targetType)} AS ${colRef}`;
-}
-
-const log = loggers.sync("cdc.adapter.bigquery");
-
-const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
-
-// ---------------------------------------------------------------------------
-// Pure MERGE statement builder.
-// ---------------------------------------------------------------------------
-
-export interface BuildMergeStatementParams {
-  fullLive: string;
-  fullStaging: string;
-  /** All columns on the live table. */
-  columns: string[];
-  keyColumns: string[];
-  /** Columns physically present in the staging table. */
-  stagingCols: Set<string>;
-  /** Live-table column types from INFORMATION_SCHEMA. */
-  liveTypes: Map<string, string>;
-  entitySchema?: ConnectorEntitySchema;
-  /**
-   * Extra predicate on `__live` ANDed into the ON clause, built by
-   * {@link buildLivePartitionFilter}. It must hold for every live row whose
-   * key is in staging, or the MERGE would insert duplicates.
-   */
-  livePartitionFilter?: string;
-}
-
-/**
- * Build the BigQuery CDC MERGE statement that materializes a deduplicated
- * staging table into the live table. Exported for contract testing — the exact
- * SQL shape (QUALIFY dedup, ordering guards, typed NULL inserts) is
- * correctness-critical for the CDC pipeline.
- */
-export function buildMergeStatement(p: BuildMergeStatementParams): string {
-  const {
-    fullLive,
-    fullStaging,
-    columns,
-    keyColumns,
-    stagingCols,
-    liveTypes,
-    entitySchema,
-    livePartitionFilter,
-  } = p;
-
-  // Only consider staging cols that also exist on live (an ALTER TABLE add may
-  // have been skipped earlier). Referencing a non-live col in UPDATE SET would
-  // make the MERGE fail with "unrecognized name".
-  const liveColsSet = new Set(columns);
-  const effectiveStagingCols = [...stagingCols].filter(c => liveColsSet.has(c));
-  const effectiveStagingSet = new Set(effectiveStagingCols);
-
-  const dedupKey = keyColumns.map(escId).join(", ");
-  const hasStagingSourceTs = effectiveStagingSet.has("_mako_source_ts");
-  const hasStagingIngestSeq = effectiveStagingSet.has("_mako_ingest_seq");
-  const orderExpr = hasStagingSourceTs
-    ? `${escId("_mako_source_ts")} DESC`
-    : hasStagingIngestSeq
-      ? `${escId("_mako_ingest_seq")} DESC`
-      : "1";
-
-  // USING subquery: SELECT staging columns (cast to live types) with dedup by
-  // key keeping the newest record per ordering expression.
-  const stagingSelectCols = effectiveStagingCols
-    .map(c => buildColumnSelectExpr(c, escId, entitySchema, liveTypes.get(c)))
-    .join(", ");
-
-  const usingSubquery = `(SELECT ${stagingSelectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${orderExpr}) = 1)`;
-
-  // ON clause
-  const keyJoin =
-    keyColumns
-      .map(k => `__live.${escId(k)} = __stg.${escId(k)}`)
-      .join(" AND ") +
-    (livePartitionFilter ? ` AND (${livePartitionFilter})` : "");
-
-  // WHEN MATCHED — only UPDATE columns present in staging (excluding keys).
-  // Columns that exist on live but not in staging are left untouched.
-  const updateColumns = effectiveStagingCols.filter(
-    c => !keyColumns.includes(c),
-  );
-
-  // Ordering guard: don't let stale events overwrite newer live data.
-  const hasSourceOrdering =
-    hasStagingSourceTs && !keyColumns.includes("_mako_source_ts");
-  const hasIngestOrdering =
-    hasStagingIngestSeq && !keyColumns.includes("_mako_ingest_seq");
-  const matchedGuard = hasSourceOrdering
-    ? ` AND COALESCE(__stg.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= COALESCE(__live.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC'))`
-    : hasIngestOrdering
-      ? ` AND COALESCE(__stg.${escId("_mako_ingest_seq")}, -1) >= COALESCE(__live.${escId("_mako_ingest_seq")}, -1)`
-      : "";
-
-  const matchedClause =
-    updateColumns.length > 0
-      ? `WHEN MATCHED${matchedGuard} THEN UPDATE SET ${updateColumns.map(c => `${escId(c)} = __stg.${escId(c)}`).join(", ")}`
-      : "";
-
-  // WHEN NOT MATCHED — INSERT all live columns; columns missing from staging
-  // get CAST(NULL AS T) (nothing to preserve for brand-new rows).
-  const insertColList = columns.map(escId).join(", ");
-  const insertValues = columns
-    .map(c => {
-      if (!effectiveStagingSet.has(c)) {
-        const targetType = resolveTargetBqType(
-          c,
-          entitySchema,
-          liveTypes.get(c),
-        );
-        return `CAST(NULL AS ${targetType})`;
-      }
-      return `__stg.${escId(c)}`;
-    })
-    .join(", ");
-
-  return [
-    `MERGE INTO ${fullLive} __live`,
-    `USING ${usingSubquery} __stg`,
-    `ON ${keyJoin}`,
-    matchedClause,
-    `WHEN NOT MATCHED THEN INSERT (${insertColList}) VALUES (${insertValues})`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// MERGE partition pruning.
-//
-// `MERGE ... ON __live.id = __stg.id` reads every partition of the live table:
-// BigQuery prunes only on constant predicates, never through the join. On the
-// Close activity tables (thousands of daily partitions) that cost ~200k
-// slot-ms per merge for batches of ~10-40 rows. The fix is two queries:
-//   1. a narrow probe (key + partition column only) that lists the partitions
-//      holding live rows whose key is in staging;
-//   2. the MERGE with those partitions as literal ranges in the ON clause.
-// Correct by construction: every live row that can match a staged key lies in
-// a probed partition, so MATCHED/NOT MATCHED decisions are unchanged. Staging
-// rows whose key is absent from live still fall to NOT MATCHED and insert.
-// ---------------------------------------------------------------------------
-
-/** Above this many distinct live partitions the MERGE runs unfiltered. */
-export const MERGE_PRUNE_MAX_PARTITIONS = 400;
-
-type PartitionGranularity = "hour" | "day" | "month" | "year";
-
-function normalizeGranularity(g: string | undefined): PartitionGranularity {
-  const v = (g || "day").toLowerCase();
-  return v === "hour" || v === "month" || v === "year" ? v : "day";
-}
-
-/**
- * Probe query listing the distinct partition buckets (UTC, `%FT%T`) of live
- * rows whose key appears in staging. Staging keys are cast exactly as the
- * MERGE casts them, so the probe joins the same pairs the MERGE would.
- */
-export function buildLivePartitionProbeQuery(p: {
-  fullLive: string;
-  fullStaging: string;
-  keyColumns: string[];
-  partitionField: string;
-  granularity?: string;
-  liveTypes: Map<string, string>;
-  entitySchema?: ConnectorEntitySchema;
-  limit: number;
-}): string {
-  const gran = normalizeGranularity(p.granularity).toUpperCase();
-  const stgKeys = p.keyColumns
-    .map(k =>
-      buildColumnSelectExpr(k, escId, p.entitySchema, p.liveTypes.get(k)),
-    )
-    .join(", ");
-  const join = p.keyColumns
-    .map(k => `__live.${escId(k)} = __stg.${escId(k)}`)
-    .join(" AND ");
-  return (
-    `SELECT DISTINCT FORMAT_TIMESTAMP('%FT%T', TIMESTAMP_TRUNC(__live.${escId(p.partitionField)}, ${gran}), 'UTC') AS p ` +
-    `FROM ${p.fullLive} __live JOIN (SELECT DISTINCT ${stgKeys} FROM ${p.fullStaging}) __stg ON ${join} ` +
-    `LIMIT ${p.limit + 1}`
-  );
-}
-
-function addGranularity(d: Date, g: PartitionGranularity): Date {
-  const n = new Date(d.getTime());
-  if (g === "hour") n.setUTCHours(n.getUTCHours() + 1);
-  else if (g === "day") n.setUTCDate(n.getUTCDate() + 1);
-  else if (g === "month") n.setUTCMonth(n.getUTCMonth() + 1);
-  else n.setUTCFullYear(n.getUTCFullYear() + 1);
-  return n;
-}
-
-const bqTs = (d: Date) =>
-  `TIMESTAMP '${d.toISOString().slice(0, 19).replace("T", " ")} UTC'`;
-
-/**
- * Turn probed buckets into a constant predicate on `__live.<field>`: one
- * half-open range per run of adjacent buckets, plus `IS NULL` when a live row
- * sits in the NULL partition. Literal ranges prune whatever granularity the
- * table was actually created with. Returns `FALSE` when no live row matches
- * (every staged row is new), and `undefined` when a bucket cannot be parsed
- * (caller runs the MERGE unfiltered).
- */
-export function buildLivePartitionFilter(p: {
-  partitionField: string;
-  granularity?: string;
-  buckets: Array<string | null>;
-}): string | undefined {
-  const gran = normalizeGranularity(p.granularity);
-  const col = `__live.${escId(p.partitionField)}`;
-  let hasNull = false;
-  const starts: Date[] = [];
-  for (const b of p.buckets) {
-    if (b == null) {
-      hasNull = true;
-      continue;
-    }
-    const d = new Date(`${b}Z`);
-    if (Number.isNaN(d.getTime())) return undefined;
-    starts.push(d);
-  }
-  starts.sort((a, b) => a.getTime() - b.getTime());
-  const ranges: Array<[Date, Date]> = [];
-  for (const s of starts) {
-    const e = addGranularity(s, gran);
-    const last = ranges[ranges.length - 1];
-    if (last && last[1].getTime() >= s.getTime()) {
-      if (e.getTime() > last[1].getTime()) last[1] = e;
-    } else {
-      ranges.push([s, e]);
-    }
-  }
-  const parts = ranges.map(
-    ([s, e]) => `(${col} >= ${bqTs(s)} AND ${col} < ${bqTs(e)})`,
-  );
-  if (hasNull) parts.push(`${col} IS NULL`);
-  return parts.length > 0 ? parts.join(" OR ") : "FALSE";
-}
-
-/**
- * BigQuery `PARTITION BY` clause for a CDC layout (empty when unpartitioned).
- * Exported for contract testing.
- */
-export function bigQueryPartitionClause(layout: CdcEntityLayout): string {
-  if (!layout.partitioning?.field) return "";
-  const gran = layout.partitioning.granularity?.toUpperCase() || "DAY";
-  return `PARTITION BY TIMESTAMP_TRUNC(${escId(layout.partitioning.field)}, ${gran})`;
-}
-
-export function bigQueryClusterClause(layout: CdcEntityLayout): string {
-  if (!layout.clustering?.fields?.length) return "";
-  return `CLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`;
-}
-
-export interface BigQueryRepartitionStatements {
-  createTmp: string;
-  dropLive: string;
-  rename: string;
-}
-
-/**
- * Build the statements that rewrite a live table's partition/cluster layout in
- * place: `CREATE OR REPLACE` a new-layout table from the current rows, drop the
- * old table, then rename the new one into place. This is the swap BigQuery
- * actually supports (no atomic EXCHANGE); the caller pauses the stream so the
- * brief window where `live` is renamed is safe. Exported for contract testing +
- * reuse by the gated integration suite.
- */
-export function buildBigQueryRepartitionStatements(params: {
-  fullLive: string;
-  fullTmp: string;
-  liveName: string;
-  layout: CdcEntityLayout;
-}): BigQueryRepartitionStatements {
-  const partitionClause = bigQueryPartitionClause(params.layout);
-  const clusterClause = bigQueryClusterClause(params.layout);
-  return {
-    createTmp:
-      `CREATE OR REPLACE TABLE ${params.fullTmp} ${partitionClause} ${clusterClause} AS SELECT * FROM ${params.fullLive}`.replace(
-        /\s+/g,
-        " ",
-      ),
-    dropLive: `DROP TABLE ${params.fullLive}`,
-    rename: `ALTER TABLE ${params.fullTmp} RENAME TO ${escId(params.liveName)}`,
-  };
-}
+export {
+  MERGE_PRUNE_MAX_PARTITIONS,
+  bigQueryClusterClause,
+  bigQueryPartitionClause,
+  buildBigQueryRepartitionStatements,
+  buildLivePartitionFilter,
+  buildLivePartitionProbeQuery,
+  buildMergeStatement,
+  mapLogicalTypeToBigQuery,
+  type BigQueryRepartitionStatements,
+  type BuildMergeStatementParams,
+} from "./bigquery-sql";
 
 interface BigQueryAdapterConfig {
   destinationDatabaseId: string;
@@ -502,91 +85,56 @@ interface BigQueryAdapterConfig {
   };
 }
 
+type FlowRef = Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+
+/** Upper bound on a MERGE job's wait: BIGQUERY_MERGE_MAX_WAIT_MS, else 15 min. */
+function mergeMaxWaitMs(): number {
+  const fromEnv = Number.parseInt(
+    process.env.BIGQUERY_MERGE_MAX_WAIT_MS || "",
+    10,
+  );
+  return Number.isFinite(fromEnv) && fromEnv >= 10_000
+    ? Math.min(fromEnv, 60 * 60 * 1000)
+    : 15 * 60 * 1000;
+}
+
+function coerceToDate(value: unknown): Date | null {
+  if (value == null) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const epochMs = value > 1e12 ? value : value * 1000;
+    const parsed = new Date(epochMs);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  const parsed = new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   readonly destinationType = "bigquery";
 
   constructor(private readonly config: BigQueryAdapterConfig) {}
 
-  private coerceToDate(value: unknown): Date | null {
-    if (value == null) return null;
-    if (value instanceof Date) {
-      return Number.isNaN(value.getTime()) ? null : value;
-    }
-    if (typeof value === "number" && Number.isFinite(value)) {
-      const epochMs = value > 1e12 ? value : value * 1000;
-      const parsed = new Date(epochMs);
-      return Number.isNaN(parsed.getTime()) ? null : parsed;
-    }
-    const parsed = new Date(String(value));
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }
-
   async ensureLiveTable(_layout: CdcEntityLayout): Promise<void> {
     await this.ensureDataset();
-  }
-
-  private async ensureLiveTableFromSchema(
-    layout: CdcEntityLayout,
-    stagingColumnNames: string[],
-    entitySchema?: ConnectorEntitySchema,
-  ): Promise<void> {
-    const { projectId, dataset, destination, datasetLocation } =
-      await this.resolveBqClient();
-    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(layout.tableName)}`;
-
-    const colDefs = stagingColumnNames
-      .map(col => {
-        const bqType = resolveTargetBqType(col, entitySchema, undefined);
-        return `${escId(col)} ${bqType}`;
-      })
-      .join(", ");
-
-    let partitionClause = "";
-    if (layout.partitioning?.field) {
-      const gran = layout.partitioning.granularity?.toUpperCase() || "DAY";
-      partitionClause = `PARTITION BY TIMESTAMP_TRUNC(${escId(layout.partitioning.field)}, ${gran})`;
-    }
-    let clusterClause = "";
-    if (layout.clustering?.fields?.length) {
-      clusterClause = `CLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`;
-    }
-
-    const ddl = `CREATE TABLE IF NOT EXISTS ${fullLive} (${colDefs}) ${partitionClause} ${clusterClause}`;
-    const createResult = await databaseConnectionService.executeQuery(
-      destination,
-      ddl,
-      { location: datasetLocation },
-    );
-    if (!createResult.success) {
-      throw new Error(
-        createResult.error || "Failed to create live table with schema",
-      );
-    }
-
-    log.info("Created live table from schema", {
-      liveTable: layout.tableName,
-      dataset,
-      columnCount: stagingColumnNames.length,
-    });
   }
 
   async repartitionLiveTable(
     layout: CdcEntityLayout,
   ): Promise<{ repartitioned: boolean }> {
-    const { bq, projectId, dataset, destination, datasetLocation } =
-      await this.resolveBqClient();
+    const target = await this.resolveBqClient();
+    const { bq, projectId, dataset } = target;
     const live = layout.tableName;
 
     const [exists] = await bq.dataset(dataset).table(live).exists();
     if (!exists) return { repartitioned: false };
 
     const tmp = `${live}__repart_${Date.now().toString(36)}`;
-    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(live)}`;
-    const fullTmp = `${escId(projectId)}.${escId(dataset)}.${escId(tmp)}`;
 
     const run = async (sql: string) => {
-      const r = await databaseConnectionService.executeQuery(destination, sql, {
-        location: datasetLocation,
+      const r = await runBigQuery(target, sql, {
         bigQueryJobMaxWaitMs: 15 * 60 * 1000,
       });
       if (!r.success) throw new Error(r.error || `BigQuery DDL failed: ${sql}`);
@@ -596,8 +144,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     // table, then rename the new one in. The caller pauses the stream so the
     // brief window where `live` is renamed is safe.
     const stmts = buildBigQueryRepartitionStatements({
-      fullLive,
-      fullTmp,
+      fullLive: fullTableName(target, live),
+      fullTmp: fullTableName(target, tmp),
       liveName: live,
       layout,
     });
@@ -619,7 +167,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   async applyEvents(params: {
     events: CdcStoredEvent[];
     layout: CdcEntityLayout;
-    flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    flow: FlowRef;
     entitySchema?: ConnectorEntitySchema;
   }): Promise<{ applied: number }> {
     if (params.events.length === 0) {
@@ -635,48 +183,30 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const deleteMode =
       params.flow.deleteMode || params.layout.deleteMode || "hard";
 
-    const rows: Record<string, unknown>[] = [];
-
-    for (const event of upserts) {
+    const toRow = (event: CdcStoredEvent, deletedAt: Date | null) => {
       const payload = normalizePayloadKeys(event.payload || {});
       const sourceTs = resolveSourceTimestamp(
         payload,
         new Date(event.sourceTs),
       );
-      rows.push(
-        withSyncedAt({
-          ...payload,
-          id: event.recordId,
-          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-          _mako_source_ts: sourceTs,
-          _mako_ingest_seq: Number(event.ingestSeq),
-          _mako_deleted_at: null,
-          is_deleted: false,
-          deleted_at: null,
-        }),
-      );
-    }
+      return withSyncedAt({
+        ...payload,
+        id: event.recordId,
+        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
+        _mako_source_ts: sourceTs,
+        _mako_ingest_seq: Number(event.ingestSeq),
+        _mako_deleted_at: deletedAt,
+        is_deleted: deletedAt !== null,
+        deleted_at: deletedAt,
+      });
+    };
 
+    const rows: Record<string, unknown>[] = upserts.map(event =>
+      toRow(event, null),
+    );
     if (deleteMode === "soft") {
       for (const event of deletes) {
-        const payload = normalizePayloadKeys(event.payload || {});
-        const sourceTs = resolveSourceTimestamp(
-          payload,
-          new Date(event.sourceTs),
-        );
-        const deletedAt = new Date();
-        rows.push(
-          withSyncedAt({
-            ...payload,
-            id: event.recordId,
-            _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-            _mako_source_ts: sourceTs,
-            _mako_ingest_seq: Number(event.ingestSeq),
-            _mako_deleted_at: deletedAt,
-            is_deleted: true,
-            deleted_at: deletedAt,
-          }),
-        );
+        rows.push(toRow(event, new Date()));
       }
     }
 
@@ -702,7 +232,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   async applyBatch(params: {
     records: Array<Record<string, unknown>>;
     layout: CdcEntityLayout;
-    flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    flow: FlowRef;
     entitySchema?: ConnectorEntitySchema;
   }): Promise<{ written: number }> {
     if (params.records.length === 0) {
@@ -724,7 +254,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         deletedAt?: unknown;
         date_deleted?: unknown;
       };
-      const makoDeletedAt = this.coerceToDate(payload._mako_deleted_at);
+      const makoDeletedAt = coerceToDate(payload._mako_deleted_at);
       return withSyncedAt({
         ...payloadWithoutDeletedAt,
         _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
@@ -757,22 +287,23 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     },
   ): Promise<{ loaded: number }> {
     await this.ensureDataset();
-    const stagingTable = this.getStagingTableName(
+    const stagingTable = bigQueryStagingTableName(
       layout.tableName,
       flowId,
       options?.stagingSuffix,
     );
+    const target = await this.resolveBqClient();
     if (!options?.skipDrop) {
-      await this.dropStagingTable(stagingTable).catch(() => undefined);
+      await dropStagingTable(target, stagingTable).catch(() => undefined);
     }
-    return this.loadParquetToStaging(parquetPath, stagingTable, {
+    return loadParquetToStaging(target, parquetPath, stagingTable, {
       skipParquetCleanup: options?.skipParquetCleanup,
     });
   }
 
   async mergeFromStaging(
     layout: CdcEntityLayout,
-    flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
+    flow: FlowRef,
     flowId: string,
     entitySchema?: ConnectorEntitySchema,
     options?: {
@@ -781,7 +312,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       prunePartitions?: boolean;
     },
   ): Promise<{ written: number }> {
-    const stagingTable = this.getStagingTableName(
+    const stagingTable = bigQueryStagingTableName(
       layout.tableName,
       flowId,
       options?.stagingSuffix,
@@ -799,15 +330,16 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
    * TIMESTAMP-partitioned, the batch spans too many partitions, or the probe
    * fails.
    */
-  private async resolveLivePartitionFilter(p: {
-    layout: CdcEntityLayout;
-    fullLive: string;
-    fullStaging: string;
-    liveTypes: Map<string, string>;
-    entitySchema?: ConnectorEntitySchema;
-    destination: Parameters<typeof databaseConnectionService.executeQuery>[0];
-    datasetLocation?: string;
-  }): Promise<string | undefined> {
+  private async resolveLivePartitionFilter(
+    target: BigQueryTarget,
+    p: {
+      layout: CdcEntityLayout;
+      fullLive: string;
+      fullStaging: string;
+      liveTypes: Map<string, string>;
+      entitySchema?: ConnectorEntitySchema;
+    },
+  ): Promise<string | undefined> {
     if (process.env.CDC_BQ_MERGE_PARTITION_PRUNE === "off") return undefined;
     const field = p.layout.partitioning?.field;
     if (!field) return undefined;
@@ -825,11 +357,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       entitySchema: p.entitySchema,
       limit: MERGE_PRUNE_MAX_PARTITIONS,
     });
-    const result = await databaseConnectionService.executeQuery(
-      p.destination,
-      probe,
-      { location: p.datasetLocation },
-    );
+    const result = await runBigQuery(target, probe);
     if (!result.success) {
       log.warn("MERGE partition probe failed; merging unfiltered", {
         liveTable: p.layout.tableName,
@@ -837,7 +365,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       });
       return undefined;
     }
-    const rows = ((result.data as any[]) || []) as Array<{ p?: unknown }>;
+    const rows = (result.data as Array<{ p?: unknown }> | undefined) || [];
     if (rows.length > MERGE_PRUNE_MAX_PARTITIONS) {
       log.info("MERGE spans too many partitions; merging unfiltered", {
         liveTable: p.layout.tableName,
@@ -861,86 +389,18 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     entitySchema?: ConnectorEntitySchema,
     options?: { knownStagingRowCount?: number; prunePartitions?: boolean },
   ): Promise<{ written: number }> {
-    const { projectId, dataset, destination, datasetLocation } =
-      await this.resolveBqClient();
+    const target = await this.resolveBqClient();
+    const { projectId, dataset } = target;
     const liveTable = layout.tableName;
 
-    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(liveTable)}`;
-    const fullStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
-
+    const fullLive = fullTableName(target, liveTable);
+    const fullStaging = fullTableName(target, stagingTable);
     const liveCacheKey = getSchemaCacheKey(projectId, dataset, liveTable);
-    const cachedLive = getCachedSchema(liveCacheKey);
 
     // Always query staging schema (ephemeral table, not cacheable) but try
     // to reuse cached live schema to avoid the INFORMATION_SCHEMA round-trip.
-    const stagingCols = new Set<string>();
-    let liveCols: Set<string>;
-    let liveTypes: Map<string, string>;
-    let schemaCacheHit = false;
-
-    if (cachedLive && cachedLive.columns.size > 0) {
-      schemaCacheHit = true;
-      liveCols = new Set(cachedLive.columns.keys());
-      liveTypes = new Map(cachedLive.columns);
-
-      const stagingSchemaQuery = `SELECT column_name FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${stagingTable.replace(/'/g, "''")}'`;
-      const stagingResult = await databaseConnectionService.executeQuery(
-        destination,
-        stagingSchemaQuery,
-        { location: datasetLocation },
-      );
-      if (!stagingResult.success) {
-        throw new Error(
-          `Staging schema discovery failed: ${stagingResult.error}`,
-        );
-      }
-      for (const r of (stagingResult.data as any[]) || []) {
-        stagingCols.add(r.column_name as string);
-      }
-
-      log.info("Schema cache hit for live table", {
-        liveTable,
-        stagingTable,
-        liveCols: liveCols.size,
-        stagingCols: stagingCols.size,
-      });
-    } else {
-      liveCols = new Set<string>();
-      liveTypes = new Map<string, string>();
-
-      const infoSchemaQuery = `SELECT table_name, column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name IN ('${stagingTable.replace(/'/g, "''")}', '${liveTable.replace(/'/g, "''")}')`;
-      const schemaResult = await databaseConnectionService.executeQuery(
-        destination,
-        infoSchemaQuery,
-        { location: datasetLocation },
-      );
-
-      if (!schemaResult.success) {
-        log.error("INFORMATION_SCHEMA query failed in mergeStagingToLive", {
-          stagingTable,
-          liveTable,
-          dataset,
-          error: schemaResult.error,
-        });
-        throw new Error(`Schema discovery failed: ${schemaResult.error}`);
-      }
-
-      for (const r of (schemaResult.data as any[]) || []) {
-        const tbl = r.table_name as string;
-        const col = r.column_name as string;
-        const dt = r.data_type as string;
-        if (tbl === liveTable) {
-          liveCols.add(col);
-          liveTypes.set(col, dt);
-        } else if (tbl === stagingTable) {
-          stagingCols.add(col);
-        }
-      }
-
-      if (liveCols.size > 0) {
-        setCachedSchema(liveCacheKey, new Map(liveTypes));
-      }
-    }
+    const { stagingCols, liveCols, liveTypes, schemaCacheHit, cachedLive } =
+      await discoverMergeSchemas(target, liveTable, stagingTable);
 
     if (stagingCols.size === 0) {
       log.info("Staging table not found or empty, nothing to merge", {
@@ -952,35 +412,13 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     }
 
     if (liveCols.size === 0) {
-      await this.ensureLiveTableFromSchema(
+      await createLiveTableFromStaging(
+        target,
         layout,
         Array.from(stagingCols),
         entitySchema,
+        { liveCols, liveTypes },
       );
-
-      const refreshQuery = `SELECT column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${liveTable.replace(/'/g, "''")}'`;
-      const refreshResult = await databaseConnectionService.executeQuery(
-        destination,
-        refreshQuery,
-        { location: datasetLocation },
-      );
-      if (!refreshResult.success) {
-        throw new Error(
-          refreshResult.error ||
-            "INFORMATION_SCHEMA refresh failed after creating live table",
-        );
-      }
-      for (const r of (refreshResult.data as any[]) || []) {
-        const col = r.column_name as string;
-        const dt = r.data_type as string;
-        liveCols.add(col);
-        liveTypes.set(col, dt);
-      }
-      setCachedSchema(liveCacheKey, new Map(liveTypes));
-      log.info("Live table types loaded from INFORMATION_SCHEMA after CREATE", {
-        liveTable,
-        columnCount: liveCols.size,
-      });
     }
 
     // --- Schema evolution: skip when connector schema hash hasn't changed ---
@@ -998,42 +436,27 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         schemaHash: currentSchemaHash,
       });
     } else {
-      await this.evolveSchemaIfNeeded({
+      await evolveSchemaIfNeeded(target, {
         fullLive,
         liveTable,
         liveCols,
         liveTypes,
         entitySchema,
-        destination,
-        datasetLocation,
       });
       if (currentSchemaHash) {
         setCachedSchema(liveCacheKey, new Map(liveTypes), currentSchemaHash);
       }
     }
 
-    const missingInLive = [...stagingCols].filter(c => !liveCols.has(c));
-    const skippedLiveAdds: string[] = [];
-    const addedToLive: string[] = [];
-    for (const col of missingInLive) {
-      const colType = resolveTargetBqType(col, entitySchema, undefined);
-      const addToLive = await databaseConnectionService.executeQuery(
-        destination,
-        `ALTER TABLE ${fullLive} ADD COLUMN IF NOT EXISTS ${escId(col)} ${colType}`,
-        { location: datasetLocation },
-      );
-      if (!addToLive.success) {
-        skippedLiveAdds.push(col);
-        log.warn(
-          "Skipping live column add; column will be omitted from MERGE",
-          { liveTable, column: col, error: addToLive.error },
-        );
-        continue;
-      }
-      liveCols.add(col);
-      liveTypes.set(col, colType);
-      addedToLive.push(col);
-    }
+    const { added: addedToLive, skipped: skippedLiveAdds } =
+      await addMissingLiveColumns(target, {
+        fullLive,
+        liveTable,
+        missing: [...stagingCols].filter(c => !liveCols.has(c)),
+        entitySchema,
+        liveCols,
+        liveTypes,
+      });
     if (addedToLive.length > 0) {
       invalidateCachedSchema(liveCacheKey);
       setCachedSchema(liveCacheKey, new Map(liveTypes), currentSchemaHash);
@@ -1056,15 +479,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       }
     }
 
-    const mergeMaxWaitEnv = Number.parseInt(
-      process.env.BIGQUERY_MERGE_MAX_WAIT_MS || "",
-      10,
-    );
-    const mergeMaxWaitMs =
-      Number.isFinite(mergeMaxWaitEnv) && mergeMaxWaitEnv >= 10_000
-        ? Math.min(mergeMaxWaitEnv, 60 * 60 * 1000)
-        : 15 * 60 * 1000;
-
     const stagingRowCount = options?.knownStagingRowCount ?? 0;
 
     // Airbyte-style write modes: "append" inserts staging rows as-is
@@ -1076,14 +490,12 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const isDedup = writeMode !== "append" && writeMode !== "overwrite";
     const livePartitionFilter =
       isDedup && options?.prunePartitions
-        ? await this.resolveLivePartitionFilter({
+        ? await this.resolveLivePartitionFilter(target, {
             layout,
             fullLive,
             fullStaging,
             liveTypes,
             entitySchema,
-            destination,
-            datasetLocation,
           })
         : undefined;
     const mergeStmt = !isDedup
@@ -1109,13 +521,12 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       partitionPruned: livePartitionFilter !== undefined,
     });
 
+    const maxWaitMs = mergeMaxWaitMs();
     await retryOnQuota(
       async () => {
-        const mergeResult = await databaseConnectionService.executeQuery(
-          destination,
-          mergeStmt,
-          { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
-        );
+        const mergeResult = await runBigQuery(target, mergeStmt, {
+          bigQueryJobMaxWaitMs: maxWaitMs,
+        });
         if (!mergeResult.success) {
           invalidateCachedSchema(liveCacheKey);
           log.error("BigQuery MERGE failed", {
@@ -1143,13 +554,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
   /** Full Refresh | Overwrite: clear the live table (no-op when absent). */
   async truncateLiveTable(layout: CdcEntityLayout): Promise<void> {
-    const { projectId, dataset, destination, datasetLocation } =
-      await this.resolveBqClient();
-    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(layout.tableName)}`;
-    const result = await databaseConnectionService.executeQuery(
-      destination,
-      `DELETE FROM ${fullLive} WHERE TRUE`,
-      { location: datasetLocation },
+    const target = await this.resolveBqClient();
+    const result = await runBigQuery(
+      target,
+      `DELETE FROM ${fullTableName(target, layout.tableName)} WHERE TRUE`,
     );
     if (
       !result.success &&
@@ -1166,12 +574,12 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     flowId: string,
     options?: { stagingSuffix?: string },
   ): Promise<void> {
-    const stagingTable = this.getStagingTableName(
+    const stagingTable = bigQueryStagingTableName(
       layout.tableName,
       flowId,
       options?.stagingSuffix,
     );
-    await this.dropStagingTable(stagingTable);
+    await dropStagingTable(await this.resolveBqClient(), stagingTable);
   }
 
   async prepareStaging(
@@ -1180,187 +588,18 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     options?: { stagingSuffix?: string },
   ): Promise<void> {
     await this.ensureDataset();
-    const stagingTable = this.getStagingTableName(
+    const stagingTable = bigQueryStagingTableName(
       layout.tableName,
       flowId,
       options?.stagingSuffix,
     );
-    await this.dropStagingTable(stagingTable).catch(() => undefined);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Schema evolution — correct drifted live-table column types before merge.
-  //
-  // Follows Airbyte's BigqueryDirectLoadNativeTableOperations pattern:
-  //   1. ADD a temp column with the correct type
-  //   2. UPDATE to SAFE_CAST existing data into the temp column
-  //   3. Atomically RENAME the old column to a backup and the temp to the real name
-  //   4. DROP the backup column
-  //
-  // If any step fails for a column, that column is skipped and the merge
-  // proceeds using the existing (drifted) live type for that column only.
-  // ---------------------------------------------------------------------------
-
-  private async evolveSchemaIfNeeded(params: {
-    fullLive: string;
-    liveTable: string;
-    liveCols: Set<string>;
-    liveTypes: Map<string, string>;
-    entitySchema: ConnectorEntitySchema | undefined;
-    destination: IDatabaseConnection;
-    datasetLocation: string | undefined;
-  }): Promise<void> {
-    const {
-      fullLive,
-      liveTable,
-      liveCols,
-      liveTypes,
-      entitySchema,
-      destination,
-      datasetLocation,
-    } = params;
-    if (!entitySchema) return;
-
-    const drifted: Array<{
-      column: string;
-      actualType: string;
-      expectedType: string;
-    }> = [];
-
-    for (const col of liveCols) {
-      const schemaField = entitySchema.fields[col];
-      if (!schemaField) continue;
-      const expectedType = mapLogicalTypeToBigQuery(schemaField.type);
-      const actualType = liveTypes.get(col);
-      if (!actualType) continue;
-      if (actualType.toUpperCase() === expectedType.toUpperCase()) continue;
-      drifted.push({ column: col, actualType, expectedType });
-    }
-
-    if (drifted.length === 0) return;
-
-    log.info("Schema drift detected, attempting live-table evolution", {
-      liveTable,
-      drifted: drifted.map(
-        d => `${d.column}: ${d.actualType} -> ${d.expectedType}`,
-      ),
-    });
-
-    const evolved: string[] = [];
-    const skipped: string[] = [];
-
-    for (const { column, actualType, expectedType } of drifted) {
-      const tmpCol = `${column}_mako_tmp`;
-      const bakCol = `${column}_mako_bak`;
-
-      try {
-        await retryOnQuota(
-          async () => {
-            const r = await databaseConnectionService.executeQuery(
-              destination,
-              `ALTER TABLE ${fullLive} ADD COLUMN IF NOT EXISTS ${escId(tmpCol)} ${expectedType}`,
-              { location: datasetLocation },
-            );
-            if (!r.success) throw new Error(r.error || "ADD COLUMN failed");
-          },
-          { label: `evolveSchema:ADD(${column})` },
-        );
-
-        await retryOnQuota(
-          async () => {
-            const castExpr = buildCastExpression(escId(column), expectedType);
-            const r = await databaseConnectionService.executeQuery(
-              destination,
-              `UPDATE ${fullLive} SET ${escId(tmpCol)} = ${castExpr} WHERE 1=1`,
-              { location: datasetLocation },
-            );
-            if (!r.success) throw new Error(r.error || "UPDATE cast failed");
-          },
-          { label: `evolveSchema:UPDATE(${column})` },
-        );
-
-        await retryOnQuota(
-          async () => {
-            const r = await databaseConnectionService.executeQuery(
-              destination,
-              `ALTER TABLE ${fullLive} RENAME COLUMN ${escId(column)} TO ${escId(bakCol)}, RENAME COLUMN ${escId(tmpCol)} TO ${escId(column)}`,
-              { location: datasetLocation },
-            );
-            if (!r.success) throw new Error(r.error || "RENAME COLUMN failed");
-          },
-          { label: `evolveSchema:RENAME(${column})` },
-        );
-
-        await retryOnQuota(
-          async () => {
-            const r = await databaseConnectionService.executeQuery(
-              destination,
-              `ALTER TABLE ${fullLive} DROP COLUMN IF EXISTS ${escId(bakCol)}`,
-              { location: datasetLocation },
-            );
-            if (!r.success) throw new Error(r.error || "DROP COLUMN failed");
-          },
-          { label: `evolveSchema:DROP(${column})` },
-        );
-
-        liveTypes.set(column, expectedType);
-        evolved.push(column);
-        log.info("Schema evolution applied", {
-          liveTable,
-          column,
-          from: actualType,
-          to: expectedType,
-        });
-      } catch (err) {
-        skipped.push(column);
-        log.warn(
-          "Schema evolution failed for column; merge will use existing live type",
-          {
-            liveTable,
-            column,
-            from: actualType,
-            to: expectedType,
-            error: err instanceof Error ? err.message : String(err),
-          },
-        );
-
-        // Best-effort cleanup of leftover temp/backup columns
-        for (const leftover of [tmpCol, bakCol]) {
-          try {
-            await databaseConnectionService.executeQuery(
-              destination,
-              `ALTER TABLE ${fullLive} DROP COLUMN IF EXISTS ${escId(leftover)}`,
-              { location: datasetLocation },
-            );
-          } catch {
-            // ignore cleanup failures
-          }
-        }
-      }
-    }
-
-    if (evolved.length > 0 || skipped.length > 0) {
-      log.info("Schema evolution summary", {
-        liveTable,
-        evolved,
-        skipped,
-        total: drifted.length,
-      });
-    }
+    const target = await this.resolveBqClient();
+    await dropStagingTable(target, stagingTable).catch(() => undefined);
   }
 
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
-
-  private getStagingTableName(
-    tableName: string,
-    flowId: string,
-    suffix?: string,
-  ): string {
-    const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
-    return `${tableName}__${flowToken}__${suffix || "staging"}`;
-  }
 
   private async resolveDestination(): Promise<IDatabaseConnection> {
     const doc = await DatabaseConnection.findById(
@@ -1375,30 +614,23 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   }
 
   private _datasetLocation: string | undefined;
-  private _resolvedClient?: {
-    bq: InstanceType<typeof BigQuery>;
-    projectId: string;
-    dataset: string;
-    destination: IDatabaseConnection;
-    datasetLocation: string | undefined;
-  };
+  private _resolvedClient?: BigQueryTarget;
 
-  private async resolveBqClient(): Promise<{
-    bq: InstanceType<typeof BigQuery>;
-    projectId: string;
-    dataset: string;
-    destination: IDatabaseConnection;
-    datasetLocation: string | undefined;
-  }> {
+  private async resolveBqClient(): Promise<BigQueryTarget> {
     if (this._resolvedClient) return this._resolvedClient;
 
     const destination = await this.resolveDestination();
-    const conn = destination.connection as any;
+    const conn = destination.connection as {
+      service_account_json?: unknown;
+      project_id?: string;
+      location?: string;
+      api_base_url?: string;
+    };
     const credentials =
       typeof conn.service_account_json === "string"
         ? JSON.parse(conn.service_account_json)
         : conn.service_account_json;
-    const projectId = conn.project_id;
+    const projectId = conn.project_id as string;
     const dataset = this.config.tableDestination.schema;
     const connLocation: string | undefined = conn.location;
     const apiBaseUrl: string | undefined = conn.api_base_url;
@@ -1452,92 +684,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     await bq.dataset(dataset).get({ autoCreate: true });
   }
 
-  private async loadParquetToStaging(
-    parquetPath: string,
-    stagingTable: string,
-    options?: { skipParquetCleanup?: boolean },
-  ): Promise<{ loaded: number }> {
-    const { bq, dataset, datasetLocation, destination } =
-      await this.resolveBqClient();
-    const loadMetadata: JobLoadMetadata & { labels?: Record<string, string> } =
-      {
-        sourceFormat: "PARQUET",
-        writeDisposition: "WRITE_APPEND",
-        schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
-      };
-    // Moved to configuration.labels by bigquery-load-labels.ts.
-    if (canLabelLoadJobs(bq)) {
-      loadMetadata.labels = bigQueryJobLabels({
-        workspaceId: destination.workspaceId,
-      });
-    }
-
-    const jobMeta = await retryOnQuota(
-      async () => {
-        const [metadata] = await bq
-          .dataset(dataset, { location: datasetLocation })
-          .table(stagingTable)
-          // A fresh copy per attempt: the SDK mutates what it is given.
-          .load(parquetPath, { ...loadMetadata });
-
-        const meta = metadata as Record<string, any>;
-        if (meta?.status?.errorResult) {
-          throw new Error(
-            meta.status.errorResult.message || "BigQuery load job failed",
-          );
-        }
-        return meta;
-      },
-      { label: `loadParquetToStaging(${stagingTable})` },
-    );
-
-    const loaded = Number(jobMeta?.statistics?.load?.outputRows || 0);
-
-    if (!options?.skipParquetCleanup) {
-      await fs.rm(parquetPath, { force: true }).catch(() => undefined);
-    }
-
-    log.info("Loaded Parquet to BigQuery staging table", {
-      stagingTable,
-      dataset,
-      loaded,
-    });
-
-    return { loaded };
-  }
-
-  private async expireStagingTable(stagingTable: string): Promise<void> {
-    const { bq, dataset, datasetLocation } = await this.resolveBqClient();
-    await bq
-      .dataset(dataset, { location: datasetLocation })
-      .table(stagingTable)
-      .setMetadata({ expirationTime: String(Date.now() + STAGING_TTL_MS) })
-      .catch(err => {
-        log.warn("Could not set an expiry on the CDC staging table", {
-          stagingTable,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
-  }
-
-  private async dropStagingTable(stagingTable: string): Promise<void> {
-    const { projectId, dataset, destination, datasetLocation } =
-      await this.resolveBqClient();
-    const fqStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
-
-    await databaseConnectionService.executeQuery(
-      destination,
-      `DROP TABLE IF EXISTS ${fqStaging}`,
-      { location: datasetLocation },
-    );
-
-    log.info("Cleaned up staging table", { stagingTable, dataset });
-  }
-
   private async writeViaParquet(params: {
     records: Record<string, unknown>[];
     layout: CdcEntityLayout;
-    flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    flow: FlowRef;
     entitySchema?: ConnectorEntitySchema;
     /** Probe live partitions and prune the MERGE (see resolveLivePartitionFilter). */
     prunePartitions?: boolean;
@@ -1549,24 +699,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     await this.ensureDataset();
 
-    // Pass schema fields so the Parquet builder types columns correctly
-    // (timestamp/number/bool/json). Without this, every column defaults to
-    // VARCHAR and Date values get JSON.stringify'd with extra quotes, which
-    // then SAFE_CAST to NULL on the live side — wiping timestamps on update.
-    const schemaFields: FieldMeta[] | undefined = params.entitySchema
-      ? Object.entries(params.entitySchema.fields).map(([name, f]) => ({
-          name,
-          type: f.type,
-        }))
-      : undefined;
-
-    const parquet = await buildParquetFromBatches({
-      filenameBase: `cdc-${params.layout.entity}`,
-      fields: schemaFields,
-      streamBatches: async insertBatch => {
-        await insertBatch(params.records);
-      },
-    });
+    const parquet = await buildCdcParquet(
+      params.layout.entity,
+      params.records,
+      params.entitySchema,
+    );
 
     log.info("writeViaParquet: built Parquet for CDC batch", {
       table: params.layout.tableName,
@@ -1586,8 +723,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       // The finally below drops the table, but not when the worker dies
       // mid-batch (deploy, timeout): such tables piled up for months, one
       // per crash. BigQuery deletes it on its own a day later regardless.
-      await this.expireStagingTable(
-        this.getStagingTableName(
+      await expireStagingTable(
+        await this.resolveBqClient(),
+        bigQueryStagingTableName(
           params.layout.tableName,
           flowId,
           stagingSuffix,
@@ -1625,24 +763,22 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     deletes: CdcStoredEvent[],
     fallbackDataSourceId: string | undefined,
   ): Promise<void> {
-    const { projectId, dataset, destination, datasetLocation } =
-      await this.resolveBqClient();
-    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(layout.tableName)}`;
+    const target = await this.resolveBqClient();
+    const fullLive = fullTableName(target, layout.tableName);
 
-    const ids = deletes.map(e => `'${String(e.recordId).replace(/'/g, "''")}'`);
+    const ids = deletes.map(e => sqlString(String(e.recordId)));
     const CHUNK = 10_000;
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunk = ids.slice(i, i + CHUNK);
       let where = `\`id\` IN (${chunk.join(", ")})`;
       if (fallbackDataSourceId) {
-        where += ` AND \`_dataSourceId\` = '${fallbackDataSourceId.replace(/'/g, "''")}'`;
+        where += ` AND \`_dataSourceId\` = ${sqlString(fallbackDataSourceId)}`;
       }
       await retryOnQuota(
         async () => {
-          const result = await databaseConnectionService.executeQuery(
-            destination,
+          const result = await runBigQuery(
+            target,
             `DELETE FROM ${fullLive} WHERE ${where}`,
-            { location: datasetLocation },
           );
           if (!result.success) {
             const notFound =
