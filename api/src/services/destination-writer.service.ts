@@ -274,6 +274,25 @@ export class DestinationWriter {
     }
   }
 
+  /** The MongoDB collection written when there is no table destination. */
+  getCollectionName(): string | undefined {
+    return this.config?.collectionName;
+  }
+
+  setCollectionName(collectionName: string): void {
+    this.config.collectionName = collectionName;
+  }
+
+  /**
+   * Treat a staging table/collection prepared by an earlier step as active,
+   * so `finalize()` swaps it in (or `cleanup()` drops it). Chunked runs
+   * prepare staging in one Inngest step and finish in another, each with a
+   * fresh writer.
+   */
+  markStagingActive(): void {
+    this.stagingActive = true;
+  }
+
   /**
    * Determine if we're writing to a SQL table or MongoDB
    */
