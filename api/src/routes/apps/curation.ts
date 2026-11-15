@@ -35,6 +35,7 @@ import {
   memberRoleFor,
   toProjectJson,
 } from "./shared";
+import { fail } from "../lib/respond";
 
 export const appsCurationRoutes = createRouter();
 
@@ -60,16 +61,13 @@ appsCurationRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const userId = actingUserId(c);
       if (!isWorkspaceAdminRole(await memberRoleFor(workspaceId, userId))) {
-        return c.json(
-          { success: false, error: "Only workspace admins can see this" },
-          403,
-        );
+        return fail(c, 403, "Only workspace admins can see this");
       }
       const plan = await getAppLifecyclePlan(workspaceId);
       return c.json({ success: true as const, plan }, 200);
     } catch (error) {
       if (error instanceof RepoRequiredError) {
-        return c.json({ success: false, error: error.message }, 412);
+        return fail(c, 412, error.message);
       }
       return handleError(c, error);
     }
@@ -108,19 +106,10 @@ appsCurationRoutes.openapi(
         !userId ||
         !isWorkspaceAdminRole(await memberRoleFor(workspaceId, userId))
       ) {
-        return c.json(
-          { success: false, error: "Only workspace admins can verify apps" },
-          403,
-        );
+        return fail(c, 403, "Only workspace admins can verify apps");
       }
       if (parseAppRepoPath(appRootFor(loaded.project))?.scope !== "workspace") {
-        return c.json(
-          {
-            success: false,
-            error: "Only apps in the Workspace tree can be verified",
-          },
-          400,
-        );
+        return fail(c, 400, "Only apps in the Workspace tree can be verified");
       }
       const { verified } = c.req.valid("json");
       const result = await setAppVerified(
@@ -172,17 +161,11 @@ appsCurationRoutes.openapi(
       const userId = loaded.userId;
       const source = parseAppRepoPath(appRootFor(loaded.project));
       if (source?.scope !== "private") {
-        return c.json(
-          { success: false, error: "This app is already in the Workspace" },
-          409,
-        );
+        return fail(c, 409, "This app is already in the Workspace");
       }
       const target = folderTargetFromPath(folder ?? "apps");
       if (target.scope !== "workspace") {
-        return c.json(
-          { success: false, error: "Pick a folder in the Workspace tree" },
-          400,
-        );
+        return fail(c, 400, "Pick a folder in the Workspace tree");
       }
       // `users/<handle>/` is the owner's tree through the handle mapping,
       // never by the raw segment.
@@ -193,7 +176,7 @@ appsCurationRoutes.openapi(
         await memberRoleFor(workspaceId, userId),
         await loadOwnerDirectory(workspaceId, { forUserId: userId }),
       );
-      if (denied) return c.json({ success: false, error: denied }, 403);
+      if (denied) return fail(c, 403, denied);
       const moved = await moveProject(loaded.project, target, {
         userId,
         description,
@@ -259,7 +242,7 @@ appsCurationRoutes.openapi(
         role,
         await loadOwnerDirectory(workspaceId, { forUserId: userId }),
       );
-      if (denied) return c.json({ success: false, error: denied }, 403);
+      if (denied) return fail(c, 403, denied);
       const moved = await moveProject(
         loaded.project,
         { ...target, slug: name },
@@ -301,10 +284,7 @@ appsCurationRoutes.openapi(
         loaded.project._id.toString(),
       );
       if (!row) {
-        return c.json(
-          { success: false, error: "App folder is not on main" },
-          404,
-        );
+        return fail(c, 404, "App folder is not on main");
       }
       await stampAppId(workspaceId, row, { userId: loaded.userId });
       return c.json({ success: true as const, id: row.appId }, 200);

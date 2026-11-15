@@ -2,6 +2,7 @@
  * Data bindings: listing, serving artifacts and snapshots, materializing,
  * the laptop dev-build loop and asynchronous binding jobs.
  */
+import { isValidBindingName } from "../../apps/binding-name";
 import { withQueryLabels } from "../../services/bigquery-labels";
 import { createRoute, z } from "@hono/zod-openapi";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
@@ -37,7 +38,9 @@ import {
   handleError,
   loadDevBuildProject,
   loadProject,
+  actorOf,
 } from "./shared";
+import { fail } from "../lib/respond";
 
 export const appsBindingRoutes = createRouter();
 
@@ -55,10 +58,7 @@ appsBindingRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const bindings = await readBindings(
-        loaded.project,
-        loaded.userId ?? "api-key",
-      );
+      const bindings = await readBindings(loaded.project, actorOf(loaded));
       const projectId = loaded.project._id.toString();
       const out = [];
       for (const b of bindings) {
@@ -108,8 +108,8 @@ appsBindingRoutes.openapi(
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { name } = c.req.valid("param");
-      if (!/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name)) {
-        return c.json({ success: false, error: "Invalid binding name" }, 400);
+      if (!isValidBindingName(name)) {
+        return fail(c, 400, "Invalid binding name");
       }
       const key = await bindingArtifactKeyByName(
         loaded.project,
@@ -122,10 +122,7 @@ appsBindingRoutes.openapi(
           })
         : null;
       if (!response) {
-        return c.json(
-          { success: false, error: `Binding "${name}" is not materialized` },
-          404,
-        );
+        return fail(c, 404, `Binding "${name}" is not materialized`);
       }
       return response;
     } catch (error) {
@@ -159,8 +156,8 @@ appsBindingRoutes.openapi(
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { name } = c.req.valid("param");
-      if (!/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name)) {
-        return c.json({ success: false, error: "Invalid binding name" }, 400);
+      if (!isValidBindingName(name)) {
+        return fail(c, 400, "Invalid binding name");
       }
       const parquetKey = await bindingArtifactKeyByName(
         loaded.project,
@@ -175,13 +172,7 @@ appsBindingRoutes.openapi(
           )
         : null;
       if (!response) {
-        return c.json(
-          {
-            success: false,
-            error: `Snapshot for binding "${name}" is not available`,
-          },
-          404,
-        );
+        return fail(c, 404, `Snapshot for binding "${name}" is not available`);
       }
       return response;
     } catch (error) {
@@ -222,15 +213,15 @@ appsBindingRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { async: asyncFlag } = c.req.valid("query");
       if (asyncFlag === "1" || asyncFlag === "true") {
-        if (!/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name)) {
-          return c.json({ success: false, error: "Invalid binding name" }, 400);
+        if (!isValidBindingName(name)) {
+          return fail(c, 400, "Invalid binding name");
         }
         const job = await enqueueBindingJob({
           workspaceId: loaded.project.workspaceId.toString(),
           projectId: loaded.project._id.toString(),
           name,
           kind: "materialize",
-          actorId: loaded.userId ?? "api-key",
+          actorId: actorOf(loaded),
           userId: loaded.userId,
           canWrite: true,
           request: {},
@@ -241,7 +232,7 @@ appsBindingRoutes.openapi(
         );
       }
       const result = await withQueryLabels({ mako_trigger: "manual" }, () =>
-        materializeAppBinding(loaded.project, name, loaded.userId ?? "api-key"),
+        materializeAppBinding(loaded.project, name, actorOf(loaded)),
       );
       return c.json({ success: true as const, ...result }, 200);
     } catch (error) {
@@ -319,7 +310,7 @@ appsBindingRoutes.openapi(
       const request = {
         project: loaded.project,
         name,
-        actorId: loaded.userId ?? "api-key",
+        actorId: actorOf(loaded),
         userId: loaded.userId,
         canWrite: loaded.canWrite,
         source,
@@ -362,10 +353,7 @@ appsBindingRoutes.openapi(
           },
         );
         if (response) return response;
-        return c.json(
-          { success: false, error: `Binding "${name}" is not materialized` },
-          404,
-        );
+        return fail(c, 404, `Binding "${name}" is not materialized`);
       }
       const stream = createReadStream(result.filePath);
       stream.on("close", () => void fs.rm(result.filePath, { force: true }));
@@ -443,19 +431,13 @@ appsBindingRoutes.openapi(
       const loaded = await loadDevBuildProject(c, { checkWrite: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const notAvailable = () =>
-        c.json(
-          {
-            success: false,
-            error: `Snapshot for binding "${name}" is not available`,
-          },
-          404,
-        );
+        fail(c, 404, `Snapshot for binding "${name}" is not available`);
       let plan: Awaited<ReturnType<typeof planDevBuild>>;
       try {
         plan = await planDevBuild({
           project: loaded.project,
           name,
-          actorId: loaded.userId ?? "api-key",
+          actorId: actorOf(loaded),
           userId: loaded.userId,
           canWrite: loaded.canWrite,
           source,
@@ -500,12 +482,9 @@ async function loadBindingJob(
   const job = await getBindingJob(loaded.project._id.toString(), jobId);
   // Another member's job is as good as missing: a draft job's result is
   // their uncommitted SQL.
-  if (!job || job.actorId !== (loaded.userId ?? "api-key")) {
+  if (!job || job.actorId !== actorOf(loaded)) {
     return {
-      errorResponse: c.json(
-        { success: false, error: "No such binding job" },
-        404,
-      ),
+      errorResponse: fail(c, 404, "No such binding job"),
     };
   }
   return { job };
@@ -560,14 +539,9 @@ appsBindingRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { job } = loaded;
       if (job.status !== "ready" || !job.result) {
-        return c.json(
-          {
-            success: false,
-            error: `Binding job is ${job.status}`,
-            status: job.status,
-          },
-          409,
-        );
+        return fail(c, 409, `Binding job is ${job.status}`, {
+          status: job.status,
+        });
       }
       const response = await serveParquetArtifact(
         getArtifactStore(),
@@ -578,10 +552,7 @@ appsBindingRoutes.openapi(
         },
       );
       if (response) return response;
-      return c.json(
-        { success: false, error: "The build's artifact is gone" },
-        404,
-      );
+      return fail(c, 404, "The build's artifact is gone");
     } catch (error) {
       return handleError(c, error);
     }

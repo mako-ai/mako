@@ -3,28 +3,21 @@
  * workspace repo). Static paths: mounted before the `/{id}` routes.
  */
 import { createRoute, z } from "@hono/zod-openapi";
-import { Types } from "mongoose";
-import { AppProject } from "../../database/workspace-schema";
-import { canWriteResource } from "../../utils/resource-acl";
+import {
+  firstUnwritableAppIn,
+  listVisibleApps,
+} from "../../apps/app-listing.service";
 import { getWorkspaceRepo } from "../../services/workspace-repos.service";
 import {
   createProject,
-  repoForWorkspace,
   createAppFolder,
   deleteAppFolder,
   folderTargetFromPath,
   moveAppFolder,
   type AppFolderTarget,
 } from "../../apps/worktree.service";
-import { loadAppsIndex } from "../../apps/app-index.service";
-import { appTreeRoot } from "../../apps/app-paths";
 import { loadOwnerDirectory } from "../../apps/user-handles.service";
-import {
-  authorizeFolderTarget,
-  canSeeIndexedApp,
-} from "../../apps/app-authorization";
-import { ensureWorkspaceTemplateSoon } from "../../apps/workspace-template";
-import { verifiedAppIds } from "../../apps/app-lifecycle.service";
+import { authorizeFolderTarget } from "../../apps/app-authorization";
 import { RepoRequiredError } from "../../apps/config";
 import { serializePublicShare } from "../lib/public-share-routes";
 import {
@@ -32,14 +25,15 @@ import {
   OPEN_RESPONSES,
   createRouter,
 } from "../../openapi/core";
-import { timed } from "../../middleware/server-timing";
 import {
   WorkspaceParam,
   actingUserId,
   handleError,
   memberRoleFor,
   toProjectJson,
+  callerRole,
 } from "./shared";
+import { fail } from "../lib/respond";
 
 export const appsProjectRoutes = createRouter();
 
@@ -61,100 +55,23 @@ appsProjectRoutes.openapi(
     try {
       const { workspaceId } = c.req.valid("param");
       const userId = actingUserId(c);
-      const role =
-        (c.get("memberRole") as string | undefined) ??
-        (await memberRoleFor(workspaceId, userId));
+      const role = await callerRole(c, workspaceId, userId);
 
-      // The REPO is the list. An app exists because a folder with a
-      // `mako.json` exists (anywhere under apps/ or users/<handle>/apps/), so a
-      // folder pushed from a local checkout shows up with no registration
-      // step (§13). Mongo is consulted only for what cannot live in a repo
-      // the customer can clone: visibility, the deployed sha, the share
-      // token — and the derived index that makes this read one query.
-      // One index read for both (each used to fetch and rev-parse on its own).
-      const snapshot = await timed("list.index", () =>
-        loadAppsIndex(workspaceId),
-      );
-      const folders = snapshot.apps.map(app => ({ ...app, id: app.appId }));
-      const folderPaths = snapshot.folders;
-      // Keep the repo's agent-facing template current for whoever is looking
-      // at it (throttled, off the request path — see workspace-template.ts).
-      repoForWorkspace(workspaceId)
-        .then(repoDir => ensureWorkspaceTemplateSoon(workspaceId, repoDir))
-        .catch(() => undefined);
-      const [docs, verified] = await Promise.all([
-        timed("list.projects", () =>
-          AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) })
-            .select(
-              "_id access workspaceRole sharedWith owner_id createdBy publicShare publishedSha publishedAt chatEnabled",
-            )
-            .lean(),
-        ),
-        timed("list.verified", () => verifiedAppIds(workspaceId)),
-      ]);
-      const stateById = new Map(docs.map(d => [d._id.toString(), d]));
-
-      const apps = folders
-        // No record yet means nothing has restricted it — a folder someone
-        // pushed is workspace content, visible like any other file in the
-        // repo. A folder in someone's personal tree is theirs alone.
-        .filter(folder =>
-          canSeeIndexedApp(folder, stateById.get(folder.id), userId, role),
-        )
-        .map(folder => {
-          const state = stateById.get(folder.id);
-          return {
-            id: folder.id,
-            slug: folder.slug,
-            path: folder.path,
-            scope: folder.scope,
-            title: folder.title,
-            description: folder.description,
-            access:
-              state?.access ??
-              (folder.scope === "private" ? "private" : "workspace"),
-            // Who restricted it — the sidebar files a private app someone
-            // else shared with you under "Shared with me", not "My Apps".
-            owner_id:
-              state?.owner_id ??
-              (folder.scope === "private" ? folder.ownerId : undefined),
-            workspaceRole: state?.workspaceRole,
-            // Only safe metadata leaves the API. The password hash and its
-            // encrypted reveal copy never do.
-            publicShare: serializePublicShare(state?.publicShare),
-            publishedSha: state?.publishedSha,
-            publishedAt: state?.publishedAt,
-            chatEnabled: state?.chatEnabled === true,
-            // A copied app that still declares its source's id: the index
-            // filed it under its own derived id; the UI offers to stamp one.
-            duplicateOf: folder.duplicateOf,
-            // A workspace admin vouched for it (app-lifecycle.service.ts).
-            verified: folder.scope === "workspace" && verified.has(folder.id),
-          };
-        });
-      // Folders of the two trees the caller can see: the workspace tree, and
-      // their own personal tree (never anyone else's) — by the handle
-      // mapping, not by what the folder is called.
-      const directory = await timed("list.directory", () =>
-        loadOwnerDirectory(workspaceId, { forUserId: userId }),
-      );
-      const handle = directory.handleOf(userId);
-      const personalRoot = handle ? appTreeRoot("private", handle) : undefined;
-      const visibleFolders = folderPaths.filter(p => {
-        if (p.startsWith("apps/")) return true;
-        return (
-          !!personalRoot &&
-          (p === personalRoot || p.startsWith(`${personalRoot}/`))
-        );
-      });
-
+      const listing = await listVisibleApps(workspaceId, userId, role);
       return c.json(
         {
           success: true as const,
-          apps,
-          folders: visibleFolders,
+          // Only safe metadata leaves the API. The password hash and its
+          // encrypted reveal copy never do.
+          apps: listing.apps.map(app => ({
+            ...app,
+            publicShare: serializePublicShare(app.publicShare),
+          })),
+          folders: listing.folders,
           // Where the caller's own apps go: `users/<handle>/apps`.
-          ...(personalRoot ? { personalRoot } : {}),
+          ...(listing.personalRoot
+            ? { personalRoot: listing.personalRoot }
+            : {}),
         },
         200,
       );
@@ -211,20 +128,17 @@ appsProjectRoutes.openapi(
           await memberRoleFor(workspaceId, userId),
           await loadOwnerDirectory(workspaceId, { forUserId: userId }),
         );
-        if (denied) return c.json({ success: false, error: denied }, 403);
+        if (denied) return fail(c, 403, denied);
       }
       // Apps live in the workspace's own GitHub repo (apps.md §17). Creating
       // one without a connected repo is refused — there is no local-only
       // Cloud Storage skip (issue #956).
       if (!(await getWorkspaceRepo(workspaceId))) {
-        return c.json(
-          {
-            success: false,
-            code: "github_required",
-            error:
-              "Connect a GitHub repository first (Settings → GitHub). Mako keeps your apps and consoles in your own repo.",
-          },
+        return fail(
+          c,
           412,
+          "Connect a GitHub repository first (Settings → GitHub). Mako keeps your apps and consoles in your own repo.",
+          { code: "github_required" },
         );
       }
       const project = await createProject({
@@ -287,7 +201,7 @@ appsProjectRoutes.openapi(
         await memberRoleFor(workspaceId, userId),
         await loadOwnerDirectory(workspaceId, { forUserId: userId }),
       );
-      if (denied) return c.json({ success: false, error: denied }, 403);
+      if (denied) return fail(c, 403, denied);
       const created = await createAppFolder(workspaceId, target, { userId });
       return c.json({ success: true as const, folder: created }, 200);
     } catch (error) {
@@ -333,29 +247,19 @@ appsProjectRoutes.openapi(
       const denied =
         authorizeFolderTarget(from, userId, role, directory) ??
         authorizeFolderTarget(target, userId, role, directory);
-      if (denied) return c.json({ success: false, error: denied }, 403);
+      if (denied) return fail(c, 403, denied);
       // Moving a folder moves every app in it, and a move into a personal
       // tree re-owns them: the caller must be allowed to write each one, as
       // POST /{id}/move requires for a single app.
-      const fromPath = path.replace(/\/+$/, "");
-      const inside = (await loadAppsIndex(workspaceId)).apps.filter(
-        a => a.path === fromPath || a.path.startsWith(`${fromPath}/`),
-      );
-      if (inside.length > 0 && userId) {
-        const rows = await AppProject.find({
-          workspaceId: new Types.ObjectId(workspaceId),
-          _id: { $in: inside.map(a => new Types.ObjectId(a.appId)) },
-        });
-        const refused = rows.find(row => !canWriteResource(row, userId, role));
-        if (refused) {
-          return c.json(
-            {
-              success: false,
-              error: `You cannot move ${refused.path ?? refused.slug}: it is restricted and not shared with you for editing`,
-            },
-            403,
-          );
-        }
+      const refused = userId
+        ? await firstUnwritableAppIn(workspaceId, path, userId, role)
+        : undefined;
+      if (refused) {
+        return fail(
+          c,
+          403,
+          `You cannot move ${refused.path ?? refused.slug}: it is restricted and not shared with you for editing`,
+        );
       }
       const moved = await moveAppFolder(workspaceId, from, target, { userId });
       return c.json({ success: true as const, ...moved }, 200);
@@ -395,7 +299,7 @@ appsProjectRoutes.openapi(
         await memberRoleFor(workspaceId, userId),
         await loadOwnerDirectory(workspaceId, { forUserId: userId }),
       );
-      if (denied) return c.json({ success: false, error: denied }, 403);
+      if (denied) return fail(c, 403, denied);
       await deleteAppFolder(workspaceId, target, { userId });
       return c.json({ success: true as const }, 200);
     } catch (error) {

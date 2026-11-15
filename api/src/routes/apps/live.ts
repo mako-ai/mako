@@ -30,7 +30,9 @@ import {
   loadProject,
   loadPublishedRowById,
   viewerOf,
+  actorOf,
 } from "./shared";
+import { fail } from "../lib/respond";
 
 export const appsLiveRoutes = createRouter();
 
@@ -64,10 +66,7 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
   const project = loaded.project;
   const sha = project.publishedSha;
   if (!sha) {
-    return c.json(
-      { success: false, error: "This app has not been published yet" },
-      404,
-    );
+    return fail(c, 404, "This app has not been published yet");
   }
   const projectId = project._id.toString();
   // Split on the id EXACTLY AS THE CALLER WROTE IT. Splitting on the project's
@@ -102,7 +101,7 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
       host: c.req.header("host"),
     });
   }
-  return response ?? c.json({ success: false, error: "Not found" }, 404);
+  return response ?? fail(c, 404, "Not found");
 }
 
 appsLiveRoutes.openapi(
@@ -125,10 +124,7 @@ appsLiveRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const sha = loaded.project.publishedSha;
       if (!sha) {
-        return c.json(
-          { success: false, error: "This app has not been published yet" },
-          404,
-        );
+        return fail(c, 404, "This app has not been published yet");
       }
       const projectId = loaded.project._id.toString();
       // APPS_ORIGIN_BASE set: the app gets its own origin and a token that
@@ -189,10 +185,7 @@ appsLiveRoutes.openapi(
       const { as } = c.req.valid("query");
       const self = viewerOf(c);
       if (!self) {
-        return c.json(
-          { success: false, error: "No signed-in viewer to resolve" },
-          403,
-        );
+        return fail(c, 403, "No signed-in viewer to resolve");
       }
       if (as && as.toLowerCase() !== self.email.toLowerCase()) {
         // Previewing as someone else is a builder's tool.
@@ -200,10 +193,7 @@ appsLiveRoutes.openapi(
         if ("errorResponse" in builder) return builder.errorResponse;
         const viewer = await resolveAppViewerByEmail(loaded.project, as);
         if (!viewer) {
-          return c.json(
-            { success: false, error: `No Mako user has the email ${as}` },
-            404,
-          );
+          return fail(c, 404, `No Mako user has the email ${as}`);
         }
         return c.json({ success: true as const, viewer }, 200);
       }
@@ -232,15 +222,12 @@ appsLiveRoutes.post("/:id/live/__data/:name/refresh", async c => {
     if ("errorResponse" in loaded) return loaded.errorResponse;
     const sha = loaded.project.publishedSha;
     if (!sha) {
-      return c.json(
-        { success: false, error: "This app has not been published yet" },
-        404,
-      );
+      return fail(c, 404, "This app has not been published yet");
     }
     const input = {
       project: loaded.project,
       name: c.req.param("name"),
-      actorId: loaded.userId ?? "api-key",
+      actorId: actorOf(loaded),
       at: sha,
     };
     if (wantsBindingProgress(c.req.header("accept"))) {

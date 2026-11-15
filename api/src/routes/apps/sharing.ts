@@ -31,6 +31,7 @@ import {
   loadProject,
   memberRoleFor,
 } from "./shared";
+import { fail } from "../lib/respond";
 
 export const appsSharingRoutes = createRouter();
 
@@ -69,13 +70,10 @@ appsSharingRoutes.openapi(
       // Same gate as v1: the owner always; a workspace admin only for
       // non-private apps (admins must not discover-or-toggle private ones).
       if (!canManageSharing(loaded.project, userId, role)) {
-        return c.json(
-          {
-            success: false,
-            error:
-              "Only the owner (or an admin, for workspace apps) can change sharing",
-          },
+        return fail(
+          c,
           403,
+          "Only the owner (or an admin, for workspace apps) can change sharing",
         );
       }
       const project = await ensureProjectRow(
@@ -107,7 +105,7 @@ appsSharingRoutes.openapi(
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       if (!loaded.userId) {
-        return c.json({ success: false, error: "Sign in to chat" }, 403);
+        return fail(c, 403, "Sign in to chat");
       }
       const chats = await Chat.find(
         {
@@ -195,22 +193,20 @@ appsSharingRoutes.openapi(
     try {
       const userId = actingUserId(c);
       if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
+        return fail(c, 401, "Unauthorized");
       }
       const { enabled } = c.req.valid("json");
       const doc = await loadShareableApp(c);
       if (!doc) {
-        return c.json({ success: false, error: "App not found" }, 404);
+        return fail(c, 404, "App not found");
       }
       const workspaceId = c.req.param("workspaceId") as string;
       const role = await memberRoleFor(workspaceId, userId);
       if (!canManageSharing(doc, userId, role)) {
-        return c.json(
-          {
-            success: false,
-            error: "Only the owner or an admin can turn chat on or off",
-          },
+        return fail(
+          c,
           403,
+          "Only the owner or an admin can turn chat on or off",
         );
       }
       doc.chatEnabled = enabled;

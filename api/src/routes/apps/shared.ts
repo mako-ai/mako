@@ -27,6 +27,7 @@ import {
   unregisteredDraftProject,
 } from "../../apps/unregistered-draft-app";
 import { timed } from "../../middleware/server-timing";
+import { fail } from "../lib/respond";
 
 const logger = loggers.api("apps");
 
@@ -64,7 +65,7 @@ export async function loadProject(
   const id = c.req.param("id");
   if (!id) {
     return {
-      errorResponse: c.json({ success: false, error: "Invalid app id" }, 400),
+      errorResponse: fail(c, 400, "Invalid app id"),
     };
   }
   // Apps are addressable by id, by repo path (`apps/sales/report`) and by
@@ -75,7 +76,7 @@ export async function loadProject(
   const project = await resolveProjectRef(workspaceId, id);
   if (!project) {
     return {
-      errorResponse: c.json({ success: false, error: "App not found" }, 404),
+      errorResponse: fail(c, 404, "App not found"),
     };
   }
   const userId = actingUserId(c);
@@ -90,23 +91,20 @@ export async function loadProject(
       // deliberately does not reveal that a private app exists.
       if (canReadResource(project, userId, role)) {
         return {
-          errorResponse: c.json(
-            {
-              success: false,
-              error:
-                "You have read-only access to this app. Ask an editor or the owner to run it in dev mode (or to share edit access with you).",
-            },
+          errorResponse: fail(
+            c,
             403,
+            "You have read-only access to this app. Ask an editor or the owner to run it in dev mode (or to share edit access with you).",
           ),
         };
       }
       return {
-        errorResponse: c.json({ success: false, error: "App not found" }, 404),
+        errorResponse: fail(c, 404, "App not found"),
       };
     }
     if (!opts.write && !canReadResource(project, userId, role)) {
       return {
-        errorResponse: c.json({ success: false, error: "App not found" }, 404),
+        errorResponse: fail(c, 404, "App not found"),
       };
     }
   }
@@ -233,30 +231,25 @@ export async function manifestForProject(
 
 export function handleError(c: AuthenticatedContext, error: unknown) {
   if (error instanceof WorktreeConflictError) {
-    return c.json({ success: false, error: error.message }, 409);
+    return fail(c, 409, error.message);
   }
   if (error instanceof AppFolderError) {
-    return c.json({ success: false, error: error.message }, error.status);
+    return fail(c, error.status, error.message);
   }
   if (error instanceof RepoRequiredError) {
-    return c.json(
-      { success: false, code: error.code, error: error.message },
-      error.status as 412,
-    );
+    return fail(c, error.status as 412, error.message, { code: error.code });
   }
   if (error instanceof WorkspaceRepoNotBoundError) {
-    return c.json({ success: false, error: error.message }, 404);
+    return fail(c, 404, error.message);
   }
   if (error instanceof BindingNotFoundError) {
-    return c.json({ success: false, error: error.message }, 404);
+    return fail(c, 404, error.message);
   }
   logger.error("Apps route error", { error });
-  return c.json(
-    {
-      success: false,
-      error: error instanceof Error ? error.message : "Internal error",
-    },
+  return fail(
+    c,
     500,
+    error instanceof Error ? error.message : "Internal error",
   );
 }
 
@@ -268,4 +261,32 @@ export function isWorkspaceAdminRole(role: string | undefined): boolean {
 export function viewerOf(c: AuthenticatedContext): ViewerIdentity | null {
   const user = c.get("user");
   return user?.email ? { id: user.id, email: user.email } : null;
+}
+
+/**
+ * The caller's workspace role: the one the membership middleware already
+ * read for this request, else a lookup (API keys carry none).
+ */
+export async function callerRole(
+  c: AuthenticatedContext,
+  workspaceId: string,
+  userId: string | undefined,
+): Promise<string | undefined> {
+  return (
+    (c.get("memberRole") as string | undefined) ??
+    (await memberRoleFor(workspaceId, userId))
+  );
+}
+
+/** Who acts in the sandbox and in git: the user, or the API key itself. */
+export function actorOf(loaded: { userId?: string }): string {
+  return loaded.userId ?? "api-key";
+}
+
+/** The signed-in caller as a commit author (their email); none for a key. */
+export function commitAuthorOf(
+  c: AuthenticatedContext,
+): { name: string; email: string } | undefined {
+  const user = c.get("user");
+  return user?.email ? { name: user.email, email: user.email } : undefined;
 }

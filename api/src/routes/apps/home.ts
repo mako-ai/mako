@@ -53,7 +53,9 @@ import {
   actingUserId,
   handleError,
   memberRoleFor,
+  callerRole,
 } from "./shared";
+import { fail } from "../lib/respond";
 
 export const appsHomeRoutes = createRouter();
 
@@ -85,9 +87,7 @@ appsHomeRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { days } = c.req.valid("query");
       const userId = actingUserId(c);
-      const role =
-        (c.get("memberRole") as string | undefined) ??
-        (await memberRoleFor(workspaceId, userId));
+      const role = await callerRole(c, workspaceId, userId);
       const [stats, visible] = await Promise.all([
         timed("usage.stats", () => homeUsageStats(workspaceId, { days })),
         timed("usage.visible", () =>
@@ -126,9 +126,7 @@ appsHomeRoutes.openapi(
       const limit = c.req.valid("query").limit ?? 20;
       const userId = actingUserId(c);
       if (!userId) return c.json({ success: true as const, apps: [] }, 200);
-      const role =
-        (c.get("memberRole") as string | undefined) ??
-        (await memberRoleFor(workspaceId, userId));
+      const role = await callerRole(c, workspaceId, userId);
       // Over-fetch: an app may have been deleted or made private since.
       const [recent, visible] = await Promise.all([
         getRecentlyViewedApps(workspaceId, userId, {
@@ -193,7 +191,7 @@ appsHomeRoutes.openapi(
       if (!userId) return c.body(null, 204);
       const accepted = acceptUsageBeat(`${workspaceId}:${userId}:${id}`, kind);
       if (!accepted && kind === "heartbeat") {
-        return c.json({ success: false, error: "Too many usage reports" }, 429);
+        return fail(c, 429, "Too many usage reports");
       }
       // The index without a mirror fetch: a heartbeat a minute must not
       // pull from GitHub. A miss (an app pushed seconds ago to another
@@ -204,7 +202,7 @@ appsHomeRoutes.openapi(
           id,
         ) ?? (await resolveAppRef(workspaceId, id));
       if (!app) {
-        return c.json({ success: false, error: "App not found" }, 404);
+        return fail(c, 404, "App not found");
       }
       const state = await AppProject.findOne({
         _id: new Types.ObjectId(app.appId),
@@ -212,11 +210,9 @@ appsHomeRoutes.openapi(
       })
         .select("access workspaceRole sharedWith owner_id createdBy")
         .lean();
-      const role =
-        (c.get("memberRole") as string | undefined) ??
-        (await memberRoleFor(workspaceId, userId));
+      const role = await callerRole(c, workspaceId, userId);
       if (!canSeeIndexedApp(app, state, userId, role)) {
-        return c.json({ success: false, error: "App not found" }, 404);
+        return fail(c, 404, "App not found");
       }
       await recordAppUsage({
         workspaceId,
@@ -258,9 +254,7 @@ appsHomeRoutes.openapi(
     try {
       const { workspaceId } = c.req.valid("param");
       const userId = actingUserId(c);
-      const role =
-        (c.get("memberRole") as string | undefined) ??
-        (await memberRoleFor(workspaceId, userId));
+      const role = await callerRole(c, workspaceId, userId);
       const apps = await listHomeDiscoveryApps(workspaceId, userId, role);
       return c.json({ success: true as const, apps }, 200);
     } catch (error) {
@@ -337,10 +331,7 @@ appsHomeRoutes.openapi(
       return c.json({ success: true as const, ...restored }, 200);
     } catch (error) {
       if (error instanceof ArchiveRestoreError) {
-        return c.json(
-          { success: false as const, error: error.message },
-          error.status,
-        );
+        return fail(c, error.status, error.message);
       }
       return handleError(c, error);
     }
@@ -403,10 +394,7 @@ appsHomeRoutes.openapi(
           })
         : null;
       if (!res) {
-        return c.json(
-          { success: false, error: "This app has no thumbnail" },
-          404,
-        );
+        return fail(c, 404, "This app has no thumbnail");
       }
       return res;
     } catch (error) {
@@ -448,9 +436,7 @@ appsHomeRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { cursor, limit } = c.req.valid("query");
       const userId = actingUserId(c);
-      const role =
-        (c.get("memberRole") as string | undefined) ??
-        (await memberRoleFor(workspaceId, userId));
+      const role = await callerRole(c, workspaceId, userId);
       const page = await getFeedPage(workspaceId, userId, role, {
         cursor: cursor || null,
         limit,
@@ -458,10 +444,7 @@ appsHomeRoutes.openapi(
       return c.json({ success: true as const, ...page }, 200);
     } catch (error) {
       if (error instanceof FeedCursorError) {
-        return c.json(
-          { success: false as const, error: error.message },
-          error.status,
-        );
+        return fail(c, error.status, error.message);
       }
       if (error instanceof RepoRequiredError) {
         return c.json(
@@ -515,9 +498,7 @@ appsHomeRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { q, limit } = c.req.valid("query");
       const userId = actingUserId(c);
-      const role =
-        (c.get("memberRole") as string | undefined) ??
-        (await memberRoleFor(workspaceId, userId));
+      const role = await callerRole(c, workspaceId, userId);
       prefetchQueryEmbedding(q);
       const [visible, usage] = await Promise.all([
         listHomeDiscoveryApps(workspaceId, userId, role),

@@ -25,7 +25,14 @@ import {
   OPEN_RESPONSES,
   createRouter,
 } from "../../openapi/core";
-import { ProjectParam, handleError, loadProject } from "./shared";
+import {
+  ProjectParam,
+  handleError,
+  loadProject,
+  commitAuthorOf,
+  actorOf,
+} from "./shared";
+import { fail } from "../lib/respond";
 
 export const appsFileRoutes = createRouter();
 
@@ -93,7 +100,7 @@ appsFileRoutes.openapi(
         const file = await readFile(loaded.project, relPath, loaded.userId);
         return c.json({ success: true as const, file }, 200);
       } catch {
-        return c.json({ success: false, error: "File not found" }, 404);
+        return fail(c, 404, "File not found");
       }
     } catch (error) {
       return handleError(c, error);
@@ -127,9 +134,8 @@ appsFileRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const userId = loaded.userId ?? "api-key";
+      const userId = actorOf(loaded);
       const { path: relPath, contents } = c.req.valid("json");
-      const user = c.get("user");
       const handle = await ensureWorktree(loaded.project, userId);
       const flush = await writeFile(handle, relPath, contents);
       // §10 Block A: manual saves auto-commit — no staged state in the UI.
@@ -137,7 +143,7 @@ appsFileRoutes.openapi(
         handle,
         relPath,
         "edit",
-        user?.email ? { name: user.email, email: user.email } : undefined,
+        commitAuthorOf(c),
       );
       return c.json({ success: true as const, flush, commit }, 200);
     } catch (error) {
@@ -184,7 +190,7 @@ appsFileRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const userId = loaded.userId ?? "api-key";
+      const userId = actorOf(loaded);
       const { command, cwd, timeoutMs } = c.req.valid("json");
       const handle = await ensureWorktree(loaded.project, userId);
       const result = await execInWorktree(handle, command, { cwd, timeoutMs });
@@ -218,7 +224,7 @@ appsFileRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const userId = loaded.userId ?? "api-key";
+      const userId = actorOf(loaded);
       const status = await worktreeStatus(scopeOf(loaded.project), userId);
       return c.json({ success: true as const, status }, 200);
     } catch (error) {
@@ -314,16 +320,12 @@ appsFileRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const userId = loaded.userId ?? "api-key";
+      const userId = actorOf(loaded);
       const { message, stagedOnly } = c.req.valid("json");
-      const user = c.get("user");
       const handle = await ensureWorktree(loaded.project, userId);
-      const result = await commitWorktree(
-        handle,
-        message,
-        user?.email ? { name: user.email, email: user.email } : undefined,
-        { stagedOnly },
-      );
+      const result = await commitWorktree(handle, message, commitAuthorOf(c), {
+        stagedOnly,
+      });
       return c.json({ success: true as const, result }, 200);
     } catch (error) {
       return handleError(c, error);
@@ -377,10 +379,7 @@ for (const action of ["stage", "unstage", "discard"] as const) {
         const loaded = await loadProject(c, { write: true });
         if ("errorResponse" in loaded) return loaded.errorResponse;
         const { paths } = c.req.valid("json");
-        const handle = await ensureWorktree(
-          loaded.project,
-          loaded.userId ?? "api-key",
-        );
+        const handle = await ensureWorktree(loaded.project, actorOf(loaded));
         await gitPathsAction(handle, action, paths);
         return c.json({ success: true as const }, 200);
       } catch (error) {
@@ -434,10 +433,7 @@ appsFileRoutes.openapi(
         );
         return c.json({ success: true as const, versions }, 200);
       }
-      const handle = await ensureWorktree(
-        loaded.project,
-        loaded.userId ?? "api-key",
-      );
+      const handle = await ensureWorktree(loaded.project, actorOf(loaded));
       const versions = await fileVersions(handle, relPath);
       return c.json({ success: true as const, versions }, 200);
     } catch (error) {

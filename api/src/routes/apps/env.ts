@@ -14,7 +14,8 @@ import {
   OPEN_RESPONSES,
   createRouter,
 } from "../../openapi/core";
-import { ProjectParam, handleError, loadProject } from "./shared";
+import { ProjectParam, handleError, loadProject, actorOf } from "./shared";
+import { fail } from "../lib/respond";
 
 export const appsEnvRoutes = createRouter();
 
@@ -84,15 +85,12 @@ appsEnvRoutes.openapi(
       const { key, value, secret } = c.req.valid("json");
       // The vault lives on the project row; folder-only apps get theirs now
       // (a fourth row-creating act alongside restrict/publish/share, §13.6).
-      const project = await ensureProjectRow(
-        loaded.project,
-        loaded.userId ?? "api-key",
-      );
+      const project = await ensureProjectRow(loaded.project, actorOf(loaded));
       const vars = await setAppEnvVar(project, { key, value, secret });
       return c.json({ success: true as const, vars }, 200);
     } catch (error) {
       if (error instanceof AppEnvValidationError) {
-        return c.json({ success: false, error: error.message }, 400);
+        return fail(c, 400, error.message);
       }
       return handleError(c, error);
     }
@@ -123,7 +121,7 @@ appsEnvRoutes.openapi(
       const { key } = c.req.valid("param");
       const removed = await deleteAppEnvVar(loaded.project, key);
       if (!removed) {
-        return c.json({ success: false, error: "Variable not found" }, 404);
+        return fail(c, 404, "Variable not found");
       }
       return c.json({ success: true as const }, 200);
     } catch (error) {

@@ -3,6 +3,7 @@
  * linking / unlinking the workspace repo the apps live in.
  */
 import { createRoute, z } from "@hono/zod-openapi";
+import { linkWorkspaceRepo } from "../../apps/repo-link.service";
 import { Types } from "mongoose";
 import { GitHubInstallation } from "../../database/workspace-schema";
 import { workspaceService } from "../../services/workspace.service";
@@ -13,30 +14,19 @@ import {
   isGitHubAppConfigured,
 } from "../../integrations/github/config";
 import { signInstallState } from "../../integrations/github/install-state";
+import { getInstallationToken } from "../../integrations/github/app-auth";
+import { listInstallationRepos } from "../../integrations/github/github-api";
 import {
-  getInstallationToken,
-  resolveRepoToken,
-} from "../../integrations/github/app-auth";
-import {
-  getRepoInfo,
-  listInstallationRepos,
-} from "../../integrations/github/github-api";
-import {
-  connectWorkspaceRepo,
   disconnectWorkspaceRepo,
   getWorkspaceRepo,
 } from "../../services/workspace-repos.service";
-import { syncRepoBackedResources } from "../../apps/worktree.service";
-import {
-  adoptConnectedRepo,
-  type ConnectedRepoAdoption,
-} from "../../apps/cloud-repo.service";
 import {
   AUTH_SECURITY,
   OPEN_RESPONSES,
   createRouter,
 } from "../../openapi/core";
 import { WorkspaceParam, handleError } from "./shared";
+import { fail } from "../lib/respond";
 
 export const appsGithubRoutes = createRouter();
 
@@ -136,23 +126,14 @@ appsGithubRoutes.openapi(
     const { workspaceId } = c.req.valid("param");
     const user = c.get("user");
     if (!user || !(await workspaceService.isAdmin(workspaceId, user.id))) {
-      return c.json(
-        {
-          success: false,
-          error: "Connecting GitHub requires the admin or owner role",
-        },
-        403,
-      );
+      return fail(c, 403, "Connecting GitHub requires the admin or owner role");
     }
     const clientId = getGitHubAppClientId();
     if (!clientId) {
-      return c.json(
-        {
-          success: false,
-          error:
-            "GitHub App OAuth client is not configured (GITHUB_APP_CLIENT_ID)",
-        },
+      return fail(
+        c,
         400,
+        "GitHub App OAuth client is not configured (GITHUB_APP_CLIENT_ID)",
       );
     }
     const state = signInstallState({
@@ -195,7 +176,7 @@ appsGithubRoutes.openapi(
         installationId,
       });
       if (!installation) {
-        return c.json({ success: false, error: "Installation not found" }, 404);
+        return fail(c, 404, "Installation not found");
       }
       const token = await getInstallationToken(installationId);
       const repos = await listInstallationRepos(token);
@@ -231,12 +212,10 @@ appsGithubRoutes.openapi(
     // real uninstall/reinstall on github.com is exactly the stale-binding bug
     // this lets an admin clear without DB access.
     if (user && !(await workspaceService.isAdmin(workspaceId, user.id))) {
-      return c.json(
-        {
-          success: false,
-          error: "Disconnecting GitHub requires the admin or owner role",
-        },
+      return fail(
+        c,
         403,
+        "Disconnecting GitHub requires the admin or owner role",
       );
     }
     await GitHubInstallation.deleteOne({
@@ -279,52 +258,15 @@ appsGithubRoutes.openapi(
       // Linking is a workspace-config mutation → admin/owner only (matches
       // the dbt GitHub connect policy).
       if (user && !(await workspaceService.isAdmin(workspaceId, user.id))) {
-        return c.json(
-          {
-            success: false,
-            error: "Linking a repo requires the admin or owner role",
-          },
-          403,
-        );
+        return fail(c, 403, "Linking a repo requires the admin or owner role");
       }
       const body = c.req.valid("json");
-      // Validate the repo is reachable + resolve its default branch when the
-      // caller didn't pin one (reuses the dbt token resolver).
-      const token = await resolveRepoToken(body.installationId);
-      const info = await getRepoInfo(body.owner, body.repo, token);
-      const binding = await connectWorkspaceRepo({
+      const linked = await linkWorkspaceRepo({
         workspaceId,
-        owner: body.owner,
-        repo: body.repo,
-        defaultBranch: body.defaultBranch || info.defaultBranch || "main",
-        subdirectory: body.subdirectory,
-        installationId: body.installationId,
+        ...body,
         linkedBy: user?.id ?? "api-key",
       });
-      // §13.17: the connected repo IS the durable mirror. Reconcile it with
-      // any existing workspace history now — import, seed, or refuse — and
-      // roll the binding back if reconciliation refuses, so pushes never
-      // target a repo we did not adopt.
-      let adoption: ConnectedRepoAdoption;
-      try {
-        adoption = await adoptConnectedRepo(workspaceId, {
-          owner: binding.owner,
-          repo: binding.repo,
-          installationId: binding.installationId,
-        });
-      } catch (error) {
-        await disconnectWorkspaceRepo(
-          workspaceId,
-          binding.owner,
-          binding.repo,
-          { purge: false },
-        ).catch(() => undefined);
-        throw error;
-      }
-      if (adoption !== "deferred") {
-        syncRepoBackedResources(workspaceId);
-      }
-      return c.json({ success: true as const, repo: binding, adoption }, 200);
+      return c.json({ success: true as const, ...linked }, 200);
     } catch (error) {
       return handleError(c, error);
     }
@@ -358,12 +300,10 @@ appsGithubRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const user = c.get("user");
       if (user && !(await workspaceService.isAdmin(workspaceId, user.id))) {
-        return c.json(
-          {
-            success: false,
-            error: "Disconnecting a repo requires the admin or owner role",
-          },
+        return fail(
+          c,
           403,
+          "Disconnecting a repo requires the admin or owner role",
         );
       }
       const body = c.req.valid("json");

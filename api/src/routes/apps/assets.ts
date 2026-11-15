@@ -19,6 +19,7 @@ import {
 } from "../../openapi/core";
 import { timed } from "../../middleware/server-timing";
 import { ProjectParam, handleError, loadProject } from "./shared";
+import { fail } from "../lib/respond";
 
 export const appsAssetRoutes = createRouter();
 
@@ -50,7 +51,7 @@ appsAssetRoutes.openapi(
       const store = getArtifactStore();
       const stream = await store.openReadStream(key);
       if (!stream) {
-        return c.json({ success: false, error: "Screenshot not found" }, 404);
+        return fail(c, 404, "Screenshot not found");
       }
       const size = await store.getSize(key);
       return new Response(
@@ -127,10 +128,7 @@ appsAssetRoutes.openapi(
           })
         : null;
       if (!res) {
-        return c.json(
-          { success: false, error: "This app has no thumbnail" },
-          404,
-        );
+        return fail(c, 404, "This app has no thumbnail");
       }
       return res;
     } catch (error) {

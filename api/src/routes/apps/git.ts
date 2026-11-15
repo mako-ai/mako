@@ -16,7 +16,13 @@ import {
   OPEN_RESPONSES,
   createRouter,
 } from "../../openapi/core";
-import { ProjectParam, handleError, loadProject } from "./shared";
+import {
+  ProjectParam,
+  handleError,
+  loadProject,
+  commitAuthorOf,
+  actorOf,
+} from "./shared";
 
 export const appsGitBranchRoutes = createRouter();
 
@@ -81,15 +87,10 @@ appsGitBranchRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const userId = loaded.userId ?? "api-key";
+      const userId = actorOf(loaded);
       const { sha } = c.req.valid("json");
-      const user = c.get("user");
       const handle = await ensureWorktree(loaded.project, userId);
-      const result = await restoreWorktreeTo(
-        handle,
-        sha,
-        user?.email ? { name: user.email, email: user.email } : undefined,
-      );
+      const result = await restoreWorktreeTo(handle, sha, commitAuthorOf(c));
       return c.json({ success: true as const, result }, 200);
     } catch (error) {
       return handleError(c, error);
@@ -127,10 +128,7 @@ appsGitBranchRoutes.openapi(
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { branch, create } = c.req.valid("json");
-      const handle = await ensureWorktree(
-        loaded.project,
-        loaded.userId ?? "api-key",
-      );
+      const handle = await ensureWorktree(loaded.project, actorOf(loaded));
       const result = await checkoutBranch(handle, branch, { create });
       return c.json({ success: true as const, ...result }, 200);
     } catch (error) {
@@ -189,7 +187,7 @@ appsGitBranchRoutes.openapi(
       const result = await mergeBranchToMain(
         scopeOf(loaded.project),
         branch,
-        user?.email ? { name: user.email, email: user.email } : undefined,
+        commitAuthorOf(c),
         user?.id,
       );
       return c.json({ success: true as const, result }, 200);

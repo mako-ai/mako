@@ -4,41 +4,45 @@
  */
 import { createRoute, z } from "@hono/zod-openapi";
 import {
+  buildPreview,
+  recycleSandbox,
+  sandboxStats,
+  startDevPreview,
+  tailBoxLog,
+} from "../../apps/sandbox-ops.service";
+import {
   PUBLISH_ACTOR,
   boxCtx,
-  commitWorktree,
   discardWorktree,
   ensureWorktree,
-  execInWorktree,
-  forgetBoxCaches,
 } from "../../apps/worktree.service";
-import { previewStagingDir } from "../../apps/config";
-import { buildApp, buildLogPath } from "../../apps/deployment.service";
-import fs from "node:fs/promises";
-import { readBoxDir } from "../../apps/box";
-import { mintPreviewGrant } from "../../apps/preview.service";
+import { buildLogPath } from "../../apps/deployment.service";
 import {
-  forgetTerminalCaches,
   killAllTerminalSessions,
   killTerminalSession,
 } from "../../apps/terminal-ws";
 import {
   devLogPath,
   devServerStatus,
-  ensureDevServer,
-  isServingApp,
   discoverDevServers,
   releaseDevServerSlot,
 } from "../../apps/dev-server.service";
-import { getBoxState, markBoxOffline } from "../../apps/box-state.service";
+import { getBoxState } from "../../apps/box-state.service";
 import { getSandboxProvider } from "../../apps/sandbox/provider";
-import { installCommand } from "../../apps/package-manager";
 import {
   AUTH_SECURITY,
   OPEN_RESPONSES,
   createRouter,
 } from "../../openapi/core";
-import { ProjectParam, handleError, loadProject, viewerOf } from "./shared";
+import {
+  ProjectParam,
+  handleError,
+  loadProject,
+  viewerOf,
+  commitAuthorOf,
+  actorOf,
+} from "./shared";
+import { fail } from "../lib/respond";
 
 export const appsSandboxRoutes = createRouter();
 
@@ -68,54 +72,21 @@ appsSandboxRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const handle = await ensureWorktree(
-        loaded.project,
-        loaded.userId ?? "api-key",
-      );
-
-      // Same build as a publish would run: the whole point of previewing a
-      // build is that it is the same artifact, produced the same way.
-      const build = await buildApp(handle, execInWorktree);
-      if (!build.ok) {
-        return c.json(
-          { success: false, error: "Build failed", output: build.output },
-          422,
-        );
-      }
-
-      // The install can leave a new/updated lockfile in the worktree (e.g.
-      // the scaffold ships without one). Commit it immediately rather than
-      // leaving it as WIP — every mutating action here should end in a real
-      // commit, same as chat turns, not just an in-progress build.
-      const user = c.get("user");
-      await commitWorktree(
-        handle,
-        "chore: install dependencies",
-        user?.email ? { name: user.email, email: user.email } : undefined,
-      );
-
-      // The build output is in the sandbox; the static preview server reads
-      // from disk. Stage just `dist/` out to a deterministic directory, which
-      // the next build overwrites — the API keeps no working copy, only this
-      // narrow, disposable artifact.
-      const staging = previewStagingDir(loaded.project._id.toString());
-      await fs.rm(staging, { recursive: true, force: true });
-      await readBoxDir(boxCtx(handle), `${handle.appRoot}/dist`, staging);
-
-      const grant = mintPreviewGrant({
-        workspaceId: loaded.project.workspaceId.toString(),
-        projectId: loaded.project._id.toString(),
-        rootDir: staging,
-        // The builder previewing their own build: `useViewer()` is them.
+      const handle = await ensureWorktree(loaded.project, actorOf(loaded));
+      const preview = await buildPreview(loaded.project, handle, {
+        author: commitAuthorOf(c),
         viewer: viewerOf(c) ?? undefined,
       });
+      if (!preview.ok) {
+        return fail(c, 422, "Build failed", { output: preview.output });
+      }
       return c.json(
         {
           success: true as const,
-          token: grant.token,
-          url: `/api/apps-preview/${grant.token}/`,
-          expiresAt: grant.expiresAt,
-          buildOutput: build.output.slice(-2000),
+          token: preview.token,
+          url: `/api/apps-preview/${preview.token}/`,
+          expiresAt: preview.expiresAt,
+          buildOutput: preview.buildOutput,
         },
         200,
       );
@@ -160,66 +131,26 @@ appsSandboxRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const handle = await ensureWorktree(
-        loaded.project,
-        loaded.userId ?? "api-key",
-      );
+      const handle = await ensureWorktree(loaded.project, actorOf(loaded));
       const body = (await c.req.json().catch(() => ({}))) as {
         restart?: boolean;
       };
-      const restart = body?.restart === true;
-
-      // Reattach (page reload, second tab): the server is already serving
-      // this app, so leave the boot log alone — it holds the real boot's
-      // output, and this call will not write a new one.
-      if (!(await isServingApp(handle))) {
-        // Everything the boot does goes to ONE log the client tails live —
-        // starting with a truncate, so this boot's output is this boot's.
-        // The install pipes through tee rather than redirecting so its
-        // output still comes back in the exec result for the failure
-        // payload.
-        const logPath = devLogPath(handle);
-        const install = await execInWorktree(
-          handle,
-          `: > ${logPath}; printf '=== mako dev boot: cd ${handle.appRoot} && vite (Mako launcher: bindings + eyes + HMR host) ===\\n\\n' >> ${logPath}; set -o pipefail; ( [ -d node_modules ] || ${installCommand()} ) 2>&1 | tee -a ${logPath}`,
-          { timeoutMs: 300_000 },
-        );
-        if (install.exitCode !== 0) {
-          return c.json(
-            {
-              success: false,
-              error: "Dependency install failed",
-              stdout: install.stdout.slice(-4000),
-              stderr: install.stderr.slice(-4000),
-            },
-            422,
-          );
-        }
+      const outcome = await startDevPreview(handle, {
+        restart: body?.restart === true,
+      });
+      if (!outcome.ok) {
+        return outcome.status === 422
+          ? fail(c, 422, outcome.error, {
+              stdout: outcome.stdout,
+              stderr: outcome.stderr,
+            })
+          : fail(c, 500, outcome.error);
       }
-
-      // §12.4: vite runs inside the sandbox and E2B publishes the port, so
-      // the browser loads it directly — there is no Mako-side proxy or token
-      // to mint for this tier.
-      try {
-        const { url, stagedBindings, evicted } = await ensureDevServer(handle, {
-          restart,
-        });
-        return c.json(
-          { success: true as const, url, stagedBindings, evicted },
-          200,
-        );
-      } catch (error) {
-        return c.json(
-          {
-            success: false,
-            error:
-              error instanceof Error
-                ? error.message
-                : "Failed to start dev server",
-          },
-          500,
-        );
-      }
+      const { url, stagedBindings, evicted } = outcome;
+      return c.json(
+        { success: true as const, url, stagedBindings, evicted },
+        200,
+      );
     } catch (error) {
       return handleError(c, error);
     }
@@ -242,10 +173,7 @@ appsSandboxRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const handle = await ensureWorktree(
-        loaded.project,
-        loaded.userId ?? "api-key",
-      );
+      const handle = await ensureWorktree(loaded.project, actorOf(loaded));
       const ctx = boxCtx(handle);
       // Snapshot first: the box's agent pushed this; no exec.
       const snapshot = await getBoxState(ctx.sessionKey);
@@ -275,49 +203,20 @@ appsSandboxRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const handle = await ensureWorktree(
-        loaded.project,
-        loaded.userId ?? "api-key",
-      );
-      const provider = getSandboxProvider();
+      const handle = await ensureWorktree(loaded.project, actorOf(loaded));
       const ctx = boxCtx(handle);
-      const info = (await provider.describe?.(ctx)) ?? null;
+      const info = (await getSandboxProvider().describe?.(ctx)) ?? null;
       if (!info) {
         return c.json({ success: true as const, running: false }, 200);
       }
-      const stats = await provider.exec(
-        ctx,
-        `echo "UPTIME=$(cut -d' ' -f1 /proc/uptime)"; ` +
-          `echo "CORES=$(nproc)"; ` +
-          `echo "LOAD=$(cut -d' ' -f1-3 /proc/loadavg)"; ` +
-          `free -b | awk '/^Mem:/{print "MEM_TOTAL="$2; print "MEM_USED="$3}'; ` +
-          `df -B1 / | awk 'NR==2{print "DISK_TOTAL="$2; print "DISK_USED="$3}'; ` +
-          `echo "SESSIONS=$(ls /tmp/mako-term-*.sock 2>/dev/null | wc -l)"; ` +
-          `A=$(awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8" "$5}' /proc/stat); sleep 1; ` +
-          `B=$(awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8" "$5}' /proc/stat); ` +
-          `echo "$A $B" | awk '{t=$3-$1; i=$4-$2; if (t>0) printf "CPU_PCT=%.1f\n", 100*(t-i)/t; else print "CPU_PCT=0"}'`,
-        { timeoutMs: 30_000 },
-      );
-      const fields: Record<string, string> = {};
-      for (const line of stats.stdout.split("\n")) {
-        const eq = line.indexOf("=");
-        if (eq > 0) fields[line.slice(0, eq)] = line.slice(eq + 1).trim();
-      }
+      const stats = await sandboxStats(ctx);
       return c.json(
         {
           success: true as const,
           running: true,
           sandboxId: info.sandboxId,
           startedAt: info.startedAt,
-          uptimeSec: Number(fields.UPTIME) || 0,
-          cores: Number(fields.CORES) || 0,
-          load: fields.LOAD ?? "",
-          cpuPct: Number(fields.CPU_PCT) || 0,
-          memTotal: Number(fields.MEM_TOTAL) || 0,
-          memUsed: Number(fields.MEM_USED) || 0,
-          diskTotal: Number(fields.DISK_TOTAL) || 0,
-          diskUsed: Number(fields.DISK_USED) || 0,
-          sessions: Number(fields.SESSIONS) || 0,
+          ...stats,
           connectCommand: `e2b sandbox connect ${info.sandboxId}`,
         },
         200,
@@ -344,20 +243,11 @@ appsSandboxRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const handle = await ensureWorktree(
-        loaded.project,
-        loaded.userId ?? "api-key",
-      );
-      const ctx = boxCtx(handle);
-      await getSandboxProvider().destroySession?.(ctx.sessionKey);
-      // The machine is gone; so is everything the API believed about it.
-      forgetBoxCaches(ctx.sessionKey);
-      forgetTerminalCaches(ctx.sessionKey);
-      // Tell every open tab NOW, so a second browser drops its dead sandbox
-      // URL instead of waiting for a poll to fail or the cache TTL to lapse.
-      await markBoxOffline(
+      const handle = await ensureWorktree(loaded.project, actorOf(loaded));
+      await recycleSandbox(
+        handle,
         loaded.project.workspaceId.toString(),
-        loaded.userId ?? "api-key",
+        actorOf(loaded),
       );
       return c.json({ success: true as const }, 200);
     } catch (error) {
@@ -387,7 +277,7 @@ appsSandboxRoutes.openapi(
       // basename — a basename kills nothing once apps nest.
       await killAllTerminalSessions(
         loaded.project,
-        loaded.userId ?? "api-key",
+        actorOf(loaded),
         loaded.project._id.toString(),
       );
       // Free the dev-server port registration too — the kill stops the
@@ -395,7 +285,7 @@ appsSandboxRoutes.openapi(
       // (§13.20).
       await releaseDevServerSlot(
         loaded.project.workspaceId.toString(),
-        loaded.userId ?? "api-key",
+        actorOf(loaded),
         loaded.project._id.toString(),
       );
       return c.json({ success: true as const }, 200);
@@ -426,11 +316,7 @@ appsSandboxRoutes.openapi(
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { termId } = c.req.valid("param");
-      await killTerminalSession(
-        loaded.project,
-        loaded.userId ?? "api-key",
-        termId,
-      );
+      await killTerminalSession(loaded.project, actorOf(loaded), termId);
       return c.json({ success: true as const }, 200);
     } catch (error) {
       return handleError(c, error);
@@ -454,10 +340,7 @@ appsSandboxRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const handle = await ensureWorktree(
-        loaded.project,
-        loaded.userId ?? "api-key",
-      );
+      const handle = await ensureWorktree(loaded.project, actorOf(loaded));
       const status = await devServerStatus(handle);
       return c.json({ success: true as const, ...status }, 200);
     } catch (error) {
@@ -486,25 +369,9 @@ appsSandboxRoutes.openapi(
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { offset } = c.req.valid("query");
-      const handle = await ensureWorktree(
-        loaded.project,
-        loaded.userId ?? "api-key",
-      );
-      const ctx = boxCtx(handle);
-      if (!(await getSandboxProvider().hasSession(ctx))) {
-        return c.json({ success: true as const, size: 0, chunk: "" }, 200);
-      }
-      const result = await getSandboxProvider().exec(
-        ctx,
-        // Size first, then the requested slice, capped so one poll can never
-        // exceed the provider's output budget.
-        `wc -c < ${devLogPath(handle)} 2>/dev/null || echo 0; tail -c +${offset + 1} ${devLogPath(handle)} 2>/dev/null | head -c 65536`,
-        { timeoutMs: 15_000 },
-      );
-      const newline = result.stdout.indexOf("\n");
-      const size = Number(result.stdout.slice(0, newline).trim()) || 0;
-      const chunk = result.stdout.slice(newline + 1);
-      return c.json({ success: true as const, size, chunk }, 200);
+      const handle = await ensureWorktree(loaded.project, actorOf(loaded));
+      const tail = await tailBoxLog(boxCtx(handle), devLogPath(handle), offset);
+      return c.json({ success: true as const, ...tail }, 200);
     } catch (error) {
       return handleError(c, error);
     }
@@ -536,19 +403,12 @@ appsSandboxRoutes.openapi(
       // box), so its log lives there — tail that one, or the client watches an
       // empty file in the wrong sandbox.
       const handle = await ensureWorktree(loaded.project, PUBLISH_ACTOR);
-      const ctx = boxCtx(handle);
-      if (!(await getSandboxProvider().hasSession(ctx))) {
-        return c.json({ success: true as const, size: 0, chunk: "" }, 200);
-      }
-      const result = await getSandboxProvider().exec(
-        ctx,
-        `wc -c < ${buildLogPath(handle)} 2>/dev/null || echo 0; tail -c +${offset + 1} ${buildLogPath(handle)} 2>/dev/null | head -c 65536`,
-        { timeoutMs: 15_000 },
+      const tail = await tailBoxLog(
+        boxCtx(handle),
+        buildLogPath(handle),
+        offset,
       );
-      const newline = result.stdout.indexOf("\n");
-      const size = Number(result.stdout.slice(0, newline).trim()) || 0;
-      const chunk = result.stdout.slice(newline + 1);
-      return c.json({ success: true as const, size, chunk }, 200);
+      return c.json({ success: true as const, ...tail }, 200);
     } catch (error) {
       return handleError(c, error);
     }
@@ -569,7 +429,7 @@ appsSandboxRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const userId = loaded.userId ?? "api-key";
+      const userId = actorOf(loaded);
       const handle = await ensureWorktree(loaded.project, userId);
       const result = await discardWorktree(handle);
       return c.json({ success: true as const, result }, 200);
