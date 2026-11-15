@@ -22,6 +22,7 @@ import {
 const fake = vi.hoisted(() => ({
   repoDir: "",
   embedded: [] as string[],
+  attributions: [] as unknown[],
   queryDelayMs: 0,
 }));
 
@@ -38,11 +39,13 @@ function vectorOf(text: string): number[] {
 vi.mock("../services/embedding.service", () => ({
   getEmbeddingModelName: () => "fake-model",
   isEmbeddingAvailable: () => true,
-  embedTexts: async (texts: string[]) => {
+  embedTexts: async (texts: string[], attribution: unknown) => {
     fake.embedded.push(...texts);
+    fake.attributions.push(attribution);
     return texts.map(vectorOf);
   },
-  embedText: async (text: string) => {
+  embedText: async (text: string, options: { attribution: unknown }) => {
+    fake.attributions.push(options.attribution);
     if (fake.queryDelayMs) {
       await new Promise(r => setTimeout(r, fake.queryDelayMs));
     }
@@ -137,6 +140,7 @@ afterAll(async () => {
 });
 beforeEach(() => {
   fake.embedded = [];
+  fake.attributions = [];
   fake.queryDelayMs = 0;
 });
 
@@ -147,6 +151,7 @@ describe("app embeddings refresh", () => {
     let snap = commit();
     await refresh(snap);
     expect(fake.embedded).toHaveLength(2);
+    expect(fake.attributions).toEqual([{ workspaceId: ws }]);
     expect(await AppEmbedding.countDocuments({ workspaceId: ws })).toBe(2);
     const sales = await AppEmbedding.findOne({ path: "apps/sales" }).lean();
     expect(sales?.terms).toContain("acquisition");
@@ -172,7 +177,9 @@ describe("app embeddings refresh", () => {
     const snap = commit();
     resetAppEmbeddingsState();
     const ids = snap.apps.map(a => a.appId);
+    fake.attributions = [];
     const signals = await relatedSignals(ws, "hiring", ids);
+    expect(fake.attributions).toEqual([{ workspaceId: ws }]);
     expect(signals?.similarity.size).toBe(2);
     for (const v of signals?.similarity.values() ?? []) {
       expect(v).toBeGreaterThan(0.9);

@@ -1,6 +1,10 @@
 import { propagateAttributes } from "@langfuse/tracing";
 import { embed, embedMany } from "ai";
-import { getEmbeddingModel } from "../agent-lib/ai-gateway";
+import {
+  attributionProviderOptions,
+  getEmbeddingModel,
+  type GatewayAttribution,
+} from "../agent-lib/ai-gateway";
 import { loggers } from "../logging";
 import { databaseConnectionService } from "./database-connection.service";
 
@@ -22,9 +26,22 @@ export function getEmbeddingModelName(): string | null {
   return isEmbeddingAvailable() ? EMBEDDING_MODEL_LABEL : null;
 }
 
+/**
+ * Who the embedding is for, for Vercel spend attribution. Embeddings are
+ * cheap but numerous (they were the whole of the gateway's untagged traffic),
+ * and an untagged request is one nobody can explain later. Callers pass the
+ * workspace (and user, when a person triggered it); the type is always
+ * `embedding`.
+ */
+export type EmbeddingAttribution = Omit<GatewayAttribution, "invocationType">;
+
 export async function embedText(
   text: string,
-  options: { abortSignal?: AbortSignal; maxRetries?: number } = {},
+  options: {
+    attribution: EmbeddingAttribution;
+    abortSignal?: AbortSignal;
+    maxRetries?: number;
+  },
 ): Promise<number[] | null> {
   if (!isEmbeddingAvailable()) return null;
 
@@ -35,6 +52,10 @@ export async function embedText(
       embed({
         model: getEmbeddingModel(GATEWAY_EMBEDDING_MODEL_ID),
         value: text,
+        providerOptions: attributionProviderOptions({
+          ...options.attribution,
+          invocationType: "embedding",
+        }),
         telemetry: { functionId: "embed-text" },
         ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
         ...(options.maxRetries !== undefined
@@ -47,6 +68,7 @@ export async function embedText(
 
 export async function embedTexts(
   texts: string[],
+  attribution: EmbeddingAttribution,
 ): Promise<(number[] | null)[]> {
   if (!isEmbeddingAvailable() || texts.length === 0) {
     return texts.map(() => null);
@@ -58,6 +80,10 @@ export async function embedTexts(
       embedMany({
         model: getEmbeddingModel(GATEWAY_EMBEDDING_MODEL_ID),
         values: texts,
+        providerOptions: attributionProviderOptions({
+          ...attribution,
+          invocationType: "embedding",
+        }),
         telemetry: { functionId: "embed-texts" },
       }),
   );

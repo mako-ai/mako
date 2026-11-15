@@ -14,7 +14,7 @@ import {
 } from "ai";
 import { Types } from "mongoose";
 
-import { getModel } from "../agent-lib/ai-gateway";
+import { buildProviderOptions, getModel } from "../agent-lib/ai-gateway";
 import { getDefaultModelId } from "../agent-lib/ai-models";
 import { withToolOutputBackstop } from "../agent-lib/tools/shared/output-cap";
 import { buildUnifiedModeRuntime } from "../agents/modes/runtime";
@@ -70,6 +70,12 @@ export async function runStepAgent(params: {
   let outputTokens = 0;
   const result = streamText({
     model: getModel(modelId),
+    providerOptions: buildProviderOptions({
+      userId,
+      workspaceId,
+      agentId: "unified",
+      invocationType: "workflow",
+    }),
     system: runtime.system,
     messages: await convertToModelMessages(messages),
     tools: withToolOutputBackstop(

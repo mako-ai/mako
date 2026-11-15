@@ -1,6 +1,10 @@
 import { generateText } from "ai";
 import { propagateAttributes } from "@langfuse/tracing";
-import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
+import {
+  buildProviderOptions,
+  getModel,
+  systemProviderOptions,
+} from "../agent-lib/ai-gateway";
 import { getUtilityModelId } from "../agent-lib/ai-models";
 import { getUtilityModelIds } from "./model-catalog.service";
 import type { GatewayLanguageModelOptions } from "@ai-sdk/gateway";
@@ -107,7 +111,7 @@ async function generateCommitMessage(
         workspaceId: trackingCtx.workspaceId,
         invocationType: "version_comment",
       })
-    : {};
+    : systemProviderOptions("version_comment");
   const gatewayBase = (baseOpts.gateway ?? {}) as Record<string, unknown>;
 
   const { text, usage, response } = await propagateAttributes(

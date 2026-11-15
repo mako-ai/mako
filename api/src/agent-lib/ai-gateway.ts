@@ -54,6 +54,108 @@ export function getEmbeddingModel(modelId: string): EmbeddingModel {
   return getGateway().textEmbeddingModel(modelId) as unknown as EmbeddingModel;
 }
 
+// ---------------------------------------------------------------------------
+// Spend attribution
+// ---------------------------------------------------------------------------
+
+/**
+ * The `user` stamped on gateway calls that no person triggered — a model
+ * probe at catalog refresh, an index rebuild. Vercel's report groups spend
+ * by this value, so unattended traffic has one recognisable bucket rather
+ * than an empty one.
+ */
+export const SYSTEM_ATTRIBUTION_USER = "system";
+
+/**
+ * Who and what a gateway request is for. Every call through the gateway
+ * carries one of these: Vercel's Custom Reporting groups spend by `user`
+ * and by `tag`, and the workspace connector `usage-by-tag` / `usage-by-user`
+ * entities land those groupings in the warehouse. An unattributed request
+ * is a row with an empty tag that nobody can explain, so the helpers below
+ * always emit a `type:` tag and a user, falling back to `system`.
+ *
+ * Tags are `ws:<workspaceId>`, `agent:<agentId>`, `type:<invocationType>`.
+ * Vercel accepts at most 10 tags of 1–64 chars and a user of ≤256 chars;
+ * every value here is well inside that.
+ */
+export interface GatewayAttribution {
+  userId?: string;
+  workspaceId?: string;
+  agentId?: string;
+  /** What kind of call: `chat`, `embedding`, `compaction`, `model_probe`, … */
+  invocationType: string;
+}
+
+/** The `gateway` provider-options block for an attribution. */
+export function gatewayAttributionOptions(
+  attribution: GatewayAttribution,
+): GatewayLanguageModelOptions {
+  const tags: string[] = [];
+  if (attribution.workspaceId) tags.push(`ws:${attribution.workspaceId}`);
+  if (attribution.agentId) tags.push(`agent:${attribution.agentId}`);
+  tags.push(`type:${attribution.invocationType}`);
+  return {
+    user: attribution.userId || SYSTEM_ATTRIBUTION_USER,
+    tags,
+  };
+}
+
+/** Vercel's limits on a request's tags. */
+const MAX_TAGS = 10;
+const MAX_TAG_CHARS = 64;
+/** Tags only Mako sets: a step cannot bill its calls to another workspace. */
+const RESERVED_TAG = /^(ws|agent|type):/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Stamp an attribution on the JSON body of a request Mako forwards to the
+ * gateway for someone else's code (a workflow step). Mako's user and tags win
+ * over whatever the step sent. The step's other options and its own tags stay.
+ * A body that is not a JSON object goes through as it came.
+ */
+export function withGatewayAttribution(
+  body: string,
+  attribution: GatewayAttribution,
+): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return body;
+  }
+  if (!isRecord(parsed)) return body;
+  const providerOptions = isRecord(parsed.providerOptions)
+    ? parsed.providerOptions
+    : {};
+  const gateway = isRecord(providerOptions.gateway)
+    ? providerOptions.gateway
+    : {};
+  const stepTags = Array.isArray(gateway.tags)
+    ? gateway.tags.filter(
+        (tag): tag is string =>
+          typeof tag === "string" &&
+          tag.length >= 1 &&
+          tag.length <= MAX_TAG_CHARS &&
+          !RESERVED_TAG.test(tag),
+      )
+    : [];
+  const { user, tags = [] } = gatewayAttributionOptions(attribution);
+  return JSON.stringify({
+    ...parsed,
+    providerOptions: {
+      ...providerOptions,
+      gateway: {
+        ...gateway,
+        user,
+        tags: [...tags, ...stepTags].slice(0, MAX_TAGS),
+      },
+    },
+  });
+}
+
 /**
  * Gateway options, plus `caching` — a Gateway feature newer than the pinned
  * `@ai-sdk/gateway` types (it arrives with the package `ai` depends on). The
@@ -85,19 +187,34 @@ export function buildProviderOptions(opts: {
   invocationType?: string;
   promptCacheSessionId?: string;
 }): Record<string, any> {
-  const tags: string[] = [`ws:${opts.workspaceId}`];
-  if (opts.agentId) tags.push(`agent:${opts.agentId}`);
-  if (opts.invocationType) tags.push(`type:${opts.invocationType}`);
-
   const cacheSession = opts.promptCacheSessionId;
   return {
     gateway: {
-      user: opts.userId,
-      tags,
+      ...gatewayAttributionOptions({
+        userId: opts.userId,
+        workspaceId: opts.workspaceId,
+        agentId: opts.agentId,
+        invocationType: opts.invocationType ?? "chat",
+      }),
       ...(cacheSession ? { caching: "auto" as const } : {}),
     } satisfies GatewayOptions,
     ...(cacheSession ? { openai: { promptCacheKey: cacheSession } } : {}),
   };
+}
+
+/** `providerOptions` carrying only an attribution. */
+export function attributionProviderOptions(
+  attribution: GatewayAttribution,
+): Record<string, any> {
+  return { gateway: gatewayAttributionOptions(attribution) };
+}
+
+/** `providerOptions` for a call made on behalf of nobody in particular. */
+export function systemProviderOptions(
+  invocationType: string,
+  workspaceId?: string,
+): Record<string, any> {
+  return attributionProviderOptions({ workspaceId, invocationType });
 }
 
 /**

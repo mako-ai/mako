@@ -207,7 +207,12 @@ async function refreshAppEmbeddings(
       const stale = rows.filter(r => byId.get(r.app.appId)?.docHash !== r.hash);
       const fresh = rows.filter(r => byId.get(r.app.appId)?.docHash === r.hash);
       const vectors =
-        stale.length > 0 ? await embedTexts(stale.map(r => r.doc)) : [];
+        stale.length > 0
+          ? await embedTexts(
+              stale.map(r => r.doc),
+              { workspaceId },
+            )
+          : [];
       const ops = [
         ...stale.flatMap((r, k) => {
           const vector = vectors[k];
@@ -325,7 +330,10 @@ const queryInFlight = new Map<string, Promise<Float32Array | null>>();
  * A query's vector (unit length): from the LRU, else one gateway call. A
  * call that outlives the caller's patience still lands in the cache.
  */
-export function embedSearchQuery(query: string): Promise<Float32Array | null> {
+export function embedSearchQuery(
+  workspaceId: string,
+  query: string,
+): Promise<Float32Array | null> {
   const model = getEmbeddingModelName();
   const q = query.trim().toLowerCase().replace(/\s+/g, " ");
   if (!model || !q) return Promise.resolve(null);
@@ -339,6 +347,7 @@ export function embedSearchQuery(query: string): Promise<Float32Array | null> {
   const pending = queryInFlight.get(key);
   if (pending) return pending;
   const call = embedText(q, {
+    attribution: { workspaceId },
     abortSignal: AbortSignal.timeout(10_000),
     maxRetries: 1,
   })

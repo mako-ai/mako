@@ -246,7 +246,9 @@ async function processConsole(
 
   try {
     const { description, embedding, embeddingModel } =
-      await generateDescriptionAndEmbedding(context);
+      await generateDescriptionAndEmbedding(context, {
+        workspaceId: doc.workspaceId.toString(),
+      });
 
     if (!description && !embedding) {
       return "skipped";
