@@ -550,6 +550,15 @@ async function endToEnd() {
     );
   }
 
+  // Every mode that writes SQL can take a metric's SQL from its definition:
+  // the app, workflow and notebook modes compile it, the query mode runs it.
+  for (const mode of ["app", "workflow", "notebook"] as const) {
+    const tools = toolNamesForModes(new Set([mode]));
+    for (const name of ["list_metrics", "compile_metric"]) {
+      assert.ok(tools.has(name), `${mode} mode should have ${name}`);
+    }
+  }
+
   // Preload: a Slack-flavored user message pre-activates relevant tools
   // with zero search/load round-trips.
   const preloadRuntime = buildUnifiedModeRuntime({
