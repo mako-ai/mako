@@ -416,6 +416,11 @@ export function resolveExpertiseModeId(
  * Pick the expertise mode to enable by default for a fresh request, based on
  * what the user is currently looking at. This replaces PostHog's small-model
  * router with a zero-cost heuristic; a model router can be layered on later.
+ *
+ * The tab decides the mode, not the question: a number asked from an app tab
+ * lands in App mode. That is fine because the metric path is core
+ * (METRIC_FIRST_TOOL_NAMES) and the base prompt's Business numbers rule
+ * applies in every mode, so App mode answers with query_metric.
  */
 export function defaultExpertiseMode(
   context: Pick<AgentContext, "activeView">,

@@ -560,6 +560,24 @@ async function endToEnd() {
     }
   }
 
+  // Routing: a number asked from an app tab stays in App mode (the tab
+  // decides the mode), and App mode now holds the metric path, so the
+  // answer comes from query_metric without a mode switch.
+  const appTabRuntime = buildUnifiedModeRuntime({
+    context,
+    messages: [user("what was MRR by country last month?")],
+    tabKind: "app",
+    modelId: "xai/grok-4.5",
+  });
+  assert.deepEqual([...appTabRuntime.modeState.enabledModes], ["app"]);
+  const appTabStep = appTabRuntime.prepareStep({ stepNumber: 0 });
+  for (const name of ["lookup_term", "list_metrics", "query_metric"]) {
+    assert.ok(
+      appTabStep?.activeTools.includes(name),
+      `${name} is active from an app tab`,
+    );
+  }
+
   // Preload: a Slack-flavored user message pre-activates relevant tools
   // with zero search/load round-trips.
   const preloadRuntime = buildUnifiedModeRuntime({
