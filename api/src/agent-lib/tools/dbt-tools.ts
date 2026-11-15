@@ -17,6 +17,8 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
+import type { QueryAccess } from "../../auth/api-key-scopes";
+import type { AgentToolExecutionContext } from "../../agents/types";
 import {
   createDbtFileSchema,
   modifyDbtFileSchema,
@@ -81,6 +83,7 @@ import { dbtWorkingTreeUserFor } from "../../dbt/rbac";
 import { validateScheduledConsoleSchedule } from "../../services/scheduled-query-schedule.service";
 import type { DbtLogLine } from "../../dbt/runner.service";
 import { describeQueuedRun } from "../../dbt/dbt-run-queue";
+import { createDbtMetricTools } from "./dbt-metric-tools";
 import { createDbtOntologyTools } from "./dbt-ontology-tools";
 import {
   FULL_STEPS_THRESHOLD,
@@ -165,6 +168,13 @@ export const createDbtServerTools = (
      * 60s, so the MCP server passes a lower cap than the in-product agent.
      */
     maxRunWaitMs?: number;
+    /**
+     * What the caller may run on a warehouse connection. Only query_metric
+     * reads it, and never runs with more than read access.
+     */
+    queryAccess?: QueryAccess;
+    /** Cancels query_metric when the chat request stops. */
+    toolExecutionContext?: AgentToolExecutionContext;
   },
 ) => {
   const maxRunWaitMs = Math.min(
@@ -364,6 +374,13 @@ export const createDbtServerTools = (
     // find_models / describe_model / lookup_term / model_readers: what the
     // last production build and the term registry say, before any SQL.
     ...createDbtOntologyTools(workspaceId, userId),
+
+    // list_metrics / compile_metric / query_metric: the metrics the project
+    // defines for MetricFlow, computed from that one definition.
+    ...createDbtMetricTools(workspaceId, userId, {
+      queryAccess: options?.queryAccess,
+      toolExecutionContext: options?.toolExecutionContext,
+    }),
 
     read_dbt_project_tree: tool({
       description:
@@ -726,7 +743,7 @@ export const createDbtServerTools = (
           const project = new DbtProject({
             workspaceId: new Types.ObjectId(workspaceId),
             name,
-            dbtVersion: dbtVersion ?? "1.9",
+            dbtVersion: dbtVersion ?? "1.12",
             environments: [
               {
                 name: environmentName,

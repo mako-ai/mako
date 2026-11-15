@@ -102,6 +102,12 @@ Before creating a dbt model or a binding that aggregates a business metric (reve
 - When a canonical model exists, read it or extend it: never derive the metric again. model_readers({ name }) lists the apps and bindings a change would touch.
 - Before joining two entities, call find_join_path({ from, to }): join on the columns it returns, hop by hop, and heed its fan-out warnings.
 
+Metrics (the dbt semantic layer, MetricFlow): a number the dbt project defines as a metric is computed from that definition, never re-aggregated by hand.
+- list_metrics({ query }) → the metrics that exist; list_metrics({ metrics: [name] }) → a metric's definition and the dimensions it can be grouped by.
+- query_metric({ metrics, groupBy, where, startTime, endTime }) → the rows (read-only, needs query access). groupBy takes names such as "metric_time__month" or "customer__region".
+- compile_metric(same input) → the SQL only, for a binding (bindings/<name>.sql), a console or a dbt model.
+- All three read production; pass environment (a dbt environment name) to try a metric from that environment's latest run before it is merged.
+
 dbt: create/read projects → create/read/edit/delete model files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run) → create/update/delete jobs. Edits commit straight to the user's session branch of the workspace repo (dbt/ folder). Warehouse-mutating runs (dbt_run_model, dbt_run_job, dbt_cancel_run) appear only with the explicit warehouse:write OAuth/API-key scope.
 
 Syncs (flows, what loads sources into the warehouse): flow_list → flow_read / flow_status (per entity: mode, backlog, failures, last materialised). flow_backfill starts a full backfill; flow_update changes only the triggers (poll cron, webhook on/off, resync cron). Both need warehouse:write and an owner/admin.
@@ -121,7 +127,7 @@ Typical loop:
 1. Discover data: list_connections (kind "database" for warehouses, kind "source" for Stripe/Close/… keys), then list_databases / list_tables / inspect_table on a database connection (they dispatch on engine — SQL or MongoDB). A source connection is not queryable: probe_connection reads one live page from its platform.
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
 3. search_apps first (extend a close match rather than copy it) → app_create_app (lands in the user's personal users/<handle>/apps/ unless they ask for a shared one) → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
-4. For dbt work: read_dbt_project_tree → read/edit files → validate asynchronously, then poll dbt_get_run. Before creating a dbt model or a binding that aggregates a business metric, call lookup_term (the registry's definition and canonical model.column) and find_models (models that already hold the data; describe_model for columns and readers); when a canonical model exists, read it or extend it. Before joining two entities, call find_join_path and join on the columns it returns. For large or destructive work (warehouse runs, Git mutations, schedules), prefer proposing a plan via mako-desktop submit_plan before acting.
+4. For dbt work: read_dbt_project_tree → read/edit files → validate asynchronously, then poll dbt_get_run. Before creating a dbt model or a binding that aggregates a business metric, call lookup_term (the registry's definition and canonical model.column) and find_models (models that already hold the data; describe_model for columns and readers); when a canonical model exists, read it or extend it. Before joining two entities, call find_join_path and join on the columns it returns. A number the dbt project defines as a metric (list_metrics) is computed with query_metric, or compile_metric for a binding's SQL, never re-aggregated by hand. For large or destructive work (warehouse runs, Git mutations, schedules), prefer proposing a plan via mako-desktop submit_plan before acting.
 5. app_open_app opens/refreshes the app tab in Desktop. Verify with app_dev_log (vite + browser console) and app_browse (headless browser inside the sandbox). For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
 6. Interactive UX: mako-desktop ask_clarifying_questions / submit_plan (docked Chat cards) — never ask as plain text.
 7. Durable memory: read_self_directive / update_self_directive only. Do NOT write .claude/**/MEMORY.md or other local Claude memory files.
@@ -226,6 +232,8 @@ export function buildMakoMcpCandidateTools(
     // clients commonly abort a request at 60s ("The operation timed out."),
     // so a dbt_get_run wait must return well before that.
     maxRunWaitMs: MCP_MAX_RUN_WAIT_MS,
+    // query_metric runs a SELECT: gated by the key's query scopes.
+    queryAccess,
   });
   // Connector discovery for flow authoring (RFC: agent-authored flows).
   const connectorTools = createConnectorTools(workspaceId);

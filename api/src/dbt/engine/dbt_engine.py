@@ -14,7 +14,7 @@ Protocol (newline-delimited JSON):
 Sessions are keyed by an opaque string (the supervisor uses project+env). The
 supervisor owns the on-disk working directory; this process only reads it.
 
-All assumptions here were verified against dbt-core 1.9.10 + dbt-duckdb 1.9.4
+All assumptions here were verified against dbt-core 1.12.7 + dbt-duckdb 1.11.1
 (see api/src/dbt/dbt-engine.contract.test.ts).
 """
 

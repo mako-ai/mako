@@ -469,6 +469,11 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             const artifactKeys: Record<string, string> = {};
             const uploads: Array<[string, Buffer | undefined, string]> = [
               ["manifest", result.artifacts.manifest, "manifest.json"],
+              [
+                "semanticManifest",
+                result.artifacts.semanticManifest,
+                "semantic_manifest.json",
+              ],
               ["runResults", result.artifacts.runResults, "run_results.json"],
               ["catalog", result.artifacts.catalog, "catalog.json"],
               ["sources", result.artifacts.sources, "sources.json"],

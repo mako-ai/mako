@@ -4008,7 +4008,7 @@ export interface IDbtProject extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   name: string;
-  /** Pinned dbt-core minor version, e.g. "1.9". Informational for now. */
+  /** Pinned dbt-core minor version, e.g. "1.12". Informational for now. */
   dbtVersion: string;
   environments: IDbtEnvironment[];
   defaultEnvironment: string;
@@ -4064,7 +4064,7 @@ const DbtProjectSchema = new Schema<IDbtProject>(
       required: true,
     },
     name: { type: String, required: true, trim: true },
-    dbtVersion: { type: String, default: "1.9" },
+    dbtVersion: { type: String, default: "1.12" },
     environments: { type: [DbtEnvironmentSchema], default: [] },
     defaultEnvironment: { type: String, default: "dev" },
     prodEnvironment: { type: String },
@@ -4400,6 +4400,8 @@ export interface IDbtRun extends Document {
   };
   artifactKeys: {
     manifest?: string;
+    /** semantic_manifest.json of the same parse (MetricFlow metrics). */
+    semanticManifest?: string;
     runResults?: string;
     catalog?: string;
     sources?: string;
@@ -4521,6 +4523,7 @@ const DbtRunSchema = new Schema<IDbtRun>(
     },
     artifactKeys: {
       manifest: { type: String },
+      semanticManifest: { type: String },
       runResults: { type: String },
       catalog: { type: String },
       sources: { type: String },

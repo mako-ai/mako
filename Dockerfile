@@ -82,14 +82,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3-venv \
 
 # Bake a pinned dbt Core venv with the supported warehouse adapters.
 # The dbt runner (api/src/dbt/dbt-bin.ts) resolves the binary via DBT_VENV_BIN.
+#
+# dbt-metricflow (the `mf` CLI + the `metricflow` library, Apache 2.0 since
+# 0.209) shares this venv. The semantic-layer tools (list_metrics /
+# compile_metric / query_metric) run api/src/dbt/engine/metricflow_engine.py
+# with this venv's python: it imports `metricflow` only and compiles a stored
+# semantic_manifest.json into SQL, with no dbt project and no warehouse
+# connection. Keep metricflow in step with DEFAULT_METRICFLOW_VERSION
+# (api/src/dbt/dbt-bin.ts). dbt-metricflow caps dbt-core below 1.13, and
+# dbt-clickhouse caps dbt-adapters below 1.25, so move these pins together.
 RUN python3 -m venv /opt/dbt \
     && /opt/dbt/bin/pip install --no-cache-dir \
-    "dbt-core==1.9.10" \
-    "dbt-postgres==1.9.1" \
-    "dbt-redshift==1.9.5" \
-    "dbt-bigquery==1.9.2" \
-    "dbt-clickhouse==1.9.2" \
-    "dbt-sqlserver==1.9.0"
+    "dbt-core==1.12.7" \
+    "dbt-postgres==1.11.0" \
+    "dbt-redshift==1.11.2" \
+    "dbt-bigquery==1.12.3" \
+    "dbt-clickhouse==1.10.3" \
+    "dbt-sqlserver==1.12.2" \
+    "dbt-metricflow==0.15.0" \
+    && /opt/dbt/bin/dbt --version \
+    && /opt/dbt/bin/mf --version \
+    && /opt/dbt/bin/python -c "import metricflow"
 
 # dbt-mysql lags upstream (requires dbt-core ~=1.7), so it gets its own venv.
 RUN python3 -m venv /opt/dbt-mysql \

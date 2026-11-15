@@ -4,7 +4,7 @@ Snapshots record how mutable source rows change over time. dbt adds
 `dbt_valid_from` / `dbt_valid_to` columns; the current row has
 `dbt_valid_to IS NULL`.
 
-## Definition (dbt 1.9 YAML style)
+## Definition (dbt 1.9+ YAML style)
 
 `snapshots/orders_snapshot.yml`:
 
