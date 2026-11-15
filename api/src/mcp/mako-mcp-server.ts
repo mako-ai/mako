@@ -54,6 +54,7 @@ import { createWorkflowTools } from "../agent-lib/tools/workflow-tools";
 import { createFlowSyncTools } from "../agent-lib/tools/flow-sync-tools";
 import { createMemberTools } from "../agent-lib/tools/member-tools";
 import { createWebTools } from "../agent-lib/tools/web-tools";
+import { createRepoTools } from "../agent-lib/tools/repo-tools";
 import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
 import { METRIC_FIRST_TOOL_NAMES } from "../agents/modes/registry";
 import {
@@ -104,6 +105,7 @@ dbt: before creating a dbt model or a binding that aggregates a business metric,
 
 Slow SQL: create_console → run_console → check_query_status. A source connection (kind "source": Stripe, Close, …) is not queryable: probe_connection reads one live page; list_connectors is the connector catalog.
 Syncs: flow_list → flow_read / flow_status; flow_backfill and flow_update need warehouse:write and an owner/admin.
+Repo: repo_glob / repo_grep / repo_read_file read any file of the workspace repo (dbt YAML, dbt/ontology/terms.yml, skills, other apps' bindings), read-only.
 Skills: get_relevant_skills({ query }) early; list_skills, load_skill, read_skill_resource or mako://skills/{name} for specifics. web_search / fetch_url for public docs.`;
 
 /** ACP Desktop Chat — no headless preview tokens; the user already has a live tab. */
@@ -239,6 +241,8 @@ export function buildMakoMcpCandidateTools(
   // Gated by the members-write grant AND a live owner/admin check inside the
   // tools themselves — a key outlives the membership that justified it.
   const memberTools = createMemberTools(workspaceId, userId);
+  // Read-only reads of the whole workspace repo.
+  const repoTools = createRepoTools({ workspaceId, userId });
   return {
     ...connectorTools,
     ...connectionWriteTools,
@@ -246,6 +250,7 @@ export function buildMakoMcpCandidateTools(
     ...flowSyncTools,
     ...workflowTools,
     ...appsTools,
+    ...repoTools,
     ...memberTools,
     ...consoleTools,
     ...notebookTools,

@@ -408,6 +408,9 @@ async function main() {
       "list_metrics",
       "compile_metric",
       "query_metric",
+      "repo_glob",
+      "repo_grep",
+      "repo_read_file",
     ]) {
       assert.equal(
         byName.get(readOnlyTool)?.annotations?.readOnlyHint,
@@ -466,6 +469,10 @@ async function main() {
       "list_metrics",
       "compile_metric",
       "query_metric",
+      // Read-only reads of the whole workspace repo.
+      "repo_glob",
+      "repo_grep",
+      "repo_read_file",
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }

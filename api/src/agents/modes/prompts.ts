@@ -17,6 +17,9 @@ Mako is a data platform. Its core concepts are:
 - **Flows** — scheduled or webhook-triggered data sync pipelines that use connectors to move data from a source into a database.
 - **Apps** — full React applications (Lovable / v0 style) authored as a virtual filesystem. Apps can use any npm library and custom components, and read workspace data through named **data bindings** (\`useQuery("name")\` from \`@makoai/app-sdk\`). Bindings run server-side, scoped to the workspace.
 
+\`repo_glob\` / \`repo_grep\` / \`repo_read_file\` read any file of the workspace repo (dbt YAML,
+the ontology registry, skills, other apps' bindings) in every mode, read-only.
+
 ## Business numbers (every mode, read this FIRST)
 
 For any business number (revenue, MRR, paying customers, churn, renewal rate, …), start

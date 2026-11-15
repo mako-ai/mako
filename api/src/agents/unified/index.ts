@@ -17,6 +17,7 @@ import { createWorkflowTools } from "../../agent-lib/tools/workflow-tools";
 import { createConnectorTools } from "../../agent-lib/tools/connector-tools";
 import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
 import { createWebTools } from "../../agent-lib/tools/web-tools";
+import { createRepoTools } from "../../agent-lib/tools/repo-tools";
 import { UNIFIED_SYSTEM_PROMPT, buildCurrentScreenContext } from "./prompt";
 
 export const unifiedAgentMeta: AgentMeta = {
@@ -69,6 +70,9 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     touchedPaths: context.appsTouchedPaths,
   });
 
+  // Read-only reads of the whole workspace repo, in every mode.
+  const repoTools = createRepoTools({ workspaceId, userId });
+
   const {
     list_connections: _flowListConnections,
     list_databases: _flowListDatabases,
@@ -80,6 +84,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
   const tools = {
     ...universalTools,
     ...appsTools,
+    ...repoTools,
     ...clientDbtTools,
     ...dbtServerTools,
     ...clientDataSourceTools,

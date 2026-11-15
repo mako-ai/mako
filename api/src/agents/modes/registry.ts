@@ -60,6 +60,11 @@ export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
   // query_metric keeps its own gate: it needs query access
   // (requiresQueryAccess in dbt-capabilities.ts), checked at execution.
   ...METRIC_FIRST_TOOL_NAMES,
+  // Read-only reads of the whole workspace repo (repo-tools.ts): the dbt
+  // YAML, the registry, skills and other apps' bindings, in every mode.
+  "repo_glob",
+  "repo_grep",
+  "repo_read_file",
 ];
 
 /**

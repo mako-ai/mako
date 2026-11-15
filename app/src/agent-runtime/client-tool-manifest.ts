@@ -599,6 +599,36 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "search",
   },
+  // Read-only reads of the whole workspace repo (api/src/agent-lib/tools/repo-tools.ts).
+  repo_glob: {
+    domain: "search",
+    execution: "server",
+    getLabel: input => {
+      const pattern = (input as Record<string, unknown>)?.pattern;
+      return pattern ? `Finding ${pattern} in the repo` : "Finding repo files";
+    },
+    icon: "search",
+  },
+  repo_grep: {
+    domain: "search",
+    execution: "server",
+    getLabel: input => {
+      const pattern = (input as Record<string, unknown>)?.pattern;
+      return pattern
+        ? `Searching the repo for "${pattern}"`
+        : "Searching the repo";
+    },
+    icon: "search",
+  },
+  repo_read_file: {
+    domain: "search",
+    execution: "server",
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Reading ${path}` : "Reading a repo file";
+    },
+    icon: "eye",
+  },
   find_join_path: {
     domain: "dbt",
     execution: "server",
