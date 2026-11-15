@@ -59,7 +59,12 @@ The connector system is designed to be extensible, allowing easy addition of new
 ```
 connectors/
 ├── base/
-│   └── BaseConnector.ts     # Abstract base class for all connectors
+│   ├── BaseConnector.ts     # Abstract base class for all connectors
+│   ├── http-retry.ts        # The one retry policy (backoff, Retry-After, 429/5xx/network)
+│   ├── http-client.ts       # headerValue, base URL, page-size clamp, API error line, retry executor
+│   ├── pagination.ts        # Offset and next-token page loops
+│   ├── incremental.ts       # Date windows, the client-side `since` filter
+│   └── webhook-signature.ts # Raw body, HMAC, constant-time compare
 ├── stripe/
 ├── close/
 ├── claap/
@@ -76,7 +81,12 @@ connectors/
 
 Each connector directory follows the same shape: `connector.ts` (implementation),
 `index.ts` (exports the `XxxConnector` class), `icon.svg`, and usually
-`connector.test.ts` + `schema.ts` for typed entity schemas.
+`connector.test.ts` + `schema.ts` for typed entity schemas. Larger connectors
+keep `connector.ts` as the public class and split the work into sibling
+modules (e.g. `client.ts`, `fetchers.ts`, `webhooks.ts`) that read the
+instance through a small context object, so a client or `sleep` stubbed on
+the instance in tests is the one they use. Reuse `base/` before writing
+another retry loop, header lookup, pagination loop or signature compare.
 
 ## Creating a New Connector
 
