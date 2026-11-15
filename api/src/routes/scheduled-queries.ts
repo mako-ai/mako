@@ -4,8 +4,7 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { SavedConsole } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { requireWorkspaceAdmin } from "../middleware/workspace-admin.middleware";
-import { AuthenticatedContext } from "../middleware/workspace.middleware";
-import { workspaceService } from "../services/workspace.service";
+import { consoleWorkspaceAccess } from "./consoles/middleware";
 import {
   AUTH_SECURITY,
   createRouter,
@@ -25,24 +24,9 @@ const WorkspaceParam = z.object({
 
 scheduledQueryRoutes.use("*", unifiedAuthMiddleware);
 
-scheduledQueryRoutes.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId");
-  const user = c.get("user");
-
-  if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-    return c.json(
-      { success: false, error: "Invalid workspace ID format" },
-      400,
-    );
-  }
-
-  if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-    return c.json({ success: false, error: "Access denied to workspace" }, 403);
-  }
-
-  await next();
-});
-
+// The consoles router's workspace check: a member, or an API key minted for
+// THIS workspace (acting with its owner's role).
+scheduledQueryRoutes.use("*", consoleWorkspaceAccess);
 scheduledQueryRoutes.use("*", requireWorkspaceAdmin);
 
 scheduledQueryRoutes.openapi(
