@@ -27,7 +27,6 @@ import {
   DialogContent,
   DialogActions,
   Alert,
-  Snackbar,
   Tooltip,
   Menu,
   MenuItem,
@@ -64,6 +63,7 @@ import { loadMonaco } from "../lib/monaco/load";
 import { lazyWithSuspense } from "../lib/lazy-component";
 import Console, { ConsoleRef } from "./Console";
 import { useAppsStore } from "../store/appsStore";
+import { notify } from "../store/notificationStore";
 import type { HistoryEntityKind } from "../store/entityHistoryStore";
 import EntityHistoryPopover from "./EntityHistoryPopover";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
@@ -112,6 +112,14 @@ import {
   useRenderCount,
   useWhyChanged,
 } from "../utils/renderDebug";
+
+/** Editor success toasts: bottom-right, 6s. */
+function showEditorToast(message: string) {
+  return notify.success(message, {
+    autoHideDuration: 6000,
+    anchorOrigin: { vertical: "bottom", horizontal: "right" },
+  });
+}
 
 // Heavy tab bodies are split out of the entry chunk (xterm, MUI X data
 // grid, notebooks, dbt, settings): each loads when its tab first renders.
@@ -414,8 +422,6 @@ function Editor({
       pageSize?: number;
     };
   } | null>(null);
-  const [snackbarOpen, setSnackbarOpen] = useState(false);
-  const [snackbarMessage, setSnackbarMessage] = useState("");
   const connectionsMap = useSchemaStore(state => state.connections);
   const ensureConnections = useSchemaStore(state => state.ensureConnections);
   const availableDatabases = React.useMemo(
@@ -1262,16 +1268,15 @@ function Editor({
 
       const baseName = tab.title || "query-results";
 
-      setSnackbarMessage(
+      const preparingToast = showEditorToast(
         format === "csv" ? "Preparing CSV…" : "Preparing NDJSON…",
       );
-      setSnackbarOpen(true);
 
       try {
-        // We use fetch (not a hidden-iframe form POST) so that server-side
-        // errors — preview-safety rejections, BigQuery auth/permission
-        // failures, etc. — surface to the user instead of being swallowed
-        // by an invisible iframe that always shows a "download started" toast.
+        // Read the export as a blob through the store (not a hidden-iframe
+        // form POST) so server-side errors — preview-safety rejections,
+        // BigQuery auth/permission failures, etc. — throw here and surface
+        // to the user instead of being swallowed by an invisible iframe.
         const blob = await useConsoleStore
           .getState()
           .exportQueryResults(currentWorkspace.id, {
@@ -1291,12 +1296,11 @@ function Editor({
         anchor.remove();
         URL.revokeObjectURL(url);
 
-        setSnackbarMessage(
+        showEditorToast(
           format === "csv" ? "CSV downloaded" : "NDJSON downloaded",
         );
-        setSnackbarOpen(true);
       } catch (error) {
-        setSnackbarOpen(false);
+        notify.dismiss(preparingToast);
         setErrorMessage(
           error instanceof Error
             ? error.message
@@ -1402,8 +1406,7 @@ function Editor({
           console_id: tabId,
         });
 
-        setSnackbarMessage(`Console saved to '${savePath}.js'`);
-        setSnackbarOpen(true);
+        showEditorToast(`Console saved to '${savePath}.js'`);
         success = true;
 
         // Add the console to the tree
@@ -1443,10 +1446,9 @@ function Editor({
           });
           state.setActiveTab(id);
         }
-        setSnackbarMessage(
+        showEditorToast(
           "Connect a GitHub repository to save consoles — Mako keeps your work in your own repo.",
         );
-        setSnackbarOpen(true);
       } else {
         setErrorMessage(JSON.stringify(result.error, null, 2));
         setErrorModalOpen(true);
@@ -1669,8 +1671,7 @@ function Editor({
         throw new Error(response.error || "Failed to run scheduled query");
       }
       setTabBottomPanel(prev => ({ ...prev, [tabId]: "runs" }));
-      setSnackbarMessage("Async query run queued");
-      setSnackbarOpen(true);
+      showEditorToast("Async query run queued");
       await loadRunsPanelForTab(tabId);
     },
     [currentWorkspace, runScheduledNow, loadRunsPanelForTab],
@@ -1768,8 +1769,7 @@ function Editor({
           .getState()
           .addConsole(currentWorkspace.id, pendingSaveData.path, tabId);
 
-        setSnackbarMessage(`Console saved at '${pendingSaveData.path}.js'`);
-        setSnackbarOpen(true);
+        showEditorToast(`Console saved at '${pendingSaveData.path}.js'`);
 
         trackEvent("console_saved", {
           console_id: tabId,
@@ -1866,8 +1866,7 @@ function Editor({
             new_path: savePath,
           });
 
-          setSnackbarMessage(`Renamed to '${savePath}.js'`);
-          setSnackbarOpen(true);
+          showEditorToast(`Renamed to '${savePath}.js'`);
 
           const { useConsoleTreeStore } =
             await import("../store/consoleTreeStore");
@@ -1923,8 +1922,7 @@ function Editor({
             source_console_id: saveDialogTabId,
             new_console_id: targetId,
           });
-          setSnackbarMessage(`Saved a copy as '${savePath}.js'`);
-          setSnackbarOpen(true);
+          showEditorToast(`Saved a copy as '${savePath}.js'`);
         } else {
           // "new" — first-time save of a draft; update the originating tab.
           updateFilePath(targetId, savePath);
@@ -1948,8 +1946,7 @@ function Editor({
             is_new: true,
           });
 
-          setSnackbarMessage(`Console saved as '${savePath}'`);
-          setSnackbarOpen(true);
+          showEditorToast(`Console saved as '${savePath}'`);
         }
 
         const { useConsoleTreeStore } =
@@ -2098,10 +2095,6 @@ function Editor({
     setErrorModalOpen(false);
     setErrorMessage("");
     setErrorPreviewRetry(null);
-  };
-
-  const handleCloseSnackbar = () => {
-    setSnackbarOpen(false);
   };
 
   /* ----------------------------- Render ---------------------------- */
@@ -3179,22 +3172,6 @@ function Editor({
           }
         />
       )}
-
-      {/* Success Snackbar */}
-      <Snackbar
-        open={snackbarOpen}
-        autoHideDuration={6000}
-        onClose={handleCloseSnackbar}
-        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
-      >
-        <Alert
-          onClose={handleCloseSnackbar}
-          severity="success"
-          sx={{ width: "100%" }}
-        >
-          {snackbarMessage}
-        </Alert>
-      </Snackbar>
     </Box>
   );
 }

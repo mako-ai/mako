@@ -2,8 +2,6 @@ import React, { useMemo, useCallback, useEffect, useRef } from "react";
 import {
   Box,
   Typography,
-  Snackbar,
-  Alert,
   Chip,
   ToggleButtonGroup,
   ToggleButton,
@@ -30,6 +28,7 @@ import {
 import Editor from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { notify } from "../store/notificationStore";
 import type { MakoChartSpec } from "../lib/chart-spec";
 import ResultsChart from "./ResultsChart";
 import VSScrollArea, { attachOverlayScrollbars } from "./VSScrollArea";
@@ -149,7 +148,6 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   hideChartView = false,
 }) => {
   const isMobile = useIsMobile();
-  const [snackbarOpen, setSnackbarOpen] = React.useState(false);
   const [internalViewMode, setInternalViewMode] =
     React.useState<ResultsViewMode>("table");
   // "cards" is a local override that takes precedence over the controlled
@@ -554,7 +552,13 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
       ].join("\n");
 
       await navigator.clipboard.writeText(csvContent);
-      setSnackbarOpen(true);
+      notify.success(
+        "Table copied to clipboard! You can now paste it in Google Sheets.",
+        {
+          autoHideDuration: 3000,
+          anchorOrigin: { vertical: "bottom", horizontal: "right" },
+        },
+      );
     } catch (error) {
       console.error("Failed to copy to clipboard:", error);
     }
@@ -1152,20 +1156,6 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
           )}
         </Box>
       )}
-      <Snackbar
-        open={snackbarOpen}
-        autoHideDuration={3000}
-        onClose={() => setSnackbarOpen(false)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
-      >
-        <Alert
-          onClose={() => setSnackbarOpen(false)}
-          severity="success"
-          sx={{ width: "100%" }}
-        >
-          Table copied to clipboard! You can now paste it in Google Sheets.
-        </Alert>
-      </Snackbar>
     </Box>
   );
 };

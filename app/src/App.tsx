@@ -77,6 +77,11 @@ const SourceControlExplorer = lazy(
 const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
 const AppViewerPage = lazy(() => import("./pages/AppViewerPage"));
 const ConnectionKeyPage = lazy(() => import("./pages/ConnectionKeyPage"));
+// The toast host stays out of the entry chunk; toasts queued before it
+// loads wait in the notification store and show once it mounts.
+const Notifier = lazy(() =>
+  import("./components/Notifier").then(m => ({ default: m.Notifier })),
+);
 const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
@@ -1040,6 +1045,9 @@ function App() {
       <CheckoutSuccessTracker />
       <DesktopAuthResume />
       <UpdateNotification />
+      <Suspense fallback={null}>
+        <Notifier />
+      </Suspense>
       <Routes>
         {/* Invite route - no authentication required */}
         <Route path="/invite/:token" element={<InvitePage />} />

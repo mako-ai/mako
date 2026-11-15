@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Alert, Box, Button, Snackbar, TextField } from "@mui/material";
+import { Alert, Box, Button, TextField } from "@mui/material";
 import { Save as SaveIcon, Refresh as RefreshIcon } from "@mui/icons-material";
 import SettingsLayout from "./SettingsLayout";
 import { useCustomPrompt } from "../../hooks/useCustomPrompt";
+import { notify } from "../../store/notificationStore";
 
 export default function SettingsPrompt() {
   const {
@@ -15,7 +16,6 @@ export default function SettingsPrompt() {
 
   const [local, setLocal] = useState("");
   const [modified, setModified] = useState(false);
-  const [snackbar, setSnackbar] = useState<string | null>(null);
 
   useEffect(() => {
     setLocal(customPromptContent);
@@ -26,13 +26,13 @@ export default function SettingsPrompt() {
     const ok = await updateCustomPrompt(local);
     if (ok) {
       setModified(false);
-      setSnackbar("Custom prompt saved successfully!");
+      notify.success("Custom prompt saved successfully!");
     }
   };
 
   const handleReset = async () => {
     if (await resetCustomPrompt()) {
-      setSnackbar("Custom prompt reset to default!");
+      notify.success("Custom prompt reset to default!");
     }
   };
 
@@ -80,16 +80,6 @@ export default function SettingsPrompt() {
           Reset to Default
         </Button>
       </Box>
-
-      <Snackbar
-        open={snackbar !== null}
-        autoHideDuration={4000}
-        onClose={() => setSnackbar(null)}
-      >
-        <Alert onClose={() => setSnackbar(null)} severity="success">
-          {snackbar}
-        </Alert>
-      </Snackbar>
     </SettingsLayout>
   );
 }

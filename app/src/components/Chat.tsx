@@ -15,7 +15,6 @@ import {
   Typography,
   Alert,
   Collapse,
-  Snackbar,
   Tooltip,
 } from "@mui/material";
 import { ChevronDown, Copy, Check, History, Plus, X } from "lucide-react";
@@ -118,6 +117,16 @@ import {
   useRenderCount,
   useWhyChanged,
 } from "../utils/renderDebug";
+import { notify } from "../store/notificationStore";
+
+/** Failed user actions surface as a filled error toast. */
+function notifyActionError(message: string) {
+  notify.error(message, {
+    autoHideDuration: 5000,
+    anchorOrigin: { vertical: "bottom", horizontal: "center" },
+    variant: "filled",
+  });
+}
 
 // Virtuoso's `Components['List']` types `ref` as a `LegacyRef` (string refs
 // allowed), which is contravariant with forwardRef's `Ref`. The component is
@@ -171,7 +180,6 @@ const Chat: React.FC<ChatProps> = ({
   const confirm = useConfirm();
   // One-off feedback for user-initiated actions that fail quietly otherwise
   // (clipboard, session delete).
-  const [actionError, setActionError] = useState<string | null>(null);
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
 
@@ -999,7 +1007,7 @@ const Chat: React.FC<ChatProps> = ({
     if (!ok) return;
     const deleted = await deleteSession(id);
     if (!deleted) {
-      setActionError("Could not delete that chat. Please try again.");
+      notifyActionError("Could not delete that chat. Please try again.");
       return;
     }
     // If we deleted the current chat, start a new one.
@@ -1271,7 +1279,7 @@ const Chat: React.FC<ChatProps> = ({
     } catch {
       // Clipboard can be unavailable (insecure context, denied permission).
       // Silently doing nothing looks like a broken button.
-      setActionError("Could not copy the chat history to the clipboard.");
+      notifyActionError("Could not copy the chat history to the clipboard.");
     }
   };
 
@@ -1666,21 +1674,6 @@ const Chat: React.FC<ChatProps> = ({
         planFeedbackMode={isPlanAwaitingFeedback}
         draft={composerDraft}
       />
-
-      <Snackbar
-        open={actionError !== null}
-        autoHideDuration={5000}
-        onClose={() => setActionError(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-      >
-        <Alert
-          severity="error"
-          variant="filled"
-          onClose={() => setActionError(null)}
-        >
-          {actionError}
-        </Alert>
-      </Snackbar>
 
       {/* Tool Debug Dialog */}
       <ToolDetailsDialog
