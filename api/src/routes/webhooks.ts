@@ -248,7 +248,7 @@ router.openapi(
       });
 
       if (!flow || !isWebhookFlow(flow)) {
-        return c.json({ error: "Webhook flow not found" });
+        return fail(c, 404, "Webhook flow not found");
       }
 
       // Create a test event
