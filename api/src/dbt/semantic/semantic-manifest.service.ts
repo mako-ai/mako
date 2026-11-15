@@ -217,3 +217,50 @@ export async function loadSemanticProjects(
   }
   return out;
 }
+
+/** Why `loadSemanticProjects` found nothing for what the caller named. */
+export type NoSemanticProjects =
+  | { reason: "unknown-project"; projects: Array<{ id: string; name: string }> }
+  | { reason: "unknown-environment"; environments: string[] }
+  | { reason: "no-manifest" };
+
+/**
+ * Tells a name that does not exist from one that exists and has no parsed
+ * run yet: a wrong projectId, a dbt environment no project has, or a real
+ * project/environment whose runs stored no semantic manifest.
+ */
+export async function explainNoSemanticProjects(
+  workspaceId: string,
+  options: { projectId?: string; environment?: string } = {},
+): Promise<NoSemanticProjects> {
+  if (!Types.ObjectId.isValid(workspaceId)) return { reason: "no-manifest" };
+  const projects = await DbtProject.find({
+    workspaceId: new Types.ObjectId(workspaceId),
+  })
+    .select("_id name environments.name")
+    .sort({ name: 1 })
+    .lean<Array<Pick<ProjectFields, "_id" | "name" | "environments">>>();
+  const named = options.projectId
+    ? projects.filter(project => project._id.toString() === options.projectId)
+    : projects;
+  if (options.projectId && named.length === 0) {
+    return {
+      reason: "unknown-project",
+      projects: projects.map(project => ({
+        id: project._id.toString(),
+        name: project.name,
+      })),
+    };
+  }
+  if (options.environment) {
+    const environments = [
+      ...new Set(
+        named.flatMap(project => project.environments.map(env => env.name)),
+      ),
+    ].sort();
+    if (!environments.includes(options.environment)) {
+      return { reason: "unknown-environment", environments };
+    }
+  }
+  return { reason: "no-manifest" };
+}

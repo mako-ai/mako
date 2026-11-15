@@ -370,6 +370,32 @@ describe("list_metrics", () => {
     expect(result).not.toHaveProperty("warning");
   });
 
+  it("says which metrics split when they share no dimension", async () => {
+    await seedProject();
+    engine.describe.mockImplementation(async (_key, names: string[]) => ({
+      dimensions:
+        names.length > 1
+          ? []
+          : names[0] === "revenue"
+            ? [{ name: "metric_time__day", type: "time" }]
+            : [{ name: "customer__region", type: "categorical" }],
+      entities: [],
+    }));
+    const result = await run<{ message: string; groupBy: unknown }>(
+      tools.list_metrics,
+      { metrics: ["revenue", "active_customers"] },
+    );
+    expect(result.groupBy).toMatchObject({ dimensions: [] });
+    expect(result.message).toBe(
+      "revenue, active_customers share no dimension, so they cannot be grouped in one query. Each alone takes: revenue: metric_time__day; active_customers: customer__region. Query them separately, or describe a subset that shares dimensions.",
+    );
+    // A single metric without dimensions needs no such message.
+    const alone = await run<Record<string, unknown>>(tools.list_metrics, {
+      metrics: ["revenue"],
+    });
+    expect(alone).not.toHaveProperty("message");
+  });
+
   it("refuses an unknown metric before starting MetricFlow, naming the ones that exist", async () => {
     await seedProject();
     const result = await run<{ success: boolean; error: string }>(
@@ -489,10 +515,19 @@ describe("compile_metric", () => {
       metrics: ["revenue"],
       groupBy: ["customer__country"],
     });
+    // The six suggestions MetricFlow gives become the whole list, with
+    // the smallest grain of metric_time.
+    expect(engine.describe).toHaveBeenCalledWith(
+      "runs/Analytics/prod/semantic_manifest.json",
+      ["revenue"],
+    );
     expect(result).toEqual({
       success: false,
-      error:
+      error: [
         "The given input does not match any of the available group-by-items",
+        "Valid group-bys for revenue (3): metric_time__day, customer__region, customer.",
+        "The smallest grain of metric_time is day: use metric_time__day or a coarser one. A finer grain does not exist for this metric.",
+      ].join("\n\n"),
     });
   });
 
@@ -687,23 +722,53 @@ describe("a named dbt environment", () => {
     expect(prod.error).toMatch(/Unknown metric: churn_rate/);
   });
 
-  it("says so when the environment has no run with a manifest", async () => {
+  it("tells an unknown environment from a real one with no parsed run", async () => {
     await seedProdAndDev();
     const listed = await run<{ metrics: unknown[]; message: string }>(
       tools.list_metrics,
       { environment: "joan" },
     );
     expect(listed.metrics).toEqual([]);
-    expect(listed.message).toMatch(
-      /No run of the dbt environment "joan" has stored a semantic manifest/,
+    expect(listed.message).toBe(
+      'Unknown dbt environment "joan". Valid: dev, prod. Omit environment to read production.',
     );
     const compiled = await run<{ success: boolean; error: string }>(
       tools.compile_metric,
       { metrics: ["revenue"], environment: "joan" },
     );
     expect(compiled.success).toBe(false);
-    expect(compiled.error).toMatch(/dbt environment "joan"/);
+    expect(compiled.error).toBe(listed.message);
     expect(engine.compile).not.toHaveBeenCalled();
+
+    // "dev" exists; without a run that stored a manifest it says that.
+    await DbtRun.deleteMany({ environment: "dev" });
+    const unparsed = await run<{ metrics: unknown[]; message: string }>(
+      tools.list_metrics,
+      { environment: "dev" },
+    );
+    expect(unparsed.message).toMatch(
+      /The dbt environment "dev" exists, but none of its runs has stored a semantic manifest/,
+    );
+  });
+
+  it("names the projects when the projectId is unknown", async () => {
+    const project = await seedProject();
+    const wrong = new Types.ObjectId().toString();
+    for (const projectId of [wrong, "not-an-id"]) {
+      const listed = await run<{ metrics: unknown[]; message: string }>(
+        tools.list_metrics,
+        { projectId },
+      );
+      expect(listed.message).toBe(
+        `Unknown projectId "${projectId}". dbt projects in this workspace: Analytics (${project._id.toString()}). Omit projectId unless several projects define the metric.`,
+      );
+      expect(listed.message).not.toBe(NO_SEMANTIC_MANIFEST);
+      const compiled = await run<{ error: string }>(tools.compile_metric, {
+        metrics: ["revenue"],
+        projectId,
+      });
+      expect(compiled.error).toBe(listed.message);
+    }
   });
 });
 

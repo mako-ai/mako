@@ -48,6 +48,7 @@ import {
   type CatalogMetric,
 } from "../../dbt/semantic/semantic-manifest";
 import {
+  explainNoSemanticProjects,
   loadSemanticProjects,
   type SemanticProject,
 } from "../../dbt/semantic/semantic-manifest.service";
@@ -71,7 +72,35 @@ export const NO_SEMANTIC_MANIFEST =
 
 /** What to say when the named environment has no run with a manifest. */
 const noEnvironmentManifest = (environment: string) =>
-  `No run of the dbt environment "${environment}" has stored a semantic manifest. Check the name with read_dbt_project_tree, then run dbt_parse in that environment (and build the models a metric reads before querying it).`;
+  `The dbt environment "${environment}" exists, but none of its runs has stored a semantic manifest. Run dbt_parse in that environment (and build the models a metric reads before querying it).`;
+
+/**
+ * What to say when nothing was loaded: a name that does not exist is told
+ * apart from a real project or environment with no parsed run.
+ */
+async function noSemanticProjectsMessage(
+  workspaceId: string,
+  options: { projectId?: string; environment?: string },
+): Promise<string> {
+  const why = await explainNoSemanticProjects(workspaceId, options);
+  if (why.reason === "unknown-project") {
+    return why.projects.length > 0
+      ? `Unknown projectId "${options.projectId}". dbt projects in this workspace: ${why.projects
+          .map(project => `${project.name} (${project.id})`)
+          .join(
+            ", ",
+          )}. Omit projectId unless several projects define the metric.`
+      : `Unknown projectId "${options.projectId}": this workspace has no dbt project.`;
+  }
+  if (why.reason === "unknown-environment") {
+    return why.environments.length > 0
+      ? `Unknown dbt environment "${options.environment}". Valid: ${why.environments.join(", ")}. Omit environment to read production.`
+      : `Unknown dbt environment "${options.environment}": this workspace's dbt projects have no environment.`;
+  }
+  return options.environment
+    ? noEnvironmentManifest(options.environment)
+    : NO_SEMANTIC_MANIFEST;
+}
 
 const NO_METRICS =
   "This workspace's dbt projects define no metrics yet. A metric is YAML in the dbt project (a semantic model over a dbt model, then a metric over its measures): load the dbt skill and read its semantic-layer reference to add one, then run dbt_parse. Until then compute the number from the dbt models: lookup_term and find_models.";
@@ -159,6 +188,80 @@ function assertTimeRange(startTime?: string, endTime?: string): void {
   }
 }
 
+const groupByNames = (items: ReadonlyArray<{ name: string }>, max: number) => {
+  const shown = capList(
+    items.map(item => item.name),
+    max,
+  );
+  return `${shown.items.join(", ")}${shown.truncated ? `, … (${shown.total} in all)` : ""}`;
+};
+
+/**
+ * MetricFlow answers a group-by it cannot resolve with six suggestions.
+ * This adds every group-by the metrics do take and the smallest grain of
+ * metric_time, so the caller can pick without another call. Any other error
+ * is returned as it is.
+ */
+async function withValidGroupBys(
+  error: unknown,
+  project: SemanticProject,
+  metrics: readonly string[],
+): Promise<unknown> {
+  if (
+    !(error instanceof MetricflowQueryError) ||
+    !/group-by-item/i.test(error.message)
+  ) {
+    return error;
+  }
+  try {
+    const { dimensions, entities } = await describeMetricGroupBys(
+      project.semanticManifestKey,
+      metrics,
+    );
+    if (dimensions.length === 0 && entities.length === 0) return error;
+    const grain = dimensions.find(
+      dimension => dimension.base === "metric_time",
+    )?.grain;
+    return new MetricflowQueryError(
+      [
+        error.message,
+        `Valid group-bys for ${metrics.join(", ")} (${dimensions.length + entities.length}): ${groupByNames([...dimensions, ...entities], MAX_GROUP_BY_DIMENSIONS)}.`,
+        ...(grain
+          ? [
+              `The smallest grain of metric_time is ${grain}: use metric_time__${grain} or a coarser one. A finer grain does not exist for ${metrics.length === 1 ? "this metric" : "these metrics"}.`,
+            ]
+          : []),
+      ].join("\n\n"),
+    );
+  } catch {
+    return error;
+  }
+}
+
+/**
+ * Metrics that share no dimension cannot be grouped together. Names what
+ * each one takes alone, so the caller sees where the set splits.
+ */
+async function sharedNothingMessage(
+  project: SemanticProject,
+  metrics: readonly string[],
+): Promise<string> {
+  const each = await Promise.all(
+    metrics.map(async name => {
+      try {
+        const { dimensions } = await describeMetricGroupBys(
+          project.semanticManifestKey,
+          [name],
+        );
+        return `${name}: ${dimensions.length > 0 ? groupByNames(dimensions, 8) : "no dimension"}`;
+      } catch {
+        return `${name}: could not be read`;
+      }
+    }),
+  );
+  return `${metrics.join(", ")} share no dimension, so they cannot be grouped in one query. Each alone takes: ${each.join("; ")}. Query them separately, or describe a subset that shares dimensions.`;
+}
+
 /**
  * The one project that defines every metric asked for. Throws with what to
  * do when none or several do.
@@ -219,9 +322,10 @@ export const createDbtMetricTools = (
     });
     if (projects.length === 0) {
       throw new Error(
-        input.environment
-          ? noEnvironmentManifest(input.environment)
-          : NO_SEMANTIC_MANIFEST,
+        await noSemanticProjectsMessage(workspaceId, {
+          projectId: input.projectId,
+          environment: input.environment,
+        }),
       );
     }
     const project = projectDefining(projects, input.metrics);
@@ -264,7 +368,9 @@ export const createDbtMetricTools = (
         endTime: input.endTime,
       },
       toolExecutionContext?.signal,
-    );
+    ).catch(async error => {
+      throw await withValidGroupBys(error, project, input.metrics);
+    });
     // A where filter is raw SQL: the compiled statement gets the same
     // read-only check as a query that runs, so compile_metric never hands
     // back SQL that query_metric would refuse.
@@ -293,9 +399,10 @@ export const createDbtMetricTools = (
             return {
               success: true as const,
               metrics: [],
-              message: environment
-                ? noEnvironmentManifest(environment)
-                : NO_SEMANTIC_MANIFEST,
+              message: await noSemanticProjectsMessage(workspaceId, {
+                projectId,
+                environment,
+              }),
             };
           }
 
@@ -341,6 +448,9 @@ export const createDbtMetricTools = (
                   : {}),
                 timeGrains: TIME_GRAIN_HINT,
               },
+              ...(metrics.length > 1 && groupBys.dimensions.length === 0
+                ? { message: await sharedNothingMessage(project, metrics) }
+                : {}),
               ...(project.catalog.hasTimeSpine
                 ? {}
                 : {
