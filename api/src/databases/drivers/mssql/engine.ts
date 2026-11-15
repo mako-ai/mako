@@ -56,6 +56,10 @@ export class MSSQLEngine implements QueryEngine {
     await this.pools.closeAll();
   }
 
+  async sweepIdleConnections(maxIdleMs: number): Promise<void> {
+    await this.pools.sweepIdle(maxIdleMs);
+  }
+
   async testConnection(
     database: IDatabaseConnection,
   ): Promise<ConnectionTestResult> {
