@@ -87,6 +87,10 @@ const runSummary = (run: Row, workflowName: unknown = run.workflowName) => ({
   trigger: metadataOf(run).trigger,
 });
 
+/** Runs in the order a list shows them; one without a start goes last. */
+const newestFirst = (a: { startedAt?: unknown }, b: { startedAt?: unknown }) =>
+  String(b.startedAt ?? "").localeCompare(String(a.startedAt ?? ""));
+
 /** What a screen shows of one slot. */
 function deployment(slot?: IWorkflowSlot) {
   return {
@@ -141,7 +145,8 @@ async function loadState(workspaceId: string) {
 
 /**
  * Everything a screen or an agent shows first: what is deployed, the
- * workflows and schedules, and the last `limit` runs.
+ * workflows and schedules, and the last `limit` runs of each workflow,
+ * newest first.
  */
 export async function readWorkflowsOverview(
   workspaceId: string,
@@ -166,22 +171,39 @@ export async function readWorkflowsOverview(
     ...(webhooks ? { webhookUrl: webhooks[workflowId] ?? null } : {}),
   }));
   let crons: Rows;
-  let runs: Rows;
+  let runs: Row[];
   try {
-    [crons, runs] = await Promise.all([
+    const [cronRows, known] = await Promise.all([
       tenantJson<Rows>(tenant, `${base}/workflows/crons`),
-      tenantJson<Rows>(
-        tenant,
-        `/api/v1/stable/tenants/${tenant.tenantId}/workflow-runs`,
-        {
-          query: new URLSearchParams({
-            since,
-            only_tasks: "false",
-            limit: String(limit),
-          }),
-        },
-      ),
+      tenantJson<Rows>(tenant, `${base}/workflows`),
     ]);
+    crons = cronRows;
+    // Each workflow's own last runs, asked one workflow at a time: the
+    // tenant's last runs are those of whichever workflow runs most often,
+    // and a workflow that runs every few minutes would leave none of a
+    // weekly one's.
+    const ids = deployed
+      .map(name =>
+        idOf((known.rows ?? []).find(row => row.name === name) ?? {}),
+      )
+      .filter((id): id is string => !!id && isHatchetId(id));
+    const lists = await Promise.all(
+      ids.map(id =>
+        tenantJson<Rows>(
+          tenant,
+          `/api/v1/stable/tenants/${tenant.tenantId}/workflow-runs`,
+          {
+            query: new URLSearchParams({
+              since,
+              only_tasks: "false",
+              limit: String(limit),
+              workflow_ids: id,
+            }),
+          },
+        ),
+      ),
+    );
+    runs = lists.flatMap(list => list.rows ?? []);
   } catch (error) {
     // The workspace's tenant did not answer (unreachable, or a token for a
     // tenant this Hatchet does not have): say so beside what is deployed,
@@ -204,7 +226,7 @@ export async function readWorkflowsOverview(
     })),
     recentRuns: await withRunCosts(
       workspaceId,
-      (runs.rows ?? []).map(run => runSummary(run)),
+      runs.map(run => runSummary(run)).sort(newestFirst),
     ),
   };
 }

@@ -71,7 +71,7 @@ import { isWebhookSecret, setTriggers } from "../workflows/webhook";
 
 const logger = loggers.api("workflows");
 
-/** How many recent runs the Workflows screen lists. */
+/** How many of each workflow's recent runs the Workflows screen lists. */
 const RUNS_SHOWN = 100;
 
 /**

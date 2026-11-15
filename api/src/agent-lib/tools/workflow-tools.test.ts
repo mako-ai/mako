@@ -15,6 +15,9 @@ import { createWorkflowTools } from "./workflow-tools";
 const TENANT = "11111111-1111-1111-1111-111111111111";
 const RUN = "22222222-2222-2222-2222-222222222222";
 const TASK = "33333333-3333-3333-3333-333333333333";
+const DAILY = "55555555-5555-5555-5555-555555555555";
+const WEEKLY = "66666666-6666-6666-6666-666666666666";
+const WEEKLY_RUN = "77777777-7777-7777-7777-777777777777";
 const TOKEN = `x.${Buffer.from(
   JSON.stringify({ sub: TENANT, server_url: "https://hatchet.test" }),
 ).toString("base64url")}.y`;
@@ -37,7 +40,10 @@ const call = (
 const requests: Array<{ method: string; path: string; body?: any }> = [];
 const responses: Record<string, unknown> = {
   [`GET /api/v1/tenants/${TENANT}/workflows`]: {
-    rows: [{ name: "daily-digest" }, { name: "weekly-report" }],
+    rows: [
+      { name: "daily-digest", metadata: { id: DAILY } },
+      { name: "weekly-report", metadata: { id: WEEKLY } },
+    ],
   },
   [`GET /api/v1/tenants/${TENANT}/workflows/crons`]: {
     rows: [{ workflowName: "daily-digest", cron: "0 7 * * 1-5" }],
@@ -46,11 +52,31 @@ const responses: Record<string, unknown> = {
     rows: [
       {
         metadata: { id: RUN },
+        workflowId: DAILY,
         workflowName: "daily-digest",
         status: "FAILED",
+        startedAt: "2026-10-08T09:43:00Z",
         duration: 1200,
         errorMessage: "boom",
         additionalMetadata: { trigger: "agent", triggeredBy: "member" },
+      },
+      // A workflow that runs all the time: more runs than a list holds.
+      ...Array.from({ length: 30 }, (_, i) => ({
+        metadata: {
+          id: `88888888-8888-8888-8888-${String(i).padStart(12, "0")}`,
+        },
+        workflowId: DAILY,
+        workflowName: "daily-digest",
+        status: "COMPLETED",
+        startedAt: `2026-10-07T${String(i % 24).padStart(2, "0")}:00:00Z`,
+      })),
+      // And one that last ran long before them.
+      {
+        metadata: { id: WEEKLY_RUN },
+        workflowId: WEEKLY,
+        workflowName: "weekly-report",
+        status: "COMPLETED",
+        startedAt: "2026-10-01T07:00:00Z",
       },
     ],
   },
@@ -99,6 +125,15 @@ globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
   if (pathname.endsWith("/logs") && body) {
     const rows = [...(body as { rows: unknown[] }).rows];
     if (searchParams.get("order_by_direction") === "DESC") rows.reverse();
+    body = { rows: rows.slice(0, Number(searchParams.get("limit") ?? 50)) };
+  }
+  // Runs as Hatchet lists them: newest first, of the workflows asked for
+  // (all of them when none is), then limited.
+  if (pathname.endsWith("/workflow-runs") && body) {
+    const wanted = searchParams.getAll("workflow_ids");
+    const rows = (body as { rows: Array<Record<string, string>> }).rows
+      .filter(row => !wanted.length || wanted.includes(row.workflowId))
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
     body = { rows: rows.slice(0, Number(searchParams.get("limit") ?? 50)) };
   }
   return new Response(JSON.stringify(body ?? { error: "not found" }), {
@@ -225,11 +260,19 @@ async function main() {
       runId: RUN,
       workflowId: "daily-digest",
       status: "FAILED",
-      startedAt: undefined,
+      startedAt: "2026-10-08T09:43:00Z",
       durationMs: 1200,
       error: "boom",
       trigger: "agent",
     });
+    // Each workflow's own last runs: one that runs all the time fills its
+    // ten and leaves the other's, however long ago that one ran.
+    const listed = (overview.recentRuns as Array<{ workflowId: string }>).map(
+      run => run.workflowId,
+    );
+    assert.equal(listed.filter(w => w === "daily-digest").length, 10);
+    assert.equal(overview.recentRuns.at(-1).runId, WEEKLY_RUN);
+    assert.equal(listed.length, 11);
     assert.ok(!JSON.stringify(overview).includes(TOKEN));
 
     // A run starts the workflow by its name, active or not.
@@ -290,7 +333,10 @@ async function main() {
       workflowId: "daily-digest",
     });
     assert.equal(refused.success, false);
-    assert.equal(requests.length, before + 2, "no run was started");
+    assert.ok(
+      requests.slice(before).every(request => request.method === "GET"),
+      "no run was started",
+    );
 
     // The triggers are an admin's: active on and off, and never a name that
     // is not one.
