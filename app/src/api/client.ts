@@ -6,25 +6,35 @@
  * is checked against the spec: invalid paths, missing path params, wrong
  * request bodies, and misread responses become compile-time errors.
  *
- * Behaviour mirrors the legacy `lib/api-client.ts`:
+ * Every request:
  *   - sends the session cookie (`credentials: "include"`)
  *   - injects the active workspace id as `x-workspace-id`
  *   - redirects to `/login` on `401` (outside auth pages)
  *
- * Prefer this client for new store code. Paths are the full spec paths
- * (e.g. `/api/workspaces/{workspaceId}/consoles`).
+ * This is the one way the app calls its JSON API (stores only — see
+ * .cursor/rules/18-frontend-state.mdc). Paths are the full spec paths (e.g.
+ * `/api/workspaces/{workspaceId}/consoles`); routes the spec does not describe
+ * yet go through `unspecced` (same client instance and middleware).
  */
 import createClient, { type Client, type Middleware } from "openapi-fetch";
 
 import { handleUnauthorized } from "../lib/auth-redirect";
 import type { paths } from "./schema";
-import { getActiveWorkspaceId } from "../lib/active-workspace";
+import { getBootWorkspaceId } from "../lib/active-workspace";
 
-function activeWorkspaceId(): string | null {
-  return getActiveWorkspaceId();
+/**
+ * Where the `x-workspace-id` header comes from. The workspace store
+ * (`store/workspaceStore.ts`, the one owner of this tab's active workspace)
+ * registers itself here on load; the transport never imports app state. Until
+ * then — and in tests that use the client alone — it is the boot hint.
+ */
+let activeWorkspaceId: () => string | null = getBootWorkspaceId;
+
+export function setWorkspaceIdSource(source: () => string | null): void {
+  activeWorkspaceId = source;
 }
 
-/** Injects the workspace header and handles `401` like the legacy client. */
+/** Injects the workspace header and handles `401`. */
 const authMiddleware: Middleware = {
   onRequest({ request }) {
     const workspaceId = activeWorkspaceId();

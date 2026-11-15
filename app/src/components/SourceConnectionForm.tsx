@@ -319,24 +319,17 @@ function SourceConnectionForm({
     setDecryptingFields(prev => ({ ...prev, [fieldName]: true }));
 
     try {
-      const response = await fetch(
-        `/api/workspaces/${currentWorkspace.id}/connections/sources/${connectorId}/reveal-secret`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ field: fieldName }),
-        },
-      );
+      const result = await useSourceConnectionEntitiesStore
+        .getState()
+        .revealSecret(currentWorkspace.id, connectorId, fieldName);
 
-      const result = await response.json();
-
-      if (result.success) {
+      if ("value" in result) {
         setDecryptedValues(prev => ({
           ...prev,
-          [fieldName]: result.data.value,
+          [fieldName]: result.value,
         }));
         setShowDecryptedFields(prev => ({ ...prev, [fieldName]: true }));
-        if (!result.data.wasEncrypted) {
+        if (!result.wasEncrypted) {
           setSnackbarMessage("Value was not encrypted");
         }
       } else {

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
+import { unspecced } from "../api/unspecced";
 
 /**
  * Detects when the running frontend bundle is stale (a newer version has been
@@ -40,7 +40,9 @@ export const useAppVersionStore = create<AppVersionState>()(
       if (get().updateAvailable) return;
 
       try {
-        const response = await apiClient.get<{ buildId?: string }>("/version");
+        const response = await unspecced.get<{ buildId?: string }>(
+          "/api/version",
+        );
         const serverBuildId = response?.buildId;
         if (
           serverBuildId &&

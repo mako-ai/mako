@@ -29,10 +29,7 @@ import {
   type FileUIPart,
 } from "ai";
 import { useMcpStore } from "../store/mcpStore";
-// TODO(state-rules): legacy direct call (chat stop) — move into the chat
-// store when it grows an action for aborting server-side generation.
-// eslint-disable-next-line no-restricted-imports
-import { api } from "../api/client";
+import { useChatHistoryStore } from "../store/chatHistoryStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import type { ConsoleTab } from "../store/lib/types";
@@ -715,11 +712,7 @@ const Chat: React.FC<ChatProps> = ({
     // server keeps generating for reconnecting clients. Stop must be explicit:
     // this aborts the server-side generation and clears the resume pointer.
     if (chatIdRef.current) {
-      void api
-        .POST("/api/agent/chat/{chatId}/stop", {
-          params: { path: { chatId: chatIdRef.current } },
-        })
-        .catch(() => undefined);
+      useChatHistoryStore.getState().stopGeneration(chatIdRef.current);
     }
     stop();
     settleDanglingAssistantToolCalls();

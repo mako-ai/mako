@@ -27,27 +27,11 @@ import {
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConfirm } from "./ConfirmDialog";
-
-interface SkillSummary {
-  id: string;
-  name: string;
-  path: string;
-  loadWhen: string;
-  bodyPreview: string;
-  entities: string[];
-  suppressed: boolean;
-  pinned: boolean;
-  definitionInvalid: { reason: string; path: string } | null;
-  /** Problems that do not hide the skill (a cut description, a refused file). */
-  warnings?: string[];
-  /** Reads by the agent or an MCP client in the last 30 days. */
-  loads30d?: number;
-  lastLoadedAt?: string | null;
-}
-
-interface SkillDetail extends SkillSummary {
-  body: string;
-}
+import {
+  useSkillsStore,
+  type SkillDetail,
+  type SkillSummary,
+} from "../store/skillsStore";
 
 export function SkillsSection() {
   const { currentWorkspace } = useWorkspace();
@@ -72,18 +56,8 @@ export function SkillsSection() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/workspaces/${workspaceId}/skills`);
-      // Writes 412 without GitHub; GET/list is an empty explorer (disconnect
-      // or never linked). A sticky error left the panel populated after unlink.
-      if (res.status === 412) {
-        setSkills([]);
-        return;
-      }
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Failed to load skills");
-      }
-      setSkills(data.skills as SkillSummary[]);
+      // A 412 (no GitHub) resolves to an empty list in the store.
+      setSkills(await useSkillsStore.getState().listSkills(workspaceId));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load skills");
     } finally {
@@ -117,20 +91,9 @@ export function SkillsSection() {
       ),
     );
     try {
-      const res = await fetch(
-        `/api/workspaces/${workspaceId}/skills/${skill.id}/suppress`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ suppressed: nextSuppressed }),
-        },
-      );
-      if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        throw new Error(data?.error || `Request failed (${res.status})`);
-      }
+      await useSkillsStore
+        .getState()
+        .setSuppressed(workspaceId, skill.id, nextSuppressed);
     } catch (err) {
       // Rollback on error — and say why, or a 412 "connect GitHub first"
       // looks like a switch that will not stay put.
@@ -150,20 +113,9 @@ export function SkillsSection() {
       prev.map(s => (s.id === skill.id ? { ...s, pinned: nextPinned } : s)),
     );
     try {
-      const res = await fetch(
-        `/api/workspaces/${workspaceId}/skills/${skill.id}/pin`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pinned: nextPinned }),
-        },
-      );
-      if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        throw new Error(data?.error || `Request failed (${res.status})`);
-      }
+      await useSkillsStore
+        .getState()
+        .setPinned(workspaceId, skill.id, nextPinned);
     } catch (err) {
       setSkills(prev =>
         prev.map(s => (s.id === skill.id ? { ...s, pinned: skill.pinned } : s)),
@@ -185,16 +137,7 @@ export function SkillsSection() {
       return;
     }
     try {
-      const res = await fetch(
-        `/api/workspaces/${workspaceId}/skills/${skill.id}`,
-        { method: "DELETE" },
-      );
-      if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        throw new Error(data?.error || `Request failed (${res.status})`);
-      }
+      await useSkillsStore.getState().deleteSkill(workspaceId, skill.id);
       setSkills(prev => prev.filter(s => s.id !== skill.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete skill");
@@ -207,14 +150,9 @@ export function SkillsSection() {
     setEditing(null);
     setSaveError(null);
     try {
-      const res = await fetch(
-        `/api/workspaces/${workspaceId}/skills/${skill.id}`,
-      );
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Failed to load skill");
-      }
-      const detail = data.skill as SkillDetail;
+      const detail: SkillDetail = await useSkillsStore
+        .getState()
+        .getSkill(workspaceId, skill.id);
       setEditing(detail);
       setEditLoadWhen(detail.loadWhen);
       setEditBody(detail.body);
@@ -236,23 +174,12 @@ export function SkillsSection() {
         .split(",")
         .map(s => s.trim())
         .filter(Boolean);
-      const res = await fetch(
-        `/api/workspaces/${workspaceId}/skills/${editing.id}`,
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            loadWhen: editLoadWhen,
-            body: editBody,
-            entities,
-            pinned: editPinned,
-          }),
-        },
-      );
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Failed to save skill");
-      }
+      await useSkillsStore.getState().updateSkill(workspaceId, editing.id, {
+        loadWhen: editLoadWhen,
+        body: editBody,
+        entities,
+        pinned: editPinned,
+      });
       setEditing(null);
       await fetchSkills();
     } catch (err) {

@@ -2,7 +2,7 @@ import { useEffect, type MutableRefObject, type RefObject } from "react";
 import type { UseChatHelpers } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import type { VirtuosoHandle } from "react-virtuoso";
-import { api } from "../../../api/client";
+import { useChatHistoryStore } from "../../../store/chatHistoryStore";
 import type { LocalAcpChatBinding } from "../../../lib/persist-local-acp-chat";
 import { isLocalAcpModelId } from "../../../lib/local-acp-models";
 import { useConsoleStore } from "../../../store/consoleStore";
@@ -204,16 +204,11 @@ export function useChatSessionLoader({
     const targetChatId = chatIdRef.current;
     if (!currentWorkspaceId || !targetChatId) return false;
     try {
-      const { data: payload, response } = await api.GET(
-        "/api/workspaces/{workspaceId}/chats/{id}",
-        {
-          params: {
-            path: { workspaceId: currentWorkspaceId, id: targetChatId },
-          },
-        },
-      );
+      const payload = await useChatHistoryStore
+        .getState()
+        .fetchChat(currentWorkspaceId, targetChatId);
       if (chatIdRef.current !== targetChatId) return false;
-      if (!response.ok || !payload) return false;
+      if (!payload) return false;
       // The chat payload (messages/consoles) is spec-typed as a generic JSON
       // envelope; keep the loose shape the converter expects.
       const data = payload as {

@@ -13,7 +13,7 @@ import {
 } from "@mui/material";
 import { Building2, Plus, ChevronRight } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
-import type { Workspace } from "../lib/workspace-client";
+import type { Workspace } from "../store/workspaceStore";
 
 interface WorkspaceSelectorProps {
   workspaces: Workspace[];

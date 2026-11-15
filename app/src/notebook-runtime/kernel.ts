@@ -3,8 +3,9 @@
  * execution routes on the control plane; the control plane drives the actual
  * Python kernel on GKE (the browser never touches a pod).
  *
- * Execution streams outputs over SSE. EventSource can't POST, so we POST with
- * fetch and parse the SSE frames off the response body ourselves.
+ * Execution streams outputs over SSE. EventSource can't POST, so we POST
+ * through the typed client with `parseAs: "stream"` and parse the SSE frames
+ * off the response body ourselves.
  */
 import { api } from "../api/client";
 
@@ -97,24 +98,23 @@ export async function executeCode(
   onOutput: (output: KernelOutput) => void,
   signal?: AbortSignal,
 ): Promise<ExecuteResult> {
-  const res = await fetch(
-    `/api/workspaces/${workspaceId}/notebooks/${notebookId}/executions`,
+  // `parseAs: "stream"` hands back the raw body so the SSE frames can be read
+  // incrementally below.
+  const { data: body, response } = await api.POST(
+    "/api/workspaces/{workspaceId}/notebooks/{id}/executions",
     {
-      method: "POST",
-      credentials: "include",
-      headers: {
-        "content-type": "application/json",
-        "x-workspace-id": workspaceId,
-      },
-      body: JSON.stringify({ code }),
+      params: { path: { workspaceId, id: notebookId } },
+      headers: { "x-workspace-id": workspaceId },
+      body: { code },
       signal,
+      parseAs: "stream",
     },
   );
-  if (!res.ok || !res.body) {
-    throw new Error(`Execution request failed (${res.status})`);
+  if (!response.ok || !body) {
+    throw new Error(`Execution request failed (${response.status})`);
   }
 
-  const reader = res.body.getReader();
+  const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let result: ExecuteResult | null = null;

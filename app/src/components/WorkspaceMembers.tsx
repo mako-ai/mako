@@ -34,7 +34,7 @@ import {
   Close,
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
-import { workspaceClient } from "../lib/workspace-client";
+import { useWorkspaceStore } from "../store/workspaceStore";
 import { useAuth } from "../contexts/auth-context";
 import { trackEvent } from "../lib/analytics";
 import { useConfirm } from "./ConfirmDialog";
@@ -472,7 +472,8 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    workspaceClient
+    useWorkspaceStore
+      .getState()
       .getAutoJoin(workspaceId)
       .then(current => {
         if (cancelled) return;
@@ -495,10 +496,12 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
         .split(/[,\s]+/)
         .map(d => d.trim())
         .filter(Boolean);
-      const saved = await workspaceClient.setAutoJoin(workspaceId, {
-        domains: list,
-        role,
-      });
+      const saved = await useWorkspaceStore
+        .getState()
+        .setAutoJoin(workspaceId, {
+          domains: list,
+          role,
+        });
       showMessage(
         saved
           ? `Anyone with an email on ${saved.domains.join(", ")} now joins as ${saved.role} the first time they open the workspace or one of its apps.`

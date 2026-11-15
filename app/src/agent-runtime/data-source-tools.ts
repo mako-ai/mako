@@ -13,7 +13,7 @@ import {
   clipAgentText,
 } from "@mako/agent-tools";
 import { useAppsStore } from "../store/appsStore";
-import { useUIStore } from "../store/uiStore";
+import { getCurrentWorkspaceId } from "../store/workspaceStore";
 import {
   collectStreamBytes,
   createDuckDBInstance,
@@ -148,7 +148,7 @@ async function executeAppDataTool(
   appId: string,
   input: Record<string, unknown>,
 ): Promise<ToolResult> {
-  const workspaceId = useUIStore.getState().currentWorkspaceId;
+  const workspaceId = getCurrentWorkspaceId();
   if (!workspaceId) return fail("No active workspace");
 
   let bindings: AppBindingInfo[];

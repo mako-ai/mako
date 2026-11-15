@@ -9,6 +9,10 @@ import {
 } from "../api";
 import { z } from "zod";
 import { createValidatedStorage, errorSchema } from "./store-validation";
+import type {
+  ScheduledQueryListItem,
+  ScheduledQueryListResponse,
+} from "../lib/api-types";
 
 // Zod schemas for validation
 const flowDataSourceSchema = z.object({
@@ -619,6 +623,12 @@ interface FlowStore extends FlowStoreState {
     query: string,
     database?: string,
   ) => Promise<QueryValidationResult>;
+
+  /** Scheduled console queries, listed alongside flows in the explorer
+   * (throws on failure). */
+  fetchScheduledQueries: (
+    workspaceId: string,
+  ) => Promise<ScheduledQueryListItem[]>;
 
   reset: () => void;
 }
@@ -1778,6 +1788,15 @@ export const useFlowStore = create<FlowStore>()(
                 : "Query validation failed",
           };
         }
+      },
+
+      fetchScheduledQueries: async workspaceId => {
+        const response = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/scheduled-queries", {
+            params: { path: { workspaceId } },
+          }),
+        ) as ScheduledQueryListResponse;
+        return response.scheduledQueries || [];
       },
 
       reset: () => {

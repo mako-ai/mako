@@ -29,7 +29,7 @@ import {
 import { reachableViewUrl } from "../lib/app-frame";
 import { onRealtimeEvent } from "./lib/realtime-channel";
 import { useConsoleStore } from "./consoleStore";
-import { useUIStore } from "./uiStore";
+import { getCurrentWorkspaceId } from "./workspaceStore";
 import type { PublicShareInfo } from "./shareStore";
 
 /** Repo-relative folder of an app; legacy rows sit at `apps/<slug>`. */
@@ -1889,12 +1889,17 @@ export const useAppsStore = create<AppsStore>()(
           let offset = 0;
           while (!stopTail) {
             try {
-              const res = await fetch(
-                `/api/workspaces/${workspaceId}/apps/${appId}/build/log?offset=${offset}`,
-                { credentials: "include" },
+              const res = await api.GET(
+                "/api/workspaces/{workspaceId}/apps/{id}/build/log",
+                {
+                  params: {
+                    path: { workspaceId, id: appId },
+                    query: { offset },
+                  },
+                },
               );
-              if (res.ok) {
-                const body = (await res.json()) as {
+              if (res.response.ok) {
+                const body = (res.data ?? {}) as {
                   size?: number;
                   chunk?: string;
                 };
@@ -2613,7 +2618,7 @@ function refreshAppNow(workspaceId: string, appId: string): void {
 
 /** Same source notebookStore reads, so the app shell has one answer. */
 function currentWorkspaceId(): string | null {
-  return useUIStore.getState().currentWorkspaceId ?? null;
+  return getCurrentWorkspaceId();
 }
 
 /** The app the user is actually looking at, if the active tab is an app. */

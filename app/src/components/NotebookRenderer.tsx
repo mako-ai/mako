@@ -39,7 +39,7 @@ import {
 } from "../store/notebookPresenceStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
-import { useUIStore } from "../store/uiStore";
+import { useWorkspaceStore } from "../store/workspaceStore";
 
 const SAVE_LABEL: Record<NotebookSaveState, string> = {
   idle: "",
@@ -74,7 +74,7 @@ export default function NotebookRenderer({
   const clearAllOutputs = useNotebookStore(s => s.clearAllOutputs);
   const updateTabTitle = useConsoleStore(s => s.updateTitle);
 
-  const workspaceId = useUIStore(s => s.currentWorkspaceId) ?? null;
+  const workspaceId = useWorkspaceStore(s => s.currentWorkspaceId);
   const connectionsByWs = useSchemaStore(s => s.connections);
   const ensureConnections = useSchemaStore(s => s.ensureConnections);
   const sources = workspaceId ? (connectionsByWs[workspaceId] ?? []) : [];

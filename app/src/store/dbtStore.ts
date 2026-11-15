@@ -10,7 +10,7 @@
 import { create } from "zustand";
 import { toErrorMessage as errMessage } from "../api";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
+import { unspecced } from "../api/unspecced";
 import { toLoadError, type LoadError } from "../api/result";
 import { realtimeClientId } from "../lib/realtime-client-id";
 import { onRealtimeEvent } from "./lib/realtime-channel";
@@ -464,10 +464,10 @@ export const useDbtStore = create<DbtStore>()(
         delete state.loadErrors.projects;
       });
       try {
-        const response = await apiClient.get<{
+        const response = await unspecced.get<{
           success: boolean;
           projects: DbtProjectItem[];
-        }>(`/workspaces/${workspaceId}/dbt/projects`);
+        }>(`/api/workspaces/${workspaceId}/dbt/projects`);
         set(state => {
           const projects = response.projects ?? [];
           state.projects = projects;
@@ -502,10 +502,10 @@ export const useDbtStore = create<DbtStore>()(
 
     createProject: async (workspaceId, payload) => {
       try {
-        const response = await apiClient.post<{
+        const response = await unspecced.post<{
           success: boolean;
           project: DbtProjectItem;
-        }>(`/workspaces/${workspaceId}/dbt/projects`, payload);
+        }>(`/api/workspaces/${workspaceId}/dbt/projects`, payload);
         const project = response.project;
         set(state => {
           state.projects.unshift(project);
@@ -522,10 +522,10 @@ export const useDbtStore = create<DbtStore>()(
 
     updateProject: async (workspaceId, projectId, patch) => {
       try {
-        const response = await apiClient.patch<{
+        const response = await unspecced.patch<{
           success: boolean;
           project: DbtProjectItem;
-        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}`, patch);
+        }>(`/api/workspaces/${workspaceId}/dbt/projects/${projectId}`, patch);
         const project = response.project;
         set(state => {
           const idx = state.projects.findIndex(p => p._id === projectId);
@@ -549,12 +549,12 @@ export const useDbtStore = create<DbtStore>()(
 
     ensurePersonalEnvironment: async (workspaceId, projectId) => {
       try {
-        const response = await apiClient.post<{
+        const response = await unspecced.post<{
           success: boolean;
           created: boolean;
           environment: DbtEnvironment;
         }>(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/environments/personal`,
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/environments/personal`,
           {},
         );
         // Refresh the project so selectors pick up the new environment.
@@ -573,11 +573,11 @@ export const useDbtStore = create<DbtStore>()(
 
     setMyEnvironment: async (workspaceId, projectId, environment) => {
       try {
-        const response = await apiClient.put<{
+        const response = await unspecced.put<{
           success: boolean;
           myDevEnvironment?: string;
         }>(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/my-environment`,
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/my-environment`,
           { environment },
         );
         set(state => {
@@ -600,8 +600,8 @@ export const useDbtStore = create<DbtStore>()(
 
     deleteProject: async (workspaceId, projectId) => {
       try {
-        await apiClient.delete(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}`,
+        await unspecced.delete(
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}`,
         );
         set(state => {
           state.projects = state.projects.filter(p => p._id !== projectId);
@@ -630,10 +630,10 @@ export const useDbtStore = create<DbtStore>()(
         state.loading[`files:${projectId}`] = true;
       });
       try {
-        const response = await apiClient.get<{
+        const response = await unspecced.get<{
           success: boolean;
           files: Array<{ path: string }>;
-        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/files`);
+        }>(`/api/workspaces/${workspaceId}/dbt/projects/${projectId}/files`);
         set(state => {
           state.filePathsByProject[projectId] = (response.files ?? []).map(
             file => file.path,
@@ -658,11 +658,11 @@ export const useDbtStore = create<DbtStore>()(
         delete state.loadErrors[`file:${projectId}:${path}`];
       });
       try {
-        const response = await apiClient.get<{
+        const response = await unspecced.get<{
           success: boolean;
           file: { path: string; content: string };
         }>(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
         );
         const content = response.file?.content ?? "";
         set(state => {
@@ -713,8 +713,8 @@ export const useDbtStore = create<DbtStore>()(
       const file = get().filesByProject[projectId]?.[path];
       if (!file) return false;
       try {
-        await apiClient.put(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
+        await unspecced.put(
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
           // clientId lets this tab suppress the echo of its own save poke.
           { content: file.content, clientId: realtimeClientId },
         );
@@ -754,11 +754,11 @@ export const useDbtStore = create<DbtStore>()(
       const entry = get().filesByProject[projectId]?.[path];
       if (entry?.dirty) return;
       try {
-        const response = await apiClient.get<{
+        const response = await unspecced.get<{
           success: boolean;
           file: { path: string; content: string };
         }>(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
         );
         const content = response.file?.content ?? "";
         set(state => {
@@ -783,8 +783,8 @@ export const useDbtStore = create<DbtStore>()(
 
     deleteFile: async (workspaceId, projectId, path) => {
       try {
-        await apiClient.delete(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
+        await unspecced.delete(
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
         );
         set(state => {
           delete state.filesByProject[projectId]?.[path];
@@ -807,8 +807,8 @@ export const useDbtStore = create<DbtStore>()(
 
     renameFile: async (workspaceId, projectId, from, to) => {
       try {
-        await apiClient.post(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/rename`,
+        await unspecced.post(
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/files/rename`,
           // clientId lets this tab suppress the echo of its own rename pokes.
           { from, to, clientId: realtimeClientId },
         );
@@ -842,10 +842,10 @@ export const useDbtStore = create<DbtStore>()(
         delete state.loadErrors[`jobs:${projectId}`];
       });
       try {
-        const response = await apiClient.get<{
+        const response = await unspecced.get<{
           success: boolean;
           jobs: DbtJobItem[];
-        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/jobs`);
+        }>(`/api/workspaces/${workspaceId}/dbt/projects/${projectId}/jobs`);
         set(state => {
           state.jobsByProject[projectId] = response.jobs ?? [];
         });
@@ -866,12 +866,12 @@ export const useDbtStore = create<DbtStore>()(
     saveJob: async (workspaceId, projectId, job, jobId) => {
       try {
         const response = jobId
-          ? await apiClient.patch<{ success: boolean; job: DbtJobItem }>(
-              `/workspaces/${workspaceId}/dbt/projects/${projectId}/jobs/${jobId}`,
+          ? await unspecced.patch<{ success: boolean; job: DbtJobItem }>(
+              `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/jobs/${jobId}`,
               job,
             )
-          : await apiClient.post<{ success: boolean; job: DbtJobItem }>(
-              `/workspaces/${workspaceId}/dbt/projects/${projectId}/jobs`,
+          : await unspecced.post<{ success: boolean; job: DbtJobItem }>(
+              `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/jobs`,
               job,
             );
         const saved = response.job;
@@ -896,8 +896,8 @@ export const useDbtStore = create<DbtStore>()(
 
     deleteJob: async (workspaceId, projectId, jobId) => {
       try {
-        await apiClient.delete(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/jobs/${jobId}`,
+        await unspecced.delete(
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/jobs/${jobId}`,
         );
         set(state => {
           state.jobsByProject[projectId] = (
@@ -918,11 +918,11 @@ export const useDbtStore = create<DbtStore>()(
 
     triggerJob: async (workspaceId, projectId, jobId) => {
       try {
-        const response = await apiClient.post<{
+        const response = await unspecced.post<{
           success: boolean;
           runId: string;
         }>(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/jobs/${jobId}/trigger`,
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/jobs/${jobId}/trigger`,
         );
         // Refresh both the job-scoped list (job view) and the unfiltered list
         // (project-wide Runs view) so whichever is open shows the new run.
@@ -944,11 +944,11 @@ export const useDbtStore = create<DbtStore>()(
 
     retryRun: async (workspaceId, projectId, runId, jobId) => {
       try {
-        const response = await apiClient.post<{
+        const response = await unspecced.post<{
           success: boolean;
           runId: string;
         }>(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/runs/${runId}/retry`,
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/runs/${runId}/retry`,
         );
         // Refresh both lists: the retry may be triggered from the job view or
         // the project-wide Runs view, and both should reflect the new run.
@@ -972,11 +972,11 @@ export const useDbtStore = create<DbtStore>()(
 
     fetchRuns: async (workspaceId, projectId, jobId) => {
       try {
-        const response = await apiClient.get<{
+        const response = await unspecced.get<{
           success: boolean;
           runs: DbtRunItem[];
         }>(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/runs`,
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/runs`,
           jobId ? { jobId, limit: "100" } : { limit: "100" },
         );
         set(state => {
@@ -999,11 +999,11 @@ export const useDbtStore = create<DbtStore>()(
     fetchRunDetails: async (workspaceId, projectId, runId) => {
       const cursor = get().runDetails[runId]?.logCursor ?? 0;
       try {
-        const response = await apiClient.get<{
+        const response = await unspecced.get<{
           success: boolean;
           run: DbtRunDetails;
         }>(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/runs/${runId}`,
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/runs/${runId}`,
           { logsSince: String(cursor) },
         );
         const run = response.run;
@@ -1039,8 +1039,8 @@ export const useDbtStore = create<DbtStore>()(
 
     cancelRun: async (workspaceId, projectId, runId) => {
       try {
-        await apiClient.post(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/runs/${runId}/cancel`,
+        await unspecced.post(
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/runs/${runId}/cancel`,
         );
         return true;
       } catch (error) {
@@ -1062,9 +1062,9 @@ export const useDbtStore = create<DbtStore>()(
         sources: "sources.json",
       };
       try {
-        // Artifacts are JSON; apiClient parses them. Re-serialize for download.
-        const content = await apiClient.get<unknown>(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/runs/${runId}/artifacts/${kind}`,
+        // Artifacts are JSON; the client parses them. Re-serialize for download.
+        const content = await unspecced.get<unknown>(
+          `/api/workspaces/${workspaceId}/dbt/projects/${projectId}/runs/${runId}/artifacts/${kind}`,
         );
         const blob = new Blob([JSON.stringify(content, null, 2)], {
           type: "application/json",
@@ -1097,10 +1097,10 @@ export const useDbtStore = create<DbtStore>()(
       defer,
     ) => {
       try {
-        const response = await apiClient.post<{
+        const response = await unspecced.post<{
           success: boolean;
           compile: DbtCompileResult;
-        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/compile`, {
+        }>(`/api/workspaces/${workspaceId}/dbt/projects/${projectId}/compile`, {
           ...(select ? { select } : {}),
           ...(environment ? { environment } : {}),
           ...(defer ? { defer } : {}),
@@ -1123,10 +1123,10 @@ export const useDbtStore = create<DbtStore>()(
 
     runCommand: async (workspaceId, projectId, command, environment, defer) => {
       try {
-        const response = await apiClient.post<{
+        const response = await unspecced.post<{
           success: boolean;
           result: DbtCommandRunResult;
-        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/command`, {
+        }>(`/api/workspaces/${workspaceId}/dbt/projects/${projectId}/command`, {
           command,
           ...(environment ? { environment } : {}),
           ...(defer ? { defer } : {}),
@@ -1158,10 +1158,10 @@ export const useDbtStore = create<DbtStore>()(
       limit,
     ) => {
       try {
-        const response = await apiClient.post<{
+        const response = await unspecced.post<{
           success: boolean;
           preview: DbtPreviewResult;
-        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/preview`, {
+        }>(`/api/workspaces/${workspaceId}/dbt/projects/${projectId}/preview`, {
           select,
           ...(environment ? { environment } : {}),
           ...(defer ? { defer } : {}),
@@ -1188,10 +1188,10 @@ export const useDbtStore = create<DbtStore>()(
 
     fetchLineage: async (workspaceId, projectId) => {
       try {
-        const response = await apiClient.get<{
+        const response = await unspecced.get<{
           success: boolean;
           lineage: DbtLineage;
-        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/lineage`);
+        }>(`/api/workspaces/${workspaceId}/dbt/projects/${projectId}/lineage`);
         return response.lineage ?? null;
       } catch (error) {
         set(state => {

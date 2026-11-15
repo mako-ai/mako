@@ -247,6 +247,8 @@ interface SchemaState {
     workspaceId: string,
     connectionId: string,
   ) => Promise<void>;
+  /** Provision the onboarding demo database (throws on failure). */
+  createDemoDatabase: (workspaceId: string) => Promise<void>;
   testConnection: (
     workspaceId: string,
     payload: {
@@ -776,6 +778,14 @@ export const useSchemaStore = create<SchemaState>()(
             columnKeysToDelete.forEach(k => delete s.columns[k]);
           });
         });
+      },
+
+      createDemoDatabase: async (workspaceId: string) => {
+        unwrapBody(
+          await api.POST("/api/workspaces/{workspaceId}/databases/demo", {
+            params: { path: { workspaceId } },
+          }),
+        );
       },
 
       deleteConnection: async (workspaceId: string, connectionId: string) => {

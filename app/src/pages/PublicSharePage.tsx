@@ -16,13 +16,18 @@ import {
   reachableViewUrl,
 } from "../lib/app-frame";
 import { replaceLocation } from "../lib/replace-location";
+import {
+  usePublicShareStore,
+  type ShareContent,
+  type ShareMeta,
+} from "../store/publicShareStore";
 
 /**
  * Anonymous viewer for public share links (/share/:token).
  *
  * Rendered outside AuthWrapper — no session, no workspace context. Talks to
- * the intentionally-public /api/share/:token endpoints directly (published
- * apps only; raw fetch on purpose, apiClient is session/workspace-bound).
+ * the intentionally-public /api/share/:token endpoints through
+ * `usePublicShareStore` (published apps only; no session/workspace handling).
  *
  * Two ways to show the app, chosen by the server:
  * - `appUrl` (per-app origins on, apps.md §31): the app lives on its own
@@ -34,24 +39,6 @@ import { replaceLocation } from "../lib/replace-location";
  *   that blocks the apps domain would fill the frame with its own error page.
  * - otherwise, or when the probe fails: navigate to `entry` on Mako's origin.
  */
-
-interface ShareMeta {
-  type: "app";
-  title: string;
-  passwordRequired: boolean;
-  unlocked: boolean;
-}
-
-interface PublicAppContent {
-  kind: "app";
-  title: string;
-  published: boolean;
-  entry: string;
-  /** The app on its own origin, when the server serves it there. */
-  appUrl?: string;
-}
-
-type ShareContent = PublicAppContent;
 
 export default function PublicSharePage() {
   const { token = "" } = useParams<{ token: string }>();
@@ -67,15 +54,7 @@ export default function PublicSharePage() {
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
 
   const loadContent = useCallback(async (): Promise<ShareContent | null> => {
-    const res = await fetch(`/api/share/${token}/content`, {
-      credentials: "include",
-    });
-    const json = await res.json().catch(() => null);
-    if (res.status === 401) return null; // password gate
-    if (!res.ok || !json?.success) {
-      throw new Error(json?.error || "Failed to load content");
-    }
-    return json.data as ShareContent;
+    return usePublicShareStore.getState().getContent(token);
   }, [token]);
 
   useEffect(() => {
@@ -86,14 +65,7 @@ export default function PublicSharePage() {
     }
     (async () => {
       try {
-        const res = await fetch(`/api/share/${token}`, {
-          credentials: "include",
-        });
-        const json = await res.json().catch(() => null);
-        if (!res.ok || !json?.success) {
-          throw new Error(json?.error || "Share link not found");
-        }
-        const metaData = json.data as ShareMeta;
+        const metaData = await usePublicShareStore.getState().getMeta(token);
         setMeta(metaData);
         if (!metaData.passwordRequired || metaData.unlocked) {
           setContent(await loadContent());
@@ -173,16 +145,7 @@ export default function PublicSharePage() {
     setUnlocking(true);
     setUnlockError(null);
     try {
-      const res = await fetch(`/api/share/${token}/unlock`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
-      });
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) {
-        throw new Error(json?.error || "Incorrect password");
-      }
+      await usePublicShareStore.getState().unlock(token, password);
       setContent(await loadContent());
       setMeta(m => (m ? { ...m, unlocked: true } : m));
     } catch (e) {

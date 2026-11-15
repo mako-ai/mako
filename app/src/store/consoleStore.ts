@@ -1,8 +1,14 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
-import { api, toLoadError, unwrapBody, type LoadError } from "../api";
+import { unspecced } from "../api/unspecced";
+import {
+  api,
+  bodyWithStatus,
+  toLoadError,
+  unwrapBody,
+  type LoadError,
+} from "../api";
 import {
   isLocalConnectionId,
   localAgentClient,
@@ -23,7 +29,7 @@ import type {
   ScheduledQueryScheduleResponse,
 } from "../lib/api-types";
 import { realtimeClientId } from "../lib/realtime-client-id";
-import { getActiveWorkspaceId } from "../lib/active-workspace";
+import { getCurrentWorkspaceId } from "./workspaceStore";
 
 export type QueryExecuteResult =
   | QueryExecuteResponse
@@ -302,6 +308,18 @@ interface ConsoleActions {
     workspaceId: string,
     consoleId: string,
   ) => Promise<ConsoleDeleteResponse>;
+  /** Create a console record (first save / save-as-copy). Resolves with the
+   * status for every response: a 409 carries the conflict to resolve. */
+  createConsoleRecord: (
+    workspaceId: string,
+    payload: Record<string, unknown>,
+  ) => Promise<{ status: number; body: ConsoleSaveResponse }>;
+  /** Run the tab's query server-side and download the results file
+   * (CSV/NDJSON). Throws with the server's message on failure. */
+  exportQueryResults: (
+    workspaceId: string,
+    payload: Record<string, unknown>,
+  ) => Promise<Blob>;
   executeQuery: (
     workspaceId: string,
     connectionId: string,
@@ -566,15 +584,15 @@ function normalizeScheduledRunSnapshotForTab(
 
 /**
  * Tabs are persisted per workspace: `console-store:<workspaceId>`. The active
- * workspace id is per browser tab (lib/active-workspace, written before the
- * post-switch reload), so each boot rehydrates the bucket that belongs to the
- * workspace being loaded — switching workspaces no longer leaks tabs from
+ * workspace id is per browser tab (workspaceStore, seeded at boot from the
+ * per-tab hint written before the post-switch reload), so each boot
+ * rehydrates the bucket that belongs to the workspace being loaded — switching workspaces no longer leaks tabs from
  * another workspace, and switching back restores that workspace's tabs.
  */
 const CONSOLE_STORE_BASE_KEY = "console-store";
 
 function consoleStoreStorageKey(): string {
-  const workspaceId = getActiveWorkspaceId();
+  const workspaceId = getCurrentWorkspaceId();
   return workspaceId
     ? `${CONSOLE_STORE_BASE_KEY}:${workspaceId}`
     : CONSOLE_STORE_BASE_KEY;
@@ -1078,23 +1096,27 @@ export const useConsoleStore = create<ConsoleStore>()(
         });
         try {
           // Same intentional catch-all save endpoint as autosave / keep-mine
-          // (not in the documented OpenAPI surface) — stays on legacy client.
+          // (not in the documented OpenAPI surface) — called via `unspecced`.
           // Keep the current title (any agent rename already applied and is not
           // part of the rejected content diff).
-          const { status, body } =
-            await apiClient.putWithStatus<ConsoleSaveResponse>(
-              `/workspaces/${workspaceId}/consoles/${consoleId}`,
+          const { status, body } = bodyWithStatus<ConsoleSaveResponse>(
+            await unspecced.request(
+              "PUT",
+              `/api/workspaces/${workspaceId}/consoles/${consoleId}`,
               {
-                content: review.baseContent,
-                title: tab.title,
-                connectionId: cloudSafeConnectionId(tab.connectionId),
-                databaseId: tab.databaseId,
-                databaseName: tab.databaseName,
-                clientId: realtimeClientId,
-                expectedDraftRevision: review.proposedRevision,
+                body: {
+                  content: review.baseContent,
+                  title: tab.title,
+                  connectionId: cloudSafeConnectionId(tab.connectionId),
+                  databaseId: tab.databaseId,
+                  databaseName: tab.databaseName,
+                  clientId: realtimeClientId,
+                  expectedDraftRevision: review.proposedRevision,
+                },
               },
-              { alsoOk: [409] },
-            );
+            ),
+            [409],
+          );
 
           if (status === 409 && body.draftConflict) {
             // Someone wrote concurrently after the agent. If they happened to
@@ -1166,21 +1188,25 @@ export const useConsoleStore = create<ConsoleStore>()(
             tab.remoteUpdate?.draftRevision ?? tab.draftRevision;
           // The console save endpoint is an intentional plain-Hono catch-all
           // (`PUT /:path{.+}`) that is not part of the documented OpenAPI
-          // surface, so it stays on the legacy client.
-          const { status, body } =
-            await apiClient.putWithStatus<ConsoleSaveResponse>(
-              `/workspaces/${workspaceId}/consoles/${consoleId}`,
+          // surface, so it goes through `unspecced`.
+          const { status, body } = bodyWithStatus<ConsoleSaveResponse>(
+            await unspecced.request(
+              "PUT",
+              `/api/workspaces/${workspaceId}/consoles/${consoleId}`,
               {
-                content,
-                title: tab.title,
-                connectionId: cloudSafeConnectionId(tab.connectionId),
-                databaseId: tab.databaseId,
-                databaseName: tab.databaseName,
-                clientId: realtimeClientId,
-                expectedDraftRevision,
+                body: {
+                  content,
+                  title: tab.title,
+                  connectionId: cloudSafeConnectionId(tab.connectionId),
+                  databaseId: tab.databaseId,
+                  databaseName: tab.databaseName,
+                  clientId: realtimeClientId,
+                  expectedDraftRevision,
+                },
               },
-              { alsoOk: [409] },
-            );
+            ),
+            [409],
+          );
 
           if (status === 409 && body.draftConflict) {
             get().setRemoteUpdate(consoleId, {
@@ -1533,7 +1559,12 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       fetchConsoleDetails: async (workspaceId, consoleId) => {
         try {
-          const data = await apiClient.get<{
+          const data = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/consoles/{id}/details",
+              { params: { path: { workspaceId, id: consoleId } } },
+            ),
+          ) as {
             success: boolean;
             console?: {
               description?: string;
@@ -1545,7 +1576,7 @@ export const useConsoleStore = create<ConsoleStore>()(
               executionCount?: number;
               lastExecutedAt?: string;
             };
-          }>(`/workspaces/${workspaceId}/consoles/${consoleId}/details`);
+          };
           return data.success && data.console ? data.console : null;
         } catch {
           return null;
@@ -1555,7 +1586,17 @@ export const useConsoleStore = create<ConsoleStore>()(
       fetchConsoleExecutions: async (workspaceId, consoleId, options) => {
         try {
           const limit = options?.limit ?? 10;
-          const data = await apiClient.get<{
+          const data = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/consoles/{id}/executions",
+              {
+                params: {
+                  path: { workspaceId, id: consoleId },
+                  query: { limit: String(limit) },
+                },
+              },
+            ),
+          ) as {
             success: boolean;
             executions?: Array<{
               id: string;
@@ -1567,9 +1608,7 @@ export const useConsoleStore = create<ConsoleStore>()(
               errorType: string | null;
               apiKeyId: string | null;
             }>;
-          }>(
-            `/workspaces/${workspaceId}/consoles/${consoleId}/executions?limit=${limit}`,
-          );
+          };
           if (!data.success || !Array.isArray(data.executions)) return [];
           return data.executions.map(execution => ({
             ...execution,
@@ -1683,13 +1722,11 @@ export const useConsoleStore = create<ConsoleStore>()(
           // tabs' autosaves (those bump draftRevision but not version).
           const expectedVersion = get().tabs[tabId]?.version;
           const expectedDraftRevision = get().tabs[tabId]?.draftRevision;
-          const response = await fetch(
+          const result = await unspecced.request(
+            "PUT",
             `/api/workspaces/${workspaceId}/consoles/${tabId}`,
             {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              credentials: "include",
-              body: JSON.stringify({
+              body: {
                 content,
                 path: cleanPath,
                 connectionId: cloudSafeConnectionId(connectionId),
@@ -1707,11 +1744,16 @@ export const useConsoleStore = create<ConsoleStore>()(
                 // Realtime sync: identifies this tab so its own
                 // console.updated poke is suppressed.
                 clientId: realtimeClientId,
-              }),
+              },
             },
           );
-
-          const res = (await response.json()) as ConsoleSaveResponse;
+          const { response } = result;
+          // Every status carries a JSON body the caller branches on (409
+          // conflicts, validation errors), so read it whatever the status.
+          const raw = response.ok ? result.data : result.error;
+          const res = (
+            typeof raw === "object" && raw !== null ? raw : {}
+          ) as ConsoleSaveResponse;
 
           if (response.status === 409 && res.error === "conflict") {
             return {
@@ -1763,6 +1805,32 @@ export const useConsoleStore = create<ConsoleStore>()(
           };
         }
       },
+
+      createConsoleRecord: async (workspaceId, payload) => {
+        const result = await api.POST(
+          "/api/workspaces/{workspaceId}/consoles",
+          {
+            params: { path: { workspaceId } },
+            body: payload,
+          },
+        );
+        const raw = result.response.ok ? result.data : result.error;
+        return {
+          status: result.response.status,
+          body: (typeof raw === "object" && raw !== null
+            ? raw
+            : {}) as ConsoleSaveResponse,
+        };
+      },
+
+      exportQueryResults: async (workspaceId, payload) =>
+        unwrapBody(
+          await api.POST("/api/workspaces/{workspaceId}/execute/export", {
+            params: { path: { workspaceId } },
+            body: payload,
+            parseAs: "blob",
+          }),
+        ) as Blob,
 
       deleteConsole: async (workspaceId, consoleId) => {
         try {
@@ -2113,21 +2181,25 @@ export const useConsoleStore = create<ConsoleStore>()(
             // overwriting another tab's / user's / the agent's work.
             const expectedDraftRevision = get().tabs[consoleId]?.draftRevision;
             // Catch-all save endpoint (see note in resolveRemoteUpdateKeepMine);
-            // not in the documented OpenAPI surface, stays on the legacy client.
-            const { status, body } =
-              await apiClient.putWithStatus<ConsoleSaveResponse>(
-                `/workspaces/${workspaceId}/consoles/${consoleId}`,
+            // not in the documented OpenAPI surface, goes through `unspecced`.
+            const { status, body } = bodyWithStatus<ConsoleSaveResponse>(
+              await unspecced.request(
+                "PUT",
+                `/api/workspaces/${workspaceId}/consoles/${consoleId}`,
                 {
-                  content,
-                  title,
-                  connectionId: cloudSafeConnectionId(connectionId),
-                  databaseId,
-                  databaseName,
-                  clientId: realtimeClientId,
-                  expectedDraftRevision,
+                  body: {
+                    content,
+                    title,
+                    connectionId: cloudSafeConnectionId(connectionId),
+                    databaseId,
+                    databaseName,
+                    clientId: realtimeClientId,
+                    expectedDraftRevision,
+                  },
                 },
-                { alsoOk: [409] },
-              );
+              ),
+              [409],
+            );
 
             if (status === 409 && body.draftConflict) {
               if (body.draftConflict.content === content) {
