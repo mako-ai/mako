@@ -21,6 +21,7 @@ import { databaseRegistry } from "../databases/registry";
 import type { DatabaseDriver } from "../databases/driver";
 import { mongoEngine } from "../databases/drivers/mongodb/engine";
 import { mysqlEngine } from "../databases/drivers/mysql/engine";
+import { mssqlEngine } from "../databases/drivers/mssql/engine";
 import { postgresEngine } from "../databases/drivers/postgresql/engine";
 
 const ID = "6577f0f0f0f0f0f0f0f0f0f0";
@@ -75,7 +76,7 @@ async function testInvalidateConnection() {
     context: "datasource",
     identifier: ID,
   });
-  svc.connections.set(ID, closable("mssql"));
+  (mssqlEngine.pools as any).set(ID, closable("mssql"));
 
   // Every registered driver's cache is honoured, and one throwing cache
   // does not keep the rest serving the old configuration.
@@ -102,7 +103,7 @@ async function testInvalidateConnection() {
   assert.deepEqual(pgPools.keys(), [`${OTHER}:app`]);
   assert.equal(mysqlEngine.pools.size, 0);
   assert.equal(mongoEngine.connections.size, 0);
-  assert.equal(svc.connections.size, 0);
+  assert.equal(mssqlEngine.pools.size, 0);
   assert.ok(driverCalls.includes(`lifecycle-failing:${ID}`));
   assert.ok(
     driverCalls.includes(`lifecycle-fake:${ID}`),

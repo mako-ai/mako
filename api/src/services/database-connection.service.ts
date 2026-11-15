@@ -1,7 +1,5 @@
 import { checkConnectionWrite } from "../access/connection-writes";
-import { createClient } from "@clickhouse/client";
 import type { Db, MongoClient } from "mongodb";
-import { ConnectionPool, Request as MSSQLRequest } from "mssql";
 import { IDatabaseConnection } from "../database/workspace-schema";
 import axios, { AxiosInstance } from "axios";
 import crypto from "crypto";
@@ -16,7 +14,6 @@ import type {
   ReadingRowsOptions,
   StreamingQueryOptions,
 } from "../databases/query-types";
-import { withRetry } from "../databases/retry";
 import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-postgres/driver";
 import { CloudflareD1DatabaseDriver } from "../databases/drivers/cloudflare-d1/driver";
 import { CloudflareKVDatabaseDriver } from "../databases/drivers/cloudflare-kv/driver";
@@ -27,6 +24,8 @@ import {
   type ConnectionContext,
 } from "../databases/drivers/mongodb/engine";
 import { mysqlEngine } from "../databases/drivers/mysql/engine";
+import { mssqlEngine } from "../databases/drivers/mssql/engine";
+import { clickHouseEngine } from "../databases/drivers/clickhouse/engine";
 import {
   cursorReadable,
   postgresEngine,
@@ -147,8 +146,6 @@ const READ_ONLY_UNSUPPORTED_TYPES = new Set<string>([
  * - Unified query execution interface
  */
 export class DatabaseConnectionService {
-  private connections: Map<string, any> = new Map();
-
   // Track running BigQuery jobs for cancellation
   private runningBigQueryJobs: Map<
     string,
@@ -157,24 +154,6 @@ export class DatabaseConnectionService {
       jobId: string;
       location?: string;
       client: AxiosInstance;
-    }
-  > = new Map();
-
-  // Track running ClickHouse queries for cancellation
-  private runningClickHouseQueries: Map<
-    string,
-    {
-      database: IDatabaseConnection;
-      queryId: string;
-      abortController: AbortController;
-    }
-  > = new Map();
-
-  // Track running MSSQL queries for cancellation
-  private runningMSSQLQueries: Map<
-    string,
-    {
-      request: MSSQLRequest;
     }
   > = new Map();
 
@@ -271,11 +250,11 @@ export class DatabaseConnectionService {
         case "mysql":
           return await mysqlEngine.testConnection(database);
         case "mssql":
-          return await this.testMSSQLConnection(database);
+          return await mssqlEngine.testConnection(database);
         case "bigquery":
           return await this.testBigQueryConnection(database);
         case "clickhouse":
-          return await this.testClickHouseConnection(database);
+          return await clickHouseEngine.testConnection(database);
         case "cloudsql-postgres":
           return await this.cloudSqlDriver.testConnection(database);
         case "cloudflare-d1":
@@ -352,11 +331,11 @@ export class DatabaseConnectionService {
         case "mysql":
           return await mysqlEngine.executeQuery(database, query, options);
         case "mssql":
-          return await this.executeMSSQLQuery(database, query, options);
+          return await mssqlEngine.executeQuery(database, query, options);
         case "bigquery":
           return await this.executeBigQueryQuery(database, query, options);
         case "clickhouse":
-          return await this.executeClickHouseQuery(database, query, options);
+          return await clickHouseEngine.executeQuery(database, query, options);
         case "cloudflare-d1":
           return await this.d1Driver.executeQuery(database, query, options);
         case "cloudflare-kv":
@@ -798,8 +777,6 @@ export class DatabaseConnectionService {
    * Get database connection
    */
   async getConnection(database: IDatabaseConnection): Promise<any> {
-    const key = database._id.toString();
-
     // For MongoDB, use advanced pooling
     if (database.type === "mongodb") {
       return mongoEngine.getConnection(database);
@@ -815,34 +792,18 @@ export class DatabaseConnectionService {
       return mysqlEngine.getPool(database);
     }
 
-    // For other database types, use basic caching
-    if (this.connections.has(key)) {
-      return this.connections.get(key);
-    }
-
-    let connection: any;
-
     switch (database.type) {
       case "cloudsql-postgres":
-        // The driver owns (and caches) its pools; caching here as well
-        // would keep a pool the driver has already closed.
         return this.cloudSqlDriver.getConnection(database);
       case "mssql":
-        connection = await this.createMSSQLConnection(database);
-        break;
+        return mssqlEngine.getConnection(database);
       case "bigquery":
-        // BigQuery uses stateless HTTP requests; no persistent connection
-        connection = null;
-        break;
       case "clickhouse":
-        connection = null;
-        break;
+        // Stateless HTTP requests: no persistent connection
+        return null;
       default:
         throw new Error(`Unsupported database type: ${database.type}`);
     }
-
-    this.connections.set(key, connection);
-    return connection;
   }
 
   /**
@@ -867,7 +828,7 @@ export class DatabaseConnectionService {
       ["mongodb", () => mongoEngine.closeConnection(databaseId)],
       ["postgresql", () => postgresEngine.closeConnection(databaseId)],
       ["mysql", () => mysqlEngine.closeConnection(databaseId)],
-      ["cached", () => this.closeCachedConnection(databaseId)],
+      ["mssql", () => mssqlEngine.closeConnection(databaseId)],
     ];
     for (const driver of databaseRegistry.getAllDrivers()) {
       if (typeof driver.closeConnection === "function") {
@@ -891,24 +852,6 @@ export class DatabaseConnectionService {
     }
   }
 
-  /** Close the generic per-connection cache entry (MSSQL pools). */
-  private async closeCachedConnection(databaseId: string): Promise<void> {
-    const connection = this.connections.get(databaseId);
-    if (connection) {
-      try {
-        if (connection.end) {
-          await connection.end();
-        } else if (connection.close) {
-          await connection.close();
-        }
-      } catch (error) {
-        logger.error("Error closing cached connection", { databaseId, error });
-      } finally {
-        this.connections.delete(databaseId);
-      }
-    }
-  }
-
   /**
    * Close all connections
    */
@@ -928,10 +871,8 @@ export class DatabaseConnectionService {
     // Close MySQL pools
     await mysqlEngine.closeAllConnections();
 
-    // Close other connections
-    await Promise.all(
-      Array.from(this.connections.keys(), id => this.closeCachedConnection(id)),
-    );
+    // Close MSSQL pools
+    await mssqlEngine.closeAllConnections();
 
     // Close every pool, connector and client the registered drivers hold
     for (const driver of databaseRegistry.getAllDrivers()) {
@@ -964,9 +905,9 @@ export class DatabaseConnectionService {
     const mongoConnections = mongoEngine.getStats();
 
     return {
-      totalConnections: mongoConnections.length + this.connections.size,
+      totalConnections: mongoConnections.length + mssqlEngine.pools.size,
       mongodb: mongoConnections.length,
-      other: this.connections.size,
+      other: mssqlEngine.pools.size,
       mongoConnections,
     };
   }
@@ -993,6 +934,11 @@ export class DatabaseConnectionService {
     identifier: string,
   ): void {
     mongoEngine.touch(context, identifier);
+  }
+
+  /** Cancel a running ClickHouse query by its executionId. */
+  cancelClickHouseQuery(executionId: string): Promise<CancelResult> {
+    return clickHouseEngine.cancelQuery(executionId);
   }
 
   /** Cancel a running MongoDB query by its executionId. */
@@ -2182,72 +2128,6 @@ export class DatabaseConnectionService {
   }
 
   /**
-   * Cancel a running ClickHouse query
-   */
-  async cancelClickHouseQuery(
-    executionId: string,
-  ): Promise<{ success: boolean; error?: string }> {
-    const query = this.runningClickHouseQueries.get(executionId);
-    if (!query) {
-      return { success: false, error: "Query not found or already completed" };
-    }
-
-    try {
-      // First, abort the JavaScript promise
-      query.abortController.abort();
-
-      // Then try to kill the query on the server side
-      try {
-        const config = this.buildClickHouseClientConfig(query.database);
-        const client = createClient(config);
-
-        // Kill the query using its query_id
-        await client.query({
-          query: `KILL QUERY WHERE query_id = '${query.queryId}'`,
-        });
-
-        await client.close();
-      } catch (killError) {
-        // Killing the query might fail if it already completed, which is okay
-        logger.warn("Could not kill ClickHouse query", {
-          queryId: query.queryId,
-          error: killError,
-        });
-      }
-
-      this.runningClickHouseQueries.delete(executionId);
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to cancel query",
-      };
-    }
-  }
-
-  private async cancelMSSQLQuery(
-    executionId: string,
-  ): Promise<{ success: boolean; error?: string }> {
-    const running = this.runningMSSQLQueries.get(executionId);
-    if (!running) {
-      return { success: false, error: "Query not found or already completed" };
-    }
-
-    try {
-      running.request.cancel();
-      this.runningMSSQLQueries.delete(executionId);
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to cancel query",
-      };
-    }
-  }
-
-  /**
    * Register a detached (resumable) execution so it can be cancelled by
    * executionId from any turn, and aborted by the server-side hard cap.
    * The caller owns the AbortController and wires it into executeQuery's
@@ -2311,12 +2191,12 @@ export class DatabaseConnectionService {
       return mongoEngine.cancelQuery(executionId);
     }
     // Try ClickHouse
-    if (this.runningClickHouseQueries.has(executionId)) {
-      return this.cancelClickHouseQuery(executionId);
+    if (clickHouseEngine.runningQueries.has(executionId)) {
+      return clickHouseEngine.cancelQuery(executionId);
     }
     // Try MSSQL
-    if (this.runningMSSQLQueries.has(executionId)) {
-      return this.cancelMSSQLQuery(executionId);
+    if (mssqlEngine.runningQueries.has(executionId)) {
+      return mssqlEngine.cancelQuery(executionId);
     }
 
     // Try MySQL
@@ -2656,363 +2536,6 @@ export class DatabaseConnectionService {
       }
       default:
         return value;
-    }
-  }
-
-  // PostgreSQL specific methods
-
-  // MSSQL specific methods
-  private async testMSSQLConnection(
-    database: IDatabaseConnection,
-  ): Promise<{ success: boolean; error?: string }> {
-    let pool: ConnectionPool | null = null;
-    try {
-      pool = new ConnectionPool({
-        server: database.connection.host ?? "",
-        port: database.connection.port || 1433,
-        database: database.connection.database ?? "",
-        user: database.connection.username ?? "",
-        password: database.connection.password ?? "",
-        options: {
-          encrypt: database.connection.ssl || false,
-          trustServerCertificate: true,
-        },
-      });
-      await pool.connect();
-      await pool.request().query("SELECT 1");
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "MSSQL connection failed",
-      };
-    } finally {
-      if (pool) {
-        await pool.close();
-      }
-    }
-  }
-
-  private async createMSSQLConnection(
-    database: IDatabaseConnection,
-  ): Promise<ConnectionPool> {
-    const pool = new ConnectionPool({
-      server: database.connection.host ?? "",
-      port: database.connection.port || 1433,
-      database: database.connection.database ?? "",
-      user: database.connection.username ?? "",
-      password: database.connection.password ?? "",
-      options: {
-        encrypt: database.connection.ssl || false,
-        trustServerCertificate: true,
-      },
-    });
-    await pool.connect();
-    return pool;
-  }
-
-  private async executeMSSQLQuery(
-    database: IDatabaseConnection,
-    query: string,
-    options?: QueryExecuteOptions,
-  ): Promise<QueryResult> {
-    const pool = (await this.getConnection(database)) as ConnectionPool;
-    const request = pool.request();
-    const executionId = options?.executionId;
-    try {
-      if (executionId) {
-        this.runningMSSQLQueries.set(executionId, { request });
-      }
-      const result = await request.query(query);
-      return {
-        success: true,
-        data: result.recordset,
-        rowCount: result.rowsAffected[0],
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "MSSQL query failed",
-      };
-    } finally {
-      if (executionId) {
-        this.runningMSSQLQueries.delete(executionId);
-      }
-    }
-  }
-
-  // ClickHouse specific methods
-
-  /**
-   * Parse a JDBC-style ClickHouse URL and return connection config
-   * Supports formats:
-   * - jdbc:clickhouse://host:port?user=default&password=xxx&ssl=true
-   * - clickhouse://host:port?user=default&password=xxx
-   * - https://host:port (ClickHouse Cloud style)
-   */
-  private parseClickHouseConnectionString(connectionString: string): {
-    url: string;
-    username: string;
-    password: string;
-    database: string;
-  } {
-    let urlToParse = connectionString.trim();
-
-    // Remove jdbc: prefix if present
-    if (urlToParse.startsWith("jdbc:")) {
-      urlToParse = urlToParse.slice(5);
-    }
-
-    // Replace clickhouse:// with https:// for URL parsing
-    if (urlToParse.startsWith("clickhouse://")) {
-      urlToParse = "https://" + urlToParse.slice("clickhouse://".length);
-    }
-
-    // Parse the URL
-    const parsedUrl = new URL(urlToParse);
-
-    // Extract query parameters
-    const user =
-      parsedUrl.searchParams.get("user") ||
-      parsedUrl.searchParams.get("username") ||
-      parsedUrl.username ||
-      "default";
-    const password =
-      parsedUrl.searchParams.get("password") || parsedUrl.password || "";
-    const database =
-      parsedUrl.searchParams.get("database") ||
-      parsedUrl.pathname.slice(1) ||
-      "default";
-    const ssl =
-      parsedUrl.searchParams.get("ssl") === "true" ||
-      parsedUrl.searchParams.get("secure") === "true" ||
-      parsedUrl.protocol === "https:";
-
-    // Build the base URL with protocol
-    const protocol = ssl ? "https" : "http";
-    const host = parsedUrl.hostname;
-    const port = parsedUrl.port || (ssl ? "8443" : "8123");
-
-    return {
-      url: `${protocol}://${host}:${port}`,
-      username: user,
-      password: password,
-      database: database,
-    };
-  }
-
-  // ClickHouse client configuration constants
-  private readonly clickHouseRequestTimeout = 120_000; // 120 seconds for cold starts
-  private readonly clickHouseMaxRetries = 3;
-  private readonly clickHouseRetryBaseDelayMs = 1000; // 1 second base delay
-
-  /**
-   * Build ClickHouse client config from database connection
-   * Supports both connection string and individual fields
-   * Includes timeout and keep_alive settings for resilience
-   */
-  private buildClickHouseClientConfig(
-    database: IDatabaseConnection,
-    databaseNameOverride?: string,
-  ): {
-    url: string;
-    username: string;
-    password: string;
-    database: string;
-    request_timeout: number;
-    keep_alive: { enabled: boolean; idle_socket_ttl: number };
-  } {
-    const conn = database.connection;
-
-    // Base config with timeout and keep_alive settings
-    const baseConfig = {
-      request_timeout: this.clickHouseRequestTimeout,
-      keep_alive: {
-        enabled: true,
-        idle_socket_ttl: 2500, // Default: 2.5 seconds
-      },
-    };
-
-    // If connection string is provided, parse it
-    if (conn.connectionString) {
-      const parsed = this.parseClickHouseConnectionString(
-        conn.connectionString,
-      );
-      // In cluster mode the active database is chosen per-query (e.g. from the
-      // console picker), so it must take precedence over the connection string.
-      if (databaseNameOverride) {
-        parsed.database = databaseNameOverride;
-      }
-      return { ...parsed, ...baseConfig };
-    }
-
-    // Build from individual fields
-    let host = conn.host || "http://localhost";
-    if (!host.startsWith("http://") && !host.startsWith("https://")) {
-      host = (conn.ssl ? "https://" : "http://") + host;
-    }
-
-    return {
-      url: `${host}:${conn.port || 8123}`,
-      username: conn.username || "default",
-      password: conn.password || "",
-      database: databaseNameOverride || conn.database || "default",
-      ...baseConfig,
-    };
-  }
-
-  private async testClickHouseConnection(
-    database: IDatabaseConnection,
-  ): Promise<{ success: boolean; error?: string }> {
-    try {
-      const config = this.buildClickHouseClientConfig(database);
-
-      // Use retry logic to handle cold starts and transient failures
-      await withRetry(
-        async () => {
-          const client = createClient(config);
-          try {
-            await client.ping();
-          } finally {
-            await client.close();
-          }
-        },
-        {
-          maxRetries: this.clickHouseMaxRetries,
-          baseDelayMs: this.clickHouseRetryBaseDelayMs,
-        },
-      );
-
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "ClickHouse connection failed",
-      };
-    }
-  }
-
-  private async executeClickHouseQuery(
-    database: IDatabaseConnection,
-    query: string,
-    options?: QueryExecuteOptions,
-  ): Promise<QueryResult> {
-    const executionId = options?.executionId;
-    const signal = options?.signal;
-    const abortController = new AbortController();
-
-    // Generate unique query_id for this execution
-    const queryId = executionId || crypto.randomUUID();
-
-    // Set up abort signal listener
-    // Store reference to remove it in finally block to prevent memory leaks
-    const abortHandler = () => {
-      abortController.abort();
-    };
-    if (signal) {
-      signal.addEventListener("abort", abortHandler);
-    }
-
-    try {
-      // Check if already cancelled
-      if (signal?.aborted) {
-        return { success: false, error: "Query cancelled" };
-      }
-
-      // Honor a per-query database selection (cluster mode) so unqualified
-      // table references resolve against the chosen database, not just the
-      // connection's default.
-      const config = this.buildClickHouseClientConfig(
-        database,
-        options?.databaseName,
-      );
-
-      // Track running query for cancellation
-      if (executionId) {
-        this.runningClickHouseQueries.set(executionId, {
-          database,
-          queryId,
-          abortController,
-        });
-      }
-
-      // Use retry logic only for connection establishment (not query execution)
-      // to avoid re-executing queries with side effects (INSERT, UPDATE, etc.)
-      const client = await withRetry(
-        async () => {
-          const newClient = createClient(config);
-          try {
-            // Verify connection is working before returning
-            await newClient.ping();
-            return newClient;
-          } catch (error) {
-            // Close the client if ping fails to prevent resource leaks
-            await newClient.close().catch(() => {});
-            throw error;
-          }
-        },
-        {
-          maxRetries: this.clickHouseMaxRetries,
-          baseDelayMs: this.clickHouseRetryBaseDelayMs,
-          signal: abortController.signal,
-        },
-      );
-
-      let data: any[];
-      try {
-        // Execute query with query_id for cancellation support
-        // Note: Query execution is NOT retried to avoid duplicate side effects
-        const resultSet = await client.query({
-          query: query,
-          format: "JSONEachRow",
-          query_id: queryId,
-          clickhouse_settings: {
-            // Allow query to be cancelled
-            cancel_http_readonly_queries_on_client_close: 1,
-            ...(options?.readOnly || options?.readOnlyTransaction
-              ? { readonly: "2" }
-              : {}),
-          },
-          abort_signal: abortController.signal,
-        });
-
-        data = await resultSet.json();
-      } finally {
-        await client.close();
-      }
-
-      return {
-        success: true,
-        data: data as any[],
-        rowCount: (data as any[]).length,
-      };
-    } catch (error: any) {
-      // Check if this was a cancellation
-      if (
-        error?.name === "AbortError" ||
-        error?.message?.includes("aborted") ||
-        error?.message?.includes("cancelled") ||
-        abortController.signal.aborted
-      ) {
-        return { success: false, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "ClickHouse query failed",
-      };
-    } finally {
-      // Clean up abort listener to prevent memory leaks when signal is reused
-      if (signal) {
-        signal.removeEventListener("abort", abortHandler);
-      }
-      if (executionId) {
-        this.runningClickHouseQueries.delete(executionId);
-      }
     }
   }
 }
