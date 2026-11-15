@@ -15,6 +15,13 @@ export interface IDbtEnvironment {
   name: string;
   /** DatabaseConnection id used as the warehouse target. */
   connectionId: Types.ObjectId;
+  /**
+   * Optional read-only connection to the same warehouse. Metric queries
+   * (query_metric) run on it instead of `connectionId`, whose credential
+   * has to write because dbt builds with it. Unset: metric queries run on
+   * `connectionId`, read-only by the query guard.
+   */
+  readConnectionId?: Types.ObjectId;
   /** Target schema (dataset for BigQuery) dbt builds into. */
   targetSchema: string;
   /** dbt threads; default low (4) — prod container is memory-constrained. */
@@ -74,6 +81,10 @@ const DbtEnvironmentSchema = new Schema<IDbtEnvironment>(
       type: Schema.Types.ObjectId,
       ref: "DatabaseConnection",
       required: true,
+    },
+    readConnectionId: {
+      type: Schema.Types.ObjectId,
+      ref: "DatabaseConnection",
     },
     targetSchema: { type: String, required: true, trim: true },
     threads: { type: Number, default: 4, min: 1, max: 16 },

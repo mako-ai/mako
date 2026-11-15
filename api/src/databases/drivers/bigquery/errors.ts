@@ -70,3 +70,36 @@ export function abandonedSuffix(cancelled: boolean): string {
     ? " and was cancelled in BigQuery."
     : ". The query may still be running in BigQuery.";
 }
+
+const GIB = 1024 ** 3;
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * GIB) {
+    return `${Number((bytes / (1024 * GIB)).toFixed(1))} TiB`;
+  }
+  if (bytes >= GIB) return `${Number((bytes / GIB).toFixed(1))} GiB`;
+  return `${Number((bytes / 1024 ** 2).toFixed(1))} MiB`;
+}
+
+/**
+ * BigQuery's refusal of a job over its `maximumBytesBilled`, reworded for
+ * whoever has to change the query; null for any other error. BigQuery says
+ * "Query exceeded limit for bytes billed: 1000. 10485760 or higher required."
+ */
+export function describeBytesBilledCap(
+  error: string | undefined,
+  capBytes: number,
+): string | null {
+  if (
+    !error ||
+    !/limit for bytes billed|bytesBilledLimitExceeded/i.test(error)
+  ) {
+    return null;
+  }
+  const required = Number(error.match(/(\d+) or higher required/)?.[1]);
+  const scan =
+    Number.isFinite(required) && required > 0
+      ? `would bill ${formatBytes(required)}`
+      : "would bill more";
+  return `This query ${scan} on BigQuery, over the ${formatBytes(capBytes)} cap on agent and MCP queries, so it did not run and cost nothing. Read fewer bytes: filter on the table's partition column, select only the columns you need, or narrow the date range. For a query that has to read this much, use a console (create_console, run_console): consoles are not capped. An operator can change the cap with AGENT_BIGQUERY_MAX_BYTES_BILLED.`;
+}

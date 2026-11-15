@@ -46,19 +46,27 @@ import {
   searchMetrics,
   unknownMetrics,
   type CatalogMetric,
+  type CatalogSavedQuery,
 } from "../../dbt/semantic/semantic-manifest";
 import {
+  explainNoSemanticProjects,
   loadSemanticProjects,
   type SemanticProject,
 } from "../../dbt/semantic/semantic-manifest.service";
 import { loggers } from "../../logging";
+import { sqlReadOnlyAccessError } from "../../services/read-only-query.service";
 import { getDialect } from "./shared/sql-dialects";
 import { isAgentToolAbortError } from "./shared/truncation";
-import { executeQueryImpl } from "./sql-tools";
+import {
+  AGENT_DEFAULT_ROW_LIMIT,
+  appendLimitIfMissing,
+  executeQueryImpl,
+} from "./sql-tools";
 
 const logger = loggers.api("dbt-metric-tools");
 
 const MAX_LISTED_METRICS = 100;
+const MAX_LISTED_SAVED_QUERIES = 30;
 const MAX_GROUP_BY_DIMENSIONS = 150;
 const MAX_GROUP_BY_ENTITIES = 60;
 const LIST_DESCRIPTION_CHARS = 240;
@@ -70,7 +78,35 @@ export const NO_SEMANTIC_MANIFEST =
 
 /** What to say when the named environment has no run with a manifest. */
 const noEnvironmentManifest = (environment: string) =>
-  `No run of the dbt environment "${environment}" has stored a semantic manifest. Check the name with read_dbt_project_tree, then run dbt_parse in that environment (and build the models a metric reads before querying it).`;
+  `The dbt environment "${environment}" exists, but none of its runs has stored a semantic manifest. Run dbt_parse in that environment (and build the models a metric reads before querying it).`;
+
+/**
+ * What to say when nothing was loaded: a name that does not exist is told
+ * apart from a real project or environment with no parsed run.
+ */
+async function noSemanticProjectsMessage(
+  workspaceId: string,
+  options: { projectId?: string; environment?: string },
+): Promise<string> {
+  const why = await explainNoSemanticProjects(workspaceId, options);
+  if (why.reason === "unknown-project") {
+    return why.projects.length > 0
+      ? `Unknown projectId "${options.projectId}". dbt projects in this workspace: ${why.projects
+          .map(project => `${project.name} (${project.id})`)
+          .join(
+            ", ",
+          )}. Omit projectId unless several projects define the metric.`
+      : `Unknown projectId "${options.projectId}": this workspace has no dbt project.`;
+  }
+  if (why.reason === "unknown-environment") {
+    return why.environments.length > 0
+      ? `Unknown dbt environment "${options.environment}". Valid: ${why.environments.join(", ")}. Omit environment to read production.`
+      : `Unknown dbt environment "${options.environment}": this workspace's dbt projects have no environment.`;
+  }
+  return options.environment
+    ? noEnvironmentManifest(options.environment)
+    : NO_SEMANTIC_MANIFEST;
+}
 
 const NO_METRICS =
   "This workspace's dbt projects define no metrics yet. A metric is YAML in the dbt project (a semantic model over a dbt model, then a metric over its measures): load the dbt skill and read its semantic-layer reference to add one, then run dbt_parse. Until then compute the number from the dbt models: lookup_term and find_models.";
@@ -138,8 +174,185 @@ function describedMetric(metric: CatalogMetric) {
     ...(metric.inputMetrics ? { inputMetrics: metric.inputMetrics } : {}),
     ...(metric.window ? { window: metric.window } : {}),
     ...(metric.grainToDate ? { grainToDate: metric.grainToDate } : {}),
+    ...(metric.periodAgg ? { periodAgg: metric.periodAgg } : {}),
+    ...(metric.inputs ? { inputs: metric.inputs } : {}),
+    ...(metric.conversion ? { conversion: metric.conversion } : {}),
+    ...(metric.fillNullsWith !== undefined
+      ? { fillNullsWith: metric.fillNullsWith }
+      : {}),
+    ...(metric.joinToTimespine ? { joinToTimespine: true } : {}),
+    ...(metric.timeGranularity
+      ? { timeGranularity: metric.timeGranularity }
+      : {}),
+    ...(metric.filters
+      ? { filters: metric.filters.map(filter => truncateText(filter, 600)) }
+      : {}),
     ...(metric.filtered ? { filtered: true } : {}),
   };
+}
+
+/** A saved query as an agent can replay it with query_metric. */
+function listedSavedQuery(query: CatalogSavedQuery) {
+  return {
+    name: query.name,
+    ...(query.label ? { label: query.label } : {}),
+    ...(query.description
+      ? {
+          description: truncateText(query.description, LIST_DESCRIPTION_CHARS),
+        }
+      : {}),
+    metrics: query.metrics,
+    ...(query.groupBy.length > 0 ? { groupBy: query.groupBy } : {}),
+    ...(query.where.length > 0
+      ? { where: query.where.map(filter => truncateText(filter, 600)) }
+      : {}),
+    ...(query.orderBy ? { orderBy: query.orderBy } : {}),
+    ...(query.limit !== undefined ? { limit: query.limit } : {}),
+  };
+}
+
+const SAVED_QUERY_HINT =
+  "A saved query is a metric query the project named: pass its metrics, groupBy and where to query_metric or compile_metric.";
+
+/** The saved queries to return, capped, or nothing when there are none. */
+function savedQueriesField(queries: CatalogSavedQuery[]) {
+  if (queries.length === 0) return {};
+  const shown = capList(queries, MAX_LISTED_SAVED_QUERIES);
+  return {
+    savedQueries: shown.items.map(listedSavedQuery),
+    ...(shown.truncated ? { savedQueriesTotal: shown.total } : {}),
+    savedQueriesHint: SAVED_QUERY_HINT,
+  };
+}
+
+const BIGQUERY_TIMESTAMP =
+  /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d+)? UTC$/;
+
+/**
+ * One cell of a metric result, in one form whatever the column type:
+ *  - a BigQuery TIMESTAMP arrives as "2026-10-12 00:00:00.000 UTC" and a
+ *    DATETIME as "2026-05-01T00:00:00": the first becomes ISO 8601 too
+ *    ("2026-10-12T00:00:00Z"), keeping the Z that tells them apart;
+ *  - a float carries binary noise (1574958.9400000046): 15 significant
+ *    digits is all a double holds exactly, so rounding to them removes the
+ *    noise and nothing else. Integers are left alone.
+ * Only metric results are normalised: the driver's own output feeds
+ * consoles, exports and app bindings, which keep their format.
+ */
+export function normalizeMetricCell(value: unknown): unknown {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || Number.isInteger(value)) return value;
+    return Number(value.toPrecision(15));
+  }
+  if (typeof value === "string") {
+    const timestamp = BIGQUERY_TIMESTAMP.exec(value);
+    if (!timestamp) return value;
+    const fraction = /^\.0+$/.test(timestamp[3] ?? ".0") ? "" : timestamp[3];
+    return `${timestamp[1]}T${timestamp[2]}${fraction}Z`;
+  }
+  return value;
+}
+
+export function normalizeMetricRows(rows: unknown[]): unknown[] {
+  return rows.map(row => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return row;
+    return Object.fromEntries(
+      Object.entries(row).map(([key, value]) => [
+        key,
+        normalizeMetricCell(value),
+      ]),
+    );
+  });
+}
+
+/** A metric_time bound as epoch ms: a date or a naive datetime, read as UTC. */
+function metricTimeMs(value: string): number {
+  const iso = value.trim().replace(" ", "T");
+  return Date.parse(`${iso.length === 10 ? `${iso}T00:00:00` : iso}Z`);
+}
+
+/** Refuse a range that can hold no rows, before MetricFlow is started. */
+function assertTimeRange(startTime?: string, endTime?: string): void {
+  if (!startTime || !endTime) return;
+  if (metricTimeMs(startTime) > metricTimeMs(endTime)) {
+    throw new Error(
+      `startTime (${startTime}) is after endTime (${endTime}): the range holds no rows. Swap them.`,
+    );
+  }
+}
+
+const groupByNames = (items: ReadonlyArray<{ name: string }>, max: number) => {
+  const shown = capList(
+    items.map(item => item.name),
+    max,
+  );
+  return `${shown.items.join(", ")}${shown.truncated ? `, … (${shown.total} in all)` : ""}`;
+};
+
+/**
+ * MetricFlow answers a group-by it cannot resolve with six suggestions.
+ * This adds every group-by the metrics do take and the smallest grain of
+ * metric_time, so the caller can pick without another call. Any other error
+ * is returned as it is.
+ */
+async function withValidGroupBys(
+  error: unknown,
+  project: SemanticProject,
+  metrics: readonly string[],
+): Promise<unknown> {
+  if (
+    !(error instanceof MetricflowQueryError) ||
+    !/group-by-item/i.test(error.message)
+  ) {
+    return error;
+  }
+  try {
+    const { dimensions, entities } = await describeMetricGroupBys(
+      project.semanticManifestKey,
+      metrics,
+    );
+    if (dimensions.length === 0 && entities.length === 0) return error;
+    const grain = dimensions.find(
+      dimension => dimension.base === "metric_time",
+    )?.grain;
+    return new MetricflowQueryError(
+      [
+        error.message,
+        `Valid group-bys for ${metrics.join(", ")} (${dimensions.length + entities.length}): ${groupByNames([...dimensions, ...entities], MAX_GROUP_BY_DIMENSIONS)}.`,
+        ...(grain
+          ? [
+              `The smallest grain of metric_time is ${grain}: use metric_time__${grain} or a coarser one. A finer grain does not exist for ${metrics.length === 1 ? "this metric" : "these metrics"}.`,
+            ]
+          : []),
+      ].join("\n\n"),
+    );
+  } catch {
+    return error;
+  }
+}
+
+/**
+ * Metrics that share no dimension cannot be grouped together. Names what
+ * each one takes alone, so the caller sees where the set splits.
+ */
+async function sharedNothingMessage(
+  project: SemanticProject,
+  metrics: readonly string[],
+): Promise<string> {
+  const each = await Promise.all(
+    metrics.map(async name => {
+      try {
+        const { dimensions } = await describeMetricGroupBys(
+          project.semanticManifestKey,
+          [name],
+        );
+        return `${name}: ${dimensions.length > 0 ? groupByNames(dimensions, 8) : "no dimension"}`;
+      } catch {
+        return `${name}: could not be read`;
+      }
+    }),
+  );
+  return `${metrics.join(", ")} share no dimension, so they cannot be grouped in one query. Each alone takes: ${each.join("; ")}. Query them separately, or describe a subset that shares dimensions.`;
 }
 
 /**
@@ -187,23 +400,32 @@ export const createDbtMetricTools = (
   options?: {
     /** What the caller may run. query_metric never uses more than read. */
     queryAccess?: QueryAccess;
+    /**
+     * One budget for compiling AND running a metric query. Over MCP the
+     * client gives up at 60s, and compile (60s) then query (60s) could
+     * outlast it: the caller then saw a transport timeout, not an answer.
+     */
+    maxWaitMs?: number;
     toolExecutionContext?: AgentToolExecutionContext;
   },
 ) => {
   const queryAccess = options?.queryAccess ?? "write";
   const toolExecutionContext = options?.toolExecutionContext;
+  const maxWaitMs = options?.maxWaitMs;
 
   /** A metric query compiled for the warehouse its project builds into. */
-  const compile = async (input: CompileMetricInput) => {
+  const compile = async (input: CompileMetricInput, deadline?: number) => {
+    assertTimeRange(input.startTime, input.endTime);
     const projects = await loadSemanticProjects(workspaceId, {
       projectId: input.projectId,
       environment: input.environment,
     });
     if (projects.length === 0) {
       throw new Error(
-        input.environment
-          ? noEnvironmentManifest(input.environment)
-          : NO_SEMANTIC_MANIFEST,
+        await noSemanticProjectsMessage(workspaceId, {
+          projectId: input.projectId,
+          environment: input.environment,
+        }),
       );
     }
     const project = projectDefining(projects, input.metrics);
@@ -212,17 +434,34 @@ export const createDbtMetricTools = (
         `The dbt project "${project.projectName}" has no environment "${project.environmentName}" any more, so its metrics have no warehouse to run on. Run a production build to refresh the semantic manifest.`,
       );
     }
-    const connection = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(project.connectionId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    })
-      .select("name type")
-      .lean();
-    if (!connection) {
+    const findConnection = (id: string) =>
+      DatabaseConnection.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      })
+        .select("name type")
+        .lean();
+    const buildConnection = await findConnection(project.connectionId);
+    if (!buildConnection) {
       throw new Error(
         `The warehouse connection of environment "${project.environmentName}" no longer exists.`,
       );
     }
+    // The build connection's credential can write: dbt builds with it. An
+    // environment may name a read-only connection to the same warehouse,
+    // and a metric query then runs on that one. A read connection that is
+    // gone, or that reaches another kind of warehouse than the SQL is
+    // written for, is not used.
+    const readConnection = project.readConnectionId
+      ? await findConnection(project.readConnectionId)
+      : null;
+    const useRead =
+      readConnection !== null && readConnection.type === buildConnection.type;
+    const connection = useRead ? readConnection : buildConnection;
+    const connectionId =
+      useRead && project.readConnectionId
+        ? project.readConnectionId
+        : project.connectionId;
     const dialect: MetricflowDialect | undefined = metricflowDialectFor(
       connection.type,
     );
@@ -237,20 +476,36 @@ export const createDbtMetricTools = (
       {
         metrics: input.metrics,
         groupBy: input.groupBy,
-        where: input.where,
+        // MetricFlow parenthesises each filter only when there are several:
+        // alone, "a = 1 or 1=1" would reach the WHERE clause bare.
+        where: input.where?.map(filter => `(${filter})`),
         orderBy: input.orderBy,
         limit: input.limit,
         startTime: input.startTime,
         endTime: input.endTime,
       },
       toolExecutionContext?.signal,
-    );
+      deadline === undefined ? undefined : deadline - Date.now(),
+    ).catch(async error => {
+      throw await withValidGroupBys(error, project, input.metrics);
+    });
+    // A where filter is raw SQL: the compiled statement gets the same
+    // read-only check as a query that runs, so compile_metric never hands
+    // back SQL that query_metric would refuse.
+    const accessError = sqlReadOnlyAccessError(sql, connection.type);
+    if (accessError) throw new Error(accessError);
     return {
       sql,
       project,
-      connectionId: project.connectionId,
+      connectionId,
       connectionName: connection.name,
+      connectionRole: useRead ? ("read" as const) : ("build" as const),
       sqlDialect: getDialect(connection.type),
+      // The database dbt built the metric's relations in: where to run when
+      // the connection names no default database (Postgres).
+      relationDatabase: project.catalog.semanticModels.find(
+        model => model.database,
+      )?.database,
     };
   };
 
@@ -268,9 +523,10 @@ export const createDbtMetricTools = (
             return {
               success: true as const,
               metrics: [],
-              message: environment
-                ? noEnvironmentManifest(environment)
-                : NO_SEMANTIC_MANIFEST,
+              message: await noSemanticProjectsMessage(workspaceId, {
+                projectId,
+                environment,
+              }),
             };
           }
 
@@ -316,6 +572,14 @@ export const createDbtMetricTools = (
                   : {}),
                 timeGrains: TIME_GRAIN_HINT,
               },
+              ...savedQueriesField(
+                project.catalog.savedQueries.filter(saved =>
+                  saved.metrics.some(name => metrics.includes(name)),
+                ),
+              ),
+              ...(metrics.length > 1 && groupBys.dimensions.length === 0
+                ? { message: await sharedNothingMessage(project, metrics) }
+                : {}),
               ...(project.catalog.hasTimeSpine
                 ? {}
                 : {
@@ -352,6 +616,11 @@ export const createDbtMetricTools = (
             ...(manyProjects ? {} : projectNote(projects[0])),
             metrics: listed.items,
             total: listed.total,
+            ...(query
+              ? {}
+              : savedQueriesField(
+                  projects.flatMap(project => project.catalog.savedQueries),
+                )),
             ...(listed.truncated
               ? {
                   truncated: true,
@@ -380,13 +649,17 @@ export const createDbtMetricTools = (
       inputSchema: compileMetricSchema,
       execute: async input => {
         try {
-          const compiled = await compile(input);
+          const compiled = await compile(
+            input,
+            maxWaitMs === undefined ? undefined : Date.now() + maxWaitMs,
+          );
           return {
             success: true as const,
             ...projectNote(compiled.project),
             metrics: input.metrics,
             connectionId: compiled.connectionId,
             connectionName: compiled.connectionName,
+            connectionRole: compiled.connectionRole,
             sqlDialect: compiled.sqlDialect,
             sql: compiled.sql,
             next: "Run it with sql_execute_query({ connectionId, query: sql }), or save it as a binding or console.",
@@ -419,27 +692,66 @@ export const createDbtMetricTools = (
                 "This API key does not have query access. compile_metric still returns the SQL.",
             };
           }
-          const compiled = await compile(input);
-          sql = compiled.sql;
+          const deadline =
+            maxWaitMs === undefined ? undefined : Date.now() + maxWaitMs;
+          const compiled = await compile(input, deadline);
+          // The statement that runs: the agent's default LIMIT is appended
+          // here, not inside the executor, so what is returned is what ran.
+          const executedSql = appendLimitIfMissing(compiled.sql);
+          const limitAppended = executedSql !== compiled.sql;
+          sql = executedSql;
           // A metric query is a SELECT: read access is all it ever needs,
           // whatever the caller holds.
           const result = await executeQueryImpl(
             compiled.connectionId,
             undefined,
-            compiled.sql,
+            executedSql,
             workspaceId,
             userId,
             toolExecutionContext,
             "read",
             maxRows,
+            {
+              fallbackDatabase: compiled.relationDatabase,
+              mapRows: normalizeMetricRows,
+              ...(deadline === undefined
+                ? {}
+                : { timeoutMs: Math.max(1000, deadline - Date.now()) }),
+            },
           );
+          const rowCount =
+            "rowCount" in result && typeof result.rowCount === "number"
+              ? result.rowCount
+              : undefined;
+          // Exactly the cap came back: the result was cut, not complete.
+          const limited =
+            limitAppended &&
+            rowCount !== undefined &&
+            rowCount >= AGENT_DEFAULT_ROW_LIMIT;
+          const note =
+            "note" in result && typeof result.note === "string"
+              ? result.note
+              : undefined;
           return {
             ...result,
+            ...(limited
+              ? {
+                  limited: true as const,
+                  rowLimit: AGENT_DEFAULT_ROW_LIMIT,
+                  note: `Capped at ${AGENT_DEFAULT_ROW_LIMIT} rows: the metric has MORE rows than the ${AGENT_DEFAULT_ROW_LIMIT} this query read, because Mako appended LIMIT ${AGENT_DEFAULT_ROW_LIMIT}. Totals over these rows are wrong. Pass limit (up to 10000) with orderBy, or cut the rows with where, startTime/endTime, fewer group-bys or a coarser grain.${note ? ` ${note}` : ""}`,
+                }
+              : {}),
             ...projectNote(compiled.project),
             metrics: input.metrics,
             connectionId: compiled.connectionId,
             connectionName: compiled.connectionName,
-            sql: compiled.sql,
+            connectionRole: compiled.connectionRole,
+            sql: executedSql,
+            ...(limitAppended
+              ? {
+                  sqlNote: `LIMIT ${AGENT_DEFAULT_ROW_LIMIT} was appended to the SQL MetricFlow compiled; compile_metric returns it without.`,
+                }
+              : {}),
           };
         } catch (error) {
           if (isAgentToolAbortError(error)) {

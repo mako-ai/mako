@@ -445,6 +445,9 @@ function environmentsToFile(project: IDbtProject) {
     environments: project.environments.map(env => ({
       name: env.name,
       connectionId: env.connectionId.toString(),
+      ...(env.readConnectionId
+        ? { readConnectionId: env.readConnectionId.toString() }
+        : {}),
       targetSchema: env.targetSchema,
       threads: env.threads,
       vars: env.vars as Record<string, unknown> | undefined,
@@ -478,6 +481,11 @@ async function applyEnvironmentsFile(
   project.environments = parsed.environments.map(env => ({
     name: env.name,
     connectionId: new Types.ObjectId(env.connectionId),
+    // A value that is no id is dropped: metric queries then fall back to
+    // the build connection rather than the whole file being refused.
+    ...(env.readConnectionId && Types.ObjectId.isValid(env.readConnectionId)
+      ? { readConnectionId: new Types.ObjectId(env.readConnectionId) }
+      : {}),
     targetSchema: env.targetSchema,
     threads: env.threads ?? 4,
     vars: env.vars,

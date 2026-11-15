@@ -19,6 +19,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { hashApiKey } from "../auth/api-key.middleware";
 import { User } from "../database/schema";
 import {
+  ConsoleFolder,
   SavedConsole,
   Workspace,
   WorkspaceMember,
@@ -163,6 +164,72 @@ async function main() {
       },
     );
     assert.notEqual(draftComment.status, 404, "a draft is not refused");
+
+    // ── Duplicate needs read access, restore needs write access ───────
+    const post = (key: string, path: string, method = "POST") =>
+      app.request(path, {
+        method,
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+        },
+        body: "{}",
+      });
+    const consolesBefore = await SavedConsole.countDocuments({});
+    const vicDuplicate = await post(
+      KEY_A_VIC,
+      `/api/workspaces/${wsA}/consoles/${privateConsole._id}/duplicate`,
+    );
+    assert.equal(vicDuplicate.status, 404, "a private console is not copied");
+    assert.equal(await SavedConsole.countDocuments({}), consolesBefore);
+
+    await SavedConsole.updateOne(
+      { _id: privateConsole._id },
+      { $set: { is_deleted: true, deletedAt: new Date() } },
+    );
+    const restorePath = `/api/workspaces/${wsA}/consoles/${privateConsole._id}/restore`;
+    const vicRestore = await post(KEY_A_VIC, restorePath, "PATCH");
+    assert.equal(vicRestore.status, 404, "no restore without write access");
+    assert.equal(
+      (await SavedConsole.findById(privateConsole._id))?.is_deleted,
+      true,
+      "the console stays deleted",
+    );
+    const ownerRestore = await post(KEY_A_OWNER, restorePath, "PATCH");
+    assert.equal(ownerRestore.status, 200, "the owner restores it");
+
+    // ── Version comment honours folder inheritance, like export ───────
+    const sharedFolder = await ConsoleFolder.create({
+      workspaceId: wsA,
+      name: "shared",
+      access: "workspace",
+      ownerId: "owner",
+    });
+    const inheritedConsole = await SavedConsole.create({
+      workspaceId: wsA,
+      folderId: sharedFolder._id,
+      name: "inherits-workspace",
+      code: "select 1",
+      language: "sql",
+      createdBy: "owner",
+      access: "private",
+    });
+    const inheritedComment = await app.request(
+      `/api/workspaces/${wsA}/consoles/${inheritedConsole._id}/version-comment`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${KEY_A_VIC}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ newContent: "select 2" }),
+      },
+    );
+    assert.notEqual(
+      inheritedComment.status,
+      404,
+      "a console in a workspace folder is readable",
+    );
 
     console.info("workspace api-key scope tests passed");
   } finally {

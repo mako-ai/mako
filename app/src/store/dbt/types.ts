@@ -6,6 +6,11 @@ import type { LoadError } from "../../api/result";
 export interface DbtEnvironment {
   name: string;
   connectionId: string;
+  /**
+   * Optional read-only connection to the same warehouse: metric queries run
+   * on it instead of `connectionId`, which dbt builds with.
+   */
+  readConnectionId?: string;
   targetSchema: string;
   threads: number;
   vars?: Record<string, unknown>;

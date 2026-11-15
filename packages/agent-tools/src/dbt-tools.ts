@@ -206,6 +206,24 @@ const metricEnvironmentField = z
     'dbt environment to read instead of production, e.g. a personal dev one ("joan"): tries a metric from that environment\'s latest run before it is merged.',
   );
 
+/**
+ * A metric_time bound: a date or a naive datetime. MetricFlow compares it
+ * with naive datetimes, so an offset ("+02:00", "Z") cannot be honoured.
+ */
+const METRIC_TIME_PATTERN =
+  /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?)?$/;
+
+const metricTimeField = (name: string, description: string) =>
+  z
+    .string()
+    .max(40)
+    .regex(
+      METRIC_TIME_PATTERN,
+      `${name} must be a date ("2026-01-01") or a datetime without a timezone ("2026-01-01T00:00:00"). Drop the offset: metric_time has no timezone.`,
+    )
+    .optional()
+    .describe(description);
+
 const metricQueryFields = {
   metrics: metricNamesField,
   groupBy: z
@@ -236,18 +254,14 @@ const metricQueryFields = {
     .max(10000)
     .optional()
     .describe("Row limit written into the SQL."),
-  startTime: z
-    .string()
-    .max(40)
-    .optional()
-    .describe(
-      'Start of the metric_time range, inclusive: "2026-01-01". Widened to whole periods of the grain grouped by (a week starts on Monday).',
-    ),
-  endTime: z
-    .string()
-    .max(40)
-    .optional()
-    .describe('End of the metric_time range, inclusive: "2026-03-31".'),
+  startTime: metricTimeField(
+    "startTime",
+    'Start of the metric_time range, inclusive: "2026-01-01". Widened to whole periods of the grain grouped by (a week starts on Monday). A date or a datetime without a timezone.',
+  ),
+  endTime: metricTimeField(
+    "endTime",
+    'End of the metric_time range, inclusive: "2026-03-31". A date or a datetime without a timezone; not before startTime.',
+  ),
   projectId: z
     .string()
     .optional()

@@ -64,7 +64,7 @@ export async function checkQuery(
     // session/transaction read-only mode (Postgres READ ONLY txn, ClickHouse
     // readonly=2, ...) additionally enforce it; SQL engines without one
     // (e.g. BigQuery) rely on this validated single SELECT/WITH statement.
-    const safety = checkPreviewQuerySafety(query);
+    const safety = checkPreviewQuerySafety(query, database.type);
     if (!safety.safe) {
       return { refused: safety.errors.join(" ") };
     }

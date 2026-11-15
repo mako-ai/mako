@@ -139,7 +139,8 @@ after the user reviews it, \`workflow_merge_to_main\` deploys it (admins only);
 a deployed workflow's schedule and webhook stay off until \`workflows_triggers\` switches
 it active. A step reads every connection; it writes only through a connection whose
 Access tab lists the workflow, which an admin sets. Load the \`workflows\` system skill
-before writing a workflow.`;
+before writing a workflow. When the dbt project defines a number as a metric
+(\`list_metrics\`), a step's SQL for it comes from \`compile_metric\`.`;
 
 export const TRANSFORM_MODE_SYSTEM_PROMPT = `## Transform (dbt) Mode
 
@@ -240,7 +241,8 @@ All cell writes go through \`edit_notebook_cell\`: \`mode: 'insert'\` adds a cel
 For a SQL cell, set \`connectionId\` to a connection id (discover with
 \`list_connections\`), then run it with \`run_notebook_sql_cell\`. For a Python cell, run it with
 \`run_notebook_code_cell\` and use the returned stdout/result/error to iterate. Prefer a short
-Markdown cell explaining each analysis above its code.`;
+Markdown cell explaining each analysis above its code. When the dbt project defines a
+number as a metric (\`list_metrics\`), the SQL cell's query comes from \`compile_metric\`.`;
 
 export const EXPLORE_MODE_SYSTEM_PROMPT = `## Explore Mode (read-only)
 

@@ -36,6 +36,8 @@ export interface DbtEnvironmentsFile {
   environments: Array<{
     name: string;
     connectionId: string;
+    /** Read-only connection metric queries run on, when the project sets one. */
+    readConnectionId?: string;
     targetSchema: string;
     threads?: number;
     vars?: Record<string, unknown>;
@@ -120,6 +122,7 @@ export function serializeEnvironmentsFile(file: DbtEnvironmentsFile): string {
       connection_id: env.connectionId,
       target_schema: env.targetSchema,
     };
+    if (env.readConnectionId) e.read_connection_id = env.readConnectionId;
     if (env.threads != null) e.threads = env.threads;
     if (env.vars && Object.keys(env.vars).length > 0) e.vars = env.vars;
     if (env.ownerUserId) e.owner_user_id = env.ownerUserId;
@@ -154,9 +157,14 @@ export function parseEnvironmentsFile(
     const targetSchema =
       typeof e.target_schema === "string" ? e.target_schema.trim() : "";
     if (!name || !connectionId || !targetSchema) return null;
+    const readConnectionId =
+      typeof e.read_connection_id === "string"
+        ? e.read_connection_id.trim()
+        : "";
     environments.push({
       name,
       connectionId,
+      ...(readConnectionId ? { readConnectionId } : {}),
       targetSchema,
       threads: typeof e.threads === "number" ? e.threads : undefined,
       vars:

@@ -228,6 +228,8 @@ Results land via the persisted `lastRun` record and the realtime `console.run.co
 
 The short, single-shot execute tools (`sql_execute_query`, `mongo_execute_query`) stay on a brief timeout (`AGENT_DIRECT_QUERY_TIMEOUT_MS`, 60s default) for quick exploration; when one times out, the agent moves the query into a console and uses the resumable `run_console` flow instead.
 
+On BigQuery, a read from these tools (and from `query_metric`) carries a byte cap: `AGENT_BIGQUERY_MAX_BYTES_BILLED`, 1 TiB by default, `0` to remove it. BigQuery refuses a query that would bill more before it runs, at no charge, and the agent is told to filter on the partition column or use a console. Consoles, apps, flows and dbt builds are not capped.
+
 ## Safety
 
 - SELECT queries are auto-limited to 500 rows unless you explicitly override

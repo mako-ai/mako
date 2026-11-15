@@ -28,7 +28,10 @@ import {
   createRouter,
   jsonBody,
 } from "../../openapi/core";
-import { canReadConsole, canWriteConsole } from "../../services/consoles";
+import {
+  canReadConsoleWithInheritance,
+  canWriteConsole,
+} from "../../services/consoles";
 import {
   VERSION_COMMENT_MAX_CHARS,
   consoleVersionComment,
@@ -112,7 +115,7 @@ async function loadReadableConsole(
     workspaceId: new Types.ObjectId(workspaceId),
   });
   const memberRole = c.get("memberRole") as string | undefined;
-  if (!doc || !canReadConsole(doc, user.id, memberRole)) {
+  if (!doc || !(await canReadConsoleWithInheritance(doc, user.id))) {
     return fail(c, 404, "Console not found");
   }
   if (opts.write && !canWriteConsole(doc, user.id, memberRole)) {

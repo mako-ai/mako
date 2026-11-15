@@ -61,6 +61,150 @@ describe("buildSemanticCatalog", () => {
     expect(metric("cumulative_revenue")).toMatchObject({ type: "cumulative" });
   });
 
+  it("keeps the window and period aggregation of a cumulative metric", () => {
+    // dbt 1.9+ writes them under cumulative_type_params.
+    expect(metric("revenue_last_7_days")).toMatchObject({
+      type: "cumulative",
+      window: "7 day",
+      periodAgg: "first",
+    });
+    expect(metric("cumulative_revenue")).toMatchObject({ periodAgg: "first" });
+    expect(metric("cumulative_revenue")).not.toHaveProperty("window");
+  });
+
+  it("returns a definition's filters as written", () => {
+    expect(metric("enterprise_revenue")?.filters).toEqual([
+      "{{ Dimension('customer__plan') }} = 'enterprise'",
+    ]);
+    expect(metric("revenue")).not.toHaveProperty("filters");
+  });
+
+  it("keeps what a conversion, an offset input and a saved query say", () => {
+    const built = buildSemanticCatalog({
+      metrics: [
+        {
+          name: "visit_to_buy_rate",
+          type: "conversion",
+          type_params: {
+            conversion_type_params: {
+              base_measure: { name: "visits" },
+              conversion_measure: { name: "buys" },
+              entity: "user",
+              calculation: "conversion_rate",
+              window: { count: 7, granularity: "day" },
+              constant_properties: [
+                { base_property: "product", conversion_property: "product" },
+              ],
+            },
+          },
+        },
+        {
+          name: "revenue_growth_mom",
+          type: "derived",
+          type_params: {
+            expr: "(revenue - revenue_prev) / revenue_prev",
+            metrics: [
+              { name: "revenue" },
+              {
+                name: "revenue",
+                alias: "revenue_prev",
+                offset_window: { count: 1, granularity: "month" },
+                filter: {
+                  where_filters: [
+                    { where_sql_template: "{{ Dimension('order__paid') }}" },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+        {
+          name: "revenue_mtd",
+          type: "cumulative",
+          time_granularity: "day",
+          type_params: {
+            measure: {
+              name: "order_total",
+              fill_nulls_with: 0,
+              join_to_timespine: true,
+            },
+            cumulative_type_params: {
+              grain_to_date: "month",
+              period_agg: "last",
+            },
+          },
+        },
+      ],
+      saved_queries: [
+        {
+          name: "weekly_revenue_by_region",
+          description: "Revenue per region and week.",
+          query_params: {
+            metrics: ["revenue"],
+            group_by: [
+              "TimeDimension('metric_time', 'week')",
+              "Dimension('customer__region')",
+            ],
+            where: {
+              where_filters: [
+                {
+                  where_sql_template:
+                    "{{ Dimension('customer__plan') }} = 'pro'",
+                },
+              ],
+            },
+          },
+        },
+        { description: "no name" },
+      ],
+    });
+    const by = (name: string) => built.metrics.find(m => m.name === name);
+    expect(by("visit_to_buy_rate")).toEqual({
+      name: "visit_to_buy_rate",
+      type: "conversion",
+      conversion: {
+        baseMeasure: "visits",
+        conversionMeasure: "buys",
+        entity: "user",
+        calculation: "conversion_rate",
+        window: "7 day",
+        constantProperties: [{ base: "product", conversion: "product" }],
+      },
+      filtered: false,
+    });
+    expect(by("revenue_growth_mom")).toMatchObject({
+      inputMetrics: ["revenue", "revenue"],
+      // Only the input the definition changes is detailed.
+      inputs: [
+        {
+          name: "revenue",
+          alias: "revenue_prev",
+          offsetWindow: "1 month",
+          filters: ["{{ Dimension('order__paid') }}"],
+        },
+      ],
+    });
+    expect(by("revenue_mtd")).toMatchObject({
+      grainToDate: "month",
+      periodAgg: "last",
+      fillNullsWith: 0,
+      joinToTimespine: true,
+      timeGranularity: "day",
+    });
+    expect(built.savedQueries).toEqual([
+      {
+        name: "weekly_revenue_by_region",
+        description: "Revenue per region and week.",
+        metrics: ["revenue"],
+        groupBy: [
+          "TimeDimension('metric_time', 'week')",
+          "Dimension('customer__region')",
+        ],
+        where: ["{{ Dimension('customer__plan') }} = 'pro'"],
+      },
+    ]);
+  });
+
   it("says when a definition carries its own filter", () => {
     expect(metric("enterprise_revenue")?.filtered).toBe(true);
     expect(metric("revenue")?.filtered).toBe(false);
@@ -72,11 +216,13 @@ describe("buildSemanticCatalog", () => {
         name: "orders",
         description: "One row per order.",
         relation: '"probe"."main"."orders"',
+        database: "probe",
       },
       {
         name: "customers",
         description: "One row per customer.",
         relation: '"probe"."main"."customers"',
+        database: "probe",
       },
     ]);
   });

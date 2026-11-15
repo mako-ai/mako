@@ -295,6 +295,7 @@ consoleWriteRoutes.openapi(
         c.req.param("id") as string,
         c.req.param("workspaceId") as string,
         user.id,
+        c.get("memberRole") as string | undefined,
       );
       if (!restored) return fail(c, 404, "Console not found");
       return c.json({ success: true, message: "Console restored" });

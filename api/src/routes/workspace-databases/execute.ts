@@ -306,7 +306,7 @@ workspaceExecuteRoutes.openapi(
         database.type !== "mongodb" &&
         database.type !== "cloudflare-kv"
       ) {
-        const safety = checkPreviewQuerySafety(executableQuery);
+        const safety = checkPreviewQuerySafety(executableQuery, database.type);
         if (!safety.safe) {
           if (!wantsUnsafeOverride) {
             return c.json(
@@ -646,7 +646,7 @@ workspaceExecuteRoutes.openapi(
         database.type !== "mongodb" &&
         database.type !== "cloudflare-kv"
       ) {
-        const safety = checkPreviewQuerySafety(executableQuery);
+        const safety = checkPreviewQuerySafety(executableQuery, database.type);
         if (!safety.safe) {
           return c.json(
             {

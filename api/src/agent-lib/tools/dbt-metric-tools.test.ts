@@ -67,8 +67,14 @@ vi.mock("./sql-tools", async importOriginal => ({
   executeQueryImpl: executor.run,
 }));
 
+import { compileMetricSchema } from "@mako/agent-tools";
+import { sqlReadOnlyAccessError } from "../../services/read-only-query.service";
 import { createDbtServerTools } from "./dbt-tools";
-import { NO_SEMANTIC_MANIFEST, createDbtMetricTools } from "./dbt-metric-tools";
+import {
+  NO_SEMANTIC_MANIFEST,
+  createDbtMetricTools,
+  normalizeMetricRows,
+} from "./dbt-metric-tools";
 import {
   DatabaseConnection,
   DbtProject,
@@ -368,6 +374,118 @@ describe("list_metrics", () => {
     expect(result).not.toHaveProperty("warning");
   });
 
+  it("returns the whole definition and the saved queries", async () => {
+    await seedProject({
+      manifest: Buffer.from(
+        JSON.stringify({
+          semantic_models: [],
+          metrics: [
+            {
+              name: "visit_to_buy_rate",
+              type: "conversion",
+              type_params: {
+                conversion_type_params: {
+                  base_measure: { name: "visits" },
+                  conversion_measure: { name: "buys" },
+                  entity: "user",
+                  calculation: "conversion_rate",
+                  window: { count: 7, granularity: "day" },
+                },
+              },
+            },
+            {
+              name: "mrr_mtd",
+              type: "cumulative",
+              type_params: {
+                measure: { name: "mrr" },
+                cumulative_type_params: {
+                  grain_to_date: "month",
+                  period_agg: "last",
+                },
+              },
+              filter: {
+                where_filters: [
+                  { where_sql_template: "{{ Dimension('account__active') }}" },
+                ],
+              },
+            },
+          ],
+          saved_queries: [
+            {
+              name: "weekly_conversion",
+              query_params: {
+                metrics: ["visit_to_buy_rate"],
+                group_by: ["TimeDimension('metric_time', 'week')"],
+              },
+            },
+          ],
+        }),
+      ),
+    });
+    const described = await run<Record<string, unknown>>(tools.list_metrics, {
+      metrics: ["visit_to_buy_rate", "mrr_mtd"],
+    });
+    expect(described.metrics).toEqual([
+      {
+        name: "visit_to_buy_rate",
+        type: "conversion",
+        conversion: {
+          baseMeasure: "visits",
+          conversionMeasure: "buys",
+          entity: "user",
+          calculation: "conversion_rate",
+          window: "7 day",
+        },
+      },
+      {
+        name: "mrr_mtd",
+        type: "cumulative",
+        measure: "mrr",
+        grainToDate: "month",
+        periodAgg: "last",
+        filters: ["{{ Dimension('account__active') }}"],
+        filtered: true,
+      },
+    ]);
+    const saved = [
+      {
+        name: "weekly_conversion",
+        metrics: ["visit_to_buy_rate"],
+        groupBy: ["TimeDimension('metric_time', 'week')"],
+      },
+    ];
+    expect(described.savedQueries).toEqual(saved);
+    const listed = await run<Record<string, unknown>>(tools.list_metrics, {});
+    expect(listed.savedQueries).toEqual(saved);
+    expect(listed.savedQueriesHint).toMatch(/pass its metrics, groupBy/);
+  });
+
+  it("says which metrics split when they share no dimension", async () => {
+    await seedProject();
+    engine.describe.mockImplementation(async (_key, names: string[]) => ({
+      dimensions:
+        names.length > 1
+          ? []
+          : names[0] === "revenue"
+            ? [{ name: "metric_time__day", type: "time" }]
+            : [{ name: "customer__region", type: "categorical" }],
+      entities: [],
+    }));
+    const result = await run<{ message: string; groupBy: unknown }>(
+      tools.list_metrics,
+      { metrics: ["revenue", "active_customers"] },
+    );
+    expect(result.groupBy).toMatchObject({ dimensions: [] });
+    expect(result.message).toBe(
+      "revenue, active_customers share no dimension, so they cannot be grouped in one query. Each alone takes: revenue: metric_time__day; active_customers: customer__region. Query them separately, or describe a subset that shares dimensions.",
+    );
+    // A single metric without dimensions needs no such message.
+    const alone = await run<Record<string, unknown>>(tools.list_metrics, {
+      metrics: ["revenue"],
+    });
+    expect(alone).not.toHaveProperty("message");
+  });
+
   it("refuses an unknown metric before starting MetricFlow, naming the ones that exist", async () => {
     await seedProject();
     const result = await run<{ success: boolean; error: string }>(
@@ -399,12 +517,14 @@ describe("compile_metric", () => {
       {
         metrics: ["average_order_value"],
         groupBy: ["metric_time__month"],
-        where: ["{{ Dimension('customer__region') }} = 'EU'"],
+        // Each filter reaches MetricFlow in parentheses, even a single one.
+        where: ["({{ Dimension('customer__region') }} = 'EU')"],
         orderBy: ["-metric_time__month"],
         limit: 12,
         startTime: "2026-01-01",
         endTime: "2026-12-31",
       },
+      undefined,
       undefined,
     );
     expect(result).toMatchObject({
@@ -486,11 +606,94 @@ describe("compile_metric", () => {
       metrics: ["revenue"],
       groupBy: ["customer__country"],
     });
+    // The six suggestions MetricFlow gives become the whole list, with
+    // the smallest grain of metric_time.
+    expect(engine.describe).toHaveBeenCalledWith(
+      "runs/Analytics/prod/semantic_manifest.json",
+      ["revenue"],
+    );
+    expect(result).toEqual({
+      success: false,
+      error: [
+        "The given input does not match any of the available group-by-items",
+        "Valid group-bys for revenue (3): metric_time__day, customer__region, customer.",
+        "The smallest grain of metric_time is day: use metric_time__day or a coarser one. A finer grain does not exist for this metric.",
+      ].join("\n\n"),
+    });
+  });
+
+  it("refuses compiled SQL that is not read-only, as query_metric does", async () => {
+    await seedProject();
+    engine.compile.mockResolvedValue(
+      "SELECT SUM(revenue) AS revenue FROM t WHERE (1=1; drop table x)",
+    );
+    const input = { metrics: ["revenue"], where: ["1=1; drop table x"] };
+    const compiled = await run<Record<string, unknown>>(
+      tools.compile_metric,
+      input,
+    );
+    expect(compiled.success).toBe(false);
+    expect(compiled.error).toBe(
+      sqlReadOnlyAccessError(
+        "SELECT SUM(revenue) AS revenue FROM t WHERE (1=1; drop table x)",
+        "postgresql",
+      ),
+    );
+    expect(compiled.error).toMatch(/Mako MCP access is read-only/);
+    // The statement is not handed back.
+    expect(compiled).not.toHaveProperty("sql");
+    expect(JSON.stringify(compiled)).not.toMatch(/drop table/);
+
+    const queried = await run<Record<string, unknown>>(
+      tools.query_metric,
+      input,
+    );
+    expect(queried.error).toBe(compiled.error);
+    expect(executor.run).not.toHaveBeenCalled();
+  });
+
+  it("refuses a range that ends before it starts, before compiling", async () => {
+    await seedProject();
+    const result = await run(tools.compile_metric, {
+      metrics: ["revenue"],
+      startTime: "2026-03-31",
+      endTime: "2026-01-01T00:00:00",
+    });
     expect(result).toEqual({
       success: false,
       error:
-        "The given input does not match any of the available group-by-items",
+        "startTime (2026-03-31) is after endTime (2026-01-01T00:00:00): the range holds no rows. Swap them.",
     });
+    expect(engine.compile).not.toHaveBeenCalled();
+  });
+
+  it("takes dates and naive datetimes only for the range", () => {
+    for (const startTime of [
+      "2026-01-01",
+      "2026-01-01T00:00:00",
+      "2026-01-01 08:30",
+      "2026-01-01T08:30:15.250",
+    ]) {
+      expect(
+        compileMetricSchema.safeParse({ metrics: ["revenue"], startTime })
+          .success,
+      ).toBe(true);
+    }
+    for (const endTime of [
+      "2026-01-01T00:00:00+02:00",
+      "2026-01-01T00:00:00Z",
+      "not-a-date",
+      "01/02/2026",
+    ]) {
+      const parsed = compileMetricSchema.safeParse({
+        metrics: ["revenue"],
+        endTime,
+      });
+      expect(parsed.success).toBe(false);
+      expect(parsed.error?.issues[0].message).toMatch(
+        /endTime must be a date \("2026-01-01"\) or a datetime without a timezone/,
+      );
+    }
   });
 
   it("says so when the workspace has no semantic manifest", async () => {
@@ -518,6 +721,67 @@ describe("compile_metric", () => {
     expect(engine.compile.mock.calls[0][0]).toBe(
       "runs/Finance/prod/semantic_manifest.json",
     );
+  });
+});
+
+describe("an environment's read connection", () => {
+  const READ_CONN = new Types.ObjectId();
+
+  async function seedWithReadConnection(type = "postgresql") {
+    await seedConnection(READ_CONN, "Warehouse (read-only)", type);
+    const project = await seedProject();
+    await DbtProject.updateOne(
+      { _id: project._id, "environments.name": "prod" },
+      { $set: { "environments.$.readConnectionId": READ_CONN } },
+    );
+    clearSemanticCatalogCache();
+  }
+
+  it("runs metric queries on the read connection, not the build one", async () => {
+    await seedWithReadConnection();
+    const compiled = await run(tools.compile_metric, { metrics: ["revenue"] });
+    expect(compiled).toMatchObject({
+      success: true,
+      connectionId: READ_CONN.toString(),
+      connectionName: "Warehouse (read-only)",
+      connectionRole: "read",
+    });
+    await run(tools.query_metric, { metrics: ["revenue"] });
+    expect(executor.run.mock.calls[0][0]).toBe(READ_CONN.toString());
+  });
+
+  it("uses the build connection when the environment names none", async () => {
+    await seedProject();
+    expect(
+      await run(tools.compile_metric, { metrics: ["revenue"] }),
+    ).toMatchObject({
+      connectionId: PROD_CONN.toString(),
+      connectionRole: "build",
+    });
+  });
+
+  it("falls back to the build connection when the read one is gone or another warehouse", async () => {
+    await seedWithReadConnection();
+    await DatabaseConnection.deleteOne({ _id: READ_CONN });
+    expect(
+      await run(tools.compile_metric, { metrics: ["revenue"] }),
+    ).toMatchObject({
+      success: true,
+      connectionId: PROD_CONN.toString(),
+      connectionRole: "build",
+    });
+
+    await DbtProject.deleteMany({});
+    await DbtRun.deleteMany({});
+    await seedWithReadConnection("bigquery");
+    expect(
+      await run(tools.compile_metric, { metrics: ["revenue"] }),
+    ).toMatchObject({
+      connectionId: PROD_CONN.toString(),
+      connectionRole: "build",
+    });
+    // The SQL is written for the warehouse dbt built in.
+    expect(engine.compile.mock.calls.at(-1)?.[1]).toBe("postgres");
   });
 });
 
@@ -610,23 +874,53 @@ describe("a named dbt environment", () => {
     expect(prod.error).toMatch(/Unknown metric: churn_rate/);
   });
 
-  it("says so when the environment has no run with a manifest", async () => {
+  it("tells an unknown environment from a real one with no parsed run", async () => {
     await seedProdAndDev();
     const listed = await run<{ metrics: unknown[]; message: string }>(
       tools.list_metrics,
       { environment: "joan" },
     );
     expect(listed.metrics).toEqual([]);
-    expect(listed.message).toMatch(
-      /No run of the dbt environment "joan" has stored a semantic manifest/,
+    expect(listed.message).toBe(
+      'Unknown dbt environment "joan". Valid: dev, prod. Omit environment to read production.',
     );
     const compiled = await run<{ success: boolean; error: string }>(
       tools.compile_metric,
       { metrics: ["revenue"], environment: "joan" },
     );
     expect(compiled.success).toBe(false);
-    expect(compiled.error).toMatch(/dbt environment "joan"/);
+    expect(compiled.error).toBe(listed.message);
     expect(engine.compile).not.toHaveBeenCalled();
+
+    // "dev" exists; without a run that stored a manifest it says that.
+    await DbtRun.deleteMany({ environment: "dev" });
+    const unparsed = await run<{ metrics: unknown[]; message: string }>(
+      tools.list_metrics,
+      { environment: "dev" },
+    );
+    expect(unparsed.message).toMatch(
+      /The dbt environment "dev" exists, but none of its runs has stored a semantic manifest/,
+    );
+  });
+
+  it("names the projects when the projectId is unknown", async () => {
+    const project = await seedProject();
+    const wrong = new Types.ObjectId().toString();
+    for (const projectId of [wrong, "not-an-id"]) {
+      const listed = await run<{ metrics: unknown[]; message: string }>(
+        tools.list_metrics,
+        { projectId },
+      );
+      expect(listed.message).toBe(
+        `Unknown projectId "${projectId}". dbt projects in this workspace: Analytics (${project._id.toString()}). Omit projectId unless several projects define the metric.`,
+      );
+      expect(listed.message).not.toBe(NO_SEMANTIC_MANIFEST);
+      const compiled = await run<{ error: string }>(tools.compile_metric, {
+        metrics: ["revenue"],
+        projectId,
+      });
+      expect(compiled.error).toBe(listed.message);
+    }
   });
 });
 
@@ -643,13 +937,20 @@ describe("query_metric", () => {
     expect(executor.run).toHaveBeenCalledWith(
       PROD_CONN.toString(),
       undefined,
-      "SELECT 1 AS revenue",
+      // The default LIMIT is appended here, so the SQL returned is what ran.
+      "SELECT 1 AS revenue\nLIMIT 500;",
       WS,
       ANA,
       undefined,
       // Whatever the caller holds, a metric query runs with read access.
       "read",
       20,
+      {
+        // The database dbt built the relations in, for a Postgres
+        // connection that names no default database.
+        fallbackDatabase: "probe",
+        mapRows: normalizeMetricRows,
+      },
     );
     expect(result).toMatchObject({
       success: true,
@@ -659,8 +960,109 @@ describe("query_metric", () => {
       source: "prod",
       metrics: ["revenue"],
       connectionId: PROD_CONN.toString(),
-      sql: "SELECT 1 AS revenue",
+      sql: "SELECT 1 AS revenue\nLIMIT 500;",
+      sqlNote:
+        "LIMIT 500 was appended to the SQL MetricFlow compiled; compile_metric returns it without.",
     });
+    // One row is not the cap.
+    expect(result).not.toHaveProperty("limited");
+  });
+
+  it("says the result was cut when the appended LIMIT is reached", async () => {
+    await seedProject();
+    executor.run.mockResolvedValue({
+      success: true,
+      rowCount: 500,
+      table: "| revenue |",
+      truncated: true,
+      note: "Showing 2 of 500 rows.",
+      sqlDialect: "postgresql",
+    });
+    const result = await run<Record<string, unknown>>(tools.query_metric, {
+      metrics: ["revenue"],
+      groupBy: ["customer"],
+      maxRows: 2,
+    });
+    expect(result).toMatchObject({ limited: true, rowLimit: 500 });
+    expect(result.note).toMatch(
+      /^Capped at 500 rows: the metric has MORE rows than the 500 this query read/,
+    );
+    expect(result.note).toMatch(/Pass limit \(up to 10000\) with orderBy/);
+    expect(result.note).toMatch(/Showing 2 of 500 rows\.$/);
+  });
+
+  it("leaves a limit the caller wrote alone", async () => {
+    await seedProject();
+    engine.compile.mockResolvedValue("SELECT 1 AS revenue\nLIMIT 500");
+    executor.run.mockResolvedValue({
+      success: true,
+      rowCount: 500,
+      table: "| revenue |",
+      sqlDialect: "postgresql",
+    });
+    const result = await run<Record<string, unknown>>(tools.query_metric, {
+      metrics: ["revenue"],
+      limit: 500,
+    });
+    expect(executor.run.mock.calls[0][2]).toBe(
+      "SELECT 1 AS revenue\nLIMIT 500",
+    );
+    expect(result.sql).toBe("SELECT 1 AS revenue\nLIMIT 500");
+    expect(result).not.toHaveProperty("limited");
+    expect(result).not.toHaveProperty("sqlNote");
+  });
+
+  it("gives compile and query one budget when the caller sets one", async () => {
+    await seedProject();
+    const overMcp = createDbtMetricTools(WS, ANA, { maxWaitMs: 45_000 });
+    await run(overMcp.query_metric, { metrics: ["revenue"] });
+    const compileBudget = engine.compile.mock.calls[0][4] as number;
+    const queryBudget = (executor.run.mock.calls[0][8] as { timeoutMs: number })
+      .timeoutMs;
+    expect(compileBudget).toBeGreaterThan(40_000);
+    expect(compileBudget).toBeLessThanOrEqual(45_000);
+    // What the query may take is what compiling left, never a second 60s.
+    expect(queryBudget).toBeLessThanOrEqual(compileBudget);
+
+    // Without a budget (the in-product agent) nothing is shortened.
+    engine.compile.mockClear();
+    executor.run.mockClear();
+    await run(tools.query_metric, { metrics: ["revenue"] });
+    expect(engine.compile.mock.calls[0][4]).toBeUndefined();
+    expect(executor.run.mock.calls[0][8]).not.toHaveProperty("timeoutMs");
+  });
+
+  it("writes timestamps and floats one way", () => {
+    expect(
+      normalizeMetricRows([
+        {
+          // BigQuery TIMESTAMP and DATETIME, as the driver returns them.
+          metric_time__day: "2026-10-12 00:00:00.000 UTC",
+          signup__created_at__day: "2026-05-01T00:00:00",
+          precise: "2026-10-12 08:30:15.250 UTC",
+          revenue: 1574958.9400000046,
+          rate: 0.30000000000000004,
+          orders: 5188,
+          tiny: 1.5e-12,
+          big: 123456789012345,
+          label: "ch",
+          missing: null,
+        },
+      ]),
+    ).toEqual([
+      {
+        metric_time__day: "2026-10-12T00:00:00Z",
+        signup__created_at__day: "2026-05-01T00:00:00",
+        precise: "2026-10-12T08:30:15.250Z",
+        revenue: 1574958.94,
+        rate: 0.3,
+        orders: 5188,
+        tiny: 1.5e-12,
+        big: 123456789012345,
+        label: "ch",
+        missing: null,
+      },
+    ]);
   });
 
   it("refuses a key without query access, before compiling", async () => {
@@ -685,7 +1087,7 @@ describe("query_metric", () => {
     expect(result).toEqual({
       success: false,
       error: 'relation "orders" does not exist',
-      sql: "SELECT 1 AS revenue",
+      sql: "SELECT 1 AS revenue\nLIMIT 500;",
     });
   });
 

@@ -5,6 +5,7 @@
 
 import {
   actingPrincipal,
+  isWrite,
   principalMatches,
   notAWriterRefusal,
   recordWrite,
@@ -19,6 +20,8 @@ import {
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { queryExecutionService } from "../../services/query-execution.service";
 import { sqlReadOnlyAccessError } from "../../services/read-only-query.service";
+import { AGENT_BIGQUERY_MAX_BYTES_BILLED } from "../../config/long-running-queries";
+import { describeBytesBilledCap } from "../../databases/drivers/bigquery/errors";
 import type { QueryAccess } from "../../auth/api-key-scopes";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
@@ -82,12 +85,16 @@ const needsDefaultLimit = (sql: string): boolean => {
   return firstToken === "select" || firstToken === "with";
 };
 
-const appendLimitIfMissing = (sql: string): string => {
+/** The LIMIT appended to an agent's SELECT that names none. */
+export const AGENT_DEFAULT_ROW_LIMIT = 500;
+
+/** The query as an agent tool runs it: with a default LIMIT when it has none. */
+export const appendLimitIfMissing = (sql: string): string => {
   if (!needsDefaultLimit(sql)) return sql;
   if (/\blimit\s+\d+/i.test(sql)) return sql;
 
   const trimmed = sql.trim().replace(/;\s*$/i, "");
-  return `${trimmed}\nLIMIT 500;`;
+  return `${trimmed}\nLIMIT ${AGENT_DEFAULT_ROW_LIMIT};`;
 };
 
 // Fetch and validate database connection
@@ -1004,6 +1011,8 @@ export async function resolveSqlQueryTarget(
   query: string,
   workspaceId: string,
   queryAccess: QueryAccess,
+  /** Used when neither the caller nor the connection names a database. */
+  fallbackDatabase?: string,
 ): Promise<SqlQueryTarget> {
   if (typeof query !== "string" || query.trim().length === 0) {
     throw new Error("'query' must be a non-empty string");
@@ -1012,15 +1021,25 @@ export async function resolveSqlQueryTarget(
     throw new Error("This API key does not have query access");
   }
   if (queryAccess === "read") {
-    const accessError = sqlReadOnlyAccessError(query);
-    if (accessError) throw new Error(accessError);
+    // Refused before any lookup when no engine would read it as one
+    // read-only statement (a backslash escapes a quote on some engines and
+    // not on others, so both readings are asked).
+    const accessError = sqlReadOnlyAccessError(query, "postgresql");
+    if (accessError && sqlReadOnlyAccessError(query, "bigquery")) {
+      throw new Error(accessError);
+    }
   }
 
   const database = await fetchSqlDatabase(connectionId, workspaceId);
+  if (queryAccess === "read") {
+    // And by the rules of the engine it will run on.
+    const accessError = sqlReadOnlyAccessError(query, database.type);
+    if (accessError) throw new Error(accessError);
+  }
   const dialect = getDialect(database.type);
   const effectiveAccess = effectiveSqlQueryAccess(queryAccess, database);
   if (queryAccess === "write-opt-in" && effectiveAccess === "read") {
-    if (sqlReadOnlyAccessError(query)) {
+    if (sqlReadOnlyAccessError(query, database.type)) {
       // The key may write, the connection's writers list decides who: say
       // who Mako saw, and record the refusal so the Access tab offers Allow.
       // Agents relay this verbatim, so the error is the docs.
@@ -1040,8 +1059,10 @@ export async function resolveSqlQueryTarget(
   let databaseName = requestedDatabase?.trim() || undefined;
   if (!databaseName) {
     if (dialect === "postgresql" || dialect === "mysql") {
-      databaseName = (connection.database ?? connection.db) as
-        string | undefined;
+      databaseName =
+        ((connection.database ?? connection.db) as string | undefined) ||
+        fallbackDatabase?.trim() ||
+        undefined;
     } else if (dialect === "sqlite") {
       databaseName = connection.database_id as string | undefined;
     }
@@ -1139,6 +1160,16 @@ export function trackSqlExecution(input: {
   });
 }
 
+/** What a caller other than sql_execute_query may set on a query. */
+export interface ExecuteQueryExtras {
+  /** Database to use when neither the caller nor the connection names one. */
+  fallbackDatabase?: string;
+  /** A shorter timeout than the agent's default (a budget shared with other work). */
+  timeoutMs?: number;
+  /** Applied to the result rows before they are formatted for the model. */
+  mapRows?: (rows: unknown[]) => unknown[];
+}
+
 export async function executeQueryImpl(
   connectionId: string,
   requestedDatabase: string | undefined,
@@ -1148,8 +1179,13 @@ export async function executeQueryImpl(
   toolExecutionContext?: AgentToolExecutionContext,
   queryAccess: QueryAccess = "write",
   maxRows?: number,
+  extras: ExecuteQueryExtras = {},
 ) {
   const startTime = Date.now();
+  const timeoutMs = Math.min(
+    extras.timeoutMs ?? AGENT_QUERY_TIMEOUT_MS,
+    AGENT_QUERY_TIMEOUT_MS,
+  );
 
   const target = await resolveSqlQueryTarget(
     connectionId,
@@ -1157,10 +1193,19 @@ export async function executeQueryImpl(
     query,
     workspaceId,
     queryAccess,
+    extras.fallbackDatabase,
   );
   const { database, dialect, databaseName, options } = target;
 
   const safeQuery = appendLimitIfMissing(query);
+  // A read on BigQuery may bill at most the agent's byte cap. A write by
+  // someone on the writers list is not capped.
+  const bytesCap =
+    dialect === "bigquery" &&
+    AGENT_BIGQUERY_MAX_BYTES_BILLED > 0 &&
+    !isWrite(database.type, query)
+      ? AGENT_BIGQUERY_MAX_BYTES_BILLED
+      : undefined;
 
   const { executionId, signal, release } = registerAgentExecution(
     toolExecutionContext,
@@ -1181,10 +1226,19 @@ export async function executeQueryImpl(
             executionId: registeredExecutionId,
             signal,
             readOnly: target.readOnly,
+            ...(bytesCap ? { maximumBytesBilled: bytesCap } : {}),
           },
         ),
-      { signal },
+      { signal, timeoutMs },
     );
+    // BigQuery refused the job for its size: say what to change.
+    const overCap = bytesCap
+      ? describeBytesBilledCap(
+          result?.success ? undefined : result?.error,
+          bytesCap,
+        )
+      : null;
+    if (overCap && result) result.error = overCap;
 
     // Track successful/error query execution (fire-and-forget)
     if (userId) {
@@ -1204,7 +1258,7 @@ export async function executeQueryImpl(
       return {
         success: true,
         rowCount: result.rowCount ?? result.data.length,
-        ...formatRowsForModel(result.data, {
+        ...formatRowsForModel(extras.mapRows?.(result.data) ?? result.data, {
           fields: result.fields,
           maxRows,
           moreHint: SQL_MORE_ROWS_HINT,
@@ -1255,7 +1309,7 @@ export async function executeQueryImpl(
       return {
         success: false,
         status: "timeout",
-        message: `Query timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s (this is a short timeout for quick exploration only). The query may be valid but slow. Either: (1) Add LIMIT / narrow the date range to make it fast enough to test here, OR (2) for a genuinely long query, write the full query into a console (create_console / modify_console) and run it with run_console — that path is resumable: it keeps running server-side past the timeout and you poll check_query_status for the result.`,
+        message: `Query timed out after ${Math.round(timeoutMs / 1000)}s (this is a short timeout for quick exploration only). The query may be valid but slow. Either: (1) Add LIMIT / narrow the date range to make it fast enough to test here, OR (2) for a genuinely long query, write the full query into a console (create_console / modify_console) and run it with run_console — that path is resumable: it keeps running server-side past the timeout and you poll check_query_status for the result.`,
         sqlDialect: dialect,
       };
     }

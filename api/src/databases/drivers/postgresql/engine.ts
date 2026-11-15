@@ -61,7 +61,7 @@ export function cursorReadable(query: string): string | null {
   const statement = stripLeadingSqlComments(query.trim());
   if (!/^[\s(]*(select|with|values|table)\b/i.test(statement)) return null;
   if (isWrite("postgresql", query)) return null;
-  const { count, lastIndex } = countTopLevelSemicolons(statement);
+  const { count, lastIndex } = countTopLevelSemicolons(statement, "postgresql");
   if (count === 0) return statement;
   if (count === 1 && lastIndex === statement.trimEnd().length - 1) {
     return statement.trimEnd().slice(0, -1);

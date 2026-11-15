@@ -7,7 +7,7 @@ import { SavedConsole } from "../../database/workspace-schema";
 import { getLogger } from "../../logging";
 import { savedConsoleStateFromRepo } from "../../apps/workspace-consoles.service";
 import { generateVersionComment } from "../version-comment.service";
-import { canReadConsole } from "./access";
+import { canReadConsoleWithInheritance } from "./access";
 
 const logger = getLogger(["api", "consoles"]);
 
@@ -33,7 +33,7 @@ export async function consoleVersionComment(input: {
     });
     // A stored console the caller cannot read gets no comment (it would
     // summarise its content). A draft has no row yet: empty baseline.
-    if (row && !canReadConsole(row, input.user.id, input.memberRole)) {
+    if (row && !(await canReadConsoleWithInheritance(row, input.user.id))) {
       return null;
     }
     const saved = row ? await savedConsoleStateFromRepo(row) : null;

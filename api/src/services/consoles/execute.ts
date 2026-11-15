@@ -380,7 +380,7 @@ export async function exportConsoleResults(input: {
 
   if (format === "ndjson" || format === "csv") {
     if (typeof query === "string" && database.type !== "cloudflare-kv") {
-      const safety = checkPreviewQuerySafety(query);
+      const safety = checkPreviewQuerySafety(query, database.type);
       if (!safety.safe) {
         return { ok: false, status: 400, error: safety.errors.join(" ") };
       }

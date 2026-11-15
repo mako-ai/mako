@@ -199,7 +199,7 @@ notebookDataRoutes.openapi(
         );
       }
 
-      const safety = checkPreviewQuerySafety(query);
+      const safety = checkPreviewQuerySafety(query, database.type);
       if (!safety.safe) {
         return fail(c, 400, safety.errors.join(" "), { code: "NOT_READ_ONLY" });
       }

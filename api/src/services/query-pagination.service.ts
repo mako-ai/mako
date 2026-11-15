@@ -256,8 +256,79 @@ export function hashPreviewQuery(query: string): string {
   return createHash("sha256").update(query).digest("hex");
 }
 
+/**
+ * Statements that end, leave or sidestep the read-only transaction a read
+ * runs in, or run code: never allowed after a statement boundary.
+ */
+const AFTER_BOUNDARY_FORBIDDEN =
+  /;\s*(COMMIT|ROLLBACK|END|ABORT|BEGIN|START|SAVEPOINT|RELEASE|DO|CALL|EXECUTE|PREPARE|COPY|SET|RESET)\b/i;
+
+/** One BigQuery string literal at `start`: its end and its text. */
+function readBigQueryString(
+  sql: string,
+  start: number,
+): { end: number; text: string } | null {
+  const prefix = sql.slice(start).match(/^[rRbB]{0,2}/)?.[0] ?? "";
+  const raw = /r/i.test(prefix);
+  const open = start + prefix.length;
+  const quote = sql[open];
+  if (quote !== "'" && quote !== '"') return null;
+  const delimiter = sql.startsWith(quote.repeat(3), open)
+    ? quote.repeat(3)
+    : quote;
+  let text = "";
+  for (let i = open + delimiter.length; i < sql.length; i += 1) {
+    if (sql[i] === "\\" && i + 1 < sql.length) {
+      // A raw string keeps the backslash; either way the next character
+      // does not close the literal.
+      text += raw
+        ? sql.slice(i, i + 2)
+        : sql[i + 1] === "n"
+          ? "\n"
+          : sql[i + 1];
+      i += 1;
+      continue;
+    }
+    if (sql.startsWith(delimiter, i)) {
+      return { end: i + delimiter.length, text };
+    }
+    text += sql[i];
+  }
+  return null;
+}
+
+/**
+ * The SQL each BigQuery `EXTERNAL_QUERY(connection, sql)` call sends to the
+ * federated database; null for a call whose SQL is not a plain literal.
+ * Matched on the raw text: a call mentioned inside a string is read too,
+ * which errs on the side of refusing.
+ */
+export function externalQueryStatements(sql: string): Array<string | null> {
+  const found: Array<string | null> = [];
+  const call = /\bEXTERNAL_QUERY\s*\(\s*/gi;
+  for (let match = call.exec(sql); match; match = call.exec(sql)) {
+    const connection = readBigQueryString(sql, match.index + match[0].length);
+    const comma = connection
+      ? sql.slice(connection.end).match(/^\s*,\s*/)
+      : null;
+    const inner =
+      connection && comma
+        ? readBigQueryString(sql, connection.end + comma[0].length)
+        : null;
+    found.push(inner ? inner.text : null);
+  }
+  return found;
+}
+
+/**
+ * Whether `query` is a single read-only SELECT/WITH statement. `dialect` is
+ * the database type or SQL dialect it runs on: quotes and statement
+ * boundaries are read by that engine's rules. Without one the query must be
+ * a single statement under every engine's reading.
+ */
 export function checkPreviewQuerySafety(
   query: string,
+  dialect?: string | null,
 ): PreviewQuerySafetyResult {
   const result: PreviewQuerySafetyResult = {
     safe: true,
@@ -303,8 +374,38 @@ export function checkPreviewQuerySafety(
     result.errors.push("Preview queries must start with SELECT or WITH (CTE).");
   }
 
+  // The mask reads strings the PostgreSQL way. Engines where a backslash
+  // escapes a quote are covered by the statement count below instead.
+  const sqlDialect = dialect ? getSqlDialectOrNull(dialect) : null;
+  const backslashDialect =
+    sqlDialect === "mysql" ||
+    sqlDialect === "bigquery" ||
+    sqlDialect === "clickhouse";
+  const boundaryKeyword = backslashDialect
+    ? undefined
+    : executableSql.match(AFTER_BOUNDARY_FORBIDDEN)?.[1];
+  if (boundaryKeyword) {
+    result.safe = false;
+    result.errors.push(
+      `Query contains forbidden ${boundaryKeyword.toUpperCase()} after a statement boundary. Preview only supports read-only queries.`,
+    );
+  }
+
+  if (!sqlDialect || sqlDialect === "bigquery") {
+    for (const inner of externalQueryStatements(trimmedQuery)) {
+      if (inner !== null && checkPreviewQuerySafety(inner).safe) continue;
+      result.safe = false;
+      result.errors.push(
+        inner === null
+          ? "EXTERNAL_QUERY must be given its SQL as a string literal so it can be checked. Preview only supports read-only queries."
+          : "EXTERNAL_QUERY carries a statement that is not a read-only SELECT/WITH. Preview only supports read-only queries.",
+      );
+      break;
+    }
+  }
+
   const { count: semicolonCount, lastIndex: lastSemicolon } =
-    countTopLevelSemicolons(trimmedQuery);
+    countTopLevelSemicolons(trimmedQuery, dialect);
   if (
     semicolonCount > 1 ||
     (semicolonCount === 1 &&

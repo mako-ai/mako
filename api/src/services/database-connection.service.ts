@@ -392,7 +392,7 @@ export class DatabaseConnectionService {
     // via executeQuery below; engines without one (e.g. BigQuery, whose native
     // streaming path bypasses executeQuery) rely solely on this check.
     if (options.readOnly && typeof query === "string") {
-      const safety = checkPreviewQuerySafety(query);
+      const safety = checkPreviewQuerySafety(query, database.type);
       if (!safety.safe) {
         return { success: false, totalRows: 0, error: safety.errors.join(" ") };
       }

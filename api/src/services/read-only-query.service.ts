@@ -10,8 +10,11 @@ export const MONGO_QUERY_WRITE_SCOPE_REQUIRED =
   "is read-only). You can still list databases and collections and inspect " +
   "collection schemas with sample documents.";
 
-export function sqlReadOnlyAccessError(query: string): string | null {
-  const safety = checkPreviewQuerySafety(query);
+export function sqlReadOnlyAccessError(
+  query: string,
+  dialect?: string | null,
+): string | null {
+  const safety = checkPreviewQuerySafety(query, dialect);
   if (safety.safe) return null;
   // Several overlapping checks usually fire on the same query; one concrete
   // reason is enough for the calling agent (the rest is repetitive noise).

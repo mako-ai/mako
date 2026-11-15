@@ -103,12 +103,12 @@ export function isWrite(type: string, query: unknown): boolean {
   }
   if (type === "cloudflare-kv") return /^\s*(put|set|delete)\b/i.test(query);
   const statement = stripLeadingSqlComments(query.trim());
-  if (LOOKING.test(statement) && singleStatement(statement)) return false;
-  return !checkPreviewQuerySafety(query).safe;
+  if (LOOKING.test(statement) && singleStatement(statement, type)) return false;
+  return !checkPreviewQuerySafety(query, type).safe;
 }
 
-function singleStatement(sql: string): boolean {
-  const { count, lastIndex } = countTopLevelSemicolons(sql);
+function singleStatement(sql: string, type?: string): boolean {
+  const { count, lastIndex } = countTopLevelSemicolons(sql, type);
   return count === 0 || (count === 1 && lastIndex === sql.trimEnd().length - 1);
 }
 

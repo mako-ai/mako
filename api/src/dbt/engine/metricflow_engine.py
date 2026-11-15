@@ -25,7 +25,9 @@ api/src/dbt/metricflow-engine.contract.test.ts).
 import datetime
 import json
 import os
+import re
 import sys
+import textwrap
 
 # Keep the real stdout for the response; everything else goes to stderr.
 _RESPONSE = os.fdopen(os.dup(sys.stdout.fileno()), "w")
@@ -151,15 +153,32 @@ def op_describe(req):
     return {"ok": True, "dimensions": dimensions, "entities": entities}
 
 
-def _parse_time(value):
+def _parse_time(value, name):
     if value is None:
         return None
-    return datetime.datetime.fromisoformat(value)
+    try:
+        parsed = datetime.datetime.fromisoformat(str(value).strip())
+    except ValueError:
+        raise ValueError(
+            f'{name} "{value}" is not a date ("2026-01-01") or a datetime '
+            'without a timezone ("2026-01-01T00:00:00").'
+        ) from None
+    # MetricFlow compares the bounds with naive datetimes, and an aware one
+    # fails with "can't compare offset-naive and offset-aware datetimes".
+    # The offset is dropped and the wall-clock time kept.
+    return parsed.replace(tzinfo=None)
 
 
 def op_compile(req):
     from metricflow.engine.metricflow_engine import MetricFlowQueryRequest
 
+    start = _parse_time(req.get("start_time"), "startTime")
+    end = _parse_time(req.get("end_time"), "endTime")
+    if start is not None and end is not None and start > end:
+        raise ValueError(
+            f"startTime ({start.isoformat()}) is after endTime ({end.isoformat()}): "
+            "the range holds no rows. Swap them."
+        )
     engine = _engine(req["manifest_path"], req["dialect"])
     request = MetricFlowQueryRequest.create(
         metric_names=list(req["metrics"]),
@@ -167,8 +186,8 @@ def op_compile(req):
         where_constraints=list(req.get("where") or []) or None,
         order_by_names=list(req.get("order_by") or []) or None,
         limit=req.get("limit"),
-        time_constraint_start=_parse_time(req.get("start_time")),
-        time_constraint_end=_parse_time(req.get("end_time")),
+        time_constraint_start=start,
+        time_constraint_end=end,
     )
     statement = engine.explain(request).sql_statement
     if statement.bind_parameter_set.param_items:
@@ -180,6 +199,37 @@ def op_compile(req):
 
 OPS = {"describe": op_describe, "compile": op_compile}
 
+_TRACEBACK = "Traceback (most recent call last):"
+_EXCEPTION_LINE = re.compile(r"^\s*(?:[\w.]+\.)?(\w+(?:Error|Exception)): (.+)$", re.M)
+
+
+def _clean_error(message):
+    """The first message block of a MetricFlow error, as a caller can act on it.
+
+    MetricFlow's query-resolution errors number each problem and append the
+    resolver's own call path; a bad Jinja filter embeds three chained Python
+    tracebacks. Kept: the first problem's message and the input it is about.
+    Dropped: the tracebacks (the root cause's last line stays) and the path.
+    """
+    text = message
+    first = re.search(
+        r"Error #1:\n\s*Message:\n(.*?)(?=\n\s*Error #2:|\Z)", text, re.S
+    )
+    more = len(re.findall(r"^\s*Error #\d+:", text, re.M)) - 1
+    if first:
+        text = re.split(r"\n\s*Issue Location:", first.group(1))[0]
+    if _TRACEBACK in text:
+        head, tail = text.split(_TRACEBACK, 1)
+        head = re.sub(r"\s*Got exception:\s*$", "", head)
+        cause = _EXCEPTION_LINE.search(tail)
+        text = head
+        if cause:
+            text += f"\n\n{cause.group(1)}: {cause.group(2).strip()}"
+    text = textwrap.dedent(text.strip("\n")).strip()
+    if more > 0:
+        text += f"\n\n(+{more} more error{'s' if more > 1 else ''})"
+    return text or message
+
 
 def main():
     try:
@@ -190,7 +240,7 @@ def main():
             return
         _respond(handler(req))
     except Exception as error:  # noqa: BLE001 - every failure is a response
-        message = str(error).strip() or type(error).__name__
+        message = _clean_error(str(error).strip()) or type(error).__name__
         _respond({"ok": False, "error": message[:MAX_ERROR_CHARS]})
 
 

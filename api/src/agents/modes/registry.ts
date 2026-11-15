@@ -241,6 +241,11 @@ const WORKFLOW_MODE_TOOL_NAMES: string[] = [
   "workflow_status",
   "workflow_commit",
   "workflow_merge_to_main",
+  // Semantic layer: a step that reads a metric takes its SQL from
+  // compile_metric and checks it with sql_execute_query, as an app binding
+  // does (dbt-metric-tools.ts).
+  "list_metrics",
+  "compile_metric",
   // Discovery: look at the data before writing a query into a step.
   "list_connections",
   "list_databases",
@@ -272,6 +277,10 @@ const NOTEBOOK_MODE_TOOL_NAMES: string[] = [
   "edit_notebook_cell",
   "run_notebook_sql_cell",
   "run_notebook_code_cell",
+  // Semantic layer: a SQL cell that shows a metric takes its SQL from
+  // compile_metric and runs it with run_notebook_sql_cell.
+  "list_metrics",
+  "compile_metric",
   // Discovery: find data sources + tables for SQL cells
   "list_connections",
   "list_databases",
