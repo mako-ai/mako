@@ -41,7 +41,7 @@ assert.ok(
   "GET /skills must return 200 { skills: [] } when no GitHub repo is bound",
 );
 assert.ok(
-  skills.includes('error: "Skill not found"'),
+  skills.includes('fail(c, 404, "Skill not found")'),
   "GET /{id} must 404 when the file is missing or the workspace is unbound",
 );
 assert.ok(
