@@ -7,6 +7,7 @@ import type { GetStepTools, Logger } from "inngest";
 import { Types } from "mongoose";
 import type { inngest } from "../../client";
 import { Flow, type IFlow } from "../../../database/workspace-schema";
+import { normalizeEntityList } from "../../../sync-cdc/entity-selection";
 import { appendExecutionLog as appendFlowExecutionLog } from "../../../services/flow-execution-tracking";
 
 export type FlowRunTriggerType = "manual" | "schedule";
@@ -57,21 +58,6 @@ export function resolveRunTriggerType(
   return data.noJitter ? "manual" : "schedule";
 }
 
-/** The requested backfill subset: trimmed, non-empty, de-duplicated. */
-export function normalizeBackfillEntities(entities: unknown): string[] {
-  if (!Array.isArray(entities)) return [];
-  return Array.from(
-    new Set(
-      entities
-        .filter(
-          (entity): entity is string =>
-            typeof entity === "string" && entity.trim().length > 0,
-        )
-        .map(entity => entity.trim()),
-    ),
-  );
-}
-
 export function createFlowRunContext(params: {
   step: GetStepTools<typeof inngest>;
   logger: Logger;
@@ -87,7 +73,7 @@ export function createFlowRunContext(params: {
     flowId,
     data,
     runTriggerType: resolveRunTriggerType(data),
-    requestedBackfillEntities: normalizeBackfillEntities(data.backfillEntities),
+    requestedBackfillEntities: normalizeEntityList(data.backfillEntities),
     state,
     appendExecutionLog: (level, message, metadata) =>
       appendFlowExecutionLog({

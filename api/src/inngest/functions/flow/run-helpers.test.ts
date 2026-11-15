@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import { selectEntitiesToSync } from "./connector-source";
 import { isCancellationError } from "./failure";
-import {
-  normalizeBackfillEntities,
-  resolveRunTriggerType,
-} from "./run-context";
+import { normalizeEntityList } from "../../../sync-cdc/entity-selection";
+import { resolveRunTriggerType } from "./run-context";
 
 // Trigger type: explicit wins, else noJitter means a manual run.
 assert.equal(
@@ -16,10 +14,10 @@ assert.equal(resolveRunTriggerType({ noJitter: true }), "manual");
 assert.equal(resolveRunTriggerType({}), "schedule");
 
 assert.deepEqual(
-  normalizeBackfillEntities([" charges ", "charges", "", 3, "customers"]),
+  normalizeEntityList([" charges ", "charges", "", 3, "customers"]),
   ["charges", "customers"],
 );
-assert.deepEqual(normalizeBackfillEntities("charges"), []);
+assert.deepEqual(normalizeEntityList("charges"), []);
 
 const available = ["charges", "customers", "invoices"];
 
