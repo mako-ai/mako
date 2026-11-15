@@ -376,52 +376,13 @@ export class StripeConnector extends BaseConnector {
   }
 
   async fetchEntity(options: FetchOptions): Promise<void> {
-    const { entity, onBatch, onProgress, since } = options;
-
-    const stripe = this.getStripeClient();
-    const batchSize = options.batchSize || this.getBatchSize();
-    const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
-
-    let hasMore = true;
-    let startingAfter: string | undefined;
-    let recordCount = 0;
-
-    // Report initial progress (Stripe doesn't provide total counts)
-    if (onProgress) {
-      onProgress(0, undefined);
-    }
-
-    while (hasMore) {
-      const response = await listStripePage(stripe, entity, {
-        limit: batchSize,
-        startingAfter,
-        since,
-      });
-
-      // Pass batch to callback
-      if (response.data.length > 0) {
-        await onBatch(response.data);
-        recordCount += response.data.length;
-
-        if (onProgress) {
-          onProgress(recordCount, undefined);
-        }
-      }
-
-      // Check for more pages
-      hasMore = response.has_more;
-
-      // Nested entities page over their parent list (payouts, customers) and
-      // resume from the last parent, not the last child.
-      const nextCursor: string | undefined =
-        response.nextCursor ?? response.data[response.data.length - 1]?.id;
-      if (hasMore && nextCursor) {
-        startingAfter = nextCursor;
-
-        // Rate limiting
-        await this.sleep(rateLimitDelay);
-      }
-    }
+    // Every page, through the same loop as a chunk: it stops when a page
+    // says has_more but yields no cursor to continue from.
+    await this.fetchEntityChunk({
+      ...options,
+      state: undefined,
+      maxIterations: Number.POSITIVE_INFINITY,
+    });
   }
 
   /**
