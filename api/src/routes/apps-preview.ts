@@ -42,6 +42,7 @@ import {
 import { sandboxAppDocument } from "../apps/app-document-sandbox";
 import { createRouter } from "../openapi/core";
 import { refreshForShareGrant } from "./public-share";
+import { fail } from "./lib/respond";
 
 export const appsPreviewRoutes = createRouter();
 
@@ -60,10 +61,7 @@ async function serveAsset(c: Context): Promise<Response> {
   const token = c.req.param("token");
   const grant = token ? resolvePreviewGrant(token) : null;
   if (!grant || !token) {
-    return c.json(
-      { success: false, error: "Preview expired — rebuild to get a new link" },
-      404,
-    );
+    return fail(c, 404, "Preview expired — rebuild to get a new link");
   }
   // `POST __data/<name>/refresh` — the SDK's `refresh()`. Unless a share
   // minted it (below), the token was minted by a workspace member who could
@@ -80,11 +78,11 @@ async function serveAsset(c: Context): Promise<Response> {
     if (grant.share) {
       return name
         ? await refreshForShareGrant(c, grant, name)
-        : c.json({ success: false, error: "Not found" }, 404);
+        : fail(c, 404, "Not found");
     }
     const project = name ? await AppProject.findById(grant.projectId) : null;
     if (!name || !project) {
-      return c.json({ success: false, error: "Not found" }, 404);
+      return fail(c, 404, "Not found");
     }
     const input = { project, name, actorId: "", at: grant.publishedSha };
     if (wantsBindingProgress(c.req.header("accept"))) {
@@ -133,7 +131,7 @@ async function serveAsset(c: Context): Promise<Response> {
       progress: wantsBindingProgress(c.req.header("accept")),
     });
     if (!response) {
-      return c.json({ success: false, error: "Not found" }, 404);
+      return fail(c, 404, "Not found");
     }
     // The iframe has an OPAQUE origin (sandboxed without allow-same-origin)
     // and ES modules are always fetched in CORS mode — so without this the
@@ -226,17 +224,14 @@ async function serveAsset(c: Context): Promise<Response> {
         })
       : null;
     if (!response) {
-      return c.json(
-        { success: false, error: `Binding "${dataMatch[1]}" not materialized` },
-        404,
-      );
+      return fail(c, 404, `Binding "${dataMatch[1]}" not materialized`);
     }
     return response;
   }
 
   const asset = await readPreviewAsset(grant, assetPathFor(c, token));
   if (!asset) {
-    return c.json({ success: false, error: "Not found" }, 404);
+    return fail(c, 404, "Not found");
   }
   const headers = new Headers({
     "Content-Type": asset.contentType,
