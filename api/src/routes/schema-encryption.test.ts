@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   // The route helper must not have quietly grown a fallback again.
   const { readFileSync } = await import("node:fs");
   const { join } = await import("node:path");
-  const source = readFileSync(join(__dirname, "sources.ts"), "utf8");
+  const source = readFileSync(join(__dirname, "source-connections.ts"), "utf8");
   assert.doesNotMatch(
     source,
     /catch\s*(\([^)]*\))?\s*\{[^}]*target\[key\] = val;/,
