@@ -1,4 +1,4 @@
-import { Alert, Box, Typography } from "@mui/material";
+import { Alert, Typography } from "@mui/material";
 import { FlowFormTopBar } from "../flow-form/FlowFormTopBar";
 import { FlowStep } from "../flow-form/FlowStep";
 import { STEPS, type SyncFlowFormProps } from "./sync-flow-config";
@@ -9,6 +9,11 @@ import { SyncDestinationStep } from "./SyncDestinationStep";
 import { SyncConfigStep } from "./SyncConfigStep";
 import { SyncEntitiesStep } from "./SyncEntitiesStep";
 import { SyncTriggersStep } from "./SyncTriggersStep";
+import {
+  FlowFormColumn,
+  FlowFormRoot,
+  FlowFormScroll,
+} from "../flow-form/flow-form-styles";
 
 /**
  * Unified Sync builder.
@@ -45,7 +50,7 @@ export function SyncFlowForm(props: SyncFlowFormProps) {
   });
 
   return (
-    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+    <FlowFormRoot>
       <LayoutResetDialog model={model} />
 
       <FlowFormTopBar
@@ -56,8 +61,8 @@ export function SyncFlowForm(props: SyncFlowFormProps) {
         onSave={handleFormSubmit}
       />
 
-      <Box sx={{ flex: 1, overflow: "auto", p: { xs: 2, sm: 3 } }}>
-        <Box sx={{ maxWidth: "800px", mx: "auto" }}>
+      <FlowFormScroll>
+        <FlowFormColumn>
           {(error || storeError) && (
             <Alert severity="error" sx={{ mb: 2 }}>
               {error || storeError}
@@ -92,8 +97,8 @@ export function SyncFlowForm(props: SyncFlowFormProps) {
               <SyncTriggersStep model={model} />
             </FlowStep>
           </form>
-        </Box>
-      </Box>
-    </Box>
+        </FlowFormColumn>
+      </FlowFormScroll>
+    </FlowFormRoot>
   );
 }

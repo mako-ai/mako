@@ -17,3 +17,11 @@ export function cronPresetValue(cron: string | undefined): string {
     ? (cron as string)
     : "__custom__";
 }
+
+/** A preset's label, "Custom: <cron>", or a placeholder when unset. */
+export function describeCron(cron: string | undefined): string {
+  if (!cron) return "No schedule selected";
+  const preset = SCHEDULE_PRESETS.find(p => p.cron === cron);
+  if (preset) return preset.label;
+  return `Custom: ${cron}`;
+}
