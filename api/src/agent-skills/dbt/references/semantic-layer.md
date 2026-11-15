@@ -121,6 +121,54 @@ Rules that matter:
 - Measure `agg`: `sum`, `count`, `count_distinct`, `average`, `min`, `max`,
   `median`, `sum_boolean`, `percentile`.
 
+#### Balances and MRR: `non_additive_dimension`
+
+A measure that is a balance (MRR, ARR, seats, stock, an account balance)
+sums across customers but NOT across time: adding 30 daily snapshots of MRR
+gives 30 times the MRR. Declare the time dimension it must not be summed
+over, and which snapshot of each period to keep:
+
+```yaml
+semantic_models:
+  - name: subscription_snapshots
+    description: One row per account and day.
+    model: ref('fct_subscription_daily')
+    primary_entity: subscription_snapshot # no single-column key: name one
+    defaults:
+      agg_time_dimension: snapshot_date
+    entities:
+      - name: account
+        type: foreign
+        expr: account_id
+    dimensions:
+      - name: snapshot_date
+        type: time
+        type_params:
+          time_granularity: day
+    measures:
+      - name: mrr
+        agg: sum
+        expr: mrr_amount
+        non_additive_dimension:
+          name: snapshot_date
+          window_choice: max # the LAST snapshot day of each period (min: the first)
+          # window_groupings: [account]  → the last snapshot PER account in
+          # the period instead: an account whose rows stop mid-month still
+          # counts with its last value. Leave it out for end-of-period MRR.
+
+metrics:
+  - name: mrr
+    label: MRR
+    description: Monthly recurring revenue at the end of the period.
+    type: simple
+    type_params:
+      measure: mrr
+```
+
+`query_metric({ metrics: ["mrr"], groupBy: ["metric_time__month"] })` then
+returns the MRR of the last snapshot day of each month, not the sum of its
+days. Without `non_additive_dimension` the same query adds every day up.
+
 ### 3. Metrics
 
 ```yaml
@@ -185,6 +233,67 @@ metrics:
         window: 7 days
 ```
 
+More metric types and options, one example each:
+
+```yaml
+metrics:
+  - name: revenue_mtd # cumulative, restarting each month (grain_to_date)
+    label: Revenue, month to date
+    type: cumulative
+    type_params:
+      measure: order_total
+      cumulative_type_params:
+        grain_to_date: month # also week, quarter, year. Not with `window`.
+        period_agg: last
+
+  - name: revenue_growth_mom # derived over the same metric, shifted in time
+    label: Revenue growth, month over month
+    type: derived
+    type_params:
+      expr: (revenue - revenue_prev_month) / revenue_prev_month
+      metrics:
+        - name: revenue
+        - name: revenue
+          offset_window: 1 month # the value one month earlier
+          alias: revenue_prev_month # the name `expr` calls it by
+        # offset_to_grain: month   → the value at the start of the month
+        # filter: |                → a filter on this input alone
+        #   {{ Dimension('customer__plan') }} = 'enterprise'
+
+  - name: orders_per_day # periods without data report 0, not a missing row
+    label: Orders per day
+    type: simple
+    type_params:
+      measure:
+        name: order_count
+        join_to_timespine: true # one row per period, from the time spine
+        fill_nulls_with: 0 #      and 0 where the period has no orders
+
+  - name: visit_to_buy_rate # conversion: a base event followed by another
+    label: Visit to purchase rate, 7 days
+    type: conversion
+    type_params:
+      conversion_type_params:
+        base_measure:
+          name: visits # counted on the semantic model of visits
+        conversion_measure:
+          name: buys # counted on the semantic model of purchases
+        entity: user # both semantic models carry this entity
+        calculation: conversion_rate # or `conversions` for the count
+        window: 7 days # a purchase counts within 7 days of the visit
+        constant_properties: # optional: must be equal on both events
+          - base_property: product
+            conversion_property: product
+```
+
+- `offset_window` and `offset_to_grain` need the time spine and a
+  `metric_time` group-by in the query.
+- `fill_nulls_with` alone turns a NULL into the value; with
+  `join_to_timespine: true` the empty periods become rows too.
+- A conversion metric needs two semantic models that share the `entity`, each
+  with a time dimension. It can only be grouped by dimensions of the base
+  event.
+
 A cumulative metric is computed per day. Grouped by a coarser grain
 (`metric_time__month`) it reports ONE day of each period, chosen by
 `period_agg`: `first` (the default), `last` or `average`. A running total
@@ -205,8 +314,85 @@ Always give a metric a `label` and a `description`: `list_metrics` and
   `{{ TimeDimension('metric_time', 'day') }} >= '2026-01-01'`,
   `{{ Entity('customer') }} = 42`.
 
+- A filter can test another metric per entity with the `Metric` template:
+  `{{ Metric('revenue', group_by=['customer']) }} > 1000` keeps the customers
+  whose revenue is over 1000.
+
 `list_metrics({ metrics: ["revenue"] })` lists the exact group-by names a
-metric accepts.
+metric accepts, with the smallest grain of each time dimension. A grain
+finer than that does not exist: a metric on a monthly model takes
+`metric_time__month`, not `metric_time__day`. Metrics that share no
+dimension cannot be grouped in one query; `list_metrics` says which split.
+
+## Saved queries
+
+A saved query names a metric query the project wants to keep: metrics,
+group-bys, filters.
+
+```yaml
+saved_queries:
+  - name: weekly_revenue_by_region
+    description: Revenue per region and week, enterprise plan.
+    query_params:
+      metrics:
+        - revenue
+      group_by:
+        - TimeDimension('metric_time', 'week')
+        - Dimension('customer__region')
+      where:
+        - "{{ Dimension('customer__plan') }} = 'enterprise'"
+```
+
+`list_metrics` returns the saved queries with their metrics, group-bys and
+filters. To run one, pass them to `query_metric` with the group-bys in query
+form: `groupBy: ["metric_time__week", "customer__region"]`.
+
+## Limits
+
+What `query_metric` and `compile_metric` do and refuse at run time:
+
+- **Rows.** `query_metric` appends `LIMIT 500` when the query names no
+  `limit`. When 500 rows come back the result carries `limited: true` and
+  `rowLimit: 500`: more rows exist and totals over the result are wrong.
+  Pass `limit` (up to 10000) with `orderBy`, or cut the rows with `where`,
+  `startTime`/`endTime`, fewer group-bys or a coarser grain. The table shows
+  50 rows by default, `maxRows` up to 200. The `sql` returned is the SQL
+  that ran, LIMIT included; `compile_metric` returns it without.
+- **Time.** In the product, compiling may take 60 s and the query 60 s. Over
+  MCP both share 45 s. A query that needs longer: `compile_metric`, put the
+  SQL in a console, `run_console`.
+- **Dates.** `startTime` and `endTime` are a date (`2026-01-01`) or a
+  datetime without a timezone (`2026-01-01T00:00:00`). An offset (`+02:00`,
+  `Z`) is refused: `metric_time` has no timezone. `startTime` after
+  `endTime` is refused. Both bounds are inclusive and widened to whole
+  periods of the grain grouped by.
+- **`where` is raw SQL.** Only the templates are resolved; the rest is
+  copied into the statement. Each filter is wrapped in parentheses and the
+  filters are ANDed, so `a or b` in one filter stays one condition. The
+  compiled statement must pass the read-only check (one SELECT/WITH, no
+  second statement, no write keyword), for `compile_metric` as for
+  `query_metric`.
+- **Connection.** The SQL runs on the warehouse of the dbt environment that
+  built the manifest: its read connection when the environment names one
+  (`read_connection_id` in `dbt/environments.yml`, or Read connection in the
+  project settings), else the connection dbt builds with. It always runs
+  read-only. The result says which: `connectionRole: "read" | "build"`.
+- **BigQuery bytes.** A metric query that would bill more than the agent
+  byte cap (1 TiB unless the operator changed it) is refused before it runs.
+  Narrow the time range, or partition the model on its time dimension.
+- **BigQuery time types.** Metrics queried together must have time
+  dimensions of ONE type. A DATE-based and a TIMESTAMP-based `metric_time`
+  fail to join: `No matching signature for operator = for argument types:
+  DATETIME, TIMESTAMP`. Give every `agg_time_dimension` the same type in the
+  semantic models (`expr: date(created_at)`), or query the metrics
+  separately.
+- **Result values.** Timestamps come back as ISO 8601
+  (`2026-10-12T00:00:00Z`; a DATETIME has no `Z`). Floats are rounded to 15
+  significant digits, which removes binary noise (`1574958.9400000046` →
+  `1574958.94`).
+- **Errors.** An unknown group-by answers with every valid group-by of the
+  metrics and the smallest grain of `metric_time`. An unknown environment or
+  projectId answers with the valid ones.
 
 ## Workflow
 
