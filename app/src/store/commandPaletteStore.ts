@@ -9,7 +9,7 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 
 export interface ConsoleSearchResult {
   id: string;
@@ -87,11 +87,15 @@ export const useCommandPaletteStore = create<CommandPaletteStore>()(
       });
 
       try {
-        const res = await apiClient.get<{ results?: ConsoleSearchResult[] }>(
-          `/workspaces/${workspaceId}/consoles/search`,
-          { q: query.trim(), limit: "8" },
-          { signal: controller.signal },
-        );
+        const res = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/consoles/search", {
+            params: {
+              path: { workspaceId },
+              query: { q: query.trim(), limit: "8" },
+            },
+            signal: controller.signal,
+          }),
+        ) as { results?: ConsoleSearchResult[] };
         if (controller.signal.aborted) return;
         set(state => {
           state.consoleResults = res.results ?? [];

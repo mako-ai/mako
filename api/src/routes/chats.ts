@@ -3,11 +3,9 @@ import type { UIMessage } from "ai";
 import { Chat } from "../database/workspace-schema";
 import { ObjectId } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { getConsolesByIds, saveChat } from "../services/agent-thread.service";
 import { generateChatTitle } from "../services/title-generator";
-import { loggers, enrichContextWithWorkspace } from "../logging";
-import { workspaceService } from "../services/workspace.service";
+import { loggers } from "../logging";
 import {
   AUTH_SECURITY,
   OPEN_RESPONSES,
@@ -21,6 +19,8 @@ import {
   ChatListCursorError,
   listUserChats,
 } from "../services/chat-list.service";
+import { fail } from "./lib/respond";
+import { requireWorkspaceAccess } from "./lib/workspace-access";
 
 const logger = loggers.api("chats");
 
@@ -84,36 +84,7 @@ const ChatBody = {
 chatsRoutes.use("*", unifiedAuthMiddleware);
 
 // Middleware to verify workspace access and enrich logging context
-chatsRoutes.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId");
-  if (workspaceId) {
-    const user = c.get("user");
-    const workspace = c.get("workspace");
-
-    if (workspace) {
-      // For API key auth, verify the URL workspace matches the API key's workspace
-      if (workspace._id.toString() !== workspaceId) {
-        return c.json(
-          { error: "API key not authorized for this workspace" },
-          403,
-        );
-      }
-    } else if (user) {
-      // For session auth, verify user has access to this workspace
-      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-      if (!hasAccess) {
-        return c.json({ error: "Access denied to workspace" }, 403);
-      }
-    } else {
-      // Neither API key nor session auth succeeded - reject request
-      return c.json({ error: "Unauthorized" }, 401);
-    }
-
-    // Only enrich logging context after authorization succeeds
-    enrichContextWithWorkspace(workspaceId);
-  }
-  await next();
-});
+chatsRoutes.use("*", requireWorkspaceAccess());
 
 // List chat sessions (most recent first), one page at a time
 const ChatListQuery = z.object({
@@ -190,12 +161,12 @@ chatsRoutes.openapi(
       const userId = user?.id;
 
       if (!userId) {
-        return c.json({ success: false, error: "User not authenticated" }, 401);
+        return fail(c, 401, "User not authenticated");
       }
       const workspaceId = c.req.param("workspaceId") as string;
 
       if (!ObjectId.isValid(workspaceId)) {
-        return c.json({ success: false, error: "Invalid workspace id" }, 400);
+        return fail(c, 400, "Invalid workspace id");
       }
 
       const { limit, cursor } = c.req.valid("query");
@@ -210,10 +181,10 @@ chatsRoutes.openapi(
       return c.json({ success: true as const, ...page }, 200);
     } catch (error) {
       if (error instanceof ChatListCursorError) {
-        return c.json({ success: false, error: error.message }, error.status);
+        return fail(c, error.status, error.message);
       }
       logger.error("Error listing chats", { error });
-      return c.json({ success: false, error: "Failed to list chats" }, 500);
+      return fail(c, 500, "Failed to list chats");
     }
   },
 );
@@ -236,12 +207,12 @@ chatsRoutes.openapi(
       const userId = user?.id;
 
       if (!userId) {
-        return c.json({ error: "User not authenticated" }, 401);
+        return fail(c, 401, "User not authenticated");
       }
       const workspaceId = c.req.param("workspaceId") as string;
 
       if (!ObjectId.isValid(workspaceId)) {
-        return c.json({ error: "Invalid workspace id" }, 400);
+        return fail(c, 400, "Invalid workspace id");
       }
 
       let body: any = {};
@@ -269,7 +240,7 @@ chatsRoutes.openapi(
       return c.json({ chatId: chat._id.toString() });
     } catch (error) {
       logger.error("Error creating chat", { error });
-      return c.json({ error: "Failed to create chat" }, 500);
+      return fail(c, 500, "Failed to create chat");
     }
   },
 );
@@ -292,17 +263,17 @@ chatsRoutes.openapi(
       const userId = user?.id;
 
       if (!userId) {
-        return c.json({ error: "User not authenticated" }, 401);
+        return fail(c, 401, "User not authenticated");
       }
       const workspaceId = c.req.param("workspaceId") as string;
       const id = c.req.param("id");
 
       if (!ObjectId.isValid(workspaceId)) {
-        return c.json({ error: "Invalid workspace id" }, 400);
+        return fail(c, 400, "Invalid workspace id");
       }
 
       if (!ObjectId.isValid(id)) {
-        return c.json({ error: "Invalid chat id" }, 400);
+        return fail(c, 400, "Invalid chat id");
       }
 
       // Filter by workspaceId, chat id, AND createdBy for privacy
@@ -313,7 +284,7 @@ chatsRoutes.openapi(
       });
 
       if (!chat) {
-        return c.json({ error: "Chat not found" }, 404);
+        return fail(c, 404, "Chat not found");
       }
 
       // Extract console IDs from modify_console tool calls in chat messages
@@ -347,7 +318,7 @@ chatsRoutes.openapi(
       });
     } catch (error) {
       logger.error("Error getting chat", { error });
-      return c.json({ error: "Failed to get chat" }, 500);
+      return fail(c, 500, "Failed to get chat");
     }
   },
 );
@@ -395,23 +366,23 @@ chatsRoutes.openapi(
       const user = c.get("user");
       const userId = user?.id;
       if (!userId) {
-        return c.json({ error: "User not authenticated" }, 401);
+        return fail(c, 401, "User not authenticated");
       }
 
       const workspaceId = c.req.param("workspaceId") as string;
       const id = c.req.param("id");
 
       if (!ObjectId.isValid(workspaceId)) {
-        return c.json({ error: "Invalid workspace id" }, 400);
+        return fail(c, 400, "Invalid workspace id");
       }
       if (!ObjectId.isValid(id)) {
-        return c.json({ error: "Invalid chat id" }, 400);
+        return fail(c, 400, "Invalid chat id");
       }
 
       const body = c.req.valid("json");
       const messages = body.messages as unknown as UIMessage[];
       if (!Array.isArray(messages)) {
-        return c.json({ error: "'messages' must be an array" }, 400);
+        return fail(c, 400, "'messages' must be an array");
       }
 
       // Ownership: refuse to upsert into another user's chat. New chats
@@ -422,7 +393,7 @@ chatsRoutes.openapi(
       }).select({ createdBy: 1, titleGenerated: 1 });
 
       if (existing && existing.createdBy !== userId.toString()) {
-        return c.json({ error: "Chat not found" }, 404);
+        return fail(c, 404, "Chat not found");
       }
 
       const saved = await saveChat(
@@ -432,7 +403,7 @@ chatsRoutes.openapi(
         messages,
       );
       if (!saved) {
-        return c.json({ error: "Failed to save chat" }, 500);
+        return fail(c, 500, "Failed to save chat");
       }
 
       // saveChat $unsets localAcp; re-bind only when ACP persistence supplies
@@ -506,7 +477,7 @@ chatsRoutes.openapi(
       });
     } catch (error) {
       logger.error("Error upserting chat messages", { error });
-      return c.json({ error: "Failed to save chat messages" }, 500);
+      return fail(c, 500, "Failed to save chat messages");
     }
   },
 );
@@ -529,17 +500,17 @@ chatsRoutes.openapi(
       const userId = user?.id;
 
       if (!userId) {
-        return c.json({ error: "User not authenticated" }, 401);
+        return fail(c, 401, "User not authenticated");
       }
       const workspaceId = c.req.param("workspaceId") as string;
       const id = c.req.param("id");
 
       if (!ObjectId.isValid(workspaceId)) {
-        return c.json({ error: "Invalid workspace id" }, 400);
+        return fail(c, 400, "Invalid workspace id");
       }
 
       if (!ObjectId.isValid(id)) {
-        return c.json({ error: "Invalid chat id" }, 400);
+        return fail(c, 400, "Invalid chat id");
       }
 
       let body: any = {};
@@ -551,7 +522,7 @@ chatsRoutes.openapi(
 
       const { title } = body;
       if (!title) {
-        return c.json({ error: "'title' is required" }, 400);
+        return fail(c, 400, "'title' is required");
       }
 
       // Only update if user owns the chat
@@ -566,13 +537,13 @@ chatsRoutes.openapi(
       );
 
       if (!result) {
-        return c.json({ error: "Chat not found" }, 404);
+        return fail(c, 404, "Chat not found");
       }
 
       return c.json({ success: true });
     } catch (error) {
       logger.error("Error updating chat", { error });
-      return c.json({ error: "Failed to update chat" }, 500);
+      return fail(c, 500, "Failed to update chat");
     }
   },
 );
@@ -595,17 +566,17 @@ chatsRoutes.openapi(
       const userId = user?.id;
 
       if (!userId) {
-        return c.json({ error: "User not authenticated" }, 401);
+        return fail(c, 401, "User not authenticated");
       }
       const workspaceId = c.req.param("workspaceId") as string;
       const id = c.req.param("id");
 
       if (!ObjectId.isValid(workspaceId)) {
-        return c.json({ error: "Invalid workspace id" }, 400);
+        return fail(c, 400, "Invalid workspace id");
       }
 
       if (!ObjectId.isValid(id)) {
-        return c.json({ error: "Invalid chat id" }, 400);
+        return fail(c, 400, "Invalid chat id");
       }
 
       // Only delete if user owns the chat
@@ -616,13 +587,13 @@ chatsRoutes.openapi(
       });
 
       if (!result) {
-        return c.json({ error: "Chat not found" }, 404);
+        return fail(c, 404, "Chat not found");
       }
 
       return c.json({ success: true });
     } catch (error) {
       logger.error("Error deleting chat", { error });
-      return c.json({ error: "Failed to delete chat" }, 500);
+      return fail(c, 500, "Failed to delete chat");
     }
   },
 );

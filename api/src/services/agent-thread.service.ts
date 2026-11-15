@@ -326,61 +326,6 @@ export const finalizeAssistantMessage = async (
 };
 
 /**
- * Update chat with assistant response and tool calls.
- * Called after agent completes (or partially completes).
- * @deprecated Use appendToolCalls + finalizeAssistantMessage for incremental persistence
- */
-export const updateChatWithResponse = async (
-  sessionId: string,
-  assistantContent: string,
-  toolCalls?: Array<{
-    toolName: string;
-    timestamp?: Date;
-    status?: "started" | "completed";
-    input?: unknown;
-    result?: unknown;
-  }>,
-  activeAgent?: AgentKind,
-): Promise<void> => {
-  const now = new Date();
-
-  // Fetch current messages and append assistant response
-  const chat = await Chat.findById(sessionId);
-  if (!chat) return;
-
-  const messages = [...(chat.messages || [])];
-
-  // Add assistant message if there's content OR tool calls
-  // Tool calls should be persisted even when the assistant doesn't generate text
-  const hasContent = assistantContent.trim();
-  const hasToolCalls = toolCalls && toolCalls.length > 0;
-
-  if (hasContent || hasToolCalls) {
-    messages.push({
-      role: "assistant" as const,
-      content: assistantContent,
-      toolCalls: hasToolCalls ? toolCalls : undefined,
-    });
-  }
-
-  const updateData: {
-    messages: typeof messages;
-    updatedAt: Date;
-    activeAgent?: AgentKind;
-  } = {
-    messages,
-    updatedAt: now,
-  };
-  if (activeAgent) {
-    updateData.activeAgent = activeAgent;
-  }
-
-  await Chat.findByIdAndUpdate(sessionId, updateData, {
-    returnDocument: "after",
-  });
-};
-
-/**
  * Persist error information to the chat for debugging.
  * Adds an assistant message with error details and any partial tool calls.
  */

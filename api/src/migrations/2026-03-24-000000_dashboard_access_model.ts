@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -38,7 +39,7 @@ export async function up(db: Db): Promise<void> {
   );
 
   try {
-    const existingIndexes = await col.indexes();
+    const existingIndexes = await indexesOf(col);
     const alreadyExists = existingIndexes.some(
       idx =>
         idx.key &&

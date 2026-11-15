@@ -1,9 +1,7 @@
 import type { IFlow } from "../database/workspace-schema";
 
 type FlowEntitySelectionSource =
-  | Pick<IFlow, "entityFilter" | "entityLayouts">
-  | null
-  | undefined;
+  Pick<IFlow, "entityFilter" | "entityLayouts"> | null | undefined;
 
 function normalizeEntityName(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -80,4 +78,22 @@ export function isEntityEnabledForFlow(
  */
 export function flowEntitySignature(flow: FlowEntitySelectionSource): string {
   return [...resolveConfiguredEntities(flow).entities].sort().join(",");
+}
+
+/**
+ * A requested entity list (backfill scope, resync subset): the trimmed,
+ * non-empty strings, de-duplicated in order. Anything not an array is none.
+ */
+export function normalizeEntityList(entities: unknown): string[] {
+  if (!Array.isArray(entities)) return [];
+  return Array.from(
+    new Set(
+      entities
+        .filter(
+          (entity): entity is string =>
+            typeof entity === "string" && entity.trim().length > 0,
+        )
+        .map(entity => entity.trim()),
+    ),
+  );
 }

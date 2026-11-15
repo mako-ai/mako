@@ -20,7 +20,6 @@ import {
   Tooltip,
   Chip,
   Skeleton,
-  Snackbar,
   Stack,
   Tab,
   Tabs,
@@ -34,6 +33,7 @@ import {
   VisibilityOff as VisibilityOffIcon,
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
+import { notify } from "../store/notificationStore";
 import {
   selectTabBySettingsSection,
   useConsoleStore,
@@ -302,20 +302,11 @@ export function ApiKeyManager() {
     (ApiKeyCreateResponse["apiKey"] & { key?: string }) | null
   >(null);
   const [showKey, setShowKey] = useState(false);
-  const [snackbar, setSnackbar] = useState<{
-    open: boolean;
-    message: string;
-    severity: "success" | "error";
-  }>({ open: false, message: "", severity: "success" });
 
   useEffect(() => {
     if (!workspaceLoading && currentWorkspace) {
       fetchKeys(currentWorkspace.id).catch(() => {
-        setSnackbar({
-          open: true,
-          message: "Failed to fetch API keys",
-          severity: "error",
-        });
+        notify.message("Failed to fetch API keys", { autoHideDuration: 3000 });
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -373,29 +364,19 @@ export function ApiKeyManager() {
         throw new Error(response.error || "Failed to delete API key");
       }
 
-      setSnackbar({
-        open: true,
-        message: "API key deleted successfully",
-        severity: "success",
+      notify.message("API key deleted successfully", {
+        autoHideDuration: 3000,
       });
     } catch (error) {
       console.error("Failed to delete API key:", error);
-      setSnackbar({
-        open: true,
-        message: "Failed to delete API key",
-        severity: "error",
-      });
+      notify.message("Failed to delete API key", { autoHideDuration: 3000 });
     }
   };
 
   // Copy to clipboard
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
-    setSnackbar({
-      open: true,
-      message: "Copied to clipboard",
-      severity: "success",
-    });
+    notify.message("Copied to clipboard", { autoHideDuration: 3000 });
   };
 
   const workspaceId = currentWorkspace?.id;
@@ -772,14 +753,6 @@ export function ApiKeyManager() {
           </Button>
         </DialogActions>
       </Dialog>
-
-      {/* Snackbar for notifications */}
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={3000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-        message={snackbar.message}
-      />
     </Box>
   );
 }

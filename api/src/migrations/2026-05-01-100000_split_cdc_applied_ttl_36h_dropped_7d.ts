@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -78,7 +79,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const col = db.collection(COLLECTION);
-  const indexes = (await col.indexes()) as IndexInfo[];
+  const indexes = (await indexesOf(col)) as IndexInfo[];
 
   for (const index of indexes) {
     if (!isAppliedAtAscendingOnly(index)) continue;
@@ -106,7 +107,7 @@ export async function up(db: Db): Promise<void> {
     }
   }
 
-  const refreshed = (await col.indexes()) as IndexInfo[];
+  const refreshed = (await indexesOf(col)) as IndexInfo[];
 
   const hasApplied = hasAppliedAtTtlForStatus(
     refreshed,
@@ -132,7 +133,7 @@ export async function up(db: Db): Promise<void> {
     });
   }
 
-  const afterApplied = (await col.indexes()) as IndexInfo[];
+  const afterApplied = (await indexesOf(col)) as IndexInfo[];
 
   const hasDropped = hasAppliedAtTtlForStatus(
     afterApplied,

@@ -19,7 +19,7 @@ import {
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
-import { workspaceClient, type InviteDetails } from "../lib/workspace-client";
+import { useWorkspaceStore, type InviteDetails } from "../store/workspaceStore";
 import { normalizeEmail } from "../utils/email";
 import { setInviteRedirect } from "../utils/invite-redirect";
 import { trackEvent } from "../lib/analytics";
@@ -65,7 +65,9 @@ export function AcceptInvite({ token }: AcceptInviteProps) {
       loadedTokenRef.current = token;
 
       try {
-        const details = await workspaceClient.getInviteDetails(token);
+        const details = await useWorkspaceStore
+          .getState()
+          .getInviteDetails(token);
         setInviteDetails(details);
 
         // Check if invite is expired

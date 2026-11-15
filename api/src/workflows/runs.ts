@@ -25,6 +25,8 @@ import { type RunCost, readRunCosts } from "./costs";
 import { webhookUrls } from "./webhook";
 
 const RECENT_RUNS_DAYS = 30;
+/** More workflows than a tenant holds, previews and earlier commits included. */
+const KNOWN_WORKFLOWS = 1000;
 const LOG_LINES_PER_STEP = 20;
 /** The screen's whole log: a step's newest lines, up to this many. */
 const FULL_LOG_LINES = 5000;
@@ -90,6 +92,16 @@ const runSummary = (run: Row, workflowName: unknown = run.workflowName) => ({
 /** Runs in the order a list shows them; one without a start goes last. */
 const newestFirst = (a: { startedAt?: unknown }, b: { startedAt?: unknown }) =>
   String(b.startedAt ?? "").localeCompare(String(a.startedAt ?? ""));
+
+/**
+ * Every workflow the tenant knows, with its id. Hatchet answers 50 a page
+ * unless asked for more, and keeps the workflows of earlier commits: one
+ * past the first page would have no id, and so no runs and no flow.
+ */
+const knownWorkflows = (tenant: WorkspaceTenant) =>
+  tenantJson<Rows>(tenant, `/api/v1/tenants/${tenant.tenantId}/workflows`, {
+    query: new URLSearchParams({ limit: String(KNOWN_WORKFLOWS) }),
+  });
 
 /** What a screen shows of one slot. */
 function deployment(slot?: IWorkflowSlot) {
@@ -175,7 +187,7 @@ export async function readWorkflowsOverview(
   try {
     const [cronRows, known] = await Promise.all([
       tenantJson<Rows>(tenant, `${base}/workflows/crons`),
-      tenantJson<Rows>(tenant, `${base}/workflows`),
+      knownWorkflows(tenant),
     ]);
     crons = cronRows;
     // Each workflow's own last runs, asked one workflow at a time: the
@@ -606,10 +618,7 @@ const isActiveRun = (status: unknown) =>
  * timeout. The flow before any run, or the same for every run.
  */
 export async function readWorkflowFlow(tenant: WorkspaceTenant, name: string) {
-  const list = await tenantJson<Rows>(
-    tenant,
-    `/api/v1/tenants/${tenant.tenantId}/workflows`,
-  );
+  const list = await knownWorkflows(tenant);
   const id = idOf((list.rows ?? []).find(row => row.name === name) ?? {});
   if (!id || !isHatchetId(id)) {
     throw new HatchetError(`"${name}" is not deployed`, 404);

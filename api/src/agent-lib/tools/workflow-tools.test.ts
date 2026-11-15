@@ -41,6 +41,13 @@ const requests: Array<{ method: string; path: string; body?: any }> = [];
 const responses: Record<string, unknown> = {
   [`GET /api/v1/tenants/${TENANT}/workflows`]: {
     rows: [
+      // Workflows of earlier commits, more than a page of them, listed first.
+      ...Array.from({ length: 60 }, (_, i) => ({
+        name: `gone-${i}`,
+        metadata: {
+          id: `99999999-9999-9999-9999-${String(i).padStart(12, "0")}`,
+        },
+      })),
       { name: "daily-digest", metadata: { id: DAILY } },
       { name: "weekly-report", metadata: { id: WEEKLY } },
     ],
@@ -125,6 +132,11 @@ globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
   if (pathname.endsWith("/logs") && body) {
     const rows = [...(body as { rows: unknown[] }).rows];
     if (searchParams.get("order_by_direction") === "DESC") rows.reverse();
+    body = { rows: rows.slice(0, Number(searchParams.get("limit") ?? 50)) };
+  }
+  // Workflows as Hatchet pages them: 50 unless asked for more.
+  if (pathname.endsWith("/workflows") && body) {
+    const rows = (body as { rows: unknown[] }).rows;
     body = { rows: rows.slice(0, Number(searchParams.get("limit") ?? 50)) };
   }
   // Runs as Hatchet lists them: newest first, of the workflows asked for

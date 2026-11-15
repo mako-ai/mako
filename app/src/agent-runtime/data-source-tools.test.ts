@@ -16,8 +16,8 @@ vi.mock("../store/appsStore", () => ({
     getState: () => ({ fetchAppBindings: mocks.fetchAppBindings }),
   },
 }));
-vi.mock("../store/uiStore", () => ({
-  useUIStore: { getState: () => ({ currentWorkspaceId: "workspace-1" }) },
+vi.mock("../store/workspaceStore", () => ({
+  getCurrentWorkspaceId: () => "workspace-1",
 }));
 vi.mock("../lib/duckdb", () => ({
   collectStreamBytes: mocks.collectStreamBytes,

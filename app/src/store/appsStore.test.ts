@@ -63,7 +63,7 @@ import { ApiError, api, unwrapBody } from "../api";
 import { reconcileAppsTabs } from "../apps-runtime/shell";
 import { useAppsStore } from "./appsStore";
 import { useConsoleStore } from "./consoleStore";
-import { useUIStore } from "./uiStore";
+import { useWorkspaceStore } from "./workspaceStore";
 
 const WS = "6846e6a01b05af0948070582";
 
@@ -111,7 +111,7 @@ beforeEach(() => {
     error: null,
   });
   useConsoleStore.setState({ tabs: {}, tabOrder: [], activeTabId: null });
-  useUIStore.setState({ currentWorkspaceId: WS } as never);
+  useWorkspaceStore.setState({ currentWorkspaceId: WS });
 });
 
 describe("a workspace-wide change", () => {

@@ -50,6 +50,12 @@ interface ChatHistoryState {
   loadMore: () => Promise<void>;
   /** Delete server-side; resolves true on success. */
   deleteSession: (workspaceId: string, id: string) => Promise<boolean>;
+  /** One persisted chat (messages, consoles, resume pointer), or null when
+   * the request fails. The payload is spec-typed as a generic envelope. */
+  fetchChat: (workspaceId: string, id: string) => Promise<unknown | null>;
+  /** Abort a chat's server-side generation and clear its resume pointer
+   * (best-effort: failures are swallowed). */
+  stopGeneration: (chatId: string) => void;
   reset: () => void;
 }
 
@@ -224,6 +230,22 @@ export const useChatHistoryStore = create<ChatHistoryState>()(
       } catch {
         return false;
       }
+    },
+
+    fetchChat: async (workspaceId, id) => {
+      const { data, response } = await api.GET(
+        "/api/workspaces/{workspaceId}/chats/{id}",
+        { params: { path: { workspaceId, id } } },
+      );
+      return response.ok && data ? data : null;
+    },
+
+    stopGeneration: chatId => {
+      void api
+        .POST("/api/agent/chat/{chatId}/stop", {
+          params: { path: { chatId } },
+        })
+        .catch(() => undefined);
     },
 
     reset: () => {

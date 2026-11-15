@@ -62,6 +62,11 @@ import {
   type RegistryEntry,
 } from "../../dbt/ontology/registry";
 import { loadOntologyRegistry } from "../../dbt/ontology/registry.service";
+import { findMetricByPhrase } from "../../dbt/semantic/semantic-manifest";
+import {
+  loadSemanticProjects,
+  type SemanticProject,
+} from "../../dbt/semantic/semantic-manifest.service";
 import {
   findJoinPath,
   relationshipsOfEntity,
@@ -95,6 +100,29 @@ function toolError(error: unknown, fallback: string) {
     error: error instanceof Error ? error.message : fallback,
   };
 }
+
+/**
+ * The metric (semantic layer) that a term's name, label or one of its
+ * synonyms names exactly, if a dbt project defines one. A term with a
+ * metric is computed by query_metric, not by hand-written aggregation.
+ */
+function metricFor(projects: SemanticProject[], phrases: readonly string[]) {
+  for (const project of projects) {
+    const metric = findMetricByPhrase(project.catalog, phrases);
+    if (metric) {
+      return {
+        name: metric.name,
+        ...(metric.label ? { label: metric.label } : {}),
+        type: metric.type,
+        ...(projects.length > 1 ? { project: project.projectName } : {}),
+      };
+    }
+  }
+  return undefined;
+}
+
+const METRIC_NEXT =
+  "A match with `metric` is defined in the semantic layer. Do not aggregate it by hand: get the rows with query_metric({ metrics: [metric.name] }), or its SQL (for a binding) with compile_metric and the same input, whichever tool you have. list_metrics({ metrics }) names its group-bys.";
 
 function registryNote(registry: OntologyRegistry) {
   const message = registryStatusMessage(registry);
@@ -681,27 +709,53 @@ export const createDbtOntologyTools = (
     }),
 
     lookup_term: tool({
-      description: `Resolve a business term or entity ("MRR", "paying customers", "account") from the workspace's ontology registry (${ONTOLOGY_REGISTRY_PATH}), by name, label or synonym. Returns the definition, owner, status, the canonical model and column, the grain, known variants and forbidden patterns; for an entity also its primary key, its identities in other systems and its relationships to other entities. Call this BEFORE writing SQL that computes a business metric: when a canonical model exists, read it. With no match it returns the closest registry names and points to find_models.`,
+      description: `Resolve a business term or entity ("MRR", "paying customers", "account") from the workspace's ontology registry (${ONTOLOGY_REGISTRY_PATH}), by name, label or synonym. Returns the definition, owner, status, the canonical model and column, the grain, known variants and forbidden patterns; for an entity also its primary key, its identities in other systems and its relationships to other entities. A term the dbt project also defines as a metric carries \`metric\`: get its rows with query_metric or its SQL with compile_metric, whichever tool you have. Call this BEFORE writing SQL that computes a business metric: when a metric exists, use it; when a canonical model exists, read it. With no match it returns the closest registry names and points to find_models.`,
       inputSchema: lookupTermSchema,
       execute: async ({ query }) => {
         try {
-          const registry = await loadOntologyRegistry(workspaceId);
+          const [registry, semanticProjects] = await Promise.all([
+            loadOntologyRegistry(workspaceId),
+            // The semantic layer is a bonus here: never why a lookup fails.
+            loadSemanticProjects(workspaceId).catch(error => {
+              logger.warn("Semantic manifests unavailable for lookup_term", {
+                workspaceId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              return [] as SemanticProject[];
+            }),
+          ]);
           const matches = matchRegistry(registry, query).slice(
             0,
             MAX_TERM_MATCHES,
           );
           if (matches.length > 0) {
-            return {
-              success: true as const,
-              matches: matches.map(match => ({
+            const summaries = matches.map(match => {
+              const metric =
+                match.entry.kind === "term"
+                  ? metricFor(semanticProjects, [
+                      match.entry.name,
+                      ...(match.entry.label ? [match.entry.label] : []),
+                      ...match.entry.synonyms,
+                    ])
+                  : undefined;
+              return {
                 ...entrySummary(match.entry, registry),
+                ...(metric ? { metric } : {}),
                 matchedOn: match.matchedOn,
                 score: Math.round(match.score * 100) / 100,
-              })),
-              next: "describe_model({ name: <canonical model> }) lists its columns, tests and readers.",
+              };
+            });
+            return {
+              success: true as const,
+              matches: summaries,
+              next: summaries.some(summary => summary.metric)
+                ? `${METRIC_NEXT} describe_model({ name: <canonical model> }) lists a model's columns, tests and readers.`
+                : "describe_model({ name: <canonical model> }) lists its columns, tests and readers.",
               ...registryNote(registry),
             };
           }
+          // No registry entry, but the semantic layer may define the number.
+          const metric = metricFor(semanticProjects, [query]);
           const scored = scoreRegistry(registry, query).map(m => m.entry.name);
           const rest = [...registry.terms, ...registry.entities]
             .map(entry => entry.name)
@@ -711,8 +765,11 @@ export const createDbtOntologyTools = (
           return {
             success: true as const,
             matches: [],
+            ...(metric ? { metric } : {}),
             closest,
-            suggestion: `No registry term or entity matches "${query}". Call find_models({ query: "${query}" }) to search models by name, description and columns.`,
+            suggestion: metric
+              ? `No registry term or entity matches "${query}", but the semantic layer defines the metric "${metric.name}": get its rows with query_metric({ metrics: ["${metric.name}"] }), or its SQL with compile_metric and the same input, whichever tool you have.`
+              : `No registry term or entity matches "${query}". Call find_models({ query: "${query}" }) to search models by name, description and columns, or list_metrics({ query: "${query}" }) to search the semantic layer.`,
             ...registryNote(registry),
           };
         } catch (error) {

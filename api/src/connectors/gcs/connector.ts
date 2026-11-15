@@ -190,17 +190,19 @@ export class GcsConnector extends BaseConnector {
     const base = super.validateConfig();
     const errors = [...base.errors];
 
-    if (!this.dataSource.config.bucket) {
+    if (!this.sourceConnection.config.bucket) {
       errors.push("Bucket is required");
     }
 
-    if (!this.dataSource.config.service_account_json) {
+    if (!this.sourceConnection.config.service_account_json) {
       errors.push("Service account JSON is required");
     } else if (
-      typeof this.dataSource.config.service_account_json === "string"
+      typeof this.sourceConnection.config.service_account_json === "string"
     ) {
       try {
-        const sa = JSON.parse(this.dataSource.config.service_account_json);
+        const sa = JSON.parse(
+          this.sourceConnection.config.service_account_json,
+        );
         if (!sa.client_email || !sa.private_key) {
           errors.push(
             "Service account JSON must include client_email and private_key",
@@ -212,10 +214,10 @@ export class GcsConnector extends BaseConnector {
     }
 
     if (
-      this.dataSource.config.queries &&
-      Array.isArray(this.dataSource.config.queries)
+      this.sourceConnection.config.queries &&
+      Array.isArray(this.sourceConnection.config.queries)
     ) {
-      this.dataSource.config.queries.forEach(
+      this.sourceConnection.config.queries.forEach(
         (query: GcsFolderQuery, index: number) => {
           if (!query?.name) {
             errors.push(`Folder #${index + 1}: entity name is required`);
@@ -231,16 +233,16 @@ export class GcsConnector extends BaseConnector {
     credentials: Record<string, unknown>;
     projectId?: string;
   } {
-    const raw = this.dataSource.config.service_account_json;
+    const raw = this.sourceConnection.config.service_account_json;
     const credentials = typeof raw === "string" ? JSON.parse(raw) : raw;
     const projectId =
-      this.dataSource.config.project_id ||
+      this.sourceConnection.config.project_id ||
       (credentials.project_id as string | undefined);
     return { credentials, projectId };
   }
 
   private getBucketName(): string {
-    return stripGsPrefix(String(this.dataSource.config.bucket || ""));
+    return stripGsPrefix(String(this.sourceConnection.config.bucket || ""));
   }
 
   private getStorage(): Storage {
@@ -259,17 +261,15 @@ export class GcsConnector extends BaseConnector {
   }
 
   private getFolderConfig(entity: string): GcsFolderQuery | undefined {
-    const queries = this.dataSource.config.queries as
-      | GcsFolderQuery[]
-      | undefined;
+    const queries = this.sourceConnection.config.queries as
+      GcsFolderQuery[] | undefined;
     if (!queries) return undefined;
     return queries.find(q => q.name === entity);
   }
 
   getAvailableEntities(): string[] {
-    const queries = this.dataSource.config.queries as
-      | GcsFolderQuery[]
-      | undefined;
+    const queries = this.sourceConnection.config.queries as
+      GcsFolderQuery[] | undefined;
     if (!queries) return [];
     return queries.map(q => q.name).filter(Boolean);
   }

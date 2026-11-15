@@ -1,114 +1,84 @@
-import React, { useMemo, useCallback, useEffect, useRef } from "react";
-import {
-  Box,
-  Typography,
-  Snackbar,
-  Alert,
-  Chip,
-  ToggleButtonGroup,
-  ToggleButton,
-  Tooltip,
-  IconButton,
-  Button,
-  Menu,
-  MenuItem,
-} from "@mui/material";
-import {
-  DataGridPremium,
-  GridColDef,
-  GridRenderCellParams,
-} from "@mui/x-data-grid-premium";
-import {
-  Sheet as TableIcon,
-  Braces as JsonIcon,
-  BarChart3 as ChartIcon,
-  LayoutGrid as CardsIcon,
-  ClipboardCopy as CopyIcon,
-  Download as DownloadIcon,
-  FileCode2 as StructureIcon,
-} from "lucide-react";
+import React, { memo, useMemo, useCallback, useEffect, useRef } from "react";
+import { Box, Typography, Button } from "@mui/material";
+import { notify } from "../store/notificationStore";
+import { DataGridPremium } from "@mui/x-data-grid-premium";
 import Editor from "../lib/monaco/MonacoEditor";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useIsMobile } from "../hooks/useIsMobile";
 import type { MakoChartSpec } from "../lib/chart-spec";
 import ResultsChart from "./ResultsChart";
-import VSScrollArea, { attachOverlayScrollbars } from "./VSScrollArea";
+import { attachOverlayScrollbars } from "./VSScrollArea";
 import {
   onRenderDebug,
   useRenderCount,
   useWhyChanged,
 } from "../utils/renderDebug";
-
-interface QueryResult {
-  results?: any; // Can be anything: array, object, primitive, etc.
-  executedAt: string;
-  resultCount: number;
-  executionTime?: number; // Execution time in milliseconds
-  fields?: Array<{ name?: string; originalName?: string } | string>;
-  pageInfo?: {
-    pageSize: number;
-    hasMore: boolean;
-    nextCursor: string | null;
-    returnedRows: number;
-    capApplied: boolean;
-  } | null;
-  currentPage?: number;
-}
-
-type ViewMode = "table" | "json" | "chart";
-// "structure" is an extra, uncontrolled-only mode available when a
-// `structureView` slot is provided (table data tabs); "cards" is the mobile
-// record-card view. Both are local-only and intentionally not part of the
-// persisted console ViewMode (the controlled `viewMode` prop stays table/json/
-// chart so the API and store contracts are unchanged).
-type ResultsViewMode = ViewMode | "structure" | "cards";
+import {
+  buildGridModel,
+  MONO_FONT_FAMILY,
+  normalizeToArray,
+  resultsToTsv,
+  type QueryResult,
+} from "./results-table/grid-model";
+import {
+  ResultsCards,
+  ResultsSummaryBand,
+} from "./results-table/MobileResults";
+import {
+  ResultsToolbar,
+  type ResultsViewMode,
+  type ViewMode,
+} from "./results-table/ResultsToolbar";
 
 const PINNED_RESULT_COLUMNS = { left: ["__rowIndex"], right: [] };
 const RESULTS_TABLE_LOCALE_TEXT = { noRowsLabel: "No rows returned" };
+const GRID_STYLE = { height: "100%", width: "auto" };
+const GRID_SX = {
+  "& .MuiDataGrid-cell": {
+    fontSize: "12px",
+    fontFamily: MONO_FONT_FAMILY,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    borderRight: "1px solid",
+    borderColor: "divider",
+  },
+  "& .MuiDataGrid-columnHeaders": {
+    backgroundColor: "background.default",
+    fontFamily: MONO_FONT_FAMILY,
+  },
+  "& .MuiDataGrid-columnHeader": {
+    backgroundColor: "background.default",
+    fontFamily: MONO_FONT_FAMILY,
+  },
+  "& .MuiDataGrid-root": {
+    overflow: "hidden",
+  },
+  "& .MuiDataGrid-row:first-of-type .MuiDataGrid-cell": {
+    borderTop: "none",
+  },
+  "& .MuiDataGrid-main": {
+    overflow: "hidden",
+    backgroundColor: "background.default",
+  },
+  "& .MuiDataGrid-virtualScroller": {
+    overflow: "auto",
+  },
+  "& .MuiDataGrid-virtualScrollerContent": {
+    backgroundColor: "background.paper",
+  },
+  borderRadius: 0,
+  border: "none",
+} as const;
 
-// Max record cards rendered at once on mobile (cards are not virtualized).
-const MOBILE_CARD_LIMIT = 200;
+const CENTERED_MESSAGE_SX = {
+  height: "100%",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  color: "text.secondary",
+} as const;
 
-// Map common status-like cell values to a Chip color so mobile cards read at a
-// glance. Returns null for non-status values (rendered as plain text).
-const STATUS_CHIP_COLORS: Record<
-  string,
-  "success" | "error" | "warning" | "info"
-> = {
-  success: "success",
-  succeeded: "success",
-  active: "success",
-  completed: "success",
-  complete: "success",
-  done: "success",
-  enabled: "success",
-  paid: "success",
-  ok: "success",
-  passed: "success",
-  error: "error",
-  failed: "error",
-  failure: "error",
-  cancelled: "error",
-  canceled: "error",
-  rejected: "error",
-  disabled: "error",
-  inactive: "error",
-  pending: "warning",
-  processing: "warning",
-  running: "warning",
-  queued: "warning",
-  waiting: "warning",
-  draft: "info",
-  new: "info",
-};
-
-function statusChipColor(
-  value: string,
-): "success" | "error" | "warning" | "info" | null {
-  const key = value.trim().toLowerCase();
-  if (!key || key.length > 24) return null;
-  return STATUS_CHIP_COLORS[key] ?? null;
-}
+const FULL_WIDTH_SX = { width: "100%", maxWidth: "100%" } as const;
 
 interface ResultsTableProps {
   results?: QueryResult | null;
@@ -134,6 +104,11 @@ interface ResultsTableProps {
   hideChartView?: boolean;
 }
 
+/**
+ * Query results as a grid, JSON, chart, mobile cards, or a caller-supplied
+ * structure view. Memoized: callers pass stable callbacks (see the Editor's
+ * ConsoleResultsPane) so streaming/typing elsewhere does not re-render it.
+ */
 const ResultsTable: React.FC<ResultsTableProps> = ({
   results,
   chartSpec,
@@ -149,7 +124,6 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   hideChartView = false,
 }) => {
   const isMobile = useIsMobile();
-  const [snackbarOpen, setSnackbarOpen] = React.useState(false);
   const [internalViewMode, setInternalViewMode] =
     React.useState<ResultsViewMode>("table");
   // "cards" is a local override that takes precedence over the controlled
@@ -158,8 +132,6 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   const [localOverride, setLocalOverride] = React.useState<"cards" | null>(
     isMobile ? "cards" : null,
   );
-  const [downloadAnchorEl, setDownloadAnchorEl] =
-    React.useState<HTMLElement | null>(null);
   const monacoTheme = useMonacoTheme();
 
   const requestedViewMode: ResultsViewMode =
@@ -213,380 +185,27 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
     }
   }, [executedAt, isMobile, setViewMode, viewMode]);
 
-  // Helper function to normalize any data into an array format
-  const normalizeToArray = (data: any): any[] => {
-    if (data === null || data === undefined) {
-      return [];
-    }
-
-    if (Array.isArray(data)) {
-      return data;
-    }
-
-    // If it's a primitive value (string, number, boolean), wrap it in an object
-    if (typeof data !== "object") {
-      return [{ value: data }];
-    }
-
-    // If it's a single object, wrap it in an array
-    return [data];
-  };
-
-  // Returns field info with unique field ID (for DataGrid), data key (for row access), and display name (for headers)
-  // Note: When SQL has duplicate column names (e.g., "SELECT id, created_by as id"), the row data
-  // only contains one value per key (JavaScript object limitation). Both columns will show the same value.
-  // This function creates unique field IDs for DataGrid while preserving the original column names for display.
-  const getFieldInfo = (
-    fields?: Array<{ name?: string; originalName?: string } | string>,
-  ) => {
-    if (!Array.isArray(fields)) return [];
-
-    const fieldCounts = new Map<string, number>();
-    return fields
-      .map(field => {
-        let name: string;
-        if (typeof field === "string") {
-          name = field;
-        } else if (field && typeof field === "object" && "name" in field) {
-          name = field.name ? String(field.name) : "";
-        } else {
-          return null;
-        }
-
-        if (!name) return null;
-
-        // Create unique field ID for DataGrid (handles duplicate column names)
-        const count = fieldCounts.get(name) || 0;
-        fieldCounts.set(name, count + 1);
-        const uniqueFieldId = count === 0 ? name : `${name}__${count}`;
-
-        return {
-          fieldId: uniqueFieldId, // Unique ID for DataGrid's field prop
-          dataKey: name, // Key to access row data (same for duplicates - will show same value)
-          displayName: name, // Original column name for header display
-        };
-      })
-      .filter(
-        (f): f is { fieldId: string; dataKey: string; displayName: string } =>
-          f !== null,
-      );
-  };
-
-  const { columns, rows, hasFieldColumns } = useMemo(() => {
-    if (!results || results.results === null || results.results === undefined) {
-      return { columns: [], rows: [], hasFieldColumns: false };
-    }
-
-    // Get field info with unique IDs for DataGrid, data keys for row access, and display names for headers
-    // Note: Duplicate column names (e.g., "SELECT id, id") will show the same value due to JS object limitations
-    const fieldInfo = getFieldInfo(results.fields);
-
-    // Normalize results to array format
-    const normalizedResults = normalizeToArray(results.results);
-
-    if (normalizedResults.length === 0) {
-      if (fieldInfo.length === 0) {
-        return { columns: [], rows: [], hasFieldColumns: false };
-      }
-
-      // Create columns for empty result set (show headers only)
-      const cols: GridColDef[] = fieldInfo.map(({ fieldId, displayName }) => ({
-        field: fieldId,
-        headerName: displayName,
-        width: Math.min(Math.max(displayName.length * 8 + 24, 60), 400),
-        align: "left" as const,
-        headerAlign: "left" as const,
-      }));
-
-      cols.unshift({
-        field: "__rowIndex",
-        headerName: "#",
-        width: 50,
-        minWidth: 50,
-        maxWidth: 50,
-        sortable: false,
-        filterable: false,
-        disableColumnMenu: true,
-        disableReorder: true,
-        resizable: false,
-        align: "right",
-        headerAlign: "right",
-      });
-
-      return { columns: cols, rows: [], hasFieldColumns: true };
-    }
-
-    // Generate columns from the first 100 results (or all if fewer than 100)
-    const sampleResults = normalizedResults.slice(0, 100);
-    const allKeys = new Set<string>();
-
-    // Collect all unique keys from the sample results
-    sampleResults.forEach(result => {
-      if (result && typeof result === "object" && !Array.isArray(result)) {
-        Object.keys(result).forEach(key => allKeys.add(key));
-      }
-    });
-
-    // Determine column ordering:
-    // 1. If fieldInfo is available, use it as the primary ordering (preserves DB column order)
-    // 2. Add any additional keys found in results that aren't in fieldInfo
-    // 3. If no fieldInfo, fall back to alphabetical ordering
-    let orderedFields: Array<{
-      fieldId: string;
-      dataKey: string;
-      displayName: string;
-    }>;
-
-    if (fieldInfo.length > 0) {
-      // Use fieldInfo as the base ordering, then append any extra keys from data
-      // Note: For duplicates, dataKey is the same, so they'll show the same value
-      // Include ALL fields from fieldInfo, even if no row contains that key (e.g., columns with all NULLs)
-      // The valueGetter handles missing keys by returning undefined
-      const dataKeysSet = new Set(fieldInfo.map(f => f.dataKey));
-      const extraKeys = Array.from(allKeys).filter(
-        key => !dataKeysSet.has(key),
-      );
-      orderedFields = [
-        ...fieldInfo,
-        ...extraKeys.map(key => ({
-          fieldId: key,
-          dataKey: key,
-          displayName: key,
-        })),
-      ];
-    } else {
-      // No fieldInfo available - fall back to alphabetical ordering
-      // Function to check if a key starts with a number
-      const startsWithNumber = (key: string): boolean => {
-        return /^\d/.test(key.trim());
-      };
-
-      // Separate keys that start with numbers from those that don't
-      const allKeysArray = Array.from(allKeys);
-      const numericKeys = allKeysArray.filter(startsWithNumber);
-      const sortedNumericKeys = numericKeys.sort();
-      const alphabeticKeys = allKeysArray.filter(key => !startsWithNumber(key));
-
-      // Combine alphabetic keys first, then numeric keys
-      const orderedKeys = [...alphabeticKeys, ...sortedNumericKeys];
-      orderedFields = orderedKeys.map(key => ({
-        fieldId: key,
-        dataKey: key,
-        displayName: key,
-      }));
-    }
-
-    // Create columns with unique field IDs for DataGrid
-    // Note: Duplicate columns will show the same value (JS object limitation)
-    const cols: GridColDef[] = orderedFields.map(
-      ({ fieldId, dataKey, displayName }) => {
-        // Check if this column contains numeric values by sampling the first few rows
-        const sampleValues = sampleResults
-          .map(row => row?.[dataKey])
-          .filter(value => value !== undefined);
-
-        const isNumericColumn =
-          sampleValues.length > 0 &&
-          sampleValues.every(
-            value =>
-              value === null ||
-              (typeof value === "number" && !isNaN(value)) ||
-              (typeof value === "string" &&
-                !isNaN(Number(value)) &&
-                value.trim() !== ""),
-          );
-
-        // Calculate column width based on content length
-        const getDisplayLength = (value: unknown): number => {
-          if (value === null || value === undefined) return 4; // "null"
-          if (typeof value === "object") return JSON.stringify(value).length;
-          return String(value).length;
-        };
-
-        // Get max content length from sample (header included)
-        const contentLengths = sampleValues.map(getDisplayLength);
-        const headerLength = displayName.length;
-        const maxContentLength = Math.max(headerLength, ...contentLengths, 0);
-
-        // Calculate width: ~8px per character + 24px padding, capped at 400px
-        const calculatedWidth = Math.min(
-          Math.max(maxContentLength * 8 + 24, 60), // min 60px
-          400, // max 400px
-        );
-
-        return {
-          field: fieldId, // Unique ID for DataGrid (e.g., "id", "id__1" for duplicates)
-          headerName: displayName, // Original column name for display
-          width: calculatedWidth,
-          align: isNumericColumn ? "right" : "left",
-          headerAlign: isNumericColumn ? "right" : "left",
-          // Use valueGetter to access data by dataKey (handles duplicate column names)
-          valueGetter: (_value: unknown, row: Record<string, unknown>) =>
-            row[dataKey],
-          renderCell: params => {
-            const value = params.value;
-            if (typeof value === "undefined") {
-              return undefined;
-            }
-            if (value === null) {
-              return null;
-            }
-            if (typeof value === "object" && value !== null) {
-              return JSON.stringify(value);
-            }
-            return String(value);
-          },
-        };
-      },
-    );
-
-    // Prepend index column on the far left
-    cols.unshift({
-      field: "__rowIndex",
-      headerName: "#",
-      width: 50,
-      minWidth: 50,
-      maxWidth: 50,
-      sortable: false,
-      filterable: false,
-      disableColumnMenu: true,
-      disableReorder: true,
-      resizable: false,
-      align: "right",
-      headerAlign: "right",
-      renderCell: (params: GridRenderCellParams<any, any>) => {
-        const api = (params as GridRenderCellParams).api;
-        const i = api.getRowIndexRelativeToVisibleRows(params.id);
-        return typeof i === "number" ? i + 1 : "";
-      },
-    });
-
-    // Generate rows with unique IDs
-    const idMap = new Map<string, number>();
-    const rowsData = normalizedResults.map((result, index) => {
-      const rowData: any = {
-        ...(result && typeof result === "object" && !Array.isArray(result)
-          ? result
-          : { value: result }),
-      };
-
-      // Handle row ID generation
-      let rowId: string | number;
-
-      // Check if the row already has an id
-      if ("id" in rowData) {
-        const existingId = rowData.id;
-
-        // Convert null/undefined to string
-        if (existingId === null || existingId === undefined) {
-          rowId = String(existingId); // "null" or "undefined"
-        } else {
-          rowId = existingId;
-        }
-
-        // Make the ID unique if we've seen it before
-        const idStr = String(rowId);
-        const count = idMap.get(idStr) || 0;
-        if (count > 0) {
-          // Append the index to make it unique
-          rowId = `${idStr}_${index}`;
-        }
-        idMap.set(idStr, count + 1);
-      } else {
-        // No existing ID, use index
-        rowId = index;
-      }
-
-      return {
-        ...rowData,
-        id: rowId,
-      };
-    });
-
-    return { columns: cols, rows: rowsData, hasFieldColumns: false };
-  }, [results]);
+  const { columns, rows, hasFieldColumns } = useMemo(
+    () => buildGridModel(results),
+    [results],
+  );
 
   const copyToClipboard = useCallback(async () => {
-    if (!results || results.results === null || results.results === undefined) {
-      return;
-    }
-
-    const normalizedResults = normalizeToArray(results.results);
-
-    // Get column info (excluding row index column)
-    // Note: For duplicate columns, both will access the same key in row data (JS object limitation)
-    const columnInfo = columns
-      .filter(col => col.field !== "__rowIndex")
-      .map(col => ({
-        headerName: col.headerName as string, // Original column name for display
-        dataKey: col.headerName as string, // Original column name for row data access
-      }));
-
-    // If no data and no columns, nothing to copy
-    if (normalizedResults.length === 0 && columnInfo.length === 0) {
-      return;
-    }
-
+    const tsv = resultsToTsv(results, columns);
+    if (tsv === null) return;
     try {
-      // Create CSV-like format that works well with Google Sheets
-      const csvContent = [
-        // Header row (use original column names)
-        columnInfo.map(c => c.headerName).join("\t"),
-        // Data rows (empty array if no results)
-        ...normalizedResults.map(row =>
-          columnInfo
-            .map(({ dataKey }) => {
-              const value =
-                row && typeof row === "object" && !Array.isArray(row)
-                  ? row[dataKey]
-                  : row;
-              if (value === null || value === undefined) {
-                return "";
-              }
-              if (typeof value === "object") {
-                return JSON.stringify(value);
-              }
-              // Escape tabs and newlines for CSV compatibility
-              return String(value).replace(/\t/g, " ").replace(/\n/g, " ");
-            })
-            .join("\t"),
-        ),
-      ].join("\n");
-
-      await navigator.clipboard.writeText(csvContent);
-      setSnackbarOpen(true);
+      await navigator.clipboard.writeText(tsv);
+      notify.success(
+        "Table copied to clipboard! You can now paste it in Google Sheets.",
+        {
+          autoHideDuration: 3000,
+          anchorOrigin: { vertical: "bottom", horizontal: "right" },
+        },
+      );
     } catch (error) {
       console.error("Failed to copy to clipboard:", error);
     }
   }, [results, columns]);
-
-  const handleViewModeChange = useCallback(
-    (_event: React.MouseEvent<HTMLElement>, newViewMode: ResultsViewMode) => {
-      if (newViewMode !== null) {
-        setViewMode(newViewMode);
-      }
-    },
-    [setViewMode],
-  );
-
-  const handleDownloadMenuOpen = useCallback(
-    (event: React.MouseEvent<HTMLElement>) => {
-      setDownloadAnchorEl(event.currentTarget);
-    },
-    [],
-  );
-
-  const handleDownloadMenuClose = useCallback(() => {
-    setDownloadAnchorEl(null);
-  }, []);
-
-  const handleDownloadSelection = useCallback(
-    (format: "csv" | "ndjson") => {
-      handleDownloadMenuClose();
-      onDownload?.(format);
-    },
-    [handleDownloadMenuClose, onDownload],
-  );
 
   // Serializing a large result set is expensive: only do it for the JSON
   // view, and only when the results change (not on every render).
@@ -658,361 +277,57 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
 
   if (!results) {
     return (
-      <Box
-        sx={{
-          height: "100%",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "text.secondary",
-        }}
-      >
+      <Box sx={CENTERED_MESSAGE_SX}>
         <Typography>Execute a query to see results here</Typography>
       </Box>
     );
   }
 
-  // Check if results are empty using the normalizeToArray helper
-  const normalizedForCheck = normalizeToArray(results.results);
-  if (normalizedForCheck.length === 0 && !hasFieldColumns) {
+  if (normalizeToArray(results.results).length === 0 && !hasFieldColumns) {
     return (
-      <Box
-        sx={{
-          height: "100%",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "text.secondary",
-        }}
-      >
+      <Box sx={CENTERED_MESSAGE_SX}>
         <Typography>No results found</Typography>
       </Box>
     );
   }
 
-  // ── Mobile record cards ───────────────────────────────────────────────
-  // Render up to a cap so large result sets don't blow up the DOM (cards are
-  // not virtualized like the DataGrid). Beyond the cap we point users at the
-  // Table view.
-  const renderCardValue = (value: unknown): React.ReactNode => {
-    if (value === null || value === undefined) {
-      return (
-        <Typography
-          variant="body2"
-          sx={{
-            color: "text.disabled",
-          }}
-        >
-          —
-        </Typography>
-      );
-    }
-    if (typeof value === "object") {
-      return (
-        <Typography
-          variant="body2"
-          sx={{
-            fontFamily:
-              'Monaco, Menlo, "Ubuntu Mono", Consolas, "Courier New", monospace',
-            fontSize: "0.75rem",
-            wordBreak: "break-word",
-            textAlign: "right",
-          }}
-        >
-          {JSON.stringify(value)}
-        </Typography>
-      );
-    }
-    const str = String(value);
-    const chipColor = statusChipColor(str);
-    if (chipColor) {
-      return (
-        <Chip size="small" variant="outlined" color={chipColor} label={str} />
-      );
-    }
-    return (
-      <Typography
-        variant="body2"
-        sx={{ wordBreak: "break-word", textAlign: "right" }}
-      >
-        {str}
-      </Typography>
-    );
-  };
-
-  const cardRows = rows.slice(0, MOBILE_CARD_LIMIT);
-  const cardsView = (
-    <VSScrollArea style={{ height: "100%" }}>
-      <Box
-        sx={{
-          p: 1,
-          display: "flex",
-          flexDirection: "column",
-          gap: 1,
-        }}
-      >
-        {cardRows.map((row, index) => {
-          const [titleCol, ...restCols] = dataColumns;
-          const titleRaw = titleCol ? row[titleCol.field] : undefined;
-          const title =
-            titleRaw === null || titleRaw === undefined || titleRaw === ""
-              ? `Row ${index + 1}`
-              : typeof titleRaw === "object"
-                ? JSON.stringify(titleRaw)
-                : String(titleRaw);
-          return (
-            <Box
-              key={row.id ?? index}
-              sx={{
-                border: 1,
-                borderColor: "divider",
-                borderRadius: 1,
-                p: 1.5,
-                backgroundColor: "background.paper",
-              }}
-            >
-              <Typography
-                variant="subtitle2"
-                sx={{
-                  fontWeight: 700,
-                  mb: restCols.length ? 1 : 0,
-                  wordBreak: "break-word",
-                }}
-              >
-                {title}
-              </Typography>
-              {restCols.length > 0 && (
-                <Box
-                  sx={{
-                    display: "grid",
-                    gridTemplateColumns: "minmax(0, 45%) 1fr",
-                    columnGap: 1.5,
-                    rowGap: 0.75,
-                    alignItems: "start",
-                  }}
-                >
-                  {restCols.map(col => (
-                    <React.Fragment key={col.field}>
-                      <Typography
-                        variant="caption"
-                        sx={{
-                          color: "text.secondary",
-                          wordBreak: "break-word",
-                          pt: 0.25,
-                        }}
-                      >
-                        {col.headerName ?? col.field}
-                      </Typography>
-                      <Box
-                        sx={{
-                          minWidth: 0,
-                          display: "flex",
-                          justifyContent: "flex-end",
-                        }}
-                      >
-                        {renderCardValue(row[col.field])}
-                      </Box>
-                    </React.Fragment>
-                  ))}
-                </Box>
-              )}
-            </Box>
-          );
-        })}
-        {rows.length > MOBILE_CARD_LIMIT && (
-          <Typography
-            variant="caption"
-            sx={{
-              color: "text.secondary",
-              textAlign: "center",
-              py: 1,
-            }}
-          >
-            Showing the first {MOBILE_CARD_LIMIT} of {rows.length} rows — switch
-            to Table view to see all.
-          </Typography>
-        )}
-      </Box>
-    </VSScrollArea>
-  );
-
-  // ── Mobile answer-first summary band ──────────────────────────────────
-  let kpi: { label: string; value: string } | null = null;
-  if (rows.length === 1 && dataColumns.length === 1) {
-    const col = dataColumns[0];
-    const v = rows[0][col.field];
-    if (v !== null && v !== undefined && typeof v !== "object") {
-      kpi = { label: col.headerName ?? col.field, value: String(v) };
-    }
-  }
-  const summaryBand =
-    isMobile && viewMode !== "structure" ? (
-      <Box
-        sx={{
-          px: 1.5,
-          py: 1,
-          borderBottom: "1px solid",
-          borderColor: "divider",
-          backgroundColor: "background.default",
-        }}
-      >
-        {kpi ? (
-          <>
-            <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
-              {kpi.value}
-            </Typography>
-            <Typography
-              variant="caption"
-              sx={{
-                color: "text.secondary",
-              }}
-            >
-              {kpi.label}
-            </Typography>
-          </>
-        ) : (
-          <Box sx={{ display: "flex", alignItems: "baseline", gap: 1 }}>
-            <Typography variant="h6" sx={{ fontWeight: 700 }}>
-              {results.resultCount.toLocaleString()}
-            </Typography>
-            <Typography
-              variant="body2"
-              sx={{
-                color: "text.secondary",
-              }}
-            >
-              {results.resultCount === 1 ? "result" : "results"}
-              {results.executionTime !== undefined
-                ? ` • ${results.executionTime} ms`
-                : ""}
-            </Typography>
-          </Box>
-        )}
-      </Box>
-    ) : null;
-
   return (
     <Box
       sx={{
         height: "100%",
-        width: "100%",
-        maxWidth: "100%",
+        ...FULL_WIDTH_SX,
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
       }}
     >
-      {/* Toolbar */}
-      <Box
-        sx={{
-          p: 0.5,
-          gap: 1,
-          display: "flex",
-          justifyContent: "flex-start",
-          alignItems: "center",
-          borderBottom: "1px solid",
-          borderColor: "divider",
-          backgroundColor: "background.default",
-        }}
-      >
-        <ToggleButtonGroup
-          value={viewMode}
-          exclusive
-          onChange={handleViewModeChange}
-          size="small"
-          aria-label="view mode"
-        >
-          {isMobile && (
-            <Tooltip title="Cards view">
-              <ToggleButton value="cards" aria-label="cards view">
-                <CardsIcon strokeWidth={1.5} size={22} />
-              </ToggleButton>
-            </Tooltip>
-          )}
-          <Tooltip title="Table view">
-            <ToggleButton value="table" aria-label="table view">
-              <TableIcon strokeWidth={1.5} size={22} />
-            </ToggleButton>
-          </Tooltip>
-          {!isMobile && (
-            <Tooltip title="JSON view">
-              <ToggleButton value="json" aria-label="json view">
-                <JsonIcon strokeWidth={1.5} size={22} />
-              </ToggleButton>
-            </Tooltip>
-          )}
-          {!hideChartView && (
-            <Tooltip title="Chart view">
-              <ToggleButton value="chart" aria-label="chart view">
-                <ChartIcon strokeWidth={1.5} size={22} />
-              </ToggleButton>
-            </Tooltip>
-          )}
-          {structureView !== undefined && (
-            <Tooltip title="Structure">
-              <ToggleButton value="structure" aria-label="structure view">
-                <StructureIcon strokeWidth={1.5} size={22} />
-              </ToggleButton>
-            </Tooltip>
-          )}
-        </ToggleButtonGroup>
-        {viewMode !== "structure" && (
-          <Tooltip title="Copy to clipboard">
-            <IconButton
-              size="small"
-              onClick={copyToClipboard}
-              sx={{
-                minWidth: "32px",
-                width: "32px",
-                height: "32px",
-                p: 0,
-              }}
-            >
-              <CopyIcon strokeWidth={1.5} size={22} />
-            </IconButton>
-          </Tooltip>
-        )}
-        {onDownload && viewMode !== "structure" && (
-          <>
-            <Button
-              size="small"
-              variant="outlined"
-              onClick={handleDownloadMenuOpen}
-              startIcon={<DownloadIcon strokeWidth={1.5} size={16} />}
-              sx={{ ml: 0.5 }}
-            >
-              Download
-            </Button>
-            <Menu
-              anchorEl={downloadAnchorEl}
-              open={Boolean(downloadAnchorEl)}
-              onClose={handleDownloadMenuClose}
-            >
-              <MenuItem onClick={() => handleDownloadSelection("csv")}>
-                Download CSV
-              </MenuItem>
-              <MenuItem onClick={() => handleDownloadSelection("ndjson")}>
-                Download NDJSON
-              </MenuItem>
-            </Menu>
-          </>
-        )}
-      </Box>
+      <ResultsToolbar
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        isMobile={isMobile}
+        hideChartView={hideChartView}
+        hasStructureView={structureView !== undefined}
+        onCopy={copyToClipboard}
+        onDownload={onDownload}
+      />
 
       {/* Answer-first summary band (mobile) */}
-      {summaryBand}
+      {isMobile && viewMode !== "structure" ? (
+        <ResultsSummaryBand
+          results={results}
+          rows={rows}
+          dataColumns={dataColumns}
+        />
+      ) : null}
 
       {/* Results content */}
       <Box
         ref={gridAreaRef}
-        sx={{
-          flexGrow: 1,
-          overflow: "hidden",
-          width: "100%",
-          maxWidth: "100%",
-        }}
+        sx={{ flexGrow: 1, overflow: "hidden", ...FULL_WIDTH_SX }}
       >
-        {viewMode === "cards" && cardsView}
+        {viewMode === "cards" && (
+          <ResultsCards rows={rows} dataColumns={dataColumns} />
+        )}
         {viewMode === "table" && (
           <React.Profiler id="ResultsTable.DataGrid" onRender={onRenderDebug}>
             <DataGridPremium
@@ -1026,61 +341,13 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
               localeText={RESULTS_TABLE_LOCALE_TEXT}
               columnHeaderHeight={40}
               rowHeight={40}
-              style={{
-                height: "100%",
-                width: "auto",
-              }}
-              sx={{
-                "& .MuiDataGrid-cell": {
-                  fontSize: "12px",
-                  fontFamily:
-                    'Monaco, Menlo, "Ubuntu Mono", Consolas, "Courier New", monospace',
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  borderRight: "1px solid",
-                  borderColor: "divider",
-                },
-                "& .MuiDataGrid-columnHeaders": {
-                  backgroundColor: "background.default",
-                  fontFamily:
-                    'Monaco, Menlo, "Ubuntu Mono", Consolas, "Courier New", monospace',
-                },
-                "& .MuiDataGrid-columnHeader": {
-                  backgroundColor: "background.default",
-                  fontFamily:
-                    'Monaco, Menlo, "Ubuntu Mono", Consolas, "Courier New", monospace',
-                },
-                "& .MuiDataGrid-root": {
-                  overflow: "hidden",
-                },
-                "& .MuiDataGrid-row:first-of-type .MuiDataGrid-cell": {
-                  borderTop: "none",
-                },
-                "& .MuiDataGrid-main": {
-                  overflow: "hidden",
-                  backgroundColor: "background.default",
-                },
-                "& .MuiDataGrid-virtualScroller": {
-                  overflow: "auto",
-                },
-                "& .MuiDataGrid-virtualScrollerContent": {
-                  backgroundColor: "background.paper",
-                },
-                borderRadius: 0,
-                border: "none",
-              }}
+              style={GRID_STYLE}
+              sx={GRID_SX}
             />
           </React.Profiler>
         )}
         {viewMode === "json" && (
-          <Box
-            sx={{
-              height: "100%",
-              width: "100%",
-              maxWidth: "100%",
-              overflow: "hidden",
-            }}
-          >
+          <Box sx={{ height: "100%", ...FULL_WIDTH_SX, overflow: "hidden" }}>
             <Editor
               height="100%"
               defaultLanguage="json"
@@ -1116,12 +383,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
             gap: 2,
           }}
         >
-          <Typography
-            variant="body2"
-            sx={{
-              color: "text.secondary",
-            }}
-          >
+          <Typography variant="body2" sx={{ color: "text.secondary" }}>
             {results.resultCount} result(s) •{" "}
             {results.executionTime !== undefined &&
               `executed in ${results.executionTime} ms at `}
@@ -1152,22 +414,8 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
           )}
         </Box>
       )}
-      <Snackbar
-        open={snackbarOpen}
-        autoHideDuration={3000}
-        onClose={() => setSnackbarOpen(false)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
-      >
-        <Alert
-          onClose={() => setSnackbarOpen(false)}
-          severity="success"
-          sx={{ width: "100%" }}
-        >
-          Table copied to clipboard! You can now paste it in Google Sheets.
-        </Alert>
-      </Snackbar>
     </Box>
   );
 };
 
-export default ResultsTable;
+export default memo(ResultsTable);

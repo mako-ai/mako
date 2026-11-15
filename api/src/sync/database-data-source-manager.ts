@@ -1,4 +1,4 @@
-import { Db, ObjectId } from "mongodb";
+import { Db, ObjectId, type Document, type WithId } from "mongodb";
 import { decryptEncrypted } from "../services/crypto.service";
 import * as dotenv from "dotenv";
 import { syncConnectorRegistry } from "./connector-registry";
@@ -46,9 +46,6 @@ export interface SourceConnectionConfig {
     timeout_ms?: number;
   };
 }
-
-/** @deprecated use SourceConnectionConfig */
-export type DataSourceConfig = SourceConnectionConfig;
 
 class SourceConnectionManager {
   private schemaCache: Map<string, ConnectorSchema> = new Map();
@@ -132,94 +129,24 @@ class SourceConnectionManager {
     return null;
   }
 
-  /**
-   * Get all active source connections
-   */
-  async getActiveSourceConnections(
-    workspaceId?: string,
-  ): Promise<SourceConnectionConfig[]> {
-    return this.getActiveDataSources(workspaceId);
-  }
-
-  /** @deprecated use getActiveSourceConnections */
-  async getActiveDataSources(
-    workspaceId?: string,
-  ): Promise<SourceConnectionConfig[]> {
-    const db = await this.getDb();
-    const collection = db.collection("connectors");
-
-    const query: any = { isActive: true };
-    if (workspaceId) {
-      query.workspaceId = new ObjectId(workspaceId);
-    }
-
-    const sources = await collection.find(query).toArray();
-
-    const results = [];
-    for (const source of sources) {
-      results.push({
-        id: source._id.toString(),
-        name: source.name,
-        description: source.description,
-        type: source.type,
-        workspaceId: source.workspaceId
-          ? String(source.workspaceId)
-          : undefined,
-        active: source.isActive,
-        connection: await this.decryptConfig(
-          source.config,
-          source.type,
-          source.workspaceId ? String(source.workspaceId) : undefined,
-        ),
-        settings: {
-          sync_batch_size: source.settings?.sync_batch_size || 100,
-          rate_limit_delay_ms: source.settings?.rate_limit_delay_ms || 200,
-          timezone: source.settings?.timezone || "UTC",
-          max_retries: source.settings?.max_retries || 3,
-          timeout_ms: source.settings?.timeout_ms || 30000,
-        },
-      });
-    }
-
-    return results;
-  }
-
-  /**
-   * Get a specific source connection by ID
-   */
-  async getSourceConnection(
-    id: string,
-  ): Promise<SourceConnectionConfig | null> {
-    return this.getDataSource(id);
-  }
-
-  /** @deprecated use getSourceConnection */
-  async getDataSource(id: string): Promise<SourceConnectionConfig | null> {
-    const db = await this.getDb();
-    const collection = db.collection("connectors");
-
-    if (!ObjectId.isValid(id)) {
-      return null;
-    }
-
-    // Try to find by ID first
-    const source = await collection.findOne({ _id: new ObjectId(id) });
-
-    if (!source) {
-      return null;
-    }
-
+  /** One stored `connectors` row as a decrypted source-connection config. */
+  private async toConfig(
+    source: WithId<Document>,
+  ): Promise<SourceConnectionConfig> {
+    const workspaceId = source.workspaceId
+      ? String(source.workspaceId)
+      : undefined;
     return {
       id: source._id.toString(),
       name: source.name,
       description: source.description,
       type: source.type,
-      workspaceId: source.workspaceId ? String(source.workspaceId) : undefined,
+      workspaceId,
       active: source.isActive,
       connection: await this.decryptConfig(
         source.config,
         source.type,
-        source.workspaceId ? String(source.workspaceId) : undefined,
+        workspaceId,
       ),
       settings: {
         sync_batch_size: source.settings?.sync_batch_size || 100,
@@ -231,82 +158,61 @@ class SourceConnectionManager {
     };
   }
 
-  /**
-   * Get source connections by connector type
-   */
+  private async connectors() {
+    const db = await this.getDb();
+    return db.collection("connectors");
+  }
+
+  /** All active source connections, optionally in one workspace. */
+  async getActiveSourceConnections(
+    workspaceId?: string,
+  ): Promise<SourceConnectionConfig[]> {
+    const query: Record<string, unknown> = { isActive: true };
+    if (workspaceId) query.workspaceId = new ObjectId(workspaceId);
+    const sources = await (await this.connectors()).find(query).toArray();
+    return Promise.all(sources.map(source => this.toConfig(source)));
+  }
+
+  /** One source connection by id, or null. */
+  async getSourceConnection(
+    id: string,
+  ): Promise<SourceConnectionConfig | null> {
+    if (!ObjectId.isValid(id)) return null;
+    const source = await (
+      await this.connectors()
+    ).findOne({ _id: new ObjectId(id) });
+    return source ? this.toConfig(source) : null;
+  }
+
+  /** Active source connections of one connector type. */
   async getSourceConnectionsByType(
     type: string,
   ): Promise<SourceConnectionConfig[]> {
-    return this.getDataSourcesByType(type);
+    const sources = await (
+      await this.connectors()
+    )
+      .find({ type, isActive: true })
+      .toArray();
+    return Promise.all(sources.map(source => this.toConfig(source)));
   }
 
-  /** @deprecated use getSourceConnectionsByType */
-  async getDataSourcesByType(type: string): Promise<SourceConnectionConfig[]> {
-    const db = await this.getDb();
-    const collection = db.collection("connectors");
-
-    const sources = await collection.find({ type, isActive: true }).toArray();
-
-    const results = [];
-    for (const source of sources) {
-      results.push({
-        id: source._id.toString(),
-        name: source.name,
-        description: source.description,
-        type: source.type,
-        workspaceId: source.workspaceId
-          ? String(source.workspaceId)
-          : undefined,
-        active: source.isActive,
-        connection: await this.decryptConfig(
-          source.config,
-          source.type,
-          source.workspaceId ? String(source.workspaceId) : undefined,
-        ),
-        settings: {
-          sync_batch_size: source.settings?.sync_batch_size || 100,
-          rate_limit_delay_ms: source.settings?.rate_limit_delay_ms || 200,
-          timezone: source.settings?.timezone || "UTC",
-          max_retries: source.settings?.max_retries || 3,
-          timeout_ms: source.settings?.timeout_ms || 30000,
-        },
-      });
-    }
-
-    return results;
-  }
-
-  /** List all source-connection IDs */
+  /** Every source connection, as "name (id)". */
   async listSourceConnectionIds(): Promise<string[]> {
-    return this.listDataSourceIds();
-  }
-
-  /** @deprecated use listSourceConnectionIds */
-  async listDataSourceIds(): Promise<string[]> {
-    const db = await this.getDb();
-    const collection = db.collection("connectors");
-
-    const sources = await collection
+    const sources = await (
+      await this.connectors()
+    )
       .find({}, { projection: { _id: 1, name: 1 } })
       .toArray();
-
     return sources.map(s => `${s.name} (${s._id})`);
   }
 
-  /** List active source-connection IDs */
+  /** Active source connections, as "name (id)". */
   async listActiveSourceConnectionIds(): Promise<string[]> {
-    return this.listActiveDataSourceIds();
-  }
-
-  /** @deprecated use listActiveSourceConnectionIds */
-  async listActiveDataSourceIds(): Promise<string[]> {
-    const db = await this.getDb();
-    const collection = db.collection("connectors");
-
-    const sources = await collection
+    const sources = await (
+      await this.connectors()
+    )
       .find({ isActive: true }, { projection: { _id: 1, name: 1 } })
       .toArray();
-
     return sources.map(s => `${s.name} (${s._id})`);
   }
 
@@ -454,11 +360,6 @@ export function getSourceConnectionManager(): SourceConnectionManager {
   return _sourceConnectionManager;
 }
 
-/** @deprecated use getSourceConnectionManager */
-export function getDatabaseDataSourceManager(): SourceConnectionManager {
-  return getSourceConnectionManager();
-}
-
 function proxyManager() {
   return {
     get instance() {
@@ -469,37 +370,17 @@ function proxyManager() {
         workspaceId,
       );
     },
-    /** @deprecated use getActiveSourceConnections */
-    async getActiveDataSources(workspaceId?: string) {
-      return getSourceConnectionManager().getActiveDataSources(workspaceId);
-    },
     async getSourceConnection(id: string) {
       return getSourceConnectionManager().getSourceConnection(id);
-    },
-    /** @deprecated use getSourceConnection */
-    async getDataSource(id: string) {
-      return getSourceConnectionManager().getDataSource(id);
     },
     async getSourceConnectionsByType(type: string) {
       return getSourceConnectionManager().getSourceConnectionsByType(type);
     },
-    /** @deprecated use getSourceConnectionsByType */
-    async getDataSourcesByType(type: string) {
-      return getSourceConnectionManager().getDataSourcesByType(type);
-    },
     async listSourceConnectionIds() {
       return getSourceConnectionManager().listSourceConnectionIds();
     },
-    /** @deprecated use listSourceConnectionIds */
-    async listDataSourceIds() {
-      return getSourceConnectionManager().listDataSourceIds();
-    },
     async listActiveSourceConnectionIds() {
       return getSourceConnectionManager().listActiveSourceConnectionIds();
-    },
-    /** @deprecated use listActiveSourceConnectionIds */
-    async listActiveDataSourceIds() {
-      return getSourceConnectionManager().listActiveDataSourceIds();
     },
     validateConfig() {
       return getSourceConnectionManager().validateConfig();
@@ -508,9 +389,5 @@ function proxyManager() {
 }
 
 export const sourceConnectionManager = proxyManager();
-/** @deprecated use sourceConnectionManager */
-export const databaseDataSourceManager = sourceConnectionManager;
 
 export { SourceConnectionManager };
-/** @deprecated use SourceConnectionManager */
-export const DatabaseDataSourceManager = SourceConnectionManager;

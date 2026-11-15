@@ -9,7 +9,6 @@ import {
   Collapse,
   IconButton,
   InputAdornment,
-  Snackbar,
   TextField,
   Typography,
 } from "@mui/material";
@@ -21,6 +20,7 @@ import {
 } from "@mui/icons-material";
 import SettingsLayout from "./SettingsLayout";
 import { useSettingsStore } from "../../store/settingsStore";
+import { notify } from "../../store/notificationStore";
 import { useWorkspace } from "../../contexts/workspace-context";
 import type { GatewayModelInfo } from "../../lib/api-types";
 
@@ -64,7 +64,6 @@ export default function SettingsModels() {
   const [search, setSearch] = useState("");
   const [providerFilter, setProviderFilter] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [snackbar, setSnackbar] = useState<string | null>(null);
   const [collapsedProviders, setCollapsedProviders] = useState<Set<string>>(
     new Set(),
   );
@@ -161,10 +160,10 @@ export default function SettingsModels() {
     const ok = await saveDisabledModels(workspaceId, Array.from(localDisabled));
     setSaving(false);
     if (ok) {
-      setSnackbar("AI models updated successfully!");
+      notify.success("AI models updated successfully!");
       fetchModels();
     } else {
-      setSnackbar("Failed to save model settings");
+      notify.error("Failed to save model settings");
     }
   };
 
@@ -401,18 +400,6 @@ export default function SettingsModels() {
       description="Uncheck a model to hide it from this workspace. New models added by the platform appear automatically."
     >
       {renderBody()}
-      <Snackbar
-        open={snackbar !== null}
-        autoHideDuration={4000}
-        onClose={() => setSnackbar(null)}
-      >
-        <Alert
-          onClose={() => setSnackbar(null)}
-          severity={snackbar?.startsWith("Failed") ? "error" : "success"}
-        >
-          {snackbar}
-        </Alert>
-      </Snackbar>
     </SettingsLayout>
   );
 }

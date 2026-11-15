@@ -37,6 +37,7 @@
  * read-only caller gets only the stored artifact of the binding as committed
  * on main, read from git (never a sandbox): the one check that needs the repo.
  */
+import { isValidBindingName } from "./binding-name";
 import { withDefaultQueryLabels } from "../services/bigquery-labels";
 import type {
   IAppProject,
@@ -70,8 +71,6 @@ import { reportBindingPhase } from "./binding-progress";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps");
-
-const NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 
 export interface DevBuildInput {
   project: IAppProject;
@@ -273,7 +272,7 @@ async function planDevBuildUnlabelled(
   deps: DevBuildDeps,
 ): Promise<DevBuildPlan> {
   const { project, name } = input;
-  if (!NAME_RE.test(name)) {
+  if (!isValidBindingName(name)) {
     throw new DevBuildError("Invalid binding name", 400);
   }
   reportBindingPhase("checking");

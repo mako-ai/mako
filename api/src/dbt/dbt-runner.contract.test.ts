@@ -66,7 +66,7 @@ describe.skipIf(!ENABLED)(
       const result = await runDbt({
         files,
         profile,
-        dbtVersion: "1.9.10",
+        dbtVersion: "1.12.7",
         commands: [
           parseDbtCommand("compile --select contract_model"),
           parseDbtCommand("run --select contract_model"),

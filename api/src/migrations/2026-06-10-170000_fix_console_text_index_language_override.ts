@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -16,7 +17,7 @@ export async function up(db: Db): Promise<void> {
 
   let indexes: Array<Record<string, unknown>>;
   try {
-    indexes = (await col.indexes()) as Array<Record<string, unknown>>;
+    indexes = (await indexesOf(col)) as Array<Record<string, unknown>>;
   } catch {
     // Collection does not exist yet (fresh install before first console).
     // Mongoose will create the index with the fixed schema options.

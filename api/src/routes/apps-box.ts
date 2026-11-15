@@ -31,6 +31,8 @@ import {
 import { createReadStream } from "node:fs";
 import { rm } from "node:fs/promises";
 import { loggers } from "../logging";
+import { isValidBindingName } from "../apps/binding-name";
+import { fail } from "./lib/respond";
 
 const logger = loggers.api("apps-box");
 
@@ -77,32 +79,40 @@ function bearer(c: Context): string | null {
   return value.trim();
 }
 
-appsBoxRoutes.post("/:workspaceId/events", async c => {
+/**
+ * The box's `mgt_` token, verified and scoped to this workspace — or null
+ * (no bearer, a bad token, another workspace's token).
+ */
+function boxTokenFor(
+  c: Context,
+  workspaceId: string,
+): ReturnType<typeof verifyGitToken> | null {
   const token = bearer(c);
-  if (!token) return c.json({ error: "Unauthorized" }, 401);
-  let payload;
+  if (!token) return null;
+  let payload: ReturnType<typeof verifyGitToken>;
   try {
     payload = verifyGitToken(token);
   } catch (error) {
-    if (error instanceof GitTokenError) {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
+    if (error instanceof GitTokenError) return null;
     throw error;
   }
+  return payload.wsId === workspaceId ? payload : null;
+}
+
+appsBoxRoutes.post("/:workspaceId/events", async c => {
   const workspaceId = c.req.param("workspaceId");
-  if (payload.wsId !== workspaceId) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const payload = boxTokenFor(c, workspaceId);
+  if (!payload) return fail(c, 401, "Unauthorized");
 
   let body: unknown;
   try {
     body = await c.req.json();
   } catch {
-    return c.json({ error: "Expected a JSON body" }, 400);
+    return fail(c, 400, "Expected a JSON body");
   }
   const parsed = PatchSchema.safeParse(body);
   if (!parsed.success) {
-    return c.json({ error: "Bad patch", issues: parsed.error.issues }, 400);
+    return fail(c, 400, "Bad patch", { issues: parsed.error.issues });
   }
   const { source, ...patch } = parsed.data;
 
@@ -119,7 +129,7 @@ appsBoxRoutes.post("/:workspaceId/events", async c => {
       workspaceId,
       error: error instanceof Error ? error.message : String(error),
     });
-    return c.json({ error: "Could not record box state" }, 500);
+    return fail(c, 500, "Could not record box state");
   }
 });
 
@@ -137,39 +147,27 @@ appsBoxRoutes.post("/:workspaceId/events", async c => {
  * binding stores nothing either way; it is fresh on every read by design.
  */
 appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
-  const token = bearer(c);
-  if (!token) return c.json({ error: "Unauthorized" }, 401);
-  let payload;
-  try {
-    payload = verifyGitToken(token);
-  } catch (error) {
-    if (error instanceof GitTokenError) {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
-    throw error;
-  }
   const workspaceId = c.req.param("workspaceId");
-  if (payload.wsId !== workspaceId) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const payload = boxTokenFor(c, workspaceId);
+  if (!payload) return fail(c, 401, "Unauthorized");
 
   let body: { slug?: unknown; name?: unknown; persist?: unknown };
   try {
     body = (await c.req.json()) as typeof body;
   } catch {
-    return c.json({ error: "Expected a JSON body" }, 400);
+    return fail(c, 400, "Expected a JSON body");
   }
   const slug = typeof body.slug === "string" ? body.slug : "";
   const name = typeof body.name === "string" ? body.name : "";
   const persist = body.persist === true;
-  if (!slug || !name || !/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name)) {
-    return c.json({ error: "slug and a valid binding name are required" }, 400);
+  if (!slug || !name || !isValidBindingName(name)) {
+    return fail(c, 400, "slug and a valid binding name are required");
   }
 
   // `slug` is whatever the box's launcher knows the app by — its path, its
   // folder name or its id all resolve.
   const project = await resolveProjectRef(workspaceId, slug);
-  if (!project) return c.json({ error: "App not found" }, 404);
+  if (!project) return fail(c, 404, "App not found");
 
   // Guarded: a binding that cannot succeed must not be re-queried as fast as
   // a page can re-request it. See live-binding-guard.ts — 41 abandoned
@@ -232,27 +230,13 @@ appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
   try {
     built = await build();
   } catch (error) {
-    if (error instanceof LiveBindingCoolingDown) {
-      // 503 + Retry-After, not 502: the query was not attempted, and this is
-      // temporary by construction. Distinguishable in logs from a real failure.
-      return c.json(
-        {
-          error: `This binding failed ${error.failures} time(s) in a row and is not being re-run yet: ${error.message}`,
-          retryAfterMs: error.retryAfterMs,
-        },
-        503,
-        { "retry-after": String(Math.ceil(error.retryAfterMs / 1000)) },
-      );
-    }
-    logger.warn("Apps live binding failed", {
-      workspaceId,
-      slug,
-      name,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    const failure = liveBindingFailure(error, { workspaceId, slug, name });
     return c.json(
-      { error: error instanceof Error ? error.message : "Live query failed" },
-      502,
+      { success: false as const, ...failure.body },
+      failure.status,
+      failure.retryAfterMs !== undefined
+        ? { "retry-after": String(Math.ceil(failure.retryAfterMs / 1000)) }
+        : undefined,
     );
   }
 
@@ -271,18 +255,30 @@ appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
   });
 });
 
-/** The live-binding failure answers above, as a phase-stream outcome. */
+/**
+ * How a live-binding failure is answered — as the HTTP response above and as
+ * the phase stream's outcome.
+ */
 function liveBindingFailure(
   error: unknown,
   where: { workspaceId: string; slug: string; name: string },
-) {
+):
+  | {
+      status: 503;
+      body: { error: string; retryAfterMs: number };
+      retryAfterMs: number;
+    }
+  | { status: 502; body: { error: string }; retryAfterMs?: undefined } {
   if (error instanceof LiveBindingCoolingDown) {
+    // 503 + Retry-After, not 502: the query was not attempted, and this is
+    // temporary by construction. Distinguishable in logs from a real failure.
     return {
       status: 503,
       body: {
         error: `This binding failed ${error.failures} time(s) in a row and is not being re-run yet: ${error.message}`,
         retryAfterMs: error.retryAfterMs,
       },
+      retryAfterMs: error.retryAfterMs,
     };
   }
   logger.warn("Apps live binding failed", {

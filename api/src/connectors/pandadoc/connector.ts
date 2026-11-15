@@ -19,7 +19,19 @@ import {
 } from "../base/BaseConnector";
 import { resolvePandaDocEntitySchema } from "./schema";
 import { loggers } from "../../logging";
-import { withHttpRetry } from "../base/http-retry";
+import {
+  clampPageSize,
+  createRetryExecutor,
+  formatHttpApiError,
+  headerValue,
+  resolveConfiguredBaseUrl,
+} from "../base/http-client";
+import { filterRecordsSince } from "../base/incremental";
+import {
+  hmacHex,
+  rawWebhookBody,
+  timingSafeEqualHex,
+} from "../base/webhook-signature";
 
 const logger = loggers.connector("pandadoc");
 
@@ -118,34 +130,29 @@ function withId(
   return record;
 }
 
+function describePandaDocErrorBody(raw: unknown): string | undefined {
+  const data = raw as
+    | {
+        detail?: unknown;
+        message?: string;
+        type?: string;
+      }
+    | string
+    | undefined;
+
+  return typeof data === "string"
+    ? data
+    : typeof data?.message === "string"
+      ? data.message
+      : typeof data?.detail === "string"
+        ? data.detail
+        : data?.detail && typeof data.detail === "object"
+          ? JSON.stringify(data.detail)
+          : undefined;
+}
+
 function formatPandaDocApiError(error: unknown): string {
-  if (axios.isAxiosError(error)) {
-    const status = error.response?.status;
-    const data = error.response?.data as
-      | {
-          detail?: unknown;
-          message?: string;
-          type?: string;
-        }
-      | string
-      | undefined;
-
-    const direct =
-      typeof data === "string"
-        ? data
-        : typeof data?.message === "string"
-          ? data.message
-          : typeof data?.detail === "string"
-            ? data.detail
-            : data?.detail && typeof data.detail === "object"
-              ? JSON.stringify(data.detail)
-              : undefined;
-
-    const detail = direct || error.message;
-    return status ? `HTTP ${status}: ${detail}` : detail;
-  }
-
-  return error instanceof Error ? error.message : String(error);
+  return formatHttpApiError(error, describePandaDocErrorBody);
 }
 
 export class PandaDocConnector extends BaseConnector {
@@ -196,7 +203,7 @@ export class PandaDocConnector extends BaseConnector {
     const base = super.validateConfig();
     const errors = [...base.errors];
 
-    if (!this.dataSource.config.api_key) {
+    if (!this.sourceConnection.config.api_key) {
       errors.push("PandaDoc API key is required");
     }
 
@@ -204,23 +211,22 @@ export class PandaDocConnector extends BaseConnector {
   }
 
   private getBaseUrl(): string {
-    const configured = this.dataSource.config.api_base_url;
-    if (typeof configured === "string" && configured.trim().length > 0) {
-      return configured.trim().replace(/\/+$/, "");
-    }
-    return DEFAULT_BASE_URL;
+    return resolveConfiguredBaseUrl(
+      this.sourceConnection.config.api_base_url,
+      DEFAULT_BASE_URL,
+    );
   }
 
   private getClient(): AxiosInstance {
     if (!this.pandaDocApi) {
-      if (!this.dataSource.config.api_key) {
+      if (!this.sourceConnection.config.api_key) {
         throw new Error("PandaDoc API key not configured");
       }
 
       this.pandaDocApi = axios.create({
         baseURL: this.getBaseUrl(),
         headers: {
-          Authorization: `API-Key ${this.dataSource.config.api_key}`,
+          Authorization: `API-Key ${this.sourceConnection.config.api_key}`,
           "Content-Type": "application/json",
         },
       });
@@ -228,51 +234,16 @@ export class PandaDocConnector extends BaseConnector {
     return this.pandaDocApi;
   }
 
-  private headerValue(
-    headers: Record<string, string | string[] | undefined>,
-    name: string,
-  ): string | undefined {
-    const lower = name.toLowerCase();
-    for (const [key, value] of Object.entries(headers)) {
-      if (key.toLowerCase() !== lower) continue;
-      return Array.isArray(value) ? value[0] : value;
-    }
-    return undefined;
-  }
-
   /** Shared policy: backoff with jitter, Retry-After, 429/5xx/network. */
-  private async executeWithRetry<T>(
-    fn: () => Promise<T>,
-    maxRetries = 5,
-  ): Promise<T> {
-    try {
-      return await withHttpRetry(fn, {
-        maxRetries,
-        sleep: ms => this.sleep(ms),
-        onRetry: ({ status, attempt, delayMs }) =>
-          logger.warn("PandaDoc API rate limited or server error, retrying", {
-            status,
-            attempt,
-            delayMs,
-          }),
-      });
-    } catch (error) {
-      // Surface the API's own error body instead of the opaque "Request
-      // failed with status code 400"; keep it an axios error so callers can
-      // still inspect error.response.status.
-      if (axios.isAxiosError(error)) {
-        error.message = formatPandaDocApiError(error);
-      }
-      throw error;
-    }
-  }
+  private readonly executeWithRetry = createRetryExecutor({
+    label: "PandaDoc",
+    logger,
+    sleep: ms => this.sleep(ms),
+    formatError: formatPandaDocApiError,
+  });
 
   private resolvePageCount(batchSize?: number): number {
-    const requested =
-      typeof batchSize === "number" && batchSize > 0
-        ? batchSize
-        : this.getBatchSize();
-    return Math.min(Math.max(requested, 1), MAX_PAGE_LIMIT);
+    return clampPageSize(batchSize, this.getBatchSize(), MAX_PAGE_LIMIT);
   }
 
   /**
@@ -281,7 +252,7 @@ export class PandaDocConnector extends BaseConnector {
    * rate-limit-constrained workspaces.
    */
   private shouldFetchDocumentDetails(): boolean {
-    const configured = this.dataSource.config.fetch_document_details;
+    const configured = this.sourceConnection.config.fetch_document_details;
     return configured !== false && configured !== "false";
   }
 
@@ -475,14 +446,7 @@ export class PandaDocConnector extends BaseConnector {
       since instanceof Date &&
       (entity === "templates" || entity === "members")
     ) {
-      const sinceMs = since.getTime();
-      records = records.filter(item => {
-        const modified =
-          typeof item.date_modified === "string"
-            ? new Date(item.date_modified).getTime()
-            : NaN;
-        return Number.isFinite(modified) ? modified >= sinceMs : false;
-      });
+      records = filterRecordsSince(records, since, "date_modified");
     }
 
     return records;
@@ -733,26 +697,15 @@ export class PandaDocConnector extends BaseConnector {
     const querySignature = query?.signature;
     const signature =
       (Array.isArray(querySignature) ? querySignature[0] : querySignature) ||
-      this.headerValue(headers, "signature");
+      headerValue(headers, "signature");
 
     if (!signature || typeof signature !== "string") {
       return { valid: false, error: "Missing PandaDoc signature parameter" };
     }
 
     try {
-      const body =
-        typeof payload === "string" ? payload : JSON.stringify(payload);
-      const expected = crypto
-        .createHmac("sha256", secret)
-        .update(body, "utf8")
-        .digest("hex");
-
-      const expectedBuf = Buffer.from(expected, "hex");
-      const providedBuf = Buffer.from(signature, "hex");
-      if (
-        expectedBuf.length !== providedBuf.length ||
-        !crypto.timingSafeEqual(expectedBuf, providedBuf)
-      ) {
+      const body = rawWebhookBody(payload);
+      if (!timingSafeEqualHex(hmacHex(secret, body), signature)) {
         return { valid: false, error: "Invalid signature" };
       }
 

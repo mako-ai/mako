@@ -124,8 +124,10 @@ Follow the skill's "Performance" rules: filters and aggregation run in SQL
 (\`useDuckDB\`, one query per panel), never over a whole binding in JS.
 
 Before writing a binding that aggregates a business metric, call \`lookup_term\` and
-\`find_models\`: when a canonical dbt model exists, the binding reads it. Before joining
-two entities, call \`find_join_path\` and join on the columns it returns.`;
+\`find_models\`: when a canonical dbt model exists, the binding reads it; when the dbt
+project defines the number as a metric (\`list_metrics\`), the binding's SQL comes from
+\`compile_metric\`. Before joining two entities, call \`find_join_path\` and join on the
+columns it returns.`;
 
 export const WORKFLOW_MODE_SYSTEM_PROMPT = `## Workflow Mode
 
@@ -152,6 +154,8 @@ Before creating a model that computes a business metric or entity, call \`lookup
 registry's definition, canonical model.column, grain, known variants) and \`find_models\`
 (models that already hold the data; \`describe_model\` for columns, tests, lineage and
 readers). When a canonical model exists, extend it: never derive the metric again.
+A number people ask for by name belongs in the semantic layer (\`list_metrics\` shows
+what exists): the dbt skill's \`references/semantic-layer.md\` shows how to define one.
 \`model_readers\` lists the apps and bindings a column change would touch.
 Before joining two entities, call \`find_join_path\`: join on the columns it returns and
 heed its fan-out warnings.

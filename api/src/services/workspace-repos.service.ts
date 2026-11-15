@@ -40,12 +40,15 @@ export function isValidRepoSegment(value: string): boolean {
 export async function getWorkspaceRepo(
   workspaceId: string,
 ): Promise<IWorkspaceRepoBinding | null> {
-  const repos = await listWorkspaceRepos(workspaceId);
-  return repos[0] ?? null;
+  return (await storedBindings(workspaceId))[0] ?? null;
 }
 
-/** @deprecated §10 makes the repo singular — use getWorkspaceRepo. */
-export async function listWorkspaceRepos(
+/**
+ * Every stored binding. §10 allows one, but a pre-§10 document can hold
+ * several: connect/disconnect must see them all, and so must anything that
+ * lists them to the user (connect refuses while any other binding exists).
+ */
+export async function storedBindings(
   workspaceId: string,
 ): Promise<IWorkspaceRepoBinding[]> {
   const ws = await Workspace.findById(workspaceId)
@@ -108,7 +111,7 @@ export async function connectWorkspaceRepo(
   // §10: one repo per workspace. Re-connecting the SAME repo updates the
   // binding in place; connecting a different repo while one exists is
   // refused (disconnect first — a silent swap would orphan every app).
-  const existing = await listWorkspaceRepos(input.workspaceId);
+  const existing = await storedBindings(input.workspaceId);
   const other = existing.find(r => !(r.owner === owner && r.repo === repo));
   if (other) {
     throw new Error(
@@ -146,7 +149,7 @@ export async function disconnectWorkspaceRepo(
   repo: string,
   opts: { purge?: boolean } = {},
 ): Promise<void> {
-  const existing = await listWorkspaceRepos(workspaceId);
+  const existing = await storedBindings(workspaceId);
   const next = existing.filter(r => !(r.owner === owner && r.repo === repo));
   // A typo must not look like success: do not purge, and do not rewrite
   // workspaceRepos / appsRepo, until we know this binding is the one leaving.

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { Snackbar } from "@mui/material";
+import { useEffect, useRef } from "react";
 import { useUIStore } from "../store/uiStore";
+import { notify } from "../store/notificationStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { appUrlSlug, useAppsStore } from "../store/appsStore";
 import { resolveAppRef } from "../lib/apps-explorer-tree";
@@ -46,9 +46,6 @@ import {
  *    unnecessary re-renders.
  */
 export function UrlSync() {
-  // Dead-link feedback: a URL that no longer resolves (deleted app) used to
-  // silently rewrite to "/" — the page just "lost" what the user asked for.
-  const [deadLinkNotice, setDeadLinkNotice] = useState<string | null>(null);
   const { currentWorkspace } = useWorkspace();
   const { user } = useAuth();
   const loadConsole = useConsoleStore(state => state.loadConsole);
@@ -398,14 +395,14 @@ export function UrlSync() {
     }
   }, [activeTabPath, activeView, user]);
 
-  // Renders nothing except the dead-link notice.
-  return (
-    <Snackbar
-      open={deadLinkNotice !== null}
-      autoHideDuration={6000}
-      onClose={() => setDeadLinkNotice(null)}
-      message={deadLinkNotice ?? ""}
-      anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-    />
-  );
+  return null;
+}
+
+// Dead-link feedback: a URL that no longer resolves (deleted app) used to
+// silently rewrite to "/" — the page just "lost" what the user asked for.
+function setDeadLinkNotice(message: string) {
+  notify.message(message, {
+    autoHideDuration: 6000,
+    anchorOrigin: { vertical: "bottom", horizontal: "center" },
+  });
 }

@@ -48,7 +48,7 @@ vi.mock("../../inngest/client", () => ({
 
 import {
   CdcEntityState,
-  Connector,
+  SourceConnection,
   DatabaseConnection,
   Flow,
 } from "../../database/workspace-schema";
@@ -152,10 +152,10 @@ beforeEach(async () => {
   await Promise.all([
     Flow.deleteMany({}),
     CdcEntityState.deleteMany({}),
-    Connector.deleteMany({}),
+    SourceConnection.deleteMany({}),
     DatabaseConnection.deleteMany({}),
   ]);
-  await Connector.create({
+  await SourceConnection.create({
     _id: CONNECTOR,
     workspaceId: WS,
     name: "Close",

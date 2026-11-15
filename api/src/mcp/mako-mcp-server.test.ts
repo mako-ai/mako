@@ -397,6 +397,9 @@ async function main() {
       "lookup_term",
       "model_readers",
       "find_join_path",
+      "list_metrics",
+      "compile_metric",
+      "query_metric",
     ]) {
       assert.equal(
         byName.get(readOnlyTool)?.annotations?.readOnlyHint,
@@ -455,6 +458,11 @@ async function main() {
       "lookup_term",
       "model_readers",
       "find_join_path",
+      // Semantic layer: listing and compiling are metadata only; running a
+      // metric is a read-only query, bridged for every query:read key.
+      "list_metrics",
+      "compile_metric",
+      "query_metric",
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }
@@ -624,6 +632,8 @@ async function main() {
       "lookup_term",
       "model_readers",
       "find_join_path",
+      "list_metrics",
+      "compile_metric",
     ]) {
       assert.ok(names.has(lookup), `${lookup} must be open to a viewer`);
     }
@@ -1091,6 +1101,18 @@ async function main() {
       false,
       "dbt run output must stay hidden without query:read",
     );
+    // Running a metric is a warehouse query; listing and compiling are not.
+    assert.equal(
+      tools.some(tool => tool.name === "query_metric"),
+      false,
+      "query_metric must stay hidden without query:read",
+    );
+    for (const metadataTool of ["list_metrics", "compile_metric"]) {
+      assert.ok(
+        tools.some(tool => tool.name === metadataTool),
+        `${metadataTool} reads metadata only: open without query:read`,
+      );
+    }
     // Warehouse-executing tools from the other migrated domains carry the
     // same query envelope.
     for (const queryTool of ["run_notebook_sql_cell", "materialize_binding"]) {

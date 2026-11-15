@@ -48,7 +48,7 @@ import { isSecretField } from "../../connectors/source-connection-create.service
 import { listWorkspaceConnectors } from "../../connectors/workspace/catalog";
 import { isWorkspaceConnectorType } from "../../connectors/workspace/SandboxedConnector";
 import {
-  Connector as SourceConnection,
+  SourceConnection,
   DatabaseConnection,
   type IConnectionWriter,
   type ISourceConnectionKeyRequest,

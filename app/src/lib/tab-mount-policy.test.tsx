@@ -182,16 +182,19 @@ describe("useMountedTabs in a tab panel list", () => {
 });
 
 describe("Editor gates every tab panel through the mount policy", () => {
-  const src = readFileSync(
-    path.join(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "../components/Editor.tsx",
-    ),
-    "utf8",
-  );
+  const read = (rel: string) =>
+    readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), rel),
+      "utf8",
+    );
+  const editorSrc = read("../components/Editor.tsx");
+  // The per-tab panel list (gate + kind switch) lives in editor/.
+  const src = read("../components/editor/EditorTabPanels.tsx");
 
   it("computes the mounted list from the active tab", () => {
-    expect(src).toMatch(/useMountedTabs\(consoleTabs, \[activeConsoleId\]\)/);
+    expect(editorSrc).toMatch(
+      /useMountedTabs\(consoleTabs, \[activeConsoleId\]\)/,
+    );
   });
 
   it("renders nothing for an unmounted tab before any kind branch", () => {

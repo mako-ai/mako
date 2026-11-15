@@ -8,7 +8,8 @@ import {
   UpsertOptions,
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
-import { databaseConnectionService } from "../../../services/database-connection.service";
+import { executeCheckedQuery } from "../../checked-query";
+import type { QueryExecuteOptions, QueryResult } from "../../query-types";
 import { loggers } from "../../../logging";
 import {
   buildCreateTableSql,
@@ -123,12 +124,10 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
       };
 
       const tables = (result.data as TableRow[])
-        .map(
-          (row): MappedTable => ({
-            tableName: row.table_name ?? row.TABLE_NAME,
-            tableType: row.table_type ?? row.TABLE_TYPE,
-          }),
-        )
+        .map((row): MappedTable => ({
+          tableName: row.table_name ?? row.TABLE_NAME,
+          tableType: row.table_type ?? row.TABLE_TYPE,
+        }))
         .filter(
           (row): row is MappedTable & { tableName: string } => !!row.tableName,
         );
@@ -174,12 +173,10 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
       };
 
       const columns = (result.data as ColumnRow[])
-        .map(
-          (row): MappedColumn => ({
-            columnName: row.column_name ?? row.COLUMN_NAME,
-            dataType: row.data_type ?? row.DATA_TYPE,
-          }),
-        )
+        .map((row): MappedColumn => ({
+          columnName: row.column_name ?? row.COLUMN_NAME,
+          dataType: row.data_type ?? row.DATA_TYPE,
+        }))
         .filter(
           (row): row is MappedColumn & { columnName: string } =>
             !!row.columnName,
@@ -258,9 +255,9 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
   async executeQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: { databaseName?: string; databaseId?: string },
-  ) {
-    return databaseConnectionService.executeQuery(database, query, options);
+    options?: QueryExecuteOptions,
+  ): Promise<QueryResult> {
+    return executeCheckedQuery(database, query, options);
   }
 
   // ============ Write capabilities (destination sync + CDC adapter) ============
@@ -591,9 +588,7 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
       // Racing writers can both attempt creation; duplicates are fine.
       const message = created.error || "";
       if (!/duplicate key name/i.test(message)) {
-        throw new Error(
-          message || "Failed to create MySQL unique key index",
-        );
+        throw new Error(message || "Failed to create MySQL unique key index");
       }
     }
   }

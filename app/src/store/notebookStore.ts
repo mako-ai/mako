@@ -1,9 +1,8 @@
 import { create } from "zustand";
 
-import { apiClient } from "../lib/api-client";
-import { ApiError } from "../api/result";
+import { api, ApiError, unwrapBody } from "../api";
 import type { KernelOutput } from "../notebook-runtime/kernel";
-import { useUIStore } from "./uiStore";
+import { getCurrentWorkspaceId } from "./workspaceStore";
 import { realtimeClientId } from "../lib/realtime-client-id";
 import { useNotebookTreeStore } from "./notebookTreeStore";
 import { onRealtimeEvent } from "./lib/realtime-channel";
@@ -59,18 +58,7 @@ export interface NotebookSummary {
 
 export type NotebookSaveState = "idle" | "saving" | "saved" | "error";
 
-/** A prior generation of a notebook, for the history panel. Mirrors the API's
- * `NotebookVersion`; `versionId` is opaque (passed back to restore). */
-export interface NotebookVersion {
-  versionId: string;
-  createdAt: string;
-  size: number;
-  isCurrent: boolean;
-}
-
-function currentWorkspaceId(): string | null {
-  return useUIStore.getState().currentWorkspaceId ?? null;
-}
+const currentWorkspaceId = getCurrentWorkspaceId;
 
 function makeBlock(type: NotebookBlockType): NotebookBlock {
   return { id: crypto.randomUUID(), type, source: "" };
@@ -106,6 +94,13 @@ interface NotebookStore {
   ) => Promise<NotebookDoc | null>;
 
   // -- open-notebook editing (editor + agent + collab share these) ----------
+  /** An offloaded kernel output payload (text/plain or text/html) as text;
+   * throws on failure. */
+  fetchArtifactText: (
+    workspaceId: string,
+    notebookId: string,
+    artifactId: string,
+  ) => Promise<string>;
   /** Load a notebook into editable open state (no-op if already open). */
   openNotebook: (id: string) => Promise<void>;
   renameOpenNotebook: (id: string, name: string) => void;
@@ -127,10 +122,6 @@ interface NotebookStore {
   clearCellOutputs: (id: string, cellId: string) => void;
   /** Pull a fresh copy of an open notebook (realtime poke-then-pull). */
   reloadOpenNotebook: (id: string) => Promise<void>;
-  /** List prior generations of a notebook (newest first). */
-  listVersions: (id: string) => Promise<NotebookVersion[]>;
-  /** Restore a prior generation as the new current; updates the open editor. */
-  restoreVersion: (id: string, versionId: string) => Promise<boolean>;
   /** Create a notebook from imported blocks (e.g. an uploaded .ipynb). */
   importNotebook: (
     name: string,
@@ -218,6 +209,17 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
     openNotebooks: {},
     saveState: {},
 
+    fetchArtifactText: async (workspaceId, notebookId, artifactId) =>
+      unwrapBody(
+        await api.GET(
+          "/api/workspaces/{workspaceId}/notebooks/{id}/artifacts/{artifactId}",
+          {
+            params: { path: { workspaceId, id: notebookId, artifactId } },
+            parseAs: "text",
+          },
+        ),
+      ) as string,
+
     loadNotebooks: async () => {
       const ws = currentWorkspaceId();
       if (!ws) return;
@@ -228,10 +230,12 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
       const ws = currentWorkspaceId();
       if (!ws) return null;
       try {
-        const res = await apiClient.post<{ data: NotebookDoc }>(
-          `/workspaces/${ws}/notebooks`,
-          { name, clientId: realtimeClientId },
-        );
+        const res = unwrapBody(
+          await api.POST("/api/workspaces/{workspaceId}/notebooks", {
+            params: { path: { workspaceId: ws } },
+            body: { name, clientId: realtimeClientId },
+          }),
+        ) as { data?: NotebookDoc };
         await get().loadNotebooks();
         return res.data ?? null;
       } catch (e) {
@@ -246,9 +250,11 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
       const ws = currentWorkspaceId();
       if (!ws) return null;
       try {
-        const res = await apiClient.get<{ data: NotebookDoc }>(
-          `/workspaces/${ws}/notebooks/${id}`,
-        );
+        const res = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/notebooks/{id}", {
+            params: { path: { workspaceId: ws, id } },
+          }),
+        ) as { data?: NotebookDoc };
         return res.data ?? null;
       } catch {
         return null;
@@ -259,7 +265,11 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
       const ws = currentWorkspaceId();
       if (!ws) return;
       try {
-        await apiClient.delete(`/workspaces/${ws}/notebooks/${id}`);
+        unwrapBody(
+          await api.DELETE("/api/workspaces/{workspaceId}/notebooks/{id}", {
+            params: { path: { workspaceId: ws, id } },
+          }),
+        );
         await get().loadNotebooks();
       } catch (e) {
         set({
@@ -272,10 +282,12 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
       const ws = currentWorkspaceId();
       if (!ws) return null;
       try {
-        const res = await apiClient.patch<{ data: NotebookDoc }>(
-          `/workspaces/${ws}/notebooks/${id}`,
-          { ...patch, clientId: realtimeClientId, expectedVersion },
-        );
+        const res = unwrapBody(
+          await api.PATCH("/api/workspaces/{workspaceId}/notebooks/{id}", {
+            params: { path: { workspaceId: ws, id } },
+            body: { ...patch, clientId: realtimeClientId, expectedVersion },
+          }),
+        ) as { data?: NotebookDoc };
         const doc = res.data ?? null;
         if (doc) {
           // Keep any local edits made while this request was in flight, but
@@ -362,58 +374,6 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
         created.version,
       );
       return updated ?? created;
-    },
-
-    listVersions: async id => {
-      const ws = currentWorkspaceId();
-      if (!ws) return [];
-      try {
-        const res = await apiClient.get<{ data: NotebookVersion[] }>(
-          `/workspaces/${ws}/notebooks/${id}/versions`,
-        );
-        return res.data ?? [];
-      } catch {
-        return [];
-      }
-    },
-
-    restoreVersion: async (id, versionId) => {
-      const ws = currentWorkspaceId();
-      if (!ws) return false;
-      // Restore discards the current working state, so cancel any pending
-      // autosave that would otherwise re-persist the pre-restore blocks.
-      const timer = saveTimers.get(id);
-      if (timer) {
-        clearTimeout(timer);
-        saveTimers.delete(id);
-      }
-      saveNamePending.delete(id);
-      queuedSaves.delete(id);
-      // Invalidate any save already in flight so its completion cannot replace
-      // the restore's idle state with a stale success/error result.
-      saveRevisions.set(id, (saveRevisions.get(id) ?? 0) + 1);
-      try {
-        const res = await apiClient.post<{ data: NotebookDoc }>(
-          `/workspaces/${ws}/notebooks/${id}/versions/${versionId}/restore`,
-          { clientId: realtimeClientId },
-        );
-        const doc = res.data;
-        if (!doc) return false;
-        // Reflect the restored doc immediately if the notebook is open.
-        set(s =>
-          s.openNotebooks[id]
-            ? {
-                openNotebooks: { ...s.openNotebooks, [id]: doc },
-                saveState: { ...s.saveState, [id]: "idle" },
-                error: null,
-              }
-            : {},
-        );
-        void get().loadNotebooks(); // refresh explorer updatedAt
-        return true;
-      } catch {
-        return false;
-      }
     },
 
     renameOpenNotebook: (id, name) =>

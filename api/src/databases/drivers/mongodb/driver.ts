@@ -4,7 +4,9 @@ import {
   DatabaseTreeNode,
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
-import { databaseConnectionService } from "../../../services/database-connection.service";
+import { executeCheckedQuery } from "../../checked-query";
+import type { QueryExecuteOptions, QueryResult } from "../../query-types";
+import { mongoEngine } from "./engine";
 import { loggers } from "../../../logging";
 
 const logger = loggers.db("mongodb");
@@ -65,7 +67,7 @@ export class MongoDatabaseDriver implements DatabaseDriver {
 
     // Cluster Mode: List all databases
     try {
-      const client = await databaseConnectionService.getConnection(database);
+      const client = await mongoEngine.getConnection(database);
       const adminDb = client.db("admin");
       const result = await adminDb.admin().listDatabases();
 
@@ -128,7 +130,7 @@ export class MongoDatabaseDriver implements DatabaseDriver {
     const isViews = parent.id === "views" || parent.id.startsWith("views::");
 
     if (isCollections) {
-      const client = await databaseConnectionService.getConnection(database);
+      const client = await mongoEngine.getConnection(database);
       const db = client.db(targetDbName);
       const collections = await db
         .listCollections({ type: { $ne: "view" } })
@@ -146,7 +148,7 @@ export class MongoDatabaseDriver implements DatabaseDriver {
     }
 
     if (isViews) {
-      const client = await databaseConnectionService.getConnection(database);
+      const client = await mongoEngine.getConnection(database);
       const db = client.db(targetDbName);
       const views = await db.listCollections({ type: "view" }).toArray();
       return views
@@ -168,7 +170,7 @@ export class MongoDatabaseDriver implements DatabaseDriver {
   ): Promise<
     Record<string, Record<string, Array<{ name: string; type: string }>>>
   > {
-    const client = await databaseConnectionService.getConnection(database);
+    const client = await mongoEngine.getConnection(database);
     const schema: Record<
       string,
       Record<string, Array<{ name: string; type: string }>>
@@ -239,8 +241,8 @@ export class MongoDatabaseDriver implements DatabaseDriver {
   async executeQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: any,
-  ) {
-    return databaseConnectionService.executeQuery(database, query, options);
+    options?: QueryExecuteOptions,
+  ): Promise<QueryResult> {
+    return executeCheckedQuery(database, query, options);
   }
 }

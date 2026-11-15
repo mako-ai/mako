@@ -11,6 +11,7 @@ import {
 import axios, { AxiosInstance } from "axios";
 import { resolvePosthogEntitySchema } from "./schema";
 import { withHttpRetry } from "../base/http-retry";
+import { filterRecordsSince } from "../base/incremental";
 import { loggers } from "../../logging";
 
 const logger = loggers.connector("posthog");
@@ -150,10 +151,10 @@ export class PosthogConnector extends BaseConnector {
     const base = super.validateConfig();
     const errors = [...base.errors];
 
-    if (!this.dataSource.config.project_id) {
+    if (!this.sourceConnection.config.project_id) {
       errors.push("PostHog project_id is required");
     }
-    if (!this.dataSource.config.api_key) {
+    if (!this.sourceConnection.config.api_key) {
       errors.push("PostHog api_key is required");
     }
     // Note: queries are now configured at the Transfer level, not Connector level
@@ -165,13 +166,14 @@ export class PosthogConnector extends BaseConnector {
   private getHttpClient(): AxiosInstance {
     if (!this.httpClient) {
       const baseURL =
-        this.dataSource.config.api_base_url || "https://app.posthog.com";
+        this.sourceConnection.config.api_base_url || "https://app.posthog.com";
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       };
 
-      const authType = this.dataSource.config.auth_type || "personal_api_key";
-      const apiKey = this.dataSource.config.api_key as string;
+      const authType =
+        this.sourceConnection.config.auth_type || "personal_api_key";
+      const apiKey = this.sourceConnection.config.api_key as string;
       if (authType === "project_api_key") {
         headers["POSTHOG-API-TOKEN"] = apiKey;
       } else {
@@ -184,7 +186,7 @@ export class PosthogConnector extends BaseConnector {
   }
 
   private getProjectId(): string {
-    return String(this.dataSource.config.project_id);
+    return String(this.sourceConnection.config.project_id);
   }
 
   async testConnection(): Promise<ConnectionTestResult> {
@@ -225,7 +227,7 @@ export class PosthogConnector extends BaseConnector {
   }
 
   private getQueryEntityNames(): string[] {
-    const list = this.dataSource.config.queries || [];
+    const list = this.sourceConnection.config.queries || [];
     return list
       .filter((q: { name?: unknown; query?: unknown }) => {
         const nameOk = typeof q?.name === "string" && q.name.trim().length > 0;
@@ -356,7 +358,7 @@ export class PosthogConnector extends BaseConnector {
         `/api/projects/${this.getProjectId()}/${path}/`,
         {
           params: { limit: options.limit, offset: options.offset },
-          timeout: this.dataSource.settings?.timeout_ms || 30000,
+          timeout: this.sourceConnection.settings?.timeout_ms || 30000,
         },
       ),
     );
@@ -402,14 +404,7 @@ export class PosthogConnector extends BaseConnector {
       // filter on created_at only (misses later edits — declared as
       // created-anchor).
       if (since instanceof Date) {
-        const sinceMs = since.getTime();
-        records = records.filter(record => {
-          const created =
-            typeof record.created_at === "string"
-              ? new Date(record.created_at).getTime()
-              : NaN;
-          return Number.isFinite(created) ? created >= sinceMs : false;
-        });
+        records = filterRecordsSince(records, since, "created_at");
       }
 
       if (records.length > 0) {
@@ -465,7 +460,7 @@ export class PosthogConnector extends BaseConnector {
         `/api/projects/${this.getProjectId()}/surveys/${options.surveyId}/responses/`,
         {
           params,
-          timeout: this.dataSource.settings?.timeout_ms || 30000,
+          timeout: this.sourceConnection.settings?.timeout_ms || 30000,
         },
       ),
     );
@@ -696,7 +691,7 @@ export class PosthogConnector extends BaseConnector {
   private getQueryConfig(
     name: string,
   ): { name: string; query: string; batch_size?: number } | undefined {
-    const queries = this.dataSource.config.queries || [];
+    const queries = this.sourceConnection.config.queries || [];
     const found = queries.find((q: { name?: string }) => q.name === name);
     if (!found) return undefined;
     return {
@@ -761,7 +756,7 @@ export class PosthogConnector extends BaseConnector {
     };
 
     const res = await client.post(`/api/projects/${projectId}/query/`, body, {
-      timeout: this.dataSource.settings?.timeout_ms || 30000,
+      timeout: this.sourceConnection.settings?.timeout_ms || 30000,
     });
     return res.data;
   }
@@ -801,7 +796,7 @@ export class PosthogConnector extends BaseConnector {
    */
   private async executeWithRetry<T>(operation: () => Promise<T>): Promise<T> {
     return withHttpRetry(operation, {
-      maxRetries: this.dataSource.settings?.max_retries || 3,
+      maxRetries: this.sourceConnection.settings?.max_retries || 3,
       baseDelayMs: 1_000,
       sleep: ms => this.sleep(ms),
       onRetry: ({ status, attempt, delayMs }) =>

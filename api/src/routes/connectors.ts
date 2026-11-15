@@ -22,6 +22,7 @@ import {
   jsonContent,
   successEnvelope,
 } from "../openapi/core";
+import { fail, failFromThrown } from "./lib/respond";
 
 /**
  * Connector catalog (code) endpoints. Intentionally public (no authentication)
@@ -228,13 +229,7 @@ connectorRoutes.openapi(
         200,
       );
     } catch (error) {
-      return c.json(
-        {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Unknown error");
     }
   },
 );
@@ -270,7 +265,7 @@ connectorRoutes.openapi(
       // connector by a given name.
       const workspaceId = await memberWorkspaceId(c);
       if (!workspaceId) {
-        return c.json({ success: false, error: "Connector not found" }, 404);
+        return fail(c, 404, "Connector not found");
       }
       try {
         const form = await workspaceConnectorForm(workspaceId, type);
@@ -282,20 +277,17 @@ connectorRoutes.openapi(
           200,
         );
       } catch (error) {
-        return c.json(
-          {
-            success: false,
-            error:
-              error instanceof Error ? error.message : "Connector not found",
-          },
+        return fail(
+          c,
           404,
+          error instanceof Error ? error.message : "Connector not found",
         );
       }
     }
 
     const metadata = connectorRegistry.getMetadata(type);
     if (!metadata) {
-      return c.json({ success: false, error: "Connector not found" }, 404);
+      return fail(c, 404, "Connector not found");
     }
 
     const connectorClass = metadata.connector as {
@@ -303,10 +295,7 @@ connectorRoutes.openapi(
     };
     const schema = connectorClass.getConfigSchema?.();
     if (!schema) {
-      return c.json(
-        { success: false, error: "Schema not defined for connector" },
-        404,
-      );
+      return fail(c, 404, "Schema not defined for connector");
     }
 
     return c.json(
@@ -381,7 +370,7 @@ connectorRoutes.openapi(
     // name. Without this, `..%2f..%2fsomething` reads an icon.svg from
     // anywhere on the filesystem the process can reach.
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(type)) {
-      return c.json({ success: false, error: "Icon not found" }, 404);
+      return fail(c, 404, "Icon not found");
     }
 
     let iconPath = path.resolve(
@@ -402,7 +391,7 @@ connectorRoutes.openapi(
     }
 
     if (!fs.existsSync(iconPath)) {
-      return c.json({ success: false, error: "Icon not found" }, 404);
+      return fail(c, 404, "Icon not found");
     }
 
     const stat = fs.statSync(iconPath);

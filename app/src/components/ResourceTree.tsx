@@ -1,5 +1,4 @@
 import React, {
-  type ReactNode,
   forwardRef,
   useCallback,
   useEffect,
@@ -8,245 +7,83 @@ import React, {
   useRef,
   useState,
 } from "react";
-import {
-  Box,
-  Divider,
-  List,
-  ListItemButton,
-  ListItemIcon,
-  ListItemText as MuiListItemText,
-  Menu,
-  MenuItem,
-  Skeleton,
-  Typography,
-} from "@mui/material";
-import {
-  ArrowRightLeft,
-  ChevronDown,
-  ChevronRight,
-  Copy,
-  Folder,
-  FolderOpen,
-  FolderPlus,
-  Info,
-  Pencil,
-  Trash2,
-} from "lucide-react";
+import { Box } from "@mui/material";
+import { Folder } from "lucide-react";
 import {
   DndContext,
   DragOverlay,
   closestCenter,
   pointerWithin,
   type CollisionDetection,
-  type DragEndEvent,
-  type DragOverEvent,
-  type DragStartEvent,
 } from "@dnd-kit/core";
 import { filterTree } from "../store/lib/tree-helpers";
 import { useDragSensors } from "../hooks/useDragSensors";
-import {
-  DraggableFolderScope,
-  DraggableTreeItem,
-  DroppableFolderContent,
-  SectionScope,
-} from "./resource-tree/dnd";
 import { useIsMobile } from "../hooks/useIsMobile";
-
-// Pixel height of a single tree row. Used to stack sticky folder/section
-// headers so each ancestor pins one row below its parent as the user scrolls.
-// Keep this in sync with the `minHeight` / vertical padding set in
-// `buildRowSx` and on section headers.
-const ROW_HEIGHT = 24;
-
-// Width of the leading chevron / icon column. Used for both the folder
-// chevron and (when `hideFolderIcon` is on) the file icon so they line up
-// vertically across sibling rows.
-const ICON_COL_WIDTH = 20;
 import {
+  findAncestorPaths,
   findNodeInSections,
-  getFolderDropTargetId,
-  isSidebarRowActive,
-  resolveTreeDropTarget,
+  flattenVisibleNodeIds,
 } from "./resource-tree/utils";
+import { useTreeDnd } from "./resource-tree/useTreeDnd";
+import { flattenTreeRows, type FlatRow } from "./resource-tree/flatten";
+import { TreeRowProvider, type TreeRowConfig } from "./resource-tree/TreeRows";
+import {
+  NodeContextMenu,
+  SectionContextMenu,
+  type NodeMenuState,
+  type SectionMenuState,
+} from "./resource-tree/TreeContextMenus";
+import { useTreeKeyboard } from "./resource-tree/useTreeKeyboard";
+import {
+  VirtualTreeList,
+  type VirtualTreeListHandle,
+} from "./resource-tree/VirtualTreeList";
+import type {
+  ResourceTreeNode,
+  ResourceTreeProps,
+  ResourceTreeRef,
+} from "./resource-tree/types";
 import {
   onRenderDebug,
   useRenderCount,
   useWhyChanged,
 } from "../utils/renderDebug";
 
-export interface ResourceTreeNode {
-  id: string;
-  name: string;
-  path: string;
-  isDirectory: boolean;
-  entityType?: string;
-  children?: ResourceTreeNode[];
-  access?: "private" | "workspace";
-  owner_id?: string;
-  readOnly?: boolean;
-}
+export type {
+  CreatedFolderResult,
+  ResourceTreeNode,
+  ResourceTreeProps,
+  ResourceTreeRef,
+  ResourceTreeSection,
+} from "./resource-tree/types";
 
-export interface ResourceTreeSection {
-  key: string;
-  label: string;
-  icon?: ReactNode;
-  nodes: ResourceTreeNode[];
-  droppableId?: string;
-  defaultAccess?: "private" | "workspace";
-  /**
-   * When true, skip rendering the section header row entirely. Useful for
-   * explorers that have only one implicit section (e.g. Databases, Flows,
-   * Sources) and don't want a visible group label.
-   */
-  hideSectionHeader?: boolean;
-}
+// Pixel height of a single tree row. Used to stack sticky folder/section
+// headers so each ancestor pins one row below its parent as the user scrolls.
+// Keep this in sync with the `minHeight` / vertical padding set on the rows
+// (resource-tree/TreeRows.tsx).
+const ROW_HEIGHT = 24;
 
-export interface CreatedFolderResult {
-  id: string;
-  name: string;
-}
-
-export interface ResourceTreeRef {
-  createFolder: (parentId: string | null, access?: string) => Promise<void>;
-}
-
-export interface ResourceTreeProps {
-  sections: ResourceTreeSection[];
-  mode?: "sidebar" | "picker";
-  activeItemId?: string | null;
-  searchQuery?: string;
-
-  /**
-   * Reveal request: the id of a node to expand-to and scroll into view. Pair
-   * it with `revealNonce` — the reveal runs whenever the nonce changes (so the
-   * same node can be revealed repeatedly, e.g. re-clicking a breadcrumb). The
-   * tree expands every ancestor folder, then scrolls the row into view,
-   * retrying briefly to accommodate lazily-loaded children (e.g. app files).
-   */
-  revealNodeId?: string | null;
-  revealNonce?: number;
-
-  getItemIcon?: (
-    node: ResourceTreeNode,
-    ctx?: { isExpanded: boolean },
-  ) => ReactNode;
-  /**
-   * Optional trailing adornment rendered at the right edge of a row. Used for
-   * status letters, badges, or secondary glyphs (e.g. Flows status, Consoles
-   * read-only eye).
-   */
-  getRightAdornment?: (node: ResourceTreeNode) => ReactNode;
-  /**
-   * When a folder is expanded and its `children` array is `undefined`, this
-   * fires so the caller can lazily fetch children. Not called again while
-   * children are being loaded (`isLoadingChildren` returning true).
-   */
-  onLoadChildren?: (node: ResourceTreeNode) => void;
-  /**
-   * When true for an expanded folder, the tree renders a compact skeleton row
-   * in place of its children.
-   */
-  isLoadingChildren?: (node: ResourceTreeNode) => boolean;
-  /**
-   * When provided and returns a non-null array, replaces the default
-   * rename/duplicate/delete/info/move context menu entries for that node.
-   * Items should be `<MenuItem>` elements (or `null`). Call `helpers.closeMenu`
-   * from within each MenuItem's onClick to dismiss the menu after an action.
-   */
-  getContextMenuItems?: (
-    node: ResourceTreeNode,
-    helpers: { closeMenu: () => void },
-  ) => ReactNode[] | null;
-  /**
-   * The same override for a SECTION header's menu. When it returns a non-null
-   * array those items replace the default "New Folder" entry — for an explorer
-   * whose sections ARE its folders, so rename/delete belong on the header.
-   */
-  getSectionContextMenuItems?: (
-    sectionKey: string,
-    helpers: { closeMenu: () => void },
-  ) => ReactNode[] | null;
-  /**
-   * Fires when a row is dropped on a section header, BEFORE the normal
-   * move/access handling. Return `true` to claim the drop and stop there —
-   * for sections that are a grouping of their own rather than an access
-   * bucket (Starred, a real folder tree).
-   */
-  onSectionDrop?: (sectionKey: string, nodeId: string) => boolean | void;
-  showFiles?: boolean;
-  /**
-   * When true, folder rows render only a chevron + name (no folder icon), and
-   * file rows drop the hidden chevron placeholder so their icon sits in the
-   * chevron column. Produces a Cursor-style compact tree.
-   */
-  hideFolderIcon?: boolean;
-
-  enableDragDrop?: boolean;
-  enableRename?: boolean;
-  enableDuplicate?: boolean;
-  enableDelete?: boolean;
-  enableMove?: boolean;
-  enableInfo?: boolean;
-  enableNewFolder?: boolean;
-
-  onItemClick?: (node: ResourceTreeNode) => void;
-  /**
-   * Opt-in: when this returns true for a directory node, clicking the row
-   * (name/icon area) fires `onItemClick` instead of toggling expansion. The
-   * caret — and anything left of it (the indent) — still expands/collapses.
-   * Used by the database explorer so clicking a table name opens its data
-   * while the caret browses the schema, and by the apps explorer so clicking
-   * an app name opens the app while the caret browses its files.
-   */
-  shouldFolderClickActivate?: (node: ResourceTreeNode) => boolean;
-  onPickerFileClick?: (node: ResourceTreeNode) => void;
-  onLocationChange?: (folderId: string | null, sectionKey: string) => void;
-  selectedLocationId?: string | null;
-  selectedSectionKey?: string;
-  initialFolderId?: string | null;
-  initialSectionKey?: string;
-
-  onMoveItem?: (
-    itemId: string,
-    targetFolderId: string | null,
-    access?: string,
-  ) => void;
-  onMoveFolder?: (
-    folderId: string,
-    parentId: string | null,
-    access?: string,
-  ) => void;
-  onRenameItem?: (id: string, name: string, isDirectory: boolean) => void;
-  /**
-   * What the inline rename box starts from, when it is not the row's
-   * displayed name — an app row shows its TITLE but renames its folder
-   * (slug). Defaults to `node.name`; the commit compares against the seed,
-   * so an unchanged value is a resort, not a rename.
-   */
-  getRenameSeed?: (node: ResourceTreeNode) => string;
-  onDeleteItem?: (node: ResourceTreeNode) => void;
-  onDuplicateItem?: (node: ResourceTreeNode) => void;
-  onCreateFolder?: (
-    parentId: string | null,
-    access?: string,
-  ) => Promise<CreatedFolderResult | null>;
-  onInfoRequest?: (node: ResourceTreeNode) => void;
-  onFolderInfoRequest?: (node: ResourceTreeNode) => void;
-  onMoveRequest?: (node: ResourceTreeNode) => void;
-  onResortItem?: (id: string) => void;
-  onUndo?: () => void;
-
-  isFolderExpanded: (expansionKey: string) => boolean;
-  onToggleFolder: (expansionKey: string) => void;
-  onExpandFolder: (expansionKey: string) => void;
-  getFolderExpansionKey?: (node: ResourceTreeNode) => string;
-
-  canManageItem?: (node: ResourceTreeNode) => boolean;
-}
+// Width of the leading chevron / icon column. Used for both the folder
+// chevron and (when `hideFolderIcon` is on) the file icon so they line up
+// vertically across sibling rows.
+const ICON_COL_WIDTH = 20;
 
 const collisionDetectionStrategy: CollisionDetection = args => {
   const pointerCollisions = pointerWithin(args);
   return pointerCollisions.length > 0 ? pointerCollisions : closestCenter(args);
+};
+
+const RENAME_INPUT_STYLE: React.CSSProperties = {
+  width: "100%",
+  border: "1px solid",
+  borderColor: "var(--mui-palette-divider, #ccc)",
+  borderRadius: 4,
+  padding: "1px 4px",
+  outline: "none",
+  background: "transparent",
+  color: "inherit",
+  fontSize: "0.8125rem",
+  fontFamily: "inherit",
 };
 
 function ResourceTreeInner(
@@ -313,26 +150,16 @@ function ResourceTreeInner(
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
-  // Scopes the reveal `querySelector` to this tree so we don't accidentally
-  // scroll an identically-id'd row in another tree (e.g. a picker dialog).
-  const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<VirtualTreeListHandle>(null);
 
-  const [contextMenu, setContextMenu] = useState<{
-    anchorPosition: { top: number; left: number };
-    item: ResourceTreeNode;
-    readOnly: boolean;
-  } | null>(null);
-  const [sectionContextMenu, setSectionContextMenu] = useState<{
-    anchorPosition: { top: number; left: number };
-    sectionKey: string;
-  } | null>(null);
+  const [contextMenu, setContextMenu] = useState<NodeMenuState | null>(null);
+  const [sectionContextMenu, setSectionContextMenu] =
+    useState<SectionMenuState | null>(null);
 
   const [sectionExpanded, setSectionExpanded] = useState<
     Record<string, boolean>
   >(() => Object.fromEntries(sections.map(section => [section.key, true])));
 
-  const [draggedNode, setDraggedNode] = useState<ResourceTreeNode | null>(null);
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [pendingCreatedFolderId, setPendingCreatedFolderId] = useState<
     string | null
   >(null);
@@ -360,39 +187,6 @@ function ResourceTreeInner(
         .join(","),
     [sections],
   );
-  useRenderCount("ResourceTree", {
-    mode,
-    sectionCount: sections.length,
-    activeItemId,
-  });
-  useWhyChanged("ResourceTree", {
-    sectionsRef: sections,
-    debugSectionSummary,
-    mode,
-    activeItemId,
-    searchQuery,
-    focusedNodeId,
-    contextMenuItemId: contextMenu?.item.id,
-    sectionContextMenuKey: sectionContextMenu?.sectionKey,
-    draggedNodeId: draggedNode?.id,
-    dropTargetId,
-    pendingCreatedFolderId,
-    currentSelectedLocation,
-    currentSelectedSectionKey,
-    showFiles,
-    hideFolderIcon,
-    enableDragDrop,
-    onItemClick,
-    onLoadChildren,
-    isLoadingChildren,
-    getItemIcon,
-    getRightAdornment,
-    isFolderExpanded,
-    onToggleFolder,
-    onExpandFolder,
-    getFolderExpansionKey,
-  });
-
   const sensors = useDragSensors(8);
 
   useEffect(() => {
@@ -425,28 +219,8 @@ function ResourceTreeInner(
   );
 
   const findAncestorExpansionKeys = useCallback(
-    (
-      nodes: ResourceTreeNode[],
-      targetId: string,
-      ancestors: string[] = [],
-    ): string[] => {
-      for (const node of nodes) {
-        if (node.id === targetId) return ancestors;
-        if (node.isDirectory && node.children) {
-          const found = findAncestorExpansionKeys(node.children, targetId, [
-            ...ancestors,
-            getExpansionKey(node),
-          ]);
-          if (
-            found.length > 0 ||
-            node.children.some(child => child.id === targetId)
-          ) {
-            return found;
-          }
-        }
-      }
-      return [];
-    },
+    (nodes: ResourceTreeNode[], targetId: string): string[] =>
+      findAncestorPaths(nodes, targetId, [], getExpansionKey),
     [getExpansionKey],
   );
 
@@ -505,26 +279,26 @@ function ResourceTreeInner(
     sections,
   ]);
 
-  const flatNodeIds = useMemo(() => {
-    const ids: string[] = [];
-
-    const collect = (nodes: ResourceTreeNode[], sectionVisible: boolean) => {
-      if (!sectionVisible) return;
-      for (const node of nodes) {
-        if (!showFiles && !node.isDirectory) continue;
-        ids.push(node.id);
-        if (node.isDirectory && node.children && isNodeExpanded(node)) {
-          collect(node.children, true);
-        }
-      }
-    };
-
-    for (const section of filteredSections) {
-      collect(section.nodes, sectionExpanded[section.key] !== false);
-    }
-
-    return ids;
-  }, [filteredSections, isNodeExpanded, sectionExpanded, showFiles]);
+  // Arrow-key order. Honours the section collapse state only (as before:
+  // a header-less section's rows stay navigable unless it was collapsed).
+  const flatNodeIds = useMemo(
+    () =>
+      flattenVisibleNodeIds(filteredSections, {
+        showFiles,
+        sectionExpanded,
+        isFolderExpanded: key =>
+          searchQuery.length >= 2 ? true : isFolderExpanded(key),
+        getExpansionKey,
+      }),
+    [
+      filteredSections,
+      showFiles,
+      sectionExpanded,
+      searchQuery,
+      isFolderExpanded,
+      getExpansionKey,
+    ],
+  );
 
   const resolveCanManage = useCallback(
     (node: ResourceTreeNode) => {
@@ -743,215 +517,81 @@ function ResourceTreeInner(
     [],
   );
 
-  const handleDragStart = useCallback(
-    (event: DragStartEvent) => {
-      const location = findNodeLocation(String(event.active.id));
-      setDraggedNode(location?.node ?? null);
-    },
-    [findNodeLocation],
-  );
+  const {
+    draggedNode,
+    dropTargetId,
+    handleDragStart,
+    handleDragOver,
+    handleDragEnd,
+  } = useTreeDnd({
+    sections,
+    findNodeLocation,
+    onSectionDrop,
+    onMoveItem,
+    onMoveFolder,
+  });
 
-  const handleDragOver = useCallback((event: DragOverEvent) => {
-    setDropTargetId(event.over ? String(event.over.id) : null);
-  }, []);
+  useRenderCount("ResourceTree", {
+    mode,
+    sectionCount: sections.length,
+    activeItemId,
+  });
+  useWhyChanged("ResourceTree", {
+    sectionsRef: sections,
+    debugSectionSummary,
+    mode,
+    activeItemId,
+    searchQuery,
+    focusedNodeId,
+    contextMenuItemId: contextMenu?.item.id,
+    sectionContextMenuKey: sectionContextMenu?.sectionKey,
+    draggedNodeId: draggedNode?.id,
+    dropTargetId,
+    pendingCreatedFolderId,
+    currentSelectedLocation,
+    currentSelectedSectionKey,
+    showFiles,
+    hideFolderIcon,
+    enableDragDrop,
+    onItemClick,
+    onLoadChildren,
+    isLoadingChildren,
+    getItemIcon,
+    getRightAdornment,
+    isFolderExpanded,
+    onToggleFolder,
+    onExpandFolder,
+    getFolderExpansionKey,
+  });
 
-  const handleDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      setDraggedNode(null);
-      setDropTargetId(null);
-
-      const { active, over } = event;
-      if (!active || !over) return;
-
-      const activeId = String(active.id);
-      const overId = String(over.id);
-      if (activeId === overId) return;
-
-      const activeLocation = findNodeLocation(activeId);
-      if (!activeLocation) return;
-
-      const target = resolveTreeDropTarget(sections, overId);
-      if (!target) return;
-
-      if (target.kind === "section") {
-        // A section that is its own grouping claims the drop; an access
-        // bucket (My X / Workspace) falls through to the move below.
-        if (onSectionDrop?.(target.sectionKey, activeId) === true) return;
-        if (activeLocation.node.isDirectory) {
-          onMoveFolder?.(activeId, null, target.access);
-        } else {
-          onMoveItem?.(activeId, null, target.access);
-        }
-        return;
-      }
-
-      if (target.targetFolderId === activeId) return;
-      if (
-        activeLocation.node.isDirectory &&
-        findNodeInSections(
-          [
-            {
-              key: activeLocation.sectionKey,
-              nodes: activeLocation.node.children ?? [],
-            },
-          ],
-          target.targetFolderId,
-        )
-      ) {
-        return;
-      }
-
-      if (activeLocation.node.isDirectory) {
-        onMoveFolder?.(activeId, target.targetFolderId);
-      } else {
-        onMoveItem?.(activeId, target.targetFolderId);
-      }
-    },
-    [findNodeLocation, onMoveFolder, onMoveItem, onSectionDrop, sections],
-  );
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
-
-      const focusId =
-        focusedNodeId ||
-        (mode === "sidebar" ? activeItemId : currentSelectedLocation) ||
-        null;
-      const focusLocation = focusId ? findNodeLocation(focusId) : null;
-      const focusItem = focusLocation?.node ?? null;
-      const canManageFocused = focusItem ? resolveCanManage(focusItem) : false;
-      const meta = event.metaKey || event.ctrlKey;
-
-      if (event.key === "F2" && focusItem && enableRename && canManageFocused) {
-        event.preventDefault();
-        startInlineRename(focusItem);
-        return;
-      }
-
-      if (
-        (event.key === "Delete" || event.key === "Backspace") &&
-        focusItem &&
-        enableDelete &&
-        canManageFocused &&
-        !meta
-      ) {
-        event.preventDefault();
-        onDeleteItem?.(focusItem);
-        return;
-      }
-
-      if (
-        meta &&
-        event.key.toLowerCase() === "d" &&
-        focusItem &&
-        enableDuplicate &&
-        !focusItem.isDirectory
-      ) {
-        event.preventDefault();
-        onDuplicateItem?.(focusItem);
-        return;
-      }
-
-      if (meta && event.key.toLowerCase() === "i" && focusItem && enableInfo) {
-        event.preventDefault();
-        if (focusItem.isDirectory) {
-          onFolderInfoRequest?.(focusItem);
-        } else {
-          onInfoRequest?.(focusItem);
-        }
-        return;
-      }
-
-      if (
-        meta &&
-        event.key.toLowerCase() === "z" &&
-        !event.shiftKey &&
-        onUndo
-      ) {
-        event.preventDefault();
-        onUndo();
-        return;
-      }
-
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        const currentIndex = focusId ? flatNodeIds.indexOf(focusId) : -1;
-        const nextIndex =
-          event.key === "ArrowDown"
-            ? Math.min(currentIndex + 1, flatNodeIds.length - 1)
-            : Math.max(currentIndex - 1, 0);
-        if (flatNodeIds[nextIndex]) {
-          setFocusedNodeId(flatNodeIds[nextIndex]);
-        }
-        return;
-      }
-
-      if (event.key === "ArrowRight" && focusItem?.isDirectory) {
-        event.preventDefault();
-        if (!isNodeExpanded(focusItem)) {
-          onExpandFolder(getExpansionKey(focusItem));
-          if (focusItem.children === undefined && onLoadChildren) {
-            onLoadChildren(focusItem);
-          }
-        }
-        return;
-      }
-
-      if (event.key === "ArrowLeft" && focusItem?.isDirectory) {
-        event.preventDefault();
-        if (isNodeExpanded(focusItem)) {
-          onToggleFolder(getExpansionKey(focusItem));
-        }
-        return;
-      }
-
-      if (event.key === "Enter" && focusItem && focusLocation) {
-        event.preventDefault();
-        if (focusItem.isDirectory) {
-          if (mode === "picker") {
-            updateLocationSelection(focusItem.id, focusLocation.sectionKey);
-          } else {
-            onToggleFolder(getExpansionKey(focusItem));
-          }
-        } else if (mode === "picker") {
-          onPickerFileClick?.(focusItem);
-        } else {
-          onItemClick?.(focusItem);
-        }
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [
+  useTreeKeyboard({
+    mode,
+    focusedNodeId,
     activeItemId,
     currentSelectedLocation,
+    flatNodeIds,
+    findNodeLocation,
+    resolveCanManage,
+    isNodeExpanded,
+    getExpansionKey,
+    setFocusedNodeId,
+    enableRename,
     enableDelete,
     enableDuplicate,
     enableInfo,
-    enableRename,
-    findNodeLocation,
-    flatNodeIds,
-    focusedNodeId,
-    getExpansionKey,
-    isNodeExpanded,
-    mode,
-    onDeleteItem,
-    onDuplicateItem,
-    onFolderInfoRequest,
-    onInfoRequest,
-    onItemClick,
-    onPickerFileClick,
-    onToggleFolder,
-    onExpandFolder,
-    onLoadChildren,
-    onUndo,
-    resolveCanManage,
     startInlineRename,
     updateLocationSelection,
-  ]);
+    onDeleteItem,
+    onDuplicateItem,
+    onInfoRequest,
+    onFolderInfoRequest,
+    onUndo,
+    onExpandFolder,
+    onToggleFolder,
+    onLoadChildren,
+    onPickerFileClick,
+    onItemClick,
+  });
 
   // Reveal-to-node: expand ancestor folders and scroll the target row into
   // view whenever `revealNonce` changes (e.g. a tab switch or breadcrumb
@@ -982,18 +622,15 @@ function ResourceTreeInner(
       );
     }
 
-    const escapeId =
-      typeof CSS !== "undefined" && typeof CSS.escape === "function"
-        ? CSS.escape(revealNodeId)
-        : revealNodeId.replace(/["\\]/g, "\\$&");
     let cancelled = false;
     const tryScroll = () => {
       if (cancelled) return;
-      const el = rootRef.current?.querySelector(`[data-node-id="${escapeId}"]`);
-      if (el) {
-        // Center the revealed row vertically rather than nudging it just barely
-        // into view, so the focused entity lands near the middle of the panel.
-        el.scrollIntoView({ block: "center", behavior: "smooth" });
+      const index = rowsRef.current.findIndex(
+        row =>
+          (row.kind === "folder" || row.kind === "file") &&
+          row.node.id === revealNodeId,
+      );
+      if (index >= 0 && listRef.current?.revealIndex(index)) {
         revealDoneNonceRef.current = revealNonce;
         cancelled = true;
       }
@@ -1010,7 +647,7 @@ function ResourceTreeInner(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealNonce, revealNodeId, sections]);
 
-  const renderInlineRenameInput = (nodeId: string) => (
+  const renderRenameInput = (nodeId: string) => (
     <input
       ref={renameInputRef}
       value={renameValue}
@@ -1028,47 +665,9 @@ function ResourceTreeInner(
         }
       }}
       onClick={event => event.stopPropagation()}
-      style={{
-        width: "100%",
-        border: "1px solid",
-        borderColor: "var(--mui-palette-divider, #ccc)",
-        borderRadius: 4,
-        padding: "1px 4px",
-        outline: "none",
-        background: "transparent",
-        color: "inherit",
-        fontSize: "0.8125rem",
-        fontFamily: "inherit",
-      }}
+      style={RENAME_INPUT_STYLE}
     />
   );
-
-  const buildRowSx = ({
-    depth,
-    isDropTarget,
-    isSelected,
-  }: {
-    depth: number;
-    isDropTarget?: boolean;
-    isSelected?: boolean;
-  }) => ({
-    pl: 1.5 + depth * 1.5,
-    minWidth: 0,
-    py: 0,
-    minHeight: rowHeight,
-    bgcolor: isDropTarget
-      ? "action.hover"
-      : isSelected
-        ? "action.selected"
-        : undefined,
-    outline: isDropTarget ? "2px dashed" : undefined,
-    outlineColor: isDropTarget ? "primary.main" : undefined,
-    // Draw the drop-target outline inside the row's own box so it isn't
-    // clipped by adjacent opaque rows or sticky ancestors (CSS outlines
-    // don't reserve layout space, so they get painted over otherwise).
-    outlineOffset: isDropTarget ? "-2px" : undefined,
-    borderRadius: 0,
-  });
 
   const maybeLoadChildren = useCallback(
     (node: ResourceTreeNode) => {
@@ -1079,510 +678,106 @@ function ResourceTreeInner(
     [onLoadChildren],
   );
 
-  const renderTree = (
-    nodes: ResourceTreeNode[],
-    depth: number,
-    sectionKey: string,
-  ): ReactNode[] => {
-    const items: ReactNode[] = [];
+  const toggleNode = (node: ResourceTreeNode, isExpanded: boolean) => {
+    const willExpand = !isExpanded;
+    onToggleFolder(getExpansionKey(node));
+    if (willExpand) maybeLoadChildren(node);
+  };
 
-    for (const node of nodes) {
-      if (!showFiles && !node.isDirectory) continue;
+  const toggleSection = (sectionKey: string) =>
+    setSectionExpanded(prev => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
 
-      const canManage = resolveCanManage(node);
-      const isExpanded = node.isDirectory && isNodeExpanded(node);
-      const isSelectedLocation =
-        mode === "picker" && currentSelectedLocation === node.id;
-      const isActive = isSidebarRowActive({
-        mode,
-        activeItemId,
-        nodeId: node.id,
-      });
-      const isRenaming = renamingItemId === node.id;
-      const isDropTarget =
-        dropTargetId === node.id ||
-        dropTargetId === getFolderDropTargetId(node.id);
-      const rightAdornment = getRightAdornment?.(node);
-
-      if (node.isDirectory) {
-        const folderRow = (
-          <ListItemButton
-            key={node.id}
-            data-node-id={node.id}
-            selected={isSelectedLocation || isActive}
-            onClick={event => {
-              setFocusedNodeId(node.id);
-              if (mode === "picker") {
-                updateLocationSelection(node.id, sectionKey);
-              } else if (shouldFolderClickActivate?.(node)) {
-                // Clicks on the caret itself are handled (and stopped) by the
-                // caret's own handler; clicks left of it (the indent) should
-                // still toggle, while the name/icon area activates.
-                const caret =
-                  event.currentTarget.querySelector("[data-tree-caret]");
-                if (
-                  caret &&
-                  event.clientX <= caret.getBoundingClientRect().right
-                ) {
-                  const willExpand = !isExpanded;
-                  onToggleFolder(getExpansionKey(node));
-                  if (willExpand) maybeLoadChildren(node);
-                } else {
-                  onItemClick?.(node);
-                }
-              } else {
-                const willExpand = !isExpanded;
-                onToggleFolder(getExpansionKey(node));
-                if (willExpand) maybeLoadChildren(node);
-              }
-            }}
-            onContextMenu={event => handleContextMenu(event, node)}
-            onDoubleClick={event => {
-              if (enableRename && canManage) {
-                event.stopPropagation();
-                startInlineRename(node);
-              }
-            }}
-            sx={{
-              ...buildRowSx({
-                depth,
-                isDropTarget,
-                // Folder rows must respect the sidebar active highlight too —
-                // entities like apps and Postgres tables open from a directory
-                // row (see isSidebarRowActive). Picker selection still wins via
-                // `isSelectedLocation`.
-                isSelected: isSelectedLocation || isActive,
-              }),
-              position: "sticky",
-              // Stack ancestor headers: depth=1 sits just below the section
-              // header (which is sticky at top: 0), depth=2 one row below
-              // that, and so on.
-              top: depth * rowHeight,
-              // Deeper folders get a lower z-index so outer ancestors always
-              // paint on top when sticky rows collide during scroll.
-              zIndex: 20 - depth,
-              // Non-transparent fill so content scrolling underneath doesn't
-              // bleed through while stuck. Uses `background.default` to match
-              // the ambient sidebar canvas (sidebar has no explicit bg, so it
-              // inherits the default theme background) — this makes the row
-              // visually invisible against the surrounding tree at rest.
-              // Selected / drop-target states from buildRowSx still win.
-              backgroundColor:
-                isDropTarget || isSelectedLocation || isActive
-                  ? undefined
-                  : "background.default",
-            }}
-          >
-            <ListItemIcon
-              sx={{
-                minWidth: iconColWidth,
-                mr: 0,
-                // MUI's ListItemIcon defaults to `action.active` which looks
-                // dimmed; the chevron should match the folder name's color.
-                color: "text.primary",
-              }}
-            >
-              <Box
-                component="span"
-                data-tree-caret
-                onClick={event => {
-                  event.stopPropagation();
-                  const willExpand = !isExpanded;
-                  onToggleFolder(getExpansionKey(node));
-                  if (willExpand) maybeLoadChildren(node);
-                }}
-                sx={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: caretSize,
-                  height: caretSize,
-                }}
-              >
-                {isExpanded ? (
-                  <ChevronDown size={14} strokeWidth={1.5} />
-                ) : (
-                  <ChevronRight size={14} strokeWidth={1.5} />
-                )}
-              </Box>
-            </ListItemIcon>
-            {(() => {
-              if (hideFolderIcon) return null;
-              const folderIcon = getItemIcon ? (
-                getItemIcon(node, { isExpanded })
-              ) : isExpanded ? (
-                <FolderOpen size={16} strokeWidth={1.5} />
-              ) : (
-                <Folder size={16} strokeWidth={1.5} />
-              );
-              // Explorers can suppress a folder's icon by returning null from
-              // getItemIcon (e.g. to show an icon only on entity rows,
-              // not on their containing folders). Collapse the icon column so
-              // the label sits right after the chevron, like console folders.
-              if (!folderIcon) return null;
-              return (
-                <ListItemIcon sx={{ minWidth: iconColWidth, mr: 0.75 }}>
-                  {folderIcon}
-                </ListItemIcon>
-              );
-            })()}
-            <MuiListItemText
-              primary={
-                isRenaming ? renderInlineRenameInput(node.id) : node.name
-              }
-              slotProps={{
-                primary: {
-                  variant: "body2",
-                  sx: {
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    fontWeight: 500,
-                  },
-                },
-              }}
-            />
-            {rightAdornment ? (
-              <Box
-                sx={{
-                  ml: "auto",
-                  pl: 1,
-                  display: "flex",
-                  alignItems: "center",
-                  flexShrink: 0,
-                }}
-              >
-                {rightAdornment}
-              </Box>
-            ) : null}
-          </ListItemButton>
-        );
-
-        const childrenLoading = isExpanded
-          ? !!isLoadingChildren?.(node)
-          : false;
-        const childrenNotYetLoaded = isExpanded && node.children === undefined;
-
-        const childrenContent = isExpanded
-          ? (() => {
-              const showSkeleton = childrenLoading || childrenNotYetLoaded;
-              const childItems = showSkeleton
-                ? []
-                : renderTree(node.children ?? [], depth + 1, sectionKey);
-              const childList = (
-                <List component="div" disablePadding dense>
-                  {showSkeleton ? (
-                    Array.from({ length: 3 }).map((_, idx) => (
-                      <Box
-                        key={`child-skel-${idx}`}
-                        sx={{
-                          pl: 1.5 + (depth + 1) * 1.5 + 2.75,
-                          py: 0.5,
-                          display: "flex",
-                          alignItems: "center",
-                        }}
-                      >
-                        <Skeleton
-                          variant="text"
-                          width={`${50 + Math.random() * 30}%`}
-                          height={16}
-                        />
-                      </Box>
-                    ))
-                  ) : childItems.length === 0 ? (
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        color: "text.disabled",
-                        pl: 1.5 + (depth + 1) * 1.5 + 2.75,
-                        py: 0,
-                        minHeight: rowHeight,
-                        lineHeight: `${rowHeight}px`,
-                        display: "flex",
-                        alignItems: "center",
-                      }}
-                    >
-                      Empty
-                    </Typography>
-                  ) : (
-                    childItems
-                  )}
-                </List>
-              );
-
-              return enableDragDrop ? (
-                <DroppableFolderContent folderId={node.id}>
-                  {childList}
-                </DroppableFolderContent>
-              ) : (
-                childList
-              );
-            })()
-          : null;
-
-        // Wrap (header + children) in a single block so the sticky header has
-        // a containing block that spans the entire folder scope.
-        const folderScope = enableDragDrop ? (
-          <DraggableFolderScope
-            key={`folder-scope-${node.id}`}
-            id={node.id}
-            disabled={!canManage}
-            header={folderRow}
-          >
-            {childrenContent}
-          </DraggableFolderScope>
-        ) : (
-          <Box key={`folder-scope-${node.id}`}>
-            {folderRow}
-            {childrenContent}
-          </Box>
-        );
-
-        items.push(folderScope);
-
-        continue;
+  const rowConfig: TreeRowConfig = {
+    mode,
+    activeItemId,
+    currentSelectedLocation,
+    currentSelectedSectionKey,
+    renamingItemId,
+    renderRenameInput,
+    dropTargetId,
+    sectionExpanded,
+    rowHeight,
+    iconColWidth,
+    caretSize,
+    hideFolderIcon,
+    enableRename,
+    getItemIcon,
+    getRightAdornment,
+    resolveCanManage,
+    onFolderRowClick: (event, node, sectionKey, isExpanded) => {
+      setFocusedNodeId(node.id);
+      if (mode === "picker") {
+        updateLocationSelection(node.id, sectionKey);
+      } else if (shouldFolderClickActivate?.(node)) {
+        // Clicks on the caret itself are handled (and stopped) by the
+        // caret's own handler; clicks left of it (the indent) should
+        // still toggle, while the name/icon area activates.
+        const caret = event.currentTarget.querySelector("[data-tree-caret]");
+        if (caret && event.clientX <= caret.getBoundingClientRect().right) {
+          toggleNode(node, isExpanded);
+        } else {
+          onItemClick?.(node);
+        }
+      } else {
+        toggleNode(node, isExpanded);
       }
-
-      const fileRow = (
-        <ListItemButton
-          key={node.id}
-          data-node-id={node.id}
-          selected={isActive}
-          onClick={() => {
-            setFocusedNodeId(node.id);
-            if (mode === "picker") {
-              onPickerFileClick?.(node);
-            } else {
-              onItemClick?.(node);
-            }
-          }}
-          onContextMenu={event => handleContextMenu(event, node)}
-          onDoubleClick={event => {
-            if (enableRename && canManage) {
-              event.stopPropagation();
-              startInlineRename(node);
-            }
-          }}
-          sx={buildRowSx({
-            depth,
-            isSelected: isActive,
-          })}
-        >
-          {!hideFolderIcon && (
-            <ListItemIcon
-              sx={{ minWidth: iconColWidth, visibility: "hidden", mr: 0 }}
-            />
-          )}
-          <ListItemIcon
-            sx={{
-              minWidth: iconColWidth,
-              // In hideFolderIcon mode the file icon occupies the chevron
-              // column. Use the same trailing gap as normal icon rows so
-              // connector/database explorer text starts consistently.
-              mr: 0.75,
-            }}
-          >
-            {getItemIcon ? getItemIcon(node) : null}
-          </ListItemIcon>
-          <MuiListItemText
-            primary={isRenaming ? renderInlineRenameInput(node.id) : node.name}
-            slotProps={{
-              primary: {
-                variant: "body2",
-                sx: {
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                },
-              },
-            }}
-          />
-          {rightAdornment ? (
-            <Box
-              sx={{
-                ml: "auto",
-                pl: 1,
-                display: "flex",
-                alignItems: "center",
-                flexShrink: 0,
-              }}
-            >
-              {rightAdornment}
-            </Box>
-          ) : null}
-        </ListItemButton>
-      );
-
-      items.push(
-        enableDragDrop ? (
-          <DraggableTreeItem
-            key={`drag-file-${node.id}`}
-            id={node.id}
-            disabled={!canManage}
-          >
-            {fileRow}
-          </DraggableTreeItem>
-        ) : (
-          fileRow
-        ),
-      );
-    }
-
-    return items;
+    },
+    onToggleNode: toggleNode,
+    onFileRowClick: node => {
+      setFocusedNodeId(node.id);
+      if (mode === "picker") {
+        onPickerFileClick?.(node);
+      } else {
+        onItemClick?.(node);
+      }
+    },
+    onContextMenu: handleContextMenu,
+    onStartRename: startInlineRename,
+    onSectionClick: sectionKey => {
+      if (mode === "picker") {
+        updateLocationSelection(null, sectionKey);
+      } else {
+        toggleSection(sectionKey);
+      }
+    },
+    onSectionToggle: toggleSection,
+    onSectionContextMenu: handleSectionContextMenu,
   };
 
-  const renderSectionHeader = (section: ResourceTreeSection) => {
-    const headerSelected =
-      mode === "picker" &&
-      currentSelectedLocation === null &&
-      currentSelectedSectionKey === section.key;
-    const isDropTarget = section.droppableId === dropTargetId;
-
-    const header = (
-      <ListItemButton
-        selected={headerSelected}
-        onClick={() => {
-          if (mode === "picker") {
-            updateLocationSelection(null, section.key);
-          } else {
-            setSectionExpanded(prev => ({
-              ...prev,
-              [section.key]: !prev[section.key],
-            }));
-          }
-        }}
-        onContextMenu={event => handleSectionContextMenu(event, section.key)}
-        sx={{
-          py: 0,
-          pl: 1.5,
-          minWidth: 0,
-          minHeight: rowHeight,
-          bgcolor: isDropTarget
-            ? "action.hover"
-            : headerSelected
-              ? "action.selected"
-              : undefined,
-          outline: isDropTarget ? "2px dashed" : undefined,
-          outlineColor: isDropTarget ? "primary.main" : undefined,
-          outlineOffset: isDropTarget ? "-2px" : undefined,
-          borderRadius: 0,
-          "& .MuiListItemText-root": {
-            minWidth: 0,
-            flex: "1 1 auto",
-          },
-          // Pin the section label at the top of the scroll container as the
-          // user scrolls through the section's tree. Folder headers inside
-          // stack below this (see ROW_HEIGHT * depth in renderTree).
-          position: "sticky",
-          top: 0,
-          zIndex: 30,
-          backgroundColor:
-            isDropTarget || headerSelected ? undefined : "background.default",
-        }}
-      >
-        <ListItemIcon
-          sx={{ minWidth: iconColWidth, mr: 0, color: "text.primary" }}
-        >
-          <Box
-            component="span"
-            onClick={event => {
-              event.stopPropagation();
-              setSectionExpanded(prev => ({
-                ...prev,
-                [section.key]: !prev[section.key],
-              }));
-            }}
-            sx={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: caretSize,
-              height: caretSize,
-            }}
-          >
-            {sectionExpanded[section.key] !== false ? (
-              <ChevronDown size={14} strokeWidth={1.5} />
-            ) : (
-              <ChevronRight size={14} strokeWidth={1.5} />
-            )}
-          </Box>
-        </ListItemIcon>
-        {section.icon ? (
-          <ListItemIcon sx={{ minWidth: iconColWidth, mr: 0.75 }}>
-            {section.icon}
-          </ListItemIcon>
-        ) : null}
-        <MuiListItemText
-          primary={section.label}
-          slotProps={{
-            primary: {
-              variant: "body2",
-              sx: {
-                fontWeight: 600,
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              },
-            },
-          }}
-        />
-      </ListItemButton>
-    );
-
-    return header;
-  };
+  const rows = useMemo(
+    () =>
+      flattenTreeRows(filteredSections, {
+        showFiles,
+        enableDragDrop,
+        sectionExpanded,
+        isNodeExpanded,
+        isLoadingChildren,
+      }),
+    [
+      filteredSections,
+      showFiles,
+      enableDragDrop,
+      sectionExpanded,
+      isNodeExpanded,
+      isLoadingChildren,
+    ],
+  );
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const canManageRow = useCallback(
+    (row: Extract<FlatRow, { kind: "folder" | "file" }>) =>
+      resolveCanManage(row.node),
+    [resolveCanManage],
+  );
 
   const treeContent = (
-    <List component="nav" dense disablePadding>
-      {filteredSections.map(section => {
-        const sectionVisible =
-          section.hideSectionHeader || sectionExpanded[section.key] !== false;
-        const sectionBody = sectionVisible ? (
-          section.nodes.length > 0 ? (
-            renderTree(
-              section.nodes,
-              section.hideSectionHeader ? 0 : 1,
-              section.key,
-            )
-          ) : (
-            <Typography
-              sx={{
-                pl: section.hideSectionHeader ? 2.5 : 4,
-                py: 0.5,
-                color: "text.disabled",
-                fontSize: "0.8rem",
-                fontStyle: "italic",
-              }}
-              variant="body2"
-            >
-              Nothing here yet
-            </Typography>
-          )
-        ) : null;
-
-        // Wrap the section header + its body in a single block so the sticky
-        // section header has a containing block spanning the whole section.
-        // When a droppableId is provided, the scope also acts as the section-
-        // level drop target (replaces the old DroppableSectionHeader wrapper
-        // around just the header).
-        return (
-          <SectionScope
-            key={`section-${section.key}`}
-            droppableId={
-              enableDragDrop && section.droppableId
-                ? section.droppableId
-                : undefined
-            }
-          >
-            {section.hideSectionHeader ? null : renderSectionHeader(section)}
-            {sectionBody}
-          </SectionScope>
-        );
-      })}
-      {/* Trailing spacer so the last row doesn't feel flush to the bottom
-          of the scroll container and hint there's more content below. */}
-      <Box sx={{ height: 24 }} aria-hidden />
-    </List>
+    <VirtualTreeList
+      ref={listRef}
+      rows={rows}
+      enableDragDrop={enableDragDrop}
+      draggedNodeId={draggedNode?.id ?? null}
+      canManage={canManageRow}
+    />
   );
 
   const content = enableDragDrop ? (
@@ -1622,154 +817,50 @@ function ResourceTreeInner(
 
   return (
     <>
-      <Box ref={rootRef} sx={{ display: "contents" }}>
+      <TreeRowProvider value={rowConfig}>
         <React.Profiler id="ResourceTree.content" onRender={onRenderDebug}>
           {content}
         </React.Profiler>
-      </Box>
+      </TreeRowProvider>
 
-      <Menu
-        open={!!contextMenu}
+      <NodeContextMenu
+        menu={contextMenu}
         onClose={() => setContextMenu(null)}
-        anchorReference="anchorPosition"
-        anchorPosition={contextMenu?.anchorPosition}
-      >
-        {contextMenu &&
-          (() => {
-            const { item, readOnly } = contextMenu;
-            const canManage = !readOnly;
+        getContextMenuItems={getContextMenuItems}
+        enableRename={enableRename}
+        enableDuplicate={enableDuplicate}
+        enableNewFolder={enableNewFolder}
+        enableMove={enableMove}
+        enableInfo={enableInfo}
+        enableDelete={enableDelete}
+        onRename={startInlineRename}
+        onDuplicateItem={onDuplicateItem}
+        onNewSubfolder={item => {
+          onExpandFolder(getExpansionKey(item));
+          void triggerCreateFolder(item.id, item.access);
+        }}
+        onMoveRequest={onMoveRequest}
+        onInfoRequest={onInfoRequest}
+        onFolderInfoRequest={onFolderInfoRequest}
+        onDeleteItem={onDeleteItem}
+      />
 
-            const customItems = getContextMenuItems?.(item, {
-              closeMenu: () => setContextMenu(null),
-            });
-            if (customItems !== undefined && customItems !== null) {
-              return customItems;
-            }
-
-            return [
-              enableRename && canManage && (
-                <MenuItem
-                  key="rename"
-                  onClick={() => {
-                    startInlineRename(item);
-                  }}
-                >
-                  <Pencil size={14} style={{ marginRight: 8 }} />
-                  Rename
-                </MenuItem>
-              ),
-              enableDuplicate && !item.isDirectory && (
-                <MenuItem
-                  key="duplicate"
-                  onClick={() => {
-                    setContextMenu(null);
-                    onDuplicateItem?.(item);
-                  }}
-                >
-                  <Copy size={14} style={{ marginRight: 8 }} />
-                  Duplicate
-                </MenuItem>
-              ),
-              enableNewFolder && item.isDirectory && canManage && (
-                <MenuItem
-                  key="subfolder"
-                  onClick={async () => {
-                    setContextMenu(null);
-                    onExpandFolder(getExpansionKey(item));
-                    await triggerCreateFolder(item.id, item.access);
-                  }}
-                >
-                  <FolderPlus size={14} style={{ marginRight: 8 }} />
-                  New Subfolder
-                </MenuItem>
-              ),
-              enableMove && canManage && onMoveRequest && (
-                <MenuItem
-                  key="move"
-                  onClick={() => {
-                    setContextMenu(null);
-                    onMoveRequest(item);
-                  }}
-                >
-                  <ArrowRightLeft size={14} style={{ marginRight: 8 }} />
-                  Move to...
-                </MenuItem>
-              ),
-              enableInfo && !item.isDirectory && onInfoRequest && (
-                <MenuItem
-                  key="info-file"
-                  onClick={() => {
-                    setContextMenu(null);
-                    onInfoRequest(item);
-                  }}
-                >
-                  <Info size={14} style={{ marginRight: 8 }} />
-                  Information
-                </MenuItem>
-              ),
-              enableInfo && item.isDirectory && onFolderInfoRequest && (
-                <MenuItem
-                  key="info-folder"
-                  onClick={() => {
-                    setContextMenu(null);
-                    onFolderInfoRequest(item);
-                  }}
-                >
-                  <Info size={14} style={{ marginRight: 8 }} />
-                  Information
-                </MenuItem>
-              ),
-              enableDelete && canManage && onDeleteItem && (
-                <React.Fragment key="delete-group">
-                  <Divider />
-                  <MenuItem
-                    onClick={() => {
-                      setContextMenu(null);
-                      onDeleteItem(item);
-                    }}
-                    sx={{ color: "error.main" }}
-                  >
-                    <Trash2 size={14} style={{ marginRight: 8 }} />
-                    Delete
-                  </MenuItem>
-                </React.Fragment>
-              ),
-            ].filter(Boolean);
-          })()}
-      </Menu>
-
-      <Menu
-        open={!!sectionContextMenu}
+      <SectionContextMenu
+        menu={sectionContextMenu}
         onClose={() => setSectionContextMenu(null)}
-        anchorReference="anchorPosition"
-        anchorPosition={sectionContextMenu?.anchorPosition}
-      >
-        {sectionContextMenu &&
-          (() => {
-            const customItems = getSectionContextMenuItems?.(
-              sectionContextMenu.sectionKey,
-              { closeMenu: () => setSectionContextMenu(null) },
-            );
-            if (customItems !== undefined && customItems !== null) {
-              return customItems;
-            }
-            if (!enableNewFolder || !onCreateFolder) return null;
-            return (
-              <MenuItem
-                onClick={async () => {
-                  const section = sections.find(
-                    entry => entry.key === sectionContextMenu.sectionKey,
-                  );
-                  setSectionContextMenu(null);
-                  await triggerCreateFolder(null, section?.defaultAccess);
-                }}
-              >
-                <FolderPlus size={14} style={{ marginRight: 8 }} />
-                New Folder
-              </MenuItem>
-            );
-          })()}
-      </Menu>
+        getSectionContextMenuItems={getSectionContextMenuItems}
+        onNewFolder={
+          enableNewFolder && onCreateFolder
+            ? sectionKey => {
+                const section = sections.find(
+                  entry => entry.key === sectionKey,
+                );
+                setSectionContextMenu(null);
+                void triggerCreateFolder(null, section?.defaultAccess);
+              }
+            : undefined
+        }
+      />
     </>
   );
 }

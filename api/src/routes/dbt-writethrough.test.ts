@@ -9,7 +9,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
-const routes = fs.readFileSync(path.join(__dirname, "dbt.routes.ts"), "utf8");
+// The dbt router and its sub-routers (./dbt/*.ts), read as one source.
+const routes = [
+  path.join(__dirname, "dbt.routes.ts"),
+  ...fs
+    .readdirSync(path.join(__dirname, "dbt"))
+    .filter(name => name.endsWith(".ts") && !name.endsWith(".test.ts"))
+    .map(name => path.join(__dirname, "dbt", name)),
+]
+  .map(file => fs.readFileSync(file, "utf8"))
+  .join("\n");
 const tools = fs.readFileSync(
   path.join(__dirname, "../agent-lib/tools/dbt-tools.ts"),
   "utf8",

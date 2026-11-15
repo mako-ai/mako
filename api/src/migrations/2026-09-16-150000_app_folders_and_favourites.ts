@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -37,7 +38,7 @@ export async function up(db: Db): Promise<void> {
 
   // Slugs stop being unique once folders nest (apps/a/report, apps/b/report).
   // The path is what cannot collide.
-  const indexes = (await projects.indexes()) as Array<{
+  const indexes = (await indexesOf(projects)) as Array<{
     name: string;
     key: Record<string, unknown>;
     unique?: boolean;
@@ -52,7 +53,7 @@ export async function up(db: Db): Promise<void> {
       name: slugIndex.name,
     });
   }
-  const after = (await projects.indexes()) as Array<{
+  const after = (await indexesOf(projects)) as Array<{
     name: string;
     key: Record<string, unknown>;
     sparse?: boolean;
@@ -80,7 +81,7 @@ export async function up(db: Db): Promise<void> {
 
   await ensureCollection(db, "app_index");
   const appIndex = db.collection("app_index");
-  const appIndexIndexes = await appIndex.indexes();
+  const appIndexIndexes = await indexesOf(appIndex);
   if (!hasIndexOnKeys(appIndexIndexes, { workspaceId: 1, appId: 1 })) {
     await appIndex.createIndex({ workspaceId: 1, appId: 1 }, { unique: true });
   }
@@ -93,13 +94,13 @@ export async function up(db: Db): Promise<void> {
 
   await ensureCollection(db, "app_index_heads");
   const heads = db.collection("app_index_heads");
-  if (!hasIndexOnKeys(await heads.indexes(), { workspaceId: 1 })) {
+  if (!hasIndexOnKeys(await indexesOf(heads), { workspaceId: 1 })) {
     await heads.createIndex({ workspaceId: 1 }, { unique: true });
   }
 
   await ensureCollection(db, "favourites");
   const favourites = db.collection("favourites");
-  const favIndexes = await favourites.indexes();
+  const favIndexes = await indexesOf(favourites);
   if (
     !hasIndexOnKeys(favIndexes, {
       workspaceId: 1,

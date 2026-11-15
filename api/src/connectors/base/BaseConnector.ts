@@ -231,12 +231,9 @@ export interface EntityMetadata {
 export abstract class BaseConnector {
   /** The source connection (credential) this connector instance is bound to. */
   protected sourceConnection: ISourceConnection;
-  /** @deprecated use sourceConnection */
-  protected dataSource: ISourceConnection;
 
   constructor(connection: ISourceConnection) {
     this.sourceConnection = connection;
-    this.dataSource = connection;
   }
 
   /**
@@ -325,15 +322,15 @@ export abstract class BaseConnector {
   validateConfig(): { valid: boolean; errors: string[] } {
     const errors: string[] = [];
 
-    if (!this.dataSource.name) {
+    if (!this.sourceConnection.name) {
       errors.push("Data source name is required");
     }
 
-    if (!this.dataSource.type) {
+    if (!this.sourceConnection.type) {
       errors.push("Data source type is required");
     }
 
-    if (!this.dataSource.config) {
+    if (!this.sourceConnection.config) {
       errors.push("Data source configuration is required");
     }
 
@@ -344,14 +341,14 @@ export abstract class BaseConnector {
    * Get rate limit delay from settings
    */
   protected getRateLimitDelay(): number {
-    return this.dataSource.settings?.rate_limit_delay_ms || 200;
+    return this.sourceConnection.settings?.rate_limit_delay_ms || 200;
   }
 
   /**
    * Get batch size from settings
    */
   protected getBatchSize(): number {
-    return this.dataSource.settings?.sync_batch_size || 100;
+    return this.sourceConnection.settings?.sync_batch_size || 100;
   }
 
   /**

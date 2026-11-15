@@ -5,11 +5,11 @@
  * that call is what renews an expiring token.
  */
 import { describe, expect, it, vi } from "vitest";
-import { databaseConnectionService } from "./database-connection.service";
+import { bigQueryEngine } from "../databases/drivers/bigquery/engine";
 
 type Internals = {
-  getBigQueryHttpClient: (...args: unknown[]) => Promise<unknown>;
-  executeBigQueryStreamingQuery: (
+  getHttpClient: (...args: unknown[]) => Promise<unknown>;
+  executeStreamingQuery: (
     database: unknown,
     query: string,
     options: unknown,
@@ -18,7 +18,7 @@ type Internals = {
 
 describe("BigQuery streaming auth", () => {
   it("renews the client between pages, so a token expiring mid-stream does not fail the build", async () => {
-    const service = databaseConnectionService as unknown as Internals;
+    const service = bigQueryEngine as unknown as Internals;
     const schema = { fields: [{ name: "n", type: "INTEGER" }] };
     const page = (n: number, pageToken?: string) => ({
       data: {
@@ -50,12 +50,12 @@ describe("BigQuery streaming auth", () => {
         .mockResolvedValueOnce(page(3)),
     };
     const clients = vi
-      .spyOn(service, "getBigQueryHttpClient")
+      .spyOn(service, "getHttpClient")
       .mockResolvedValueOnce(expired)
       .mockResolvedValue(renewed);
 
     const onBatch = vi.fn(async () => undefined);
-    const result = await service.executeBigQueryStreamingQuery(
+    const result = await service.executeStreamingQuery(
       {
         type: "bigquery",
         connection: { project_id: "warehouse", service_account_json: "{}" },

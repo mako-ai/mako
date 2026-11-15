@@ -7,6 +7,43 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
+// One way to call the API: the typed client in src/api (see
+// .cursor/rules/18-frontend-state.mdc). The lists below are shared because a
+// later flat-config block REPLACES a rule's options for the files it matches
+// instead of merging them.
+
+/** Deleted HTTP helpers that must not come back. */
+const LEGACY_CLIENT_PATTERNS = [
+  {
+    group: ["**/lib/api-client", "**/lib/workspace-client"],
+    message:
+      "The legacy API clients are gone: stores call the typed client in src/api (`api`, or `unspecced` for routes the spec does not describe yet).",
+  },
+];
+
+/**
+ * Raw `fetch("/api/...")` skips the typed client's workspace header and 401
+ * handling. The few genuine exceptions (response streams, keepalive beacons)
+ * carry an inline `eslint-disable-next-line no-restricted-syntax -- <why>`.
+ */
+const RAW_API_FETCH_MESSAGE =
+  "Call the API through the typed client (src/api) from a store action, not raw fetch. A stream/beacon that cannot use it needs an inline eslint-disable with the reason.";
+const RAW_API_FETCH = [
+  {
+    selector:
+      "CallExpression[callee.name='fetch'][arguments.0.type='Literal'][arguments.0.value=/^\\/api(\\/|$)/]",
+    message: RAW_API_FETCH_MESSAGE,
+  },
+  {
+    selector:
+      "CallExpression[callee.name='fetch'][arguments.0.type='TemplateLiteral'][arguments.0.quasis.0.value.raw=/^\\/api(\\/|$)/]",
+    message: RAW_API_FETCH_MESSAGE,
+  },
+];
+
+const DIRECT_API_MESSAGE =
+  "Components/pages/contexts/hooks must not call the API directly. Add a Zustand store action and read via a selector. See .cursor/rules/18-frontend-state.mdc.";
+
 export default defineConfig([
   // Only TypeScript is linted (the old `--ext ts,tsx`).
   globalIgnores([
@@ -77,30 +114,53 @@ export default defineConfig([
       "react/display-name": "warn",
       "react-hooks/rules-of-hooks": "warn",
       "no-empty": "warn",
+
+      "no-restricted-imports": ["error", { patterns: LEGACY_CLIENT_PATTERNS }],
+      "no-restricted-syntax": ["error", ...RAW_API_FETCH],
     },
   },
   {
-    // Frontend state rule (.cursor/rules/18-frontend-state.mdc): components
-    // and pages never call the API directly — go through a Zustand store
-    // action and read the result via a selector. Type-only imports from the
-    // api module are fine; only the `api` client is banned. Hooks are the
-    // data-access seam and are exempt for now (but should also route through
-    // stores — do not add new direct calls there).
-    files: ["src/components/**/*.{ts,tsx}", "src/pages/**/*.{ts,tsx}"],
-    ignores: ["**/hooks/**"],
+    // Frontend state rule (.cursor/rules/18-frontend-state.mdc): components,
+    // pages, contexts and hooks never call the API directly — go through a
+    // Zustand store action and read the result via a selector. Type-only
+    // imports from the api module are fine; the clients are banned, and so is
+    // `fetch` itself (a non-API fetch is an exception, disabled inline with
+    // its reason). Tests may import the client to stub it.
+    files: [
+      "src/components/**/*.{ts,tsx}",
+      "src/pages/**/*.{ts,tsx}",
+      "src/contexts/**/*.{ts,tsx}",
+      "src/hooks/**/*.{ts,tsx}",
+    ],
+    ignores: ["**/*.test.{ts,tsx}"],
     rules: {
       "no-restricted-imports": [
         "error",
         {
           patterns: [
+            ...LEGACY_CLIENT_PATTERNS,
             {
               group: ["**/api", "**/api/index"],
-              importNames: ["api", "unwrapBody", "createApiClient"],
-              message:
-                "Components/pages must not call the API directly. Add a Zustand store action and read via a selector. See .cursor/rules/18-frontend-state.mdc.",
+              importNames: [
+                "api",
+                "unspecced",
+                "unwrap",
+                "unwrapBody",
+                "bodyWithStatus",
+                "createApiClient",
+              ],
+              message: DIRECT_API_MESSAGE,
+            },
+            {
+              group: ["**/api/client", "**/api/unspecced"],
+              message: DIRECT_API_MESSAGE,
             },
           ],
         },
+      ],
+      "no-restricted-globals": [
+        "error",
+        { name: "fetch", message: DIRECT_API_MESSAGE },
       ],
     },
   },

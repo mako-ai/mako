@@ -15,6 +15,8 @@
  */
 
 import { create } from "zustand";
+
+import { api } from "../api/client";
 import {
   addUsage,
   EMPTY_SESSION_USAGE,
@@ -28,10 +30,32 @@ interface ChatUsageState {
   /** Add one finished turn's delta on top of what is already there. */
   addTurnUsage: (chatId: string, delta: SessionUsage) => void;
   clearSessionUsage: (chatId: string) => void;
+  /** The server's authoritative per-chat aggregate (undefined if none). */
+  fetchChatTotals: (
+    workspaceId: string,
+    chatId: string,
+  ) => Promise<ChatUsageTotals | undefined>;
+}
+
+export interface ChatUsageTotals {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  costUsd?: number;
 }
 
 export const useChatUsageStore = create<ChatUsageState>()((set, get) => ({
   byChatId: {},
+
+  fetchChatTotals: async (workspaceId, chatId) => {
+    const { data } = await api.GET(
+      "/api/workspaces/{workspaceId}/usage/by-chat/{chatId}",
+      { params: { path: { workspaceId, chatId } } },
+    );
+    return data?.totals;
+  },
 
   seedSessionUsage: (chatId, totals) => {
     if (!chatId) return;

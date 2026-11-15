@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+import { api, unwrapBody } from "../api";
 import { acpClient } from "../lib/acp-client";
 import {
   acpSupportsAdapterEnsure,
@@ -14,13 +15,10 @@ import type {
   AcpStatus,
   AcpWarmModelsResult,
 } from "../lib/acp-types";
-import {
-  getActiveWorkspaceId,
-  mintMakoMcpAttach,
-} from "../lib/mako-mcp-attach";
+import { mintMakoMcpAttach } from "../lib/mako-mcp-attach";
+import { getCurrentWorkspaceId } from "./workspaceStore";
 import { fetchWorkspaceGuidanceForAcp } from "../lib/acp-system-append";
 import { startDesktopAcpCliLogin } from "../lib/desktop";
-import { apiClient } from "../lib/api-client";
 import {
   sanitizeAcpUserError,
   shouldClearAcpAuthGuidance,
@@ -411,18 +409,16 @@ export const useAcpStore = create<AcpState>()(
     },
 
     applyPlanDecision: async input => {
-      await apiClient.request(
-        `/workspaces/${encodeURIComponent(input.workspaceId)}/acp-plan-grant`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+      unwrapBody(
+        await api.POST("/api/workspaces/{id}/acp-plan-grant", {
+          params: { path: { id: input.workspaceId } },
+          body: {
             agentSessionId: input.agentSessionId,
             decision: input.decision,
             planMarkdown: input.planMarkdown,
             grants: input.grants,
-          }),
-        },
+          },
+        }),
       );
     },
 
@@ -437,22 +433,19 @@ export const useAcpStore = create<AcpState>()(
     },
 
     fetchTurnGuidance: async input => {
-      const response = await apiClient.request<{
-        success: boolean;
-        skillsBlock?: string;
-        dbtRulesBlock?: string;
-      }>(
-        `/workspaces/${encodeURIComponent(input.workspaceId)}/custom-prompt/turn-guidance`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userText: input.userText,
-            includeDbtRules: input.includeDbtRules,
-            dbtProjectId: input.dbtProjectId,
-          }),
-        },
-      );
+      const response = unwrapBody(
+        await api.POST(
+          "/api/workspaces/{workspaceId}/custom-prompt/turn-guidance",
+          {
+            params: { path: { workspaceId: input.workspaceId } },
+            body: {
+              userText: input.userText,
+              includeDbtRules: input.includeDbtRules,
+              dbtProjectId: input.dbtProjectId,
+            },
+          },
+        ),
+      ) as { skillsBlock?: string; dbtRulesBlock?: string };
       return [response.skillsBlock, response.dbtRulesBlock]
         .filter(
           (section): section is string =>
@@ -469,7 +462,7 @@ export const useAcpStore = create<AcpState>()(
       });
       try {
         const workspaceId =
-          options?.workspaceId?.trim() || getActiveWorkspaceId();
+          options?.workspaceId?.trim() || getCurrentWorkspaceId();
         if (!workspaceId) {
           throw new Error(
             `Select a workspace before starting ${providerLabel(

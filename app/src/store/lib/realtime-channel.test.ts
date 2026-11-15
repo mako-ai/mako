@@ -4,7 +4,6 @@
  * isolation.
  */
 import { describe, expect, it, vi } from "vitest";
-
 import { realtimeClientId } from "../../lib/realtime-client-id";
 import {
   dispatchRealtimeEvent,

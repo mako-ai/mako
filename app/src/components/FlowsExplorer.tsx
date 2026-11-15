@@ -17,11 +17,7 @@ import {
   SquareTerminal as ConsoleIcon,
   Webhook as WebhookIcon,
 } from "lucide-react";
-import { apiClient } from "../lib/api-client";
-import type {
-  ScheduledQueryListItem,
-  ScheduledQueryListResponse,
-} from "../lib/api-types";
+import type { ScheduledQueryListItem } from "../lib/api-types";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useConsoleStore } from "../store/consoleStore";
@@ -108,10 +104,9 @@ export function FlowsExplorer() {
     setScheduledError(null);
 
     try {
-      const response = await apiClient.get<ScheduledQueryListResponse>(
-        `/workspaces/${workspaceId}/scheduled-queries`,
+      setScheduledQueries(
+        await useFlowStore.getState().fetchScheduledQueries(workspaceId),
       );
-      setScheduledQueries(response.scheduledQueries || []);
     } catch (err) {
       setScheduledError(
         err instanceof Error ? err.message : "Failed to load scheduled queries",

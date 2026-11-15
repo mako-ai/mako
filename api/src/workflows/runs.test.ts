@@ -85,7 +85,9 @@ void (async () => {
     });
     const body = String(url).includes("/workflow-runs/")
       ? detail
-      : String(url).endsWith(`/tenants/${tenant.tenantId}/workflows`)
+      : new URL(String(url)).pathname.endsWith(
+            `/tenants/${tenant.tenantId}/workflows`,
+          )
         ? { rows: [{ name: "flow", metadata: { id: WORKFLOW } }] }
         : String(url).endsWith(`/workflows/${WORKFLOW}/versions`)
           ? {

@@ -1,24 +1,12 @@
 import {
   cloneElement,
   isValidElement,
-  type CSSProperties,
   type HTMLAttributes,
   type ReactElement,
   type ReactNode,
 } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
-
-/**
- * Touch drags start on a long-press (see useDragSensors), which iOS would
- * otherwise also answer with its callout menu. No `user-select: none` here:
- * the inline rename input renders inside these wrappers.
- */
-function dragWrapperStyle(isDragging: boolean): CSSProperties {
-  return {
-    opacity: isDragging ? 0.4 : 1,
-    WebkitTouchCallout: "none",
-  };
-}
+import { dragWrapperStyle } from "./useTreeDnd";
 
 interface DroppableSectionHeaderProps {
   id: string;

@@ -174,30 +174,30 @@ export class RestConnector extends BaseConnector {
     const base = super.validateConfig();
     const errors = [...base.errors];
 
-    if (!this.dataSource.config.api_base_url) {
+    if (!this.sourceConnection.config.api_base_url) {
       errors.push("API base URL is required");
     }
 
     if (
-      !Array.isArray(this.dataSource.config.entities) ||
-      this.dataSource.config.entities.length === 0
+      !Array.isArray(this.sourceConnection.config.entities) ||
+      this.sourceConnection.config.entities.length === 0
     ) {
       errors.push("At least one entity must be configured");
     }
 
     if (
-      this.dataSource.config.headers &&
-      typeof this.dataSource.config.headers === "string"
+      this.sourceConnection.config.headers &&
+      typeof this.sourceConnection.config.headers === "string"
     ) {
       try {
-        JSON.parse(this.dataSource.config.headers);
+        JSON.parse(this.sourceConnection.config.headers);
       } catch {
         errors.push("Headers must be valid JSON");
       }
     }
 
-    if (Array.isArray(this.dataSource.config.entities)) {
-      this.dataSource.config.entities.forEach((e: any, i: number) => {
+    if (Array.isArray(this.sourceConnection.config.entities)) {
+      this.sourceConnection.config.entities.forEach((e: any, i: number) => {
         if (e.params && typeof e.params === "string") {
           try {
             JSON.parse(e.params);
@@ -223,7 +223,7 @@ export class RestConnector extends BaseConnector {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       };
-      const cfgHeaders = this.dataSource.config.headers;
+      const cfgHeaders = this.sourceConnection.config.headers;
       if (cfgHeaders) {
         try {
           const parsed =
@@ -238,7 +238,7 @@ export class RestConnector extends BaseConnector {
 
       // User-supplied base URL: SSRF-guarded (no private/metadata targets).
       this.httpClient = createSsrfSafeAxios({
-        baseURL: this.dataSource.config.api_base_url,
+        baseURL: this.sourceConnection.config.api_base_url,
         headers,
       });
     }
@@ -269,7 +269,7 @@ export class RestConnector extends BaseConnector {
   }
 
   getAvailableEntities(): string[] {
-    const list = this.dataSource.config.entities || [];
+    const list = this.sourceConnection.config.entities || [];
     return list.map((e: any) => e.name);
   }
 
@@ -396,7 +396,7 @@ export class RestConnector extends BaseConnector {
   }
 
   private getEntityConfig(name: string) {
-    const entities = this.dataSource.config.entities || [];
+    const entities = this.sourceConnection.config.entities || [];
     const found = entities.find((e: any) => e.name === name);
     if (!found) return undefined;
     return {

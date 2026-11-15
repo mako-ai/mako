@@ -4,7 +4,9 @@ import {
   DatabaseTreeNode,
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
-import { databaseConnectionService } from "../../../services/database-connection.service";
+import { executeCheckedQuery } from "../../checked-query";
+import type { QueryExecuteOptions, QueryResult } from "../../query-types";
+import { clickHouseEngine } from "./engine";
 
 export class ClickHouseDatabaseDriver implements DatabaseDriver {
   getMetadata(): DatabaseDriverMetadata {
@@ -30,10 +32,7 @@ export class ClickHouseDatabaseDriver implements DatabaseDriver {
     database: IDatabaseConnection,
   ): Promise<DatabaseTreeNode[]> {
     // List all databases in the ClickHouse server
-    const result = await databaseConnectionService.executeQuery(
-      database,
-      "SHOW DATABASES",
-    );
+    const result = await executeCheckedQuery(database, "SHOW DATABASES");
 
     if (!result.success || !result.data) {
       return [];
@@ -69,7 +68,7 @@ export class ClickHouseDatabaseDriver implements DatabaseDriver {
     if (parent.kind === "database") {
       // List tables in the database
       const dbName = parent.metadata?.databaseName || parent.id;
-      const result = await databaseConnectionService.executeQuery(
+      const result = await executeCheckedQuery(
         database,
         `SELECT name, engine 
          FROM system.tables 
@@ -100,7 +99,7 @@ export class ClickHouseDatabaseDriver implements DatabaseDriver {
       const { databaseName, tableName } = parent.metadata || {};
       if (!databaseName || !tableName) return [];
 
-      const result = await databaseConnectionService.executeQuery(
+      const result = await executeCheckedQuery(
         database,
         `SELECT name, type 
          FROM system.columns 
@@ -135,9 +134,9 @@ export class ClickHouseDatabaseDriver implements DatabaseDriver {
   async executeQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: any,
-  ) {
-    return databaseConnectionService.executeQuery(database, query, options);
+    options?: QueryExecuteOptions,
+  ): Promise<QueryResult> {
+    return executeCheckedQuery(database, query, options);
   }
 
   async getAutocompleteData(
@@ -146,7 +145,7 @@ export class ClickHouseDatabaseDriver implements DatabaseDriver {
     Record<string, Record<string, Array<{ name: string; type: string }>>>
   > {
     // Get all columns from all tables across all databases
-    const result = await databaseConnectionService.executeQuery(
+    const result = await executeCheckedQuery(
       database,
       `SELECT database, table, name, type 
        FROM system.columns 
@@ -192,6 +191,6 @@ export class ClickHouseDatabaseDriver implements DatabaseDriver {
   async cancelQuery(
     executionId: string,
   ): Promise<{ success: boolean; error?: string }> {
-    return databaseConnectionService.cancelClickHouseQuery(executionId);
+    return clickHouseEngine.cancelQuery(executionId);
   }
 }

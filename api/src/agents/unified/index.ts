@@ -51,6 +51,8 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
   const versionHistoryTools = createVersionHistoryTools(workspaceId);
   const dbtServerTools = createDbtServerTools(workspaceId, userId, {
     chatId: context.chatId,
+    queryAccess: context.queryAccess,
+    toolExecutionContext: context.toolExecutionContext,
   });
   const webTools = createWebTools(context.toolExecutionContext);
   const serverNotebookTools = createNotebookServerTools({

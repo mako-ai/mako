@@ -19,10 +19,9 @@ import {
   ArrowForward as ArrowForwardIcon,
   ArrowBack as ArrowBackIcon,
 } from "@mui/icons-material";
-import { workspaceClient, type PendingInvite } from "../lib/workspace-client";
+import { useWorkspaceStore, type PendingInvite } from "../store/workspaceStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent } from "../lib/analytics";
-import { apiClient } from "../lib/api-client";
 import { useOnboarding } from "../contexts/onboarding-context";
 import {
   QualificationStep,
@@ -180,7 +179,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
     const loadInvites = async () => {
       try {
-        const invites = await workspaceClient.getPendingInvitesForUser();
+        const invites = await useWorkspaceStore
+          .getState()
+          .getPendingInvitesForUser();
         setPendingInvites(invites);
         setState("choose-workspace");
       } catch (error: unknown) {
@@ -274,7 +275,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
       // Save qualification data to user profile
       try {
-        await apiClient.put("/auth/onboarding", {
+        await useWorkspaceStore.getState().saveOnboardingAnswers({
           role: data.role,
           companySize: data.companySize,
           primaryDatabase: data.primaryDatabase,
@@ -303,7 +304,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
             throw new Error("No workspace found");
           }
 
-          await apiClient.post(`/workspaces/${workspaceId}/databases/demo`);
+          await useSchemaStore.getState().createDemoDatabase(workspaceId);
 
           // Refresh workspaces to get updated state
           await refreshWorkspaces();

@@ -62,6 +62,3 @@ export const useSourceConnectionStore = create<SourceConnectionState>()(
     },
   ),
 );
-
-/** @deprecated use useSourceConnectionStore */
-export const useConnectorStore = useSourceConnectionStore;

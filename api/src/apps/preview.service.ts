@@ -24,7 +24,14 @@
  *   artifact store, so nothing about it is instance-local — the signature
  *   is all any instance needs to trust the token.
  */
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
+import {
+  MISSING_TOKEN_SECRET,
+  decodeTokenBody,
+  signTokenPayload,
+  tokenSecret,
+  verifiedTokenBody,
+} from "./signed-token";
 import { stableWindow } from "./app-origin";
 import { contentTypeFor } from "./deployment.service";
 import fs from "node:fs/promises";
@@ -153,17 +160,9 @@ interface PublishedTokenPayload {
 }
 
 function resolveSecret(): string {
-  const secret = process.env.SESSION_SECRET || process.env.ENCRYPTION_KEY;
-  if (!secret) {
-    throw new Error(
-      "Missing HMAC secret: set SESSION_SECRET or ENCRYPTION_KEY",
-    );
-  }
+  const secret = tokenSecret();
+  if (!secret) throw new Error(MISSING_TOKEN_SECRET);
   return secret;
-}
-
-function sign(body: string, secret: string): string {
-  return createHmac("sha256", secret).update(body).digest("base64url");
 }
 
 export function mintPublishedGrant(input: {
@@ -205,10 +204,7 @@ export function mintPublishedGrant(input: {
     ...(input.share ? { sh: input.share } : {}),
     exp,
   };
-  const body = Buffer.from(JSON.stringify(payload), "utf8").toString(
-    "base64url",
-  );
-  const token = `${PUBLISHED_TOKEN_PREFIX}${body}.${sign(body, resolveSecret())}`;
+  const token = `${PUBLISHED_TOKEN_PREFIX}${signTokenPayload(payload, resolveSecret())}`;
   return {
     token,
     workspaceId: input.workspaceId,
@@ -235,28 +231,16 @@ export function shareFingerprint(shareToken: string): string {
 }
 
 function resolvePublishedGrant(token: string): PreviewGrant | null {
-  const [body, signature] = token
-    .slice(PUBLISHED_TOKEN_PREFIX.length)
-    .split(".");
-  if (!body || !signature) return null;
-  let secret: string;
-  try {
-    secret = resolveSecret();
-  } catch {
-    return null;
-  }
-  const expected = Buffer.from(sign(body, secret), "utf8");
-  const actual = Buffer.from(signature, "utf8");
-  // Length-check first: timingSafeEqual THROWS on a length mismatch rather
-  // than returning false, which would turn a forged token into a 500.
-  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
-    return null;
-  }
+  const secret = tokenSecret();
+  if (!secret) return null;
+  const verified = verifiedTokenBody(
+    token.slice(PUBLISHED_TOKEN_PREFIX.length),
+    secret,
+  );
+  if ("error" in verified) return null;
   let payload: PublishedTokenPayload;
   try {
-    payload = JSON.parse(
-      Buffer.from(body, "base64url").toString("utf8"),
-    ) as PublishedTokenPayload;
+    payload = decodeTokenBody<PublishedTokenPayload>(verified.body);
   } catch {
     return null;
   }

@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -26,7 +27,7 @@ export async function up(db: Db): Promise<void> {
 
   const folders = db.collection("notebookfolders");
   try {
-    const existingIndexes = await folders.indexes();
+    const existingIndexes = await indexesOf(folders);
     const alreadyExists = existingIndexes.some(
       idx => idx.key && idx.key.workspaceId === 1 && idx.key.parentId === 1,
     );
@@ -50,7 +51,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   try {
-    const existingIndexes = await folders.indexes();
+    const existingIndexes = await indexesOf(folders);
     const alreadyExists = existingIndexes.some(
       idx => idx.key && idx.key.workspaceId === 1 && idx.key.access === 1,
     );
@@ -75,7 +76,7 @@ export async function up(db: Db): Promise<void> {
 
   const indexes = db.collection("notebookindexes");
   try {
-    const existingIndexes = await indexes.indexes();
+    const existingIndexes = await indexesOf(indexes);
     const alreadyExists = existingIndexes.some(
       idx => idx.key && idx.key.workspaceId === 1 && idx.key.notebookId === 1,
     );
@@ -99,7 +100,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   try {
-    const existingIndexes = await indexes.indexes();
+    const existingIndexes = await indexesOf(indexes);
     const alreadyExists = existingIndexes.some(
       idx => idx.key && idx.key.workspaceId === 1 && idx.key.folderId === 1,
     );
@@ -123,7 +124,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   try {
-    const existingIndexes = await indexes.indexes();
+    const existingIndexes = await indexesOf(indexes);
     const alreadyExists = existingIndexes.some(
       idx =>
         idx.key &&

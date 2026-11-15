@@ -35,6 +35,7 @@ import { ACP_MCP_CLIENT_ID } from "../auth/mcp-oauth.service";
 import type { AuthEnv } from "../openapi/core";
 import { loggers } from "../logging";
 import { resolveAcpPlanGrants } from "../services/acp-plan-grant.service";
+import { fail } from "./lib/respond";
 
 const logger = loggers.api("mcp-server");
 
@@ -79,15 +80,13 @@ mcpProtocolRoutes.post(
     // authenticate with either the OAuth sign-in flow or a workspace API key
     // so the workspace binding is unambiguous.
     if (!isApiKeyAuth(c) && !isMcpOAuthAuth(c)) {
-      return c.json(
-        {
-          error:
-            "The MCP endpoint requires OAuth (connect this URL from your MCP " +
-            "client and sign in) or a workspace API key " +
-            "(Authorization: Bearer revops_..., created under Workspace " +
-            "Settings → API keys).",
-        },
+      return fail(
+        c,
         401,
+        "The MCP endpoint requires OAuth (connect this URL from your MCP " +
+          "client and sign in) or a workspace API key " +
+          "(Authorization: Bearer revops_..., created under Workspace " +
+          "Settings → API keys).",
       );
     }
 
@@ -95,7 +94,7 @@ mcpProtocolRoutes.post(
     const user = c.get("user");
     const apiKey = c.get("apiKey");
     if (!workspaceId) {
-      return c.json({ error: "Credential is not bound to a workspace" }, 401);
+      return fail(c, 401, "Credential is not bound to a workspace");
     }
     const scopes = isMcpOAuthAuth(c)
       ? resolveWorkspaceApiKeyScopes(c.get("mcpOAuthScopes"))
@@ -104,17 +103,16 @@ mcpProtocolRoutes.post(
       // Agents relay this verbatim to the user, so the error is the docs:
       // say why AND how to fix it.
       const isLegacyKey = apiKey?.scopes === undefined;
-      return c.json(
-        {
-          error: isLegacyKey
-            ? "This API key was created before MCP scopes existed and cannot " +
+      return fail(
+        c,
+        403,
+        isLegacyKey
+          ? "This API key was created before MCP scopes existed and cannot " +
               "use MCP. Create a new key under Workspace Settings → API keys " +
               "(new keys include read-only MCP access by default) and update " +
               "your MCP client configuration with it."
-            : "This API key does not include the mcp scope. Create a new key " +
+          : "This API key does not include the mcp scope. Create a new key " +
               "under Workspace Settings → API keys and use that for MCP.",
-        },
-        403,
       );
     }
 
@@ -191,8 +189,8 @@ mcpProtocolRoutes.post(
 
 // Stateless mode: no server-initiated SSE stream and no session to delete.
 mcpProtocolRoutes.get("/", c =>
-  c.json({ error: "This MCP server is stateless; use POST" }, 405),
+  fail(c, 405, "This MCP server is stateless; use POST"),
 );
 mcpProtocolRoutes.delete("/", c =>
-  c.json({ error: "This MCP server is stateless; there is no session" }, 405),
+  fail(c, 405, "This MCP server is stateless; there is no session"),
 );

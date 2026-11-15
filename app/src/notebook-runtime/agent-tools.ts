@@ -19,7 +19,7 @@ import {
   type NotebookBlock,
   type NotebookBlockType,
 } from "../store/notebookStore";
-import { useUIStore } from "../store/uiStore";
+import { getCurrentWorkspaceId } from "../store/workspaceStore";
 import {
   executeCode,
   startKernelSession,
@@ -323,7 +323,7 @@ export async function executeNotebookAgentTool(
       if (!cell.connectionId) {
         return fail("Set a data source (connectionId) on the cell first.");
       }
-      const workspaceId = useUIStore.getState().currentWorkspaceId ?? null;
+      const workspaceId = getCurrentWorkspaceId();
       if (!workspaceId) return fail("No active workspace");
       const res = await useConsoleStore
         .getState()
@@ -359,7 +359,7 @@ export async function executeNotebookAgentTool(
             "run_notebook_sql_cell for SQL.",
         );
       }
-      const workspaceId = useUIStore.getState().currentWorkspaceId ?? null;
+      const workspaceId = getCurrentWorkspaceId();
       if (!workspaceId) return fail("No active workspace");
       const collected: KernelOutput[] = [];
       try {

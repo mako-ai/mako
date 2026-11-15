@@ -20,6 +20,7 @@ import {
 } from "../billing/billing.service";
 import { loggers } from "../logging";
 import { OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { fail } from "./lib/respond";
 
 const logger = loggers.api("stripe-webhook");
 
@@ -44,7 +45,7 @@ stripeWebhookRoutes.openapi(
   }),
   async c => {
     if (!isBillingEnabled()) {
-      return c.json({ error: "Billing is not enabled" }, 400);
+      return fail(c, 400, "Billing is not enabled");
     }
 
     let event: Stripe.Event;
@@ -58,7 +59,7 @@ stripeWebhookRoutes.openapi(
       const signature = c.req.header("stripe-signature");
 
       if (!signature) {
-        return c.json({ error: "Missing stripe-signature header" }, 400);
+        return fail(c, 400, "Missing stripe-signature header");
       }
 
       event = stripe.webhooks.constructEvent(
@@ -68,7 +69,7 @@ stripeWebhookRoutes.openapi(
       );
     } catch (err) {
       logger.error("Webhook signature verification failed", { error: err });
-      return c.json({ error: "Invalid signature" }, 400);
+      return fail(c, 400, "Invalid signature");
     }
 
     logger.info("Received Stripe webhook", {
@@ -172,7 +173,7 @@ stripeWebhookRoutes.openapi(
         type: event.type,
         error: err,
       });
-      return c.json({ error: "Webhook processing error" }, 500);
+      return fail(c, 500, "Webhook processing error");
     }
 
     return c.json({ received: true });

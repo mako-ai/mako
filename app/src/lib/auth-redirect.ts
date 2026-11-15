@@ -14,7 +14,7 @@
  * next request succeeds once the new revision is serving.
  */
 import { getApiBasePath } from "./api-base-path";
-import { clearActiveWorkspaceId } from "./active-workspace";
+import { forgetWorkspaceId } from "./active-workspace";
 
 const LOGIN_PATH = "/login";
 const AUTH_PAGES = new Set([LOGIN_PATH, "/register"]);
@@ -43,7 +43,7 @@ function delay(ms: number): Promise<void> {
 }
 
 function clearActiveWorkspace(): void {
-  clearActiveWorkspaceId();
+  forgetWorkspaceId();
 }
 
 function redirectToLogin(): void {

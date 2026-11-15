@@ -610,6 +610,41 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "link",
   },
+  // Semantic layer (api/src/agent-lib/tools/dbt-metric-tools.ts).
+  list_metrics: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const { query, metrics } = (input ?? {}) as Record<string, unknown>;
+      if (Array.isArray(metrics) && metrics.length > 0) {
+        return `Describing ${metrics.join(", ")}`;
+      }
+      return query ? `Finding metrics for "${query}"` : "Listing metrics";
+    },
+    icon: "search",
+  },
+  compile_metric: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const metrics = (input as Record<string, unknown>)?.metrics;
+      return Array.isArray(metrics) && metrics.length > 0
+        ? `Compiling ${metrics.join(", ")}`
+        : "Compiling a metric";
+    },
+    icon: "eye",
+  },
+  query_metric: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const metrics = (input as Record<string, unknown>)?.metrics;
+      return Array.isArray(metrics) && metrics.length > 0
+        ? `Querying ${metrics.join(", ")}`
+        : "Querying a metric";
+    },
+    icon: "bar-chart",
+  },
   // dbt file mutation tools execute SERVER-SIDE (issue #475 pattern; see
   // createDbtServerTools in api/src/agent-lib/tools/dbt-tools.ts). Open editor
   // tabs follow along via the realtime channel (dbt.file.updated).

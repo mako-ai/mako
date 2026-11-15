@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -20,7 +21,7 @@ async function ensureIndex(
   options: { name: string; unique?: boolean },
 ): Promise<void> {
   const collection = db.collection("app_deploy_commit_statuses");
-  const existing = await collection.indexes().catch(() => []);
+  const existing = await indexesOf(collection).catch(() => []);
   if (hasIndexOnKeys(existing, keyPattern)) {
     log.info(`Index ${options.name} already exists`);
     return;

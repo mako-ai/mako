@@ -34,11 +34,11 @@ import {
   Close,
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
-import { workspaceClient } from "../lib/workspace-client";
+import { useWorkspaceStore } from "../store/workspaceStore";
 import { useAuth } from "../contexts/auth-context";
 import { trackEvent } from "../lib/analytics";
 import { useConfirm } from "./ConfirmDialog";
-import { useTransientMessage } from "../hooks/useTransientMessage";
+import { notify } from "../store/notificationStore";
 
 interface MemberRow {
   id: string;
@@ -71,11 +71,6 @@ export function WorkspaceMembers() {
   );
   const [inviting, setInviting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const {
-    message: successMessage,
-    show: showSuccess,
-    clear: clearSuccess,
-  } = useTransientMessage();
 
   const handleInviteMember = async () => {
     if (!inviteEmail.trim()) {
@@ -97,7 +92,9 @@ export function WorkspaceMembers() {
       setInviteDialogOpen(false);
       setInviteEmail("");
       setInviteRole("member");
-      showSuccess("Invitation sent successfully", 5000);
+      notify.success("Invitation sent successfully", {
+        autoHideDuration: 5000,
+      });
     } catch (error: any) {
       setError(error.message || "Failed to send invitation");
     } finally {
@@ -155,7 +152,9 @@ export function WorkspaceMembers() {
   const copyInviteLink = (token: string) => {
     const inviteUrl = `${window.location.origin}/invite/${token}`;
     navigator.clipboard.writeText(inviteUrl);
-    showSuccess("Invite link copied to clipboard", 3000);
+    notify.success("Invite link copied to clipboard", {
+      autoHideDuration: 3000,
+    });
   };
 
   const getRoleBadgeColor = (role: string) => {
@@ -231,12 +230,6 @@ export function WorkspaceMembers() {
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
           {error}
-        </Alert>
-      )}
-
-      {successMessage && (
-        <Alert severity="success" sx={{ mb: 2 }} onClose={clearSuccess}>
-          {successMessage}
         </Alert>
       )}
 
@@ -463,16 +456,12 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
   const [domains, setDomains] = useState("");
   const [role, setRole] = useState<"member" | "viewer">("viewer");
   const [saving, setSaving] = useState(false);
-  const {
-    message,
-    show: showMessage,
-    clear: clearMessage,
-  } = useTransientMessage();
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    workspaceClient
+    useWorkspaceStore
+      .getState()
       .getAutoJoin(workspaceId)
       .then(current => {
         if (cancelled) return;
@@ -489,21 +478,22 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
   const save = async () => {
     setSaving(true);
     setError(null);
-    clearMessage();
     try {
       const list = domains
         .split(/[,\s]+/)
         .map(d => d.trim())
         .filter(Boolean);
-      const saved = await workspaceClient.setAutoJoin(workspaceId, {
-        domains: list,
-        role,
-      });
-      showMessage(
+      const saved = await useWorkspaceStore
+        .getState()
+        .setAutoJoin(workspaceId, {
+          domains: list,
+          role,
+        });
+      notify.success(
         saved
           ? `Anyone with an email on ${saved.domains.join(", ")} now joins as ${saved.role} the first time they open the workspace or one of its apps.`
           : "Auto-join is off.",
-        6000,
+        { autoHideDuration: 6000 },
       );
     } catch (e: any) {
       setError(e.message || "Failed to save auto-join");
@@ -541,11 +531,6 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
       {error && (
         <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setError(null)}>
           {error}
-        </Alert>
-      )}
-      {message && (
-        <Alert severity="success" sx={{ mb: 1.5 }} onClose={clearMessage}>
-          {message}
         </Alert>
       )}
       <Box

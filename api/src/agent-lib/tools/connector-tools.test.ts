@@ -76,7 +76,7 @@ vi.mock("../../connections/proxy.service", () => ({
 
 import { ProbeError } from "../../connectors/probe.service";
 import {
-  Connector as SourceConnection,
+  SourceConnection,
   DatabaseConnection,
 } from "../../database/workspace-schema";
 import { encryptString } from "../../services/crypto.service";

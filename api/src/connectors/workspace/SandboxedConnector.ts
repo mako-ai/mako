@@ -79,14 +79,14 @@ export class SandboxedConnector extends BaseConnector {
   private catalogCache: ProtocolMessage | null = null;
 
   private get slug(): string {
-    return slugFromType(this.dataSource.type);
+    return slugFromType(this.sourceConnection.type);
   }
 
   private get workspaceId(): string {
-    const id = (this.dataSource as { workspaceId?: unknown }).workspaceId;
+    const id = (this.sourceConnection as { workspaceId?: unknown }).workspaceId;
     if (!id) {
       throw new Error(
-        `Workspace connector "${this.dataSource.type}" needs a workspaceId on its data source; ` +
+        `Workspace connector "${this.sourceConnection.type}" needs a workspaceId on its data source; ` +
           `a workspace connector cannot be resolved globally.`,
       );
     }
@@ -141,7 +141,7 @@ export class SandboxedConnector extends BaseConnector {
   }
 
   private config(): Record<string, unknown> {
-    return (this.dataSource.config ?? {}) as Record<string, unknown>;
+    return (this.sourceConnection.config ?? {}) as Record<string, unknown>;
   }
 
   async testConnection(): Promise<ConnectionTestResult> {
@@ -348,7 +348,7 @@ export class SandboxedConnector extends BaseConnector {
       if (!state.hasMore) return;
     }
     logger.warn("fetchEntity stopped at the chunk ceiling", {
-      type: this.dataSource.type,
+      type: this.sourceConnection.type,
       entity: options.entity,
     });
   }
