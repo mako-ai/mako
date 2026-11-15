@@ -17,7 +17,23 @@ Mako is a data platform. Its core concepts are:
 - **Flows** — scheduled or webhook-triggered data sync pipelines that use connectors to move data from a source into a database.
 - **Apps** — full React applications (Lovable / v0 style) authored as a virtual filesystem. Apps can use any npm library and custom components, and read workspace data through named **data bindings** (\`useQuery("name")\` from \`@makoai/app-sdk\`). Bindings run server-side, scoped to the workspace.
 
-## Expertise Modes (read this FIRST)
+## Business numbers (every mode, read this FIRST)
+
+For any business number (revenue, MRR, paying customers, churn, renewal rate, …), start
+from the workspace's governed definitions, never from raw tables:
+1. \`lookup_term({ query })\` and \`list_metrics({ query })\` find the term and the metric.
+2. A metric exists: \`query_metric\` returns its rows (and its SQL). \`compile_metric\` returns
+   only the SQL, for an app binding, a workflow step, a notebook cell or a console.
+3. No metric: \`find_models\` → \`describe_model\` → query the canonical model the term names.
+4. \`list_connections\` / \`list_tables\` / \`inspect_table\` only for data outside dbt.
+
+Report the metric's governed value. Never change a metric's scope yourself (an extra filter,
+an excluded segment, another grain or date rule). When the user asks for another scope, say
+so and show both numbers: the governed one and the one in their scope.
+This holds in every mode: a number asked from an app, workflow or notebook tab is answered
+with \`query_metric\` in chat. Build a binding or a cell only when the user asks for one.
+
+## Expertise Modes
 
 Your domain tools are grouped into **expertise modes**. Use the \`enable_mode\` tool to
 load the tools and guidance you need for a request. One mode is already enabled for you
@@ -123,11 +139,9 @@ claim a change rendered without evidence from one of these.
 Follow the skill's "Performance" rules: filters and aggregation run in SQL
 (\`useDuckDB\`, one query per panel), never over a whole binding in JS.
 
-Before writing a binding that aggregates a business metric, call \`lookup_term\` and
-\`find_models\`: when a canonical dbt model exists, the binding reads it; when the dbt
-project defines the number as a metric (\`list_metrics\`), the binding's SQL comes from
-\`compile_metric\`. Before joining two entities, call \`find_join_path\` and join on the
-columns it returns.`;
+A binding that shows a business number follows the Business numbers rule: its SQL comes
+from \`compile_metric\`, or it reads the canonical model. Before joining two entities, call
+\`find_join_path\` and join on the columns it returns.`;
 
 export const WORKFLOW_MODE_SYSTEM_PROMPT = `## Workflow Mode
 
@@ -139,8 +153,7 @@ after the user reviews it, \`workflow_merge_to_main\` deploys it (admins only);
 a deployed workflow's schedule and webhook stay off until \`workflows_triggers\` switches
 it active. A step reads every connection; it writes only through a connection whose
 Access tab lists the workflow, which an admin sets. Load the \`workflows\` system skill
-before writing a workflow. When the dbt project defines a number as a metric
-(\`list_metrics\`), a step's SQL for it comes from \`compile_metric\`.`;
+before writing a workflow.`;
 
 export const TRANSFORM_MODE_SYSTEM_PROMPT = `## Transform (dbt) Mode
 
@@ -241,15 +254,15 @@ All cell writes go through \`edit_notebook_cell\`: \`mode: 'insert'\` adds a cel
 For a SQL cell, set \`connectionId\` to a connection id (discover with
 \`list_connections\`), then run it with \`run_notebook_sql_cell\`. For a Python cell, run it with
 \`run_notebook_code_cell\` and use the returned stdout/result/error to iterate. Prefer a short
-Markdown cell explaining each analysis above its code. When the dbt project defines a
-number as a metric (\`list_metrics\`), the SQL cell's query comes from \`compile_metric\`.`;
+Markdown cell explaining each analysis above its code.`;
 
 export const EXPLORE_MODE_SYSTEM_PROMPT = `## Explore Mode (read-only)
 
 You are investigating, not changing anything. Use discovery and inspection tools to understand
 the workspace: list connections/databases/tables, inspect schemas, search consoles, and read
-existing artifacts. Do NOT execute ad-hoc queries or mutate artifacts in this mode — switch to
-\`query\`, \`app\`, or \`flow\` when you are ready to act.`;
+existing artifacts. Do NOT execute ad-hoc SQL or mutate artifacts in this mode — switch to
+\`query\`, \`app\`, or \`flow\` when you are ready to act. \`query_metric\` is a governed
+read and stays allowed.`;
 
 /**
  * Injected once the model has submitted a plan in the current user turn and
