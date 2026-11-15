@@ -201,40 +201,6 @@ export class ConsoleManager {
   }
 
   /**
-   * Determine which section a console belongs to for a given user.
-   */
-  static classifyForUser(
-    console: ISavedConsole,
-    userId: string,
-  ): "my" | "workspace" | null {
-    const ownerId = (console.owner_id || console.createdBy)?.toString();
-    if (ownerId === userId) return "my";
-
-    const access = ConsoleManager.resolveAccess(console);
-    if (access === "workspace") return "workspace";
-    // Private consoles shared explicitly with this user surface under the
-    // shared section so collaborators can find them.
-    if (ConsoleManager.isCollaborator(console, userId)) return "workspace";
-    return null;
-  }
-
-  /**
-   * Determine which section a folder belongs to for a given user.
-   */
-  static classifyFolderForUser(
-    folder: IConsoleFolder,
-    userId: string,
-  ): "my" | "workspace" | null {
-    const ownerId = folder.ownerId?.toString();
-    if (ownerId && ownerId === userId) return "my";
-
-    const access =
-      folder.access || (folder.isPrivate ? "private" : "workspace");
-    if (access === "workspace") return "workspace";
-    return null;
-  }
-
-  /**
    * The folder cache for an inheritance check: the caller's (shared across
    * many consoles, see prefetch) or a fresh one scoped to the console's
    * workspace. Null when no workspace is known — the walk is then skipped
@@ -556,39 +522,6 @@ export class ConsoleManager {
   }
 
   /**
-   * Console body. Saved consoles read the file at main; drafts stay on the
-   * Mongo working copy. A saved row with no git file is not found.
-   */
-  async getConsole(consolePath: string, workspaceId?: string): Promise<string> {
-    try {
-      if (!workspaceId) {
-        throw new Error(`Console not found: ${consolePath}`);
-      }
-      if (Types.ObjectId.isValid(consolePath)) {
-        const found = await loadLiveConsoleById(workspaceId, consolePath);
-        if (found && "draft" in found) return found.draft.code;
-        if (found && "live" in found) return found.live.parsed.code;
-        throw new Error(`Console not found: ${consolePath}`);
-      }
-      const live = await loadLiveConsoles(workspaceId);
-      const name = consolePath.split("/").pop();
-      const match = live.find(
-        item =>
-          item.location.name === name &&
-          (item.location.folderSegments.join("/")
-            ? `${item.location.folderSegments.join("/")}/${item.location.name}`
-            : item.location.name) === consolePath,
-      );
-      if (match) return match.parsed.code;
-      throw new Error(`Console not found: ${consolePath}`);
-    } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
-      logger.error("Error getting console from git", { error });
-      throw error;
-    }
-  }
-
-  /**
    * GET a console by id. Drafts are the Mongo working copy; saved consoles
    * are live only when the file exists at main.
    */
@@ -712,86 +645,6 @@ export class ConsoleManager {
       if (error instanceof RepoRequiredError) throw error;
       logger.error("Error updating console access", { error });
       return null;
-    }
-  }
-
-  /**
-   * Update access level for a folder.
-   * Propagates to child folders and consoles owned by the same user.
-   */
-  async updateFolderAccess(
-    folderId: string,
-    workspaceId: string,
-    userId: string,
-    access: ConsoleAccessLevel,
-  ): Promise<boolean> {
-    try {
-      const folder = await ConsoleFolder.findOne({
-        _id: new Types.ObjectId(folderId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!folder) return false;
-
-      const ownerId = folder.ownerId?.toString();
-      if (!ownerId || ownerId !== userId) return false;
-
-      folder.access = access;
-      folder.isPrivate = access === "private";
-      await folder.save();
-
-      await this.propagateFolderAccess(folderId, workspaceId, userId, access);
-      await this.reprojectFolderSubtree(
-        folderId,
-        workspaceId,
-        userId,
-        `access ${access}: folder ${folder.name}`,
-      );
-
-      return true;
-    } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
-      logger.error("Error updating folder access", { error });
-      return false;
-    }
-  }
-
-  /**
-   * Recursively propagate access to all children of a folder.
-   */
-  private async propagateFolderAccess(
-    folderId: string,
-    workspaceId: string,
-    ownerId: string,
-    access: ConsoleAccessLevel,
-  ): Promise<void> {
-    const wid = new Types.ObjectId(workspaceId);
-    const fid = new Types.ObjectId(folderId);
-
-    await SavedConsole.updateMany(
-      {
-        workspaceId: wid,
-        folderId: fid,
-        $or: [{ owner_id: ownerId }, { createdBy: ownerId }],
-      },
-      { $set: { access, isPrivate: access === "private" } },
-    );
-
-    const childFolders = await ConsoleFolder.find({
-      workspaceId: wid,
-      parentId: fid,
-      ownerId,
-    });
-
-    for (const child of childFolders) {
-      child.access = access;
-      child.isPrivate = access === "private";
-      await child.save();
-      await this.propagateFolderAccess(
-        child._id.toString(),
-        workspaceId,
-        ownerId,
-        access,
-      );
     }
   }
 
@@ -1122,38 +975,6 @@ export class ConsoleManager {
   }
 
   /**
-   * Delete a console from database
-   */
-  async deleteConsole(
-    consoleId: string,
-    workspaceId: string,
-  ): Promise<boolean> {
-    try {
-      const doomed = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      }).select("path");
-      if (doomed?.path) {
-        await commitConsoleRemoval({
-          workspaceId,
-          path: doomed.path,
-          message: `delete: ${doomed.path}`,
-        });
-      }
-      const result = await SavedConsole.deleteOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-
-      return result.deletedCount > 0;
-    } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
-      logger.error("Error deleting console", { error });
-      return false;
-    }
-  }
-
-  /**
    * Rename a folder in the database
    */
   async renameFolder(
@@ -1317,58 +1138,6 @@ export class ConsoleManager {
   }
 
   /**
-   * Check if console exists in database
-   */
-  async consoleExists(
-    consolePath: string,
-    workspaceId?: string,
-  ): Promise<boolean> {
-    try {
-      if (workspaceId) {
-        if (Types.ObjectId.isValid(consolePath)) {
-          const savedConsole = await SavedConsole.findOne({
-            _id: new Types.ObjectId(consolePath),
-            workspaceId: new Types.ObjectId(workspaceId),
-          });
-          return !!savedConsole;
-        } else {
-          const parts = consolePath.split("/");
-          const consoleName = parts[parts.length - 1];
-
-          // Get folder ID if there's a folder path
-          let folderId: string | undefined;
-          if (parts.length > 1) {
-            const folderParts = parts.slice(0, -1);
-            folderId = await this.findFolderByPath(folderParts, workspaceId);
-          }
-
-          // Check for console with same name in same folder (or root if no folder)
-          const query: any = {
-            name: consoleName,
-            workspaceId: new Types.ObjectId(workspaceId),
-          };
-
-          if (folderId) {
-            query.folderId = new Types.ObjectId(folderId);
-          } else {
-            // For root level consoles, check that folderId is null/undefined
-            query.$or = [{ folderId: null }, { folderId: { $exists: false } }];
-          }
-
-          const savedConsole = await SavedConsole.findOne(query);
-          return !!savedConsole;
-        }
-      }
-
-      return false;
-    } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
-      logger.error("Error checking console existence", { error });
-      return false;
-    }
-  }
-
-  /**
    * Get console by path - returns the full console document
    * Used for conflict detection when saving
    */
@@ -1414,30 +1183,6 @@ export class ConsoleManager {
     } catch (error) {
       logger.error("Error getting console by path", { error });
       return null;
-    }
-  }
-
-  /**
-   * Update execution stats
-   */
-  async updateExecutionStats(
-    consoleId: string,
-    workspaceId: string,
-  ): Promise<void> {
-    try {
-      await SavedConsole.updateOne(
-        {
-          _id: new Types.ObjectId(consoleId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        },
-        {
-          $inc: { executionCount: 1 },
-          $set: { lastExecutedAt: new Date() },
-        },
-      );
-    } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
-      logger.error("Error updating execution stats", { error });
     }
   }
 
