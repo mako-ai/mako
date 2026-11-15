@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -31,7 +32,7 @@ export async function up(db: Db): Promise<void> {
     },
   ];
 
-  const existingLlmIdx = await llmUsage.indexes();
+  const existingLlmIdx = await indexesOf(llmUsage);
 
   function keySpecExists(
     existing: Awaited<ReturnType<typeof llmUsage.indexes>>,

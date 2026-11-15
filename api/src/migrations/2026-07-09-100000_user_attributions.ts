@@ -1,4 +1,5 @@
 import { Db } from "mongodb";
+import { indexesOf } from "./index-helpers";
 
 export const description =
   "Create user_attributions (write-once, 1:1 with users; first-party signup attribution from the mako_attr cookie) with a sparse gclid index";
@@ -34,7 +35,7 @@ async function ensureNamedIndex(
         .listCollections({ name: collectionName }, { nameOnly: true })
         .toArray()
     ).length > 0;
-  const indexes: IndexInfo[] = exists ? await collection.indexes() : [];
+  const indexes: IndexInfo[] = exists ? await indexesOf(collection) : [];
 
   for (const idx of indexes) {
     const sameKeys = JSON.stringify(idx.key) === JSON.stringify(keys);

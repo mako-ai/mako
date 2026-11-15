@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -24,7 +25,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const col = db.collection("mcp_oauth_flows");
-  const indexes = await col.indexes();
+  const indexes = await indexesOf(col);
   if (!hasIndexOnKeys(indexes, { state: 1 })) {
     await col.createIndex(
       { state: 1 },

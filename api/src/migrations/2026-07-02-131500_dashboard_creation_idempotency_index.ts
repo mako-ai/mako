@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -47,7 +48,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const col = db.collection(COLLECTION);
-  const indexes = (await col.indexes()) as IndexInfo[];
+  const indexes = (await indexesOf(col)) as IndexInfo[];
 
   if (hasIndexOnKeys(indexes, { workspaceId: 1, creationIdempotencyKey: 1 })) {
     log.info("creation idempotency index already present, skipping", {

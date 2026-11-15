@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -24,7 +25,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const collection = db.collection("materialization_runs");
-  const indexes = await collection.listIndexes().toArray();
+  const indexes = await indexesOf(collection);
 
   if (
     !hasIndexOnKeys(indexes, {

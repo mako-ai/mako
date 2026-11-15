@@ -1,4 +1,5 @@
 import { Db } from "mongodb";
+import { indexesOf } from "./index-helpers";
 
 export const description =
   "Create entity_versions collection with indexes and seed v1 for existing saved consoles and dashboards";
@@ -6,7 +7,7 @@ export const description =
 export async function up(db: Db): Promise<void> {
   const col = db.collection("entity_versions");
 
-  const indexes = await col.listIndexes().toArray();
+  const indexes = await indexesOf(col);
   const hasKeys = (kp: Record<string, number>) =>
     indexes.some(i => JSON.stringify(i.key) === JSON.stringify(kp));
 

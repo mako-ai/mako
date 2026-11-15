@@ -7,6 +7,7 @@
  */
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -52,7 +53,7 @@ async function existingIndexNames(
   collection: string,
 ): Promise<Set<string>> {
   try {
-    const indexes = await db.collection(collection).listIndexes().toArray();
+    const indexes = await indexesOf(db.collection(collection));
     return new Set(indexes.map(index => index.name as string));
   } catch {
     // NamespaceNotFound: nothing exists yet, so nothing can conflict.

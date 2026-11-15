@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import { Db } from "mongodb";
+import { indexesOf } from "./index-helpers";
 
 export const description =
   "Per-user dbt working trees: brand dbt_files with their branch, move uncommitted edits into per-user dbt_file_drafts, and re-key the dbt_files unique index to (projectId, branch, path)";
@@ -127,7 +128,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   // --- 3: re-key the unique index ---
-  const indexes = await files.indexes();
+  const indexes = await indexesOf(files);
   const oldUnique = indexes.find(
     idx =>
       JSON.stringify(idx.key) === JSON.stringify({ projectId: 1, path: 1 }),

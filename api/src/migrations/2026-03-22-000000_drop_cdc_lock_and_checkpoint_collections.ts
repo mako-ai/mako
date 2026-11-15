@@ -1,5 +1,6 @@
 import { Db, ObjectId } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -43,8 +44,7 @@ function isDesiredAppliedAtTtlIndex(index: IndexInfo): boolean {
   if (index.name !== APPLIED_TTL_INDEX) return false;
   if ((index.expireAfterSeconds || 0) !== APPLIED_TTL_SECONDS) return false;
   const partial = index.partialFilterExpression?.appliedAt as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   return Boolean(partial?.$exists === true);
 }
 
@@ -147,7 +147,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const changeEventCol = db.collection(CHANGE_EVENTS_COLLECTION);
-  const existingIndexes = (await changeEventCol.indexes()) as IndexInfo[];
+  const existingIndexes = (await indexesOf(changeEventCol)) as IndexInfo[];
   const appliedAtIndexes = existingIndexes.filter(isAppliedAtSingleFieldIndex);
   const hasDesiredIndex = appliedAtIndexes.some(isDesiredAppliedAtTtlIndex);
 

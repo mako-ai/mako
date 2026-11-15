@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -19,7 +20,7 @@ export async function up(db: Db): Promise<void> {
 
   const folders = db.collection("dashboardfolders");
   try {
-    const existingIndexes = await folders.indexes();
+    const existingIndexes = await indexesOf(folders);
     const alreadyExists = existingIndexes.some(
       idx => idx.key && idx.key.workspaceId === 1 && idx.key.parentId === 1,
     );
@@ -43,7 +44,7 @@ export async function up(db: Db): Promise<void> {
   if (collectionNames.includes("dashboards")) {
     const dashboards = db.collection("dashboards");
     try {
-      const existingIndexes = await dashboards.indexes();
+      const existingIndexes = await indexesOf(dashboards);
       const alreadyExists = existingIndexes.some(
         idx => idx.key && idx.key.workspaceId === 1 && idx.key.folderId === 1,
       );

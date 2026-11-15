@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -17,7 +18,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const col = db.collection(COLLECTION);
-  const indexes = await col.indexes();
+  const indexes = await indexesOf(col);
 
   const requestedAtTtl = indexes.find(
     idx =>
