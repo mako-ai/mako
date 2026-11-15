@@ -19,7 +19,7 @@ import {
 import { loggers } from "../logging";
 import { requireWorkspaceAdmin } from "../middleware/workspace-admin.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
-import { workspaceService } from "../services/workspace.service";
+import { principalOf, workspaceAccessDenial } from "./lib/workspace-access";
 import {
   buildOutboundPayload,
   deliverNotificationJobDirect,
@@ -71,15 +71,15 @@ notificationRulesRoutes.use("*", unifiedAuthMiddleware);
 
 notificationRulesRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId") as string;
-  const user = c.get("user");
 
   if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
     return fail(c, 400, "Invalid workspace ID format");
   }
 
-  if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-    return fail(c, 403, "Access denied to workspace");
-  }
+  // A session user must be a member; an API key must belong to THIS
+  // workspace (its creator being a member elsewhere is not enough).
+  const denial = await workspaceAccessDenial(principalOf(c), workspaceId);
+  if (denial) return fail(c, denial.status, denial.error);
 
   await next();
 });

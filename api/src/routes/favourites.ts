@@ -27,7 +27,7 @@ import {
   updateFavourite,
   type FavouriteResult,
 } from "../services/favourites.service";
-import { workspaceService } from "../services/workspace.service";
+import { principalOf, workspaceAccessDenial } from "./lib/workspace-access";
 import { fail, failFromThrown } from "./lib/respond";
 
 const logger = loggers.api("favourites");
@@ -60,9 +60,9 @@ favouriteRoutes.use("*", async (c: AuthenticatedContext, next) => {
   if (!user) {
     return fail(c, 401, "Authentication required");
   }
-  if (!(await workspaceService.hasAccess(workspaceId, user.id))) {
-    return fail(c, 403, "Access denied to workspace");
-  }
+  // An API key must belong to THIS workspace, not just its creator.
+  const denial = await workspaceAccessDenial(principalOf(c), workspaceId);
+  if (denial) return fail(c, denial.status, denial.error);
   await next();
 });
 

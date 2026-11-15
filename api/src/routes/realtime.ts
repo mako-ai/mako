@@ -16,7 +16,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 import { Types } from "mongoose";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { workspaceService } from "../services/workspace.service";
+import { principalOf, workspaceAccessDenial } from "./lib/workspace-access";
 import {
   subscribeToWorkspaceEvents,
   type RealtimeEvent,
@@ -78,10 +78,9 @@ realtimeRoutes.openapi(
 
     const user = c.get("user");
     if (user) {
-      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-      if (!hasAccess) {
-        return fail(c, 403, "Access denied to workspace");
-      }
+      // An API key must belong to THIS workspace, not just its creator.
+      const denial = await workspaceAccessDenial(principalOf(c), workspaceId);
+      if (denial) return fail(c, denial.status, denial.error);
     } else {
       // EventSource cannot carry API-key headers; API-key principals have no
       // browser tab to push to. Session auth only, by design.
