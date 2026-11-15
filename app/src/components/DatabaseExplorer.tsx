@@ -9,7 +9,6 @@ import {
   ListItemIcon,
   Tooltip,
   Button,
-  Snackbar,
 } from "@mui/material";
 import {
   Database as DatabaseIcon,
@@ -48,6 +47,16 @@ import ResourceTree, {
 } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
 import { useConfirm } from "./ConfirmDialog";
+import { notify } from "../store/notificationStore";
+
+/** Failed user actions surface as a filled error toast. */
+function notifyActionError(message: string) {
+  notify.error(message, {
+    autoHideDuration: 6000,
+    anchorOrigin: { vertical: "bottom", horizontal: "center" },
+    variant: "filled",
+  });
+}
 
 export interface CollectionInfo {
   name: string;
@@ -185,8 +194,6 @@ function DatabaseExplorer({
   const toggleNode = useExplorerStore(s => s.toggleNode);
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  // Shown in a snackbar instead of a blocking native alert().
-  const [actionError, setActionError] = useState<string | null>(null);
   const [editingDatabaseId, setEditingDatabaseId] = useState<
     string | undefined
   >(undefined);
@@ -574,7 +581,7 @@ function DatabaseExplorer({
                   err instanceof Error
                     ? err.message
                     : "Failed to delete database";
-                setActionError(message);
+                notifyActionError(message);
               }
             }}
           >
@@ -852,20 +859,6 @@ function DatabaseExplorer({
         }
       </ExplorerShell>
 
-      <Snackbar
-        open={actionError !== null}
-        autoHideDuration={6000}
-        onClose={() => setActionError(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-      >
-        <Alert
-          severity="error"
-          variant="filled"
-          onClose={() => setActionError(null)}
-        >
-          {actionError}
-        </Alert>
-      </Snackbar>
       <CreateDatabaseDialog
         open={createDialogOpen}
         onClose={() => {

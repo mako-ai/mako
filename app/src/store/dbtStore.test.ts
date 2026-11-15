@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the typed API client the store depends on. Each method is a vi.fn we
 // configure per test; the store treats the resolved value as the parsed body.
-vi.mock("../lib/api-client", () => ({
-  apiClient: {
+vi.mock("../api/unspecced", () => ({
+  unspecced: {
     get: vi.fn(),
     post: vi.fn(),
     patch: vi.fn(),
@@ -12,10 +12,10 @@ vi.mock("../lib/api-client", () => ({
   },
 }));
 
-import { apiClient } from "../lib/api-client";
+import { unspecced } from "../api/unspecced";
 import { useDbtStore } from "./dbtStore";
 
-const api = apiClient as unknown as {
+const api = unspecced as unknown as {
   get: ReturnType<typeof vi.fn>;
   post: ReturnType<typeof vi.fn>;
   patch: ReturnType<typeof vi.fn>;
@@ -141,7 +141,7 @@ describe("file buffer — write / persist / read", () => {
       .persistFile(WS, "p1", "models/a.sql");
     expect(ok).toBe(true);
     expect(api.put).toHaveBeenCalledWith(
-      `/workspaces/${WS}/dbt/projects/p1/files/models/a.sql`,
+      `/api/workspaces/${WS}/dbt/projects/p1/files/models/a.sql`,
       // clientId (per-tab echo suppression) rides along with every save.
       { content: "select 1", clientId: expect.any(String) },
     );
@@ -178,7 +178,7 @@ describe("ad-hoc runner passthrough", () => {
       .compileModel(WS, "p1", "customers", "dev", true);
     expect(res?.compiledSql).toBe("select 1");
     expect(api.post).toHaveBeenCalledWith(
-      `/workspaces/${WS}/dbt/projects/p1/compile`,
+      `/api/workspaces/${WS}/dbt/projects/p1/compile`,
       { select: "customers", environment: "dev", defer: true },
     );
   });
@@ -208,7 +208,7 @@ describe("ad-hoc runner passthrough", () => {
       .runCommand(WS, "p1", "build --select customers+", "dev");
     expect(res?.ok).toBe(true);
     expect(api.post).toHaveBeenCalledWith(
-      `/workspaces/${WS}/dbt/projects/p1/command`,
+      `/api/workspaces/${WS}/dbt/projects/p1/command`,
       { command: "build --select customers+", environment: "dev" },
     );
   });
@@ -284,7 +284,7 @@ describe("project update + file list/delete/rename", () => {
       "models/b.sql",
     );
     expect(api.post).toHaveBeenCalledWith(
-      `/workspaces/${WS}/dbt/projects/p1/files/rename`,
+      `/api/workspaces/${WS}/dbt/projects/p1/files/rename`,
       // clientId (per-tab echo suppression) rides along with every rename.
       {
         from: "models/a.sql",
@@ -322,7 +322,7 @@ describe("jobs", () => {
       .getState()
       .saveJob(WS, "p1", { name: "b" } as never, "j1");
     expect(api.patch).toHaveBeenCalledWith(
-      `/workspaces/${WS}/dbt/projects/p1/jobs/j1`,
+      `/api/workspaces/${WS}/dbt/projects/p1/jobs/j1`,
       { name: "b" },
     );
     expect(useDbtStore.getState().jobsByProject.p1[0].name).toBe("b");
@@ -360,7 +360,7 @@ describe("runs lifecycle", () => {
     expect(useDbtStore.getState().runsByJob.j1).toHaveLength(1);
     expect(useDbtStore.getState().runsByProject.p1).toBeUndefined();
     expect(api.get).toHaveBeenCalledWith(
-      `/workspaces/${WS}/dbt/projects/p1/runs`,
+      `/api/workspaces/${WS}/dbt/projects/p1/runs`,
       { jobId: "j1", limit: "100" },
     );
   });
@@ -385,7 +385,7 @@ describe("runs lifecycle", () => {
     const ok = await useDbtStore.getState().cancelRun(WS, "p1", "r1");
     expect(ok).toBe(true);
     expect(api.post).toHaveBeenCalledWith(
-      `/workspaces/${WS}/dbt/projects/p1/runs/r1/cancel`,
+      `/api/workspaces/${WS}/dbt/projects/p1/runs/r1/cancel`,
     );
   });
 

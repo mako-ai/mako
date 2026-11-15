@@ -16,7 +16,6 @@ import { useRef, type MutableRefObject } from "react";
 import { getResponseCostMetadata } from "../response-cost";
 import { turnUsageKey, usageDeltaFromMetadata } from "../session-usage";
 import { useChatUsageStore } from "../../../store/chatUsageStore";
-import { api } from "../../../api/client";
 
 /**
  * How long to wait after a turn settles before reconciling against the server.
@@ -103,15 +102,9 @@ export function useSessionUsageCounter({
     reconcileTimerRef.current = setTimeout(() => {
       void (async () => {
         try {
-          const { data } = await api.GET(
-            "/api/workspaces/{workspaceId}/usage/by-chat/{chatId}",
-            {
-              params: {
-                path: { workspaceId: targetWorkspaceId, chatId: targetChatId },
-              },
-            },
-          );
-          const totals = data?.totals;
+          const totals = await useChatUsageStore
+            .getState()
+            .fetchChatTotals(targetWorkspaceId, targetChatId);
           if (!totals) return;
           // The user may have switched chats while this was in flight.
           if (chatIdRef.current !== targetChatId) return;

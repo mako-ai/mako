@@ -39,7 +39,7 @@ vi.mock("../../connectors/probe.service", async importOriginal => {
 });
 
 import {
-  Connector as SourceConnection,
+  SourceConnection,
   Flow,
   WorkspaceMember,
 } from "../../database/workspace-schema";

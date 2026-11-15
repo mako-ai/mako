@@ -1,4 +1,5 @@
 import { Db } from "mongodb";
+import { indexesOf } from "./index-helpers";
 
 export const description =
   "Branch-scoped dbt drafts: stamp dbt_file_drafts with the owner's checked-out branch and re-key the unique index to (projectId, userId, branch, path)";
@@ -81,7 +82,7 @@ export async function up(db: Db): Promise<void> {
         .listCollections({ name: "dbt_file_drafts" }, { nameOnly: true })
         .toArray()
     ).length > 0;
-  const indexes = collectionExists ? await drafts.indexes() : [];
+  const indexes = collectionExists ? await indexesOf(drafts) : [];
   const oldUnique = indexes.find(
     idx =>
       JSON.stringify(idx.key) ===

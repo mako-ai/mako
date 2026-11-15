@@ -24,7 +24,7 @@ import { Types } from "mongoose";
 
 import {
   DatabaseConnection,
-  Connector,
+  SourceConnection,
   Flow,
 } from "../database/workspace-schema";
 import { parseFlowFileResult, slugFromFlowFilePath } from "./flow-config-files";
@@ -97,7 +97,7 @@ export async function validateFlowFile(input: {
       );
     } else if (!isObjectId(id)) {
       add(`\`source.connection_id: ${id}\` is not a valid id`);
-    } else if (!(await Connector.exists({ _id: id, workspaceId }))) {
+    } else if (!(await SourceConnection.exists({ _id: id, workspaceId }))) {
       add(
         `\`source.connection_id: ${id}\` does not name a source connection in this workspace — configure the connection first (Sources → Add), then reference the id list_connections returns`,
       );

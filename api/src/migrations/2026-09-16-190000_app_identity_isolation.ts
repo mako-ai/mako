@@ -1,11 +1,12 @@
 import { Db } from "mongodb";
+import { indexesOf } from "./index-helpers";
 
 export const description =
   "Rebuild the disposable apps index with globally unique app ids";
 
 export async function up(db: Db): Promise<void> {
   const index = db.collection("app_index");
-  const indexes = await index.indexes();
+  const indexes = await indexesOf(index);
   // Older index rows may alias a foreign id or omit a legacy project's id.
   // Clear the head first so an interrupted migration cannot mark them fresh.
   await db.collection("app_index_heads").deleteMany({});

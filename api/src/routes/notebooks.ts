@@ -54,6 +54,7 @@ import {
   updateNotebookIndex,
 } from "../services/notebook-index.service";
 import { NotebookManager } from "../utils/notebook-manager";
+import { fail } from "./lib/respond";
 
 const logger = loggers.api("notebooks");
 
@@ -196,7 +197,7 @@ notebookRoutes.openapi(
     const userId = editorUserId(c);
 
     if (body.folderId && !Types.ObjectId.isValid(body.folderId)) {
-      return c.json({ success: false, error: "Invalid folderId" }, 400);
+      return fail(c, 400, "Invalid folderId");
     }
 
     const doc = await getNotebookStore().create(ws, { name: body.name });
@@ -247,15 +248,12 @@ notebookRoutes.openapi(
       "read",
     );
     if (!access.ok) {
-      return c.json(
-        { success: false, error: "Notebook not found" },
-        access.status,
-      );
+      return fail(c, access.status, "Notebook not found");
     }
 
     const doc = await getNotebookStore().get(ws, id);
     if (!doc) {
-      return c.json({ success: false, error: "Notebook not found" }, 404);
+      return fail(c, 404, "Notebook not found");
     }
     return c.json({ success: true, data: doc });
   },
@@ -289,15 +287,12 @@ notebookRoutes.openapi(
       "read",
     );
     if (!access.ok) {
-      return c.json(
-        { success: false, error: "Artifact not found" },
-        access.status,
-      );
+      return fail(c, access.status, "Artifact not found");
     }
 
     const artifact = await getNotebookStore().getArtifact(ws, id, artifactId);
     if (!artifact) {
-      return c.json({ success: false, error: "Artifact not found" }, 404);
+      return fail(c, 404, "Artifact not found");
     }
     return c.body(new Uint8Array(artifact.body), 200, {
       "Content-Type": artifact.contentType,
@@ -335,10 +330,7 @@ async function loadReadableNotebook(
   );
   if (!access.ok) {
     return {
-      errorResponse: c.json(
-        { success: false, error: "Notebook not found" },
-        access.status as 403 | 404,
-      ),
+      errorResponse: fail(c, access.status as 403 | 404, "Notebook not found"),
     };
   }
   const index = await NotebookIndex.findOne({
@@ -347,10 +339,7 @@ async function loadReadableNotebook(
   });
   if (!index) {
     return {
-      errorResponse: c.json(
-        { success: false, error: "Notebook not found" },
-        404,
-      ),
+      errorResponse: fail(c, 404, "Notebook not found"),
     };
   }
   return { index, workspaceId: ws, userId };
@@ -441,10 +430,7 @@ notebookRoutes.openapi(
       return c.json({ success: true as const, versions });
     } catch (error) {
       if (error instanceof NotEntityPathError) {
-        return c.json(
-          { success: false, error: "Path is not this notebook" },
-          403,
-        );
+        return fail(c, 403, "Path is not this notebook");
       }
       throw error;
     }
@@ -483,18 +469,15 @@ notebookRoutes.openapi(
       return c.json({ success: true as const, ...result });
     } catch (error) {
       if (error instanceof RepoRequiredError) {
-        return c.json(
-          { success: false, code: error.code, error: error.message },
-          error.status as 412,
-        );
+        return fail(c, error.status as 412, error.message, {
+          code: error.code,
+        });
       }
       logger.error("Notebook restore failed", { error });
-      return c.json(
-        {
-          success: false,
-          error: error instanceof Error ? error.message : "Restore failed",
-        },
+      return fail(
+        c,
         400,
+        error instanceof Error ? error.message : "Restore failed",
       );
     }
   },
@@ -529,10 +512,7 @@ notebookRoutes.openapi(
       "write",
     );
     if (!access.ok) {
-      return c.json(
-        { success: false, error: "Notebook not found" },
-        access.status,
-      );
+      return fail(c, access.status, "Notebook not found");
     }
 
     const blocks = body.blocks
@@ -548,22 +528,21 @@ notebookRoutes.openapi(
       );
     } catch (error) {
       if (error instanceof NotebookVersionConflictError) {
-        return c.json(
+        return fail(
+          c,
+          409,
+          "Notebook changed since it was loaded. Reload it before saving again.",
           {
-            success: false,
-            error:
-              "Notebook changed since it was loaded. Reload it before saving again.",
             code: "version_conflict",
             expectedVersion: error.expectedVersion,
             actualVersion: error.actualVersion,
           },
-          409,
         );
       }
       throw error;
     }
     if (!doc) {
-      return c.json({ success: false, error: "Notebook not found" }, 404);
+      return fail(c, 404, "Notebook not found");
     }
 
     if (body.name !== undefined) {
@@ -626,10 +605,7 @@ notebookRoutes.openapi(
       "read",
     );
     if (!access.ok) {
-      return c.json(
-        { success: false, error: "Notebook not found" },
-        access.status,
-      );
+      return fail(c, access.status, "Notebook not found");
     }
 
     const body = (await c.req.json().catch(() => ({}))) as {
@@ -638,7 +614,7 @@ notebookRoutes.openapi(
       gone?: boolean;
     };
     if (!body.clientId) {
-      return c.json({ success: false, error: "clientId is required" }, 400);
+      return fail(c, 400, "clientId is required");
     }
     const user = c.get("user") as
       { id?: unknown; email?: string; name?: string } | undefined;
@@ -677,10 +653,7 @@ notebookRoutes.openapi(
       "write",
     );
     if (!access.ok) {
-      return c.json(
-        { success: false, error: "Notebook not found" },
-        access.status,
-      );
+      return fail(c, access.status, "Notebook not found");
     }
 
     const doomedIndex = await NotebookIndex.findOne({
@@ -689,7 +662,7 @@ notebookRoutes.openapi(
     }).select("path name");
     const ok = await getNotebookStore().remove(ws, id);
     if (!ok) {
-      return c.json({ success: false, error: "Notebook not found" }, 404);
+      return fail(c, 404, "Notebook not found");
     }
     await deleteNotebookIndex(ws, id);
     if (doomedIndex) {

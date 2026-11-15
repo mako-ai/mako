@@ -19,7 +19,21 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
-const routes = fs.readFileSync(path.join(__dirname, "flows.ts"), "utf8");
+// The router module plus its sub-routers; shared.ts (the helper) first.
+const flowsDir = path.join(__dirname, "flows");
+const routes = [
+  path.join(__dirname, "flows.ts"),
+  path.join(flowsDir, "shared.ts"),
+  ...fs
+    .readdirSync(flowsDir)
+    .filter(
+      f => f.endsWith(".ts") && f !== "shared.ts" && !f.includes(".test."),
+    )
+    .sort()
+    .map(f => path.join(flowsDir, f)),
+]
+  .map(f => fs.readFileSync(f, "utf8"))
+  .join("\n");
 
 // Every write-through goes through the checked helper, never the raw call.
 // The helper's own call to `commitFlowFile` is the one legitimate one, so

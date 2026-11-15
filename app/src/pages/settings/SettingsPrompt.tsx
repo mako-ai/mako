@@ -1,23 +1,21 @@
 import { useEffect, useState } from "react";
-import { Alert, Box, Button, Snackbar, TextField } from "@mui/material";
+import { Alert, Box, Button, TextField } from "@mui/material";
 import { Save as SaveIcon, Refresh as RefreshIcon } from "@mui/icons-material";
 import SettingsLayout from "./SettingsLayout";
 import { useCustomPrompt } from "../../hooks/useCustomPrompt";
-import { useWorkspace } from "../../contexts/workspace-context";
+import { notify } from "../../store/notificationStore";
 
 export default function SettingsPrompt() {
-  const { currentWorkspace } = useWorkspace();
   const {
     content: customPromptContent,
     isLoading,
     error,
     updateCustomPrompt,
-    fetchCustomPrompt,
+    resetCustomPrompt,
   } = useCustomPrompt();
 
   const [local, setLocal] = useState("");
   const [modified, setModified] = useState(false);
-  const [snackbar, setSnackbar] = useState<string | null>(null);
 
   useEffect(() => {
     setLocal(customPromptContent);
@@ -28,26 +26,13 @@ export default function SettingsPrompt() {
     const ok = await updateCustomPrompt(local);
     if (ok) {
       setModified(false);
-      setSnackbar("Custom prompt saved successfully!");
+      notify.success("Custom prompt saved successfully!");
     }
   };
 
   const handleReset = async () => {
-    if (!currentWorkspace?.id) return;
-    try {
-      const res = await fetch(
-        `/api/workspaces/${currentWorkspace.id}/custom-prompt/reset`,
-        { method: "POST" },
-      );
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success) {
-          await fetchCustomPrompt();
-          setSnackbar("Custom prompt reset to default!");
-        }
-      }
-    } catch (err) {
-      console.error("Error resetting custom prompt:", err);
+    if (await resetCustomPrompt()) {
+      notify.success("Custom prompt reset to default!");
     }
   };
 
@@ -95,16 +80,6 @@ export default function SettingsPrompt() {
           Reset to Default
         </Button>
       </Box>
-
-      <Snackbar
-        open={snackbar !== null}
-        autoHideDuration={4000}
-        onClose={() => setSnackbar(null)}
-      >
-        <Alert onClose={() => setSnackbar(null)} severity="success">
-          {snackbar}
-        </Alert>
-      </Snackbar>
     </SettingsLayout>
   );
 }

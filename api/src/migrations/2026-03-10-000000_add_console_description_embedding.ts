@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -27,7 +28,7 @@ export async function up(db: Db): Promise<void> {
 
   // Text index for keyword search (best-effort: never fails the migration)
   try {
-    const existingIndexes = await col.indexes();
+    const existingIndexes = await indexesOf(col);
     const hasTextIndex = existingIndexes.some(
       idx => idx.textIndexVersion !== undefined,
     );

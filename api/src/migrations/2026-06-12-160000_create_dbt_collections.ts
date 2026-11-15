@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -32,7 +33,7 @@ export async function up(db: Db): Promise<void> {
   await ensureCollection(db, "dbt_runs");
 
   const projects = db.collection("dbt_projects");
-  let indexes = await projects.indexes();
+  let indexes = await indexesOf(projects);
   if (!hasIndexOnKeys(indexes, { workspaceId: 1, name: 1 })) {
     await projects.createIndex(
       { workspaceId: 1, name: 1 },
@@ -49,7 +50,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const files = db.collection("dbt_files");
-  indexes = await files.indexes();
+  indexes = await indexesOf(files);
   if (!hasIndexOnKeys(indexes, { projectId: 1, path: 1 })) {
     await files.createIndex(
       { projectId: 1, path: 1 },
@@ -70,7 +71,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const jobs = db.collection("dbt_jobs");
-  indexes = await jobs.indexes();
+  indexes = await indexesOf(jobs);
   if (!hasIndexOnKeys(indexes, { workspaceId: 1, projectId: 1 })) {
     await jobs.createIndex(
       { workspaceId: 1, projectId: 1 },
@@ -87,7 +88,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const runs = db.collection("dbt_runs");
-  indexes = await runs.indexes();
+  indexes = await indexesOf(runs);
   if (
     !hasIndexOnKeys(indexes, { workspaceId: 1, projectId: 1, createdAt: -1 })
   ) {

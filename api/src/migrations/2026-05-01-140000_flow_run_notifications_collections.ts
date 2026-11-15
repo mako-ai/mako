@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -29,7 +30,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const rules = db.collection("notification_rules");
-  const ruleIndexes = await rules.listIndexes().toArray();
+  const ruleIndexes = await indexesOf(rules);
 
   if (
     !hasIndexOnKeys(ruleIndexes, {
@@ -46,7 +47,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const deliveries = db.collection("notification_deliveries");
-  const deliveryIndexes = await deliveries.listIndexes().toArray();
+  const deliveryIndexes = await indexesOf(deliveries);
 
   if (
     !hasIndexOnKeys(deliveryIndexes, {

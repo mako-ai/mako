@@ -1,6 +1,7 @@
 export { api, createApiClient } from "./client";
 export {
   ApiError,
+  bodyWithStatus,
   toLoadError,
   unwrap,
   unwrapBody,
@@ -8,4 +9,5 @@ export {
   type LoadError,
   toErrorMessage,
 } from "./result";
+export { unspecced, type UnspeccedPath } from "./unspecced";
 export type { paths, components, operations } from "./schema";

@@ -27,7 +27,8 @@ import {
   updateFavourite,
   type FavouriteResult,
 } from "../services/favourites.service";
-import { workspaceService } from "../services/workspace.service";
+import { principalOf, workspaceAccessDenial } from "./lib/workspace-access";
+import { fail, failFromThrown } from "./lib/respond";
 
 const logger = loggers.api("favourites");
 
@@ -54,17 +55,14 @@ favouriteRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId");
   const user = c.get("user");
   if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-    return c.json(
-      { success: false, error: "Invalid workspace ID format" },
-      400,
-    );
+    return fail(c, 400, "Invalid workspace ID format");
   }
   if (!user) {
-    return c.json({ success: false, error: "Authentication required" }, 401);
+    return fail(c, 401, "Authentication required");
   }
-  if (!(await workspaceService.hasAccess(workspaceId, user.id))) {
-    return c.json({ success: false, error: "Access denied to workspace" }, 403);
-  }
+  // An API key must belong to THIS workspace, not just its creator.
+  const denial = await workspaceAccessDenial(principalOf(c), workspaceId);
+  if (denial) return fail(c, denial.status, denial.error);
   await next();
 });
 
@@ -81,20 +79,14 @@ function reply<T>(
   key: string,
 ): Response {
   if (!result.ok) {
-    return c.json({ success: false, error: result.error }, result.status);
+    return fail(c, result.status, result.error);
   }
   return c.json({ success: true, [key]: result.value }, 200);
 }
 
 function handleError(c: AuthenticatedContext, error: unknown): Response {
   logger.error("Favourites route error", { error });
-  return c.json(
-    {
-      success: false,
-      error: error instanceof Error ? error.message : "Internal error",
-    },
-    500,
-  );
+  return failFromThrown(c, error, "Internal error");
 }
 
 favouriteRoutes.openapi(

@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -35,7 +36,7 @@ async function ensureIndex(
 ): Promise<void> {
   const col = db.collection(collectionName);
   try {
-    const existingIndexes = await col.indexes();
+    const existingIndexes = await indexesOf(col);
     if (hasIndexOnKeys(existingIndexes, keyPattern)) {
       log.info(
         `Index ${JSON.stringify(keyPattern)} already exists on ${collectionName}, skipping`,

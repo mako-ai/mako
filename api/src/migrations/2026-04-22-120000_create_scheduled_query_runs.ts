@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -24,7 +25,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const scheduledRuns = db.collection("scheduled_query_runs");
-  const scheduledRunIndexes = await scheduledRuns.listIndexes().toArray();
+  const scheduledRunIndexes = await indexesOf(scheduledRuns);
 
   if (
     !hasIndexOnKeys(scheduledRunIndexes, {
@@ -51,7 +52,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const savedConsoles = db.collection("savedconsoles");
-  const savedConsoleIndexes = await savedConsoles.listIndexes().toArray();
+  const savedConsoleIndexes = await indexesOf(savedConsoles);
 
   if (
     !hasIndexOnKeys(savedConsoleIndexes, {

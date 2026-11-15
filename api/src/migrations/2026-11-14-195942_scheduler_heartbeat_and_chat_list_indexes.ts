@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 export const description =
   "Index the scheduler scans (savedconsoles scheduledRun.nextAt, flows schedule.enabled), the abandoned-flow cleanup (flow_executions status+lastHeartbeat) and the chat list sort (chats workspaceId+createdBy+updatedAt)";
@@ -57,7 +58,7 @@ export async function up(db: Db): Promise<void> {
     const collection = db.collection(spec.collection);
     let indexes: { key: Record<string, unknown> }[] = [];
     try {
-      indexes = await collection.listIndexes().toArray();
+      indexes = await indexesOf(collection);
     } catch {
       // NamespaceNotFound: nothing exists yet, so nothing can conflict.
     }

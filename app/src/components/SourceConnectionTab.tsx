@@ -43,7 +43,6 @@ const SourceConnectionTab: React.FC<SourceConnectionTabProps> = ({
 
   /* ------------------ entity cache -------------------- */
   const fetchConnector = useSourceConnectionEntitiesStore(s => s.fetchOne);
-  const upsertConnector = useSourceConnectionEntitiesStore(s => s.upsert);
   const entities = useSourceConnectionEntitiesStore(s => s.entities);
 
   const [localSourceId, setLocalSourceId] = useState<string | undefined>(
@@ -131,39 +130,30 @@ const SourceConnectionTab: React.FC<SourceConnectionTabProps> = ({
     if (!currentWorkspace) return { success: false, isNew };
 
     try {
-      const url = effectiveSourceId
-        ? `/api/workspaces/${currentWorkspace.id}/connections/sources/${effectiveSourceId}`
-        : `/api/workspaces/${currentWorkspace.id}/connections/sources`;
-      const method = effectiveSourceId ? "PUT" : "POST";
-
-      const response = await fetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
-      });
-      const data = await response.json();
-      if (data.success) {
-        const entity = { ...data.data, workspaceId: currentWorkspace.id };
-        // Update the tab's entity cache and the sidebar list's cache so the
-        // connector shows/updates immediately without a manual refresh.
-        upsertConnector(entity);
+      const store = useSourceConnectionEntitiesStore.getState();
+      // The store caches the saved entity (tab + sidebar list), so the
+      // connector shows/updates immediately without a manual refresh.
+      const { data: entity, error: saveError } = effectiveSourceId
+        ? await store.update(currentWorkspace.id, effectiveSourceId, formData)
+        : await store.create(currentWorkspace.id, formData);
+      if (entity) {
         setError(null);
-        updateTabIcon(data.data.type);
+        updateTabIcon(entity.type);
         // Update the tab title once after a successful save
-        updateTitle(tabId, data.data.name || "Source connection");
+        updateTitle(tabId, entity.name || "Source connection");
 
         // Clear draft on successful save
         deleteDraft(tabId);
 
-        const newId = data.data._id;
+        const newId = entity._id;
         if (isNew && newId) {
           // Track connector creation
           trackEvent("connector_created", {
-            connector_type: data.data.type,
+            connector_type: entity.type,
             connector_id: newId,
           });
           trackEvent("source_connection_created", {
-            connector_type: data.data.type,
+            connector_type: entity.type,
             connector_id: newId,
             source_connection_id: newId,
           });
@@ -174,8 +164,7 @@ const SourceConnectionTab: React.FC<SourceConnectionTabProps> = ({
         }
         return { success: true, isNew };
       } else {
-        const serverError = data.error || data.message || JSON.stringify(data);
-        setError(serverError);
+        setError(saveError || "Failed to save source connection");
         return { success: false, isNew };
       }
     } catch (err: any) {

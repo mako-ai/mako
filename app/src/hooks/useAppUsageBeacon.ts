@@ -56,6 +56,7 @@ function sendUsage(
   },
 ): Promise<number | null> {
   try {
+    // eslint-disable-next-line no-restricted-globals, no-restricted-syntax -- keepalive beacon (see above): no 401 redirect, survives tab close
     return fetch(
       `/api/workspaces/${encodeURIComponent(workspaceId)}/apps/${encodeURIComponent(appId)}/usage`,
       {

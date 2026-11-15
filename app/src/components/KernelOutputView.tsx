@@ -7,6 +7,7 @@ import type {
 } from "../notebook-runtime/kernel";
 import { getApiBasePath } from "../lib/api-base-path";
 import { KernelHtmlFrame } from "./KernelHtmlFrame";
+import { useNotebookStore } from "../store/notebookStore";
 
 /** Strip ANSI escape codes (kernel tracebacks are colourised). */
 // eslint-disable-next-line no-control-regex
@@ -26,8 +27,8 @@ const PRE_SX = {
   overflowX: "auto" as const,
 };
 
-/** URL of an offloaded output artifact (same-origin; the session cookie auths
- * the request, so `<img src>` and `fetch` both work). */
+/** URL of an offloaded output artifact, for `<img src>` (same-origin; the
+ * session cookie auths the request). Text payloads load through the store. */
 function artifactUrl(
   workspaceId: string,
   notebookId: string,
@@ -38,7 +39,17 @@ function artifactUrl(
 }
 
 /** Fetch an offloaded text/HTML payload lazily and render it. */
-function ArtifactText({ url, asHtml }: { url: string; asHtml: boolean }) {
+function ArtifactText({
+  workspaceId,
+  notebookId,
+  artifactId,
+  asHtml,
+}: {
+  workspaceId: string;
+  notebookId: string;
+  artifactId: string;
+  asHtml: boolean;
+}) {
   const [text, setText] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -46,16 +57,15 @@ function ArtifactText({ url, asHtml }: { url: string; asHtml: boolean }) {
     let active = true;
     setText(null);
     setFailed(false);
-    fetch(url, { credentials: "include" })
-      .then(r =>
-        r.ok ? r.text() : Promise.reject(new Error(String(r.status))),
-      )
+    useNotebookStore
+      .getState()
+      .fetchArtifactText(workspaceId, notebookId, artifactId)
       .then(t => active && setText(t))
       .catch(() => active && setFailed(true));
     return () => {
       active = false;
     };
-  }, [url]);
+  }, [workspaceId, notebookId, artifactId]);
 
   if (failed) {
     return (
@@ -135,7 +145,9 @@ function MimeBundle({
   if (htmlRef && canFetch && workspaceId) {
     return (
       <ArtifactText
-        url={artifactUrl(workspaceId, notebookId, htmlRef)}
+        workspaceId={workspaceId}
+        notebookId={notebookId}
+        artifactId={htmlRef.artifactId}
         asHtml
       />
     );
@@ -150,7 +162,9 @@ function MimeBundle({
   if (plainRef && canFetch && workspaceId) {
     return (
       <ArtifactText
-        url={artifactUrl(workspaceId, notebookId, plainRef)}
+        workspaceId={workspaceId}
+        notebookId={notebookId}
+        artifactId={plainRef.artifactId}
         asHtml={false}
       />
     );

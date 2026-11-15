@@ -9,7 +9,7 @@
  * out-of-order events are self-correcting.
  *
  * NOTE: the EventSource itself is a documented exception to the
- * "stores use apiClient" rule (same as the chat SSE stream) — native
+ * "stores use the typed api client" rule (same as the chat SSE stream) — native
  * EventSource is the transport, cookies carry auth.
  */
 import { create } from "zustand";

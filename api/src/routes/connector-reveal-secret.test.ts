@@ -74,7 +74,7 @@ vi.mock("../sync/connector-registry", () => ({
 }));
 
 import { sourceConnectionRoutes } from "./source-connections";
-import { Connector } from "../database/workspace-schema";
+import { SourceConnection } from "../database/workspace-schema";
 import { encryptString } from "../services/crypto.service";
 
 let mongo: MongoMemoryServer;
@@ -120,11 +120,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   ctx.role = "owner";
-  await Connector.deleteMany({});
+  await SourceConnection.deleteMany({});
 });
 
 async function seedConnector(workspaceId: string) {
-  return Connector.create({
+  return SourceConnection.create({
     workspaceId: new Types.ObjectId(workspaceId),
     name: "Stripe",
     type: "stripe",

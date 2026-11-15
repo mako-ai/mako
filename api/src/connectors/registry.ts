@@ -235,11 +235,6 @@ class ConnectorRegistry {
     return new ConnectorClass(connection);
   }
 
-  /** @deprecated use getConnectorFor */
-  getConnector(dataSource: ISourceConnection): BaseConnector | null {
-    return this.getConnectorFor(dataSource);
-  }
-
   /**
    * Get all registered connector types
    */

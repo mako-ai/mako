@@ -16,7 +16,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 import { Types } from "mongoose";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { workspaceService } from "../services/workspace.service";
+import { principalOf, workspaceAccessDenial } from "./lib/workspace-access";
 import {
   subscribeToWorkspaceEvents,
   type RealtimeEvent,
@@ -27,6 +27,7 @@ import {
 } from "../services/realtime-presence.service";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { fail } from "./lib/respond";
 
 const logger = loggers.api("realtime");
 
@@ -72,22 +73,18 @@ realtimeRoutes.openapi(
   async c => {
     const workspaceId = c.req.param("workspaceId");
     if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-      return c.json({ success: false, error: "Invalid workspace ID" }, 400);
+      return fail(c, 400, "Invalid workspace ID");
     }
 
     const user = c.get("user");
     if (user) {
-      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-      if (!hasAccess) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
+      // An API key must belong to THIS workspace, not just its creator.
+      const denial = await workspaceAccessDenial(principalOf(c), workspaceId);
+      if (denial) return fail(c, denial.status, denial.error);
     } else {
       // EventSource cannot carry API-key headers; API-key principals have no
       // browser tab to push to. Session auth only, by design.
-      return c.json({ success: false, error: "Unauthorized" }, 401);
+      return fail(c, 401, "Unauthorized");
     }
 
     enrichContextWithWorkspace(workspaceId);

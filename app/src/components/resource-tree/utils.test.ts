@@ -142,7 +142,7 @@ describe("resource-tree utils", () => {
   // from `isSidebarRowActive` and feed it into the row's `selected` state.
   describe("ResourceTree active-row highlight wiring", () => {
     const source = fs.readFileSync(
-      path.resolve(__dirname, "../ResourceTree.tsx"),
+      path.resolve(__dirname, "./TreeRows.tsx"),
       "utf-8",
     );
 

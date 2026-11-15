@@ -160,7 +160,7 @@ export interface IUserAttribution extends Document<string> {
 }
 
 /**
- * Session model interface for Lucia
+ * Login session (auth/session.ts)
  */
 export interface ISession extends Document<string> {
   _id: string;
@@ -303,7 +303,7 @@ const DesktopAuthCodeSchema = new Schema<IDesktopAuthCode>(
 DesktopAuthCodeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 /**
- * Session Schema for Lucia
+ * Login session schema (auth/session.ts)
  */
 const SessionSchema = new Schema<ISession>({
   _id: {

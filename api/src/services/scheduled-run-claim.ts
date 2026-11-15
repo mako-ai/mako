@@ -30,7 +30,7 @@ export interface DueScheduledRunDoc {
 
 export async function findDueScheduledRuns(
   // Docs only need the schedule/scheduledRun shape; models are invariant.
-  model: Model<any>,
+  model: Model<any, any, any, any>,
   now: Date,
   extraFilter: Record<string, unknown> = {},
 ): Promise<DueScheduledRunDoc[]> {
@@ -62,7 +62,7 @@ export async function findDueScheduledRuns(
  * scan) claimed it first — the caller must skip the trigger.
  */
 export async function claimScheduledRun(
-  model: Model<any>,
+  model: Model<any, any, any, any>,
   doc: DueScheduledRunDoc,
   now: Date,
 ): Promise<{ modifiedCount: number }> {
@@ -102,7 +102,7 @@ export interface ClaimedScheduledRun {
  * Docs without both a cron and a timezone are skipped, as before.
  */
 export async function claimDueScheduledRuns(
-  model: Model<any>,
+  model: Model<any, any, any, any>,
   now: Date,
   extraFilter: Record<string, unknown> = {},
 ): Promise<ClaimedScheduledRun[]> {

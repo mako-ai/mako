@@ -1514,8 +1514,46 @@ async function testCustomActivityReplansWhenCustomFieldDeleted() {
   );
 }
 
+/**
+ * Close signs `timestamp + body` with HMAC-SHA256 under the hex-decoded key.
+ * A hash of the wrong length is an invalid signature, not a crypto error.
+ */
+async function testWebhookSignatureVerification() {
+  const connector = createConnector();
+  const secret = "00112233445566778899aabbccddeeff";
+  const timestamp = "1700000000";
+  const payload = JSON.stringify({ event: { id: "ev_1" } });
+  const crypto = await import("node:crypto");
+  const hash = crypto
+    .createHmac("sha256", Buffer.from(secret, "hex"))
+    .update(timestamp + payload, "utf8")
+    .digest("hex");
+  const verify = (sigHash: string) =>
+    connector.verifyWebhook({
+      payload,
+      headers: {
+        "close-sig-hash": sigHash,
+        "close-sig-timestamp": timestamp,
+      },
+      secret,
+    });
+
+  const valid = await verify(hash);
+  assert.equal(valid.valid, true);
+  assert.equal(valid.event?.event?.id, "ev_1");
+
+  const tampered = await verify(
+    `${hash.slice(0, -1)}0`.replace(/0$/, hash.endsWith("0") ? "1" : "0"),
+  );
+  assert.deepEqual(tampered, { valid: false, error: "Invalid signature" });
+
+  const short = await verify(hash.slice(0, 10));
+  assert.deepEqual(short, { valid: false, error: "Invalid signature" });
+}
+
 async function main() {
   testCloseApiErrorResponseIsFormattedForLogs();
+  await testWebhookSignatureVerification();
   testUserWebhookEventsAreSupported();
   testUserWebhookEventsAreMapped();
   testUserWebhookPayloadIsExtractedForProcessing();

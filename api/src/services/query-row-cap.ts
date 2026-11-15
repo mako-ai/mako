@@ -18,6 +18,7 @@
  */
 import { isWrite } from "../access/connection-writes";
 import type { IDatabaseConnection } from "../database/workspace-schema";
+import type { DatabaseQuery } from "../databases/query-types";
 import type {
   DatabaseConnectionService,
   QueryExecuteOptions,
@@ -83,7 +84,7 @@ export async function executeQueryWithRowCap(
     "executeQuery" | "executeQueryReadingRows"
   >,
   database: IDatabaseConnection,
-  query: unknown,
+  query: DatabaseQuery,
   options: QueryExecuteOptions,
   maxRows: number,
 ): Promise<CappedQueryResult> {

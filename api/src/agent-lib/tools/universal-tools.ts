@@ -10,7 +10,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
 import {
-  Connector as SourceConnection,
+  SourceConnection,
   DatabaseConnection,
   type IDatabaseConnection,
   type ISourceConnectionKeyRequest,

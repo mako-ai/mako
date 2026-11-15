@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -38,7 +39,7 @@ export async function up(db: Db): Promise<void> {
 
   // Helper function to check if an index with specific key exists
   const indexExists = async (keyPattern: any): Promise<boolean> => {
-    const indexes = await collection.listIndexes().toArray();
+    const indexes = await indexesOf(collection);
     return indexes.some(idx => {
       const keys = Object.keys(idx.key);
       const patternKeys = Object.keys(keyPattern);

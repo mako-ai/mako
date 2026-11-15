@@ -24,6 +24,11 @@
 import { postCommitStatus } from "../integrations/github/github-api";
 import { resolveRepoToken } from "../integrations/github/app-auth";
 import { loggers } from "../logging";
+import {
+  clipStatusDescription,
+  logStatusPostFailure,
+  makoClientUrl,
+} from "./commit-status";
 import { mirrorPushNow, resolveMirrorTarget } from "./cloud-repo.service";
 import {
   loadSkillCatalog,
@@ -33,14 +38,6 @@ import {
 const logger = loggers.api("skills-status");
 
 export const SKILLS_STATUS_CONTEXT = "mako/skills";
-
-/** GitHub caps a status description at 140 characters. */
-const DESCRIPTION_MAX_CHARS = 140;
-
-function clip(text: string, max = DESCRIPTION_MAX_CHARS): string {
-  const oneLine = text.replace(/\s+/g, " ").trim();
-  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
-}
 
 function plural(count: number, word: string): string {
   return `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -64,7 +61,7 @@ export function describeSkillsStatus(
   if (invalid.length > 0) {
     return {
       state: "failure",
-      description: clip(
+      description: clipStatusDescription(
         `${plural(invalid.length, "skill file")} hidden from the agent: ${firstAndMore(invalid)}`,
       ),
     };
@@ -72,7 +69,7 @@ export function describeSkillsStatus(
   if (warnings.length > 0) {
     return {
       state: "success",
-      description: clip(
+      description: clipStatusDescription(
         `${plural(skills.length, "skill")} load, ${plural(warnings.length, "warning")}: ${firstAndMore(warnings)}`,
       ),
     };
@@ -83,21 +80,9 @@ export function describeSkillsStatus(
   };
 }
 
-/** The GitHub App lacks "Commit statuses: write" (as deploy-commit-status.ts). */
-function isPermissionError(message: string): boolean {
-  return (
-    /GitHub 40[34]\b/.test(message) ||
-    /Resource not accessible by integration/i.test(message)
-  );
-}
-
 /** Where the status links to: Settings → Skills, which lists every reason. */
 function skillsTargetUrl(): string | undefined {
-  const base = (process.env.CLIENT_URL || process.env.PUBLIC_URL || "").replace(
-    /\/+$/,
-    "",
-  );
-  return base ? `${base}/settings/skills` : undefined;
+  return makoClientUrl("/settings/skills");
 }
 
 // A push through Mako's git endpoint reaches GitHub, whose webhook then runs
@@ -170,22 +155,14 @@ export async function reportSkillsCommitStatus(
     rememberHead(workspaceId, head);
     return { posted: true };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const permission = isPermissionError(message);
-    if (!permission || !warnedWorkspaces.has(workspaceId)) {
-      if (permission) warnedWorkspaces.add(workspaceId);
-      logger.warn("Could not post the skills commit status", {
-        workspaceId,
-        sha: head,
-        error: message,
-        ...(permission
-          ? {
-              hint: 'Grant the GitHub App "Commit statuses: Read and write" and accept it on the installation',
-            }
-          : {}),
-      });
-    }
-    return { posted: false, reason: permission ? "permission" : "error" };
+    const reason = logStatusPostFailure(
+      logger,
+      "Could not post the skills commit status",
+      error,
+      warnedWorkspaces,
+      { workspaceId, sha: head },
+    );
+    return { posted: false, reason };
   }
 }
 

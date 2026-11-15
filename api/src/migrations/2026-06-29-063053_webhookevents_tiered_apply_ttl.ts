@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -28,10 +29,26 @@ type Tier = {
 };
 
 const TIERS: Tier[] = [
-  { name: APPLIED_TTL_INDEX_NAME, expireAfterSeconds: THREE_DAYS, applyStatus: "applied" },
-  { name: PENDING_TTL_INDEX_NAME, expireAfterSeconds: SEVEN_DAYS, applyStatus: "pending" },
-  { name: DROPPED_TTL_INDEX_NAME, expireAfterSeconds: SEVEN_DAYS, applyStatus: "dropped" },
-  { name: FAILED_TTL_INDEX_NAME, expireAfterSeconds: THIRTY_DAYS, applyStatus: "failed" },
+  {
+    name: APPLIED_TTL_INDEX_NAME,
+    expireAfterSeconds: THREE_DAYS,
+    applyStatus: "applied",
+  },
+  {
+    name: PENDING_TTL_INDEX_NAME,
+    expireAfterSeconds: SEVEN_DAYS,
+    applyStatus: "pending",
+  },
+  {
+    name: DROPPED_TTL_INDEX_NAME,
+    expireAfterSeconds: SEVEN_DAYS,
+    applyStatus: "dropped",
+  },
+  {
+    name: FAILED_TTL_INDEX_NAME,
+    expireAfterSeconds: THIRTY_DAYS,
+    applyStatus: "failed",
+  },
 ];
 
 function isReceivedAtAscendingOnly(index: IndexInfo): boolean {
@@ -72,7 +89,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const col = db.collection(COLLECTION);
-  const indexes = (await col.indexes()) as IndexInfo[];
+  const indexes = (await indexesOf(col)) as IndexInfo[];
 
   // Drop any legacy flat TTL on { receivedAt: 1 } (no applyStatus partial filter).
   // Covers both Mongoose's auto name (receivedAt_1) and the migration-created
@@ -101,7 +118,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   for (const tier of TIERS) {
-    const refreshed = (await col.indexes()) as IndexInfo[];
+    const refreshed = (await indexesOf(col)) as IndexInfo[];
     if (hasTierTtl(refreshed, tier)) {
       log.info("webhookevents tiered TTL index already present, skipping", {
         collection: COLLECTION,

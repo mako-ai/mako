@@ -1,601 +1,77 @@
-import {
-  createContext,
-  useContext,
-  useState,
-  useEffect,
-  useCallback,
-  useMemo,
-  ReactNode,
-} from "react";
-import {
-  workspaceClient,
-  type Workspace,
-  type WorkspaceMember,
-  type WorkspaceInvite,
-  type CreateWorkspaceData,
-  type InviteMemberData,
-} from "../lib/workspace-client";
-import { useAuth } from "./auth-context";
-import { useUIStore } from "../store/uiStore";
-import { useExplorerStore } from "../store/explorerStore";
-import { useChatStore } from "../store/chatStore";
+import { useEffect, type ReactNode } from "react";
 
-import { useFlowStore } from "../store/flowStore";
-import { useSchemaStore } from "../store/schemaStore";
+import { useAuth } from "./auth-context";
 import { useConsoleTreeStore } from "../store/consoleTreeStore";
 import { useRealtimeStore } from "../store/realtimeStore";
+import { useSchemaStore } from "../store/schemaStore";
 import {
-  clearActiveWorkspaceId,
-  getActiveWorkspaceId,
-  getTabWorkspaceId,
-  setActiveWorkspaceId,
-} from "../lib/active-workspace";
+  useWorkspaceStore,
+  type WorkspaceState,
+} from "../store/workspaceStore";
 
-interface WorkspaceContextState {
-  // State
-  workspaces: Workspace[];
-  currentWorkspace: Workspace | null;
-  members: WorkspaceMember[];
-  invites: WorkspaceInvite[];
-  loading: boolean;
-  initialized: boolean; // true after first load attempt completes
-  error: string | null;
-
-  // Actions
-  loadWorkspaces: () => Promise<void>;
-  refreshWorkspaces: () => Promise<void>; // Reload workspace list without page reload
-  createWorkspace: (data: CreateWorkspaceData) => Promise<Workspace>;
-  createWorkspaceForOnboarding: (
-    data: CreateWorkspaceData,
-  ) => Promise<Workspace>; // Create without reload
-  updateWorkspace: (
-    id: string,
-    data: Partial<CreateWorkspaceData>,
-  ) => Promise<void>;
-  deleteWorkspace: (id: string) => Promise<void>;
-  switchWorkspace: (id: string, workspaceOverride?: Workspace) => Promise<void>;
-
-  // Member management
-  loadMembers: () => Promise<void>;
-  inviteMember: (data: InviteMemberData) => Promise<void>;
-  updateMemberRole: (
-    userId: string,
-    role: "admin" | "member" | "viewer",
-  ) => Promise<void>;
-  removeMember: (userId: string) => Promise<void>;
-
-  // Invitation management
-  loadInvites: () => Promise<void>;
-  cancelInvite: (inviteId: string) => Promise<void>;
-  acceptInvite: (token: string) => Promise<Workspace>;
-}
-
-const WorkspaceContext = createContext<WorkspaceContextState | undefined>(
-  undefined,
-);
-
-interface WorkspaceProviderProps {
-  children: ReactNode;
-}
-
-export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
+/**
+ * Workspace state lives in `useWorkspaceStore` (Zustand — the project rule is
+ * stores, not Context). This provider holds no state: it only runs the
+ * effects that follow the signed-in user and the active workspace (load the
+ * list, members/invites, background preloads, the realtime channel).
+ */
+export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const { user, loading: authLoading } = useAuth();
-  const currentWorkspaceId = useUIStore(s => s.currentWorkspaceId);
-  const setCurrentWorkspaceId = useUIStore(s => s.setCurrentWorkspaceId);
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [currentWorkspace, setCurrentWorkspace] = useState<Workspace | null>(
-    null,
-  );
-  const [members, setMembers] = useState<WorkspaceMember[]>([]);
-  const [invites, setInvites] = useState<WorkspaceInvite[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [initialized, setInitialized] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const workspaceId = useWorkspaceStore(s => s.currentWorkspace?.id);
 
-  // Load workspaces when user is authenticated
+  // Load workspaces once auth resolves; drop them on sign-out (the boot hint
+  // is kept so the workspace is restored on the next sign-in).
   useEffect(() => {
-    if (authLoading) return; // wait for auth status to resolve
+    if (authLoading) return;
     if (user) {
-      loadWorkspaces();
+      void useWorkspaceStore.getState().loadWorkspaces();
     } else {
-      // Clear in-memory workspace data when user is unauthenticated
-      // Preserve persisted workspace id so it can be restored on next login
-      setWorkspaces([]);
-      setCurrentWorkspace(null);
-      setMembers([]);
-      setInvites([]);
-      // Reset initialized so ProtectedRoute shows loading spinner on next login
-      // instead of briefly flashing OnboardingFlow before workspaces load
-      setInitialized(false);
+      useWorkspaceStore.getState().clearSession();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, authLoading]);
 
-  // Load current workspace data when it changes
   useEffect(() => {
-    if (currentWorkspace) {
-      loadMembers();
-      loadInvites();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentWorkspace?.id]);
-
-  // Background preload schema data (connections and databases) when workspace changes
-  useEffect(() => {
-    if (currentWorkspace?.id) {
-      // Trigger background preloading - this loads connections first, then tree roots
-      useSchemaStore
-        .getState()
-        .preloadConnectionsAndDatabases(currentWorkspace.id);
-    }
-  }, [currentWorkspace?.id]);
-
-  // Background preload console tree when workspace changes
-  // This ensures the tree is ready before any optimistic addConsole calls
-  useEffect(() => {
-    if (currentWorkspace?.id) {
-      useConsoleTreeStore.getState().fetchTree(currentWorkspace.id);
-    }
-  }, [currentWorkspace?.id]);
+    if (!workspaceId) return;
+    const { loadMembers, loadInvites } = useWorkspaceStore.getState();
+    void loadMembers();
+    void loadInvites();
+    // Background preload: connections first, then tree roots.
+    useSchemaStore.getState().preloadConnectionsAndDatabases(workspaceId);
+    // The console tree must be ready before any optimistic addConsole call.
+    useConsoleTreeStore.getState().fetchTree(workspaceId);
+  }, [workspaceId]);
 
   // Workspace realtime channel: keeps open console tabs live (other users,
   // other tabs, server-side agent edits) and carries chat activity/intents.
   useEffect(() => {
-    if (currentWorkspace?.id) {
-      useRealtimeStore.getState().setCurrentUserId(user?.id ?? null);
-      useRealtimeStore.getState().connect(currentWorkspace.id);
-      return () => {
-        useRealtimeStore.getState().disconnect();
-      };
-    }
-  }, [currentWorkspace?.id, user?.id]);
+    if (!workspaceId) return;
+    useRealtimeStore.getState().setCurrentUserId(user?.id ?? null);
+    useRealtimeStore.getState().connect(workspaceId);
+    return () => {
+      useRealtimeStore.getState().disconnect();
+    };
+  }, [workspaceId, user?.id]);
 
-  const loadWorkspaces = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      const workspaceList = await workspaceClient.listWorkspaces();
-      setWorkspaces(workspaceList);
-
-      // Workspace selection logic:
-      // - 0 workspaces: set currentWorkspace = null (triggers onboarding)
-      // - 1 workspace: auto-select it
-      // - 2+ workspaces: check localStorage, if not found set null (triggers selector)
-
-      if (workspaceList.length === 0) {
-        // No workspaces - will trigger onboarding
-        setCurrentWorkspace(null);
-        clearActiveWorkspaceId();
-      } else if (workspaceList.length === 1) {
-        // Exactly one workspace - auto-select it
-        const workspace = workspaceList[0];
-        setCurrentWorkspace(workspace);
-        setCurrentWorkspaceId(workspace.id);
-        setActiveWorkspaceId(workspace.id);
-
-        // Sync with backend
-        try {
-          await workspaceClient.switchWorkspace(workspace.id);
-        } catch {
-          // Ignore switch errors for auto-selection
-        }
-      } else {
-        // Multiple workspaces - check for persisted selection
-        // This tab's own choice first: uiStore and the localStorage default
-        // are shared by every tab, so they only seed a tab that has none.
-        const persistedId =
-          getTabWorkspaceId() || currentWorkspaceId || getActiveWorkspaceId();
-        const persisted = persistedId
-          ? workspaceList.find(ws => ws.id === persistedId)
-          : undefined;
-
-        if (persisted) {
-          // Valid persisted workspace - use it
-          setCurrentWorkspace(persisted);
-          setCurrentWorkspaceId(persisted.id);
-
-          // Sync with backend
-          try {
-            await workspaceClient.switchWorkspace(persisted.id);
-          } catch {
-            // Ignore switch errors
-          }
-        } else {
-          // No valid persisted workspace - show selector
-          setCurrentWorkspace(null);
-          clearActiveWorkspaceId();
-        }
-      }
-    } catch (err: any) {
-      setError(err.message || "Failed to load workspaces");
-      console.error("Load workspaces error:", err);
-    } finally {
-      setLoading(false);
-      setInitialized(true);
-    }
-  }, [currentWorkspaceId, setCurrentWorkspaceId]);
-
-  // Refresh workspace list without triggering page reload
-  const refreshWorkspaces = useCallback(async () => {
-    try {
-      const workspaceList = await workspaceClient.listWorkspaces();
-      setWorkspaces(workspaceList);
-
-      // If we have a current workspace, ensure it's still in the list
-      if (currentWorkspace) {
-        const stillExists = workspaceList.find(
-          ws => ws.id === currentWorkspace.id,
-        );
-        if (!stillExists) {
-          setCurrentWorkspace(null);
-        } else {
-          // Take the fresh object: settings (feature flags, tiers) changed on
-          // the server are what a refresh is FOR, and the rail reads them
-          // from here.
-          setCurrentWorkspace(stillExists);
-        }
-      }
-    } catch (err: any) {
-      console.error("Refresh workspaces error:", err);
-    }
-  }, [currentWorkspace]);
-
-  const createWorkspace = useCallback(
-    async (data: CreateWorkspaceData): Promise<Workspace> => {
-      try {
-        setError(null);
-        const workspace = await workspaceClient.createWorkspace(data);
-        setWorkspaces(prev => [...prev, workspace]);
-        // Automatically switch to the new workspace. We do NOT delegate to
-        // `switchWorkspace` here because its closure captures a stale
-        // `workspaces` list (without the workspace we just created), which
-        // would make the workspace lookup fail and skip the state reset.
-        await switchWorkspace(workspace.id, workspace);
-        return workspace;
-      } catch (err: any) {
-        setError(err.message || "Failed to create workspace");
-        throw err;
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
-
-  // Create workspace during onboarding without triggering page reload
-  // This allows the multi-step onboarding flow to continue
-  const createWorkspaceForOnboarding = useCallback(
-    async (data: CreateWorkspaceData): Promise<Workspace> => {
-      try {
-        setError(null);
-        const workspace = await workspaceClient.createWorkspace(data);
-        setWorkspaces(prev => [...prev, workspace]);
-
-        // Set as current workspace WITHOUT reloading
-        setCurrentWorkspace(workspace);
-        setCurrentWorkspaceId(workspace.id);
-        setActiveWorkspaceId(workspace.id);
-
-        // Sync with backend (don't await to avoid blocking)
-        workspaceClient.switchWorkspace(workspace.id).catch(() => {
-          // Ignore errors during background sync
-        });
-
-        return workspace;
-      } catch (err: any) {
-        setError(err.message || "Failed to create workspace");
-        throw err;
-      }
-    },
-    [setCurrentWorkspaceId],
-  );
-
-  const updateWorkspace = useCallback(
-    async (id: string, data: Partial<CreateWorkspaceData>) => {
-      try {
-        setError(null);
-        const updated = await workspaceClient.updateWorkspace(id, data);
-        setWorkspaces(prev => prev.map(ws => (ws.id === id ? updated : ws)));
-        if (currentWorkspace?.id === id) {
-          setCurrentWorkspace(updated);
-        }
-      } catch (err: any) {
-        setError(err.message || "Failed to update workspace");
-        throw err;
-      }
-    },
-    [currentWorkspace],
-  );
-
-  const deleteWorkspace = useCallback(
-    async (id: string) => {
-      try {
-        setError(null);
-        await workspaceClient.deleteWorkspace(id);
-        setWorkspaces(prev => prev.filter(ws => ws.id !== id));
-
-        // If deleted workspace was current, switch to first available
-        if (currentWorkspace?.id === id) {
-          const remaining = workspaces.filter(ws => ws.id !== id);
-          if (remaining.length > 0) {
-            await switchWorkspace(remaining[0].id);
-          } else {
-            setCurrentWorkspace(null);
-            clearActiveWorkspaceId();
-          }
-        }
-      } catch (err: any) {
-        setError(err.message || "Failed to delete workspace");
-        throw err;
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [currentWorkspace, workspaces],
-  );
-
-  const switchWorkspace = useCallback(
-    async (id: string, workspaceOverride?: Workspace) => {
-      try {
-        setError(null);
-        await workspaceClient.switchWorkspace(id);
-
-        const workspace =
-          workspaceOverride ?? workspaces.find(ws => ws.id === id);
-        if (workspace) {
-          setCurrentWorkspace(workspace);
-        }
-
-        // Console tabs are persisted per workspace (`console-store:<id>`, see
-        // consoleStore's storage adapter), so they must NOT be cleared here:
-        // the post-switch reload rehydrates the new workspace's own tabs, and
-        // switching back later restores this workspace's tabs. The adapter
-        // freezes writes once `activeWorkspaceId` flips (workspaceClient set
-        // it above), so the old workspace's tabs can't leak into the new
-        // bucket before the reload.
-        //
-        // Reset only the persisted stores whose state is global and
-        // workspace-specific, so it can't leak into the new workspace.
-        useExplorerStore.getState().reset();
-        useChatStore.getState().reset();
-        useFlowStore.getState().reset();
-
-        setCurrentWorkspaceId(id);
-
-        // Reload from the root: keeping the current path would make UrlSync
-        // deep-link the previous workspace's resource (e.g. /a/<appId>) into
-        // the new workspace, where it 404s. The new workspace's own active
-        // tab is restored from its persisted bucket instead.
-        window.location.replace("/");
-      } catch (err: any) {
-        setError(err.message || "Failed to switch workspace");
-        throw err;
-      }
-    },
-    [workspaces, setCurrentWorkspaceId],
-  );
-
-  const loadMembers = useCallback(async () => {
-    if (!currentWorkspace) return;
-
-    try {
-      const memberList = await workspaceClient.getMembers(currentWorkspace.id);
-      setMembers(memberList);
-    } catch (err: any) {
-      console.error("Load members error:", err);
-    }
-  }, [currentWorkspace]);
-
-  const inviteMember = useCallback(
-    async (data: InviteMemberData) => {
-      if (!currentWorkspace) throw new Error("No workspace selected");
-
-      try {
-        setError(null);
-        const invite = await workspaceClient.createInvite(
-          currentWorkspace.id,
-          data,
-        );
-        setInvites(prev => [...prev, invite]);
-      } catch (err: any) {
-        setError(err.message || "Failed to invite member");
-        throw err;
-      }
-    },
-    [currentWorkspace],
-  );
-
-  const updateMemberRole = useCallback(
-    async (userId: string, role: "admin" | "member" | "viewer") => {
-      if (!currentWorkspace) throw new Error("No workspace selected");
-
-      try {
-        setError(null);
-        const updated = await workspaceClient.updateMemberRole(
-          currentWorkspace.id,
-          userId,
-          { role },
-        );
-        setMembers(prev =>
-          prev.map(member =>
-            member.userId === userId
-              ? {
-                  ...member,
-                  ...updated,
-                  id: updated.id || member.id,
-                  userId: updated.userId || member.userId,
-                  email: updated.email || member.email,
-                  joinedAt: updated.joinedAt || member.joinedAt,
-                }
-              : member,
-          ),
-        );
-      } catch (err: any) {
-        setError(err.message || "Failed to update member role");
-        throw err;
-      }
-    },
-    [currentWorkspace],
-  );
-
-  const removeMember = useCallback(
-    async (userId: string) => {
-      if (!currentWorkspace) throw new Error("No workspace selected");
-
-      try {
-        setError(null);
-        await workspaceClient.removeMember(currentWorkspace.id, userId);
-        setMembers(prev => prev.filter(member => member.userId !== userId));
-      } catch (err: any) {
-        setError(err.message || "Failed to remove member");
-        throw err;
-      }
-    },
-    [currentWorkspace],
-  );
-
-  const loadInvites = useCallback(async () => {
-    if (!currentWorkspace) return;
-
-    try {
-      const inviteList = await workspaceClient.getPendingInvites(
-        currentWorkspace.id,
-      );
-      setInvites(inviteList);
-    } catch (err: any) {
-      console.error("Load invites error:", err);
-    }
-  }, [currentWorkspace]);
-
-  const cancelInvite = useCallback(
-    async (inviteId: string) => {
-      if (!currentWorkspace) throw new Error("No workspace selected");
-
-      try {
-        setError(null);
-        await workspaceClient.cancelInvite(currentWorkspace.id, inviteId);
-        setInvites(prev => prev.filter(invite => invite.id !== inviteId));
-      } catch (err: any) {
-        setError(err.message || "Failed to cancel invite");
-        throw err;
-      }
-    },
-    [currentWorkspace],
-  );
-
-  const acceptInvite = useCallback(
-    async (token: string) => {
-      try {
-        setError(null);
-        const workspace = await workspaceClient.acceptInvite(token);
-
-        // Set localStorage FIRST to ensure the invited workspace is selected after redirect
-        // This prevents the race condition where loadWorkspaces() picks a different workspace
-        setActiveWorkspaceId(workspace.id);
-
-        // Add workspace to local list and set as current
-        setWorkspaces(prev => {
-          // Check if workspace already exists in list
-          if (prev.some(ws => ws.id === workspace.id)) {
-            return prev;
-          }
-          return [...prev, workspace];
-        });
-
-        // Switch to the accepted workspace on the backend
-        await workspaceClient.switchWorkspace(workspace.id);
-        setCurrentWorkspace(workspace);
-        setCurrentWorkspaceId(workspace.id);
-
-        // Don't reload here - let the calling component (AcceptInvite) handle the redirect
-        // after showing the success message
-
-        return workspace;
-      } catch (err: any) {
-        setError(err.message || "Failed to accept invite");
-        throw err;
-      }
-    },
-    [setCurrentWorkspaceId],
-  );
-
-  const value: WorkspaceContextState = useMemo(
-    () => ({
-      // State
-      workspaces,
-      currentWorkspace,
-      members,
-      invites,
-      loading,
-      initialized,
-      error,
-
-      // Actions
-      loadWorkspaces,
-      refreshWorkspaces,
-      createWorkspace,
-      createWorkspaceForOnboarding,
-      updateWorkspace,
-      deleteWorkspace,
-      switchWorkspace,
-
-      // Member management
-      loadMembers,
-      inviteMember,
-      updateMemberRole,
-      removeMember,
-
-      // Invitation management
-      loadInvites,
-      cancelInvite,
-      acceptInvite,
-    }),
-    [
-      workspaces,
-      currentWorkspace,
-      members,
-      invites,
-      loading,
-      initialized,
-      error,
-      loadWorkspaces,
-      refreshWorkspaces,
-      createWorkspace,
-      createWorkspaceForOnboarding,
-      updateWorkspace,
-      deleteWorkspace,
-      switchWorkspace,
-      loadMembers,
-      inviteMember,
-      updateMemberRole,
-      removeMember,
-      loadInvites,
-      cancelInvite,
-      acceptInvite,
-    ],
-  );
-
-  return (
-    <WorkspaceContext.Provider value={value}>
-      {children}
-    </WorkspaceContext.Provider>
-  );
+  return <>{children}</>;
 }
 
 /**
- * The workspace context when rendered inside a WorkspaceProvider, else
- * undefined — for shared components that also render outside the shell
- * (the app viewer's chat).
+ * The whole workspace store, for the many components written against the
+ * old context. Prefer a narrow selector (`useWorkspaceStore(s => ...)`) in
+ * new code: this re-renders on every workspace-store change, as the context
+ * did.
  */
 // eslint-disable-next-line react-refresh/only-export-components
-export function useOptionalWorkspace() {
-  return useContext(WorkspaceContext);
+export function useWorkspace(): WorkspaceState {
+  return useWorkspaceStore();
 }
 
+/**
+ * Kept for shared components that also render outside the shell (the app
+ * viewer's chat). With the store there is no "outside": it always returns
+ * the store, whose `currentWorkspace` is null until the shell loads one.
+ */
 // eslint-disable-next-line react-refresh/only-export-components
-export function useWorkspace() {
-  const context = useContext(WorkspaceContext);
-  if (context === undefined) {
-    throw new Error("useWorkspace must be used within a WorkspaceProvider");
-  }
-  return context;
+export function useOptionalWorkspace(): WorkspaceState | undefined {
+  return useWorkspaceStore();
 }

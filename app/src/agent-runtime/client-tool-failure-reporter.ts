@@ -40,6 +40,7 @@ export function reportClientToolFailure({
         : "Client-side tool execution failed";
   const code = typeof output.code === "string" ? output.code : undefined;
 
+  // eslint-disable-next-line no-restricted-syntax -- fire-and-forget keepalive report: must outlive the page and never trigger the 401 /login redirect
   void fetch("/api/agent/client-tool-failure", {
     method: "POST",
     credentials: "include",

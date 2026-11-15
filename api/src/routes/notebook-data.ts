@@ -36,6 +36,7 @@ import {
   pathParam,
 } from "../openapi/core";
 import { loggers } from "../logging";
+import { fail, failFromThrown } from "./lib/respond";
 
 const logger = loggers.db();
 
@@ -60,27 +61,18 @@ async function kernelOrUnifiedAuth(c: Context, next: Next) {
       try {
         payload = verifyKernelToken(token);
       } catch (error) {
-        return c.json(
-          {
-            success: false,
-            error:
-              error instanceof Error ? error.message : "Invalid kernel token",
-          },
+        return fail(
+          c,
           401,
+          error instanceof Error ? error.message : "Invalid kernel token",
         );
       }
       if (!Types.ObjectId.isValid(payload.wsId)) {
-        return c.json(
-          { success: false, error: "Invalid workspace in kernel token" },
-          401,
-        );
+        return fail(c, 401, "Invalid workspace in kernel token");
       }
       const workspace = await Workspace.findById(payload.wsId);
       if (!workspace) {
-        return c.json(
-          { success: false, error: "Workspace not found for kernel token" },
-          401,
-        );
+        return fail(c, 401, "Workspace not found for kernel token");
       }
       c.set("workspace", workspace);
       c.set("workspaceId", workspace._id.toString());
@@ -169,31 +161,22 @@ notebookDataRoutes.openapi(
       const query = typeof body.query === "string" ? body.query : undefined;
 
       if (!connectionId) {
-        return c.json(
-          { success: false, error: "connectionId is required" },
-          400,
-        );
+        return fail(c, 400, "connectionId is required");
       }
       if (!query || !query.trim()) {
-        return c.json({ success: false, error: "query is required" }, 400);
+        return fail(c, 400, "query is required");
       }
       if (!Types.ObjectId.isValid(connectionId)) {
-        return c.json(
-          { success: false, error: "Invalid connectionId format" },
-          400,
-        );
+        return fail(c, 400, "Invalid connectionId format");
       }
       // Parameter binding is not wired yet; reject rather than silently ignore
       // (a caller relying on binding for safety must not be misled).
       if (body.params !== undefined) {
-        return c.json(
-          {
-            success: false,
-            error:
-              "params (server-side binding) is not supported yet; inline values safely or omit params",
-            code: "PARAMS_UNSUPPORTED",
-          },
+        return fail(
+          c,
           400,
+          "params (server-side binding) is not supported yet; inline values safely or omit params",
+          { code: "PARAMS_UNSUPPORTED" },
         );
       }
 
@@ -202,35 +185,23 @@ notebookDataRoutes.openapi(
         workspaceId: workspace._id,
       });
       if (!database) {
-        return c.json(
-          { success: false, error: "Database connection not found" },
-          404,
-        );
+        return fail(c, 404, "Database connection not found");
       }
 
       // Notebook reads are SQL-only; the read-only guard + row-limit wrapper
       // are SQL constructs. (Mongo/KV sources are out of scope for this path.)
       const dialect = getSqlDialectOrNull(database.type);
       if (!dialect) {
-        return c.json(
-          {
-            success: false,
-            error: `notebook read supports SQL sources only (got '${database.type}')`,
-          },
+        return fail(
+          c,
           400,
+          `notebook read supports SQL sources only (got '${database.type}')`,
         );
       }
 
       const safety = checkPreviewQuerySafety(query);
       if (!safety.safe) {
-        return c.json(
-          {
-            success: false,
-            error: safety.errors.join(" "),
-            code: "NOT_READ_ONLY",
-          },
-          400,
-        );
+        return fail(c, 400, safety.errors.join(" "), { code: "NOT_READ_ONLY" });
       }
 
       // Row budget: clamp the caller's limit to the ceiling and wrap the query
@@ -265,14 +236,10 @@ notebookDataRoutes.openapi(
           streamingOptions,
         );
       if (!fieldsResult.success || !fieldsResult.fields?.length) {
-        return c.json(
-          {
-            success: false,
-            error:
-              fieldsResult.error ||
-              "Failed to resolve result schema for the query",
-          },
+        return fail(
+          c,
           400,
+          fieldsResult.error || "Failed to resolve result schema for the query",
         );
       }
 
@@ -288,14 +255,7 @@ notebookDataRoutes.openapi(
       });
     } catch (error) {
       logger.error("Notebook read failed", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error ? error.message : "Notebook read failed",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Notebook read failed");
     }
   },
 );

@@ -47,6 +47,44 @@ function asSourceConnection(
   } as unknown as ISourceConnection;
 }
 
+type ConnectorMetadata = ConnectorRegistryEntry["metadata"];
+
+/**
+ * The `XxxConnector` class a connector directory exports (by convention the
+ * first export whose name ends in "Connector"), or undefined when it exports
+ * none. Throws when the directory cannot be imported.
+ */
+async function importConnectorClass(type: string): Promise<any | undefined> {
+  const mod = await import(`../connectors/${type}`);
+  const exportKey = Object.keys(mod).find(k => k.endsWith("Connector"));
+  return exportKey ? (mod as Record<string, unknown>)[exportKey] : undefined;
+}
+
+function defaultMetadata(type: string, name: string = type): ConnectorMetadata {
+  return {
+    name,
+    version: "1.0.0",
+    description: `${type} connector`,
+    supportedEntities: [],
+  };
+}
+
+/** The class's own getMetadata() on a config-less instance, else `fallback`. */
+function probeMetadata(
+  connectorClass: any,
+  fallback: ConnectorMetadata,
+): ConnectorMetadata {
+  try {
+    const temp = new connectorClass({ config: {} } as any);
+    if (typeof temp.getMetadata === "function") {
+      return temp.getMetadata();
+    }
+  } catch {
+    // ignore, fall back to default metadata
+  }
+  return fallback;
+}
+
 /**
  * Connector registry for the sync script
  * Dynamically loads connectors based on connector type
@@ -97,20 +135,9 @@ class SyncConnectorRegistry {
     if (!entry) {
       // Attempt lazy load
       try {
-        const mod = await import(`../connectors/${type}`);
-        const exportKey = Object.keys(mod).find(k => k.endsWith("Connector"));
-        if (!exportKey) return null;
-        const connectorClass = (mod as any)[exportKey];
-        entry = {
-          type,
-          connectorClass,
-          metadata: {
-            name: type,
-            version: "1.0.0",
-            description: `${type} connector`,
-            supportedEntities: [],
-          },
-        };
+        const connectorClass = await importConnectorClass(type);
+        if (!connectorClass) return null;
+        entry = { type, connectorClass, metadata: defaultMetadata(type) };
         this.register(entry);
       } catch {
         return null;
@@ -150,32 +177,18 @@ class SyncConnectorRegistry {
           continue;
         }
         try {
-          // Dynamically import the connector module
-          const modulePath = `../connectors/${dirName}`;
-          const mod = await import(modulePath);
-          const exportKey = Object.keys(mod).find(k => k.endsWith("Connector"));
-          if (!exportKey) {
+          const connectorClass = await importConnectorClass(dirName);
+          if (!connectorClass) {
             logger.warn("No Connector class export found", { dirName });
             continue;
           }
-          const connectorClass = (mod as any)[exportKey];
-
-          // Try to get metadata
-          let metadata = {
-            name: dirName.charAt(0).toUpperCase() + dirName.slice(1),
-            version: "1.0.0",
-            description: `${dirName} connector`,
-            supportedEntities: [],
-          };
-          try {
-            const temp = new connectorClass({ config: {} } as any);
-            if (typeof temp.getMetadata === "function") {
-              metadata = temp.getMetadata();
-            }
-          } catch {
-            // ignore, fallback to default metadata
-          }
-
+          const metadata = probeMetadata(
+            connectorClass,
+            defaultMetadata(
+              dirName,
+              dirName.charAt(0).toUpperCase() + dirName.slice(1),
+            ),
+          );
           this.register({ type: dirName, connectorClass, metadata });
         } catch (err) {
           logger.warn("Failed to load connector", { dirName, error: err });
@@ -221,24 +234,12 @@ class SyncConnectorRegistry {
     if (!entry) {
       // Attempt lazy load by type name (directory)
       try {
-        const mod = await import(`../connectors/${connection.type}`);
-        const exportKey = Object.keys(mod).find(k => k.endsWith("Connector"));
-        if (exportKey) {
-          const connectorClass = (mod as any)[exportKey];
-          let metadata = {
-            name: connection.type,
-            version: "1.0.0",
-            description: `${connection.type} connector`,
-            supportedEntities: [],
-          };
-          try {
-            const temp = new connectorClass({ config: {} } as any);
-            if (typeof temp.getMetadata === "function") {
-              metadata = temp.getMetadata();
-            }
-          } catch {
-            // ignore metadata fetch errors
-          }
+        const connectorClass = await importConnectorClass(connection.type);
+        if (connectorClass) {
+          const metadata = probeMetadata(
+            connectorClass,
+            defaultMetadata(connection.type),
+          );
           entry = { type: connection.type, connectorClass, metadata };
           this.register(entry);
         }
@@ -251,27 +252,17 @@ class SyncConnectorRegistry {
     // If somehow no class yet, try to import by convention
     if (!entry || !entry.connectorClass) {
       try {
-        const mod = await import(`../connectors/${connection.type}`);
-        const exportKey = Object.keys(mod).find(k => k.endsWith("Connector"));
-        if (exportKey) {
-          const klass = (mod as any)[exportKey];
-          if (!entry) {
-            entry = {
-              type: connection.type,
-              connectorClass: klass,
-              metadata: {
-                name: connection.type,
-                version: "1.0.0",
-                description: `${connection.type} connector`,
-                supportedEntities: [],
-              },
-            };
-            this.register(entry);
-          } else {
-            entry.connectorClass = klass;
-          }
+        const klass = await importConnectorClass(connection.type);
+        if (!klass) throw new Error("No Connector export found");
+        if (!entry) {
+          entry = {
+            type: connection.type,
+            connectorClass: klass,
+            metadata: defaultMetadata(connection.type),
+          };
+          this.register(entry);
         } else {
-          throw new Error("No Connector export found");
+          entry.connectorClass = klass;
         }
       } catch (error) {
         logger.error("Failed to load connector", {
@@ -283,13 +274,6 @@ class SyncConnectorRegistry {
     }
 
     return new entry.connectorClass(asSourceConnection(connection));
-  }
-
-  /** @deprecated use getConnectorFor */
-  async getConnector(
-    dataSource: SourceConnectionConfig,
-  ): Promise<BaseConnector | null> {
-    return this.getConnectorFor(dataSource);
   }
 
   /**

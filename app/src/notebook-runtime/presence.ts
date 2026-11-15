@@ -13,8 +13,6 @@
  */
 import { useEffect, useRef, useState } from "react";
 
-import { apiClient } from "../lib/api-client";
-import { getApiBasePath } from "../lib/api-base-path";
 import { realtimeClientId } from "../lib/realtime-client-id";
 import {
   NOTEBOOK_VIEWER_TTL_MS,
@@ -43,53 +41,32 @@ export function useNotebookPresence({
   const activeCellRef = useRef(activeCellId);
   activeCellRef.current = activeCellId;
 
-  const path = workspaceId
-    ? `/workspaces/${workspaceId}/notebooks/${notebookId}/presence`
-    : null;
-
   // Keep-alive: beat on open + every HEARTBEAT_MS. Interval only; the leave
   // beacon lives in its own effect so it fires on unmount, not on re-runs.
   useEffect(() => {
-    if (!path) return;
+    if (!workspaceId) return;
     const beat = () =>
-      void apiClient
-        .post(path, {
-          clientId: realtimeClientId,
-          activeCellId: activeCellRef.current,
-        })
-        .catch(() => undefined);
+      useNotebookPresenceStore
+        .getState()
+        .beat(workspaceId, notebookId, activeCellRef.current);
     beat();
     const timer = setInterval(beat, HEARTBEAT_MS);
     return () => clearInterval(timer);
-  }, [path, activeCellId]);
+  }, [workspaceId, notebookId, activeCellId]);
 
   // Announce departure once, on unmount / notebook switch.
   useEffect(() => {
-    if (!path) return;
+    if (!workspaceId) return;
     return () => {
-      const payload = JSON.stringify({
-        clientId: realtimeClientId,
-        gone: true,
-      });
-      const url = `${getApiBasePath(import.meta.env.VITE_API_URL)}${path}`;
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon(
-          url,
-          new Blob([payload], { type: "application/json" }),
-        );
-      } else {
-        void apiClient
-          .post(path, { clientId: realtimeClientId, gone: true })
-          .catch(() => undefined);
-      }
+      useNotebookPresenceStore.getState().leave(workspaceId, notebookId);
     };
-  }, [path]);
+  }, [workspaceId, notebookId]);
 
   // Echo once (throttled) when a new peer appears, so newcomers see everyone.
   const knownPeers = useRef<Set<string>>(new Set());
   const lastEcho = useRef(0);
   useEffect(() => {
-    if (!path) return;
+    if (!workspaceId) return;
     let fresh = false;
     for (const clientId of Object.keys(viewersMap ?? {})) {
       if (clientId === realtimeClientId) continue;
@@ -102,13 +79,10 @@ export function useNotebookPresence({
     const now = Date.now();
     if (now - lastEcho.current < ECHO_THROTTLE_MS) return;
     lastEcho.current = now;
-    void apiClient
-      .post(path, {
-        clientId: realtimeClientId,
-        activeCellId: activeCellRef.current,
-      })
-      .catch(() => undefined);
-  }, [path, viewersMap]);
+    useNotebookPresenceStore
+      .getState()
+      .beat(workspaceId, notebookId, activeCellRef.current);
+  }, [workspaceId, notebookId, viewersMap]);
 
   // Re-render on a timer so viewers whose beats stopped drop off even when no
   // other presence event is arriving.

@@ -46,6 +46,8 @@ interface KVKey {
  *   kv.delete("my-key")                      - Delete a key
  */
 export class CloudflareKVDatabaseDriver implements DatabaseDriver {
+  // KV commands are not SQL: no lexical read-only check can vouch for them.
+  readonly nonSql = true;
   private httpClients: Map<string, AxiosInstance> = new Map();
 
   getMetadata(): DatabaseDriverMetadata {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -12,7 +12,16 @@ import { join } from "node:path";
  * list, not APPS_REQUIRE_CONNECTED_REPO.
  */
 
-const apps = readFileSync(join(__dirname, "apps.ts"), "utf8");
+// The apps routes: the mounting module plus its per-concern sub-routers.
+const appsDir = join(__dirname, "apps");
+const apps = [
+  join(__dirname, "apps.ts"),
+  ...readdirSync(appsDir)
+    .filter(name => name.endsWith(".ts") && !name.endsWith(".test.ts"))
+    .map(name => join(appsDir, name)),
+]
+  .map(file => readFileSync(file, "utf8"))
+  .join("\n");
 
 assert.equal(
   apps.includes("appsRequireConnectedRepo"),
@@ -26,10 +35,8 @@ assert.ok(
 );
 
 assert.ok(
-  /const repos = await listWorkspaceRepos\(workspaceId\);[\s\S]*?if \(repos\.length === 0\)/.test(
-    apps,
-  ),
-  "POST /apps must 412 when listWorkspaceRepos is empty",
+  /if \(!\(await getWorkspaceRepo\(workspaceId\)\)\) \{[\s\S]*?412/.test(apps),
+  "POST /apps must 412 when the workspace has no repo binding",
 );
 
 assert.ok(

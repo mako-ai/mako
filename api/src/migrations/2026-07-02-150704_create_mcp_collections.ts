@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -30,7 +31,7 @@ export async function up(db: Db): Promise<void> {
   await ensureCollection(db, "mcp_tool_grants");
 
   const servers = db.collection("mcp_servers");
-  let indexes = await servers.indexes();
+  let indexes = await indexesOf(servers);
   if (!hasIndexOnKeys(indexes, { workspaceId: 1, name: 1 })) {
     await servers.createIndex(
       { workspaceId: 1, name: 1 },
@@ -47,7 +48,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const configs = db.collection("mcp_connection_configs");
-  indexes = await configs.indexes();
+  indexes = await indexesOf(configs);
   if (!hasIndexOnKeys(indexes, { serverId: 1, userId: 1 })) {
     await configs.createIndex(
       { serverId: 1, userId: 1 },
@@ -66,7 +67,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const grants = db.collection("mcp_tool_grants");
-  indexes = await grants.indexes();
+  indexes = await indexesOf(grants);
   if (!hasIndexOnKeys(indexes, { serverId: 1, userId: 1, toolName: 1 })) {
     await grants.createIndex(
       { serverId: 1, userId: 1, toolName: 1 },

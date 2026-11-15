@@ -10,7 +10,7 @@
  */
 import assert from "node:assert/strict";
 import type { AxiosInstance } from "axios";
-import { databaseConnectionService } from "./database-connection.service";
+import { bigQueryEngine } from "../databases/drivers/bigquery/engine";
 
 type CancelInput = {
   client: AxiosInstance;
@@ -20,14 +20,10 @@ type CancelInput = {
   executionId?: string;
 };
 
-// The method is private by design — nothing outside the class should be
-// cancelling jobs — but its behaviour is the whole point of the change.
+// Only the engine's own timeout path cancels an abandoned job, but its
+// behaviour is the whole point of the change.
 const cancel = (input: CancelInput): Promise<boolean> =>
-  (
-    databaseConnectionService as unknown as {
-      cancelAbandonedBigQueryJob(i: CancelInput): Promise<boolean>;
-    }
-  ).cancelAbandonedBigQueryJob(input);
+  bigQueryEngine.cancelAbandonedJob(input);
 
 async function main(): Promise<void> {
   const posts: Array<{ url: string; params: unknown }> = [];

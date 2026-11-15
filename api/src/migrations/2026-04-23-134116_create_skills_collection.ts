@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -24,7 +25,7 @@ export async function up(db: Db): Promise<void> {
   }
 
   const col = db.collection("skills");
-  const indexes = await col.indexes();
+  const indexes = await indexesOf(col);
 
   if (!hasIndexOnKeys(indexes, { workspaceId: 1, name: 1 })) {
     await col.createIndex(
@@ -54,8 +55,7 @@ export async function up(db: Db): Promise<void> {
   // Best-effort: never fail the migration if a text index already exists.
   try {
     const hasTextIndex = indexes.some(
-      (idx: { textIndexVersion?: number }) =>
-        idx.textIndexVersion !== undefined,
+      idx => idx.textIndexVersion !== undefined,
     );
     if (hasTextIndex) {
       log.info("Text index already exists on skills, skipping creation");

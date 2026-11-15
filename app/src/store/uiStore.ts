@@ -76,9 +76,6 @@ interface UIState {
   // Active editor content (ephemeral, not persisted)
   activeEditorContent?: ActiveEditorContent;
 
-  // Current workspace
-  currentWorkspaceId: string | null;
-
   /**
    * A first message for a new chat, written by a screen ("Ask Mako to fix").
    * The chat pane starts a new chat with it in the composer, then clears it.
@@ -115,9 +112,6 @@ interface UIActions {
   // Editor content
   setActiveEditorContent: (content: ActiveEditorContent | undefined) => void;
 
-  // Workspace
-  setCurrentWorkspaceId: (workspaceId: string | null) => void;
-
   // Chat
   /** Open the chat on a new chat with `text` written in the composer. */
   askMako: (text: string) => void;
@@ -143,7 +137,6 @@ const initialState: UIState = {
   mobileAppPane: "preview",
   loading: {},
   activeEditorContent: undefined,
-  currentWorkspaceId: null,
 };
 
 export const useUIStore = create<UIStore>()(
@@ -256,12 +249,6 @@ export const useUIStore = create<UIStore>()(
           state.activeEditorContent = content;
         }),
 
-      // Workspace
-      setCurrentWorkspaceId: workspaceId =>
-        set(state => {
-          state.currentWorkspaceId = workspaceId;
-        }),
-
       // Reset
       reset: () => set(initialState),
     })),
@@ -271,7 +258,12 @@ export const useUIStore = create<UIStore>()(
       // rename, "dashboards" before apps replaced them) land on the Apps
       // explorer instead of an explorer that no longer renders.
       merge: (persisted, current) => {
-        const p = (persisted ?? {}) as Partial<UIStore>;
+        const p = (persisted ?? {}) as Partial<UIStore> & {
+          currentWorkspaceId?: unknown;
+        };
+        // The active workspace moved to the per-tab workspaceStore; the copy
+        // persisted here was shared by every tab and is no longer read.
+        delete p.currentWorkspaceId;
         const legacyPane = p.leftPane as string | undefined;
         if (legacyPane === "apps-v2" || legacyPane === "dashboards") {
           p.leftPane = "apps";
@@ -281,7 +273,7 @@ export const useUIStore = create<UIStore>()(
         }
         return { ...current, ...p };
       },
-      // Only persist navigation and workspace - not loading states or editor content
+      // Only persist navigation - not loading states or editor content
       partialize: state => ({
         leftPane: state.leftPane,
         activeView: state.activeView,
@@ -289,7 +281,6 @@ export const useUIStore = create<UIStore>()(
         rightPaneOpen: state.rightPaneOpen,
         leftPaneWidthPx: state.leftPaneWidthPx,
         rightPaneWidthPx: state.rightPaneWidthPx,
-        currentWorkspaceId: state.currentWorkspaceId,
       }),
     },
   ),
@@ -297,19 +288,8 @@ export const useUIStore = create<UIStore>()(
 
 // Selectors for common patterns
 export const selectLeftPane = (state: UIStore) => state.leftPane;
-export const selectCurrentWorkspaceId = (state: UIStore) =>
-  state.currentWorkspaceId;
 export const selectActiveEditorContent = (state: UIStore) =>
   state.activeEditorContent;
-
-/**
- * Imperative read of the current workspace id for code that runs outside
- * React (agent client tools, tab-open shells). Components should subscribe
- * with `selectCurrentWorkspaceId` instead.
- */
-export function getCurrentWorkspaceId(): string | null {
-  return useUIStore.getState().currentWorkspaceId ?? null;
-}
 
 /**
  * The "active explorer" — the explorer panel currently visible on the left,

@@ -303,7 +303,7 @@ export class CustomApiConnector extends BaseConnector {
   async testConnection(): Promise<ConnectionTestResult> {
     // A missing or non-http(s) address is refused by the proxy's own check
     // (connections/forward.ts `urlUnder`), with a message the form shows.
-    const config = this.dataSource.config ?? {};
+    const config = this.sourceConnection.config ?? {};
     const { expectation, defaultPath, error } = testExpectation(config);
     if (error) return { success: false, message: error };
     const testPath =
@@ -312,7 +312,7 @@ export class CustomApiConnector extends BaseConnector {
         : (defaultPath ?? "/");
     try {
       const answer = await forward(
-        this.dataSource,
+        this.sourceConnection,
         customApi,
         config.graphql === true
           ? { method: "POST", path: "/", body: { query: "{ __typename }" } }

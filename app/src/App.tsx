@@ -77,6 +77,11 @@ const SourceControlExplorer = lazy(
 const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
 const AppViewerPage = lazy(() => import("./pages/AppViewerPage"));
 const ConnectionKeyPage = lazy(() => import("./pages/ConnectionKeyPage"));
+// The toast host stays out of the entry chunk; toasts queued before it
+// loads wait in the notification store and show once it mounts.
+const Notifier = lazy(() =>
+  import("./components/Notifier").then(m => ({ default: m.Notifier })),
+);
 const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
@@ -144,7 +149,7 @@ function InvitePage() {
 
 import { UrlSync } from "./components/UrlSync";
 import CommandPalette from "./components/CommandPalette";
-import { getActiveWorkspaceId } from "./lib/active-workspace";
+import { getCurrentWorkspaceId } from "./store/workspaceStore";
 
 // Main application component (extracted from original App)
 
@@ -187,7 +192,7 @@ function MainApp() {
   useEffect(() => {
     if (!activeTabId) return;
     const tab = useConsoleStore.getState().tabs[activeTabId];
-    const workspaceId = useUIStore.getState().currentWorkspaceId;
+    const workspaceId = getCurrentWorkspaceId();
     if (!tab || !workspaceId) return;
     const kind = tab.kind ?? "console";
     const record = useRecentsStore.getState().record;
@@ -486,7 +491,7 @@ function MainApp() {
       let prefill = `db.getCollection(${JSON.stringify(collection.name)}).find({}).limit(500)`;
       try {
         const { useSchemaStore } = await import("./store/schemaStore");
-        const workspaceId = getActiveWorkspaceId();
+        const workspaceId = getCurrentWorkspaceId();
         if (workspaceId) {
           const tpl = await useSchemaStore
             .getState()
@@ -1040,6 +1045,9 @@ function App() {
       <CheckoutSuccessTracker />
       <DesktopAuthResume />
       <UpdateNotification />
+      <Suspense fallback={null}>
+        <Notifier />
+      </Suspense>
       <Routes>
         {/* Invite route - no authentication required */}
         <Route path="/invite/:token" element={<InvitePage />} />

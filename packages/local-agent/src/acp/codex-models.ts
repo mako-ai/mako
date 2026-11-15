@@ -80,11 +80,6 @@ export function isForeignGatewayCodexModel(model: string): boolean {
   return false;
 }
 
-/** @deprecated Use isForeignGatewayCodexModel — Sol/Terra/Luna are valid. */
-export function isUnsupportedCodexChatGptModel(model: string): boolean {
-  return isForeignGatewayCodexModel(model);
-}
-
 /**
  * Prefer an explicit Chat pick, else keep current unless it is a foreign
  * gateway slug, else first advertised / fallback ChatGPT Codex model.

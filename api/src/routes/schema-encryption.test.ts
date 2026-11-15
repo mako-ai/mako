@@ -15,7 +15,7 @@ import { isEncryptedValue } from "../services/crypto.service";
 
 async function main(): Promise<void> {
   const { applySchemaEncryption, SecretEncryptionError } =
-    await import("./sources");
+    await import("./source-connections");
   const schema = {
     fields: [
       { name: "account", type: "text" },
@@ -71,7 +71,16 @@ async function main(): Promise<void> {
   // The route helper must not have quietly grown a fallback again.
   const { readFileSync } = await import("node:fs");
   const { join } = await import("node:path");
-  const source = readFileSync(join(__dirname, "sources.ts"), "utf8");
+  // routes/source-connections.ts only re-exports it; the code is here.
+  const source = readFileSync(
+    join(__dirname, "../connectors/source-connection-create.service.ts"),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /export function applySchemaEncryption\(/,
+    "the guard must read the file that defines applySchemaEncryption",
+  );
   assert.doesNotMatch(
     source,
     /catch\s*(\([^)]*\))?\s*\{[^}]*target\[key\] = val;/,

@@ -1,5 +1,6 @@
 import { Db, ObjectId } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 export const description =
   "Create the unique partial index guarding one default membership per user ({userId, isDefaultMembership} where isDefaultMembership=true), first clearing the flag on all but each user's oldest default membership";
@@ -75,7 +76,7 @@ export async function up(db: Db): Promise<void> {
     });
   }
 
-  const indexes = await members.listIndexes().toArray();
+  const indexes = await indexesOf(members);
   if (hasIndexOnKeys(indexes, KEY)) {
     log.info("Default-membership unique index already present", {
       duplicateUsers: duplicates.length,

@@ -1,504 +1,82 @@
+/**
+ * The database connection service: the one entry point the rest of the API
+ * runs queries through. A facade over the engines in `databases/drivers/`:
+ * it resolves the engine for a connection's type (`databases/engines.ts`),
+ * applies what every engine shares once — the connection's write rules and
+ * read-only checks (`databases/checked-query.ts`), preview paging, export
+ * streaming, cancellation by executionId, connection invalidation and the
+ * idle sweep — and delegates the rest.
+ *
+ * Two engines have native paths here: a Postgres read goes through a
+ * server-side cursor (one snapshot, read in batches), and BigQuery pages
+ * previews and streams with its job page tokens.
+ */
+import type { Db, MongoClient } from "mongodb";
+import { checkConnectionWrite } from "../access/connection-writes";
+import type { IDatabaseConnection } from "../database/workspace-schema";
+import { executeCheckedQuery, runOnEngine } from "../databases/checked-query";
+import * as bigQueryCatalog from "../databases/drivers/bigquery/catalog";
+import { bigQueryEngine } from "../databases/drivers/bigquery/engine";
+import { clickHouseEngine } from "../databases/drivers/clickhouse/engine";
 import {
-  checkConnectionWrite,
-  inReadOnlyTransaction,
-  isWrite,
-  ownResult,
-} from "../access/connection-writes";
-import { createClient } from "@clickhouse/client";
-import { MongoClient, Db, MongoClientOptions, ClientSession } from "mongodb";
+  mongoEngine,
+  type ConnectionConfig,
+  type ConnectionContext,
+} from "../databases/drivers/mongodb/engine";
+import { mssqlEngine } from "../databases/drivers/mssql/engine";
 import {
-  Client as PgClient,
-  Pool as PgPool,
-  type PoolClient,
-  type QueryResult as PgQueryResult,
-} from "pg";
-import * as mysql from "mysql2/promise";
-import { ConnectionPool, Request as MSSQLRequest } from "mssql";
-import { IDatabaseConnection } from "../database/workspace-schema";
-import axios, { AxiosInstance } from "axios";
-import crypto from "crypto";
-import { DatabaseDriver, StreamingQueryOptions } from "../databases/driver";
-import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-postgres/driver";
-import { CloudflareD1DatabaseDriver } from "../databases/drivers/cloudflare-d1/driver";
-import { CloudflareKVDatabaseDriver } from "../databases/drivers/cloudflare-kv/driver";
+  cursorReadable,
+  postgresEngine,
+} from "../databases/drivers/postgresql/engine";
+import type { QueryEngine } from "../databases/engine";
+import { allEngines, d1Driver, engineFor } from "../databases/engines";
+import { normalizeQueryFields, resultRows } from "../databases/query-fields";
 import {
-  mapPostgresOidToType,
-  normalizePostgresFields,
-  normalizePostgresRows,
-} from "../databases/drivers/postgresql/pg-type-utils";
-import { pgBackendPid } from "../databases/drivers/postgresql/pg-backend-pid";
-import { loggers } from "../logging";
-import { createBigQueryPollBudget } from "./bigquery-poll-budget";
-import { sshTunnelManager, type SshTunnelConfig } from "./ssh-tunnel.service";
+  QUERY_NOT_FOUND,
+  type CancelResult,
+  type ConnectionTestResult,
+  type CursorReadOptions,
+  type DatabaseQuery,
+  type QueryExecuteOptions,
+  type QueryPreviewOptions,
+  type QueryPreviewResult,
+  type QueryResult,
+  type ReadingRowsOptions,
+  type StreamingQueryOptions,
+  type StreamingQueryResult,
+} from "../databases/query-types";
 import { databaseRegistry } from "../databases/registry";
-import { isLocalBigQueryEmulator } from "../utils/bigquery-emulator";
-import { bigQueryJobLabels, type QueryLabels } from "./bigquery-labels";
+import { loggers } from "../logging";
 import {
-  type PreviewPageInfo,
-  buildBigQueryCursor,
   buildPreviewPage,
   checkPreviewQuerySafety,
-  decodePreviewCursor,
-  hashPreviewQuery,
-  inferFieldsFromRows,
   prepareSqlBatchQuery,
   prepareSqlPreviewQuery,
   resolvePreviewPageSize,
-  stripLeadingSqlComments,
 } from "./query-pagination.service";
-import { countTopLevelSemicolons } from "./sql-query-utils";
-import { MongoShellError, runMongoShellQuery } from "./mongo-shell-interpreter";
-import { StopReading } from "./query-row-cap";
 
 const logger = loggers.db();
 
-export interface QueryResult {
-  success: boolean;
-  data?: any;
-  error?: string;
-  rowCount?: number;
-  fields?: any[];
-  /** Rows were cut at the caller's `maxRows`: `data` holds the first ones. */
-  truncated?: boolean;
-}
+export type {
+  ConnectionConfig,
+  ConnectionContext,
+} from "../databases/drivers/mongodb/engine";
+export type {
+  QueryExecuteOptions,
+  QueryPreviewOptions,
+  QueryPreviewResult,
+  QueryResult,
+} from "../databases/query-types";
 
-export interface QueryPreviewResult {
-  success: boolean;
-  rows?: Record<string, unknown>[];
-  error?: string;
-  rowCount?: number;
-  fields?: Array<{ name: string; type?: string }>;
-  pageInfo?: PreviewPageInfo;
-  warnings?: string[];
-}
+/** Pools unused this long are closed by the sweep (kept during sessions). */
+const USER_DATABASE_MAX_IDLE_MS = 15 * 60 * 1000;
 
-// Types for different connection contexts
-export type ConnectionContext =
-  | "main" // Main application database
-  | "destination" // Destination databases for sync
-  | "datasource" // Data source databases
-  | "workspace"; // Workspace-specific databases
-
-export interface ConnectionConfig {
-  connectionString: string;
-  database: string;
-}
-
-/**
- * Options for query execution
- * Used consistently across all database drivers
- */
-export interface QueryExecuteOptions {
-  /** Set once checkConnectionWrite ran at an outer entry point. */
-  writeChecked?: boolean;
-  /**
-   * Run in a read-only transaction (or setting) without readOnly's lexical
-   * single-SELECT rule: set by checkConnectionWrite for a person's reads.
-   */
-  readOnlyTransaction?: boolean;
-  /** Target database name (for cluster/server-level connections) */
-  databaseName?: string;
-  /** Sub-database ID (e.g., Cloudflare D1 database UUID) */
-  databaseId?: string;
-  /** Batch size for paginated queries (BigQuery) */
-  batchSize?: number;
-  /** Location/region for query execution (BigQuery) */
-  location?: string;
-  /** Abort signal for cancellation */
-  signal?: AbortSignal;
-  /** Execution ID for job tracking (enables cancellation) */
-  executionId?: string;
-  /**
-   * Enforce read-only execution at the database/session layer. Unsupported
-   * engines fail closed instead of falling back to lexical SQL checks.
-   */
-  readOnly?: boolean;
-  /**
-   * Who runs this query when it is not the person or workflow of the
-   * request being served, e.g. "user:<id>" for a scheduled console run as
-   * its owner (access/connection-writes.ts).
-   */
-  actor?: string;
-  /**
-   * BigQuery only: max time to poll jobs.query until jobComplete (default 5m).
-   * Large MERGE/DML jobs need a higher value or we return a false timeout while BQ keeps running.
-   */
-  bigQueryJobMaxWaitMs?: number;
-  /**
-   * The most rows to read, where the engine can stop early (MongoDB shell
-   * queries read their cursor up to it). Engines that cannot ignore it; the
-   * caller cuts their result (query-row-cap.ts).
-   */
-  maxRows?: number;
-  /**
-   * Given each batch of rows as it is read (BigQuery: each result page).
-   * Throwing stops the read; the query fails with that error.
-   */
-  onRows?: (rows: Record<string, unknown>[]) => void;
-  /**
-   * BigQuery only: job labels for cost attribution, merged over the
-   * enclosing withQueryLabels context (these win). See bigquery-labels.ts.
-   */
-  labels?: QueryLabels;
-}
-
-/** Rows a Postgres cursor fetches at a time. */
-const CURSOR_FETCH_ROWS = 1000;
-
-/**
- * The query without its trailing semicolon, when it is one statement that a
- * Postgres cursor can read (a SELECT, WITH, VALUES or TABLE that writes
- * nothing); null otherwise.
- */
-function cursorReadable(query: string): string | null {
-  const statement = stripLeadingSqlComments(query.trim());
-  if (!/^[\s(]*(select|with|values|table)\b/i.test(statement)) return null;
-  if (isWrite("postgresql", query)) return null;
-  const { count, lastIndex } = countTopLevelSemicolons(statement);
-  if (count === 0) return statement;
-  if (count === 1 && lastIndex === statement.trimEnd().length - 1) {
-    return statement.trimEnd().slice(0, -1);
-  }
-  return null;
-}
-
-export interface QueryPreviewOptions extends QueryExecuteOptions {
-  pageSize?: number;
-  cursor?: string | null;
-}
-
-interface PooledConnection {
-  client: MongoClient;
-  db: Db;
-  lastUsed: Date;
-  context: ConnectionContext;
-  identifier: string;
-}
-
-/**
- * Options for the retry utility
- */
-interface RetryOptions {
-  /** Maximum number of retry attempts */
-  maxRetries: number;
-  /** Base delay in milliseconds (doubles with each retry) */
-  baseDelayMs: number;
-  /** Optional: only retry if error matches these patterns */
-  retryableErrorPatterns?: RegExp[];
-  /** Optional: abort signal to cancel retries */
-  signal?: AbortSignal;
-}
-
-/**
- * Default patterns for retryable connection errors
- * These indicate transient failures that may succeed on retry
- */
-const DEFAULT_RETRYABLE_ERROR_PATTERNS: RegExp[] = [
-  // Connection errors
-  /ECONNREFUSED/i,
-  /ECONNRESET/i,
-  /ETIMEDOUT/i,
-  /ENOTFOUND/i,
-  /ENETUNREACH/i,
-  /EHOSTUNREACH/i,
-  /EAI_AGAIN/i,
-  // Timeout errors
-  /timeout/i,
-  /timed out/i,
-  // Connection closed/reset
-  /connection.*closed/i,
-  /connection.*reset/i,
-  /connection.*terminated/i,
-  /socket hang up/i,
-  // Server temporarily unavailable (cold start)
-  /service unavailable/i,
-  /503/i,
-  /502/i,
-  /temporarily unavailable/i,
-  // ClickHouse specific
-  /Code: 159/i, // TIMEOUT_EXCEEDED
-  /Code: 209/i, // SOCKET_TIMEOUT
-  /Code: 210/i, // NETWORK_ERROR
-];
-
-/**
- * Patterns for errors that should NOT be retried
- * These indicate permanent failures (syntax errors, auth issues, etc.)
- */
-const NON_RETRYABLE_ERROR_PATTERNS: RegExp[] = [
-  // SQL syntax errors
-  /syntax error/i,
-  /parse error/i,
-  // Authentication/authorization
-  /authentication failed/i,
-  /access denied/i,
-  /permission denied/i,
-  /unauthorized/i,
-  /invalid.*password/i,
-  /invalid.*credentials/i,
-  // Invalid queries
-  /unknown.*table/i,
-  /unknown.*column/i,
-  /unknown.*database/i,
-  /does not exist/i,
-  /no such/i,
-  // Query cancelled by user
-  /cancelled/i,
-  /aborted/i,
-];
-
-/**
- * Check if an error is retryable based on error patterns
- */
-function isRetryableError(error: Error, customPatterns?: RegExp[]): boolean {
-  const errorMessage = error.message || "";
-  const errorName = error.name || "";
-  const fullErrorString = `${errorName}: ${errorMessage}`;
-
-  // First check if it's explicitly non-retryable
-  for (const pattern of NON_RETRYABLE_ERROR_PATTERNS) {
-    if (pattern.test(fullErrorString)) {
-      return false;
-    }
-  }
-
-  // Then check if it matches retryable patterns
-  const patterns = customPatterns || DEFAULT_RETRYABLE_ERROR_PATTERNS;
-  for (const pattern of patterns) {
-    if (pattern.test(fullErrorString)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
- * Execute a function with retry logic and exponential backoff
- * Used for transient connection failures and cold starts
- */
-async function withRetry<T>(
-  fn: () => Promise<T>,
-  options: RetryOptions,
-): Promise<T> {
-  const { maxRetries, baseDelayMs, retryableErrorPatterns, signal } = options;
-  let lastError: Error | undefined;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    // Check if cancelled
-    if (signal?.aborted) {
-      throw new Error("Operation cancelled");
-    }
-
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-
-      // Don't retry if this is the last attempt
-      if (attempt >= maxRetries) {
-        break;
-      }
-
-      // Don't retry non-retryable errors
-      if (!isRetryableError(lastError, retryableErrorPatterns)) {
-        break;
-      }
-
-      // Calculate delay with exponential backoff
-      const delayMs = baseDelayMs * Math.pow(2, attempt);
-      logger.debug("Retry attempt failed, retrying", {
-        attempt: attempt + 1,
-        maxRetries: maxRetries + 1,
-        error: lastError.message,
-        delayMs,
-      });
-
-      // Wait before retrying
-      await new Promise<void>((resolve, reject) => {
-        const abortHandler = () => {
-          clearTimeout(timeoutId);
-          reject(new Error("Operation cancelled"));
-        };
-
-        const timeoutId = setTimeout(() => {
-          // Clean up abort listener when timeout completes normally
-          if (signal) {
-            signal.removeEventListener("abort", abortHandler);
-          }
-          resolve();
-        }, delayMs);
-
-        if (signal) {
-          signal.addEventListener("abort", abortHandler, { once: true });
-        }
-      });
-    }
-  }
-
-  throw lastError;
-}
-
-/**
- * Extract a human-readable message from a Google/BigQuery API error.
- *
- * Handles the two distinct error-body shapes Google returns, both of which the
- * old `error?.response?.data?.error?.message` chain silently dropped:
- *
- * - BigQuery / Google REST API:  `{ error: { code, message, errors: [...] } }`
- *     → `data.error.message` (object shape)
- * - OAuth2 token endpoint:       `{ error: "invalid_grant", error_description }`
- *     → `data.error` is a STRING, so `.message` is `undefined` and the real
- *       reason (e.g. a rotated/disabled service-account key) gets masked as a
- *       generic "Request failed with status code 400".
- *
- * Always includes the HTTP status code so the caller sees 400/401/403 etc.
- */
-/**
- * How a timed-out BigQuery query ended, said accurately.
- *
- * The old message always claimed the query "may still be running", which was
- * true only because nothing tried to stop it. Now that we do, the message has
- * to distinguish the two outcomes — a cancelled job stops scanning and stops
- * billing, and telling someone otherwise sends them hunting a job that is
- * already gone.
- */
-function bqAbandonedSuffix(cancelled: boolean): string {
-  return cancelled
-    ? " and was cancelled in BigQuery."
-    : ". The query may still be running in BigQuery.";
-}
-
-function describeGoogleApiError(error: any, fallback: string): string {
-  const status: number | undefined = error?.response?.status;
-  const data = error?.response?.data;
-  let detail: string | undefined;
-
-  if (data && typeof data === "object") {
-    const errField = (data as any).error;
-    if (
-      errField &&
-      typeof errField === "object" &&
-      typeof errField.message === "string"
-    ) {
-      // BigQuery / Google REST API shape
-      detail = errField.message;
-    } else if (typeof errField === "string") {
-      // OAuth2 token endpoint shape: { error, error_description }
-      const description = (data as any).error_description;
-      detail =
-        typeof description === "string" && description.trim()
-          ? `${errField}: ${description}`
-          : errField;
-    }
-  } else if (typeof data === "string" && data.trim()) {
-    detail = data.trim();
-  }
-
-  const message =
-    detail ||
-    (typeof error?.message === "string" && error.message.trim()
-      ? error.message
-      : fallback);
-
-  return status ? `${message} (HTTP ${status})` : message;
-}
-
-/**
- * Non-SQL engines whose queries cannot be validated by the lexical read-only
- * analyzer (`checkPreviewQuerySafety`). Under `readOnly` these fail closed in
- * `executeQuery`; SQL engines (incl. BigQuery) are enforced read-only lexically
- * instead — see `executeQuery`.
- */
-const READ_ONLY_UNSUPPORTED_TYPES = new Set<string>([
-  "mongodb",
-  "cloudflare-kv",
-]);
-
-/**
- * Enhanced Database Connection Service
- *
- * Provides unified connection management for all database types with:
- * - Advanced MongoDB connection pooling with health checks
- * - Multi-database support (PostgreSQL, MySQL, MSSQL, BigQuery, Cloudflare D1/KV)
- * - Automatic reconnection and idle cleanup
- * - Unified query execution interface
- */
 export class DatabaseConnectionService {
-  private connections: Map<string, any> = new Map();
-
-  // MongoDB-specific pooling
-  private mongoConnections: Map<string, PooledConnection> = new Map();
-  // First-connect promises, so concurrent callers for one key share a
-  // single MongoClient instead of each connecting and overwriting the map.
-  private mongoConnecting: Map<
-    string,
-    Promise<{ client: MongoClient; db: Db }>
-  > = new Map();
-
-  // Track running BigQuery jobs for cancellation
-  private runningBigQueryJobs: Map<
-    string,
-    {
-      projectId: string;
-      jobId: string;
-      location?: string;
-      client: AxiosInstance;
-    }
-  > = new Map();
-
-  // Track running PostgreSQL queries for cancellation
-  private runningPostgresQueries: Map<
-    string,
-    { database: IDatabaseConnection; pid: number; cancelled?: boolean }
-  > = new Map();
-
-  // Track running MySQL queries for cancellation (KILL QUERY <threadId>)
-  private runningMySQLQueries: Map<
-    string,
-    {
-      database: IDatabaseConnection;
-      targetDatabase?: string;
-      poolKey: string;
-      threadId: number;
-      cancelled?: boolean;
-    }
-  > = new Map();
-
-  // Track running MongoDB queries for cancellation
-  private runningMongoQueries: Map<
-    string,
-    {
-      database: IDatabaseConnection;
-      client: MongoClient;
-      abortController: AbortController;
-      session: ClientSession;
-    }
-  > = new Map();
-
-  // Track running ClickHouse queries for cancellation
-  private runningClickHouseQueries: Map<
-    string,
-    {
-      database: IDatabaseConnection;
-      queryId: string;
-      abortController: AbortController;
-    }
-  > = new Map();
-
-  // Track running MSSQL queries for cancellation
-  private runningMSSQLQueries: Map<
-    string,
-    {
-      request: MSSQLRequest;
-    }
-  > = new Map();
-
   // Engine-agnostic registry of detached (resumable) executions, layered over
-  // the per-engine cancel maps above. Holds the detached task's AbortController
-  // plus light metadata so a long query can be cancelled by executionId from
-  // any turn (or by the server-side hard cap). The per-engine maps still do the
-  // engine-native cancel (pid / query_id / opid / request / BQ jobId).
+  // the engines' own running-query maps. Holds the detached task's
+  // AbortController plus light metadata so a long query can be cancelled by
+  // executionId from any turn (or by the server-side hard cap). The engines
+  // still do the native cancel (pid / query_id / session / request / jobId).
   private runningExecutions: Map<
     string,
     {
@@ -510,68 +88,18 @@ export class DatabaseConnectionService {
   > = new Map();
 
   private cleanupInterval: NodeJS.Timeout | null = null;
-  private readonly userDatabaseMaxIdleTime = 15 * 60 * 1000; // 15 minutes - keep user database pools alive during active sessions
-
-  // BigQuery auth/client caching (in-memory)
-  private bigQueryClientCache: Map<
-    string,
-    { client: AxiosInstance; token: string; expiresAtMs: number }
-  > = new Map();
-  private bigQueryTokenInFlight: Map<
-    string,
-    Promise<{ token: string; expiresAtMs: number }>
-  > = new Map();
-
-  // Default MongoDB connection options - optimized for Cloud Run / serverless
-  private readonly defaultMongoOptions: MongoClientOptions = {
-    maxPoolSize: 5,
-    minPoolSize: 0, // No idle connections when unused
-    maxIdleTimeMS: 10000, // Close idle connections after 10s
-    serverSelectionTimeoutMS: 10000,
-    socketTimeoutMS: 0,
-    connectTimeoutMS: 10000,
-    retryWrites: true,
-    retryReads: true,
-  };
-
-  // The stateful drivers this service delegates to. They live in the shared
-  // registry (index.ts registers the same slots), never in a private copy:
-  // two instances would mean two sets of pools to one instance, and a
-  // cancelQuery that cannot see queries started through the other one.
-  private get cloudSqlDriver(): CloudSQLPostgresDatabaseDriver {
-    return databaseRegistry.getOrRegister(
-      "cloudsql-postgres",
-      () => new CloudSQLPostgresDatabaseDriver(),
-    );
-  }
-
-  private get d1Driver(): CloudflareD1DatabaseDriver {
-    return databaseRegistry.getOrRegister(
-      "cloudflare-d1",
-      () => new CloudflareD1DatabaseDriver(),
-    );
-  }
-
-  private get kvDriver(): CloudflareKVDatabaseDriver {
-    return databaseRegistry.getOrRegister(
-      "cloudflare-kv",
-      () => new CloudflareKVDatabaseDriver(),
-    );
-  }
 
   constructor() {
-    // Start cleanup interval for idle connections (MongoDB, PostgreSQL, MySQL,
-    // Cloud SQL)
+    // Every minute, close the pools and clients nothing used for a while.
     this.cleanupInterval = setInterval(() => {
-      void this.cleanupIdleMongoConnections();
-      void this.cleanupIdlePostgresPools();
-      void this.cleanupIdleMySQLPools();
-      void this.cloudSqlDriver
-        .cleanupIdleConnections(this.userDatabaseMaxIdleTime)
-        .catch(error =>
-          logger.error("Error sweeping idle Cloud SQL pools", { error }),
-        );
-    }, 60000); // Every minute
+      for (const engine of allEngines()) {
+        void engine
+          .sweepIdleConnections?.(USER_DATABASE_MAX_IDLE_MS)
+          .catch(error =>
+            logger.error("Error sweeping idle connections", { error }),
+          );
+      }
+    }, 60000);
     // Housekeeping must not be a reason for the process to stay alive. The
     // singleton below is constructed on IMPORT, so this timer starts in
     // anything that so much as mentions this module — a test, a migration, a
@@ -588,34 +116,16 @@ export class DatabaseConnectionService {
    */
   async testConnection(
     database: IDatabaseConnection,
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<ConnectionTestResult> {
     try {
-      switch (database.type) {
-        case "mongodb":
-          return await this.testMongoDBConnection(database);
-        case "postgresql":
-        case "redshift":
-          return await this.testPostgreSQLConnection(database);
-        case "mysql":
-          return await this.testMySQLConnection(database);
-        case "mssql":
-          return await this.testMSSQLConnection(database);
-        case "bigquery":
-          return await this.testBigQueryConnection(database);
-        case "clickhouse":
-          return await this.testClickHouseConnection(database);
-        case "cloudsql-postgres":
-          return await this.cloudSqlDriver.testConnection(database);
-        case "cloudflare-d1":
-          return await this.d1Driver.testConnection(database);
-        case "cloudflare-kv":
-          return await this.kvDriver.testConnection(database);
-        default:
-          return {
-            success: false,
-            error: `Unsupported database type: ${database.type}`,
-          };
+      const engine = engineFor(database.type);
+      if (!engine) {
+        return {
+          success: false,
+          error: `Unsupported database type: ${database.type}`,
+        };
       }
+      return await engine.testConnection(database);
     } catch (error) {
       return {
         success: false,
@@ -629,78 +139,73 @@ export class DatabaseConnectionService {
    */
   async executeQuery(
     database: IDatabaseConnection,
-    query: any,
+    query: DatabaseQuery,
     options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
-    try {
-      // Writes are for the connection's writers; a read returns from this
-      // at once, in memory (access/connection-writes.ts).
-      const check = await checkConnectionWrite(database, query, options);
-      if (check.refused) return { success: false, error: check.refused };
-      if (check.readOnlyTransaction) {
-        options = { ...options, readOnlyTransaction: true };
-      }
-      if (options?.readOnly) {
-        if (typeof query !== "string") {
-          return {
-            success: false,
-            error:
-              "Read-only execution only supports SQL strings; arbitrary MongoDB execution is disabled",
-          };
-        }
-        // Lexical read-only validation is the uniform guarantee. Engines with a
-        // session/transaction read-only mode (Postgres READ ONLY txn, ClickHouse
-        // readonly=2, ...) additionally enforce it below; SQL engines without one
-        // (e.g. BigQuery) rely on this validated single SELECT/WITH statement.
-        const safety = checkPreviewQuerySafety(query);
-        if (!safety.safe) {
-          return { success: false, error: safety.errors.join(" ") };
-        }
-        // Non-SQL engines can't be validated by the SQL analyzer, so fail closed.
-        if (READ_ONLY_UNSUPPORTED_TYPES.has(database.type)) {
-          return {
-            success: false,
-            error: `Read-only execution is not supported for ${database.type}; connect it with database credentials restricted to read access`,
-          };
-        }
-      }
+    return executeCheckedQuery(database, query, options, (db, q, o) =>
+      this.runEngineQuery(db, q, o),
+    );
+  }
 
-      switch (database.type) {
-        case "mongodb":
-          return await this.executeMongoDBQuery(database, query, options);
-        case "postgresql":
-        case "redshift":
-          return await this.executePostgreSQLQuery(database, query, options);
-        case "cloudsql-postgres":
-          return await this.cloudSqlDriver.executeQuery(
-            database,
-            query,
-            options,
-          );
-        case "mysql":
-          return await this.executeMySQLQuery(database, query, options);
-        case "mssql":
-          return await this.executeMSSQLQuery(database, query, options);
-        case "bigquery":
-          return await this.executeBigQueryQuery(database, query, options);
-        case "clickhouse":
-          return await this.executeClickHouseQuery(database, query, options);
-        case "cloudflare-d1":
-          return await this.d1Driver.executeQuery(database, query, options);
-        case "cloudflare-kv":
-          return await this.kvDriver.executeQuery(database, query, options);
-        default:
-          return {
-            success: false,
-            error: `Unsupported database type: ${database.type}`,
-          };
-      }
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
+  /**
+   * The engine call behind executeQuery. Postgres and BigQuery go through
+   * their named entry points below, which route tests stub on this service
+   * to see what reaches the database.
+   */
+  private runEngineQuery(
+    database: IDatabaseConnection,
+    query: DatabaseQuery,
+    options?: QueryExecuteOptions,
+  ): Promise<QueryResult> {
+    switch (database.type) {
+      case "postgresql":
+      case "redshift":
+        return this.executePostgreSQLQuery(database, query as string, options);
+      case "bigquery":
+        return this.executeBigQueryQuery(database, query as string, options);
+      default:
+        return runOnEngine(database, query, options);
     }
+  }
+
+  private executePostgreSQLQuery(
+    database: IDatabaseConnection,
+    query: string,
+    options?: QueryExecuteOptions,
+  ): Promise<QueryResult> {
+    return postgresEngine.executeQuery(database, query, options);
+  }
+
+  private executePostgreSQLCursor(
+    database: IDatabaseConnection,
+    query: string,
+    options: CursorReadOptions,
+  ): Promise<QueryResult> {
+    return postgresEngine.readCursor(database, query, options);
+  }
+
+  private executeBigQueryQuery(
+    database: IDatabaseConnection,
+    query: string,
+    options?: QueryExecuteOptions,
+  ): Promise<QueryResult> {
+    return bigQueryEngine.executeQuery(database, query, options);
+  }
+
+  private executeBigQueryPreviewQuery(
+    database: IDatabaseConnection,
+    query: string,
+    options?: QueryPreviewOptions,
+  ): Promise<QueryPreviewResult> {
+    return bigQueryEngine.executePreviewQuery(database, query, options);
+  }
+
+  private executeBigQueryStreamingQuery(
+    database: IDatabaseConnection,
+    query: string,
+    options: StreamingQueryOptions & QueryExecuteOptions,
+  ): Promise<StreamingQueryResult> {
+    return bigQueryEngine.executeStreamingQuery(database, query, options);
   }
 
   /**
@@ -714,11 +219,7 @@ export class DatabaseConnectionService {
   async executeQueryReadingRows(
     database: IDatabaseConnection,
     query: string,
-    options: QueryExecuteOptions & {
-      onRows: (rows: Record<string, unknown>[]) => void;
-      /** Statement timeout for the cursor read and BigQuery's job wait. */
-      timeoutMs?: number;
-    },
+    options: ReadingRowsOptions,
   ): Promise<QueryResult> {
     const check = await checkConnectionWrite(database, query, options);
     if (check.refused) return { success: false, error: check.refused };
@@ -755,125 +256,9 @@ export class DatabaseConnectionService {
     return result;
   }
 
-  /**
-   * A Postgres read through a cursor: DECLARE once, FETCH a batch at a time
-   * in one transaction (read-only where the caller may not write), so the
-   * statement runs once and is one snapshot.
-   *
-   * `onRows` may be async (it is awaited before the next FETCH, so a slow
-   * consumer applies backpressure); `fetchRows` sets the batch size; and
-   * `keepRows: false` streams without accumulating the result in `data`.
-   */
-  private async executePostgreSQLCursor(
-    database: IDatabaseConnection,
-    query: string,
-    options: QueryExecuteOptions & {
-      onRows: (rows: Record<string, unknown>[]) => void | Promise<void>;
-      timeoutMs?: number;
-      fetchRows?: number;
-      keepRows?: boolean;
-    },
-  ): Promise<QueryResult> {
-    const { executionId, signal, timeoutMs } = options;
-    const fetchRows = Math.max(
-      1,
-      Math.floor(options.fetchRows ?? CURSOR_FETCH_ROWS),
-    );
-    const keepRows = options.keepRows !== false;
-    try {
-      if (signal?.aborted) return { success: false, error: "Query cancelled" };
-      const pool = await this.getPostgresPool(
-        database,
-        options.databaseName || database.connection.database,
-      );
-      const client = await withRetry(async () => pool.connect(), {
-        maxRetries: this.postgresMaxRetries,
-        baseDelayMs: this.postgresRetryBaseDelayMs,
-        signal,
-      });
-      let open = false;
-      let release: (() => void) | undefined;
-      try {
-        release = await this.trackPostgresQuery(
-          database,
-          client,
-          executionId,
-          signal,
-        );
-        await client.query(
-          options.readOnly || options.readOnlyTransaction
-            ? "BEGIN TRANSACTION READ ONLY"
-            : "BEGIN",
-        );
-        open = true;
-        if (timeoutMs) {
-          await client.query(
-            `SET LOCAL statement_timeout = ${Math.max(1, Math.floor(timeoutMs))}`,
-          );
-        }
-        // On its own lines: a trailing `-- comment` cannot eat the rest.
-        await client.query(
-          `DECLARE _mako_rows NO SCROLL CURSOR FOR\n${query}\n`,
-        );
-        const rows: Record<string, unknown>[] = [];
-        let rowCount = 0;
-        let fields: ReturnType<typeof normalizePostgresFields> | undefined;
-        for (;;) {
-          if (signal?.aborted) {
-            return { success: false, error: "Query cancelled" };
-          }
-          // pg reads query_timeout per query; its types do not list it.
-          const batch = await client.query({
-            text: `FETCH ${fetchRows} FROM _mako_rows`,
-            ...(timeoutMs ? { query_timeout: timeoutMs } : {}),
-          } as { text: string });
-          fields ??= normalizePostgresFields(batch.fields);
-          const batchRows = normalizePostgresRows(
-            batch.rows as Record<string, unknown>[],
-            fields,
-          );
-          // StopReading ends the read with what was read (a row cap).
-          let stop = false;
-          if (keepRows || batchRows.length > 0) {
-            try {
-              await options.onRows(batchRows);
-            } catch (error) {
-              if (!(error instanceof StopReading)) throw error;
-              stop = true;
-            }
-          }
-          rowCount += batchRows.length;
-          if (keepRows) rows.push(...batchRows);
-          if (stop || batch.rows.length < fetchRows) break;
-        }
-        await client.query("COMMIT");
-        open = false;
-        return {
-          success: true,
-          data: keepRows ? rows : undefined,
-          rowCount,
-          fields,
-        };
-      } finally {
-        if (open) await client.query("ROLLBACK").catch(() => undefined);
-        if (release) release();
-        else client.release();
-      }
-    } catch (error: any) {
-      if (error?.message?.includes("canceling statement due to user request")) {
-        return { success: false, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "PostgreSQL query failed",
-      };
-    }
-  }
-
   async executePreviewQuery(
     database: IDatabaseConnection,
-    query: any,
+    query: DatabaseQuery,
     options?: QueryPreviewOptions,
   ): Promise<QueryPreviewResult> {
     try {
@@ -893,11 +278,9 @@ export class DatabaseConnectionService {
         return await this.executeBigQueryPreviewQuery(database, query, options);
       }
 
-      if (
-        typeof query !== "string" ||
-        database.type === "mongodb" ||
-        database.type === "cloudflare-kv"
-      ) {
+      // Non-SQL engines (MongoDB, KV) cannot be paged with LIMIT/OFFSET: their
+      // whole result is read and paged here.
+      if (typeof query !== "string" || engineFor(database.type)?.nonSql) {
         const result = await this.executeQuery(database, query, options);
         if (!result.success) {
           return {
@@ -909,11 +292,7 @@ export class DatabaseConnectionService {
         const { pageSize, capApplied } = resolvePreviewPageSize(
           options?.pageSize,
         );
-        const rows = Array.isArray(result.data)
-          ? (result.data as Record<string, unknown>[])
-          : result.data == null
-            ? []
-            : [result.data as Record<string, unknown>];
+        const rows = resultRows(result.data);
         const page = buildPreviewPage({
           rows,
           pageSize,
@@ -925,7 +304,7 @@ export class DatabaseConnectionService {
           success: true,
           rows: page.rows,
           rowCount: page.pageInfo.returnedRows,
-          fields: this.normalizeQueryFields(result.fields, page.rows),
+          fields: normalizeQueryFields(result.fields, page.rows),
           pageInfo: page.pageInfo,
           warnings: result.truncated
             ? [
@@ -981,7 +360,7 @@ export class DatabaseConnectionService {
         success: true,
         rows: page.rows,
         rowCount: page.pageInfo.returnedRows,
-        fields: this.normalizeQueryFields(result.fields, page.rows),
+        fields: normalizeQueryFields(result.fields, page.rows),
         pageInfo: page.pageInfo,
         warnings: page.warnings,
       };
@@ -995,9 +374,9 @@ export class DatabaseConnectionService {
 
   async executeStreamingQuery(
     database: IDatabaseConnection,
-    query: any,
+    query: DatabaseQuery,
     options: StreamingQueryOptions & QueryExecuteOptions,
-  ): Promise<{ success: boolean; totalRows: number; error?: string }> {
+  ): Promise<StreamingQueryResult> {
     const check = await checkConnectionWrite(database, query, options);
     if (check.refused) {
       return { success: false, totalRows: 0, error: check.refused };
@@ -1059,20 +438,12 @@ export class DatabaseConnectionService {
         : { success: false, totalRows: streamed, error: result.error };
     }
 
-    if (
-      database.type === "mongodb" ||
-      database.type === "cloudflare-kv" ||
-      typeof query !== "string"
-    ) {
+    if (engineFor(database.type)?.nonSql || typeof query !== "string") {
       const result = await this.executeQuery(database, query, options);
       if (!result.success) {
         return { success: false, totalRows: 0, error: result.error };
       }
-      const rows = Array.isArray(result.data)
-        ? (result.data as Record<string, unknown>[])
-        : result.data == null
-          ? []
-          : [result.data as Record<string, unknown>];
+      const rows = resultRows(result.data);
       if (rows.length > 0) {
         await options.onBatch(rows);
       }
@@ -1140,7 +511,7 @@ export class DatabaseConnectionService {
 
   async getStreamingQueryFields(
     database: IDatabaseConnection,
-    query: any,
+    query: DatabaseQuery,
     options: QueryExecuteOptions = {},
   ): Promise<{
     success: boolean;
@@ -1162,7 +533,7 @@ export class DatabaseConnectionService {
     // registry is not populated. The dry-run never executes the query, so it
     // is safe regardless of `readOnly`.
     if (database.type === "bigquery" && typeof query === "string") {
-      const schema = await this.getBigQueryQuerySchema(database, query);
+      const schema = await bigQueryEngine.getQuerySchema(database, query);
       if (!schema.success) {
         return { success: false, error: schema.error };
       }
@@ -1225,12 +596,8 @@ export class DatabaseConnectionService {
       return { success: false, error: probe.error };
     }
 
-    const rows = Array.isArray(probe.data)
-      ? (probe.data as Record<string, unknown>[])
-      : probe.data == null
-        ? []
-        : [probe.data as Record<string, unknown>];
-    const fields = this.normalizeQueryFields(probe.fields, rows);
+    const rows = resultRows(probe.data);
+    const fields = normalizeQueryFields(probe.fields, rows);
 
     if (fields.length === 0) {
       return {
@@ -1243,62 +610,15 @@ export class DatabaseConnectionService {
   }
 
   /**
-   * Get database connection
+   * The engine's native handle for a connection: a MongoClient, a pg or
+   * MySQL/MSSQL pool, or null for the HTTP engines (BigQuery, ClickHouse).
    */
   async getConnection(database: IDatabaseConnection): Promise<any> {
-    const key = database._id.toString();
-
-    // For MongoDB, use advanced pooling
-    if (database.type === "mongodb") {
-      const connection = await this.getMongoConnection(
-        "datasource",
-        database._id.toString(),
-        {
-          connectionString: this.buildMongoDBConnectionString(database),
-          database: database.connection.database || "",
-        },
-      );
-      return connection.client;
+    const engine = engineFor(database.type);
+    if (!engine?.getConnection) {
+      throw new Error(`Unsupported database type: ${database.type}`);
     }
-
-    // For PostgreSQL and Redshift (PostgreSQL wire-compatible), use dedicated pool management
-    if (database.type === "postgresql" || database.type === "redshift") {
-      return this.getPostgresPool(database);
-    }
-
-    // For MySQL, use dedicated pool management
-    if (database.type === "mysql") {
-      return this.getMySQLPool(database);
-    }
-
-    // For other database types, use basic caching
-    if (this.connections.has(key)) {
-      return this.connections.get(key);
-    }
-
-    let connection: any;
-
-    switch (database.type) {
-      case "cloudsql-postgres":
-        // The driver owns (and caches) its pools; caching here as well
-        // would keep a pool the driver has already closed.
-        return this.cloudSqlDriver.getConnection(database);
-      case "mssql":
-        connection = await this.createMSSQLConnection(database);
-        break;
-      case "bigquery":
-        // BigQuery uses stateless HTTP requests; no persistent connection
-        connection = null;
-        break;
-      case "clickhouse":
-        connection = null;
-        break;
-      default:
-        throw new Error(`Unsupported database type: ${database.type}`);
-    }
-
-    this.connections.set(key, connection);
-    return connection;
+    return engine.getConnection(database);
   }
 
   /**
@@ -1309,34 +629,40 @@ export class DatabaseConnectionService {
   }
 
   /**
+   * Every engine, and every registered driver that caches something of its
+   * own, once each.
+   */
+  private connectionHolders(): Array<[string, QueryEngine]> {
+    const holders = new Map<QueryEngine, string>();
+    for (const engine of allEngines()) holders.set(engine, "engine");
+    for (const driver of databaseRegistry.getAllDrivers()) {
+      const holder = driver as unknown as QueryEngine;
+      if (!holders.has(holder)) {
+        holders.set(holder, `driver:${driver.getMetadata().type}`);
+      }
+    }
+    return [...holders].map(([holder, name]) => [
+      name === "engine" ? holder.constructor.name : name,
+      holder,
+    ]);
+  }
+
+  /**
    * Drop every cached pool, client, connector and HTTP client held for a
-   * connection, in this service and in every registered driver, so the next
+   * connection, in every engine and every registered driver, so the next
    * query connects afresh from the saved configuration.
    *
    * Call it whenever a connection's configuration changes (edit) or the
    * connection goes away (delete): all of these caches are keyed by the
-   * connection id alone, so without it an edited host or rotated password
-   * keeps being served by the pool built from the old one.
+   * connection id, so without it an edited host or rotated password keeps
+   * being served by the pool built from the old one.
    */
   async invalidateConnection(databaseId: string): Promise<void> {
-    const steps: Array<[string, () => Promise<void> | void]> = [
-      ["mongodb", () => this.closeMongoConnection("datasource", databaseId)],
-      ["postgresql", () => this.closePostgresPool(databaseId)],
-      ["mysql", () => this.closeMySQLPool(databaseId)],
-      ["cached", () => this.closeCachedConnection(databaseId)],
-    ];
-    for (const driver of databaseRegistry.getAllDrivers()) {
-      if (typeof driver.closeConnection === "function") {
-        steps.push([
-          `driver:${driver.getMetadata().type}`,
-          () => driver.closeConnection?.(databaseId),
-        ]);
-      }
-    }
     // One failing cache must not keep the others serving stale config.
-    for (const [cache, close] of steps) {
+    for (const [cache, holder] of this.connectionHolders()) {
+      if (typeof holder.closeConnection !== "function") continue;
       try {
-        await close();
+        await holder.closeConnection(databaseId);
       } catch (error) {
         logger.error("Error invalidating cached connection", {
           databaseId,
@@ -1347,62 +673,22 @@ export class DatabaseConnectionService {
     }
   }
 
-  /** Close the generic per-connection cache entry (MSSQL pools). */
-  private async closeCachedConnection(databaseId: string): Promise<void> {
-    const connection = this.connections.get(databaseId);
-    if (connection) {
-      try {
-        if (connection.end) {
-          await connection.end();
-        } else if (connection.close) {
-          await connection.close();
-        }
-      } catch (error) {
-        logger.error("Error closing cached connection", { databaseId, error });
-      } finally {
-        this.connections.delete(databaseId);
-      }
-    }
-  }
-
   /**
    * Close all connections
    */
   async closeAllConnections(): Promise<void> {
-    // Close MongoDB connections
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
     }
 
-    // Close MongoDB connections, including ones still connecting
-    const mongoKeys = new Set([
-      ...this.mongoConnections.keys(),
-      ...this.mongoConnecting.keys(),
-    ]);
-    await Promise.all(
-      Array.from(mongoKeys, key => this.closeMongoConnectionByKey(key)),
-    );
-
-    // Close PostgreSQL pools
-    await this.closeAllPostgresPools();
-
-    // Close MySQL pools
-    await this.closeAllMySQLPools();
-
-    // Close other connections
-    await Promise.all(
-      Array.from(this.connections.keys(), id => this.closeCachedConnection(id)),
-    );
-
-    // Close every pool, connector and client the registered drivers hold
-    for (const driver of databaseRegistry.getAllDrivers()) {
-      if (typeof driver.closeAllConnections !== "function") continue;
+    for (const [cache, holder] of this.connectionHolders()) {
+      if (typeof holder.closeAllConnections !== "function") continue;
       try {
-        await driver.closeAllConnections();
+        await holder.closeAllConnections();
       } catch (error) {
         logger.error("Error closing driver connections", {
-          driver: driver.getMetadata().type,
+          driver: cache,
           error,
         });
       }
@@ -1423,94 +709,38 @@ export class DatabaseConnectionService {
       lastUsed: Date;
     }>;
   } {
-    const mongoConnections = Array.from(this.mongoConnections.entries()).map(
-      ([key, conn]) => ({
-        key,
-        context: conn.context,
-        identifier: conn.identifier,
-        lastUsed: conn.lastUsed,
-      }),
-    );
+    const mongoConnections = mongoEngine.getStats();
 
     return {
-      totalConnections: this.mongoConnections.size + this.connections.size,
-      mongodb: this.mongoConnections.size,
-      other: this.connections.size,
+      totalConnections: mongoConnections.length + mssqlEngine.pools.size,
+      mongodb: mongoConnections.length,
+      other: mssqlEngine.pools.size,
       mongoConnections,
     };
   }
 
-  // MongoDB Advanced Pooling Methods
-  private async getMongoConnection(
-    context: ConnectionContext,
-    identifier: string,
-    config: ConnectionConfig,
-    options?: MongoClientOptions,
-  ): Promise<{ client: MongoClient; db: Db }> {
-    const key = this.getMongoConnectionKey(context, identifier);
+  // Convenience methods for MongoDB connections
 
-    // Reuse the pooled client as is. No per-call ping: MongoClient monitors
-    // its topology and reconnects on its own, and a client that does close
-    // removes itself from the map (see createMongoConnection's handlers).
-    const existing = this.mongoConnections.get(key);
-    if (existing) {
-      existing.lastUsed = new Date();
-      return { client: existing.client, db: existing.db };
-    }
-
-    // Concurrent first calls share one connect; otherwise each would create
-    // a client and all but the last set() would leak, unreachable by the
-    // idle sweep.
-    const pending = this.mongoConnecting.get(key);
-    if (pending) return pending;
-    const connecting = this.createMongoConnection(
-      context,
-      identifier,
-      config,
-      options,
-    ).finally(() => {
-      if (this.mongoConnecting.get(key) === connecting) {
-        this.mongoConnecting.delete(key);
-      }
-    });
-    this.mongoConnecting.set(key, connecting);
-    return connecting;
+  /** Connection for Mako's own database (DATABASE_URL). */
+  getMainConnection(): Promise<{ client: MongoClient; db: Db }> {
+    return mongoEngine.getMainConnection();
   }
 
-  // -------------------- BigQuery helpers --------------------
-  // Public: list BigQuery datasets (by datasetId)
-  async listBigQueryDatasets(database: IDatabaseConnection): Promise<string[]> {
-    const { project_id, service_account_json, api_base_url } =
-      (database.connection as any) || {};
-    if (!project_id || !service_account_json) {
-      throw new Error(
-        "BigQuery requires 'project_id' and 'service_account_json' in connection",
-      );
-    }
+  /** Connection by database ID (for destinations/datasources). */
+  getConnectionById(
+    context: ConnectionContext,
+    databaseId: string,
+    lookupFn: (id: string) => Promise<ConnectionConfig | null>,
+  ): Promise<{ client: MongoClient; db: Db }> {
+    return mongoEngine.getConnectionById(context, databaseId, lookupFn);
+  }
 
-    const client = await this.getBigQueryHttpClient(
-      service_account_json,
-      api_base_url,
-    );
-
-    const datasets: string[] = [];
-    let pageToken: string | undefined;
-    do {
-      const params: any = { maxResults: 1000 };
-      if (pageToken) params.pageToken = pageToken;
-      const res = await client.get(`/projects/${project_id}/datasets`, {
-        params,
-      });
-      const data = res.data || {};
-      const items: any[] = Array.isArray(data.datasets) ? data.datasets : [];
-      for (const ds of items) {
-        const id = ds?.datasetReference?.datasetId;
-        if (id) datasets.push(id);
-      }
-      pageToken = data.nextPageToken;
-    } while (pageToken);
-
-    return datasets.sort((a, b) => a.localeCompare(b));
+  /** Update the last used time for a connection to keep it alive */
+  updateConnectionLastUsed(
+    context: ConnectionContext,
+    identifier: string,
+  ): void {
+    mongoEngine.touch(context, identifier);
   }
 
   /**
@@ -1526,1026 +756,83 @@ export class DatabaseConnectionService {
       );
     }
 
-    const databases = await this.d1Driver.listDatabases(database);
+    const databases = await d1Driver().listDatabases(database);
     return databases.map(db => ({
       uuid: db.uuid,
       name: db.name,
     }));
   }
 
-  // Public (autocomplete): list BigQuery datasets with prefix/limit and early-stop pagination
-  async listBigQueryDatasetsForAutocomplete(
+  // -------------------- BigQuery catalog --------------------
+
+  listBigQueryDatasets(database: IDatabaseConnection): Promise<string[]> {
+    return bigQueryCatalog.listDatasets(bigQueryEngine, database);
+  }
+
+  /** Datasets for autocomplete: by prefix, stopping at `limit`. */
+  listBigQueryDatasetsForAutocomplete(
     database: IDatabaseConnection,
     opts?: { prefix?: string; limit?: number },
   ): Promise<string[]> {
-    const { project_id, service_account_json, api_base_url } =
-      (database.connection as any) || {};
-    if (!project_id || !service_account_json) {
-      throw new Error(
-        "BigQuery requires 'project_id' and 'service_account_json' in connection",
-      );
-    }
-
-    const prefix = String(opts?.prefix || "");
-    const limit = Math.max(1, Math.min(200, Number(opts?.limit || 100)));
-
-    const client = await this.getBigQueryHttpClient(
-      service_account_json,
-      api_base_url,
+    return bigQueryCatalog.listDatasetsForAutocomplete(
+      bigQueryEngine,
+      database,
+      opts,
     );
-
-    const datasets: string[] = [];
-    let pageToken: string | undefined;
-    do {
-      const params: any = { maxResults: 1000 };
-      if (pageToken) params.pageToken = pageToken;
-      const res = await client.get(`/projects/${project_id}/datasets`, {
-        params,
-      });
-      const data = res.data || {};
-      const items: any[] = Array.isArray(data.datasets) ? data.datasets : [];
-      for (const ds of items) {
-        const id = ds?.datasetReference?.datasetId;
-        if (!id) continue;
-        if (prefix && !String(id).startsWith(prefix)) continue;
-        datasets.push(String(id));
-        if (datasets.length >= limit) {
-          return datasets;
-        }
-      }
-      pageToken = data.nextPageToken;
-    } while (pageToken);
-
-    return datasets.sort((a, b) => a.localeCompare(b));
   }
 
-  // Public: get columns for a single BigQuery table (for incremental autocomplete)
-  async getBigQueryTableColumns(
+  /** Columns of one table (nested RECORD fields flattened with dots). */
+  getBigQueryTableColumns(
     database: IDatabaseConnection,
     datasetId: string,
     tableId: string,
   ): Promise<Array<{ name: string; type: string }>> {
-    const { project_id, service_account_json, api_base_url } =
-      (database.connection as any) || {};
-    if (!project_id || !service_account_json) {
-      throw new Error(
-        "BigQuery requires 'project_id' and 'service_account_json' in connection",
-      );
-    }
-    if (!datasetId || !tableId) return [];
-
-    const client = await this.getBigQueryHttpClient(
-      service_account_json,
-      api_base_url,
+    return bigQueryCatalog.getTableColumns(
+      bigQueryEngine,
+      database,
+      datasetId,
+      tableId,
     );
-    const res = await client.get(
-      `/projects/${project_id}/datasets/${encodeURIComponent(
-        datasetId,
-      )}/tables/${encodeURIComponent(tableId)}`,
-    );
-    const fields: any[] = Array.isArray(res?.data?.schema?.fields)
-      ? res.data.schema.fields
-      : [];
-
-    const out: Array<{ name: string; type: string }> = [];
-    const flatten = (prefix: string, field: any) => {
-      const name = String(field?.name || "");
-      const type = String(field?.type || "");
-      if (!name) return;
-      const full = prefix ? `${prefix}.${name}` : name;
-      out.push({ name: full, type });
-      const nested: any[] = Array.isArray(field?.fields) ? field.fields : [];
-      if (String(type).toUpperCase() === "RECORD" && nested.length > 0) {
-        nested.forEach(f => flatten(full, f));
-      }
-    };
-    fields.forEach(f => flatten("", f));
-    return out;
   }
 
-  // Public (autocomplete): list BigQuery tableIds for a dataset with prefix/limit and early-stop
-  async listBigQueryTableIdsForAutocomplete(
+  /** A dataset's table ids for autocomplete: by prefix, up to `limit`. */
+  listBigQueryTableIdsForAutocomplete(
     database: IDatabaseConnection,
     datasetId: string,
     opts?: { prefix?: string; limit?: number },
   ): Promise<string[]> {
-    const { project_id, service_account_json, api_base_url } =
-      (database.connection as any) || {};
-    if (!project_id || !service_account_json) {
-      throw new Error(
-        "BigQuery requires 'project_id' and 'service_account_json' in connection",
-      );
-    }
-    const prefix = String(opts?.prefix || "");
-    const limit = Math.max(1, Math.min(200, Number(opts?.limit || 100)));
-
-    const client = await this.getBigQueryHttpClient(
-      service_account_json,
-      api_base_url,
+    return bigQueryCatalog.listTableIdsForAutocomplete(
+      bigQueryEngine,
+      database,
+      datasetId,
+      opts,
     );
-    const out: string[] = [];
-    let pageToken: string | undefined;
-    do {
-      const params: any = { maxResults: 1000 };
-      if (pageToken) params.pageToken = pageToken;
-      const res = await client.get(
-        `/projects/${project_id}/datasets/${encodeURIComponent(
-          datasetId,
-        )}/tables`,
-        { params },
-      );
-      const data = res.data || {};
-      const tables: any[] = Array.isArray(data.tables) ? data.tables : [];
-      for (const t of tables) {
-        const tableId = t?.tableReference?.tableId;
-        if (!tableId) continue;
-        const tid = String(tableId);
-        if (prefix && !tid.startsWith(prefix)) continue;
-        out.push(tid);
-        if (out.length >= limit) {
-          return out;
-        }
-      }
-      pageToken = data.nextPageToken;
-    } while (pageToken);
-    return out.sort((a, b) => a.localeCompare(b));
   }
 
-  // Public: Get BigQuery schema (tables and columns) for autocomplete
-  async getBigQuerySchema(
+  /** Every dataset's tables and columns, for autocomplete. */
+  getBigQuerySchema(
     database: IDatabaseConnection,
   ): Promise<
     Record<string, Record<string, Array<{ name: string; type: string }>>>
   > {
-    const { project_id } = (database.connection as any) || {};
-    if (!project_id) {
-      throw new Error("BigQuery requires 'project_id' in connection");
-    }
-
-    // List all datasets first
-    const datasetIds = await this.listBigQueryDatasets(database);
-
-    const schema: Record<
-      string,
-      Record<string, Array<{ name: string; type: string }>>
-    > = {};
-
-    // Fetch schema for each dataset in parallel with concurrency limit
-    const fetchDatasetSchema = async (datasetId: string) => {
-      try {
-        const query = `
-          SELECT table_name, column_name, data_type 
-          FROM \`${project_id}.${datasetId}.INFORMATION_SCHEMA.COLUMNS\`
-          ORDER BY table_name, ordinal_position
-        `;
-
-        const result = await this.executeBigQueryQuery(database, query, {
-          labels: { mako_source: "metadata" },
-        });
-        if (result.success && Array.isArray(result.data)) {
-          if (!schema[datasetId]) schema[datasetId] = {};
-
-          for (const row of result.data) {
-            const tableName = row.table_name;
-            const colName = row.column_name;
-            const colType = row.data_type;
-
-            if (!schema[datasetId][tableName]) {
-              schema[datasetId][tableName] = [];
-            }
-            schema[datasetId][tableName].push({ name: colName, type: colType });
-          }
-        }
-      } catch (e) {
-        logger.warn("Failed to fetch schema for dataset", {
-          datasetId,
-          error: e,
-        });
-      }
-    };
-
-    const limit = 5;
-    const runners: Promise<void>[] = [];
-    let index = 0;
-    const runNext = async () => {
-      while (index < datasetIds.length) {
-        const current = datasetIds[index++];
-        await fetchDatasetSchema(current);
-      }
-    };
-    for (let i = 0; i < Math.min(limit, datasetIds.length); i++) {
-      runners.push(runNext());
-    }
-    await Promise.all(runners);
-
-    return schema;
+    return bigQueryCatalog.getSchema(bigQueryEngine, database);
   }
 
-  // Public: list BigQuery tables in a dataset
-  async listBigQueryTables(
+  listBigQueryTables(
     database: IDatabaseConnection,
     datasetId: string,
-  ): Promise<Array<{ name: string; type: string; options: any }>> {
-    const { project_id, service_account_json, api_base_url } =
-      (database.connection as any) || {};
-    if (!project_id || !service_account_json) {
-      throw new Error(
-        "BigQuery requires 'project_id' and 'service_account_json' in connection",
-      );
-    }
-
-    const client = await this.getBigQueryHttpClient(
-      service_account_json,
-      api_base_url,
-    );
-
-    const out: Array<{ name: string; type: string; options: any }> = [];
-    let pageToken: string | undefined;
-    do {
-      const params: any = { maxResults: 1000 };
-      if (pageToken) params.pageToken = pageToken;
-      const res = await client.get(
-        `/projects/${project_id}/datasets/${encodeURIComponent(
-          datasetId,
-        )}/tables`,
-        { params },
-      );
-      const data = res.data || {};
-      const tables: any[] = Array.isArray(data.tables) ? data.tables : [];
-      for (const t of tables) {
-        const tableId = t?.tableReference?.tableId;
-        if (!tableId) continue;
-        out.push({
-          name: `${datasetId}.${tableId}`,
-          type: t?.type || "TABLE",
-          options: { datasetId, tableId },
-        });
-      }
-      pageToken = data.nextPageToken;
-    } while (pageToken);
-
-    return out;
+  ): Promise<bigQueryCatalog.BigQueryTableEntry[]> {
+    return bigQueryCatalog.listTables(bigQueryEngine, database, datasetId);
   }
 
-  private getBigQueryPollIntervalMs(): number {
-    const configured = Number.parseInt(
-      process.env.BIGQUERY_QUERY_POLL_INTERVAL_MS || "",
-      10,
-    );
-    if (!Number.isFinite(configured)) {
-      return 1000;
-    }
-    return Math.max(100, configured);
-  }
-
-  /**
-   * The `labels` map for a BigQuery job on this connection (see
-   * bigquery-labels.ts), or undefined for a local emulator: emulator jobs
-   * cost nothing, and an emulator that rejects the field must not fail them.
-   */
-  private bigQueryLabels(
+  listBigQueryDatasetsAndTables(
     database: IDatabaseConnection,
-    apiBaseUrl: string | undefined,
-    options?: Pick<QueryExecuteOptions, "labels">,
-  ): Record<string, string> | undefined {
-    if (isLocalBigQueryEmulator(apiBaseUrl)) return undefined;
-    return bigQueryJobLabels({
-      workspaceId: database.workspaceId,
-      explicit: options?.labels,
-    });
+  ): Promise<bigQueryCatalog.BigQueryTableEntry[]> {
+    return bigQueryCatalog.listDatasetsAndTables(bigQueryEngine, database);
   }
 
-  private async testBigQueryConnection(
-    database: IDatabaseConnection,
-  ): Promise<{ success: boolean; error?: string }> {
-    try {
-      const { project_id, service_account_json, location, api_base_url } =
-        (database.connection as any) || {};
-      if (!project_id || !service_account_json) {
-        return {
-          success: false,
-          error:
-            "BigQuery requires 'project_id' and 'service_account_json' in connection",
-        };
-      }
-
-      const client = await this.getBigQueryHttpClient(
-        service_account_json,
-        api_base_url,
-      );
-      const body: any = {
-        query: "SELECT 1 AS one",
-        useLegacySql: false,
-        maxResults: 1,
-      };
-      if (location) body.location = location;
-      const labels = this.bigQueryLabels(database, api_base_url, {
-        labels: { mako_source: "connection_test" },
-      });
-      if (labels) body.labels = labels;
-      await client.post(`/projects/${project_id}/queries`, body);
-      return { success: true };
-    } catch (error: any) {
-      return {
-        success: false,
-        error: describeGoogleApiError(error, "BigQuery connection failed"),
-      };
-    }
-  }
-
-  private async executeBigQueryQuery(
-    database: IDatabaseConnection,
-    query: string,
-    options?: QueryExecuteOptions,
-  ): Promise<QueryResult> {
-    const executionId = options?.executionId;
-    const signal = options?.signal;
-
-    const checkAborted = () => {
-      if (signal?.aborted) throw new Error("Query cancelled");
-    };
-
-    try {
-      checkAborted();
-      if (typeof query !== "string" || !query.trim()) {
-        return { success: false, error: "Query must be a non-empty string" };
-      }
-      const {
-        project_id,
-        service_account_json,
-        location: dbLocation,
-        api_base_url,
-      } = (database.connection as any) || {};
-      if (!project_id || !service_account_json) {
-        return {
-          success: false,
-          error:
-            "BigQuery requires 'project_id' and 'service_account_json' in connection",
-        };
-      }
-
-      const client = await this.getBigQueryHttpClient(
-        service_account_json,
-        api_base_url,
-      );
-      const configuredLocation = options?.location || dbLocation;
-      const batchSize = Math.max(
-        1,
-        Math.min(10000, options?.batchSize || 1000),
-      );
-
-      // Start the query
-      const startBody: any = {
-        query,
-        useLegacySql: false,
-        maxResults: batchSize,
-      };
-      if (configuredLocation) startBody.location = configuredLocation;
-      const labels = this.bigQueryLabels(database, api_base_url, options);
-      if (labels) startBody.labels = labels;
-      checkAborted();
-      let response = await client.post(
-        `/projects/${project_id}/queries`,
-        startBody,
-      );
-
-      let data = response.data || {};
-      const jobId: string | undefined = data.jobReference?.jobId;
-      const jobLocation: string | undefined =
-        data.jobReference?.location || configuredLocation;
-      let schema: any = data.schema;
-      let pageToken: string | undefined = data.pageToken;
-      const rowsAccum: any[] = [];
-
-      // Track running job for cancellation
-      if (executionId && jobId) {
-        this.runningBigQueryJobs.set(executionId, {
-          projectId: project_id,
-          jobId,
-          location: jobLocation,
-          client,
-        });
-      }
-
-      // Wait for job completion (interactive default 5m; sync MERGE etc. pass bigQueryJobMaxWaitMs)
-      const configuredMax = options?.bigQueryJobMaxWaitMs;
-      const maxWaitMs = Math.min(
-        Math.max(
-          typeof configuredMax === "number" &&
-            Number.isFinite(configuredMax) &&
-            configuredMax > 0
-            ? configuredMax
-            : 5 * 60 * 1000,
-          1000,
-        ),
-        60 * 60 * 1000,
-      );
-      const pollIntervalMs = this.getBigQueryPollIntervalMs();
-      // A wall-clock deadline: see bigquery-poll-budget.ts for why counting
-      // only the sleeps turned 5 minutes into 55.
-      const budget = createBigQueryPollBudget(maxWaitMs);
-
-      while (data.jobComplete === false && jobId && !budget.expired()) {
-        checkAborted();
-        await new Promise(resolve =>
-          setTimeout(resolve, budget.sleepMs(pollIntervalMs)),
-        );
-        checkAborted();
-        if (budget.expired()) break;
-
-        const params: any = {
-          maxResults: batchSize,
-          timeoutMs: budget.requestTimeoutMs(),
-        };
-        if (jobLocation) params.location = jobLocation;
-        response = await client.get(
-          `/projects/${project_id}/queries/${jobId}`,
-          { params },
-        );
-        data = response.data || {};
-        schema = data.schema || schema;
-      }
-
-      checkAborted();
-      if (data.jobComplete === false) {
-        const stopped = await this.cancelAbandonedBigQueryJob({
-          client,
-          projectId: project_id,
-          jobId: jobId as string,
-          location: jobLocation,
-          executionId,
-        });
-        return {
-          success: false,
-          error: `Query timed out after ${maxWaitMs / 1000} seconds${bqAbandonedSuffix(stopped)}`,
-        };
-      }
-
-      if (Array.isArray(data.errors) && data.errors.length > 0) {
-        const fatalErrors = data.errors.filter(
-          (e: { reason?: string }) => e?.reason !== "warning",
-        );
-        if (fatalErrors.length > 0) {
-          return {
-            success: false,
-            error: fatalErrors
-              .map(
-                (e: { message?: string }) =>
-                  (e && typeof e.message === "string" && e.message) ||
-                  "BigQuery job error",
-              )
-              .join("; "),
-          };
-        }
-      }
-
-      // Collect results
-      if (Array.isArray(data.rows) && schema) {
-        const page = this.bqMapRowsToObjects(data.rows, schema);
-        options?.onRows?.(page);
-        rowsAccum.push(...page);
-      }
-      pageToken = data.pageToken;
-
-      while (pageToken) {
-        checkAborted();
-        const params: any = { maxResults: batchSize };
-        if (pageToken) params.pageToken = pageToken;
-        if (jobLocation) params.location = jobLocation;
-        response = await client.get(
-          `/projects/${project_id}/queries/${jobId}`,
-          { params },
-        );
-        data = response.data || {};
-        schema = data.schema || schema;
-        if (Array.isArray(data.rows) && schema) {
-          const page = this.bqMapRowsToObjects(data.rows, schema);
-          options?.onRows?.(page);
-          rowsAccum.push(...page);
-        }
-        pageToken = data.pageToken;
-      }
-
-      // A DML statement returns no rows; BigQuery says how many it changed.
-      const affected = Number(data.numDmlAffectedRows);
-      return {
-        success: true,
-        data: rowsAccum,
-        rowCount:
-          rowsAccum.length === 0 && Number.isFinite(affected)
-            ? affected
-            : rowsAccum.length,
-      };
-    } catch (error: any) {
-      if (error?.message === "Query cancelled") {
-        return { success: false, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        error: describeGoogleApiError(error, "BigQuery query failed"),
-      };
-    } finally {
-      if (executionId) this.runningBigQueryJobs.delete(executionId);
-    }
-  }
-
-  private async executeBigQueryPreviewQuery(
-    database: IDatabaseConnection,
-    query: string,
-    options?: QueryPreviewOptions,
-  ): Promise<QueryPreviewResult> {
-    const baseQuery = query.trim().replace(/;\s*$/, "");
-    const safety = checkPreviewQuerySafety(baseQuery);
-    if (!safety.safe) {
-      return { success: false, error: safety.errors.join(" ") };
-    }
-
-    const decodedCursor = decodePreviewCursor(options?.cursor);
-    const queryHash = hashPreviewQuery(baseQuery);
-    if (decodedCursor && decodedCursor.queryHash !== queryHash) {
-      return {
-        success: false,
-        error: "The provided preview cursor does not match the current query",
-      };
-    }
-    if (decodedCursor && decodedCursor.kind !== "bigquery") {
-      return {
-        success: false,
-        error: "The provided preview cursor is invalid for this BigQuery query",
-      };
-    }
-
-    const {
-      project_id,
-      service_account_json,
-      location: dbLocation,
-      api_base_url,
-    } = (database.connection as any) || {};
-    if (!project_id || !service_account_json) {
-      return {
-        success: false,
-        error:
-          "BigQuery requires 'project_id' and 'service_account_json' in connection",
-      };
-    }
-
-    const { pageSize, capApplied } = resolvePreviewPageSize(options?.pageSize);
-    const client = await this.getBigQueryHttpClient(
-      service_account_json,
-      api_base_url,
-    );
-    const configuredLocation =
-      decodedCursor?.kind === "bigquery"
-        ? decodedCursor.location || options?.location || dbLocation
-        : options?.location || dbLocation;
-    const executionId = options?.executionId;
-    const signal = options?.signal;
-
-    const checkAborted = () => {
-      if (signal?.aborted) throw new Error("Query cancelled");
-    };
-
-    try {
-      checkAborted();
-
-      let response;
-      let data: any = {};
-      let jobId: string | undefined =
-        decodedCursor?.kind === "bigquery" ? decodedCursor.jobId : undefined;
-      let jobLocation: string | undefined = configuredLocation;
-
-      if (decodedCursor?.kind === "bigquery") {
-        const params: any = {
-          maxResults: pageSize,
-          pageToken: decodedCursor.pageToken,
-        };
-        if (jobLocation) {
-          params.location = jobLocation;
-        }
-        response = await client.get(
-          `/projects/${project_id}/queries/${jobId}`,
-          {
-            params,
-          },
-        );
-        data = response.data || {};
-      } else {
-        const startBody: any = {
-          query: baseQuery,
-          useLegacySql: false,
-          maxResults: pageSize,
-        };
-        if (configuredLocation) {
-          startBody.location = configuredLocation;
-        }
-        const labels = this.bigQueryLabels(database, api_base_url, options);
-        if (labels) startBody.labels = labels;
-
-        response = await client.post(
-          `/projects/${project_id}/queries`,
-          startBody,
-        );
-        data = response.data || {};
-        jobId = data.jobReference?.jobId;
-        jobLocation = data.jobReference?.location || configuredLocation;
-      }
-
-      if (executionId && jobId) {
-        this.runningBigQueryJobs.set(executionId, {
-          projectId: project_id,
-          jobId,
-          location: jobLocation,
-          client,
-        });
-      }
-
-      const maxWaitMs = 5 * 60 * 1000;
-      const pollIntervalMs = this.getBigQueryPollIntervalMs();
-      // A wall-clock deadline: see bigquery-poll-budget.ts.
-      const budget = createBigQueryPollBudget(maxWaitMs);
-
-      while (data.jobComplete === false && jobId && !budget.expired()) {
-        checkAborted();
-        await new Promise(resolve =>
-          setTimeout(resolve, budget.sleepMs(pollIntervalMs)),
-        );
-        checkAborted();
-        if (budget.expired()) break;
-
-        const params: any = {
-          maxResults: pageSize,
-          timeoutMs: budget.requestTimeoutMs(),
-        };
-        if (jobLocation) {
-          params.location = jobLocation;
-        }
-        if (decodedCursor?.kind === "bigquery" && decodedCursor.pageToken) {
-          params.pageToken = decodedCursor.pageToken;
-        }
-
-        response = await client.get(
-          `/projects/${project_id}/queries/${jobId}`,
-          {
-            params,
-          },
-        );
-        data = response.data || {};
-      }
-
-      checkAborted();
-      if (data.jobComplete === false) {
-        const stopped = await this.cancelAbandonedBigQueryJob({
-          client,
-          projectId: project_id,
-          jobId: jobId as string,
-          location: jobLocation,
-          executionId,
-        });
-        return {
-          success: false,
-          error: `Query timed out after ${maxWaitMs / 1000} seconds${bqAbandonedSuffix(stopped)}`,
-        };
-      }
-
-      const schema = data.schema;
-      const rows =
-        Array.isArray(data.rows) && schema
-          ? (this.bqMapRowsToObjects(data.rows, schema) as Array<
-              Record<string, unknown>
-            >)
-          : [];
-      const fields = this.bqSchemaToFields(schema, rows);
-      const nextPageToken =
-        typeof data.pageToken === "string" && data.pageToken.length > 0
-          ? data.pageToken
-          : undefined;
-
-      return {
-        success: true,
-        rows,
-        rowCount: rows.length,
-        fields,
-        warnings: safety.warnings,
-        pageInfo: {
-          pageSize,
-          hasMore: Boolean(nextPageToken),
-          nextCursor:
-            nextPageToken && jobId
-              ? buildBigQueryCursor({
-                  jobId,
-                  pageToken: nextPageToken,
-                  query: baseQuery,
-                  location: jobLocation,
-                })
-              : null,
-          returnedRows: rows.length,
-          capApplied,
-        },
-      };
-    } catch (error: any) {
-      if (error?.message === "Query cancelled") {
-        return { success: false, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        error: describeGoogleApiError(error, "BigQuery preview query failed"),
-      };
-    } finally {
-      if (executionId) {
-        this.runningBigQueryJobs.delete(executionId);
-      }
-    }
-  }
-
-  private async executeBigQueryStreamingQuery(
-    database: IDatabaseConnection,
-    query: string,
-    options: StreamingQueryOptions & QueryExecuteOptions,
-  ): Promise<{ success: boolean; totalRows: number; error?: string }> {
-    const executionId = options.executionId;
-    const signal = options.signal;
-
-    const checkAborted = () => {
-      if (signal?.aborted) throw new Error("Query cancelled");
-    };
-
-    let totalRows = 0;
-
-    try {
-      checkAborted();
-      if (typeof query !== "string" || !query.trim()) {
-        return {
-          success: false,
-          totalRows,
-          error: "Query must be a non-empty string",
-        };
-      }
-
-      const {
-        project_id,
-        service_account_json,
-        location: dbLocation,
-        api_base_url,
-      } = (database.connection as any) || {};
-      if (!project_id || !service_account_json) {
-        return {
-          success: false,
-          totalRows,
-          error:
-            "BigQuery requires 'project_id' and 'service_account_json' in connection",
-        };
-      }
-
-      // Asked for again per poll and per page: a job or a stream can outlive
-      // the token it started with (smp0's 250+ seconds of pages ended in a 401
-      // for two deploys on 2026-11-03), and this call is what renews it.
-      let client = await this.getBigQueryHttpClient(
-        service_account_json,
-        api_base_url,
-      );
-      const configuredLocation = options.location || dbLocation;
-      const batchSize = Math.max(1, Math.min(10000, options.batchSize || 1000));
-
-      const startBody: any = {
-        query,
-        useLegacySql: false,
-        maxResults: batchSize,
-      };
-      if (configuredLocation) {
-        startBody.location = configuredLocation;
-      }
-      const labels = this.bigQueryLabels(database, api_base_url, options);
-      if (labels) startBody.labels = labels;
-
-      checkAborted();
-      let response = await client.post(
-        `/projects/${project_id}/queries`,
-        startBody,
-      );
-      let data = response.data || {};
-      const jobId: string | undefined = data.jobReference?.jobId;
-      const jobLocation: string | undefined =
-        data.jobReference?.location || configuredLocation;
-      let schema: any = data.schema;
-      let pageToken: string | undefined = data.pageToken;
-
-      if (executionId && jobId) {
-        this.runningBigQueryJobs.set(executionId, {
-          projectId: project_id,
-          jobId,
-          location: jobLocation,
-          client,
-        });
-      }
-
-      const maxWaitMs = 5 * 60 * 1000;
-      const pollIntervalMs = this.getBigQueryPollIntervalMs();
-      // A wall-clock deadline: see bigquery-poll-budget.ts.
-      const budget = createBigQueryPollBudget(maxWaitMs);
-
-      while (data.jobComplete === false && jobId && !budget.expired()) {
-        checkAborted();
-        await new Promise(resolve =>
-          setTimeout(resolve, budget.sleepMs(pollIntervalMs)),
-        );
-        checkAborted();
-        if (budget.expired()) break;
-
-        const params: any = {
-          maxResults: batchSize,
-          timeoutMs: budget.requestTimeoutMs(),
-        };
-        if (jobLocation) {
-          params.location = jobLocation;
-        }
-        client = await this.getBigQueryHttpClient(
-          service_account_json,
-          api_base_url,
-        );
-        response = await client.get(
-          `/projects/${project_id}/queries/${jobId}`,
-          {
-            params,
-          },
-        );
-        data = response.data || {};
-        schema = data.schema || schema;
-      }
-
-      checkAborted();
-      if (data.jobComplete === false) {
-        const stopped = await this.cancelAbandonedBigQueryJob({
-          client,
-          projectId: project_id,
-          jobId: jobId as string,
-          location: jobLocation,
-          executionId,
-        });
-        return {
-          success: false,
-          totalRows,
-          error: `Query timed out after ${maxWaitMs / 1000} seconds${bqAbandonedSuffix(stopped)}`,
-        };
-      }
-
-      if (Array.isArray(data.rows) && schema) {
-        const rows = this.bqMapRowsToObjects(data.rows, schema) as Array<
-          Record<string, unknown>
-        >;
-        if (rows.length > 0) {
-          await options.onBatch(rows);
-          totalRows += rows.length;
-        }
-      }
-
-      pageToken = data.pageToken;
-
-      while (pageToken && jobId) {
-        checkAborted();
-        const params: any = { maxResults: batchSize, pageToken };
-        if (jobLocation) {
-          params.location = jobLocation;
-        }
-        client = await this.getBigQueryHttpClient(
-          service_account_json,
-          api_base_url,
-        );
-        response = await client.get(
-          `/projects/${project_id}/queries/${jobId}`,
-          {
-            params,
-          },
-        );
-        data = response.data || {};
-        schema = data.schema || schema;
-
-        const rows =
-          Array.isArray(data.rows) && schema
-            ? (this.bqMapRowsToObjects(data.rows, schema) as Array<
-                Record<string, unknown>
-              >)
-            : [];
-        if (rows.length > 0) {
-          await options.onBatch(rows);
-          totalRows += rows.length;
-        }
-
-        pageToken = data.pageToken;
-      }
-
-      return { success: true, totalRows };
-    } catch (error: any) {
-      if (error?.message === "Query cancelled") {
-        return { success: false, totalRows, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        totalRows,
-        error: describeGoogleApiError(error, "BigQuery streaming query failed"),
-      };
-    } finally {
-      if (executionId) {
-        this.runningBigQueryJobs.delete(executionId);
-      }
-    }
-  }
-
-  /**
-   * Stop a job we have stopped waiting for.
-   *
-   * When the poll loop gives up at `maxWaitMs` the HTTP request ends, but the
-   * BigQuery job does not: it runs to completion, scans what it was going to
-   * scan, and bills for it — which is what "the query may still be running in
-   * BigQuery" in the timeout message has always meant. Nobody reads the
-   * result, so every byte after we walk away is paid for and thrown away.
-   *
-   * Measured on 2026-09-01: one app's two bindings abandoned 41 jobs in 48
-   * minutes, each a 300s query. The circuit breaker in front of live bindings
-   * cut that to 7; this makes the ones that still happen stop scanning.
-   *
-   * Best effort by construction — it runs on a path that is already failing,
-   * so a failed cancel must not replace the timeout the caller needs to hear
-   * about. Returns whether the job was actually cancelled, so the message can
-   * say which happened instead of always claiming the worse one.
-   */
-  private async cancelAbandonedBigQueryJob(input: {
-    client: AxiosInstance;
-    projectId: string;
-    jobId: string;
-    location?: string;
-    executionId?: string;
-  }): Promise<boolean> {
-    const { client, projectId, jobId, location, executionId } = input;
-    try {
-      const params: Record<string, string> = {};
-      if (location) params.location = location;
-      await client.post(
-        `/projects/${projectId}/jobs/${jobId}/cancel`,
-        {},
-        { params },
-      );
-      if (executionId) this.runningBigQueryJobs.delete(executionId);
-      logger.info("Cancelled an abandoned BigQuery job", {
-        category: "db.bigquery",
-        projectId,
-        jobId,
-      });
-      return true;
-    } catch (error) {
-      logger.warn("Could not cancel an abandoned BigQuery job", {
-        category: "db.bigquery",
-        projectId,
-        jobId,
-        error: describeGoogleApiError(error, "Failed to cancel job"),
-      });
-      return false;
-    }
-  }
-
-  /**
-   * Cancel a running BigQuery job
-   */
-  async cancelBigQueryJob(
-    executionId: string,
-  ): Promise<{ success: boolean; error?: string }> {
-    const job = this.runningBigQueryJobs.get(executionId);
-    if (!job) {
-      return { success: false, error: "Job not found or already completed" };
-    }
-
-    try {
-      const params: any = {};
-      if (job.location) params.location = job.location;
-      await job.client.post(
-        `/projects/${job.projectId}/jobs/${job.jobId}/cancel`,
-        {},
-        { params },
-      );
-      this.runningBigQueryJobs.delete(executionId);
-      return { success: true };
-    } catch (error: any) {
-      return {
-        success: false,
-        error: describeGoogleApiError(error, "Failed to cancel job"),
-      };
-    }
-  }
-
-  /**
-   * Get the schema (column types) of a BigQuery query without executing it.
-   * Uses BigQuery's dry run feature which validates the query and returns
-   * the result schema without actually running it.
-   *
-   * This is more reliable than inferring types from sample data because:
-   * - NULL values are handled correctly (column type is known)
-   * - No data sampling variance issues
-   * - Works even if query returns 0 rows
-   *
-   * @param database - BigQuery database connection
-   * @param query - SQL query to analyze
-   * @returns Column definitions with name and BigQuery type
-   */
-  async getBigQueryQuerySchema(
+  /** The result schema of a BigQuery query, by dry run (nothing runs). */
+  getBigQueryQuerySchema(
     database: IDatabaseConnection,
     query: string,
   ): Promise<{
@@ -2553,275 +840,25 @@ export class DatabaseConnectionService {
     columns?: Array<{ name: string; type: string; nullable: boolean }>;
     error?: string;
   }> {
-    try {
-      const { project_id, service_account_json, location, api_base_url } =
-        (database.connection as any) || {};
-      if (!project_id || !service_account_json) {
-        return {
-          success: false,
-          error:
-            "BigQuery requires 'project_id' and 'service_account_json' in connection",
-        };
-      }
-
-      const client = await this.getBigQueryHttpClient(
-        service_account_json,
-        api_base_url,
-      );
-
-      // Use dry run to get schema without executing
-      const body: any = {
-        query,
-        useLegacySql: false,
-        dryRun: true, // Key: validates query and returns schema without running
-      };
-      if (location) body.location = location;
-      const labels = this.bigQueryLabels(database, api_base_url);
-      if (labels) body.labels = labels;
-
-      const response = await client.post(
-        `/projects/${project_id}/queries`,
-        body,
-      );
-
-      const schema = response?.data?.schema;
-      if (!schema?.fields) {
-        return {
-          success: false,
-          error: "No schema returned from dry run query",
-        };
-      }
-
-      // Map BigQuery schema fields to column definitions
-      const columns = this.flattenBigQuerySchemaFields(schema.fields);
-
-      return { success: true, columns };
-    } catch (error: any) {
-      return {
-        success: false,
-        error: describeGoogleApiError(error, "Failed to get query schema"),
-      };
-    }
+    return bigQueryEngine.getQuerySchema(database, query);
   }
 
-  /**
-   * Flatten BigQuery schema fields to column definitions
-   * Handles nested RECORD/STRUCT types by flattening with dot notation
-   */
-  private flattenBigQuerySchemaFields(
-    fields: any[],
-    prefix = "",
-  ): Array<{ name: string; type: string; nullable: boolean }> {
-    const columns: Array<{ name: string; type: string; nullable: boolean }> =
-      [];
+  // -------------------- Cancellation --------------------
 
-    for (const field of fields) {
-      const name = prefix ? `${prefix}.${field.name}` : field.name;
-      const mode = field.mode || "NULLABLE";
-      const nullable = mode !== "REQUIRED";
-
-      if (field.type === "RECORD" && Array.isArray(field.fields)) {
-        // Flatten nested records
-        columns.push(...this.flattenBigQuerySchemaFields(field.fields, name));
-      } else {
-        columns.push({
-          name,
-          type: field.type,
-          nullable,
-        });
-      }
-    }
-
-    return columns;
+  cancelBigQueryJob(executionId: string): Promise<CancelResult> {
+    return bigQueryEngine.cancelJob(executionId);
   }
 
-  /**
-   * Cancel a running PostgreSQL query
-   *
-   * IMPORTANT: This intentionally creates a dedicated client outside the pool.
-   * Since the pool has limited connections (max: 2), using pool.query() would
-   * deadlock if all connections are occupied by running queries—the cancellation
-   * request would wait for a connection that can never be released because the
-   * query being cancelled is holding it.
-   */
-  async cancelPostgresQuery(
-    executionId: string,
-  ): Promise<{ success: boolean; error?: string }> {
-    const query = this.runningPostgresQueries.get(executionId);
-    if (!query) {
-      return { success: false, error: "Query not found or already completed" };
-    }
-    // Marked first: the query's release then retires its client (see
-    // trackPostgresQuery) rather than pool a backend a cancel is aimed at.
-    query.cancelled = true;
-    const result = await this.cancelPostgresBackend(query.database, query.pid);
-    if (result.success) this.runningPostgresQueries.delete(executionId);
-    return result;
+  cancelPostgresQuery(executionId: string): Promise<CancelResult> {
+    return postgresEngine.cancelQuery(executionId);
   }
 
-  /**
-   * `pg_cancel_backend(pid)` from a dedicated connection outside the pool
-   * (a pooled one could deadlock: see cancelPostgresQuery).
-   */
-  private async cancelPostgresBackend(
-    database: IDatabaseConnection,
-    pid: number,
-  ): Promise<{ success: boolean; error?: string }> {
-    let cancelClient: PgClient | null = null;
-    try {
-      // Create a dedicated connection outside the pool for cancellation
-      // This avoids deadlock when all pool connections are busy
-      const config = this.buildPostgreSQLConfig(database);
-      cancelClient = new PgClient(config);
-      await cancelClient.connect();
-      const res = await cancelClient.query<{ cancelled: boolean }>(
-        "SELECT pg_cancel_backend($1) as cancelled",
-        [pid],
-      );
-      const cancelled = res.rows?.[0]?.cancelled;
-      if (!cancelled) {
-        return {
-          success: false,
-          error: "Failed to cancel query (pg_cancel_backend returned false)",
-        };
-      }
-      return { success: true };
-    } catch (error: any) {
-      return {
-        success: false,
-        error: error?.message || "Failed to cancel query",
-      };
-    } finally {
-      if (cancelClient) {
-        await cancelClient.end().catch(() => {});
-      }
-    }
+  cancelMongoDBQuery(executionId: string): Promise<CancelResult> {
+    return mongoEngine.cancelQuery(executionId);
   }
 
-  /**
-   * Cancel a running MongoDB query using session-based cancellation.
-   * This uses the session's lsid (logical session ID) to precisely kill
-   * only operations belonging to this specific session.
-   */
-  async cancelMongoDBQuery(
-    executionId: string,
-  ): Promise<{ success: boolean; error?: string }> {
-    const running = this.runningMongoQueries.get(executionId);
-    if (!running) {
-      return { success: false, error: "Query not found or already completed" };
-    }
-
-    try {
-      // First, abort the AbortController to stop the JavaScript promise
-      running.abortController.abort();
-      logger.debug("Aborted controller for MongoDB execution", { executionId });
-
-      // Kill all operations associated with this session using killSessions.
-      // This precisely targets only operations from our session, avoiding
-      // any risk of killing other users' queries.
-      try {
-        const adminDb = running.client.db("admin");
-        const sessionId = running.session.id;
-
-        if (sessionId) {
-          await adminDb.command({
-            killSessions: [sessionId],
-          });
-          logger.debug("Killed MongoDB session for execution", { executionId });
-        }
-      } catch (killErr) {
-        // killSessions might fail if user doesn't have sufficient privileges
-        // This is okay - the AbortController should still work for the JS side
-        logger.warn("Could not kill MongoDB session (may lack privileges)", {
-          executionId,
-          error: killErr,
-        });
-      }
-
-      // End the session
-      try {
-        await running.session.endSession();
-      } catch {
-        // Ignore errors when ending session
-      }
-
-      // Remove from tracking
-      this.runningMongoQueries.delete(executionId);
-      return { success: true };
-    } catch (error) {
-      logger.error("Error cancelling MongoDB query", { executionId, error });
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to cancel query",
-      };
-    }
-  }
-
-  /**
-   * Cancel a running ClickHouse query
-   */
-  async cancelClickHouseQuery(
-    executionId: string,
-  ): Promise<{ success: boolean; error?: string }> {
-    const query = this.runningClickHouseQueries.get(executionId);
-    if (!query) {
-      return { success: false, error: "Query not found or already completed" };
-    }
-
-    try {
-      // First, abort the JavaScript promise
-      query.abortController.abort();
-
-      // Then try to kill the query on the server side
-      try {
-        const config = this.buildClickHouseClientConfig(query.database);
-        const client = createClient(config);
-
-        // Kill the query using its query_id
-        await client.query({
-          query: `KILL QUERY WHERE query_id = '${query.queryId}'`,
-        });
-
-        await client.close();
-      } catch (killError) {
-        // Killing the query might fail if it already completed, which is okay
-        logger.warn("Could not kill ClickHouse query", {
-          queryId: query.queryId,
-          error: killError,
-        });
-      }
-
-      this.runningClickHouseQueries.delete(executionId);
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to cancel query",
-      };
-    }
-  }
-
-  private async cancelMSSQLQuery(
-    executionId: string,
-  ): Promise<{ success: boolean; error?: string }> {
-    const running = this.runningMSSQLQueries.get(executionId);
-    if (!running) {
-      return { success: false, error: "Query not found or already completed" };
-    }
-
-    try {
-      running.request.cancel();
-      this.runningMSSQLQueries.delete(executionId);
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to cancel query",
-      };
-    }
+  cancelClickHouseQuery(executionId: string): Promise<CancelResult> {
+    return clickHouseEngine.cancelQuery(executionId);
   }
 
   /**
@@ -2859,9 +896,7 @@ export class DatabaseConnectionService {
   /**
    * Cancel a running query (auto-detects database type)
    */
-  async cancelQuery(
-    executionId: string,
-  ): Promise<{ success: boolean; error?: string }> {
+  async cancelQuery(executionId: string): Promise<CancelResult> {
     // Abort the detached task first (if any) so the in-process poll/await
     // stops; the engine-native cancel below actually kills the server-side
     // query. Both are needed: aborting the signal alone does not stop most
@@ -2875,47 +910,13 @@ export class DatabaseConnectionService {
       }
     }
 
-    // Try BigQuery first
-    if (this.runningBigQueryJobs.has(executionId)) {
-      return this.cancelBigQueryJob(executionId);
-    }
-    // Try PostgreSQL
-    if (this.runningPostgresQueries.has(executionId)) {
-      return this.cancelPostgresQuery(executionId);
-    }
-    // Try MongoDB
-    if (this.runningMongoQueries.has(executionId)) {
-      return this.cancelMongoDBQuery(executionId);
-    }
-    // Try ClickHouse
-    if (this.runningClickHouseQueries.has(executionId)) {
-      return this.cancelClickHouseQuery(executionId);
-    }
-    // Try MSSQL
-    if (this.runningMSSQLQueries.has(executionId)) {
-      return this.cancelMSSQLQuery(executionId);
-    }
-
-    // Try MySQL
-    if (this.runningMySQLQueries.has(executionId)) {
-      return this.cancelMySQLQuery(executionId);
-    }
-
-    // Delegate to the drivers this service runs queries through that track
-    // their own (cloudsql-postgres). The same registry instance ran the query.
-    for (const driver of [this.cloudSqlDriver, this.d1Driver, this.kvDriver]) {
-      const cancel = (driver as DatabaseDriver).cancelQuery;
-      if (typeof cancel === "function") {
-        const res = await cancel.call(driver, executionId);
-        if (res?.success) return res;
-        // If the driver found the executionId but failed to cancel, return that error.
-        if (
-          res?.error &&
-          res.error !== "Query not found or already completed"
-        ) {
-          return res;
-        }
-      }
+    // The engine running it answers; the others do not know the id.
+    for (const engine of allEngines()) {
+      if (typeof engine.cancelQuery !== "function") continue;
+      const res = await engine.cancelQuery(executionId);
+      if (res?.success) return res;
+      // An engine that found the executionId but failed to cancel says why.
+      if (res?.error && res.error !== QUERY_NOT_FOUND) return res;
     }
 
     // No engine-native handle matched. If a detached task was registered we
@@ -2925,2264 +926,7 @@ export class DatabaseConnectionService {
       return { success: true };
     }
 
-    return { success: false, error: "Query not found or already completed" };
-  }
-
-  // New: list BigQuery datasets and tables via REST (fast, no deprecated auth)
-  async listBigQueryDatasetsAndTables(
-    database: IDatabaseConnection,
-  ): Promise<Array<{ name: string; type: string; options: any }>> {
-    const datasetIds = await this.listBigQueryDatasets(database);
-
-    // Concurrency limiter
-    const limit = 5;
-    const results: Array<{ name: string; type: string; options: any }>[] = [];
-    let index = 0;
-    const runners: Promise<void>[] = [];
-    const runNext = async () => {
-      while (index < datasetIds.length) {
-        const current = datasetIds[index++];
-        const tables = await this.listBigQueryTables(database, current);
-        results.push(tables);
-      }
-    };
-    for (let i = 0; i < Math.min(limit, datasetIds.length); i++) {
-      runners.push(runNext());
-    }
-    await Promise.all(runners);
-
-    return results.flat();
-  }
-
-  private async getBigQueryHttpClient(
-    serviceAccountJson: string | object,
-    apiBaseUrl?: string,
-  ): Promise<AxiosInstance> {
-    const sa = this.parseServiceAccount(serviceAccountJson);
-    const base = (apiBaseUrl || "https://bigquery.googleapis.com").trim();
-    const normalized = /^https?:\/\//i.test(base) ? base : `https://${base}`;
-    const baseURL = normalized.replace(/\/+$/, "") + "/bigquery/v2";
-
-    const cacheKey = crypto
-      .createHash("sha256")
-      .update(`${sa.client_email}|${sa.token_uri}|${baseURL}`)
-      .digest("hex");
-
-    const cached = this.bigQueryClientCache.get(cacheKey);
-    const now = Date.now();
-
-    // Local emulator (e.g. goccy/bigquery-emulator): no auth. Skip the JWT/OAuth
-    // token exchange entirely and send a dummy bearer the emulator ignores. This
-    // lets local dev / integration tests run fully offline with fake credentials.
-    if (isLocalBigQueryEmulator(apiBaseUrl)) {
-      const emulatorClient = cached?.client || axios.create({ baseURL });
-      emulatorClient.defaults.headers.common["Authorization"] =
-        "Bearer emulator";
-      emulatorClient.defaults.headers.common["Content-Type"] =
-        "application/json";
-      const expiresAtMs = now + 365 * 24 * 60 * 60 * 1000;
-      this.bigQueryClientCache.set(cacheKey, {
-        client: emulatorClient,
-        token: "emulator",
-        expiresAtMs,
-      });
-      return emulatorClient;
-    }
-
-    // Refresh token if expiring soon (within 2 minutes)
-    const needsRefresh = !cached || cached.expiresAtMs - now < 2 * 60 * 1000;
-
-    if (!needsRefresh && cached) {
-      return cached.client;
-    }
-
-    const inFlight = this.bigQueryTokenInFlight.get(cacheKey);
-    const tokenPromise =
-      inFlight ||
-      (async () => {
-        try {
-          return await this.createGoogleAccessTokenWithExpiry(sa);
-        } finally {
-          this.bigQueryTokenInFlight.delete(cacheKey);
-        }
-      })();
-
-    if (!inFlight) {
-      this.bigQueryTokenInFlight.set(cacheKey, tokenPromise);
-    }
-
-    const { token, expiresAtMs } = await tokenPromise;
-
-    const client = cached?.client || axios.create({ baseURL });
-    client.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-    client.defaults.headers.common["Content-Type"] = "application/json";
-    this.bigQueryClientCache.set(cacheKey, { client, token, expiresAtMs });
-    return client;
-  }
-
-  private parseServiceAccount(sa: string | object): {
-    client_email: string;
-    private_key: string;
-    token_uri: string;
-  } {
-    let obj: any;
-    try {
-      obj = typeof sa === "string" ? JSON.parse(sa) : sa;
-    } catch (e) {
-      logger.error("Failed to parse service_account_json", { error: e });
-      throw new Error("Invalid service_account_json: Not a valid JSON string", {
-        cause: e,
-      });
-    }
-
-    if (!obj || typeof obj !== "object") {
-      throw new Error("Invalid service_account_json: Content is not an object");
-    }
-
-    return {
-      client_email: obj.client_email,
-      private_key: obj.private_key,
-      token_uri: obj.token_uri || "https://oauth2.googleapis.com/token",
-    };
-  }
-
-  private async createGoogleAccessTokenWithExpiry(sa: {
-    client_email: string;
-    private_key: string;
-    token_uri: string;
-  }): Promise<{ token: string; expiresAtMs: number }> {
-    const now = Math.floor(Date.now() / 1000);
-    const header = { alg: "RS256", typ: "JWT" };
-    const payload = {
-      iss: sa.client_email,
-      scope: "https://www.googleapis.com/auth/bigquery",
-      aud: sa.token_uri,
-      iat: now,
-      exp: now + 3600,
-    } as any;
-    const base64url = (input: Buffer | string) =>
-      (Buffer.isBuffer(input) ? input : Buffer.from(input))
-        .toString("base64")
-        .replace(/=/g, "")
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_");
-    const encodedHeader = base64url(JSON.stringify(header));
-    const encodedPayload = base64url(JSON.stringify(payload));
-    const signingInput = `${encodedHeader}.${encodedPayload}`;
-    const signer = crypto.createSign("RSA-SHA256");
-    signer.update(signingInput);
-    signer.end();
-    const signature = signer.sign(sa.private_key);
-    const assertion = `${signingInput}.${base64url(signature)}`;
-    let res;
-    try {
-      res = await axios.post(
-        sa.token_uri,
-        new URLSearchParams({
-          grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-          assertion,
-        }),
-        { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
-      );
-    } catch (error: any) {
-      const detail = describeGoogleApiError(
-        error,
-        "Failed to obtain Google access token",
-      );
-      logger.error("Google access token request failed", {
-        clientEmail: sa.client_email,
-        tokenUri: sa.token_uri,
-        status: error?.response?.status,
-        detail,
-      });
-      // invalid_grant / invalid_client almost always means the service-account
-      // key was rotated, disabled, or deleted. Surface that explicitly instead
-      // of the opaque "Request failed with status code 400".
-      throw new Error(
-        `Google authentication failed for service account "${sa.client_email}": ${detail}. ` +
-          `The service-account key may have been rotated, disabled, or deleted — update this connection's service_account_json with a current key.`,
-        { cause: error },
-      );
-    }
-    const token = res.data.access_token as string;
-    const expiresInSec = Number(res.data.expires_in || 3600);
-    // Refresh a bit early by setting the stored expiry slightly before real expiry
-    const expiresAtMs = Date.now() + Math.max(60, expiresInSec - 60) * 1000;
-    return { token, expiresAtMs };
-  }
-
-  private normalizeQueryFields(
-    fields: any[] | undefined,
-    rows: Array<Record<string, unknown>>,
-  ): Array<{ name: string; type?: string }> {
-    if (Array.isArray(fields) && fields.length > 0) {
-      return fields
-        .map(field => {
-          if (typeof field === "string") {
-            return { name: field };
-          }
-
-          const name =
-            field?.name || field?.columnName || field?.originalName || "";
-          if (!name) {
-            return null;
-          }
-
-          const type =
-            field?.type ||
-            field?.dataType ||
-            field?.columnType ||
-            (typeof field?.dataTypeID === "number"
-              ? mapPostgresOidToType(field.dataTypeID)
-              : undefined);
-          return {
-            name: String(name),
-            type: type ? String(type) : undefined,
-          };
-        })
-        .filter(
-          (field): field is { name: string; type?: string } => field !== null,
-        );
-    }
-
-    return inferFieldsFromRows(rows);
-  }
-
-  private bqSchemaToFields(
-    schema: any,
-    rows: Array<Record<string, unknown>>,
-  ): Array<{ name: string; type?: string }> {
-    const schemaFields = Array.isArray(schema?.fields) ? schema.fields : [];
-    if (schemaFields.length === 0) {
-      return inferFieldsFromRows(rows);
-    }
-
-    return schemaFields
-      .map((field: any) => {
-        const name = field?.name ? String(field.name) : "";
-        if (!name) {
-          return null;
-        }
-        return {
-          name,
-          type: field?.type ? String(field.type) : undefined,
-        };
-      })
-      .filter(
-        (
-          field: { name: string; type?: string } | null,
-        ): field is { name: string; type?: string } => field !== null,
-      );
-  }
-
-  private bqMapRowsToObjects(rows: any[], schema: any): any[] {
-    const fields = (schema?.fields || []) as Array<any>;
-    return (rows || []).map(r => this.bqMapRow(r, fields));
-  }
-
-  private bqMapRow(row: any, fields: Array<any>): any {
-    const obj: Record<string, any> = {};
-    const cells: any[] = Array.isArray(row?.f) ? row.f : [];
-    for (let i = 0; i < fields.length; i++) {
-      const field = fields[i];
-      const cell = cells[i]?.v;
-      obj[field.name] = this.bqParseCellValue(cell, field);
-    }
-    return obj;
-  }
-
-  private bqParseCellValue(value: any, field: any): any {
-    if (value === null || value === undefined) return null;
-    const mode = String(field?.mode || "").toUpperCase();
-    const type = String(field?.type || "").toUpperCase();
-    if (mode === "REPEATED") {
-      const arr: any[] = Array.isArray(value) ? value : [];
-      return arr.map(v =>
-        this.bqParseCellValue(v?.v ?? v, { ...field, mode: undefined }),
-      );
-    }
-    switch (type) {
-      case "RECORD":
-        return this.bqMapRow(value, field.fields || []);
-      case "INTEGER":
-      case "INT64":
-      case "FLOAT":
-      case "FLOAT64":
-      case "NUMERIC":
-      case "BIGNUMERIC":
-        return value === "" ? null : Number(value);
-      case "BOOLEAN":
-      case "BOOL":
-        return value === true || value === "true";
-      case "TIMESTAMP": {
-        if (value === "") return null;
-        // BigQuery REST API returns TIMESTAMP as epoch-seconds float (e.g. "1.677123456E9").
-        // Convert to ISO 8601 string for human-readable display.
-        const num = Number(value);
-        if (!isNaN(num)) {
-          return new Date(num * 1000)
-            .toISOString()
-            .replace("T", " ")
-            .replace("Z", " UTC");
-        }
-        return value;
-      }
-      case "DATETIME": {
-        // DATETIME has no timezone in BigQuery; value is already a string like "2025-01-01 20:45:28".
-        return value;
-      }
-      default:
-        return value;
-    }
-  }
-
-  private async createMongoConnection(
-    context: ConnectionContext,
-    identifier: string,
-    config: ConnectionConfig,
-    customOptions?: MongoClientOptions,
-  ): Promise<{ client: MongoClient; db: Db }> {
-    const key = this.getMongoConnectionKey(context, identifier);
-    logger.info("Creating pooled MongoDB connection", { key });
-
-    // Merge options
-    const options = { ...this.defaultMongoOptions, ...customOptions };
-
-    // Create client
-    const client = new MongoClient(config.connectionString, options);
-    await client.connect();
-
-    // Handle database name extraction
-    const databaseName = config.database;
-
-    const db = client.db(databaseName);
-
-    // Store in pool
-    const pooledConnection: PooledConnection = {
-      client,
-      db,
-      lastUsed: new Date(),
-      context,
-      identifier,
-    };
-    this.mongoConnections.set(key, pooledConnection);
-
-    // Set up monitoring. Each handler only drops the entry while it still
-    // points at THIS client: an old, replaced client closing late must not
-    // evict (and so orphan) the live one that took its key.
-    const forget = () => this.forgetMongoClient(key, client);
-    client.on("close", () => {
-      logger.info("MongoDB connection closed", { key });
-      forget();
-    });
-
-    client.on("error", error => {
-      logger.error("MongoDB connection error", { key, error });
-      if (forget()) {
-        client.close().catch(() => undefined);
-      }
-    });
-
-    client.on("topologyClosed", () => {
-      logger.info("MongoDB topology closed", { key });
-      forget();
-    });
-
-    logger.info("MongoDB connected", { key });
-    return { client, db };
-  }
-
-  /**
-   * Drop the pool entry for `key` if (and only if) it holds `client`.
-   * Returns whether it did.
-   */
-  private forgetMongoClient(key: string, client: MongoClient): boolean {
-    if (this.mongoConnections.get(key)?.client !== client) return false;
-    this.mongoConnections.delete(key);
-    return true;
-  }
-
-  private getMongoConnectionKey(
-    context: ConnectionContext,
-    identifier: string,
-  ): string {
-    return `${context}:${identifier}`;
-  }
-
-  private async cleanupIdleMongoConnections(): Promise<void> {
-    const now = new Date();
-    const toRemove: string[] = [];
-
-    for (const [key, connection] of this.mongoConnections.entries()) {
-      const idleTime = now.getTime() - connection.lastUsed.getTime();
-      if (idleTime > this.userDatabaseMaxIdleTime) {
-        toRemove.push(key);
-      }
-    }
-
-    for (const key of toRemove) {
-      const connection = this.mongoConnections.get(key);
-      if (connection) {
-        // Re-check lastUsed to avoid closing a connection that was used between passes
-        // This prevents race conditions where getMongoConnection updates lastUsed
-        // after the key was added to toRemove but before we close it
-        const idleTime = now.getTime() - connection.lastUsed.getTime();
-        if (idleTime <= this.userDatabaseMaxIdleTime) {
-          continue; // Connection was used recently, skip closing
-        }
-        // Delete BEFORE closing, so a request arriving meanwhile connects
-        // afresh, and a delete after the await cannot evict that new entry.
-        this.forgetMongoClient(key, connection.client);
-        try {
-          await connection.client.close();
-          logger.info("Closed idle MongoDB connection", { key });
-        } catch (error) {
-          logger.error("Error closing idle MongoDB connection", { key, error });
-        }
-      }
-    }
-  }
-
-  private async closeMongoConnection(
-    context: ConnectionContext,
-    identifier: string,
-  ): Promise<void> {
-    await this.closeMongoConnectionByKey(
-      this.getMongoConnectionKey(context, identifier),
-    );
-  }
-
-  /**
-   * Close the pooled client for `key` and any client still connecting for
-   * it (that one is closed once its connect settles, so it never lands in
-   * the pool with the configuration this call is retiring).
-   */
-  private async closeMongoConnectionByKey(key: string): Promise<void> {
-    const connecting = this.mongoConnecting.get(key);
-    if (connecting) {
-      this.mongoConnecting.delete(key);
-      try {
-        const { client } = await connecting;
-        this.forgetMongoClient(key, client);
-        await client.close();
-      } catch {
-        // A failed connect left nothing to close.
-      }
-    }
-
-    const connection = this.mongoConnections.get(key);
-    if (connection) {
-      this.forgetMongoClient(key, connection.client);
-      try {
-        await connection.client.close();
-        logger.info("Closed MongoDB connection", { key });
-      } catch (error) {
-        logger.error("Error closing MongoDB connection", { key, error });
-      }
-    }
-  }
-
-  // Utility methods
-  private extractDatabaseName(connectionString: string): string | null {
-    try {
-      const url = new URL(connectionString);
-      const pathname = url.pathname;
-      if (pathname && pathname.length > 1) {
-        return pathname.substring(1).split("?")[0];
-      }
-    } catch {
-      // Invalid URL
-    }
-    return null;
-  }
-
-  // Convenience methods for MongoDB connections
-  /**
-   * Get connection for main application database
-   */
-  async getMainConnection(): Promise<{ client: MongoClient; db: Db }> {
-    const connectionString = process.env.DATABASE_URL;
-    const databaseName =
-      process.env.DATABASE_NAME ||
-      this.extractDatabaseName(connectionString ?? "") ||
-      "mako";
-
-    if (!connectionString) {
-      throw new Error("DATABASE_URL environment variable is not set");
-    }
-
-    const connection = await this.getMongoConnection("main", "app", {
-      connectionString,
-      database: databaseName,
-    });
-
-    // Wrap the database for automatic usage tracking
-    const key = this.getMongoConnectionKey("main", "app");
-    const wrappedDb = this.wrapDatabaseWithUsageTracking(connection.db, key);
-    return { client: connection.client, db: wrappedDb };
-  }
-
-  /**
-   * Get connection by database ID (for destinations/datasources)
-   */
-  async getConnectionById(
-    context: ConnectionContext,
-    databaseId: string,
-    lookupFn: (id: string) => Promise<ConnectionConfig | null>,
-  ): Promise<{ client: MongoClient; db: Db }> {
-    // Try to get from pool first
-    const key = this.getMongoConnectionKey(context, databaseId);
-    const existing = this.mongoConnections.get(key);
-    if (existing) {
-      try {
-        await existing.client.db("admin").command({ ping: 1 });
-        existing.lastUsed = new Date();
-
-        // Return wrapped database for automatic usage tracking
-        const wrappedDb = this.wrapDatabaseWithUsageTracking(existing.db, key);
-        return { client: existing.client, db: wrappedDb };
-      } catch {
-        // Continue to recreate
-      }
-    }
-
-    // Lookup configuration
-    const config = await lookupFn(databaseId);
-    if (!config) {
-      throw new Error(`Database '${databaseId}' not found`);
-    }
-
-    const connection = await this.getMongoConnection(
-      context,
-      databaseId,
-      config,
-    );
-
-    // Wrap the database for automatic usage tracking
-    const wrappedDb = this.wrapDatabaseWithUsageTracking(connection.db, key);
-    return { client: connection.client, db: wrappedDb };
-  }
-
-  /**
-   * Update the last used time for a connection to keep it alive
-   */
-  updateConnectionLastUsed(
-    context: ConnectionContext,
-    identifier: string,
-  ): void {
-    const key = this.getMongoConnectionKey(context, identifier);
-    const connection = this.mongoConnections.get(key);
-    if (connection) {
-      connection.lastUsed = new Date();
-    }
-  }
-
-  /**
-   * Wrap a MongoDB database object with automatic usage tracking
-   * Every time the database is used, it updates the connection's lastUsed timestamp
-   */
-  private wrapDatabaseWithUsageTracking(db: Db, connectionKey: string): Db {
-    return new Proxy(db, {
-      get: (target, prop, receiver) => {
-        // Update lastUsed timestamp whenever any database operation is accessed
-        const connection = this.mongoConnections.get(connectionKey);
-        if (connection) {
-          connection.lastUsed = new Date();
-        }
-
-        // Return the original property/method
-        return Reflect.get(target, prop, receiver);
-      },
-    });
-  }
-
-  // MongoDB specific methods
-  private async testMongoDBConnection(
-    database: IDatabaseConnection,
-  ): Promise<{ success: boolean; error?: string }> {
-    // A throwaway client, closed after: a test is often of an unsaved
-    // candidate (random _id), and pooling it would park a live client under
-    // a key nothing ever uses again for the 15-minute idle window. It also
-    // tests the configuration given, not a pooled client built from an
-    // older one.
-    let client: MongoClient | undefined;
-    try {
-      const connectionString = this.buildMongoDBConnectionString(database);
-      client = new MongoClient(connectionString, {
-        ...this.defaultMongoOptions,
-        maxPoolSize: 1,
-      });
-      await client.connect();
-      await client.db("admin").command({ ping: 1 });
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "MongoDB connection failed",
-      };
-    } finally {
-      await client?.close().catch(() => undefined);
-    }
-  }
-
-  private buildMongoDBConnectionString(database: IDatabaseConnection): string {
-    const conn = database.connection;
-
-    // If connection string is provided, use it directly
-    if (conn.connectionString) {
-      return conn.connectionString;
-    }
-
-    // Build connection string from individual parameters
-    let connectionString = "mongodb://";
-
-    if (conn.username && conn.password) {
-      connectionString += `${encodeURIComponent(conn.username)}:${encodeURIComponent(conn.password)}@`;
-    }
-
-    connectionString += `${conn.host || "localhost"}:${conn.port || 27017}`;
-
-    if (conn.database) {
-      connectionString += `/${conn.database}`;
-    }
-
-    const params: string[] = [];
-
-    if (conn.authSource) {
-      params.push(`authSource=${conn.authSource}`);
-    }
-
-    if (conn.replicaSet) {
-      params.push(`replicaSet=${conn.replicaSet}`);
-    }
-
-    if (conn.ssl) {
-      params.push("ssl=true");
-    }
-
-    if (params.length > 0) {
-      connectionString += `?${params.join("&")}`;
-    }
-
-    return connectionString;
-  }
-
-  private async executeMongoDBQuery(
-    database: IDatabaseConnection,
-    query: any,
-    options?: QueryExecuteOptions,
-  ): Promise<QueryResult> {
-    const client = (await this.getConnection(database)) as MongoClient;
-    // Use database from options or fallback to connection default
-    const dbName = options?.databaseName || database.connection.database;
-    const db = client.db(dbName);
-
-    const executionId = options?.executionId;
-    let abortController: AbortController | undefined;
-    let session: ClientSession | undefined;
-
-    // Track this query for cancellation if executionId is provided
-    if (executionId) {
-      abortController = new AbortController();
-      session = client.startSession();
-      this.runningMongoQueries.set(executionId, {
-        database,
-        client,
-        abortController,
-        session,
-      });
-    }
-    // The caller's signal stops the await too, with or without an
-    // executionId (and, with one, runs the same session kill as cancelQuery).
-    const callerSignal = options?.signal;
-    const onCallerAbort = () => {
-      if (executionId && this.runningMongoQueries.has(executionId)) {
-        void this.cancelMongoDBQuery(executionId);
-      } else {
-        abortController?.abort();
-      }
-    };
-    if (callerSignal) {
-      abortController ??= new AbortController();
-      if (callerSignal.aborted) {
-        abortController.abort();
-      } else {
-        callerSignal.addEventListener("abort", onCallerAbort, { once: true });
-      }
-    }
-
-    try {
-      // Check if aborted before starting
-      if (abortController?.signal.aborted) {
-        return { success: false, error: "Query cancelled" };
-      }
-
-      // Handle different MongoDB operations
-      if (typeof query === "string") {
-        // Parse JavaScript-style query
-        const { data, truncated } = await this.executeMongoDBJavaScriptQuery(
-          db,
-          query,
-          abortController?.signal,
-          options?.maxRows,
-        );
-        return truncated
-          ? {
-              success: true,
-              data,
-              truncated: true,
-              rowCount: Array.isArray(data) ? data.length : undefined,
-            }
-          : { success: true, data };
-      } else if (query.collection && query.operation) {
-        // Handle structured query
-        const collection = db.collection(query.collection);
-        let result: any;
-
-        // Helper to race a promise against abort signal for cancellation support
-        const raceWithAbort = async <T>(promise: Promise<T>): Promise<T> => {
-          if (!abortController?.signal) return promise;
-          const signal = abortController.signal;
-          return Promise.race([
-            promise,
-            new Promise<never>((_, reject) => {
-              if (signal.aborted) {
-                reject(new Error("Query cancelled"));
-              }
-              signal.addEventListener(
-                "abort",
-                () => {
-                  reject(new Error("Query cancelled"));
-                },
-                { once: true },
-              );
-            }),
-          ]);
-        };
-
-        // A row cap reads one row past it, so the caller knows it cut.
-        const capRead =
-          options?.maxRows !== undefined ? options.maxRows + 1 : undefined;
-        switch (query.operation) {
-          case "find": {
-            const findOptions = { ...(query.options || {}) };
-            if (
-              capRead !== undefined &&
-              !(findOptions.limit > 0 && findOptions.limit <= capRead)
-            ) {
-              findOptions.limit = capRead;
-            }
-            result = await raceWithAbort(
-              collection.find(query.filter || {}, findOptions).toArray(),
-            );
-            break;
-          }
-          case "findOne":
-            result = await raceWithAbort(
-              collection.findOne(query.filter || {}, query.options || {}),
-            );
-            break;
-          case "aggregate": {
-            const pipeline: Record<string, unknown>[] = [
-              ...(query.pipeline || []),
-            ];
-            const last = pipeline[pipeline.length - 1];
-            if (
-              capRead !== undefined &&
-              !(last && ("$out" in last || "$merge" in last))
-            ) {
-              pipeline.push({ $limit: capRead });
-            }
-            result = await raceWithAbort(
-              collection.aggregate(pipeline, query.options || {}).toArray(),
-            );
-            break;
-          }
-          case "insertMany":
-            result = await raceWithAbort(
-              collection.insertMany(query.documents || [], query.options || {}),
-            );
-            break;
-          case "updateMany":
-            result = await raceWithAbort(
-              collection.updateMany(
-                query.filter || {},
-                query.update || {},
-                query.options || {},
-              ),
-            );
-            break;
-          case "deleteMany":
-            result = await raceWithAbort(
-              collection.deleteMany(query.filter || {}, query.options || {}),
-            );
-            break;
-          case "updateOne":
-            result = await raceWithAbort(
-              collection.updateOne(
-                query.filter || {},
-                query.update || {},
-                query.options || {},
-              ),
-            );
-            break;
-          case "deleteOne":
-            result = await raceWithAbort(
-              collection.deleteOne(query.filter || {}, query.options || {}),
-            );
-            break;
-          default:
-            return {
-              success: false,
-              error: `Unsupported MongoDB operation: ${query.operation}`,
-            };
-        }
-
-        return { success: true, data: result };
-      } else {
-        return { success: false, error: "Invalid MongoDB query format" };
-      }
-    } catch (error) {
-      // Check if this was a cancellation
-      if (
-        error instanceof Error &&
-        (error.message.includes("cancelled") ||
-          error.message.includes("aborted") ||
-          error.name === "AbortError")
-      ) {
-        return { success: false, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "MongoDB query failed",
-      };
-    } finally {
-      callerSignal?.removeEventListener("abort", onCallerAbort);
-      // Clean up tracking and end session
-      if (executionId) {
-        this.runningMongoQueries.delete(executionId);
-      }
-      if (session) {
-        try {
-          await session.endSession();
-        } catch {
-          // Ignore errors when ending session
-        }
-      }
-    }
-  }
-
-  private async executeMongoDBJavaScriptQuery(
-    db: Db,
-    query: string,
-    signal?: AbortSignal,
-    maxRows?: number,
-  ): Promise<{ data: unknown; truncated: boolean }> {
-    logger.debug("Executing MongoDB query", { query: query.substring(0, 200) });
-
-    // Check if already aborted
-    if (signal?.aborted) {
-      throw new Error("Query cancelled");
-    }
-
-    // Interpreted, never evaluated: the query is parsed and only `db` chains,
-    // literals and the shell's value helpers run (mongo-shell-interpreter.ts).
-    // A write method runs only if the query was classified as a write, and
-    // so went through checkConnectionWrite in executeQuery.
-    try {
-      const { value: finalResult, truncated } = await runMongoShellQuery(
-        db,
-        query,
-        {
-          allowWrites: isWrite("mongodb", query),
-          signal,
-          maxRows,
-        },
-      );
-
-      logger.debug("Final result info", {
-        type: typeof finalResult,
-        isArray: Array.isArray(finalResult),
-        length: Array.isArray(finalResult) ? finalResult.length : undefined,
-        truncated,
-      });
-
-      // Ensure the result can be safely serialized to JSON (avoid circular refs)
-      const getCircularReplacer = () => {
-        const seen = new WeakSet();
-        return (_key: string, value: any) => {
-          // Handle BigInt explicitly (convert to string)
-          if (typeof value === "bigint") return value.toString();
-
-          if (typeof value === "object" && value !== null) {
-            // Replace common MongoDB driver objects with descriptive strings
-            const ctor = value.constructor?.name;
-            if (
-              ctor === "Collection" ||
-              ctor === "Db" ||
-              ctor === "MongoClient" ||
-              ctor === "Cursor" ||
-              ctor === "AggregationCursor" ||
-              ctor === "FindCursor"
-            ) {
-              // Provide minimal useful info instead of the full object
-              if (ctor === "Collection") {
-                return {
-                  _type: "Collection",
-                  name: (value as any).collectionName,
-                };
-              }
-              return `[${ctor}]`;
-            }
-
-            // Handle circular structures
-            if (seen.has(value)) {
-              return "[Circular]";
-            }
-            seen.add(value);
-          }
-          return value;
-        };
-      };
-
-      let serializedResult: any;
-      try {
-        serializedResult = JSON.parse(
-          JSON.stringify(finalResult, getCircularReplacer()),
-        );
-      } catch (e) {
-        logger.warn(
-          "Failed to serialize result, falling back to string representation",
-          { error: e },
-        );
-        serializedResult = String(finalResult);
-      }
-
-      return { data: serializedResult, truncated };
-    } catch (error) {
-      // A refused query (MongoShellError) is the user's to fix, and a
-      // cancellation is expected: neither is a server error.
-      if (error instanceof MongoShellError) {
-        logger.info("Refused a MongoDB shell query", { error: error.message });
-        throw error;
-      }
-      const isCancellation =
-        error instanceof Error &&
-        (error.message.includes("cancelled") ||
-          error.message.includes("aborted") ||
-          error.name === "AbortError");
-      if (!isCancellation) {
-        logger.error("Error in executeMongoDBJavaScriptQuery", { error });
-      }
-      throw error;
-    }
-  }
-
-  // PostgreSQL specific methods
-
-  // PostgreSQL connection pools with lastUsed tracking (keyed by databaseId:databaseName)
-  private postgresPools: Map<string, { pool: PgPool; lastUsed: Date }> =
-    new Map();
-
-  // MySQL connection pools with lastUsed tracking (keyed by databaseId:databaseName)
-  private mysqlPools: Map<string, { pool: mysql.Pool; lastUsed: Date }> =
-    new Map();
-
-  /**
-   * Build PostgreSQL pool/client configuration with timeout settings
-   * Supports both connection string and individual fields
-   */
-  private buildPostgreSQLConfig(
-    database: IDatabaseConnection,
-    targetDatabase?: string,
-  ) {
-    const conn = database.connection;
-    const baseConfig = {
-      connectionTimeoutMillis: this.postgresConnectionTimeoutMs,
-      query_timeout: this.postgresQueryTimeoutMs,
-      statement_timeout: this.postgresQueryTimeoutMs,
-    };
-
-    // If connection string is provided, use it directly
-    if (conn.connectionString) {
-      let connectionString = conn.connectionString;
-
-      // If a target database is specified, we need to modify the connection string
-      if (targetDatabase) {
-        try {
-          const url = new URL(connectionString);
-          url.pathname = `/${targetDatabase}`;
-          connectionString = url.toString();
-        } catch {
-          // If URL parsing fails, just use the original connection string
-        }
-      }
-
-      return {
-        connectionString,
-        ssl: conn.ssl ? { rejectUnauthorized: false } : undefined,
-        ...baseConfig,
-      };
-    }
-
-    // Build from individual fields (Redshift default port 5439)
-    const defaultPort = database.type === "redshift" ? 5439 : 5432;
-    return {
-      host: conn.host,
-      port: conn.port ?? defaultPort,
-      database: targetDatabase || conn.database,
-      user: conn.username,
-      password: conn.password,
-      ssl: conn.ssl ? { rejectUnauthorized: false } : false,
-      ...baseConfig,
-    };
-  }
-
-  /**
-   * Get or create a PostgreSQL connection pool for the given database
-   * Uses lazy initialization with aggressive cleanup to minimize memory usage
-   */
-  private async getPostgresPool(
-    database: IDatabaseConnection,
-    targetDatabase?: string,
-  ): Promise<PgPool> {
-    // Use empty string when no database specified to avoid collision with a database literally named "default".
-    // Empty string is not a valid PostgreSQL database name (must start with letter or underscore),
-    // so there's no risk of collision with an actual database name.
-    const dbName = targetDatabase || database.connection.database || "";
-    const key = `${database._id.toString()}:${dbName}`;
-
-    const existing = this.postgresPools.get(key);
-    if (existing) {
-      // Update lastUsed timestamp to keep the pool alive during active use
-      existing.lastUsed = new Date();
-      return existing.pool;
-    }
-
-    const config = this.buildPostgreSQLConfig(database, targetDatabase);
-
-    // Create pool with settings optimized for Cloud Run / serverless:
-    // - min: 0 = no idle connections when unused (saves memory)
-    // - max: 2 = limit concurrent connections per database
-    // - idleTimeoutMillis: 10000 = close idle connections after 10s (pg default)
-    // - maxLifetimeSeconds: 1800 = max 30 min connection lifetime
-    // - keepAlive: true = enable TCP keepalive probes
-    // - keepAliveInitialDelayMillis: 30000 = start keepalive after 30s idle
-    const pool = new PgPool({
-      ...config,
-      min: 0,
-      max: 2,
-      idleTimeoutMillis: 10000,
-      maxLifetimeSeconds: 1800,
-      keepAlive: true,
-      keepAliveInitialDelayMillis: 30000,
-    });
-
-    // Handle pool errors to prevent crashes and clean up stale pools
-    pool.on("error", err => {
-      logger.error("PostgreSQL pool error", { key, error: err.message });
-      // Only remove from map if this is still the active pool for this key.
-      // If this pool was already replaced (e.g., by cleanup + new request),
-      // unconditionally deleting would orphan the new pool and leak connections.
-      const entry = this.postgresPools.get(key);
-      if (entry?.pool === pool) {
-        this.postgresPools.delete(key);
-      }
-      pool.end().catch(endErr => {
-        logger.error("Error closing PostgreSQL pool after error", {
-          key,
-          error: endErr,
-        });
-      });
-    });
-
-    this.postgresPools.set(key, { pool, lastUsed: new Date() });
-    logger.debug("Created PostgreSQL pool", { key });
-
-    return pool;
-  }
-
-  /**
-   * Close a specific PostgreSQL pool
-   */
-  private async closePostgresPool(databaseId: string): Promise<void> {
-    // Find all pools for this database ID and collect them with their keys
-    const poolsToClose: Array<{ key: string; pool: PgPool }> = [];
-    for (const [key, { pool }] of this.postgresPools.entries()) {
-      if (key.startsWith(`${databaseId}:`)) {
-        poolsToClose.push({ key, pool });
-      }
-    }
-
-    // Delete all keys from map BEFORE closing pools to prevent race condition.
-    // If we delete after pool.end(), concurrent calls to getPostgresPool could
-    // retrieve the pool while it's being closed, causing pool.connect() to fail.
-    for (const { key } of poolsToClose) {
-      this.postgresPools.delete(key);
-    }
-
-    // Now close all pools (order doesn't matter for correctness anymore)
-    for (const { key, pool } of poolsToClose) {
-      try {
-        await pool.end();
-        logger.debug("Closed PostgreSQL pool", { key });
-      } catch (error) {
-        logger.error("Error closing PostgreSQL pool", { key, error });
-      }
-    }
-  }
-
-  /**
-   * Close all PostgreSQL pools
-   */
-  private async closeAllPostgresPools(): Promise<void> {
-    // Capture pools before clearing to avoid race condition.
-    // Clear map BEFORE closing pools so concurrent calls to getPostgresPool
-    // will create new pools instead of retrieving ones being closed.
-    const poolsToClose = Array.from(this.postgresPools.entries());
-    this.postgresPools.clear();
-
-    const promises = poolsToClose.map(async ([key, { pool }]) => {
-      try {
-        await pool.end();
-        logger.debug("Closed PostgreSQL pool", { key });
-      } catch (error) {
-        logger.error("Error closing PostgreSQL pool", { key, error });
-      }
-    });
-    await Promise.all(promises);
-  }
-
-  /**
-   * Clean up idle PostgreSQL pools that haven't been used recently
-   * Called periodically to free memory from unused pool objects
-   */
-  private async cleanupIdlePostgresPools(): Promise<void> {
-    const now = new Date();
-    const toRemove: string[] = [];
-
-    for (const [key, { lastUsed }] of this.postgresPools.entries()) {
-      const idleTime = now.getTime() - lastUsed.getTime();
-      if (idleTime > this.userDatabaseMaxIdleTime) {
-        toRemove.push(key);
-      }
-    }
-
-    for (const key of toRemove) {
-      const entry = this.postgresPools.get(key);
-      if (entry) {
-        // Re-check lastUsed to avoid closing a pool that was used between passes
-        // This prevents race conditions where getPostgresPool updates lastUsed
-        // after the key was added to toRemove but before we close it
-        const idleTime = now.getTime() - entry.lastUsed.getTime();
-        if (idleTime <= this.userDatabaseMaxIdleTime) {
-          continue; // Pool was used recently, skip closing
-        }
-        // IMPORTANT: Delete from map BEFORE calling pool.end() to prevent race condition.
-        // If we delete after, concurrent calls to getPostgresPool could retrieve
-        // the pool while it's being closed, causing pool.connect() to fail.
-        this.postgresPools.delete(key);
-        try {
-          await entry.pool.end();
-          logger.info("Closed idle PostgreSQL pool", { key });
-        } catch (error) {
-          logger.error("Error closing idle PostgreSQL pool", { key, error });
-        }
-      }
-    }
-  }
-
-  private async testPostgreSQLConnection(
-    database: IDatabaseConnection,
-  ): Promise<{ success: boolean; error?: string }> {
-    try {
-      const config = this.buildPostgreSQLConfig(database);
-
-      // Use retry logic to handle transient connection failures
-      // Use a temporary client for testing (not the pool)
-      await withRetry(
-        async () => {
-          const client = new PgClient(config);
-          try {
-            await client.connect();
-            await client.query("SELECT 1");
-          } finally {
-            await client.end();
-          }
-        },
-        {
-          maxRetries: this.postgresMaxRetries,
-          baseDelayMs: this.postgresRetryBaseDelayMs,
-        },
-      );
-
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "PostgreSQL connection failed",
-      };
-    }
-  }
-
-  /**
-   * Make a checked-out client's statements cancellable — by `executionId`
-   * (cancelQuery) and by `signal` on its own — via `pg_cancel_backend` on
-   * the client's backend pid (`client.processID`: no extra round trip).
-   *
-   * Returns the function that MUST replace `client.release()`: it
-   * unregisters, and when a cancel was sent it destroys the client instead
-   * of pooling it, so a cancel still in flight cannot land on whatever
-   * query that backend runs next.
-   */
-  private async trackPostgresQuery(
-    database: IDatabaseConnection,
-    client: PoolClient,
-    executionId?: string,
-    signal?: AbortSignal,
-  ): Promise<() => void> {
-    if (!executionId && !signal) return () => client.release();
-    const pid = await pgBackendPid(client);
-    if (!pid) return () => client.release();
-
-    const entry: {
-      database: IDatabaseConnection;
-      pid: number;
-      cancelled?: boolean;
-    } = { database, pid };
-    if (executionId) this.runningPostgresQueries.set(executionId, entry);
-    const onAbort = () => {
-      if (entry.cancelled) return;
-      entry.cancelled = true;
-      void this.cancelPostgresBackend(database, pid).then(result => {
-        if (!result.success) {
-          logger.warn("PostgreSQL cancel on abort failed", {
-            pid,
-            error: result.error,
-          });
-        }
-      });
-    };
-    if (signal) {
-      signal.addEventListener("abort", onAbort, { once: true });
-      if (signal.aborted) onAbort();
-    }
-    return () => {
-      signal?.removeEventListener("abort", onAbort);
-      if (
-        executionId &&
-        this.runningPostgresQueries.get(executionId) === entry
-      ) {
-        this.runningPostgresQueries.delete(executionId);
-      }
-      client.release(entry.cancelled ? true : undefined);
-    };
-  }
-
-  private async executePostgreSQLQuery(
-    database: IDatabaseConnection,
-    query: string,
-    options?: QueryExecuteOptions,
-  ): Promise<QueryResult> {
-    const executionId = options?.executionId;
-    const signal = options?.signal;
-
-    // Determine the target database: options override or connection default
-    const targetDatabase =
-      options?.databaseName || database.connection.database;
-
-    try {
-      // Check if already cancelled
-      if (signal?.aborted) {
-        return { success: false, error: "Query cancelled" };
-      }
-
-      // Get the pool for this database (creates one if needed)
-      const pool = await this.getPostgresPool(database, targetDatabase);
-
-      // Get a client from the pool for this query
-      // Use retry logic to handle transient connection failures and cold starts
-      // (pool is configured with min: 0, so connections may need to be established fresh)
-      const client = await withRetry(async () => pool.connect(), {
-        maxRetries: this.postgresMaxRetries,
-        baseDelayMs: this.postgresRetryBaseDelayMs,
-        signal,
-      });
-
-      let readOnlyTransactionStarted = false;
-      let release: (() => void) | undefined;
-      try {
-        // Cancellable by executionId (cancelQuery) and by the signal alone.
-        release = await this.trackPostgresQuery(
-          database,
-          client,
-          executionId,
-          signal,
-        );
-
-        // Check if already cancelled
-        if (signal?.aborted) {
-          return { success: false, error: "Query cancelled" };
-        }
-
-        let result: PgQueryResult;
-        if (options?.readOnly || options?.readOnlyTransaction) {
-          readOnlyTransactionStarted = true;
-          result = ownResult(
-            (await client.query(inReadOnlyTransaction(query))) as
-              PgQueryResult | PgQueryResult[],
-          );
-          readOnlyTransactionStarted = false;
-        } else {
-          result = await client.query(query);
-        }
-        const fields = normalizePostgresFields(result.fields);
-        const rows = normalizePostgresRows(
-          result.rows as Record<string, unknown>[],
-          fields,
-        );
-        return {
-          success: true,
-          data: rows,
-          rowCount: result.rowCount ?? undefined,
-          fields,
-        };
-      } finally {
-        if (readOnlyTransactionStarted) {
-          await client.query("ROLLBACK").catch(() => undefined);
-        }
-        // Always release the client back to the pool
-        if (release) release();
-        else client.release();
-      }
-    } catch (error: any) {
-      if (error?.message?.includes("canceling statement")) {
-        return { success: false, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "PostgreSQL query failed",
-      };
-    }
-  }
-
-  // MySQL specific methods
-
-  /**
-   * Build an SshTunnelConfig from the saved connection, or null when SSH is disabled.
-   * Throws on invalid/incomplete configuration so callers get a clear error.
-   */
-  private buildSshTunnelConfig(
-    database: IDatabaseConnection,
-    tunnelKey: string,
-  ): SshTunnelConfig | null {
-    const tunnel = database.connection.sshTunnel;
-    if (!tunnel?.enabled) return null;
-
-    if (!tunnel.host) {
-      throw new Error("SSH tunnel host is required");
-    }
-    if (!tunnel.username) {
-      throw new Error("SSH tunnel username is required");
-    }
-    const authMethod = tunnel.authMethod || "password";
-    if (authMethod === "password" && !tunnel.password) {
-      throw new Error(
-        "SSH tunnel password is required when using password auth",
-      );
-    }
-    if (authMethod === "privateKey" && !tunnel.privateKey) {
-      throw new Error("SSH private key is required when using key auth");
-    }
-
-    // Strip port suffix from host fields if the user accidentally entered host:port
-    const parseHost = (
-      raw: string,
-    ): { host: string; port: number | undefined } => {
-      // Bracketed IPv6: [::1]:3306
-      const bracketMatch = raw.match(/^\[([^\]]+)\](?::(\d+))?$/);
-      if (bracketMatch) {
-        return {
-          host: bracketMatch[1],
-          port: bracketMatch[2] ? Number(bracketMatch[2]) : undefined,
-        };
-      }
-      // Non-bracketed host:port — use lastIndexOf so IPv4 like 127.0.0.1:22 works
-      const lastColon = raw.lastIndexOf(":");
-      if (lastColon > 0) {
-        const maybePart = raw.slice(lastColon + 1);
-        if (/^\d+$/.test(maybePart)) {
-          return { host: raw.slice(0, lastColon), port: Number(maybePart) };
-        }
-      }
-      return { host: raw, port: undefined };
-    };
-
-    const rawRemote = parseHost(database.connection.host || "127.0.0.1");
-    const remoteHost = rawRemote.host;
-    const remotePort = database.connection.port || rawRemote.port || 3306;
-
-    const rawSsh = parseHost(tunnel.host);
-    const sshHost = rawSsh.host;
-    const sshPort = tunnel.port ?? rawSsh.port ?? 22;
-
-    return {
-      key: tunnelKey,
-      sshHost,
-      sshPort,
-      sshUsername: tunnel.username,
-      authMethod,
-      sshPassword: tunnel.password,
-      privateKey: tunnel.privateKey,
-      passphrase: tunnel.passphrase,
-      remoteHost,
-      remotePort,
-    };
-  }
-
-  private buildMySQLConfig(
-    database: IDatabaseConnection,
-    targetDatabase?: string,
-    tunnelEndpoint?: { host: string; port: number },
-  ) {
-    const conn = database.connection;
-    const baseConfig = {
-      connectTimeout: this.mysqlConnectionTimeoutMs,
-    };
-
-    if (conn.connectionString) {
-      try {
-        let urlString = conn.connectionString;
-        if (!urlString.startsWith("mysql://")) {
-          urlString = `mysql://${urlString}`;
-        }
-        const url = new URL(urlString);
-        if (targetDatabase) {
-          url.pathname = `/${targetDatabase}`;
-        }
-
-        const sslParam = url.searchParams.get("ssl");
-        const sslMode = url.searchParams.get("sslmode");
-        const ssl =
-          conn.ssl ||
-          sslParam === "true" ||
-          sslParam === "1" ||
-          sslMode === "require" ||
-          sslMode === "verify-ca" ||
-          sslMode === "verify-full" ||
-          sslMode === "prefer";
-
-        return {
-          host: tunnelEndpoint?.host ?? (url.hostname || undefined),
-          port:
-            tunnelEndpoint?.port ??
-            (url.port ? Number.parseInt(url.port, 10) : 3306),
-          database: url.pathname.slice(1)
-            ? decodeURIComponent(url.pathname.slice(1))
-            : undefined,
-          user: url.username ? decodeURIComponent(url.username) : undefined,
-          password: url.password ? decodeURIComponent(url.password) : undefined,
-          ssl: ssl ? { rejectUnauthorized: false } : undefined,
-          ...baseConfig,
-        };
-      } catch (error) {
-        logger.warn("Failed to parse MySQL connection string", { error });
-      }
-    }
-
-    let host = conn.host;
-    let port = conn.port || 3306;
-    if (host && host.includes(":")) {
-      const idx = host.lastIndexOf(":");
-      const maybePart = host.slice(idx + 1);
-      if (/^\d+$/.test(maybePart)) {
-        port = conn.port || Number(maybePart);
-        host = host.slice(0, idx);
-      }
-    }
-
-    return {
-      host: tunnelEndpoint?.host ?? host,
-      port: tunnelEndpoint?.port ?? port,
-      database: targetDatabase || conn.database,
-      user: conn.username,
-      password: conn.password,
-      ssl: conn.ssl ? { rejectUnauthorized: false } : undefined,
-      ...baseConfig,
-    };
-  }
-
-  private async getMySQLPool(
-    database: IDatabaseConnection,
-    targetDatabase?: string,
-  ): Promise<mysql.Pool> {
-    const dbName = targetDatabase || database.connection.database || "";
-    const key = `${database._id.toString()}:${dbName}`;
-
-    const existing = this.mysqlPools.get(key);
-    if (existing) {
-      existing.lastUsed = new Date();
-      return existing.pool;
-    }
-
-    const tunnelCfg = this.buildSshTunnelConfig(database, key);
-    const tunnelEndpoint = tunnelCfg
-      ? await sshTunnelManager.openTunnel(tunnelCfg)
-      : undefined;
-
-    const config = this.buildMySQLConfig(
-      database,
-      targetDatabase,
-      tunnelEndpoint,
-    );
-    const pool = mysql.createPool({
-      ...config,
-      waitForConnections: true,
-      connectionLimit: 2,
-      maxIdle: 2,
-      idleTimeout: 10000,
-      enableKeepAlive: true,
-      keepAliveInitialDelay: 30000,
-    });
-
-    pool.on("connection", connection => {
-      connection.on("error", err => {
-        logger.error("MySQL pool connection error", {
-          key,
-          error: err instanceof Error ? err.message : err,
-        });
-        const entry = this.mysqlPools.get(key);
-        if (entry?.pool === pool) {
-          this.mysqlPools.delete(key);
-        }
-        pool.end().catch(endErr => {
-          logger.error("Error closing MySQL pool after error", {
-            key,
-            error: endErr,
-          });
-        });
-        sshTunnelManager.closeTunnel(key).catch(() => {});
-      });
-    });
-
-    this.mysqlPools.set(key, { pool, lastUsed: new Date() });
-    logger.debug("Created MySQL pool", { key });
-    return pool;
-  }
-
-  private async closeMySQLPool(databaseId: string): Promise<void> {
-    const poolsToClose: Array<{ key: string; pool: mysql.Pool }> = [];
-    for (const [key, { pool }] of this.mysqlPools.entries()) {
-      if (key.startsWith(`${databaseId}:`)) {
-        poolsToClose.push({ key, pool });
-      }
-    }
-
-    for (const { key } of poolsToClose) {
-      this.mysqlPools.delete(key);
-    }
-
-    for (const { key, pool } of poolsToClose) {
-      try {
-        await pool.end();
-        logger.debug("Closed MySQL pool", { key });
-      } catch (error) {
-        logger.error("Error closing MySQL pool", { key, error });
-      }
-      await sshTunnelManager.closeTunnel(key).catch(err => {
-        logger.error("Error closing SSH tunnel for MySQL pool", {
-          key,
-          error: err,
-        });
-      });
-    }
-  }
-
-  private async closeAllMySQLPools(): Promise<void> {
-    const poolsToClose = Array.from(this.mysqlPools.entries());
-    this.mysqlPools.clear();
-
-    const promises = poolsToClose.map(async ([key, { pool }]) => {
-      try {
-        await pool.end();
-        logger.debug("Closed MySQL pool", { key });
-      } catch (error) {
-        logger.error("Error closing MySQL pool", { key, error });
-      }
-      await sshTunnelManager.closeTunnel(key).catch(() => {});
-    });
-    await Promise.all(promises);
-  }
-
-  private async cleanupIdleMySQLPools(): Promise<void> {
-    const now = new Date();
-    const toRemove: string[] = [];
-
-    for (const [key, { lastUsed }] of this.mysqlPools.entries()) {
-      const idleTime = now.getTime() - lastUsed.getTime();
-      if (idleTime > this.userDatabaseMaxIdleTime) {
-        toRemove.push(key);
-      }
-    }
-
-    for (const key of toRemove) {
-      const entry = this.mysqlPools.get(key);
-      if (entry) {
-        const idleTime = now.getTime() - entry.lastUsed.getTime();
-        if (idleTime <= this.userDatabaseMaxIdleTime) {
-          continue;
-        }
-        this.mysqlPools.delete(key);
-        try {
-          await entry.pool.end();
-          logger.info("Closed idle MySQL pool", { key });
-        } catch (error) {
-          logger.error("Error closing idle MySQL pool", { key, error });
-        }
-        await sshTunnelManager.closeTunnel(key).catch(() => {});
-      }
-    }
-  }
-
-  private async testMySQLConnection(
-    database: IDatabaseConnection,
-  ): Promise<{ success: boolean; error?: string }> {
-    const ephemeralKey = `test:${Date.now()}`;
-    let connection: mysql.Connection | null = null;
-    try {
-      const tunnelCfg = this.buildSshTunnelConfig(database, ephemeralKey);
-      const tunnelEndpoint = tunnelCfg
-        ? await sshTunnelManager.openTunnel(tunnelCfg)
-        : undefined;
-
-      const config = this.buildMySQLConfig(database, undefined, tunnelEndpoint);
-      connection = await mysql.createConnection(config);
-      await connection.ping();
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "MySQL connection failed",
-      };
-    } finally {
-      if (connection) {
-        await connection.end();
-      }
-      await sshTunnelManager.closeTunnel(ephemeralKey).catch(() => {});
-    }
-  }
-
-  private normalizeMySQLValue(value: unknown): unknown {
-    if (Buffer.isBuffer(value)) {
-      const text = value.toString("utf8");
-      const trimmed = text.trim();
-      if (
-        (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
-        (trimmed.startsWith("[") && trimmed.endsWith("]"))
-      ) {
-        try {
-          return JSON.parse(trimmed);
-        } catch {
-          return text;
-        }
-      }
-      return text;
-    }
-
-    if (Array.isArray(value)) {
-      return value.map(item => this.normalizeMySQLValue(item));
-    }
-
-    // Handle Date objects before generic object check - mysql2 returns
-    // DATETIME, TIMESTAMP, and DATE columns as JavaScript Date objects.
-    // Date passes typeof === "object" but Object.entries() returns [] since
-    // Date has no enumerable own properties, which would convert dates to {}.
-    if (value instanceof Date) {
-      return value.toISOString();
-    }
-
-    if (value && typeof value === "object") {
-      const record = value as Record<string, unknown>;
-      const normalized: Record<string, unknown> = {};
-      for (const [key, entry] of Object.entries(record)) {
-        normalized[key] = this.normalizeMySQLValue(entry);
-      }
-      return normalized;
-    }
-
-    return value;
-  }
-
-  private async executeMySQLQuery(
-    database: IDatabaseConnection,
-    query: string,
-    options?: QueryExecuteOptions,
-  ): Promise<QueryResult> {
-    const signal = options?.signal;
-    const targetDatabase =
-      options?.databaseName || database.connection.database;
-
-    try {
-      if (signal?.aborted) {
-        return { success: false, error: "Query cancelled" };
-      }
-
-      const pool = await this.getMySQLPool(database, targetDatabase);
-      const connection = await withRetry(async () => pool.getConnection(), {
-        maxRetries: this.mysqlMaxRetries,
-        baseDelayMs: this.mysqlRetryBaseDelayMs,
-        signal,
-      });
-
-      let readOnlyTransactionStarted = false;
-      // Cancellable by executionId (cancelQuery) and by the signal alone.
-      const untrack = this.trackMySQLQuery(
-        database,
-        targetDatabase,
-        connection,
-        options?.executionId,
-        signal,
-      );
-      try {
-        if (signal?.aborted) {
-          return { success: false, error: "Query cancelled" };
-        }
-
-        if (options?.readOnly || options?.readOnlyTransaction) {
-          await connection.query("START TRANSACTION READ ONLY");
-          readOnlyTransactionStarted = true;
-        }
-        const [rows, fields] = await connection.execute(query);
-        if (readOnlyTransactionStarted) {
-          await connection.commit();
-          readOnlyTransactionStarted = false;
-        }
-        const normalizedRows = Array.isArray(rows)
-          ? rows.map(row => this.normalizeMySQLValue(row))
-          : rows;
-        const normalizedFields = Array.isArray(fields)
-          ? fields.map(field => {
-              const fieldPacket =
-                field && typeof field === "object"
-                  ? (field as mysql.FieldPacket)
-                  : undefined;
-              return {
-                name: fieldPacket?.name,
-                type: fieldPacket?.type ?? fieldPacket?.columnType,
-                columnType: fieldPacket?.columnType,
-                columnLength: fieldPacket?.columnLength,
-                decimals: fieldPacket?.decimals,
-                flags: fieldPacket?.flags,
-                characterSet: fieldPacket?.characterSet,
-                encoding: fieldPacket?.encoding,
-              };
-            })
-          : fields;
-        return {
-          success: true,
-          data: normalizedRows,
-          fields: normalizedFields,
-        };
-      } finally {
-        if (readOnlyTransactionStarted) {
-          await connection.rollback().catch(() => undefined);
-        }
-        // A connection a KILL was aimed at is retired, not pooled: a KILL
-        // still in flight must not land on the next query it runs.
-        if (untrack()) connection.destroy();
-        else connection.release();
-      }
-    } catch (error) {
-      if (
-        signal?.aborted ||
-        (error as { code?: string } | null)?.code === "ER_QUERY_INTERRUPTED"
-      ) {
-        return { success: false, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "MySQL query failed",
-      };
-    }
-  }
-
-  /**
-   * Register a pooled MySQL connection's statement for cancellation by
-   * `executionId` and/or `signal`. Returns the function to call once the
-   * statement settles (before releasing the connection); it returns
-   * whether a cancel was sent, in which case the connection is destroyed.
-   */
-  private trackMySQLQuery(
-    database: IDatabaseConnection,
-    targetDatabase: string | undefined,
-    connection: { threadId: number | null },
-    executionId?: string,
-    signal?: AbortSignal,
-  ): () => boolean {
-    const threadId = connection.threadId;
-    if ((!executionId && !signal) || typeof threadId !== "number") {
-      return () => false;
-    }
-    const poolKey = `${database._id.toString()}:${targetDatabase || ""}`;
-    const entry: {
-      database: IDatabaseConnection;
-      targetDatabase?: string;
-      poolKey: string;
-      threadId: number;
-      cancelled?: boolean;
-    } = { database, targetDatabase, poolKey, threadId };
-    if (executionId) this.runningMySQLQueries.set(executionId, entry);
-    const onAbort = () => {
-      if (entry.cancelled) return;
-      entry.cancelled = true;
-      void this.killMySQLQuery(entry).then(result => {
-        if (!result.success) {
-          logger.warn("MySQL cancel on abort failed", {
-            threadId,
-            error: result.error,
-          });
-        }
-      });
-    };
-    if (signal) {
-      signal.addEventListener("abort", onAbort, { once: true });
-      if (signal.aborted) onAbort();
-    }
-    return () => {
-      signal?.removeEventListener("abort", onAbort);
-      if (executionId && this.runningMySQLQueries.get(executionId) === entry) {
-        this.runningMySQLQueries.delete(executionId);
-      }
-      return entry.cancelled === true;
-    };
-  }
-
-  private async cancelMySQLQuery(
-    executionId: string,
-  ): Promise<{ success: boolean; error?: string }> {
-    const running = this.runningMySQLQueries.get(executionId);
-    if (!running) {
-      return { success: false, error: "Query not found or already completed" };
-    }
-    // Marked first: the query's release then retires its connection rather
-    // than pool one a KILL is aimed at (see trackMySQLQuery).
-    running.cancelled = true;
-    const result = await this.killMySQLQuery(running);
-    if (result.success) this.runningMySQLQueries.delete(executionId);
-    return result;
-  }
-
-  /**
-   * `KILL QUERY <threadId>` from a separate, unpooled connection: the pool
-   * (connectionLimit 2) may be fully occupied by the very query being
-   * cancelled. KILL QUERY stops the statement and leaves the connection
-   * usable. Through the pool's own SSH tunnel when it has one.
-   */
-  private async killMySQLQuery(running: {
-    database: IDatabaseConnection;
-    targetDatabase?: string;
-    poolKey: string;
-    threadId: number;
-  }): Promise<{ success: boolean; error?: string }> {
-    let killer: mysql.Connection | undefined;
-    try {
-      const tunnelCfg = this.buildSshTunnelConfig(
-        running.database,
-        running.poolKey,
-      );
-      const tunnelEndpoint = tunnelCfg
-        ? await sshTunnelManager.openTunnel(tunnelCfg)
-        : undefined;
-      killer = await mysql.createConnection(
-        this.buildMySQLConfig(
-          running.database,
-          running.targetDatabase,
-          tunnelEndpoint,
-        ),
-      );
-      await killer.query(`KILL QUERY ${Math.trunc(running.threadId)}`);
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to cancel query",
-      };
-    } finally {
-      await killer?.end().catch(() => undefined);
-    }
-  }
-
-  // MSSQL specific methods
-  private async testMSSQLConnection(
-    database: IDatabaseConnection,
-  ): Promise<{ success: boolean; error?: string }> {
-    let pool: ConnectionPool | null = null;
-    try {
-      pool = new ConnectionPool({
-        server: database.connection.host ?? "",
-        port: database.connection.port || 1433,
-        database: database.connection.database ?? "",
-        user: database.connection.username ?? "",
-        password: database.connection.password ?? "",
-        options: {
-          encrypt: database.connection.ssl || false,
-          trustServerCertificate: true,
-        },
-      });
-      await pool.connect();
-      await pool.request().query("SELECT 1");
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "MSSQL connection failed",
-      };
-    } finally {
-      if (pool) {
-        await pool.close();
-      }
-    }
-  }
-
-  private async createMSSQLConnection(
-    database: IDatabaseConnection,
-  ): Promise<ConnectionPool> {
-    const pool = new ConnectionPool({
-      server: database.connection.host ?? "",
-      port: database.connection.port || 1433,
-      database: database.connection.database ?? "",
-      user: database.connection.username ?? "",
-      password: database.connection.password ?? "",
-      options: {
-        encrypt: database.connection.ssl || false,
-        trustServerCertificate: true,
-      },
-    });
-    await pool.connect();
-    return pool;
-  }
-
-  private async executeMSSQLQuery(
-    database: IDatabaseConnection,
-    query: string,
-    options?: QueryExecuteOptions,
-  ): Promise<QueryResult> {
-    const pool = (await this.getConnection(database)) as ConnectionPool;
-    const request = pool.request();
-    const executionId = options?.executionId;
-    try {
-      if (executionId) {
-        this.runningMSSQLQueries.set(executionId, { request });
-      }
-      const result = await request.query(query);
-      return {
-        success: true,
-        data: result.recordset,
-        rowCount: result.rowsAffected[0],
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "MSSQL query failed",
-      };
-    } finally {
-      if (executionId) {
-        this.runningMSSQLQueries.delete(executionId);
-      }
-    }
-  }
-
-  // ClickHouse specific methods
-
-  /**
-   * Parse a JDBC-style ClickHouse URL and return connection config
-   * Supports formats:
-   * - jdbc:clickhouse://host:port?user=default&password=xxx&ssl=true
-   * - clickhouse://host:port?user=default&password=xxx
-   * - https://host:port (ClickHouse Cloud style)
-   */
-  private parseClickHouseConnectionString(connectionString: string): {
-    url: string;
-    username: string;
-    password: string;
-    database: string;
-  } {
-    let urlToParse = connectionString.trim();
-
-    // Remove jdbc: prefix if present
-    if (urlToParse.startsWith("jdbc:")) {
-      urlToParse = urlToParse.slice(5);
-    }
-
-    // Replace clickhouse:// with https:// for URL parsing
-    if (urlToParse.startsWith("clickhouse://")) {
-      urlToParse = "https://" + urlToParse.slice("clickhouse://".length);
-    }
-
-    // Parse the URL
-    const parsedUrl = new URL(urlToParse);
-
-    // Extract query parameters
-    const user =
-      parsedUrl.searchParams.get("user") ||
-      parsedUrl.searchParams.get("username") ||
-      parsedUrl.username ||
-      "default";
-    const password =
-      parsedUrl.searchParams.get("password") || parsedUrl.password || "";
-    const database =
-      parsedUrl.searchParams.get("database") ||
-      parsedUrl.pathname.slice(1) ||
-      "default";
-    const ssl =
-      parsedUrl.searchParams.get("ssl") === "true" ||
-      parsedUrl.searchParams.get("secure") === "true" ||
-      parsedUrl.protocol === "https:";
-
-    // Build the base URL with protocol
-    const protocol = ssl ? "https" : "http";
-    const host = parsedUrl.hostname;
-    const port = parsedUrl.port || (ssl ? "8443" : "8123");
-
-    return {
-      url: `${protocol}://${host}:${port}`,
-      username: user,
-      password: password,
-      database: database,
-    };
-  }
-
-  // ClickHouse client configuration constants
-  private readonly clickHouseRequestTimeout = 120_000; // 120 seconds for cold starts
-  private readonly clickHouseMaxRetries = 3;
-  private readonly clickHouseRetryBaseDelayMs = 1000; // 1 second base delay
-
-  // PostgreSQL client configuration constants
-  private readonly postgresConnectionTimeoutMs = 30_000; // 30 seconds connection timeout
-  private readonly postgresQueryTimeoutMs = 120_000; // 120 seconds query timeout
-  private readonly postgresMaxRetries = 3;
-  private readonly postgresRetryBaseDelayMs = 1000; // 1 second base delay
-
-  // MySQL client configuration constants
-  private readonly mysqlConnectionTimeoutMs = 30_000; // 30 seconds connection timeout
-  private readonly mysqlMaxRetries = 3;
-  private readonly mysqlRetryBaseDelayMs = 1000; // 1 second base delay
-
-  /**
-   * Build ClickHouse client config from database connection
-   * Supports both connection string and individual fields
-   * Includes timeout and keep_alive settings for resilience
-   */
-  private buildClickHouseClientConfig(
-    database: IDatabaseConnection,
-    databaseNameOverride?: string,
-  ): {
-    url: string;
-    username: string;
-    password: string;
-    database: string;
-    request_timeout: number;
-    keep_alive: { enabled: boolean; idle_socket_ttl: number };
-  } {
-    const conn = database.connection;
-
-    // Base config with timeout and keep_alive settings
-    const baseConfig = {
-      request_timeout: this.clickHouseRequestTimeout,
-      keep_alive: {
-        enabled: true,
-        idle_socket_ttl: 2500, // Default: 2.5 seconds
-      },
-    };
-
-    // If connection string is provided, parse it
-    if (conn.connectionString) {
-      const parsed = this.parseClickHouseConnectionString(
-        conn.connectionString,
-      );
-      // In cluster mode the active database is chosen per-query (e.g. from the
-      // console picker), so it must take precedence over the connection string.
-      if (databaseNameOverride) {
-        parsed.database = databaseNameOverride;
-      }
-      return { ...parsed, ...baseConfig };
-    }
-
-    // Build from individual fields
-    let host = conn.host || "http://localhost";
-    if (!host.startsWith("http://") && !host.startsWith("https://")) {
-      host = (conn.ssl ? "https://" : "http://") + host;
-    }
-
-    return {
-      url: `${host}:${conn.port || 8123}`,
-      username: conn.username || "default",
-      password: conn.password || "",
-      database: databaseNameOverride || conn.database || "default",
-      ...baseConfig,
-    };
-  }
-
-  private async testClickHouseConnection(
-    database: IDatabaseConnection,
-  ): Promise<{ success: boolean; error?: string }> {
-    try {
-      const config = this.buildClickHouseClientConfig(database);
-
-      // Use retry logic to handle cold starts and transient failures
-      await withRetry(
-        async () => {
-          const client = createClient(config);
-          try {
-            await client.ping();
-          } finally {
-            await client.close();
-          }
-        },
-        {
-          maxRetries: this.clickHouseMaxRetries,
-          baseDelayMs: this.clickHouseRetryBaseDelayMs,
-        },
-      );
-
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "ClickHouse connection failed",
-      };
-    }
-  }
-
-  private async executeClickHouseQuery(
-    database: IDatabaseConnection,
-    query: string,
-    options?: QueryExecuteOptions,
-  ): Promise<QueryResult> {
-    const executionId = options?.executionId;
-    const signal = options?.signal;
-    const abortController = new AbortController();
-
-    // Generate unique query_id for this execution
-    const queryId = executionId || crypto.randomUUID();
-
-    // Set up abort signal listener
-    // Store reference to remove it in finally block to prevent memory leaks
-    const abortHandler = () => {
-      abortController.abort();
-    };
-    if (signal) {
-      signal.addEventListener("abort", abortHandler);
-    }
-
-    try {
-      // Check if already cancelled
-      if (signal?.aborted) {
-        return { success: false, error: "Query cancelled" };
-      }
-
-      // Honor a per-query database selection (cluster mode) so unqualified
-      // table references resolve against the chosen database, not just the
-      // connection's default.
-      const config = this.buildClickHouseClientConfig(
-        database,
-        options?.databaseName,
-      );
-
-      // Track running query for cancellation
-      if (executionId) {
-        this.runningClickHouseQueries.set(executionId, {
-          database,
-          queryId,
-          abortController,
-        });
-      }
-
-      // Use retry logic only for connection establishment (not query execution)
-      // to avoid re-executing queries with side effects (INSERT, UPDATE, etc.)
-      const client = await withRetry(
-        async () => {
-          const newClient = createClient(config);
-          try {
-            // Verify connection is working before returning
-            await newClient.ping();
-            return newClient;
-          } catch (error) {
-            // Close the client if ping fails to prevent resource leaks
-            await newClient.close().catch(() => {});
-            throw error;
-          }
-        },
-        {
-          maxRetries: this.clickHouseMaxRetries,
-          baseDelayMs: this.clickHouseRetryBaseDelayMs,
-          signal: abortController.signal,
-        },
-      );
-
-      let data: any[];
-      try {
-        // Execute query with query_id for cancellation support
-        // Note: Query execution is NOT retried to avoid duplicate side effects
-        const resultSet = await client.query({
-          query: query,
-          format: "JSONEachRow",
-          query_id: queryId,
-          clickhouse_settings: {
-            // Allow query to be cancelled
-            cancel_http_readonly_queries_on_client_close: 1,
-            ...(options?.readOnly || options?.readOnlyTransaction
-              ? { readonly: "2" }
-              : {}),
-          },
-          abort_signal: abortController.signal,
-        });
-
-        data = await resultSet.json();
-      } finally {
-        await client.close();
-      }
-
-      return {
-        success: true,
-        data: data as any[],
-        rowCount: (data as any[]).length,
-      };
-    } catch (error: any) {
-      // Check if this was a cancellation
-      if (
-        error?.name === "AbortError" ||
-        error?.message?.includes("aborted") ||
-        error?.message?.includes("cancelled") ||
-        abortController.signal.aborted
-      ) {
-        return { success: false, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "ClickHouse query failed",
-      };
-    } finally {
-      // Clean up abort listener to prevent memory leaks when signal is reused
-      if (signal) {
-        signal.removeEventListener("abort", abortHandler);
-      }
-      if (executionId) {
-        this.runningClickHouseQueries.delete(executionId);
-      }
-    }
+    return { success: false, error: QUERY_NOT_FOUND };
   }
 }
 

@@ -21,8 +21,10 @@
  * anything is dropped, and the entry is marked purged only after the bucket
  * delete succeeds. A denied bucket (the deployer SA lacked
  * storage.objects.list on the first prod run) therefore cannot orphan the
- * parquet untracked: the migration completes, and
- * `pnpm apps:purge-v1-artifacts` sweeps the backlog once access exists.
+ * parquet untracked: the migration completes, and the backlog can be swept
+ * once access exists. The sweeper CLI (apps/purge-v1-artifacts.cli.ts) was
+ * removed after the cutover; restore it from git history (fc984dd) if any
+ * backlog entry still has no purgedAt.
  */
 import fs from "node:fs/promises";
 import { Db, ObjectId } from "mongodb";
@@ -132,7 +134,7 @@ export async function up(db: Db): Promise<void> {
       }
     } catch (error) {
       log.error(
-        "v1 artifact purge failed; prefixes are in v1_artifact_purge_backlog — run `pnpm apps:purge-v1-artifacts` once the credential can list the bucket",
+        "v1 artifact purge failed; prefixes are in v1_artifact_purge_backlog — sweep them once the credential can list the bucket (purge-v1-artifacts.cli.ts, in git history at fc984dd)",
         { error: error instanceof Error ? error.message : String(error) },
       );
     }

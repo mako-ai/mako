@@ -406,7 +406,7 @@ async function main(): Promise<void> {
   if (missingSystemSkills.length > 0) {
     throw new Error(
       `Missing required system skills: ${missingSystemSkills.join(", ")}. ` +
-        "Ensure api/src/agent-skills/**/*.md is bundled into dist (copyfiles).",
+        "Ensure api/src/agent-skills/**/*.md is bundled into dist (api/scripts/copy-build-assets.mjs).",
     );
   }
   logger.info("System skills discovered", {

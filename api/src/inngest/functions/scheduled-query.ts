@@ -17,16 +17,9 @@ import { loggers } from "../../logging";
 import { getNextScheduledConsoleRunAt } from "../../services/scheduled-query-schedule.service";
 import { emitScheduledQueryTerminalEvent } from "../../services/flow-run-notification.emit";
 import { liveConsoleCode } from "../../apps/workspace-consoles.service";
+import { mapConsoleLanguageToQueryLanguage } from "../../services/console-execution.service";
 
 const logger = loggers.inngest();
-
-function mapConsoleLanguageToQueryLanguage(
-  language: "sql" | "javascript" | "mongodb",
-): "sql" | "javascript" | "mongodb" {
-  if (language === "mongodb") return "mongodb";
-  if (language === "javascript") return "javascript";
-  return "sql";
-}
 
 export const scheduledQuerySchedulerFunction = inngest.createFunction(
   {

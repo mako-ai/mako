@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 const log = loggers.migration();
 
@@ -19,7 +20,7 @@ export async function up(db: Db): Promise<void> {
   const keyPattern = { workspaceId: 1, lastExternalUsedAt: 1 };
 
   try {
-    const existingIndexes = await collection.indexes();
+    const existingIndexes = await indexesOf(collection);
     if (hasIndexOnKeys(existingIndexes, keyPattern)) {
       log.info(
         "Index { workspaceId: 1, lastExternalUsedAt: 1 } already exists on savedconsoles",

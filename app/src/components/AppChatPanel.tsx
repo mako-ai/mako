@@ -23,7 +23,6 @@ import {
   Alert,
   Box,
   IconButton,
-  Snackbar,
   Tooltip,
   Typography,
   useTheme,
@@ -48,6 +47,16 @@ import { useChatScroll } from "./chat/hooks/useChatScroll";
 import type { ChatSessionMeta } from "./chat/hooks/useChatSessions";
 import type { ChatMessageRowProps } from "./chat-message-comparator";
 import type { ToolInvocationInfo } from "./chat/tool-presentation";
+import { notify } from "../store/notificationStore";
+
+/** Failed user actions surface as a filled error toast. */
+function notifyActionError(message: string) {
+  notify.error(message, {
+    autoHideDuration: 5000,
+    anchorOrigin: { vertical: "bottom", horizontal: "center" },
+    variant: "filled",
+  });
+}
 
 interface AppChatPanelProps {
   workspaceId: string;
@@ -119,7 +128,6 @@ export function AppChatPanel({
   const deleteChat = useAppViewerStore(s => s.deleteChat);
   const [historyAnchor, setHistoryAnchor] = useState<HTMLElement | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
   const [toolDetails, setToolDetails] = useState<ToolInvocationInfo | null>(
     null,
   );
@@ -263,7 +271,7 @@ export function AppChatPanel({
       });
       if (!ok) return;
       if (!(await deleteChat(workspaceId, appId, id))) {
-        setActionError("Could not delete that chat. Please try again.");
+        notifyActionError("Could not delete that chat. Please try again.");
         return;
       }
       if (id === chatIdRef.current) startNewChat();
@@ -463,21 +471,6 @@ export function AppChatPanel({
         showModelControls={false}
         allowAttachments={false}
       />
-
-      <Snackbar
-        open={actionError !== null}
-        autoHideDuration={5000}
-        onClose={() => setActionError(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-      >
-        <Alert
-          severity="error"
-          variant="filled"
-          onClose={() => setActionError(null)}
-        >
-          {actionError}
-        </Alert>
-      </Snackbar>
 
       <ToolDetailsDialog
         open={!!toolDetails}

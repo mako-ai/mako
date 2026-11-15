@@ -2,7 +2,7 @@
  * Helpers for consuming `openapi-fetch` results in stores.
  *
  * `openapi-fetch` returns `{ data, error, response }` and never throws. These
- * adapters reproduce the legacy `apiClient` contract (throw on transport/HTTP
+ * adapters give stores a throwing contract (throw on transport/HTTP
  * error) and unwrap the standard `{ success, data }` envelope, while leaving
  * the path/param/body type-checking intact at the call site.
  */
@@ -147,4 +147,23 @@ export function unwrapBody(res: ApiResult): unknown {
     throw new ApiError(errorMessage(res), res.response.status);
   }
   return res.data;
+}
+
+/**
+ * Like {@link unwrapBody}, but resolves (instead of throwing) for the listed
+ * non-2xx statuses, returning the parsed body with its status — e.g. a `409`
+ * draft conflict a caller handles itself. Other failures throw `ApiError`.
+ */
+export function bodyWithStatus<T>(
+  res: ApiResult,
+  alsoOk: readonly number[],
+): { status: number; body: T } {
+  const status = res.response.status;
+  if (res.response.ok || alsoOk.includes(status)) {
+    const body = res.response.ok ? res.data : res.error;
+    return { status, body: (body ?? {}) as T };
+  }
+  // Delegates the message extraction (and throws) for every other failure.
+  unwrapBody(res);
+  throw new ApiError(`Request failed with ${status}`, status);
 }

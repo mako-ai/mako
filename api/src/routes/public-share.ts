@@ -60,6 +60,7 @@ import {
   isOpenShare,
   shareImageFor,
 } from "../services/share-og.service";
+import { fail } from "./lib/respond";
 
 const logger = loggers.api("public-share");
 
@@ -221,10 +222,7 @@ function passwordRequired(resource: SharedResource): boolean {
 function requireUnlock(c: Context, token: string, resource: SharedResource) {
   if (!passwordRequired(resource)) return null;
   if (hasValidUnlock(c, token)) return null;
-  return c.json(
-    { success: false, error: "Password required", code: "PASSWORD_REQUIRED" },
-    401,
-  );
+  return fail(c, 401, "Password required", { code: "PASSWORD_REQUIRED" });
 }
 
 // ── Unlock rate limiting (in-memory, per token+IP) ──
@@ -265,7 +263,7 @@ app.openapi(
       const token = c.req.param("token") as string;
       const resource = await findByToken(token);
       if (!resource) {
-        return c.json({ success: false, error: "Share link not found" }, 404);
+        return fail(c, 404, "Share link not found");
       }
       return c.json({
         success: true,
@@ -278,7 +276,7 @@ app.openapi(
       });
     } catch (error) {
       logger.error("Error fetching share metadata", { error });
-      return c.json({ success: false, error: "Failed to load share" }, 500);
+      return fail(c, 500, "Failed to load share");
     }
   },
 );
@@ -299,7 +297,7 @@ app.openapi(
       const token = c.req.param("token") as string;
       const resource = await findByToken(token);
       if (!resource) {
-        return c.json({ success: false, error: "Share link not found" }, 404);
+        return fail(c, 404, "Share link not found");
       }
       if (!passwordRequired(resource)) {
         return c.json({ success: true, data: { unlocked: true } });
@@ -307,10 +305,7 @@ app.openapi(
 
       const rlKey = `${token}:${clientIp(c)}`;
       if (isUnlockRateLimited(rlKey)) {
-        return c.json(
-          { success: false, error: "Too many attempts. Try again later." },
-          429,
-        );
+        return fail(c, 429, "Too many attempts. Try again later.");
       }
 
       const body = await c.req.json().catch(() => ({}));
@@ -319,7 +314,7 @@ app.openapi(
       const valid =
         password.length > 0 && (await bcrypt.compare(password, hash));
       if (!valid) {
-        return c.json({ success: false, error: "Incorrect password" }, 401);
+        return fail(c, 401, "Incorrect password");
       }
 
       const expiresAt = Date.now() + UNLOCK_TTL_MS;
@@ -338,7 +333,7 @@ app.openapi(
       return c.json({ success: true, data: { unlocked: true } });
     } catch (error) {
       logger.error("Error unlocking share", { error });
-      return c.json({ success: false, error: "Failed to unlock share" }, 500);
+      return fail(c, 500, "Failed to unlock share");
     }
   },
 );
@@ -359,7 +354,7 @@ app.openapi(
       const token = c.req.param("token") as string;
       const resource = await findByToken(token);
       if (!resource) {
-        return c.json({ success: false, error: "Share link not found" }, 404);
+        return fail(c, 404, "Share link not found");
       }
       const gate = requireUnlock(c, token, resource);
       if (gate) return gate;
@@ -399,7 +394,7 @@ app.openapi(
       return response;
     } catch (error) {
       logger.error("Error building share content", { error });
-      return c.json({ success: false, error: "Failed to load content" }, 500);
+      return fail(c, 500, "Failed to load content");
     }
   },
 );
@@ -442,7 +437,7 @@ app.openapi(
       });
     } catch (error) {
       logger.error("Error serving share preview image", { error });
-      return c.json({ success: false, error: "Failed to load image" }, 500);
+      return fail(c, 500, "Failed to load image");
     }
   },
 );

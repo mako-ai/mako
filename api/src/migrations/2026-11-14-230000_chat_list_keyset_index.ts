@@ -1,5 +1,6 @@
 import { Db } from "mongodb";
 import { loggers } from "../logging";
+import { indexesOf } from "./index-helpers";
 
 export const description =
   "Extend the chat list index with _id (chats workspaceId+createdBy+updatedAt+_id) so the paginated list's keyset sort is index-served, and drop the 3-key prefix it replaces";
@@ -32,7 +33,7 @@ export async function up(db: Db): Promise<void> {
   const chats = db.collection("chats");
   let indexes: { name?: string; key: Record<string, unknown> }[] = [];
   try {
-    indexes = await chats.listIndexes().toArray();
+    indexes = await indexesOf(chats);
   } catch {
     // NamespaceNotFound: nothing exists yet, so nothing can conflict.
   }

@@ -39,6 +39,7 @@ import { ensureLocalRepo, fetchFromCloud } from "../apps/cloud-repo.service";
 import { findWorkspaceIdsByRepoBinding } from "../services/workspace-repos.service";
 import { syncRepoBackedResources } from "../apps/worktree.service";
 import { repoDirFor } from "../apps/repository.service";
+import { fail } from "./lib/respond";
 
 const logger = loggers.api("github");
 
@@ -166,13 +167,13 @@ githubRoutes.post("/webhook", async (c: Context) => {
   const secret = getGitHubAppWebhookSecret();
   if (!secret) {
     logger.warn("GitHub webhook received but GITHUB_APP_WEBHOOK_SECRET unset");
-    return c.json({ ok: false, error: "webhook not configured" }, 503);
+    return fail(c, 503, "webhook not configured", { ok: false });
   }
 
   const raw = await c.req.text();
   const signature = c.req.header("x-hub-signature-256");
   if (!verifySignature(raw, signature, secret)) {
-    return c.json({ ok: false, error: "invalid signature" }, 401);
+    return fail(c, 401, "invalid signature", { ok: false });
   }
 
   const event = c.req.header("x-github-event") ?? "";
@@ -180,7 +181,7 @@ githubRoutes.post("/webhook", async (c: Context) => {
   try {
     payload = JSON.parse(raw);
   } catch {
-    return c.json({ ok: false, error: "invalid json" }, 400);
+    return fail(c, 400, "invalid json", { ok: false });
   }
 
   if (event === "ping") return c.json({ ok: true, pong: true });
