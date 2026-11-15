@@ -26,7 +26,6 @@ import { fail } from "../lib/respond";
 import {
   accessDenied,
   consoleIdParams,
-  logger,
   looseJsonBody,
   serverError,
   wsParams,
@@ -141,14 +140,12 @@ consoleWriteRoutes.put("/:path{.+}", async (c: Context) => {
       data,
     });
   } catch (error) {
-    logger.error("Error updating console", {
-      path: c.req.param("path"),
-      error,
-    });
-    return fail(
+    return serverError(
       c,
-      500,
-      error instanceof Error ? error.message : "Unknown error updating console",
+      error,
+      "Error updating console",
+      "Unknown error updating console",
+      { path: c.req.param("path") },
     );
   }
 });
