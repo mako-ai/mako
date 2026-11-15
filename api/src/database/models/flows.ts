@@ -12,7 +12,7 @@ import {
 export interface IFlowQuery {
   name: string;
   query: string;
-  variables?: { [key: string]: any };
+  variables?: Record<string, unknown>;
   dataPath?: string;
   data_path?: string;
   hasNextPagePath?: string;
@@ -342,7 +342,7 @@ const FlowSchema = new Schema<IFlow>(
       type: Schema.Types.ObjectId,
       ref: "Connector",
       required: function () {
-        return (this as any).sourceType !== "database";
+        return (this as IFlow).sourceType !== "database";
       },
     },
     // For database sources (SQL queries)
@@ -687,15 +687,15 @@ export interface IFlowExecution extends Document {
     timestamp: Date;
     level: "debug" | "info" | "warn" | "error";
     message: string;
-    metadata?: any;
+    metadata?: unknown;
   }>;
   error?: {
     message: string;
     stack?: string;
     code?: string | number | null;
   } | null;
-  context?: any;
-  system?: any;
+  context?: unknown;
+  system?: unknown;
 }
 
 /**

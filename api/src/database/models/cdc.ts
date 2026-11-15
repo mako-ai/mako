@@ -17,7 +17,7 @@ export interface ICdcChangeEvent extends Document {
   ingestTs: Date;
   ingestSeq: number;
   idempotencyKey: string;
-  payload?: any;
+  payload?: unknown;
   webhookEventId?: string;
   stageStatus: "pending" | "staged" | "failed";
   stageAttemptCount: number;

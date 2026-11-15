@@ -3,11 +3,11 @@ import { type IConnectionWriter, ConnectionWriterSchema } from "./shared";
 
 // Pass-through for source-connection config — encryption is applied at the
 // route using the connector's schema, not by this getter/setter.
-function encryptSourceConnectionConfig(config: any): any {
+function encryptSourceConnectionConfig<T>(config: T): T {
   return config;
 }
 
-function decryptSourceConnectionConfig(config: any): any {
+function decryptSourceConnectionConfig<T>(config: T): T {
   return config;
 }
 
@@ -32,7 +32,7 @@ export interface ISourceConnection extends Document {
     queries?: Array<{
       name: string;
       query: string;
-      variables?: { [key: string]: any };
+      variables?: Record<string, unknown>;
       dataPath?: string;
       hasNextPagePath?: string;
       cursorPath?: string;

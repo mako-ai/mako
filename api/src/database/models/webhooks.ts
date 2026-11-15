@@ -18,7 +18,7 @@ export interface IWebhookEvent extends Document {
     stack?: string;
     code?: string;
   };
-  rawPayload: any;
+  rawPayload: unknown;
   signature?: string; // For verification
   processingDurationMs?: number;
   entity?: string;
