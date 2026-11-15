@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -25,29 +25,50 @@ import { join } from "node:path";
  * once instead of the two that were top of mind.
  */
 
-const flows = readFileSync(join(__dirname, "flows.ts"), "utf8");
+const flowsDir = join(__dirname, "flows");
+// The router module plus its sub-routers; shared.ts first so the helper
+// definitions precede every call site.
+const flows = [
+  join(__dirname, "flows.ts"),
+  join(flowsDir, "shared.ts"),
+  ...readdirSync(flowsDir)
+    .filter(
+      f => f.endsWith(".ts") && f !== "shared.ts" && !f.includes(".test."),
+    )
+    .sort()
+    .map(f => join(flowsDir, f)),
+]
+  .map(f => readFileSync(f, "utf8"))
+  .join("\n");
 
 // Each route is one `flowRoutes.openapi(` call, closed by its own top-level
 // `);`. Ending a block there (not at the next route or EOF) keeps code after
 // the last route — e.g. the git-history registration, whose restore gates —
 // from being read as part of it.
+// Sub-routers register inside a function, so the call (and its closing
+// `);`) is indented; the closer is the first `);` at the call's own indent.
 const lines = flows.split("\n");
 const starts = lines
-  .map((line, i) => (line.startsWith("flowRoutes.openapi(") ? i : -1))
+  .map((line, i) => (/^\s*flowRoutes\.openapi\(/.test(line) ? i : -1))
   .filter(i => i !== -1);
 assert.ok(
   starts.length > 0,
   "no flow routes found — did the file's shape change?",
 );
 const blocks = starts.map(start => {
-  const end = lines.findIndex((line, i) => i > start && line === ");");
+  const indent = /^\s*/.exec(lines[start])?.[0] ?? "";
+  const end = lines.findIndex(
+    (line, i) =>
+      i > start && (line === `${indent});` || line === `${indent}});`),
+  );
   assert.ok(end !== -1, `route at line ${start + 1} has no closing ");"`);
   return lines.slice(start, end + 1).join("\n");
 });
 
 const describe = (block: string) => {
-  const method = /method:\s*"(\w+)"/.exec(block)?.[1]?.toUpperCase() ?? "?";
-  const path = /path:\s*"([^"]+)"/.exec(block)?.[1] ?? "?";
+  const spec = /flowRoute\(\s*"(\w+)",\s*"([^"]+)"/.exec(block);
+  const method = spec?.[1]?.toUpperCase() ?? "?";
+  const path = spec?.[2] ?? "?";
   return `${method} ${path}`;
 };
 

@@ -13877,182 +13877,6 @@
         "operationId": "post_api_workspaces_workspaceId_flows_flowId_toggle"
       }
     },
-    "/api/workspaces/{workspaceId}/flows/{flowId}/run": {
-      "post": {
-        "tags": [
-          "Flows"
-        ],
-        "summary": "POST /{flowId}/run",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "flowId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_flows_flowId_run"
-      }
-    },
-    "/api/workspaces/{workspaceId}/flows/{flowId}/backfill": {
-      "post": {
-        "tags": [
-          "Flows"
-        ],
-        "summary": "POST /{flowId}/backfill",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "flowId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_flows_flowId_backfill"
-      }
-    },
     "/api/workspaces/{workspaceId}/flows/{flowId}/sync-engine": {
       "post": {
         "tags": [
@@ -14240,6 +14064,602 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_flows_flowId_backfill_schedule"
+      }
+    },
+    "/api/workspaces/{workspaceId}/flows/{flowId}/run": {
+      "post": {
+        "tags": [
+          "Flows"
+        ],
+        "summary": "POST /{flowId}/run",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "flowId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_flows_flowId_run"
+      }
+    },
+    "/api/workspaces/{workspaceId}/flows/{flowId}/status": {
+      "get": {
+        "tags": [
+          "Flows"
+        ],
+        "summary": "GET /{flowId}/status",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "flowId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_flows_flowId_status"
+      }
+    },
+    "/api/workspaces/{workspaceId}/flows/{flowId}/cancel": {
+      "post": {
+        "tags": [
+          "Flows"
+        ],
+        "summary": "POST /{flowId}/cancel",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "flowId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_flows_flowId_cancel"
+      }
+    },
+    "/api/workspaces/{workspaceId}/flows/{flowId}/history": {
+      "get": {
+        "tags": [
+          "Flows"
+        ],
+        "summary": "GET /{flowId}/history",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "flowId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_flows_flowId_history"
+      }
+    },
+    "/api/workspaces/{workspaceId}/flows/{flowId}/executions/{executionId}": {
+      "get": {
+        "tags": [
+          "Flows"
+        ],
+        "summary": "GET /{flowId}/executions/{executionId}",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "flowId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "executionId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_flows_flowId_executions_executionId"
+      }
+    },
+    "/api/workspaces/{workspaceId}/flows/{flowId}/executions/{executionId}/logs": {
+      "get": {
+        "tags": [
+          "Flows"
+        ],
+        "summary": "GET /{flowId}/executions/{executionId}/logs",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "flowId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "executionId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_flows_flowId_executions_executionId_logs"
+      }
+    },
+    "/api/workspaces/{workspaceId}/flows/{flowId}/backfill": {
+      "post": {
+        "tags": [
+          "Flows"
+        ],
+        "summary": "POST /{flowId}/backfill",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "flowId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_flows_flowId_backfill"
       }
     },
     "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/backfill/start": {
@@ -14592,6 +15012,94 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_flows_flowId_sync_cdc_reset_column"
+      }
+    },
+    "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/resync": {
+      "post": {
+        "tags": [
+          "Flows"
+        ],
+        "summary": "POST /{flowId}/sync-cdc/resync",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "flowId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_flows_flowId_sync_cdc_resync"
       }
     },
     "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/recover": {
@@ -15034,182 +15542,6 @@
         "operationId": "post_api_workspaces_workspaceId_flows_flowId_sync_cdc_materialize_retry_failed"
       }
     },
-    "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/provision": {
-      "post": {
-        "tags": [
-          "Flows"
-        ],
-        "summary": "POST /{flowId}/webhook/provision",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "flowId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_flows_flowId_webhook_provision"
-      }
-    },
-    "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/resync": {
-      "post": {
-        "tags": [
-          "Flows"
-        ],
-        "summary": "POST /{flowId}/sync-cdc/resync",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "flowId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_flows_flowId_sync_cdc_resync"
-      }
-    },
     "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/stream/start": {
       "post": {
         "tags": [
@@ -15560,6 +15892,472 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_flows_flowId_sync_cdc_resume"
+      }
+    },
+    "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/provision": {
+      "post": {
+        "tags": [
+          "Flows"
+        ],
+        "summary": "POST /{flowId}/webhook/provision",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "flowId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_flows_flowId_webhook_provision"
+      }
+    },
+    "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/events": {
+      "get": {
+        "tags": [
+          "Flows"
+        ],
+        "summary": "GET /{flowId}/webhook/events",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "flowId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "offset",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "applyStatus",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_flows_flowId_webhook_events"
+      }
+    },
+    "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/events/{eventId}": {
+      "get": {
+        "tags": [
+          "Flows"
+        ],
+        "summary": "GET /{flowId}/webhook/events/{eventId}",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "flowId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "eventId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_flows_flowId_webhook_events_eventId"
+      }
+    },
+    "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/events/{eventId}/retry": {
+      "post": {
+        "tags": [
+          "Flows"
+        ],
+        "summary": "POST /{flowId}/webhook/events/{eventId}/retry",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "flowId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "eventId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_flows_flowId_webhook_events_eventId_retry"
+      }
+    },
+    "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/events/retry-all-failed": {
+      "post": {
+        "tags": [
+          "Flows"
+        ],
+        "summary": "POST /{flowId}/webhook/events/retry-all-failed",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "flowId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_flows_flowId_webhook_events_retry_all_failed"
       }
     },
     "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/status": {
@@ -16038,804 +16836,6 @@
           }
         },
         "operationId": "get_api_workspaces_workspaceId_flows_flowId_schema"
-      }
-    },
-    "/api/workspaces/{workspaceId}/flows/{flowId}/status": {
-      "get": {
-        "tags": [
-          "Flows"
-        ],
-        "summary": "GET /{flowId}/status",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "flowId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_flows_flowId_status"
-      }
-    },
-    "/api/workspaces/{workspaceId}/flows/{flowId}/cancel": {
-      "post": {
-        "tags": [
-          "Flows"
-        ],
-        "summary": "POST /{flowId}/cancel",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "flowId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_flows_flowId_cancel"
-      }
-    },
-    "/api/workspaces/{workspaceId}/flows/{flowId}/history": {
-      "get": {
-        "tags": [
-          "Flows"
-        ],
-        "summary": "GET /{flowId}/history",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "flowId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "limit",
-            "in": "query"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_flows_flowId_history"
-      }
-    },
-    "/api/workspaces/{workspaceId}/flows/{flowId}/executions/{executionId}": {
-      "get": {
-        "tags": [
-          "Flows"
-        ],
-        "summary": "GET /{flowId}/executions/{executionId}",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "flowId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "executionId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_flows_flowId_executions_executionId"
-      }
-    },
-    "/api/workspaces/{workspaceId}/flows/{flowId}/executions/{executionId}/logs": {
-      "get": {
-        "tags": [
-          "Flows"
-        ],
-        "summary": "GET /{flowId}/executions/{executionId}/logs",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "flowId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "executionId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_flows_flowId_executions_executionId_logs"
-      }
-    },
-    "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/events": {
-      "get": {
-        "tags": [
-          "Flows"
-        ],
-        "summary": "GET /{flowId}/webhook/events",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "flowId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "limit",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "offset",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "status",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "applyStatus",
-            "in": "query"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_flows_flowId_webhook_events"
-      }
-    },
-    "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/events/{eventId}": {
-      "get": {
-        "tags": [
-          "Flows"
-        ],
-        "summary": "GET /{flowId}/webhook/events/{eventId}",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "flowId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "eventId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_flows_flowId_webhook_events_eventId"
-      }
-    },
-    "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/events/{eventId}/retry": {
-      "post": {
-        "tags": [
-          "Flows"
-        ],
-        "summary": "POST /{flowId}/webhook/events/{eventId}/retry",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "flowId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "eventId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_flows_flowId_webhook_events_eventId_retry"
-      }
-    },
-    "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/events/retry-all-failed": {
-      "post": {
-        "tags": [
-          "Flows"
-        ],
-        "summary": "POST /{flowId}/webhook/events/retry-all-failed",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "flowId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_flows_flowId_webhook_events_retry_all_failed"
       }
     },
     "/api/workspaces/{workspaceId}/flows/validate-query": {
