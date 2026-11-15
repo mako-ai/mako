@@ -45,3 +45,8 @@ export const ShareDialog = lazyWithSuspense(
   () => import("../ShareDialog"),
   null,
 );
+// Modals that only open on demand (scheduling pulls in cron-parser + luxon).
+export const ScheduleConsoleModal = lazyWithSuspense(
+  () => import("../ScheduleConsoleModal"),
+  null,
+);
