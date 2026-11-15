@@ -46,6 +46,7 @@ import {
   searchMetrics,
   unknownMetrics,
   type CatalogMetric,
+  type CatalogSavedQuery,
 } from "../../dbt/semantic/semantic-manifest";
 import {
   explainNoSemanticProjects,
@@ -65,6 +66,7 @@ import {
 const logger = loggers.api("dbt-metric-tools");
 
 const MAX_LISTED_METRICS = 100;
+const MAX_LISTED_SAVED_QUERIES = 30;
 const MAX_GROUP_BY_DIMENSIONS = 150;
 const MAX_GROUP_BY_ENTITIES = 60;
 const LIST_DESCRIPTION_CHARS = 240;
@@ -172,7 +174,54 @@ function describedMetric(metric: CatalogMetric) {
     ...(metric.inputMetrics ? { inputMetrics: metric.inputMetrics } : {}),
     ...(metric.window ? { window: metric.window } : {}),
     ...(metric.grainToDate ? { grainToDate: metric.grainToDate } : {}),
+    ...(metric.periodAgg ? { periodAgg: metric.periodAgg } : {}),
+    ...(metric.inputs ? { inputs: metric.inputs } : {}),
+    ...(metric.conversion ? { conversion: metric.conversion } : {}),
+    ...(metric.fillNullsWith !== undefined
+      ? { fillNullsWith: metric.fillNullsWith }
+      : {}),
+    ...(metric.joinToTimespine ? { joinToTimespine: true } : {}),
+    ...(metric.timeGranularity
+      ? { timeGranularity: metric.timeGranularity }
+      : {}),
+    ...(metric.filters
+      ? { filters: metric.filters.map(filter => truncateText(filter, 600)) }
+      : {}),
     ...(metric.filtered ? { filtered: true } : {}),
+  };
+}
+
+/** A saved query as an agent can replay it with query_metric. */
+function listedSavedQuery(query: CatalogSavedQuery) {
+  return {
+    name: query.name,
+    ...(query.label ? { label: query.label } : {}),
+    ...(query.description
+      ? {
+          description: truncateText(query.description, LIST_DESCRIPTION_CHARS),
+        }
+      : {}),
+    metrics: query.metrics,
+    ...(query.groupBy.length > 0 ? { groupBy: query.groupBy } : {}),
+    ...(query.where.length > 0
+      ? { where: query.where.map(filter => truncateText(filter, 600)) }
+      : {}),
+    ...(query.orderBy ? { orderBy: query.orderBy } : {}),
+    ...(query.limit !== undefined ? { limit: query.limit } : {}),
+  };
+}
+
+const SAVED_QUERY_HINT =
+  "A saved query is a metric query the project named: pass its metrics, groupBy and where to query_metric or compile_metric.";
+
+/** The saved queries to return, capped, or nothing when there are none. */
+function savedQueriesField(queries: CatalogSavedQuery[]) {
+  if (queries.length === 0) return {};
+  const shown = capList(queries, MAX_LISTED_SAVED_QUERIES);
+  return {
+    savedQueries: shown.items.map(listedSavedQuery),
+    ...(shown.truncated ? { savedQueriesTotal: shown.total } : {}),
+    savedQueriesHint: SAVED_QUERY_HINT,
   };
 }
 
@@ -505,6 +554,11 @@ export const createDbtMetricTools = (
                   : {}),
                 timeGrains: TIME_GRAIN_HINT,
               },
+              ...savedQueriesField(
+                project.catalog.savedQueries.filter(saved =>
+                  saved.metrics.some(name => metrics.includes(name)),
+                ),
+              ),
               ...(metrics.length > 1 && groupBys.dimensions.length === 0
                 ? { message: await sharedNothingMessage(project, metrics) }
                 : {}),
@@ -544,6 +598,11 @@ export const createDbtMetricTools = (
             ...(manyProjects ? {} : projectNote(projects[0])),
             metrics: listed.items,
             total: listed.total,
+            ...(query
+              ? {}
+              : savedQueriesField(
+                  projects.flatMap(project => project.catalog.savedQueries),
+                )),
             ...(listed.truncated
               ? {
                   truncated: true,

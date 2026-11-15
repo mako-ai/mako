@@ -374,6 +374,92 @@ describe("list_metrics", () => {
     expect(result).not.toHaveProperty("warning");
   });
 
+  it("returns the whole definition and the saved queries", async () => {
+    await seedProject({
+      manifest: Buffer.from(
+        JSON.stringify({
+          semantic_models: [],
+          metrics: [
+            {
+              name: "visit_to_buy_rate",
+              type: "conversion",
+              type_params: {
+                conversion_type_params: {
+                  base_measure: { name: "visits" },
+                  conversion_measure: { name: "buys" },
+                  entity: "user",
+                  calculation: "conversion_rate",
+                  window: { count: 7, granularity: "day" },
+                },
+              },
+            },
+            {
+              name: "mrr_mtd",
+              type: "cumulative",
+              type_params: {
+                measure: { name: "mrr" },
+                cumulative_type_params: {
+                  grain_to_date: "month",
+                  period_agg: "last",
+                },
+              },
+              filter: {
+                where_filters: [
+                  { where_sql_template: "{{ Dimension('account__active') }}" },
+                ],
+              },
+            },
+          ],
+          saved_queries: [
+            {
+              name: "weekly_conversion",
+              query_params: {
+                metrics: ["visit_to_buy_rate"],
+                group_by: ["TimeDimension('metric_time', 'week')"],
+              },
+            },
+          ],
+        }),
+      ),
+    });
+    const described = await run<Record<string, unknown>>(tools.list_metrics, {
+      metrics: ["visit_to_buy_rate", "mrr_mtd"],
+    });
+    expect(described.metrics).toEqual([
+      {
+        name: "visit_to_buy_rate",
+        type: "conversion",
+        conversion: {
+          baseMeasure: "visits",
+          conversionMeasure: "buys",
+          entity: "user",
+          calculation: "conversion_rate",
+          window: "7 day",
+        },
+      },
+      {
+        name: "mrr_mtd",
+        type: "cumulative",
+        measure: "mrr",
+        grainToDate: "month",
+        periodAgg: "last",
+        filters: ["{{ Dimension('account__active') }}"],
+        filtered: true,
+      },
+    ]);
+    const saved = [
+      {
+        name: "weekly_conversion",
+        metrics: ["visit_to_buy_rate"],
+        groupBy: ["TimeDimension('metric_time', 'week')"],
+      },
+    ];
+    expect(described.savedQueries).toEqual(saved);
+    const listed = await run<Record<string, unknown>>(tools.list_metrics, {});
+    expect(listed.savedQueries).toEqual(saved);
+    expect(listed.savedQueriesHint).toMatch(/pass its metrics, groupBy/);
+  });
+
   it("says which metrics split when they share no dimension", async () => {
     await seedProject();
     engine.describe.mockImplementation(async (_key, names: string[]) => ({
