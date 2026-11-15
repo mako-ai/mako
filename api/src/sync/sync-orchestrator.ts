@@ -1140,6 +1140,65 @@ export async function performPrepareStaging(
   });
 }
 
+/**
+ * Merges whatever a previous attempt left in the backfill staging table into
+ * live, then drops the staging table for a fresh load.
+ *
+ * Use this instead of a bare `performPrepareStaging` wherever a flush follows.
+ * `performBulkFlush` deletes each batch from the temp buffer as soon as it is
+ * loaded into staging, so between that delete and a successful merge the
+ * staging table is the ONLY copy of those rows. An Inngest retry of the step
+ * (merge timeout, instance restart) used to start by dropping staging, which
+ * lost every batch the failed attempt had already loaded — whole
+ * FLUSH_BATCH_SIZE blocks, with the run still reporting "completed".
+ *
+ * `dedupOnly` (the per-flush steps): rescue only when the merge is keyed
+ * (`append_dedup`, the default), where merging the same rows twice is a
+ * no-op. A retry cannot tell whether the failed attempt's merge had already
+ * committed, or whether a batch in staging is also still in the buffer; in
+ * `append` / `overwrite` the merge is a plain INSERT, so a rescue there could
+ * write rows to live twice. Those modes keep the previous behaviour (drop
+ * staging and re-flush from the buffer).
+ *
+ * A merge failure is rethrown, so the caller never goes on to drop staging
+ * rows it could not merge. Adapters return `{ written: 0 }` for a missing or
+ * empty staging table; the only error treated as "nothing to rescue" is a
+ * destination dataset that does not exist yet (first run).
+ */
+export async function performRescueAndPrepareStaging(
+  options: SyncChunkOptions,
+  opts?: { dedupOnly?: boolean },
+): Promise<{ rescued: number }> {
+  const isDedup =
+    options.writeMode !== "append" && options.writeMode !== "overwrite";
+  let rescued = 0;
+  if (isDedup || !opts?.dedupOnly) {
+    try {
+      rescued = (await performStagingMerge(options)).written;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!STAGING_CONTAINER_MISSING.test(message)) {
+        throw err;
+      }
+    }
+  }
+  if (rescued > 0) {
+    orchestratorLogger.warn(
+      "Rescued staging rows left by a previous attempt before dropping staging",
+      { entity: options.entity, flowId: options.flowId, rescued },
+    );
+  }
+  await performPrepareStaging(options);
+  return { rescued };
+}
+
+// The destination dataset/database itself is missing: nothing was ever
+// staged. Deliberately does NOT match "Not found: Table …" — that is a real
+// merge failure (e.g. live table dropped under a stale schema cache), and
+// swallowing it would drop the staged rows.
+const STAGING_CONTAINER_MISSING =
+  /not found: dataset|was not found in location/i;
+
 export function getTempCollectionCount(
   flowId: string,
   entity: string,

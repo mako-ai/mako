@@ -2,6 +2,7 @@ import {
   performSyncChunk as performSyncChunkOrchestrated,
   performBulkFlush as performBulkFlushOrchestrated,
   performPrepareStaging as performPrepareStagingOrchestrated,
+  performRescueAndPrepareStaging as performRescueAndPrepareStagingOrchestrated,
   performOverwriteTruncate as performOverwriteTruncateOrchestrated,
   getTempCollectionCount as getTempCollectionCountOrchestrated,
   performStagingMerge as performStagingMergeOrchestrated,
@@ -42,6 +43,13 @@ export async function performPrepareStaging(
   options: SyncChunkOptions,
 ): Promise<void> {
   return performPrepareStagingOrchestrated(options);
+}
+
+export async function performRescueAndPrepareStaging(
+  options: SyncChunkOptions,
+  opts?: { dedupOnly?: boolean },
+): Promise<{ rescued: number }> {
+  return performRescueAndPrepareStagingOrchestrated(options, opts);
 }
 
 export async function performOverwriteTruncate(
