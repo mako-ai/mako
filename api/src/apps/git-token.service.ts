@@ -20,7 +20,13 @@
  * credential, reaches no other workspace, and expires. That is the same trade
  * every hosted dev environment makes, and it is the honest one.
  */
-import { createHmac, timingSafeEqual } from "crypto";
+import {
+  MISSING_TOKEN_SECRET,
+  decodeTokenBody,
+  signTokenPayload,
+  tokenSecret,
+  verifiedTokenBody,
+} from "./signed-token";
 
 const TOKEN_PREFIX = "mgt_"; // mako git token
 
@@ -59,17 +65,9 @@ export class GitTokenError extends Error {
 }
 
 function resolveSecret(): string {
-  const secret = process.env.SESSION_SECRET || process.env.ENCRYPTION_KEY;
-  if (!secret) {
-    throw new GitTokenError(
-      "Missing HMAC secret: set SESSION_SECRET or ENCRYPTION_KEY",
-    );
-  }
+  const secret = tokenSecret();
+  if (!secret) throw new GitTokenError(MISSING_TOKEN_SECRET);
   return secret;
-}
-
-function sign(body: string, secret: string): string {
-  return createHmac("sha256", secret).update(body).digest("base64url");
 }
 
 export function mintGitToken(input: {
@@ -89,30 +87,23 @@ export function mintGitToken(input: {
     iat: now,
     exp: now + (input.ttlSeconds ?? DEFAULT_TTL_SECONDS),
   };
-  const body = Buffer.from(JSON.stringify(payload), "utf8").toString(
-    "base64url",
-  );
-  return `${TOKEN_PREFIX}${body}.${sign(body, resolveSecret())}`;
+  return `${TOKEN_PREFIX}${signTokenPayload(payload, resolveSecret())}`;
 }
 
 export function verifyGitToken(token: string): GitTokenPayload {
   if (!token.startsWith(TOKEN_PREFIX)) {
     throw new GitTokenError("Not a git token");
   }
-  const [body, signature] = token.slice(TOKEN_PREFIX.length).split(".");
-  if (!body || !signature) throw new GitTokenError("Malformed git token");
-
-  const expected = Buffer.from(sign(body, resolveSecret()), "utf8");
-  const actual = Buffer.from(signature, "utf8");
-  // Length-check first: timingSafeEqual THROWS on a length mismatch rather
-  // than returning false, which would turn a forged token into a 500.
-  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+  const rest = token.slice(TOKEN_PREFIX.length);
+  // Malformed before the secret: a token with no signature part says so
+  // even on a host with no secret configured.
+  const [head, tail] = rest.split(".");
+  if (!head || !tail) throw new GitTokenError("Malformed git token");
+  const verified = verifiedTokenBody(rest, resolveSecret());
+  if ("error" in verified) {
     throw new GitTokenError("Bad git token signature");
   }
-
-  const payload = JSON.parse(
-    Buffer.from(body, "base64url").toString("utf8"),
-  ) as GitTokenPayload;
+  const payload = decodeTokenBody<GitTokenPayload>(verified.body);
   if (payload.v !== 1 || payload.scope !== "git") {
     throw new GitTokenError("Unsupported git token");
   }

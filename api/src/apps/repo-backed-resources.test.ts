@@ -20,7 +20,8 @@ import { join } from "node:path";
  */
 
 const SRC = join(__dirname, "..");
-const worktree = readFileSync(join(SRC, "apps/worktree.service.ts"), "utf8");
+// The push reactions of the worktree service (apps/worktree/push.ts).
+const worktree = readFileSync(join(SRC, "apps/worktree/push.ts"), "utf8");
 const webhook = readFileSync(join(SRC, "routes/github.routes.ts"), "utf8");
 
 // Every repo-backed resource is reconciled from exactly one place.

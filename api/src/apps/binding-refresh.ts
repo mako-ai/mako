@@ -17,6 +17,7 @@
  * is one build, not N), and a binding declared `-- materialization: live`
  * has no artifact to rebuild — the runtime just re-fetches it.
  */
+import { isValidBindingName } from "./binding-name";
 import type { IAppProject } from "../database/workspace-schema";
 import {
   claimPublicBindingRefresh,
@@ -35,8 +36,6 @@ import {
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps");
-
-const NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 
 /**
  * The app-relative refresh path, as seen by a host that has already stripped
@@ -121,7 +120,7 @@ export async function refreshAppBinding(
   deps: RefreshBindingDeps = defaultDeps,
 ): Promise<RefreshBindingResult> {
   const { project, name, actorId, at, cooldownMs } = input;
-  if (!NAME_RE.test(name)) {
+  if (!isValidBindingName(name)) {
     throw new BindingRefreshError("Invalid binding name", 400);
   }
   reportBindingPhase("checking");

@@ -21,6 +21,11 @@ import {
   AppProject,
   type AppDeployCommitState,
 } from "../database/workspace-schema";
+import {
+  clipStatusDescription,
+  logStatusPostFailure,
+  makoClientUrl,
+} from "./commit-status";
 import { isAncestorCommit } from "./git";
 import { resolveMirrorTarget } from "./cloud-repo.service";
 import {
@@ -33,17 +38,9 @@ const logger = loggers.api("apps-deploy-status");
 
 export type AppDeployStatusState = "pending" | "success" | "failure";
 
-/** GitHub caps a status description at 140 characters. */
-const DESCRIPTION_MAX_CHARS = 140;
-
 /** One status line per app, so a push touching three apps shows three. */
 export function appDeployStatusContext(appPath: string): string {
   return `mako/app-deploy: ${appPath}`;
-}
-
-function clip(text: string, max = DESCRIPTION_MAX_CHARS): string {
-  const oneLine = text.replace(/\s+/g, " ").trim();
-  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 }
 
 /**
@@ -68,14 +65,13 @@ export function describeDeployFailure(
   if (headline.endsWith(":") && lines[index + 1]) {
     headline = `${headline} ${lines[index + 1]}`;
   }
-  return clip(stage ? `${stage} failed: ${headline}` : headline);
+  return clipStatusDescription(
+    stage ? `${stage} failed: ${headline}` : headline,
+  );
 }
 
 export type AppDeployOutcome =
-  | "built"
-  | "already-built"
-  | "gone"
-  | "superseded";
+  "built" | "already-built" | "gone" | "superseded";
 
 export function describeDeployOutcome(outcome: AppDeployOutcome): {
   state: AppDeployStatusState;
@@ -100,24 +96,13 @@ export function describeDeployOutcome(outcome: AppDeployOutcome): {
 
 /** Where the status links to: the app in Mako, whose chip shows the error. */
 export function appDeployTargetUrl(appId: string): string | undefined {
-  const base = (process.env.CLIENT_URL || process.env.PUBLIC_URL || "").replace(
-    /\/+$/,
-    "",
-  );
-  return base ? `${base}/apps/${encodeURIComponent(appId)}` : undefined;
+  return makoClientUrl(`/apps/${encodeURIComponent(appId)}`);
 }
 
 // Workspaces already warned about a permission problem, so one whose GitHub
 // App lacks "Commit statuses: write" logs it once per process, not three
 // times per deploy.
 const warnedWorkspaces = new Set<string>();
-
-function isPermissionError(message: string): boolean {
-  return (
-    /GitHub 40[34]\b/.test(message) ||
-    /Resource not accessible by integration/i.test(message)
-  );
-}
 
 export interface ReportAppDeployStatusInput {
   workspaceId: string;
@@ -233,7 +218,7 @@ export async function reportAppDeployStatus(
         commit,
         {
           state,
-          description: clip(text),
+          description: clipStatusDescription(text),
           context: appDeployStatusContext(appRootFor(project)),
           targetUrl: appDeployTargetUrl(appId),
         },
@@ -274,24 +259,14 @@ export async function reportAppDeployStatus(
     await post(sha, state, input.description);
     return { posted: true };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const permission = isPermissionError(message);
-    if (!permission || !warnedWorkspaces.has(workspaceId)) {
-      if (permission) warnedWorkspaces.add(workspaceId);
-      logger.warn("Could not post app deploy commit status", {
-        workspaceId,
-        appId,
-        sha,
-        state,
-        error: message,
-        ...(permission
-          ? {
-              hint: 'Grant the GitHub App "Commit statuses: Read and write" and accept it on the installation',
-            }
-          : {}),
-      });
-    }
-    return { posted: false, reason: permission ? "permission" : "error" };
+    const reason = logStatusPostFailure(
+      logger,
+      "Could not post app deploy commit status",
+      error,
+      warnedWorkspaces,
+      { workspaceId, appId, sha, state },
+    );
+    return { posted: false, reason };
   }
 }
 

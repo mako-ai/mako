@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -12,7 +12,16 @@ import { join } from "node:path";
  * list, not APPS_REQUIRE_CONNECTED_REPO.
  */
 
-const apps = readFileSync(join(__dirname, "apps.ts"), "utf8");
+// The apps routes: the mounting module plus its per-concern sub-routers.
+const appsDir = join(__dirname, "apps");
+const apps = [
+  join(__dirname, "apps.ts"),
+  ...readdirSync(appsDir)
+    .filter(name => name.endsWith(".ts") && !name.endsWith(".test.ts"))
+    .map(name => join(appsDir, name)),
+]
+  .map(file => readFileSync(file, "utf8"))
+  .join("\n");
 
 assert.equal(
   apps.includes("appsRequireConnectedRepo"),
