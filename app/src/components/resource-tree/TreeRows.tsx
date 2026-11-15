@@ -1,4 +1,9 @@
-import React, { createContext, useContext, type ReactNode } from "react";
+import React, {
+  createContext,
+  useContext,
+  type HTMLAttributes,
+  type ReactNode,
+} from "react";
 import {
   Box,
   ListItemButton,
@@ -141,7 +146,15 @@ function RightAdornment({ children }: { children: ReactNode }) {
   return children ? <Box sx={RIGHT_ADORNMENT_SX}>{children}</Box> : null;
 }
 
-interface RowProps {
+/**
+ * Extra DOM props a wrapper attaches to a row: dnd-kit's drag listeners and
+ * attributes (DraggableTreeItem) and the sticky header's `pointer-events`
+ * style (StickyScopeBox). They go on the row's ListItemButton, before its own
+ * handlers, so the row's click/context-menu/rename handlers still win.
+ */
+type PassThroughProps = HTMLAttributes<HTMLElement>;
+
+interface RowProps extends PassThroughProps {
   /** A layout-only copy (sticky headers draw the live one on top of it). */
   ghost?: boolean;
 }
@@ -149,6 +162,7 @@ interface RowProps {
 export function FolderRow({
   row,
   ghost,
+  ...passThrough
 }: RowProps & { row: Extract<FlatRow, { kind: "folder" }> }) {
   const c = useTreeRowConfig();
   const { node, depth, sectionKey, isExpanded } = row;
@@ -176,6 +190,7 @@ export function FolderRow({
 
   return (
     <ListItemButton
+      {...(ghost ? {} : passThrough)}
       data-node-id={ghost ? undefined : node.id}
       aria-hidden={ghost || undefined}
       tabIndex={ghost ? -1 : undefined}
@@ -274,7 +289,10 @@ export function FolderRow({
   );
 }
 
-export function FileRow({ row }: { row: Extract<FlatRow, { kind: "file" }> }) {
+export function FileRow({
+  row,
+  ...passThrough
+}: PassThroughProps & { row: Extract<FlatRow, { kind: "file" }> }) {
   const c = useTreeRowConfig();
   const { node, depth } = row;
   const canManage = c.resolveCanManage(node);
@@ -287,6 +305,7 @@ export function FileRow({ row }: { row: Extract<FlatRow, { kind: "file" }> }) {
 
   return (
     <ListItemButton
+      {...passThrough}
       data-node-id={node.id}
       selected={isActive}
       onClick={() => c.onFileRowClick(node)}
@@ -327,6 +346,7 @@ export function FileRow({ row }: { row: Extract<FlatRow, { kind: "file" }> }) {
 export function SectionHeaderRow({
   section,
   ghost,
+  ...passThrough
 }: RowProps & { section: ResourceTreeSection }) {
   const c = useTreeRowConfig();
   const headerSelected =
@@ -337,6 +357,7 @@ export function SectionHeaderRow({
 
   return (
     <ListItemButton
+      {...(ghost ? {} : passThrough)}
       aria-hidden={ghost || undefined}
       tabIndex={ghost ? -1 : undefined}
       selected={headerSelected}

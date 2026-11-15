@@ -23,12 +23,18 @@ const sections: ResourceTreeSection[] = [
   },
 ];
 
-function Harness({ onItemClick }: { onItemClick: (id: string) => void }) {
+function Harness({
+  onItemClick,
+  enableDragDrop = false,
+}: {
+  onItemClick: (id: string) => void;
+  enableDragDrop?: boolean;
+}) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   return (
     <ResourceTree
       sections={sections}
-      enableDragDrop={false}
+      enableDragDrop={enableDragDrop}
       isFolderExpanded={key => !!expanded[key]}
       onToggleFolder={key => setExpanded(p => ({ ...p, [key]: !p[key] }))}
       onExpandFolder={key => setExpanded(p => ({ ...p, [key]: true }))}
@@ -44,8 +50,42 @@ const liveRow = (id: string) => {
   return el as HTMLElement;
 };
 
+/**
+ * The inline pointer-events in effect for an element: the nearest ancestor
+ * (or itself) that sets one. jsdom ignores pointer-events in hit testing, so
+ * this checks the styles a browser would apply.
+ */
+const effectivePointerEvents = (el: HTMLElement | null) => {
+  for (let node = el; node; node = node.parentElement) {
+    if (node.style.pointerEvents) return node.style.pointerEvents;
+  }
+  return "auto";
+};
+
 describe("ResourceTree (flat rows)", () => {
   afterEach(cleanup);
+
+  it("attaches drag handlers to file and folder rows", () => {
+    render(<Harness onItemClick={vi.fn()} enableDragDrop />);
+    // dnd-kit's attributes reach the row's own button, not a dropped prop.
+    expect(liveRow("scratch").getAttribute("aria-roledescription")).toBe(
+      "draggable",
+    );
+    expect(liveRow("reports").getAttribute("aria-roledescription")).toBe(
+      "draggable",
+    );
+  });
+
+  it("keeps pinned headers clickable inside their pointer-events:none scope", () => {
+    render(<Harness onItemClick={vi.fn()} enableDragDrop />);
+    fireEvent.click(liveRow("reports"));
+    expect(effectivePointerEvents(liveRow("reports"))).not.toBe("none");
+    const header = screen
+      .getAllByText("My Consoles")
+      .map(el => el.closest(".MuiListItemButton-root") as HTMLElement | null)
+      .find(el => el && el.getAttribute("aria-hidden") !== "true");
+    expect(effectivePointerEvents(header ?? null)).not.toBe("none");
+  });
 
   it("expands and collapses folders on click", () => {
     render(<Harness onItemClick={vi.fn()} />);
