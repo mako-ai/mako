@@ -97,6 +97,8 @@ Session cookie or `Authorization: Bearer revops_*` API key required. Use the dat
 | `POST` | `/api/workspaces/:wid/execute/export`                | Stream results as `format` = `arrow`, `parquet`, `ndjson`, or `csv`                  |
 | `POST` | `/api/workspaces/:wid/execute/cancel`                | Cancel an in-flight query by `executionId`                                           |
 
+Both execute routes cap results at `QUERY_EXECUTE_MAX_ROWS` (default 50,000); a cut result is marked `truncated` with `rowCount` and `rowLimit`. A workspace **viewer** can only read: a write is refused with `403` even if the viewer is listed as a connection writer, and reads run in a read-only transaction where the engine has one. Request `options` are allow-listed, so a caller cannot set `writeChecked`, `actor` or `readOnlyTransaction`. MongoDB shell queries are parsed and interpreted, not evaluated: only `db` chains, the driver's collection and cursor methods, literals and the shell value helpers (`ObjectId`, `ISODate`, …) run, and anything else (`process`, `require`, `this`, functions, `import()`) is refused with an error before any call is made.
+
 :::caution[Breaking change]
 The legacy unauthenticated `POST /api/execute` and `POST /api/run/:path` endpoints were removed in [#401](https://github.com/mako-ai/mako/pull/401) (they allowed unauthenticated RCE). Callers must move to the workspace-scoped endpoints above and authenticate with a session cookie or `Bearer revops_*` API key.
 :::

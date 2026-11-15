@@ -75,6 +75,14 @@ resync:
 
 This uses the same scoped path as the per-entity **Sync** button. Leave `entities` out (or empty) for a full resync. Schedules saved from the UI keep the list. (Format 1 files call this `backfill_schedule`; it still parses.)
 
+### Webhook Authentication
+
+Connectors with native signature verification (Stripe, Close, Wise, Claap, Calendly, PandaDoc) are checked against the provider's signature. For any other connector, an inbound delivery to `POST /api/webhooks/:workspaceId/:flowId` must present the sync's webhook secret, as an `X-Mako-Webhook-Token` header, an `Authorization: Bearer` token, or `?token=` for senders that cannot set headers. The secret is compared in constant time. A sync with no secret configured takes no deliveries and answers `401`, so set the secret in the sync form (or `webhookSecret` through the API) and give it to the sender.
+
+### Run History Retention
+
+Finished runs (completed, failed, cancelled or abandoned) expire `FLOW_EXECUTION_RETENTION_DAYS` days (default 90) after they ended; a running execution is never expired. See [Deployment](/deployment/).
+
 ### Webhook Subscriptions Follow Flow Entities
 
 For connectors that can update their provider-side webhook subscription (Stripe today), Mako keeps the subscription's event list in step with the flow's enabled entities:
