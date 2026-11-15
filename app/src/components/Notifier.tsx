@@ -1,7 +1,17 @@
 import { useEffect, useState } from "react";
 import { Alert, Button, IconButton, Snackbar } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
-import { useNotificationStore } from "../store/notificationStore";
+import {
+  removeNotification,
+  useNotificationStore,
+  type NotificationAnchor,
+} from "../store/notificationStore";
+
+const DEFAULT_AUTO_HIDE_MS = 4000;
+const DEFAULT_ANCHOR: NotificationAnchor = {
+  vertical: "bottom",
+  horizontal: "left",
+};
 
 /**
  * The one toast host: renders the head of the notification queue. Mounted
@@ -15,7 +25,6 @@ import { useNotificationStore } from "../store/notificationStore";
 export function Notifier() {
   const current = useNotificationStore(s => s.queue[0]);
   const hasNext = useNotificationStore(s => s.queue.length > 1);
-  const remove = useNotificationStore(s => s.remove);
   const [open, setOpen] = useState(false);
 
   const currentId = current?.id;
@@ -47,10 +56,16 @@ export function Notifier() {
     <Snackbar
       key={current.id}
       open={open}
-      autoHideDuration={current.autoHideDuration}
+      autoHideDuration={
+        current.autoHideDuration === undefined
+          ? DEFAULT_AUTO_HIDE_MS
+          : current.autoHideDuration
+      }
       onClose={() => setOpen(false)}
-      anchorOrigin={current.anchorOrigin}
-      slotProps={{ transition: { onExited: () => remove(current.id) } }}
+      anchorOrigin={current.anchorOrigin ?? DEFAULT_ANCHOR}
+      slotProps={{
+        transition: { onExited: () => removeNotification(current.id) },
+      }}
       message={current.severity ? undefined : current.message}
       action={current.severity ? undefined : actionButton}
     >
@@ -58,7 +73,7 @@ export function Notifier() {
         <Alert
           onClose={() => setOpen(false)}
           severity={current.severity}
-          variant={current.variant}
+          variant={current.variant ?? "standard"}
           // An explicit action replaces Alert's built-in close button, so
           // render both.
           action={

@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  DEFAULT_ANCHOR,
-  DEFAULT_AUTO_HIDE_MS,
   notify,
+  removeNotification,
   useNotificationStore,
 } from "./notificationStore";
 
@@ -13,7 +12,7 @@ describe("notificationStore", () => {
     useNotificationStore.setState({ queue: [] });
   });
 
-  it("queues toasts with defaults and per-call options", () => {
+  it("queues toasts with their per-call options", () => {
     notify.success("Saved");
     notify.error("Nope", {
       autoHideDuration: 6000,
@@ -23,14 +22,8 @@ describe("notificationStore", () => {
     notify.message("Plain");
 
     expect(queue()).toHaveLength(3);
-    expect(queue()[0]).toMatchObject({
-      message: "Saved",
-      severity: "success",
-      autoHideDuration: DEFAULT_AUTO_HIDE_MS,
-      anchorOrigin: DEFAULT_ANCHOR,
-      variant: "standard",
-      closing: false,
-    });
+    expect(queue()[0]).toMatchObject({ message: "Saved", severity: "success" });
+    expect(queue()[0].closing).toBeFalsy();
     expect(queue()[1]).toMatchObject({
       severity: "error",
       autoHideDuration: 6000,
@@ -77,7 +70,7 @@ describe("notificationStore", () => {
     const reshown = notify.success("One");
     expect(reshown).not.toBe(visible);
 
-    useNotificationStore.getState().remove(visible);
+    removeNotification(visible);
     expect(queue().map(n => n.id)).toEqual([reshown]);
   });
 
