@@ -334,7 +334,13 @@ export async function exportConsoleResults(input: {
     _id: new Types.ObjectId(consoleId),
     workspaceId: new Types.ObjectId(workspaceId),
   });
-  if (!savedConsole) {
+  // Same read rule as execute: a console the caller cannot read (private,
+  // or in a folder they cannot see) is "not found", not exportable.
+  if (
+    !savedConsole ||
+    (input.userId &&
+      !(await canReadConsoleWithInheritance(savedConsole, input.userId)))
+  ) {
     return { ok: false, status: 404, error: "Console not found" };
   }
   if (!savedConsole.connectionId) {

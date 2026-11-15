@@ -62,6 +62,10 @@ consoleHistoryRoutes.openapi(
   }),
   async c => {
     try {
+      // The comment is generated against the stored console: only someone
+      // who can read that console may ask for one.
+      const loaded = await loadReadableConsole(c, { write: false });
+      if (loaded instanceof Response) return loaded;
       const user = c.get("user");
       if (!user) return accessDenied(c);
 
