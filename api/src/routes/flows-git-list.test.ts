@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -8,7 +8,21 @@ import { join } from "node:path";
  * (issue #956, after #961 made git the write store).
  */
 
-const flows = readFileSync(join(__dirname, "flows.ts"), "utf8");
+const flowsDir = join(__dirname, "flows");
+// The router module plus its sub-routers; shared.ts first so the helper
+// definitions precede every call site.
+const flows = [
+  join(__dirname, "flows.ts"),
+  join(flowsDir, "shared.ts"),
+  ...readdirSync(flowsDir)
+    .filter(
+      f => f.endsWith(".ts") && f !== "shared.ts" && !f.includes(".test."),
+    )
+    .sort()
+    .map(f => join(flowsDir, f)),
+]
+  .map(f => readFileSync(f, "utf8"))
+  .join("\n");
 const sync = readFileSync(
   join(__dirname, "../services/flow-sync.service.ts"),
   "utf8",
@@ -32,7 +46,8 @@ assert.ok(
 
 assert.ok(
   flows.includes("loadLiveFlowById") &&
-    flows.includes('error: "Flow not found"'),
+    (flows.includes('error: "Flow not found"') ||
+      flows.includes('fail(c, 404, "Flow not found")')),
   "GET /{flowId} must 404 when the file is missing or the workspace is unbound",
 );
 
