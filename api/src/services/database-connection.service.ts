@@ -1,17 +1,6 @@
-import {
-  checkConnectionWrite,
-  inReadOnlyTransaction,
-  isWrite,
-  ownResult,
-} from "../access/connection-writes";
+import { checkConnectionWrite, isWrite } from "../access/connection-writes";
 import { createClient } from "@clickhouse/client";
 import { MongoClient, Db, MongoClientOptions, ClientSession } from "mongodb";
-import {
-  Client as PgClient,
-  Pool as PgPool,
-  type PoolClient,
-  type QueryResult as PgQueryResult,
-} from "pg";
 import * as mysql from "mysql2/promise";
 import { ConnectionPool, Request as MSSQLRequest } from "mssql";
 import { IDatabaseConnection } from "../database/workspace-schema";
@@ -19,6 +8,7 @@ import axios, { AxiosInstance } from "axios";
 import crypto from "crypto";
 import { DatabaseDriver } from "../databases/driver";
 import type {
+  CancelResult,
   CursorReadOptions,
   QueryExecuteOptions,
   QueryPreviewOptions,
@@ -31,12 +21,11 @@ import { withRetry } from "../databases/retry";
 import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-postgres/driver";
 import { CloudflareD1DatabaseDriver } from "../databases/drivers/cloudflare-d1/driver";
 import { CloudflareKVDatabaseDriver } from "../databases/drivers/cloudflare-kv/driver";
+import { mapPostgresOidToType } from "../databases/drivers/postgresql/pg-type-utils";
 import {
-  mapPostgresOidToType,
-  normalizePostgresFields,
-  normalizePostgresRows,
-} from "../databases/drivers/postgresql/pg-type-utils";
-import { pgBackendPid } from "../databases/drivers/postgresql/pg-backend-pid";
+  cursorReadable,
+  postgresEngine,
+} from "../databases/drivers/postgresql/engine";
 import { loggers } from "../logging";
 import { createBigQueryPollBudget } from "./bigquery-poll-budget";
 import { sshTunnelManager, type SshTunnelConfig } from "./ssh-tunnel.service";
@@ -53,11 +42,8 @@ import {
   prepareSqlBatchQuery,
   prepareSqlPreviewQuery,
   resolvePreviewPageSize,
-  stripLeadingSqlComments,
 } from "./query-pagination.service";
-import { countTopLevelSemicolons } from "./sql-query-utils";
 import { MongoShellError, runMongoShellQuery } from "./mongo-shell-interpreter";
-import { StopReading } from "./query-row-cap";
 
 const logger = loggers.db();
 
@@ -78,26 +64,6 @@ export type ConnectionContext =
 export interface ConnectionConfig {
   connectionString: string;
   database: string;
-}
-
-/** Rows a Postgres cursor fetches at a time. */
-const CURSOR_FETCH_ROWS = 1000;
-
-/**
- * The query without its trailing semicolon, when it is one statement that a
- * Postgres cursor can read (a SELECT, WITH, VALUES or TABLE that writes
- * nothing); null otherwise.
- */
-function cursorReadable(query: string): string | null {
-  const statement = stripLeadingSqlComments(query.trim());
-  if (!/^[\s(]*(select|with|values|table)\b/i.test(statement)) return null;
-  if (isWrite("postgresql", query)) return null;
-  const { count, lastIndex } = countTopLevelSemicolons(statement);
-  if (count === 0) return statement;
-  if (count === 1 && lastIndex === statement.trimEnd().length - 1) {
-    return statement.trimEnd().slice(0, -1);
-  }
-  return null;
 }
 
 interface PooledConnection {
@@ -216,12 +182,6 @@ export class DatabaseConnectionService {
     }
   > = new Map();
 
-  // Track running PostgreSQL queries for cancellation
-  private runningPostgresQueries: Map<
-    string,
-    { database: IDatabaseConnection; pid: number; cancelled?: boolean }
-  > = new Map();
-
   // Track running MySQL queries for cancellation (KILL QUERY <threadId>)
   private runningMySQLQueries: Map<
     string,
@@ -333,7 +293,7 @@ export class DatabaseConnectionService {
     // Cloud SQL)
     this.cleanupInterval = setInterval(() => {
       void this.cleanupIdleMongoConnections();
-      void this.cleanupIdlePostgresPools();
+      void postgresEngine.sweepIdleConnections(this.userDatabaseMaxIdleTime);
       void this.cleanupIdleMySQLPools();
       void this.cloudSqlDriver
         .cleanupIdleConnections(this.userDatabaseMaxIdleTime)
@@ -364,7 +324,7 @@ export class DatabaseConnectionService {
           return await this.testMongoDBConnection(database);
         case "postgresql":
         case "redshift":
-          return await this.testPostgreSQLConnection(database);
+          return await postgresEngine.testConnection(database);
         case "mysql":
           return await this.testMySQLConnection(database);
         case "mssql":
@@ -518,117 +478,6 @@ export class DatabaseConnectionService {
       }
     }
     return result;
-  }
-
-  /**
-   * A Postgres read through a cursor: DECLARE once, FETCH a batch at a time
-   * in one transaction (read-only where the caller may not write), so the
-   * statement runs once and is one snapshot.
-   *
-   * `onRows` may be async (it is awaited before the next FETCH, so a slow
-   * consumer applies backpressure); `fetchRows` sets the batch size; and
-   * `keepRows: false` streams without accumulating the result in `data`.
-   */
-  private async executePostgreSQLCursor(
-    database: IDatabaseConnection,
-    query: string,
-    options: CursorReadOptions,
-  ): Promise<QueryResult> {
-    const { executionId, signal, timeoutMs } = options;
-    const fetchRows = Math.max(
-      1,
-      Math.floor(options.fetchRows ?? CURSOR_FETCH_ROWS),
-    );
-    const keepRows = options.keepRows !== false;
-    try {
-      if (signal?.aborted) return { success: false, error: "Query cancelled" };
-      const pool = await this.getPostgresPool(
-        database,
-        options.databaseName || database.connection.database,
-      );
-      const client = await withRetry(async () => pool.connect(), {
-        maxRetries: this.postgresMaxRetries,
-        baseDelayMs: this.postgresRetryBaseDelayMs,
-        signal,
-      });
-      let open = false;
-      let release: (() => void) | undefined;
-      try {
-        release = await this.trackPostgresQuery(
-          database,
-          client,
-          executionId,
-          signal,
-        );
-        await client.query(
-          options.readOnly || options.readOnlyTransaction
-            ? "BEGIN TRANSACTION READ ONLY"
-            : "BEGIN",
-        );
-        open = true;
-        if (timeoutMs) {
-          await client.query(
-            `SET LOCAL statement_timeout = ${Math.max(1, Math.floor(timeoutMs))}`,
-          );
-        }
-        // On its own lines: a trailing `-- comment` cannot eat the rest.
-        await client.query(
-          `DECLARE _mako_rows NO SCROLL CURSOR FOR\n${query}\n`,
-        );
-        const rows: Record<string, unknown>[] = [];
-        let rowCount = 0;
-        let fields: ReturnType<typeof normalizePostgresFields> | undefined;
-        for (;;) {
-          if (signal?.aborted) {
-            return { success: false, error: "Query cancelled" };
-          }
-          // pg reads query_timeout per query; its types do not list it.
-          const batch = await client.query({
-            text: `FETCH ${fetchRows} FROM _mako_rows`,
-            ...(timeoutMs ? { query_timeout: timeoutMs } : {}),
-          } as { text: string });
-          fields ??= normalizePostgresFields(batch.fields);
-          const batchRows = normalizePostgresRows(
-            batch.rows as Record<string, unknown>[],
-            fields,
-          );
-          // StopReading ends the read with what was read (a row cap).
-          let stop = false;
-          if (keepRows || batchRows.length > 0) {
-            try {
-              await options.onRows(batchRows);
-            } catch (error) {
-              if (!(error instanceof StopReading)) throw error;
-              stop = true;
-            }
-          }
-          rowCount += batchRows.length;
-          if (keepRows) rows.push(...batchRows);
-          if (stop || batch.rows.length < fetchRows) break;
-        }
-        await client.query("COMMIT");
-        open = false;
-        return {
-          success: true,
-          data: keepRows ? rows : undefined,
-          rowCount,
-          fields,
-        };
-      } finally {
-        if (open) await client.query("ROLLBACK").catch(() => undefined);
-        if (release) release();
-        else client.release();
-      }
-    } catch (error: any) {
-      if (error?.message?.includes("canceling statement due to user request")) {
-        return { success: false, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "PostgreSQL query failed",
-      };
-    }
   }
 
   async executePreviewQuery(
@@ -1023,7 +872,7 @@ export class DatabaseConnectionService {
 
     // For PostgreSQL and Redshift (PostgreSQL wire-compatible), use dedicated pool management
     if (database.type === "postgresql" || database.type === "redshift") {
-      return this.getPostgresPool(database);
+      return postgresEngine.getPool(database);
     }
 
     // For MySQL, use dedicated pool management
@@ -1081,7 +930,7 @@ export class DatabaseConnectionService {
   async invalidateConnection(databaseId: string): Promise<void> {
     const steps: Array<[string, () => Promise<void> | void]> = [
       ["mongodb", () => this.closeMongoConnection("datasource", databaseId)],
-      ["postgresql", () => this.closePostgresPool(databaseId)],
+      ["postgresql", () => postgresEngine.closeConnection(databaseId)],
       ["mysql", () => this.closeMySQLPool(databaseId)],
       ["cached", () => this.closeCachedConnection(databaseId)],
     ];
@@ -1145,7 +994,7 @@ export class DatabaseConnectionService {
     );
 
     // Close PostgreSQL pools
-    await this.closeAllPostgresPools();
+    await postgresEngine.closeAllConnections();
 
     // Close MySQL pools
     await this.closeAllMySQLPools();
@@ -2395,67 +2244,27 @@ export class DatabaseConnectionService {
     return columns;
   }
 
-  /**
-   * Cancel a running PostgreSQL query
-   *
-   * IMPORTANT: This intentionally creates a dedicated client outside the pool.
-   * Since the pool has limited connections (max: 2), using pool.query() would
-   * deadlock if all connections are occupied by running queries—the cancellation
-   * request would wait for a connection that can never be released because the
-   * query being cancelled is holding it.
-   */
-  async cancelPostgresQuery(
-    executionId: string,
-  ): Promise<{ success: boolean; error?: string }> {
-    const query = this.runningPostgresQueries.get(executionId);
-    if (!query) {
-      return { success: false, error: "Query not found or already completed" };
-    }
-    // Marked first: the query's release then retires its client (see
-    // trackPostgresQuery) rather than pool a backend a cancel is aimed at.
-    query.cancelled = true;
-    const result = await this.cancelPostgresBackend(query.database, query.pid);
-    if (result.success) this.runningPostgresQueries.delete(executionId);
-    return result;
+  // The PostgreSQL engine's entry points, by name: route tests stub these
+  // on the service to see what reaches the database.
+  private executePostgreSQLQuery(
+    database: IDatabaseConnection,
+    query: string,
+    options?: QueryExecuteOptions,
+  ): Promise<QueryResult> {
+    return postgresEngine.executeQuery(database, query, options);
   }
 
-  /**
-   * `pg_cancel_backend(pid)` from a dedicated connection outside the pool
-   * (a pooled one could deadlock: see cancelPostgresQuery).
-   */
-  private async cancelPostgresBackend(
+  private executePostgreSQLCursor(
     database: IDatabaseConnection,
-    pid: number,
-  ): Promise<{ success: boolean; error?: string }> {
-    let cancelClient: PgClient | null = null;
-    try {
-      // Create a dedicated connection outside the pool for cancellation
-      // This avoids deadlock when all pool connections are busy
-      const config = this.buildPostgreSQLConfig(database);
-      cancelClient = new PgClient(config);
-      await cancelClient.connect();
-      const res = await cancelClient.query<{ cancelled: boolean }>(
-        "SELECT pg_cancel_backend($1) as cancelled",
-        [pid],
-      );
-      const cancelled = res.rows?.[0]?.cancelled;
-      if (!cancelled) {
-        return {
-          success: false,
-          error: "Failed to cancel query (pg_cancel_backend returned false)",
-        };
-      }
-      return { success: true };
-    } catch (error: any) {
-      return {
-        success: false,
-        error: error?.message || "Failed to cancel query",
-      };
-    } finally {
-      if (cancelClient) {
-        await cancelClient.end().catch(() => {});
-      }
-    }
+    query: string,
+    options: CursorReadOptions,
+  ): Promise<QueryResult> {
+    return postgresEngine.readCursor(database, query, options);
+  }
+
+  /** Cancel a running PostgreSQL query by its executionId. */
+  async cancelPostgresQuery(executionId: string): Promise<CancelResult> {
+    return postgresEngine.cancelQuery(executionId);
   }
 
   /**
@@ -2640,7 +2449,7 @@ export class DatabaseConnectionService {
       return this.cancelBigQueryJob(executionId);
     }
     // Try PostgreSQL
-    if (this.runningPostgresQueries.has(executionId)) {
+    if (postgresEngine.runningQueries.has(executionId)) {
       return this.cancelPostgresQuery(executionId);
     }
     // Try MongoDB
@@ -3641,395 +3450,9 @@ export class DatabaseConnectionService {
 
   // PostgreSQL specific methods
 
-  // PostgreSQL connection pools with lastUsed tracking (keyed by databaseId:databaseName)
-  private postgresPools: Map<string, { pool: PgPool; lastUsed: Date }> =
-    new Map();
-
   // MySQL connection pools with lastUsed tracking (keyed by databaseId:databaseName)
   private mysqlPools: Map<string, { pool: mysql.Pool; lastUsed: Date }> =
     new Map();
-
-  /**
-   * Build PostgreSQL pool/client configuration with timeout settings
-   * Supports both connection string and individual fields
-   */
-  private buildPostgreSQLConfig(
-    database: IDatabaseConnection,
-    targetDatabase?: string,
-  ) {
-    const conn = database.connection;
-    const baseConfig = {
-      connectionTimeoutMillis: this.postgresConnectionTimeoutMs,
-      query_timeout: this.postgresQueryTimeoutMs,
-      statement_timeout: this.postgresQueryTimeoutMs,
-    };
-
-    // If connection string is provided, use it directly
-    if (conn.connectionString) {
-      let connectionString = conn.connectionString;
-
-      // If a target database is specified, we need to modify the connection string
-      if (targetDatabase) {
-        try {
-          const url = new URL(connectionString);
-          url.pathname = `/${targetDatabase}`;
-          connectionString = url.toString();
-        } catch {
-          // If URL parsing fails, just use the original connection string
-        }
-      }
-
-      return {
-        connectionString,
-        ssl: conn.ssl ? { rejectUnauthorized: false } : undefined,
-        ...baseConfig,
-      };
-    }
-
-    // Build from individual fields (Redshift default port 5439)
-    const defaultPort = database.type === "redshift" ? 5439 : 5432;
-    return {
-      host: conn.host,
-      port: conn.port ?? defaultPort,
-      database: targetDatabase || conn.database,
-      user: conn.username,
-      password: conn.password,
-      ssl: conn.ssl ? { rejectUnauthorized: false } : false,
-      ...baseConfig,
-    };
-  }
-
-  /**
-   * Get or create a PostgreSQL connection pool for the given database
-   * Uses lazy initialization with aggressive cleanup to minimize memory usage
-   */
-  private async getPostgresPool(
-    database: IDatabaseConnection,
-    targetDatabase?: string,
-  ): Promise<PgPool> {
-    // Use empty string when no database specified to avoid collision with a database literally named "default".
-    // Empty string is not a valid PostgreSQL database name (must start with letter or underscore),
-    // so there's no risk of collision with an actual database name.
-    const dbName = targetDatabase || database.connection.database || "";
-    const key = `${database._id.toString()}:${dbName}`;
-
-    const existing = this.postgresPools.get(key);
-    if (existing) {
-      // Update lastUsed timestamp to keep the pool alive during active use
-      existing.lastUsed = new Date();
-      return existing.pool;
-    }
-
-    const config = this.buildPostgreSQLConfig(database, targetDatabase);
-
-    // Create pool with settings optimized for Cloud Run / serverless:
-    // - min: 0 = no idle connections when unused (saves memory)
-    // - max: 2 = limit concurrent connections per database
-    // - idleTimeoutMillis: 10000 = close idle connections after 10s (pg default)
-    // - maxLifetimeSeconds: 1800 = max 30 min connection lifetime
-    // - keepAlive: true = enable TCP keepalive probes
-    // - keepAliveInitialDelayMillis: 30000 = start keepalive after 30s idle
-    const pool = new PgPool({
-      ...config,
-      min: 0,
-      max: 2,
-      idleTimeoutMillis: 10000,
-      maxLifetimeSeconds: 1800,
-      keepAlive: true,
-      keepAliveInitialDelayMillis: 30000,
-    });
-
-    // Handle pool errors to prevent crashes and clean up stale pools
-    pool.on("error", err => {
-      logger.error("PostgreSQL pool error", { key, error: err.message });
-      // Only remove from map if this is still the active pool for this key.
-      // If this pool was already replaced (e.g., by cleanup + new request),
-      // unconditionally deleting would orphan the new pool and leak connections.
-      const entry = this.postgresPools.get(key);
-      if (entry?.pool === pool) {
-        this.postgresPools.delete(key);
-      }
-      pool.end().catch(endErr => {
-        logger.error("Error closing PostgreSQL pool after error", {
-          key,
-          error: endErr,
-        });
-      });
-    });
-
-    this.postgresPools.set(key, { pool, lastUsed: new Date() });
-    logger.debug("Created PostgreSQL pool", { key });
-
-    return pool;
-  }
-
-  /**
-   * Close a specific PostgreSQL pool
-   */
-  private async closePostgresPool(databaseId: string): Promise<void> {
-    // Find all pools for this database ID and collect them with their keys
-    const poolsToClose: Array<{ key: string; pool: PgPool }> = [];
-    for (const [key, { pool }] of this.postgresPools.entries()) {
-      if (key.startsWith(`${databaseId}:`)) {
-        poolsToClose.push({ key, pool });
-      }
-    }
-
-    // Delete all keys from map BEFORE closing pools to prevent race condition.
-    // If we delete after pool.end(), concurrent calls to getPostgresPool could
-    // retrieve the pool while it's being closed, causing pool.connect() to fail.
-    for (const { key } of poolsToClose) {
-      this.postgresPools.delete(key);
-    }
-
-    // Now close all pools (order doesn't matter for correctness anymore)
-    for (const { key, pool } of poolsToClose) {
-      try {
-        await pool.end();
-        logger.debug("Closed PostgreSQL pool", { key });
-      } catch (error) {
-        logger.error("Error closing PostgreSQL pool", { key, error });
-      }
-    }
-  }
-
-  /**
-   * Close all PostgreSQL pools
-   */
-  private async closeAllPostgresPools(): Promise<void> {
-    // Capture pools before clearing to avoid race condition.
-    // Clear map BEFORE closing pools so concurrent calls to getPostgresPool
-    // will create new pools instead of retrieving ones being closed.
-    const poolsToClose = Array.from(this.postgresPools.entries());
-    this.postgresPools.clear();
-
-    const promises = poolsToClose.map(async ([key, { pool }]) => {
-      try {
-        await pool.end();
-        logger.debug("Closed PostgreSQL pool", { key });
-      } catch (error) {
-        logger.error("Error closing PostgreSQL pool", { key, error });
-      }
-    });
-    await Promise.all(promises);
-  }
-
-  /**
-   * Clean up idle PostgreSQL pools that haven't been used recently
-   * Called periodically to free memory from unused pool objects
-   */
-  private async cleanupIdlePostgresPools(): Promise<void> {
-    const now = new Date();
-    const toRemove: string[] = [];
-
-    for (const [key, { lastUsed }] of this.postgresPools.entries()) {
-      const idleTime = now.getTime() - lastUsed.getTime();
-      if (idleTime > this.userDatabaseMaxIdleTime) {
-        toRemove.push(key);
-      }
-    }
-
-    for (const key of toRemove) {
-      const entry = this.postgresPools.get(key);
-      if (entry) {
-        // Re-check lastUsed to avoid closing a pool that was used between passes
-        // This prevents race conditions where getPostgresPool updates lastUsed
-        // after the key was added to toRemove but before we close it
-        const idleTime = now.getTime() - entry.lastUsed.getTime();
-        if (idleTime <= this.userDatabaseMaxIdleTime) {
-          continue; // Pool was used recently, skip closing
-        }
-        // IMPORTANT: Delete from map BEFORE calling pool.end() to prevent race condition.
-        // If we delete after, concurrent calls to getPostgresPool could retrieve
-        // the pool while it's being closed, causing pool.connect() to fail.
-        this.postgresPools.delete(key);
-        try {
-          await entry.pool.end();
-          logger.info("Closed idle PostgreSQL pool", { key });
-        } catch (error) {
-          logger.error("Error closing idle PostgreSQL pool", { key, error });
-        }
-      }
-    }
-  }
-
-  private async testPostgreSQLConnection(
-    database: IDatabaseConnection,
-  ): Promise<{ success: boolean; error?: string }> {
-    try {
-      const config = this.buildPostgreSQLConfig(database);
-
-      // Use retry logic to handle transient connection failures
-      // Use a temporary client for testing (not the pool)
-      await withRetry(
-        async () => {
-          const client = new PgClient(config);
-          try {
-            await client.connect();
-            await client.query("SELECT 1");
-          } finally {
-            await client.end();
-          }
-        },
-        {
-          maxRetries: this.postgresMaxRetries,
-          baseDelayMs: this.postgresRetryBaseDelayMs,
-        },
-      );
-
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "PostgreSQL connection failed",
-      };
-    }
-  }
-
-  /**
-   * Make a checked-out client's statements cancellable — by `executionId`
-   * (cancelQuery) and by `signal` on its own — via `pg_cancel_backend` on
-   * the client's backend pid (`client.processID`: no extra round trip).
-   *
-   * Returns the function that MUST replace `client.release()`: it
-   * unregisters, and when a cancel was sent it destroys the client instead
-   * of pooling it, so a cancel still in flight cannot land on whatever
-   * query that backend runs next.
-   */
-  private async trackPostgresQuery(
-    database: IDatabaseConnection,
-    client: PoolClient,
-    executionId?: string,
-    signal?: AbortSignal,
-  ): Promise<() => void> {
-    if (!executionId && !signal) return () => client.release();
-    const pid = await pgBackendPid(client);
-    if (!pid) return () => client.release();
-
-    const entry: {
-      database: IDatabaseConnection;
-      pid: number;
-      cancelled?: boolean;
-    } = { database, pid };
-    if (executionId) this.runningPostgresQueries.set(executionId, entry);
-    const onAbort = () => {
-      if (entry.cancelled) return;
-      entry.cancelled = true;
-      void this.cancelPostgresBackend(database, pid).then(result => {
-        if (!result.success) {
-          logger.warn("PostgreSQL cancel on abort failed", {
-            pid,
-            error: result.error,
-          });
-        }
-      });
-    };
-    if (signal) {
-      signal.addEventListener("abort", onAbort, { once: true });
-      if (signal.aborted) onAbort();
-    }
-    return () => {
-      signal?.removeEventListener("abort", onAbort);
-      if (
-        executionId &&
-        this.runningPostgresQueries.get(executionId) === entry
-      ) {
-        this.runningPostgresQueries.delete(executionId);
-      }
-      client.release(entry.cancelled ? true : undefined);
-    };
-  }
-
-  private async executePostgreSQLQuery(
-    database: IDatabaseConnection,
-    query: string,
-    options?: QueryExecuteOptions,
-  ): Promise<QueryResult> {
-    const executionId = options?.executionId;
-    const signal = options?.signal;
-
-    // Determine the target database: options override or connection default
-    const targetDatabase =
-      options?.databaseName || database.connection.database;
-
-    try {
-      // Check if already cancelled
-      if (signal?.aborted) {
-        return { success: false, error: "Query cancelled" };
-      }
-
-      // Get the pool for this database (creates one if needed)
-      const pool = await this.getPostgresPool(database, targetDatabase);
-
-      // Get a client from the pool for this query
-      // Use retry logic to handle transient connection failures and cold starts
-      // (pool is configured with min: 0, so connections may need to be established fresh)
-      const client = await withRetry(async () => pool.connect(), {
-        maxRetries: this.postgresMaxRetries,
-        baseDelayMs: this.postgresRetryBaseDelayMs,
-        signal,
-      });
-
-      let readOnlyTransactionStarted = false;
-      let release: (() => void) | undefined;
-      try {
-        // Cancellable by executionId (cancelQuery) and by the signal alone.
-        release = await this.trackPostgresQuery(
-          database,
-          client,
-          executionId,
-          signal,
-        );
-
-        // Check if already cancelled
-        if (signal?.aborted) {
-          return { success: false, error: "Query cancelled" };
-        }
-
-        let result: PgQueryResult;
-        if (options?.readOnly || options?.readOnlyTransaction) {
-          readOnlyTransactionStarted = true;
-          result = ownResult(
-            (await client.query(inReadOnlyTransaction(query))) as
-              PgQueryResult | PgQueryResult[],
-          );
-          readOnlyTransactionStarted = false;
-        } else {
-          result = await client.query(query);
-        }
-        const fields = normalizePostgresFields(result.fields);
-        const rows = normalizePostgresRows(
-          result.rows as Record<string, unknown>[],
-          fields,
-        );
-        return {
-          success: true,
-          data: rows,
-          rowCount: result.rowCount ?? undefined,
-          fields,
-        };
-      } finally {
-        if (readOnlyTransactionStarted) {
-          await client.query("ROLLBACK").catch(() => undefined);
-        }
-        // Always release the client back to the pool
-        if (release) release();
-        else client.release();
-      }
-    } catch (error: any) {
-      if (error?.message?.includes("canceling statement")) {
-        return { success: false, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "PostgreSQL query failed",
-      };
-    }
-  }
 
   // MySQL specific methods
 
@@ -4724,12 +4147,6 @@ export class DatabaseConnectionService {
   private readonly clickHouseRequestTimeout = 120_000; // 120 seconds for cold starts
   private readonly clickHouseMaxRetries = 3;
   private readonly clickHouseRetryBaseDelayMs = 1000; // 1 second base delay
-
-  // PostgreSQL client configuration constants
-  private readonly postgresConnectionTimeoutMs = 30_000; // 30 seconds connection timeout
-  private readonly postgresQueryTimeoutMs = 120_000; // 120 seconds query timeout
-  private readonly postgresMaxRetries = 3;
-  private readonly postgresRetryBaseDelayMs = 1000; // 1 second base delay
 
   // MySQL client configuration constants
   private readonly mysqlConnectionTimeoutMs = 30_000; // 30 seconds connection timeout

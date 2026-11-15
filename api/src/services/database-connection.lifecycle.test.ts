@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { DatabaseConnectionService } from "./database-connection.service";
 import { databaseRegistry } from "../databases/registry";
 import type { DatabaseDriver } from "../databases/driver";
+import { postgresEngine } from "../databases/drivers/postgresql/engine";
 
 const ID = "6577f0f0f0f0f0f0f0f0f0f0";
 const OTHER = "6577f0f0f0f0f0f0f0f0f0f1";
@@ -44,6 +45,15 @@ function deferred<T>() {
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
+/** Replace `target[name]` for the rest of the test; returns the restore. */
+function stub(target: any, name: string, value: unknown): () => void {
+  const original = target[name];
+  target[name] = value;
+  return () => {
+    target[name] = original;
+  };
+}
+
 async function testInvalidateConnection() {
   const svc = new DatabaseConnectionService() as any;
   const closed: string[] = [];
@@ -52,18 +62,10 @@ async function testInvalidateConnection() {
     close: async () => void closed.push(name),
   });
 
-  svc.postgresPools.set(`${ID}:app`, {
-    pool: closable("pg:app"),
-    lastUsed: new Date(),
-  });
-  svc.postgresPools.set(`${ID}:other`, {
-    pool: closable("pg:other"),
-    lastUsed: new Date(),
-  });
-  svc.postgresPools.set(`${OTHER}:app`, {
-    pool: closable("pg:keep"),
-    lastUsed: new Date(),
-  });
+  const pgPools = postgresEngine.pools as any;
+  pgPools.set(`${ID}:app`, closable("pg:app"));
+  pgPools.set(`${ID}:other`, closable("pg:other"));
+  pgPools.set(`${OTHER}:app`, closable("pg:keep"));
   svc.mysqlPools.set(`${ID}:app`, {
     pool: closable("mysql:app"),
     lastUsed: new Date(),
@@ -99,7 +101,7 @@ async function testInvalidateConnection() {
     closed.sort(),
     ["mongo", "mssql", "mysql:app", "pg:app", "pg:other"].sort(),
   );
-  assert.deepEqual([...svc.postgresPools.keys()], [`${OTHER}:app`]);
+  assert.deepEqual(pgPools.keys(), [`${OTHER}:app`]);
   assert.equal(svc.mysqlPools.size, 0);
   assert.equal(svc.mongoConnections.size, 0);
   assert.equal(svc.connections.size, 0);
@@ -112,12 +114,9 @@ async function testInvalidateConnection() {
   databaseRegistry.register(fakeDriver("lifecycle-failing"));
 
   // closeConnection (the delete route) is the same eviction.
-  svc.postgresPools.set(`${ID}:app`, {
-    pool: closable("pg:again"),
-    lastUsed: new Date(),
-  });
+  pgPools.set(`${ID}:app`, closable("pg:again"));
   await svc.closeConnection(ID);
-  assert.equal(svc.postgresPools.has(`${ID}:app`), false);
+  assert.equal(pgPools.has(`${ID}:app`), false);
   await svc.closeAllConnections();
 }
 
@@ -273,7 +272,10 @@ async function testPostgresCursorStreaming() {
   // Deliberately not sorted: the stream must keep the server's order.
   const rows = [5, 3, 9, 1, 7, 2, 8].map(id => ({ id }));
   const client = fakePgClient(rows);
-  svc.getPostgresPool = async () => ({ connect: async () => client });
+  let pooled: unknown = client;
+  const restorePool = stub(postgresEngine, "getPool", async () => ({
+    connect: async () => pooled,
+  }));
 
   const batches: number[][] = [];
   const result = await svc.executeStreamingQuery(
@@ -307,7 +309,7 @@ async function testPostgresCursorStreaming() {
 
   // Read-only streaming uses the same cursor, in a READ ONLY transaction.
   const ro = fakePgClient(rows);
-  svc.getPostgresPool = async () => ({ connect: async () => ro });
+  pooled = ro;
   const roResult = await svc.executeStreamingQuery(
     conn("postgresql"),
     "SELECT id FROM t",
@@ -316,6 +318,7 @@ async function testPostgresCursorStreaming() {
   assert.equal(roResult.success, true);
   assert.equal(roResult.totalRows, 7);
   assert.ok(ro.statements.includes("BEGIN TRANSACTION READ ONLY"));
+  restorePool();
   await svc.closeAllConnections();
 }
 
@@ -325,13 +328,19 @@ async function testPostgresSignalCancel() {
   const hang = deferred<never>();
   client.hang = { promise: hang.promise, reject: hang.reject };
   hang.promise.catch(() => undefined);
-  svc.getPostgresPool = async () => ({ connect: async () => client });
+  const restorePool = stub(postgresEngine, "getPool", async () => ({
+    connect: async () => client,
+  }));
   const cancels: number[] = [];
-  svc.cancelPostgresBackend = async (_db: unknown, pid: number) => {
-    cancels.push(pid);
-    hang.reject(new Error("canceling statement due to user request"));
-    return { success: true };
-  };
+  const restoreCancel = stub(
+    postgresEngine,
+    "cancelBackend",
+    async (_db: unknown, pid: number) => {
+      cancels.push(pid);
+      hang.reject(new Error("canceling statement due to user request"));
+      return { success: true };
+    },
+  );
 
   // No executionId: the signal alone cancels the server-side statement.
   const controller = new AbortController();
@@ -350,6 +359,8 @@ async function testPostgresSignalCancel() {
     [true],
     "a client a cancel was aimed at is destroyed, not pooled",
   );
+  restorePool();
+  restoreCancel();
   await svc.closeAllConnections();
 }
 
