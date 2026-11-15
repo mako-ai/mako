@@ -18,7 +18,12 @@
 import assert from "node:assert/strict";
 import { DatabaseConnectionService } from "./database-connection.service";
 import { databaseRegistry } from "../databases/registry";
+import { engineFor } from "../databases/engines";
 import type { DatabaseDriver } from "../databases/driver";
+import { mongoEngine } from "../databases/drivers/mongodb/engine";
+import { mysqlEngine } from "../databases/drivers/mysql/engine";
+import { mssqlEngine } from "../databases/drivers/mssql/engine";
+import { postgresEngine } from "../databases/drivers/postgresql/engine";
 
 const ID = "6577f0f0f0f0f0f0f0f0f0f0";
 const OTHER = "6577f0f0f0f0f0f0f0f0f0f1";
@@ -44,6 +49,15 @@ function deferred<T>() {
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
+/** Replace `target[name]` for the rest of the test; returns the restore. */
+function stub(target: any, name: string, value: unknown): () => void {
+  const original = target[name];
+  target[name] = value;
+  return () => {
+    target[name] = original;
+  };
+}
+
 async function testInvalidateConnection() {
   const svc = new DatabaseConnectionService() as any;
   const closed: string[] = [];
@@ -52,30 +66,18 @@ async function testInvalidateConnection() {
     close: async () => void closed.push(name),
   });
 
-  svc.postgresPools.set(`${ID}:app`, {
-    pool: closable("pg:app"),
-    lastUsed: new Date(),
-  });
-  svc.postgresPools.set(`${ID}:other`, {
-    pool: closable("pg:other"),
-    lastUsed: new Date(),
-  });
-  svc.postgresPools.set(`${OTHER}:app`, {
-    pool: closable("pg:keep"),
-    lastUsed: new Date(),
-  });
-  svc.mysqlPools.set(`${ID}:app`, {
-    pool: closable("mysql:app"),
-    lastUsed: new Date(),
-  });
-  svc.mongoConnections.set(`datasource:${ID}`, {
+  const pgPools = postgresEngine.pools as any;
+  pgPools.set(`${ID}:app`, closable("pg:app"));
+  pgPools.set(`${ID}:other`, closable("pg:other"));
+  pgPools.set(`${OTHER}:app`, closable("pg:keep"));
+  (mysqlEngine.pools as any).set(`${ID}:app`, closable("mysql:app"));
+  (mongoEngine.connections as any).set(`datasource:${ID}`, {
     client: closable("mongo"),
     db: {},
-    lastUsed: new Date(),
     context: "datasource",
     identifier: ID,
   });
-  svc.connections.set(ID, closable("mssql"));
+  (mssqlEngine.pools as any).set(ID, closable("mssql"));
 
   // Every registered driver's cache is honoured, and one throwing cache
   // does not keep the rest serving the old configuration.
@@ -99,10 +101,10 @@ async function testInvalidateConnection() {
     closed.sort(),
     ["mongo", "mssql", "mysql:app", "pg:app", "pg:other"].sort(),
   );
-  assert.deepEqual([...svc.postgresPools.keys()], [`${OTHER}:app`]);
-  assert.equal(svc.mysqlPools.size, 0);
-  assert.equal(svc.mongoConnections.size, 0);
-  assert.equal(svc.connections.size, 0);
+  assert.deepEqual(pgPools.keys(), [`${OTHER}:app`]);
+  assert.equal(mysqlEngine.pools.size, 0);
+  assert.equal(mongoEngine.connections.size, 0);
+  assert.equal(mssqlEngine.pools.size, 0);
   assert.ok(driverCalls.includes(`lifecycle-failing:${ID}`));
   assert.ok(
     driverCalls.includes(`lifecycle-fake:${ID}`),
@@ -112,26 +114,17 @@ async function testInvalidateConnection() {
   databaseRegistry.register(fakeDriver("lifecycle-failing"));
 
   // closeConnection (the delete route) is the same eviction.
-  svc.postgresPools.set(`${ID}:app`, {
-    pool: closable("pg:again"),
-    lastUsed: new Date(),
-  });
+  pgPools.set(`${ID}:app`, closable("pg:again"));
   await svc.closeConnection(ID);
-  assert.equal(svc.postgresPools.has(`${ID}:app`), false);
+  assert.equal(pgPools.has(`${ID}:app`), false);
   await svc.closeAllConnections();
 }
 
 async function testSharedDriverInstances() {
   const svc = new DatabaseConnectionService() as any;
   for (const type of ["cloudsql-postgres", "cloudflare-d1", "cloudflare-kv"]) {
-    const getter =
-      type === "cloudsql-postgres"
-        ? "cloudSqlDriver"
-        : type === "cloudflare-d1"
-          ? "d1Driver"
-          : "kvDriver";
     assert.equal(
-      svc[getter],
+      engineFor(type),
       databaseRegistry.getDriver(type),
       `${type}: the service uses the registry's instance`,
     );
@@ -141,55 +134,54 @@ async function testSharedDriverInstances() {
     databaseRegistry.getOrRegister("cloudsql-postgres", () => {
       throw new Error("must not construct a second instance");
     }),
-    svc.cloudSqlDriver,
+    engineFor("cloudsql-postgres"),
   );
   await svc.closeAllConnections();
 }
 
 async function testMongoDedupeAndGuard() {
   const svc = new DatabaseConnectionService() as any;
+  const pool = mongoEngine.connections;
   const gate = deferred<void>();
   let creates = 0;
   const client = { close: async () => undefined };
-  svc.createMongoConnection = async (context: string, identifier: string) => {
-    creates++;
-    await gate.promise;
-    const entry = {
-      client,
-      db: { name: "db" },
-      lastUsed: new Date(),
-      context,
-      identifier,
-    };
-    svc.mongoConnections.set(`${context}:${identifier}`, entry);
-    return { client, db: entry.db };
-  };
+  const restoreCreate = stub(
+    mongoEngine,
+    "createConnection",
+    async (context: string, identifier: string) => {
+      creates++;
+      await gate.promise;
+      return { client, db: { name: "db" }, context, identifier };
+    },
+  );
   const config = { connectionString: "mongodb://x", database: "db" };
-  const first = svc.getMongoConnection("datasource", ID, config);
-  const second = svc.getMongoConnection("datasource", ID, config);
+  const first = mongoEngine.connect("datasource", ID, config);
+  const second = mongoEngine.connect("datasource", ID, config);
   gate.resolve();
   const [a, b] = await Promise.all([first, second]);
   assert.equal(creates, 1, "concurrent first connects share one client");
   assert.equal(a.client, b.client);
-  assert.equal(svc.mongoConnecting.size, 0, "in-flight entry is cleared");
+  assert.equal(pool.pendingKeys().length, 0, "in-flight entry is cleared");
 
   // Reuse needs no ping (the old health check cost a round trip per query).
-  await svc.getMongoConnection("datasource", ID, config);
+  await mongoEngine.connect("datasource", ID, config);
   assert.equal(creates, 1);
 
   // A replaced client's late close/error must not evict the live entry.
   const live = { close: async () => undefined };
-  svc.mongoConnections.set(`datasource:${ID}`, {
+  (pool as any).set(`datasource:${ID}`, {
     client: live,
     db: {},
-    lastUsed: new Date(),
     context: "datasource",
     identifier: ID,
   });
-  assert.equal(svc.forgetMongoClient(`datasource:${ID}`, client), false);
-  assert.equal(svc.mongoConnections.get(`datasource:${ID}`).client, live);
-  assert.equal(svc.forgetMongoClient(`datasource:${ID}`, live), true);
-  assert.equal(svc.mongoConnections.size, 0);
+  assert.equal(
+    mongoEngine.forgetClient(`datasource:${ID}`, client as any),
+    false,
+  );
+  assert.equal(pool.entry(`datasource:${ID}`)?.value.client, live);
+  assert.equal(mongoEngine.forgetClient(`datasource:${ID}`, live as any), true);
+  assert.equal(pool.size, 0);
 
   // Invalidating while a connect is in flight closes that client once it
   // lands instead of leaving it pooled with the retired configuration.
@@ -200,32 +192,31 @@ async function testMongoDedupeAndGuard() {
       closedInFlight++;
     },
   };
-  svc.createMongoConnection = async (context: string, identifier: string) => {
-    await slow.promise;
-    svc.mongoConnections.set(`${context}:${identifier}`, {
-      client: pendingClient,
-      db: {},
-      lastUsed: new Date(),
-      context,
-      identifier,
-    });
-    return { client: pendingClient, db: {} };
-  };
-  const connecting = svc.getMongoConnection("datasource", ID, config);
+  restoreCreate();
+  const restoreSlow = stub(
+    mongoEngine,
+    "createConnection",
+    async (context: string, identifier: string) => {
+      await slow.promise;
+      return { client: pendingClient, db: {}, context, identifier };
+    },
+  );
+  const connecting = mongoEngine.connect("datasource", ID, config);
   const invalidating = svc.invalidateConnection(ID);
   slow.resolve();
   await connecting;
   await invalidating;
   assert.equal(closedInFlight, 1);
-  assert.equal(svc.mongoConnections.size, 0);
+  assert.equal(pool.size, 0);
+  restoreSlow();
 
   // A connection test (often an unsaved candidate with a random _id) never
   // goes through the pool.
   let pooled = 0;
-  svc.getMongoConnection = async () => {
+  const restoreConnect = stub(mongoEngine, "connect", async () => {
     pooled++;
     throw new Error("must not pool");
-  };
+  });
   const test = await svc.testConnection({
     _id: { toString: () => "candidate" },
     type: "mongodb",
@@ -233,6 +224,7 @@ async function testMongoDedupeAndGuard() {
   });
   assert.equal(test.success, false);
   assert.equal(pooled, 0, "testConnection uses a throwaway client");
+  restoreConnect();
   await svc.closeAllConnections();
 }
 
@@ -273,7 +265,10 @@ async function testPostgresCursorStreaming() {
   // Deliberately not sorted: the stream must keep the server's order.
   const rows = [5, 3, 9, 1, 7, 2, 8].map(id => ({ id }));
   const client = fakePgClient(rows);
-  svc.getPostgresPool = async () => ({ connect: async () => client });
+  let pooled: unknown = client;
+  const restorePool = stub(postgresEngine, "getPool", async () => ({
+    connect: async () => pooled,
+  }));
 
   const batches: number[][] = [];
   const result = await svc.executeStreamingQuery(
@@ -307,7 +302,7 @@ async function testPostgresCursorStreaming() {
 
   // Read-only streaming uses the same cursor, in a READ ONLY transaction.
   const ro = fakePgClient(rows);
-  svc.getPostgresPool = async () => ({ connect: async () => ro });
+  pooled = ro;
   const roResult = await svc.executeStreamingQuery(
     conn("postgresql"),
     "SELECT id FROM t",
@@ -316,6 +311,7 @@ async function testPostgresCursorStreaming() {
   assert.equal(roResult.success, true);
   assert.equal(roResult.totalRows, 7);
   assert.ok(ro.statements.includes("BEGIN TRANSACTION READ ONLY"));
+  restorePool();
   await svc.closeAllConnections();
 }
 
@@ -325,13 +321,19 @@ async function testPostgresSignalCancel() {
   const hang = deferred<never>();
   client.hang = { promise: hang.promise, reject: hang.reject };
   hang.promise.catch(() => undefined);
-  svc.getPostgresPool = async () => ({ connect: async () => client });
+  const restorePool = stub(postgresEngine, "getPool", async () => ({
+    connect: async () => client,
+  }));
   const cancels: number[] = [];
-  svc.cancelPostgresBackend = async (_db: unknown, pid: number) => {
-    cancels.push(pid);
-    hang.reject(new Error("canceling statement due to user request"));
-    return { success: true };
-  };
+  const restoreCancel = stub(
+    postgresEngine,
+    "cancelBackend",
+    async (_db: unknown, pid: number) => {
+      cancels.push(pid);
+      hang.reject(new Error("canceling statement due to user request"));
+      return { success: true };
+    },
+  );
 
   // No executionId: the signal alone cancels the server-side statement.
   const controller = new AbortController();
@@ -350,6 +352,8 @@ async function testPostgresSignalCancel() {
     [true],
     "a client a cancel was aimed at is destroyed, not pooled",
   );
+  restorePool();
+  restoreCancel();
   await svc.closeAllConnections();
 }
 
@@ -376,25 +380,34 @@ async function testMySQLCancel() {
     };
   };
   let connection = makeConnection();
-  svc.getMySQLPool = async () => ({ getConnection: async () => connection });
+  const restorePool = stub(mysqlEngine, "getPool", async () => ({
+    getConnection: async () => connection,
+  }));
   const kills: number[] = [];
-  svc.killMySQLQuery = async (running: { threadId: number }) => {
-    kills.push(running.threadId);
-    const error = Object.assign(new Error("Query execution was interrupted"), {
-      code: "ER_QUERY_INTERRUPTED",
-    });
-    connection.kill.reject(error);
-    return { success: true };
-  };
+  const restoreKill = stub(
+    mysqlEngine,
+    "killQuery",
+    async (running: { threadId: number }) => {
+      kills.push(running.threadId);
+      const error = Object.assign(
+        new Error("Query execution was interrupted"),
+        {
+          code: "ER_QUERY_INTERRUPTED",
+        },
+      );
+      connection.kill.reject(error);
+      return { success: true };
+    },
+  );
 
   // By executionId (agent Stop / detached hard cap → cancelQuery).
-  const running = svc.executeMySQLQuery(conn("mysql"), "SELECT SLEEP(100)", {
+  const running = mysqlEngine.executeQuery(conn("mysql"), "SELECT SLEEP(100)", {
     executionId: "exec-mysql",
   });
   await tick();
   await tick();
   assert.equal(
-    svc.runningMySQLQueries.get("exec-mysql")?.threadId,
+    mysqlEngine.runningQueries.get("exec-mysql")?.threadId,
     77,
     "a running MySQL query is registered",
   );
@@ -402,16 +415,20 @@ async function testMySQLCancel() {
   assert.deepEqual(cancel, { success: true });
   assert.deepEqual(await running, { success: false, error: "Query cancelled" });
   assert.deepEqual(kills, [77]);
-  assert.equal(svc.runningMySQLQueries.size, 0);
+  assert.equal(mysqlEngine.runningQueries.size, 0);
   assert.equal(connection.destroyed, 1, "a killed connection is retired");
   assert.equal(connection.released, 0);
 
   // By signal alone.
   connection = makeConnection();
   const controller = new AbortController();
-  const bySignal = svc.executeMySQLQuery(conn("mysql"), "SELECT SLEEP(100)", {
-    signal: controller.signal,
-  });
+  const bySignal = mysqlEngine.executeQuery(
+    conn("mysql"),
+    "SELECT SLEEP(100)",
+    {
+      signal: controller.signal,
+    },
+  );
   await tick();
   await tick();
   controller.abort();
@@ -424,12 +441,14 @@ async function testMySQLCancel() {
   // A query that finishes normally releases its connection to the pool.
   connection = makeConnection();
   connection.execute = async () => [[{ a: 1 }], []] as never;
-  const ok = await svc.executeMySQLQuery(conn("mysql"), "SELECT 1", {
+  const ok = await mysqlEngine.executeQuery(conn("mysql"), "SELECT 1", {
     executionId: "exec-ok",
   });
   assert.equal(ok.success, true);
   assert.equal(connection.released, 1);
-  assert.equal(svc.runningMySQLQueries.size, 0);
+  assert.equal(mysqlEngine.runningQueries.size, 0);
+  restorePool();
+  restoreKill();
   await svc.closeAllConnections();
 }
 

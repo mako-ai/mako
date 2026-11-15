@@ -4964,6 +4964,94 @@
         "operationId": "post_api_workspaces_workspaceId_databases_test_connection"
       }
     },
+    "/api/workspaces/{workspaceId}/databases/{id}/test": {
+      "post": {
+        "tags": [
+          "Databases"
+        ],
+        "summary": "POST /{id}/test",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_databases_id_test"
+      }
+    },
     "/api/workspaces/{workspaceId}/databases/{id}/writers": {
       "get": {
         "tags": [
@@ -5150,94 +5238,6 @@
           }
         },
         "operationId": "put_api_workspaces_workspaceId_databases_id_writers"
-      }
-    },
-    "/api/workspaces/{workspaceId}/databases/{id}/test": {
-      "post": {
-        "tags": [
-          "Databases"
-        ],
-        "summary": "POST /{id}/test",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_databases_id_test"
       }
     },
     "/api/workspaces/{workspaceId}/databases/{id}/execute": {

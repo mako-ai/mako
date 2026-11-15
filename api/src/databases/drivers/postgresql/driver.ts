@@ -8,7 +8,8 @@ import {
   UpsertOptions,
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
-import { databaseConnectionService } from "../../../services/database-connection.service";
+import { executeCheckedQuery } from "../../checked-query";
+import type { QueryExecuteOptions, QueryResult } from "../../query-types";
 import { loggers } from "../../../logging";
 import {
   mapPostgresOidToType,
@@ -269,9 +270,9 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
   async executeQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: { databaseName?: string; databaseId?: string },
-  ) {
-    return databaseConnectionService.executeQuery(database, query, options);
+    options?: QueryExecuteOptions,
+  ): Promise<QueryResult> {
+    return executeCheckedQuery(database, query, options);
   }
 
   async getTableDefinition(
@@ -389,11 +390,9 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
       // LIMIT 0 gives us column metadata without fetching any data
       const schemaQuery = `SELECT * FROM (${baseQuery}) AS _schema_query LIMIT 0`;
 
-      const result = await databaseConnectionService.executeQuery(
-        database,
-        schemaQuery,
-        { databaseName: options?.databaseName },
-      );
+      const result = await executeCheckedQuery(database, schemaQuery, {
+        databaseName: options?.databaseName,
+      });
 
       if (!result.success) {
         return { success: false, error: result.error };
@@ -414,11 +413,9 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
 
       // Fallback: try with LIMIT 1 and infer from data
       const sampleQuery = `SELECT * FROM (${baseQuery}) AS _schema_query LIMIT 1`;
-      const sampleResult = await databaseConnectionService.executeQuery(
-        database,
-        sampleQuery,
-        { databaseName: options?.databaseName },
-      );
+      const sampleResult = await executeCheckedQuery(database, sampleQuery, {
+        databaseName: options?.databaseName,
+      });
 
       if (!sampleResult.success) {
         return { success: false, error: sampleResult.error };

@@ -3,12 +3,12 @@
  * and is a page requested with a live token when the renewal margin holds?
  */
 import { describe, expect, it, vi } from "vitest";
-import { databaseConnectionService } from "./database-connection.service";
+import { bigQueryEngine } from "../databases/drivers/bigquery/engine";
 
 type Internals = {
-  getBigQueryHttpClient: (...args: unknown[]) => Promise<unknown>;
-  getBigQueryPollIntervalMs: () => number;
-  executeBigQueryStreamingQuery: (
+  getHttpClient: (...args: unknown[]) => Promise<unknown>;
+  getPollIntervalMs: () => number;
+  executeStreamingQuery: (
     database: unknown,
     query: string,
     options: unknown,
@@ -26,8 +26,8 @@ const http401 = () =>
 
 describe("BigQuery token renewal in the poll loop", () => {
   it("DEFECT: a token that expires while the job is still running must not fail the build", async () => {
-    const service = databaseConnectionService as unknown as Internals;
-    vi.spyOn(service, "getBigQueryPollIntervalMs").mockReturnValue(1);
+    const service = bigQueryEngine as unknown as Internals;
+    vi.spyOn(service, "getPollIntervalMs").mockReturnValue(1);
     const held = {
       post: vi.fn(async () => ({
         data: { jobComplete: false, jobReference: { jobId: "job" } },
@@ -47,11 +47,11 @@ describe("BigQuery token renewal in the poll loop", () => {
         },
       })),
     };
-    vi.spyOn(service, "getBigQueryHttpClient")
+    vi.spyOn(service, "getHttpClient")
       .mockResolvedValueOnce(held)
       .mockResolvedValue(renewed);
 
-    const result = await service.executeBigQueryStreamingQuery(
+    const result = await service.executeStreamingQuery(
       {
         type: "bigquery",
         connection: {
