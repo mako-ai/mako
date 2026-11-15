@@ -650,7 +650,7 @@ export function createServerConsoleTools({
               error: MONGO_QUERY_WRITE_SCOPE_REQUIRED,
             };
           }
-          const accessError = sqlReadOnlyAccessError(doc.code);
+          const accessError = sqlReadOnlyAccessError(doc.code, connection.type);
           if (accessError) {
             return { success: false, error: accessError };
           }

@@ -1011,16 +1011,15 @@ export async function resolveSqlQueryTarget(
   if (queryAccess === "none") {
     throw new Error("This API key does not have query access");
   }
+  const database = await fetchSqlDatabase(connectionId, workspaceId);
   if (queryAccess === "read") {
-    const accessError = sqlReadOnlyAccessError(query);
+    const accessError = sqlReadOnlyAccessError(query, database.type);
     if (accessError) throw new Error(accessError);
   }
-
-  const database = await fetchSqlDatabase(connectionId, workspaceId);
   const dialect = getDialect(database.type);
   const effectiveAccess = effectiveSqlQueryAccess(queryAccess, database);
   if (queryAccess === "write-opt-in" && effectiveAccess === "read") {
-    if (sqlReadOnlyAccessError(query)) {
+    if (sqlReadOnlyAccessError(query, database.type)) {
       // The key may write, the connection's writers list decides who: say
       // who Mako saw, and record the refusal so the Access tab offers Allow.
       // Agents relay this verbatim, so the error is the docs.

@@ -363,7 +363,7 @@ export class BigQueryEngine implements QueryEngine {
     options?: QueryPreviewOptions,
   ): Promise<QueryPreviewResult> {
     const baseQuery = query.trim().replace(/;\s*$/, "");
-    const safety = checkPreviewQuerySafety(baseQuery);
+    const safety = checkPreviewQuerySafety(baseQuery, "bigquery");
     if (!safety.safe) {
       return { success: false, error: safety.errors.join(" ") };
     }

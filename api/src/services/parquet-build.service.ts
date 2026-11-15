@@ -68,7 +68,7 @@ export function assertReadOnlyMaterializationQuery(
     }
     return;
   }
-  const safety = checkPreviewQuerySafety(executableQuery);
+  const safety = checkPreviewQuerySafety(executableQuery, databaseType);
   if (!safety.safe) {
     throw new Error(
       `Query failed read-only safety checks: ${safety.errors.join(" ")}`,

@@ -164,55 +164,93 @@ export function appendWhereCondition(query: string, condition: string): string {
 }
 
 /**
- * Count semicolons that are NOT inside single-quoted strings, double-quoted
- * identifiers, line comments (`-- …`), or block comments.  Returns the total
- * count and the character index of the last top-level semicolon (or -1).
+ * How a dialect reads a quoted string. PostgreSQL (and the other engines
+ * that follow the SQL standard) does not treat a backslash as an escape:
+ * `'a\'` is a complete string. MySQL, BigQuery and ClickHouse do: there
+ * `'a\'` is still open. A scanner that guesses wrong sees statement
+ * boundaries the engine does not, or misses ones it does.
  */
-export function countTopLevelSemicolons(query: string): {
-  count: number;
-  lastIndex: number;
-} {
+interface QuoteRules {
+  /** A backslash escapes the next character in '...' and "...". */
+  backslashEscapes: boolean;
+  /** PostgreSQL extras: E'...' escape strings and $tag$...$tag$ quoting. */
+  postgres: boolean;
+}
+
+const POSTGRES_RULES: QuoteRules = { backslashEscapes: false, postgres: true };
+const STANDARD_RULES: QuoteRules = { backslashEscapes: false, postgres: false };
+const BACKSLASH_RULES: QuoteRules = { backslashEscapes: true, postgres: false };
+
+/**
+ * The quote rules to scan with for a database type or SQL dialect. An
+ * unknown dialect is scanned under every rule set, and the caller keeps the
+ * worst answer: a query is one statement only when every reading agrees.
+ */
+function quoteRulesFor(dialect?: string | null): QuoteRules[] {
+  switch (dialect) {
+    case "postgresql":
+    case "cloudsql-postgres":
+      return [POSTGRES_RULES];
+    case "sqlite":
+    case "cloudflare-d1":
+    case "mssql":
+      return [STANDARD_RULES];
+    case "mysql":
+    case "bigquery":
+    case "clickhouse":
+      return [BACKSLASH_RULES];
+    // Redshift keeps the pre-9.1 PostgreSQL reading (backslash escapes) and
+    // PostgreSQL's dollar quoting: read it both ways, like an unknown dialect.
+    default:
+      return [POSTGRES_RULES, BACKSLASH_RULES];
+  }
+}
+
+function countSemicolonsWith(
+  query: string,
+  rules: QuoteRules,
+): { count: number; lastIndex: number } {
   let count = 0;
   let lastIndex = -1;
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
   const len = query.length;
 
   for (let i = 0; i < len; i++) {
     const ch = query[i];
 
-    if (ch === "'" && !inDoubleQuote) {
-      if (inSingleQuote) {
-        if (i + 1 < len && query[i + 1] === "'") {
+    if (ch === "'" || ch === '"') {
+      // PostgreSQL E'...' strings do take backslash escapes.
+      const escapeString =
+        rules.postgres &&
+        ch === "'" &&
+        i > 0 &&
+        /[eE]/.test(query[i - 1]) &&
+        (i === 1 || !/[\w$]/.test(query[i - 2]));
+      const backslash = rules.backslashEscapes || escapeString;
+      for (i += 1; i < len; i++) {
+        if (backslash && query[i] === "\\") {
           i++;
-        } else {
-          inSingleQuote = false;
+          continue;
         }
-      } else {
-        inSingleQuote = true;
+        if (query[i] !== ch) continue;
+        if (query[i + 1] === ch) {
+          i++; // doubled quote: a literal quote
+          continue;
+        }
+        break;
       }
-      continue;
-    }
-    if (inSingleQuote) {
-      if (ch === "\\" && i + 1 < len) i++;
       continue;
     }
 
-    if (ch === '"') {
-      if (inDoubleQuote) {
-        if (i + 1 < len && query[i + 1] === '"') {
-          i++;
-        } else {
-          inDoubleQuote = false;
-        }
-      } else {
-        inDoubleQuote = true;
+    if (rules.postgres && ch === "$" && (i === 0 || !/\w/.test(query[i - 1]))) {
+      const tag = query
+        .slice(i)
+        .match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/)?.[0];
+      if (tag) {
+        const close = query.indexOf(tag, i + tag.length);
+        if (close === -1) break;
+        i = close + tag.length - 1;
+        continue;
       }
-      continue;
-    }
-    if (inDoubleQuote) {
-      if (ch === "\\" && i + 1 < len) i++;
-      continue;
     }
 
     if (ch === "-" && i + 1 < len && query[i + 1] === "-") {
@@ -240,6 +278,34 @@ export function countTopLevelSemicolons(query: string): {
   }
 
   return { count, lastIndex };
+}
+
+/**
+ * Count semicolons that are NOT inside single-quoted strings, double-quoted
+ * identifiers, dollar-quoted strings (PostgreSQL), line comments (`-- …`),
+ * or block comments.  Returns the total count and the character index of the
+ * last top-level semicolon (or -1).
+ *
+ * `dialect` is a database type or SQL dialect ("postgresql", "bigquery", …).
+ * Without one the query is read under every dialect's quote rules and the
+ * reading with the most statement boundaries wins.
+ */
+export function countTopLevelSemicolons(
+  query: string,
+  dialect?: string | null,
+): {
+  count: number;
+  lastIndex: number;
+} {
+  const end = query.trimEnd().length - 1;
+  const readings = quoteRulesFor(dialect).map(rules =>
+    countSemicolonsWith(query, rules),
+  );
+  return (
+    readings.find(r => r.count > 1) ??
+    readings.find(r => r.count === 1 && r.lastIndex !== end) ??
+    readings[0]
+  );
 }
 
 /**

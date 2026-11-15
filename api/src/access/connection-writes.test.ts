@@ -15,6 +15,8 @@ import {
   writeTarget,
 } from "./connection-writes";
 import { requestContextStorage } from "../logging/context";
+import { checkPreviewQuerySafety } from "../services/query-pagination.service";
+import { countTopLevelSemicolons } from "../services/sql-query-utils";
 import { assertReadOnlyMaterializationQuery } from "../services/parquet-build.service";
 
 // --- What counts as a write --------------------------------------------------
@@ -45,6 +47,84 @@ const writes = [
   "CALL finance.rebuild()",
 ];
 for (const q of writes) assert.equal(isWrite("postgresql", q), true, q);
+
+// --- Statement boundaries are read by the engine's own quote rules -----------
+
+// PostgreSQL does not treat a backslash as an escape: 'a\' is a whole string,
+// so everything after it is SQL. Read as an escape, the rest hid in a string
+// and the COMMIT ended the read-only transaction ahead of the write.
+const POSTGRES_ESCAPES = [
+  String.raw`SELECT 'a\'; COMMIT; DO $$ BEGIN EXECUTE 'DROP TABLE x'; END $$; SELECT 'x'`,
+  String.raw`SELECT 1 AS "a\"; COMMIT; DO $$ BEGIN EXECUTE 'DROP TABLE x'; END $$; SELECT 1 AS "b"`,
+  // A quote inside a dollar-quoted string opens nothing.
+  "SELECT $$'$$; COMMIT; DO $$ BEGIN EXECUTE 'DROP TABLE x'; END $$; SELECT $$'$$",
+  "SELECT $t$'$t$; ROLLBACK; CALL finance.rebuild(); SELECT $t$'$t$",
+  String.raw`SELECT 'a\'; SET default_transaction_read_only = off; SELECT 'x'`,
+  String.raw`SELECT 'a\'; COPY t TO PROGRAM 'id'; SELECT 'x'`,
+];
+for (const q of POSTGRES_ESCAPES) {
+  for (const type of ["postgresql", "cloudsql-postgres", "redshift"]) {
+    assert.equal(isWrite(type, q), true, `${type}: ${q}`);
+  }
+  // No dialect given: refused under every reading.
+  assert.equal(checkPreviewQuerySafety(q).safe, false, q);
+}
+// The QA payload names each statement it smuggles.
+{
+  const errors = checkPreviewQuerySafety(
+    POSTGRES_ESCAPES[0],
+    "postgresql",
+  ).errors.join(" ");
+  assert.match(errors, /forbidden COMMIT after a statement boundary/);
+  assert.match(errors, /single SQL statement/);
+}
+// E'' strings do take backslash escapes on PostgreSQL, and a dollar-quoted
+// string may hold semicolons: both stay one read.
+for (const q of [
+  String.raw`SELECT E'it\'s; fine' AS note`,
+  "SELECT $$a; b$$ AS note",
+  String.raw`SELECT 'C:\' AS drive`,
+  "SELECT 'it''s; fine' AS note;",
+]) {
+  assert.equal(isWrite("postgresql", q), false, q);
+}
+// Where a backslash does escape (BigQuery, MySQL, ClickHouse), the same
+// text is one string, and the reverse trick is the one refused.
+for (const type of ["bigquery", "mysql", "clickhouse"]) {
+  assert.equal(isWrite(type, String.raw`SELECT 'it\'s; fine' AS note`), false);
+  assert.equal(
+    isWrite(type, String.raw`SELECT 'a\''; DELETE FROM t WHERE x = ''`),
+    true,
+  );
+}
+assert.deepEqual(
+  countTopLevelSemicolons(String.raw`SELECT 'a\'; SELECT 'b'`, "postgresql"),
+  { count: 1, lastIndex: 11 },
+);
+assert.equal(
+  countTopLevelSemicolons(String.raw`SELECT 'a\'; SELECT 'b'`, "bigquery")
+    .count,
+  0,
+);
+
+// BigQuery EXTERNAL_QUERY sends its SQL to another database: a write inside
+// it is a write, and SQL that is not a literal cannot be checked.
+for (const q of [
+  `SELECT * FROM EXTERNAL_QUERY("p.eu.conn", "DELETE FROM leads")`,
+  `SELECT * FROM EXTERNAL_QUERY('p.eu.conn', '''UPDATE leads SET x = 1 RETURNING *''')`,
+  `SELECT * FROM external_query("p.eu.conn", "SELECT 1; DROP TABLE leads")`,
+  String.raw`SELECT * FROM EXTERNAL_QUERY("p.eu.conn", "SELECT 'a\\'; COMMIT; DROP TABLE leads; SELECT 'x'")`,
+  `SELECT * FROM EXTERNAL_QUERY("p.eu.conn", CONCAT("DELETE ", "FROM leads"))`,
+]) {
+  assert.equal(isWrite("bigquery", q), true, q);
+}
+assert.equal(
+  isWrite(
+    "bigquery",
+    `SELECT * FROM EXTERNAL_QUERY("p.eu.conn", "SELECT id, 'it''s' FROM leads")`,
+  ),
+  false,
+);
 
 assert.equal(isWrite("mongodb", "db.users.find({})"), false);
 assert.equal(isWrite("mongodb", "db.users.insertOne({a: 1})"), true);
