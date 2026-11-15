@@ -89,10 +89,6 @@ const runSummary = (run: Row, workflowName: unknown = run.workflowName) => ({
   trigger: metadataOf(run).trigger,
 });
 
-/** Runs in the order a list shows them; one without a start goes last. */
-const newestFirst = (a: { startedAt?: unknown }, b: { startedAt?: unknown }) =>
-  String(b.startedAt ?? "").localeCompare(String(a.startedAt ?? ""));
-
 /**
  * Every workflow the tenant knows, with its id. Hatchet answers 50 a page
  * unless asked for more, and keeps the workflows of earlier commits: one
@@ -157,8 +153,8 @@ async function loadState(workspaceId: string) {
 
 /**
  * Everything a screen or an agent shows first: what is deployed, the
- * workflows and schedules, and the last `limit` runs of each workflow,
- * newest first.
+ * workflows and schedules, and the workspace's last `limit` runs, whichever
+ * workflows they are of. One workflow's own runs: `readWorkflowRuns`.
  */
 export async function readWorkflowsOverview(
   workspaceId: string,
@@ -183,39 +179,22 @@ export async function readWorkflowsOverview(
     ...(webhooks ? { webhookUrl: webhooks[workflowId] ?? null } : {}),
   }));
   let crons: Rows;
-  let runs: Row[];
+  let runs: Rows;
   try {
-    const [cronRows, known] = await Promise.all([
+    [crons, runs] = await Promise.all([
       tenantJson<Rows>(tenant, `${base}/workflows/crons`),
-      knownWorkflows(tenant),
-    ]);
-    crons = cronRows;
-    // Each workflow's own last runs, asked one workflow at a time: the
-    // tenant's last runs are those of whichever workflow runs most often,
-    // and a workflow that runs every few minutes would leave none of a
-    // weekly one's.
-    const ids = deployed
-      .map(name =>
-        idOf((known.rows ?? []).find(row => row.name === name) ?? {}),
-      )
-      .filter((id): id is string => !!id && isHatchetId(id));
-    const lists = await Promise.all(
-      ids.map(id =>
-        tenantJson<Rows>(
-          tenant,
-          `/api/v1/stable/tenants/${tenant.tenantId}/workflow-runs`,
-          {
-            query: new URLSearchParams({
-              since,
-              only_tasks: "false",
-              limit: String(limit),
-              workflow_ids: id,
-            }),
-          },
-        ),
+      tenantJson<Rows>(
+        tenant,
+        `/api/v1/stable/tenants/${tenant.tenantId}/workflow-runs`,
+        {
+          query: new URLSearchParams({
+            since,
+            only_tasks: "false",
+            limit: String(limit),
+          }),
+        },
       ),
-    );
-    runs = lists.flatMap(list => list.rows ?? []);
+    ]);
   } catch (error) {
     // The workspace's tenant did not answer (unreachable, or a token for a
     // tenant this Hatchet does not have): say so beside what is deployed,
@@ -238,7 +217,54 @@ export async function readWorkflowsOverview(
     })),
     recentRuns: await withRunCosts(
       workspaceId,
-      runs.map(run => runSummary(run)).sort(newestFirst),
+      (runs.rows ?? []).map(run => runSummary(run)),
+    ),
+  };
+}
+
+/**
+ * One workflow's own last `limit` runs, newest first. Asked of Hatchet for
+ * that workflow alone: the workspace's last runs are those of whichever
+ * workflow runs most often, and one that runs every few minutes leaves none
+ * of a weekly one's. A workflow Hatchet does not know (never deployed) has
+ * none.
+ */
+export async function listWorkflowRuns(
+  tenant: WorkspaceTenant,
+  name: string,
+  limit: number,
+) {
+  const known = await knownWorkflows(tenant);
+  const id = idOf((known.rows ?? []).find(row => row.name === name) ?? {});
+  if (!id || !isHatchetId(id)) return [];
+  const since = new Date(Date.now() - RECENT_RUNS_DAYS * 864e5).toISOString();
+  const runs = await tenantJson<Rows>(
+    tenant,
+    `/api/v1/stable/tenants/${tenant.tenantId}/workflow-runs`,
+    {
+      query: new URLSearchParams({
+        since,
+        only_tasks: "false",
+        limit: String(limit),
+        workflow_ids: id,
+      }),
+    },
+  );
+  return (runs.rows ?? []).map(run => runSummary(run, name));
+}
+
+/** `listWorkflowRuns`, each run with its AI cost. */
+export async function readWorkflowRuns(
+  workspaceId: string,
+  tenant: WorkspaceTenant,
+  name: string,
+  limit: number,
+) {
+  return {
+    workflowId: name,
+    runs: await withRunCosts(
+      workspaceId,
+      await listWorkflowRuns(tenant, name, limit),
     ),
   };
 }

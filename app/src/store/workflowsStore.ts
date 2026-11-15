@@ -90,8 +90,11 @@ type Result = {
 interface WorkflowsState {
   overviewByWorkspace: Record<string, WorkflowsOverview>;
   runsById: Record<string, WorkflowRun>;
+  /** Each workflow's own recent runs, by `workflowRunsKey`. */
+  runsByWorkflow: Record<string, WorkflowRunSummary[]>;
   filesByWorkspace: Record<string, string[]>;
   fetchOverview: (workspaceId: string) => Promise<void>;
+  fetchWorkflowRuns: (workspaceId: string, workflowId: string) => Promise<void>;
   fetchRun: (workspaceId: string, runId: string) => Promise<void>;
   fetchFiles: (workspaceId: string) => Promise<void>;
   run: (
@@ -123,6 +126,10 @@ export interface WorkflowFlow {
     timeout?: string;
   }>;
 }
+
+/** Where the store keeps one workflow's runs. */
+export const workflowRunsKey = (workspaceId: string, workflowId: string) =>
+  `${workspaceId}/${workflowId}`;
 
 /** A workflow's AI cost over the last 30 days, or null when it cannot be read. */
 export async function fetchWorkflowCost(
@@ -177,9 +184,10 @@ export const useWorkflowsStore = create<WorkflowsState>()(
   immer(set => ({
     overviewByWorkspace: {},
     runsById: {},
+    runsByWorkflow: {},
     filesByWorkspace: {},
 
-    // The three reads keep what the screens last saw when a poll fails: the
+    // The reads keep what the screens last saw when a poll fails: the
     // next poll tries again.
     fetchOverview: async workspaceId => {
       try {
@@ -190,6 +198,24 @@ export const useWorkflowsStore = create<WorkflowsState>()(
         ) as WorkflowsOverview;
         set(s => {
           s.overviewByWorkspace[workspaceId] = body;
+        });
+      } catch {
+        // See above.
+      }
+    },
+
+    // The workflow's own runs, not its share of the workspace's last ones:
+    // a workflow that runs often would leave none of a rare one's there.
+    fetchWorkflowRuns: async (workspaceId, workflowId) => {
+      try {
+        const body = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/workflows/{name}/runs", {
+            params: { path: { workspaceId, name: workflowId } },
+          }),
+        ) as { runs: WorkflowRunSummary[] };
+        set(s => {
+          s.runsByWorkflow[workflowRunsKey(workspaceId, workflowId)] =
+            body.runs;
         });
       } catch {
         // See above.

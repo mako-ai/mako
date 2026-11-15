@@ -3,7 +3,13 @@
  * like the Transforms run history. For a file under `workflows/`: the file,
  * read-only. Polls while on screen, faster while a run is active.
  */
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Box,
   Button,
@@ -44,6 +50,7 @@ import {
   fetchWorkflowFlow,
   isActiveRun,
   useWorkflowsStore,
+  workflowRunsKey,
   type WorkflowFlow,
   type WorkflowRun,
   type WorkflowRunSummary,
@@ -268,6 +275,19 @@ function RunsView({
 }) {
   const overview = useWorkflowsStore(s => s.overviewByWorkspace[workspaceId]);
   const fetchOverview = useWorkflowsStore(s => s.fetchOverview);
+  const fetchWorkflowRuns = useWorkflowsStore(s => s.fetchWorkflowRuns);
+  const ownRuns = useWorkflowsStore(
+    s => s.runsByWorkflow[workflowRunsKey(workspaceId, workflowId)],
+  );
+  // What is deployed and switched on, and this workflow's runs.
+  const refresh = useCallback(
+    () =>
+      Promise.all([
+        fetchOverview(workspaceId),
+        fetchWorkflowRuns(workspaceId, workflowId),
+      ]),
+    [workspaceId, workflowId, fetchOverview, fetchWorkflowRuns],
+  );
   const fetchRun = useWorkflowsStore(s => s.fetchRun);
   const startRun = useWorkflowsStore(s => s.run);
   const setTriggers = useWorkflowsStore(s => s.setTriggers);
@@ -296,13 +316,19 @@ function RunsView({
   );
   const selectedRun = sandboxRun ?? listedRun;
 
+  // The workflow's own runs; until they are read, those of it among the
+  // workspace's last runs.
   const runs = useMemo(
     () =>
-      (overview?.recentRuns ?? []).filter(
-        (run): run is WorkflowRunSummary & { runId: string } =>
-          run.workflowId === workflowId && Boolean(run.runId),
+      (
+        ownRuns ??
+        (overview?.recentRuns ?? []).filter(
+          run => run.workflowId === workflowId,
+        )
+      ).filter((run): run is WorkflowRunSummary & { runId: string } =>
+        Boolean(run.runId),
       ),
-    [overview?.recentRuns, workflowId],
+    [ownRuns, overview?.recentRuns, workflowId],
   );
   const selectedSummary: WorkflowRunSummary | undefined =
     sandboxRun ?? runs.find(run => run.runId === selectedRunId);
@@ -314,7 +340,7 @@ function RunsView({
   useEffect(() => {
     let first = true;
     const tick = () => {
-      void fetchOverview(workspaceId);
+      void refresh();
       if (selectedRunId && (first || isActiveRun(selectedStatus))) {
         void fetchRun(workspaceId, selectedRunId);
       }
@@ -331,7 +357,7 @@ function RunsView({
     selectedRunId,
     selectedStatus,
     hasActive,
-    fetchOverview,
+    refresh,
     fetchRun,
   ]);
 
@@ -372,7 +398,7 @@ function RunsView({
   const change = async (triggers: { active?: boolean; webhook?: boolean }) => {
     const result = await setTriggers(workspaceId, workflowId, triggers);
     setError(result.ok ? null : (result.error ?? "Failed"));
-    void fetchOverview(workspaceId);
+    void refresh();
   };
 
   return (
@@ -477,7 +503,7 @@ function RunsView({
                   setError(result.ok ? null : (result.error ?? "Failed"));
                   if (result.ok) {
                     await fetchRun(workspaceId, selectedSummary.runId);
-                    void fetchOverview(workspaceId);
+                    void refresh();
                   }
                 }}
                 onNewInput={() => setDialogOpen(true)}
@@ -575,7 +601,7 @@ function RunsView({
             if (!result.ok) return result.error ?? "Failed to start the run";
             if (sandbox && result.runId) setSandboxRunId(result.runId);
             else {
-              await fetchOverview(workspaceId);
+              await refresh();
               if (result.runId) select(result.runId);
             }
             return null;

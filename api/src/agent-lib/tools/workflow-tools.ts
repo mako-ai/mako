@@ -16,7 +16,7 @@ import { waitForDeploy, waitForRun } from "../../workflows/status";
 import { MAX_WAIT_SECONDS } from "../../workflows/wait";
 import { setTriggers } from "../../workflows/webhook";
 
-/** How many of each workflow's recent runs an agent is shown. */
+/** How many recent runs an agent is shown. */
 const RECENT_RUNS = 10;
 
 const failure = (error: unknown) => ({
