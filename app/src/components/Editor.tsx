@@ -6,7 +6,7 @@ import { useConsoleStore, selectConsoleTabs } from "../store/consoleStore";
 import { useShallow } from "zustand/react/shallow";
 import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
-import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
+import { useConnectionIconById } from "../hooks/useConnectionIconById";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
@@ -90,23 +90,7 @@ function Editor({
   );
 
   // Database type → iconUrl map for rendering per-connection icons in console tabs.
-  const dbTypes = useDatabaseCatalogStore(state => state.types);
-  const fetchDbTypes = useDatabaseCatalogStore(state => state.fetchTypes);
-  useEffect(() => {
-    fetchDbTypes().catch(() => undefined);
-  }, [fetchDbTypes]);
-  const connectionIconById = useMemo(() => {
-    const typeToIcon = new Map<string, string>();
-    for (const t of dbTypes || []) {
-      if (t.iconUrl) typeToIcon.set(t.type, t.iconUrl);
-    }
-    const map = new Map<string, string>();
-    for (const c of availableDatabases) {
-      const icon = typeToIcon.get(c.type);
-      if (icon) map.set(c.id, icon);
-    }
-    return map;
-  }, [dbTypes, availableDatabases]);
+  const connectionIconById = useConnectionIconById(availableDatabases);
 
   // Fetch connections when workspace changes
   useEffect(() => {
