@@ -8,7 +8,7 @@ import { join } from "node:path";
  * (issue #956, after #961 made git the write store).
  */
 
-const consoles = readFileSync(join(__dirname, "consoles.ts"), "utf8");
+const consoles = readFileSync(join(__dirname, "consoles/read.ts"), "utf8");
 const manager = readFileSync(
   join(__dirname, "../services/consoles/tree.ts"),
   "utf8",

@@ -13,6 +13,7 @@ import {
 } from "../../database/workspace-schema";
 import { getLogger } from "../../logging";
 import { FolderChainCache } from "../../utils/folder-chain";
+import { canWriteResource } from "../../utils/resource-acl";
 import {
   commitConsoleBatch,
   commitConsoleMoves,
@@ -402,4 +403,28 @@ export async function moveConsoleFolder(
     throw error;
   }
   return true;
+}
+
+/**
+ * Why the caller may not write (rename / move / delete) a console folder,
+ * or null when they may: the shared resource ACL over the folder's owner
+ * and its (legacy-aware) access level.
+ */
+export async function consoleFolderWriteRefusal(
+  ctx: { workspaceId: string; userId: string; role: string | undefined },
+  folderId: string,
+): Promise<{ ok: false; status: 403 | 404; error: string } | null> {
+  const folder = await ConsoleFolder.findOne({
+    _id: new Types.ObjectId(folderId),
+    workspaceId: new Types.ObjectId(ctx.workspaceId),
+  }).lean();
+  if (!folder) return { ok: false, status: 404, error: "Folder not found" };
+  const access = legacyAccess(folder);
+  const allowed = canWriteResource(
+    { owner_id: folder.ownerId?.toString(), access },
+    ctx.userId,
+    ctx.role,
+    { effectiveAccess: access },
+  );
+  return allowed ? null : { ok: false, status: 403, error: "Access denied" };
 }
