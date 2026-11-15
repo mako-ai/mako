@@ -5,12 +5,14 @@
  * is exposed on every surface. Cell runs execute real queries / kernel code
  * and carry the query envelope where warehouse access is involved.
  */
-import { ALL_AGENT_SURFACES, type AgentCapabilityDefinition } from "./types";
+import {
+  ALL_AGENT_SURFACES,
+  IN_CHAT_ONLY_SURFACES,
+  type AgentCapabilityDefinition,
+} from "./types";
 
 export type NotebookCapabilityPack =
-  | "notebook-orient"
-  | "notebook-edit"
-  | "notebook-run";
+  "notebook-orient" | "notebook-edit" | "notebook-run";
 
 export type NotebookCapabilityDefinition = AgentCapabilityDefinition<
   "notebook",
@@ -74,25 +76,35 @@ export const NOTEBOOK_CAPABILITIES = [
   }),
   define({
     // Deprecated alias of edit_notebook_cell (mode: 'insert'); kept
-    // registered for external MCP clients. Deferred out of the in-product
-    // working set (see DEFERRED_BUILTIN_TOOL_DOMAINS).
+    // registered for chats that already called it, deferred out of the
+    // in-product working set (see DEFERRED_BUILTIN_TOOL_DOMAINS) and off the
+    // MCP surfaces, which expose edit_notebook_cell.
     name: "add_notebook_cell",
     pack: "notebook-edit",
     risk: "write",
     requiredGrant: "artifact-write",
-    surfaces: ALL_AGENT_SURFACES,
+    surfaces: IN_CHAT_ONLY_SURFACES,
     resultKind: "artifact",
+    mcpExclusion: {
+      why: "deferred",
+      note: "Deprecated alias; MCP exposes edit_notebook_cell.",
+    },
   }),
   define({
     // Deprecated alias of edit_notebook_cell (mode: 'delete'); kept
-    // registered for external MCP clients. Deferred out of the in-product
-    // working set (see DEFERRED_BUILTIN_TOOL_DOMAINS).
+    // registered for chats that already called it, deferred out of the
+    // in-product working set (see DEFERRED_BUILTIN_TOOL_DOMAINS) and off the
+    // MCP surfaces, which expose edit_notebook_cell.
     name: "delete_notebook_cell",
     pack: "notebook-edit",
     risk: "destructive",
     requiredGrant: "artifact-write",
-    surfaces: ALL_AGENT_SURFACES,
+    surfaces: IN_CHAT_ONLY_SURFACES,
     resultKind: "artifact",
+    mcpExclusion: {
+      why: "deferred",
+      note: "Deprecated alias; MCP exposes edit_notebook_cell.",
+    },
   }),
   // ── Cell runs ───────────────────────────────────────────────────────────
   define({

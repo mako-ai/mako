@@ -55,6 +55,7 @@ import { createFlowSyncTools } from "../agent-lib/tools/flow-sync-tools";
 import { createMemberTools } from "../agent-lib/tools/member-tools";
 import { createWebTools } from "../agent-lib/tools/web-tools";
 import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
+import { METRIC_FIRST_TOOL_NAMES } from "../agents/modes/registry";
 import {
   getSystemSkillIndex,
   getSystemSkillFullText,
@@ -84,48 +85,35 @@ const SERVER_VERSION = "0.1.0";
  * costs the client tokens on every session — but a compact workflow guide
  * saves far more by avoiding failed exploratory round-trips.
  */
-const SERVER_INSTRUCTIONS = `Mako builds data apps (git-backed React projects + data bindings) inside one workspace.
+const SERVER_INSTRUCTIONS = `Mako is one workspace's data platform: governed dbt metrics and terms, warehouse connections, and data apps (git-backed React + data bindings).
+
+Business numbers first (revenue, MRR, paying customers, churn, renewal rate, …):
+1. lookup_term({ query }) and list_metrics({ query }) → the governed term (canonical model.column, grain, variants) and the metric with its group-bys.
+2. A metric exists: query_metric({ metrics, groupBy, where, startTime, endTime }) → the rows (read-only, needs query access). compile_metric(same input) → its SQL only, for a binding, a console or a dbt model. groupBy names look like "metric_time__month" or "customer__region".
+3. No metric: find_models({ query }) → describe_model({ name }) → query the canonical model with sql_execute_query.
+4. list_connections / list_tables / inspect_table only for data outside dbt.
+Report the governed value. Never change a metric's scope yourself (a filter, an excluded segment). When asked for another scope, say so and show both numbers.
+Metric limits: query_metric adds LIMIT 500 unless you pass limit (limited: true means more rows exist); dates carry no timezone; where is raw SQL checked read-only; compile and query share 45s. Pass environment (a dbt environment name) to try a metric from that environment's latest run before it is merged.
+
 This connection is bound to one workspace: call get_mcp_capabilities before the first write to confirm its name and id (every write result echoes them too).
 
-Typical loop:
-1. Discover data: list_connections (every configured credential — kind "database" for warehouses, kind "source" for Stripe/Close/… keys), then list_databases / list_tables / inspect_table on a database connection (they dispatch on engine — SQL or MongoDB). A source connection is not queryable: probe_connection reads one live page of an entity from its platform; list_connectors is the catalog of connector code.
-2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
-3. search_apps first (extend a close match rather than copy it) → app_create_app (lands in the user's personal users/<handle>/apps/ unless they ask for a shared one) → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
-4. Verify with app_open_app (starts the dev server, focuses the user's UI) + app_dev_log (vite + browser console) + app_browse (headless browser: click, navigate, screenshot the running app).
-5. app_commit → app_merge_to_main (main is what publishes buildable state).
+Apps: search_apps first (extend a close match) → app_create_app (lands in the user's personal users/<handle>/apps/ unless they ask for a shared one) → app_write_file / app_edit_file / app_bash → app_materialize (bindings/<name>.sql holds the validated query; a metric's SQL comes from compile_metric). Verify with app_open_app (dev server, focuses the user's UI) + app_dev_log + app_browse (headless browser). app_commit → app_merge_to_main (main is what publishes).
+App performance (mako://skills/apps, "Performance"): filter, join and aggregate in SQL with useDuckDB(sql), one query per panel; useQuery(name) only for bindings under ~10k rows; trace a filter change with app_browse: no main-thread task over 200 ms.
 
-App performance (rules: mako://skills/apps, "Performance"): filter, join and aggregate in SQL with useDuckDB(sql), one query per panel, so only the rows a panel draws reach JS. useQuery(name) is for bindings under ~10k rows. Each panel shows a same-size skeleton while it loads, and filter clicks never wait on a query. Before calling a UI done, trace a filter change with app_browse: no main-thread task over 200 ms.
+dbt: before creating a dbt model or a binding that aggregates a business metric, call lookup_term and find_models; when a canonical model exists, read it or extend it, never derive the metric again. model_readers({ name }) lists the apps and bindings a change touches. Before joining two entities, call find_join_path({ from, to }): join on the columns it returns and heed its fan-out warnings. Edits commit to the user's session branch (dbt/ folder); validate with dbt_parse / dbt_compile_model / dbt_show (poll dbt_get_run). dbt_run_model, dbt_run_job and dbt_cancel_run need the warehouse:write scope.
 
-Before creating a dbt model or a binding that aggregates a business metric (revenue, MRR, churn, paying customers, …):
-- lookup_term({ query }) → the registry's definition, canonical model.column, grain, known variants and forbidden patterns.
-- find_models({ query }) → models, sources and seeds that already hold the data; describe_model({ name }) for columns, tests, lineage and readers.
-- When a canonical model exists, read it or extend it: never derive the metric again. model_readers({ name }) lists the apps and bindings a change would touch.
-- Before joining two entities, call find_join_path({ from, to }): join on the columns it returns, hop by hop, and heed its fan-out warnings.
-
-Metrics (the dbt semantic layer, MetricFlow): a number the dbt project defines as a metric is computed from that definition, never re-aggregated by hand.
-- list_metrics({ query }) → the metrics that exist; list_metrics({ metrics: [name] }) → a metric's definition and the dimensions it can be grouped by.
-- query_metric({ metrics, groupBy, where, startTime, endTime }) → the rows (read-only, needs query access). groupBy takes names such as "metric_time__month" or "customer__region".
-- compile_metric(same input) → the SQL only, for a binding (bindings/<name>.sql), a console or a dbt model.
-- All three read production; pass environment (a dbt environment name) to try a metric from that environment's latest run before it is merged.
-- Limits: query_metric appends LIMIT 500 when you pass no limit and says limited: true when it is reached (more rows exist: pass limit with orderBy, or narrow the query); startTime/endTime are dates or datetimes without a timezone; where is raw SQL checked read-only; compile and query share 45s.
-
-dbt: create/read projects → create/read/edit/delete model files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run) → create/update/delete jobs. Edits commit straight to the user's session branch of the workspace repo (dbt/ folder). Warehouse-mutating runs (dbt_run_model, dbt_run_job, dbt_cancel_run) appear only with the explicit warehouse:write OAuth/API-key scope.
-
-Syncs (flows, what loads sources into the warehouse): flow_list → flow_read / flow_status (per entity: mode, backlog, failures, last materialised). flow_backfill starts a full backfill; flow_update changes only the triggers (poll cron, webhook on/off, resync cron). Both need warehouse:write and an owner/admin.
-
-Skills (same knowledge as the in-product agent):
-- list_skills → compact index (workspace + system).
-- get_relevant_skills({ query }) → ranked bodies for your task (call this early).
-- load_skill / read_skill_resource / mako://skills/{name} for specifics.
-Before writing app code: get_relevant_skills("build a Mako app") or resource mako://skills/apps.
-Optional: web_search / fetch_url for public docs.`;
+Slow SQL: create_console → run_console → check_query_status. A source connection (kind "source": Stripe, Close, …) is not queryable: probe_connection reads one live page; list_connectors is the connector catalog.
+Syncs: flow_list → flow_read / flow_status; flow_backfill and flow_update need warehouse:write and an owner/admin.
+Skills: get_relevant_skills({ query }) early; list_skills, load_skill, read_skill_resource or mako://skills/{name} for specifics. web_search / fetch_url for public docs.`;
 
 /** ACP Desktop Chat — no headless preview tokens; the user already has a live tab. */
 const ACP_DESKTOP_SERVER_INSTRUCTIONS = `Mako builds data apps (React + data bindings) inside Mako Desktop Chat.
 This connection is bound to one workspace: call get_mcp_capabilities before the first write to confirm its name and id (every write result echoes them too).
 
+Business numbers first (revenue, MRR, paying customers, churn, renewal rate, …): lookup_term / list_metrics → query_metric for the rows, or compile_metric for a binding's SQL; with no metric, find_models → describe_model → the canonical model. Report the governed value; never change a metric's scope yourself, and show both numbers when the user asks for another scope.
+
 Typical loop:
-1. Discover data: list_connections (kind "database" for warehouses, kind "source" for Stripe/Close/… keys), then list_databases / list_tables / inspect_table on a database connection (they dispatch on engine — SQL or MongoDB). A source connection is not queryable: probe_connection reads one live page from its platform.
+1. Data outside dbt: list_connections (kind "database" for warehouses, kind "source" for Stripe/Close/… keys), then list_databases / list_tables / inspect_table on a database connection (they dispatch on engine — SQL or MongoDB). A source connection is not queryable: probe_connection reads one live page from its platform.
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
 3. search_apps first (extend a close match rather than copy it) → app_create_app (lands in the user's personal users/<handle>/apps/ unless they ask for a shared one) → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
 4. For dbt work: read_dbt_project_tree → read/edit files → validate asynchronously, then poll dbt_get_run. Before creating a dbt model or a binding that aggregates a business metric, call lookup_term (the registry's definition and canonical model.column) and find_models (models that already hold the data; describe_model for columns and readers); when a canonical model exists, read it or extend it. Before joining two entities, call find_join_path and join on the columns it returns. A number the dbt project defines as a metric (list_metrics) is computed with query_metric, or compile_metric for a binding's SQL, never re-aggregated by hand. For large or destructive work (warehouse runs, Git mutations, schedules), prefer proposing a plan via mako-desktop submit_plan before acting.
@@ -263,18 +251,13 @@ export function buildMakoMcpCandidateTools(
     ...notebookTools,
     ...selfDirectiveTools,
     // Unified cross-engine discovery (dispatches on connection type). The
-    // namespaced sql_*/mongo_* discovery tools below remain as aliases for
-    // existing external clients.
+    // deprecated sql_list_* aliases in sqlTools are excluded by the bridge
+    // policy (query-capabilities.ts).
     list_connections,
     list_databases,
     list_tables,
     inspect_table,
     ...sqlTools,
-    // Namespace mongo the same way the unified agent does.
-    mongo_list_connections: mongoTools.list_connections,
-    mongo_list_databases: mongoTools.list_databases,
-    mongo_list_collections: mongoTools.list_collections,
-    mongo_inspect_collection: mongoTools.inspect_collection,
     // Included in candidates so the policy can deliberately exclude it;
     // buildMakoMcpToolset will strip it.
     mongo_execute_query: mongoTools.execute_query,
@@ -408,7 +391,8 @@ export function buildMakoMcpToolset(
     exposed[name] = tool;
   }
 
-  exposed.get_mcp_capabilities = {
+  const ordered = leadToolsFirst(exposed);
+  ordered.get_mcp_capabilities = {
     description:
       "Report which workspace this MCP connection is bound to (name + id), " +
       "its effective scopes, grants, available " +
@@ -420,7 +404,7 @@ export function buildMakoMcpToolset(
       scopes,
       queryAccess,
       grants: [...grants].sort(),
-      availableTools: Object.keys(exposed).sort(),
+      availableTools: Object.keys(ordered).sort(),
       unavailableTools: unavailable.sort((a, b) =>
         a.name.localeCompare(b.name),
       ),
@@ -431,7 +415,28 @@ export function buildMakoMcpToolset(
     }),
   };
 
-  return exposed;
+  return ordered;
+}
+
+/**
+ * The tools a business question starts with, listed first in tools/list:
+ * clients that rank or truncate a long tool list keep these.
+ */
+export const MCP_LEAD_TOOL_NAMES: readonly string[] = [
+  ...METRIC_FIRST_TOOL_NAMES,
+  "find_join_path",
+  "model_readers",
+];
+
+function leadToolsFirst<T>(tools: Record<string, T>): Record<string, T> {
+  const ordered: Record<string, T> = {};
+  for (const name of MCP_LEAD_TOOL_NAMES) {
+    if (name in tools) ordered[name] = tools[name];
+  }
+  for (const [name, tool] of Object.entries(tools)) {
+    if (!(name in ordered)) ordered[name] = tool;
+  }
+  return ordered;
 }
 
 /** The workspace this MCP connection acts on, as echoed back to clients. */
