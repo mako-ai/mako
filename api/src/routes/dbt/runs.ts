@@ -192,10 +192,18 @@ dbtRunRoutes.get(
       if (!Types.ObjectId.isValid(runId)) {
         return badRequest(c, "Invalid run id");
       }
-      if (!["manifest", "runResults", "catalog", "sources"].includes(kind)) {
+      if (
+        ![
+          "manifest",
+          "semanticManifest",
+          "runResults",
+          "catalog",
+          "sources",
+        ].includes(kind)
+      ) {
         return badRequest(
           c,
-          "kind must be manifest | runResults | catalog | sources",
+          "kind must be manifest | semanticManifest | runResults | catalog | sources",
         );
       }
       const run = await DbtRun.findOne({
@@ -206,7 +214,12 @@ dbtRunRoutes.get(
         .lean();
       const key =
         run?.artifactKeys?.[
-          kind as "manifest" | "runResults" | "catalog" | "sources"
+          kind as
+            | "manifest"
+            | "semanticManifest"
+            | "runResults"
+            | "catalog"
+            | "sources"
         ];
       if (!key) {
         return fail(c, 404, "Artifact not found");

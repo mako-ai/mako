@@ -231,7 +231,7 @@ dbtProjectRoutes.post("/projects", async (c: AuthenticatedContext) => {
     const project = new DbtProject({
       workspaceId: new Types.ObjectId(workspaceId),
       name: body.name,
-      dbtVersion: body.dbtVersion ?? "1.9",
+      dbtVersion: body.dbtVersion ?? "1.12",
       environments: body.environments.map(env => ({
         ...env,
         connectionId: new Types.ObjectId(env.connectionId),

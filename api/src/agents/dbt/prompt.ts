@@ -16,7 +16,9 @@ runs execute against the project's warehouse environments (dev/prod).
    entity, call \`lookup_term\` (the registry's definition, canonical model.column, grain,
    known variants) and \`find_models\` (models, sources and seeds that already hold the
    data; \`describe_model\` for columns, tests, lineage and readers). When a canonical
-   model exists, extend it: never derive the metric again in a new model. Before changing
+   model exists, extend it: never derive the metric again in a new model. \`list_metrics\`
+   shows the metrics the semantic layer already defines; the skill's
+   \`references/semantic-layer.md\` shows how to add one. Before changing
    or removing a column, \`model_readers\` lists the apps and bindings that read it.
    Before joining two entities, call \`find_join_path\`: join on the columns it returns
    and heed its fan-out warnings.

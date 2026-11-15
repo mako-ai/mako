@@ -2,7 +2,7 @@
  * dbt-core versions the Mako runner can resolve (see api/src/dbt/dbt-bin.ts).
  * Store the minor release track on the project; patch is pinned at runtime.
  */
-export const DEFAULT_DBT_VERSION = "1.9";
+export const DEFAULT_DBT_VERSION = "1.12";
 
 export const DBT_VERSION_OPTIONS: Array<{
   value: string;
@@ -10,14 +10,9 @@ export const DBT_VERSION_OPTIONS: Array<{
   description?: string;
 }> = [
   {
-    value: "1.9",
-    label: "1.9 — recommended",
-    description: "dbt-core 1.9.x (Fusion-compatible projects)",
-  },
-  {
-    value: "1.8",
-    label: "1.8",
-    description: "dbt-core 1.8.x",
+    value: "1.12",
+    label: "1.12 — recommended",
+    description: "dbt-core 1.12.x, with MetricFlow (semantic layer)",
   },
   {
     value: "1.7",

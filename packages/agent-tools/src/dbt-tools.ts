@@ -187,6 +187,110 @@ export const findJoinPathSchema = z.object({
     .describe("Longest path to search, in joins (default 4, at most 6)."),
 });
 
+// Semantic layer (api/src/agent-lib/tools/dbt-metric-tools.ts): the metrics a
+// dbt project defines for MetricFlow, read from the semantic manifest of the
+// last production build.
+const metricNamesField = z
+  .array(z.string().min(1).max(200))
+  .min(1)
+  .max(10)
+  .describe(
+    'Metric names from list_metrics: ["revenue", "average_order_value"].',
+  );
+
+const metricEnvironmentField = z
+  .string()
+  .max(100)
+  .optional()
+  .describe(
+    'dbt environment to read instead of production, e.g. a personal dev one ("joan"): tries a metric from that environment\'s latest run before it is merged.',
+  );
+
+const metricQueryFields = {
+  metrics: metricNamesField,
+  groupBy: z
+    .array(z.string().min(1).max(300))
+    .max(20)
+    .optional()
+    .describe(
+      'Group-bys as list_metrics({ metrics }) names them: "metric_time__month" (day, week, month, quarter, year), "customer__region". Omit for one total row.',
+    ),
+  where: z
+    .array(z.string().min(1).max(2000))
+    .max(10)
+    .optional()
+    .describe(
+      "Filters, ANDed: SQL conditions naming dimensions through templates: \"{{ Dimension('customer__region') }} = 'EU'\", \"{{ TimeDimension('metric_time', 'day') }} >= '2026-01-01'\", \"{{ Entity('customer') }} = 42\".",
+    ),
+  orderBy: z
+    .array(z.string().min(1).max(300))
+    .max(10)
+    .optional()
+    .describe(
+      'Names to order by; "-" prefix for descending: ["-revenue"].',
+    ),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(10000)
+    .optional()
+    .describe("Row limit written into the SQL."),
+  startTime: z
+    .string()
+    .max(40)
+    .optional()
+    .describe(
+      'Start of the metric_time range, inclusive: "2026-01-01". Widened to whole periods of the grain grouped by (a week starts on Monday).',
+    ),
+  endTime: z
+    .string()
+    .max(40)
+    .optional()
+    .describe('End of the metric_time range, inclusive: "2026-03-31".'),
+  projectId: z
+    .string()
+    .optional()
+    .describe(
+      "dbt project ID. Only needed when several projects define the metric.",
+    ),
+  environment: metricEnvironmentField,
+};
+
+export const listMetricsSchema = z.object({
+  query: z
+    .string()
+    .max(200)
+    .optional()
+    .describe(
+      'Keep metrics whose name, label or description contains this: "revenue". Omit to list all.',
+    ),
+  metrics: z
+    .array(z.string().min(1).max(200))
+    .max(10)
+    .optional()
+    .describe(
+      "Metric names to describe in full, with the group-bys they share.",
+    ),
+  projectId: ontologyProjectIdField,
+  environment: metricEnvironmentField,
+});
+
+export const compileMetricSchema = z.object(metricQueryFields);
+
+export const queryMetricSchema = z.object({
+  ...metricQueryFields,
+  maxRows: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Rows to show in the result table (default 50)."),
+});
+
+export type ListMetricsInput = z.infer<typeof listMetricsSchema>;
+export type CompileMetricInput = z.infer<typeof compileMetricSchema>;
+export type QueryMetricInput = z.infer<typeof queryMetricSchema>;
 export type FindJoinPathInput = z.infer<typeof findJoinPathSchema>;
 export type FindModelsInput = z.infer<typeof findModelsSchema>;
 export type DescribeModelInput = z.infer<typeof describeModelSchema>;

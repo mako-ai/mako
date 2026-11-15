@@ -122,6 +122,11 @@ export interface DbtRunResult {
   /** Raw artifact contents collected from target/ after the last command. */
   artifacts: {
     manifest?: Buffer;
+    /**
+     * MetricFlow's view of the project (semantic models, metrics, time
+     * spines), written by every parse next to manifest.json.
+     */
+    semanticManifest?: Buffer;
     runResults?: Buffer;
     catalog?: Buffer;
     /** Written by `dbt source freshness`. */
@@ -870,6 +875,10 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
     }
 
     artifacts.manifest = await readArtifact(projectDir, "manifest.json");
+    artifacts.semanticManifest = await readArtifact(
+      projectDir,
+      "semantic_manifest.json",
+    );
     artifacts.runResults = await readArtifact(projectDir, "run_results.json");
     artifacts.catalog = await readArtifact(projectDir, "catalog.json");
     artifacts.sources = await readArtifact(projectDir, "sources.json");
