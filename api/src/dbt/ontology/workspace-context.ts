@@ -84,8 +84,10 @@ export async function loadVisibleAppReads(
 
 export interface WorkspaceContextInput {
   registry: OntologyRegistry;
-  semanticProjects: SemanticProject[];
-  manifests: ProjectManifestIndex[];
+  /** Null: the semantic manifests could not be read right now. */
+  semanticProjects: SemanticProject[] | null;
+  /** Null: the dbt manifests could not be read right now. */
+  manifests: ProjectManifestIndex[] | null;
   /** Null: the apps index could not be read. */
   apps: AppBindingReads[] | null;
 }
@@ -115,6 +117,11 @@ function fitLines(lines: string[], budget: number, more: string): string[] {
   return kept;
 }
 
+/** A registry entry without a status is a draft, as join-path.ts reads it. */
+function statusOf(entry: RegistryEntry): string {
+  return entry.status ?? "draft";
+}
+
 function statusRank(status: string | undefined): number {
   if (status === "governed") return 0;
   if (status === "draft") return 1;
@@ -139,7 +146,9 @@ function canonicalOf(entry: RegistryEntry): string {
 export function renderWorkspaceContext(
   input: WorkspaceContextInput,
 ): WorkspaceContextPack {
-  const { registry, semanticProjects, manifests, apps } = input;
+  const { registry, apps } = input;
+  const semanticProjects = input.semanticProjects ?? [];
+  const manifests = input.manifests ?? [];
   const sections: string[] = [
     "# Workspace context",
     "Business numbers start here: a term's metric goes to query_metric (rows) or compile_metric (SQL); otherwise read the canonical model. lookup_term, list_metrics and describe_model give the details.",
@@ -151,15 +160,18 @@ export function renderWorkspaceContext(
     ...registry.entities,
   ].sort(
     (a, b) =>
-      statusRank(a.status) - statusRank(b.status) ||
+      statusRank(statusOf(a)) - statusRank(statusOf(b)) ||
       a.kind.localeCompare(b.kind) ||
       a.name.localeCompare(b.name),
   );
   const termLines = entries
-    .filter(entry => entry.status === "governed" || entry.status === "draft")
+    .filter(entry => {
+      const status = statusOf(entry);
+      return status === "governed" || status === "draft";
+    })
     .map(entry => {
       const metric = findMetricFor(semanticProjects, entry);
-      return `- ${entry.name} [${entry.status}${entry.kind === "entity" ? ", entity" : ""}] → ${canonicalOf(entry)}${metric ? ` · metric ${metric}` : ""}`;
+      return `- ${entry.name} [${statusOf(entry)}${entry.kind === "entity" ? ", entity" : ""}] → ${canonicalOf(entry)}${metric ? ` · metric ${metric}` : ""}`;
     });
   sections.push("", "## Terms (governed, then draft)");
   const registryMessage = registryStatusMessage(registry);
@@ -185,9 +197,11 @@ export function renderWorkspaceContext(
   }
   sections.push("", "## Metrics (semantic layer)");
   sections.push(
-    metricLines.length === 0
-      ? "No metric is defined yet."
-      : fitLines(metricLines, METRICS_CHARS, "list_metrics").join("\n"),
+    input.semanticProjects === null
+      ? "The metrics could not be read right now: use list_metrics."
+      : metricLines.length === 0
+        ? "No metric is defined yet."
+        : fitLines(metricLines, METRICS_CHARS, "list_metrics").join("\n"),
   );
 
   // The models the most apps read.
@@ -209,7 +223,11 @@ export function renderWorkspaceContext(
   );
   const topModels = modelRows.slice(0, MAX_MODELS);
   sections.push("", "## Most-read dbt models (apps reading each)");
-  if (manifests.length === 0) {
+  if (input.manifests === null) {
+    sections.push(
+      "The dbt manifest could not be read right now: use find_models.",
+    );
+  } else if (manifests.length === 0) {
     sections.push("No dbt manifest is stored yet.");
   } else if (!apps) {
     sections.push("The apps index is unavailable: use find_models.");
@@ -250,6 +268,16 @@ function findMetricFor(
   return undefined;
 }
 
+/** A rejected load becomes null, so the pack says "could not be read". */
+function loadFailed(what: string) {
+  return (error: unknown): null => {
+    logger.warn(`Workspace context: ${what} could not be read`, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  };
+}
+
 /** Load the sources and render the pack. Never throws. */
 export async function buildWorkspaceContextPack(
   workspaceId: string,
@@ -257,8 +285,8 @@ export async function buildWorkspaceContextPack(
 ): Promise<WorkspaceContextPack> {
   const [registry, semanticProjects, manifests, apps] = await Promise.all([
     loadOntologyRegistry(workspaceId),
-    loadSemanticProjects(workspaceId).catch(() => []),
-    loadManifestIndexes(workspaceId).catch(() => []),
+    loadSemanticProjects(workspaceId).catch(loadFailed("semantic manifests")),
+    loadManifestIndexes(workspaceId).catch(loadFailed("dbt manifests")),
     loadVisibleAppReads(workspaceId, userId),
   ]);
   return renderWorkspaceContext({

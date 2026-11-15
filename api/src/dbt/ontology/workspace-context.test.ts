@@ -132,6 +132,31 @@ describe("renderWorkspaceContext", () => {
     expect(text).toMatch(/more: list_metrics/);
   });
 
+  it("reads an entry without a status as a draft", () => {
+    // The fixture's `account` entity has no status.
+    const { text } = renderWorkspaceContext({
+      registry: parseOntologyRegistry(ONTOLOGY_REGISTRY_YAML),
+      semanticProjects,
+      manifests,
+      apps,
+    });
+    expect(text).toContain(
+      "- account [draft, entity] → dim_account (account_id)",
+    );
+  });
+
+  it("says a failed load could not be read, not that nothing is defined", () => {
+    const { text } = renderWorkspaceContext({
+      registry: parseOntologyRegistry(ONTOLOGY_REGISTRY_YAML),
+      semanticProjects: null,
+      manifests: null,
+      apps,
+    });
+    expect(text).toContain("could not be read right now: use list_metrics");
+    expect(text).toContain("could not be read right now: use find_models");
+    expect(text).not.toContain("No metric is defined yet.");
+  });
+
   it("says what is missing instead of failing", () => {
     const { text } = renderWorkspaceContext({
       registry: emptyRegistry("absent"),
