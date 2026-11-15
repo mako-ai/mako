@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 const consoles = readFileSync(join(__dirname, "consoles.ts"), "utf8");
 const manager = readFileSync(
-  join(__dirname, "../utils/console-manager.ts"),
+  join(__dirname, "../services/consoles/tree.ts"),
   "utf8",
 );
 
