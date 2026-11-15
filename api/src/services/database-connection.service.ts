@@ -1,6 +1,6 @@
-import { checkConnectionWrite, isWrite } from "../access/connection-writes";
+import { checkConnectionWrite } from "../access/connection-writes";
 import { createClient } from "@clickhouse/client";
-import { MongoClient, Db, MongoClientOptions, ClientSession } from "mongodb";
+import type { Db, MongoClient } from "mongodb";
 import { ConnectionPool, Request as MSSQLRequest } from "mssql";
 import { IDatabaseConnection } from "../database/workspace-schema";
 import axios, { AxiosInstance } from "axios";
@@ -21,6 +21,11 @@ import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-po
 import { CloudflareD1DatabaseDriver } from "../databases/drivers/cloudflare-d1/driver";
 import { CloudflareKVDatabaseDriver } from "../databases/drivers/cloudflare-kv/driver";
 import { mapPostgresOidToType } from "../databases/drivers/postgresql/pg-type-utils";
+import {
+  mongoEngine,
+  type ConnectionConfig,
+  type ConnectionContext,
+} from "../databases/drivers/mongodb/engine";
 import { mysqlEngine } from "../databases/drivers/mysql/engine";
 import {
   cursorReadable,
@@ -42,36 +47,19 @@ import {
   prepareSqlPreviewQuery,
   resolvePreviewPageSize,
 } from "./query-pagination.service";
-import { MongoShellError, runMongoShellQuery } from "./mongo-shell-interpreter";
 
 const logger = loggers.db();
 
+export type {
+  ConnectionConfig,
+  ConnectionContext,
+} from "../databases/drivers/mongodb/engine";
 export type {
   QueryExecuteOptions,
   QueryPreviewOptions,
   QueryPreviewResult,
   QueryResult,
 } from "../databases/query-types";
-
-// Types for different connection contexts
-export type ConnectionContext =
-  | "main" // Main application database
-  | "destination" // Destination databases for sync
-  | "datasource" // Data source databases
-  | "workspace"; // Workspace-specific databases
-
-export interface ConnectionConfig {
-  connectionString: string;
-  database: string;
-}
-
-interface PooledConnection {
-  client: MongoClient;
-  db: Db;
-  lastUsed: Date;
-  context: ConnectionContext;
-  identifier: string;
-}
 
 /**
  * Extract a human-readable message from a Google/BigQuery API error.
@@ -161,15 +149,6 @@ const READ_ONLY_UNSUPPORTED_TYPES = new Set<string>([
 export class DatabaseConnectionService {
   private connections: Map<string, any> = new Map();
 
-  // MongoDB-specific pooling
-  private mongoConnections: Map<string, PooledConnection> = new Map();
-  // First-connect promises, so concurrent callers for one key share a
-  // single MongoClient instead of each connecting and overwriting the map.
-  private mongoConnecting: Map<
-    string,
-    Promise<{ client: MongoClient; db: Db }>
-  > = new Map();
-
   // Track running BigQuery jobs for cancellation
   private runningBigQueryJobs: Map<
     string,
@@ -178,17 +157,6 @@ export class DatabaseConnectionService {
       jobId: string;
       location?: string;
       client: AxiosInstance;
-    }
-  > = new Map();
-
-  // Track running MongoDB queries for cancellation
-  private runningMongoQueries: Map<
-    string,
-    {
-      database: IDatabaseConnection;
-      client: MongoClient;
-      abortController: AbortController;
-      session: ClientSession;
     }
   > = new Map();
 
@@ -238,18 +206,6 @@ export class DatabaseConnectionService {
     Promise<{ token: string; expiresAtMs: number }>
   > = new Map();
 
-  // Default MongoDB connection options - optimized for Cloud Run / serverless
-  private readonly defaultMongoOptions: MongoClientOptions = {
-    maxPoolSize: 5,
-    minPoolSize: 0, // No idle connections when unused
-    maxIdleTimeMS: 10000, // Close idle connections after 10s
-    serverSelectionTimeoutMS: 10000,
-    socketTimeoutMS: 0,
-    connectTimeoutMS: 10000,
-    retryWrites: true,
-    retryReads: true,
-  };
-
   // The stateful drivers this service delegates to. They live in the shared
   // registry (index.ts registers the same slots), never in a private copy:
   // two instances would mean two sets of pools to one instance, and a
@@ -279,7 +235,7 @@ export class DatabaseConnectionService {
     // Start cleanup interval for idle connections (MongoDB, PostgreSQL, MySQL,
     // Cloud SQL)
     this.cleanupInterval = setInterval(() => {
-      void this.cleanupIdleMongoConnections();
+      void mongoEngine.sweepIdleConnections(this.userDatabaseMaxIdleTime);
       void postgresEngine.sweepIdleConnections(this.userDatabaseMaxIdleTime);
       void mysqlEngine.sweepIdleConnections(this.userDatabaseMaxIdleTime);
       void this.cloudSqlDriver
@@ -308,7 +264,7 @@ export class DatabaseConnectionService {
     try {
       switch (database.type) {
         case "mongodb":
-          return await this.testMongoDBConnection(database);
+          return await mongoEngine.testConnection(database);
         case "postgresql":
         case "redshift":
           return await postgresEngine.testConnection(database);
@@ -383,7 +339,7 @@ export class DatabaseConnectionService {
 
       switch (database.type) {
         case "mongodb":
-          return await this.executeMongoDBQuery(database, query, options);
+          return await mongoEngine.executeQuery(database, query, options);
         case "postgresql":
         case "redshift":
           return await this.executePostgreSQLQuery(database, query, options);
@@ -846,15 +802,7 @@ export class DatabaseConnectionService {
 
     // For MongoDB, use advanced pooling
     if (database.type === "mongodb") {
-      const connection = await this.getMongoConnection(
-        "datasource",
-        database._id.toString(),
-        {
-          connectionString: this.buildMongoDBConnectionString(database),
-          database: database.connection.database || "",
-        },
-      );
-      return connection.client;
+      return mongoEngine.getConnection(database);
     }
 
     // For PostgreSQL and Redshift (PostgreSQL wire-compatible), use dedicated pool management
@@ -916,7 +864,7 @@ export class DatabaseConnectionService {
    */
   async invalidateConnection(databaseId: string): Promise<void> {
     const steps: Array<[string, () => Promise<void> | void]> = [
-      ["mongodb", () => this.closeMongoConnection("datasource", databaseId)],
+      ["mongodb", () => mongoEngine.closeConnection(databaseId)],
       ["postgresql", () => postgresEngine.closeConnection(databaseId)],
       ["mysql", () => mysqlEngine.closeConnection(databaseId)],
       ["cached", () => this.closeCachedConnection(databaseId)],
@@ -972,13 +920,7 @@ export class DatabaseConnectionService {
     }
 
     // Close MongoDB connections, including ones still connecting
-    const mongoKeys = new Set([
-      ...this.mongoConnections.keys(),
-      ...this.mongoConnecting.keys(),
-    ]);
-    await Promise.all(
-      Array.from(mongoKeys, key => this.closeMongoConnectionByKey(key)),
-    );
+    await mongoEngine.closeAllConnections();
 
     // Close PostgreSQL pools
     await postgresEngine.closeAllConnections();
@@ -1019,58 +961,43 @@ export class DatabaseConnectionService {
       lastUsed: Date;
     }>;
   } {
-    const mongoConnections = Array.from(this.mongoConnections.entries()).map(
-      ([key, conn]) => ({
-        key,
-        context: conn.context,
-        identifier: conn.identifier,
-        lastUsed: conn.lastUsed,
-      }),
-    );
+    const mongoConnections = mongoEngine.getStats();
 
     return {
-      totalConnections: this.mongoConnections.size + this.connections.size,
-      mongodb: this.mongoConnections.size,
+      totalConnections: mongoConnections.length + this.connections.size,
+      mongodb: mongoConnections.length,
       other: this.connections.size,
       mongoConnections,
     };
   }
 
-  // MongoDB Advanced Pooling Methods
-  private async getMongoConnection(
+  // Convenience methods for MongoDB connections
+
+  /** Connection for Mako's own database (DATABASE_URL). */
+  getMainConnection(): Promise<{ client: MongoClient; db: Db }> {
+    return mongoEngine.getMainConnection();
+  }
+
+  /** Connection by database ID (for destinations/datasources). */
+  getConnectionById(
+    context: ConnectionContext,
+    databaseId: string,
+    lookupFn: (id: string) => Promise<ConnectionConfig | null>,
+  ): Promise<{ client: MongoClient; db: Db }> {
+    return mongoEngine.getConnectionById(context, databaseId, lookupFn);
+  }
+
+  /** Update the last used time for a connection to keep it alive */
+  updateConnectionLastUsed(
     context: ConnectionContext,
     identifier: string,
-    config: ConnectionConfig,
-    options?: MongoClientOptions,
-  ): Promise<{ client: MongoClient; db: Db }> {
-    const key = this.getMongoConnectionKey(context, identifier);
+  ): void {
+    mongoEngine.touch(context, identifier);
+  }
 
-    // Reuse the pooled client as is. No per-call ping: MongoClient monitors
-    // its topology and reconnects on its own, and a client that does close
-    // removes itself from the map (see createMongoConnection's handlers).
-    const existing = this.mongoConnections.get(key);
-    if (existing) {
-      existing.lastUsed = new Date();
-      return { client: existing.client, db: existing.db };
-    }
-
-    // Concurrent first calls share one connect; otherwise each would create
-    // a client and all but the last set() would leak, unreachable by the
-    // idle sweep.
-    const pending = this.mongoConnecting.get(key);
-    if (pending) return pending;
-    const connecting = this.createMongoConnection(
-      context,
-      identifier,
-      config,
-      options,
-    ).finally(() => {
-      if (this.mongoConnecting.get(key) === connecting) {
-        this.mongoConnecting.delete(key);
-      }
-    });
-    this.mongoConnecting.set(key, connecting);
-    return connecting;
+  /** Cancel a running MongoDB query by its executionId. */
+  cancelMongoDBQuery(executionId: string): Promise<CancelResult> {
+    return mongoEngine.cancelQuery(executionId);
   }
 
   // -------------------- BigQuery helpers --------------------
@@ -2255,66 +2182,6 @@ export class DatabaseConnectionService {
   }
 
   /**
-   * Cancel a running MongoDB query using session-based cancellation.
-   * This uses the session's lsid (logical session ID) to precisely kill
-   * only operations belonging to this specific session.
-   */
-  async cancelMongoDBQuery(
-    executionId: string,
-  ): Promise<{ success: boolean; error?: string }> {
-    const running = this.runningMongoQueries.get(executionId);
-    if (!running) {
-      return { success: false, error: "Query not found or already completed" };
-    }
-
-    try {
-      // First, abort the AbortController to stop the JavaScript promise
-      running.abortController.abort();
-      logger.debug("Aborted controller for MongoDB execution", { executionId });
-
-      // Kill all operations associated with this session using killSessions.
-      // This precisely targets only operations from our session, avoiding
-      // any risk of killing other users' queries.
-      try {
-        const adminDb = running.client.db("admin");
-        const sessionId = running.session.id;
-
-        if (sessionId) {
-          await adminDb.command({
-            killSessions: [sessionId],
-          });
-          logger.debug("Killed MongoDB session for execution", { executionId });
-        }
-      } catch (killErr) {
-        // killSessions might fail if user doesn't have sufficient privileges
-        // This is okay - the AbortController should still work for the JS side
-        logger.warn("Could not kill MongoDB session (may lack privileges)", {
-          executionId,
-          error: killErr,
-        });
-      }
-
-      // End the session
-      try {
-        await running.session.endSession();
-      } catch {
-        // Ignore errors when ending session
-      }
-
-      // Remove from tracking
-      this.runningMongoQueries.delete(executionId);
-      return { success: true };
-    } catch (error) {
-      logger.error("Error cancelling MongoDB query", { executionId, error });
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to cancel query",
-      };
-    }
-  }
-
-  /**
    * Cancel a running ClickHouse query
    */
   async cancelClickHouseQuery(
@@ -2440,8 +2307,8 @@ export class DatabaseConnectionService {
       return this.cancelPostgresQuery(executionId);
     }
     // Try MongoDB
-    if (this.runningMongoQueries.has(executionId)) {
-      return this.cancelMongoDBQuery(executionId);
+    if (mongoEngine.runningQueries.has(executionId)) {
+      return mongoEngine.cancelQuery(executionId);
     }
     // Try ClickHouse
     if (this.runningClickHouseQueries.has(executionId)) {
@@ -2789,649 +2656,6 @@ export class DatabaseConnectionService {
       }
       default:
         return value;
-    }
-  }
-
-  private async createMongoConnection(
-    context: ConnectionContext,
-    identifier: string,
-    config: ConnectionConfig,
-    customOptions?: MongoClientOptions,
-  ): Promise<{ client: MongoClient; db: Db }> {
-    const key = this.getMongoConnectionKey(context, identifier);
-    logger.info("Creating pooled MongoDB connection", { key });
-
-    // Merge options
-    const options = { ...this.defaultMongoOptions, ...customOptions };
-
-    // Create client
-    const client = new MongoClient(config.connectionString, options);
-    await client.connect();
-
-    // Handle database name extraction
-    const databaseName = config.database;
-
-    const db = client.db(databaseName);
-
-    // Store in pool
-    const pooledConnection: PooledConnection = {
-      client,
-      db,
-      lastUsed: new Date(),
-      context,
-      identifier,
-    };
-    this.mongoConnections.set(key, pooledConnection);
-
-    // Set up monitoring. Each handler only drops the entry while it still
-    // points at THIS client: an old, replaced client closing late must not
-    // evict (and so orphan) the live one that took its key.
-    const forget = () => this.forgetMongoClient(key, client);
-    client.on("close", () => {
-      logger.info("MongoDB connection closed", { key });
-      forget();
-    });
-
-    client.on("error", error => {
-      logger.error("MongoDB connection error", { key, error });
-      if (forget()) {
-        client.close().catch(() => undefined);
-      }
-    });
-
-    client.on("topologyClosed", () => {
-      logger.info("MongoDB topology closed", { key });
-      forget();
-    });
-
-    logger.info("MongoDB connected", { key });
-    return { client, db };
-  }
-
-  /**
-   * Drop the pool entry for `key` if (and only if) it holds `client`.
-   * Returns whether it did.
-   */
-  private forgetMongoClient(key: string, client: MongoClient): boolean {
-    if (this.mongoConnections.get(key)?.client !== client) return false;
-    this.mongoConnections.delete(key);
-    return true;
-  }
-
-  private getMongoConnectionKey(
-    context: ConnectionContext,
-    identifier: string,
-  ): string {
-    return `${context}:${identifier}`;
-  }
-
-  private async cleanupIdleMongoConnections(): Promise<void> {
-    const now = new Date();
-    const toRemove: string[] = [];
-
-    for (const [key, connection] of this.mongoConnections.entries()) {
-      const idleTime = now.getTime() - connection.lastUsed.getTime();
-      if (idleTime > this.userDatabaseMaxIdleTime) {
-        toRemove.push(key);
-      }
-    }
-
-    for (const key of toRemove) {
-      const connection = this.mongoConnections.get(key);
-      if (connection) {
-        // Re-check lastUsed to avoid closing a connection that was used between passes
-        // This prevents race conditions where getMongoConnection updates lastUsed
-        // after the key was added to toRemove but before we close it
-        const idleTime = now.getTime() - connection.lastUsed.getTime();
-        if (idleTime <= this.userDatabaseMaxIdleTime) {
-          continue; // Connection was used recently, skip closing
-        }
-        // Delete BEFORE closing, so a request arriving meanwhile connects
-        // afresh, and a delete after the await cannot evict that new entry.
-        this.forgetMongoClient(key, connection.client);
-        try {
-          await connection.client.close();
-          logger.info("Closed idle MongoDB connection", { key });
-        } catch (error) {
-          logger.error("Error closing idle MongoDB connection", { key, error });
-        }
-      }
-    }
-  }
-
-  private async closeMongoConnection(
-    context: ConnectionContext,
-    identifier: string,
-  ): Promise<void> {
-    await this.closeMongoConnectionByKey(
-      this.getMongoConnectionKey(context, identifier),
-    );
-  }
-
-  /**
-   * Close the pooled client for `key` and any client still connecting for
-   * it (that one is closed once its connect settles, so it never lands in
-   * the pool with the configuration this call is retiring).
-   */
-  private async closeMongoConnectionByKey(key: string): Promise<void> {
-    const connecting = this.mongoConnecting.get(key);
-    if (connecting) {
-      this.mongoConnecting.delete(key);
-      try {
-        const { client } = await connecting;
-        this.forgetMongoClient(key, client);
-        await client.close();
-      } catch {
-        // A failed connect left nothing to close.
-      }
-    }
-
-    const connection = this.mongoConnections.get(key);
-    if (connection) {
-      this.forgetMongoClient(key, connection.client);
-      try {
-        await connection.client.close();
-        logger.info("Closed MongoDB connection", { key });
-      } catch (error) {
-        logger.error("Error closing MongoDB connection", { key, error });
-      }
-    }
-  }
-
-  // Utility methods
-  private extractDatabaseName(connectionString: string): string | null {
-    try {
-      const url = new URL(connectionString);
-      const pathname = url.pathname;
-      if (pathname && pathname.length > 1) {
-        return pathname.substring(1).split("?")[0];
-      }
-    } catch {
-      // Invalid URL
-    }
-    return null;
-  }
-
-  // Convenience methods for MongoDB connections
-  /**
-   * Get connection for main application database
-   */
-  async getMainConnection(): Promise<{ client: MongoClient; db: Db }> {
-    const connectionString = process.env.DATABASE_URL;
-    const databaseName =
-      process.env.DATABASE_NAME ||
-      this.extractDatabaseName(connectionString ?? "") ||
-      "mako";
-
-    if (!connectionString) {
-      throw new Error("DATABASE_URL environment variable is not set");
-    }
-
-    const connection = await this.getMongoConnection("main", "app", {
-      connectionString,
-      database: databaseName,
-    });
-
-    // Wrap the database for automatic usage tracking
-    const key = this.getMongoConnectionKey("main", "app");
-    const wrappedDb = this.wrapDatabaseWithUsageTracking(connection.db, key);
-    return { client: connection.client, db: wrappedDb };
-  }
-
-  /**
-   * Get connection by database ID (for destinations/datasources)
-   */
-  async getConnectionById(
-    context: ConnectionContext,
-    databaseId: string,
-    lookupFn: (id: string) => Promise<ConnectionConfig | null>,
-  ): Promise<{ client: MongoClient; db: Db }> {
-    // Try to get from pool first
-    const key = this.getMongoConnectionKey(context, databaseId);
-    const existing = this.mongoConnections.get(key);
-    if (existing) {
-      try {
-        await existing.client.db("admin").command({ ping: 1 });
-        existing.lastUsed = new Date();
-
-        // Return wrapped database for automatic usage tracking
-        const wrappedDb = this.wrapDatabaseWithUsageTracking(existing.db, key);
-        return { client: existing.client, db: wrappedDb };
-      } catch {
-        // Continue to recreate
-      }
-    }
-
-    // Lookup configuration
-    const config = await lookupFn(databaseId);
-    if (!config) {
-      throw new Error(`Database '${databaseId}' not found`);
-    }
-
-    const connection = await this.getMongoConnection(
-      context,
-      databaseId,
-      config,
-    );
-
-    // Wrap the database for automatic usage tracking
-    const wrappedDb = this.wrapDatabaseWithUsageTracking(connection.db, key);
-    return { client: connection.client, db: wrappedDb };
-  }
-
-  /**
-   * Update the last used time for a connection to keep it alive
-   */
-  updateConnectionLastUsed(
-    context: ConnectionContext,
-    identifier: string,
-  ): void {
-    const key = this.getMongoConnectionKey(context, identifier);
-    const connection = this.mongoConnections.get(key);
-    if (connection) {
-      connection.lastUsed = new Date();
-    }
-  }
-
-  /**
-   * Wrap a MongoDB database object with automatic usage tracking
-   * Every time the database is used, it updates the connection's lastUsed timestamp
-   */
-  private wrapDatabaseWithUsageTracking(db: Db, connectionKey: string): Db {
-    return new Proxy(db, {
-      get: (target, prop, receiver) => {
-        // Update lastUsed timestamp whenever any database operation is accessed
-        const connection = this.mongoConnections.get(connectionKey);
-        if (connection) {
-          connection.lastUsed = new Date();
-        }
-
-        // Return the original property/method
-        return Reflect.get(target, prop, receiver);
-      },
-    });
-  }
-
-  // MongoDB specific methods
-  private async testMongoDBConnection(
-    database: IDatabaseConnection,
-  ): Promise<{ success: boolean; error?: string }> {
-    // A throwaway client, closed after: a test is often of an unsaved
-    // candidate (random _id), and pooling it would park a live client under
-    // a key nothing ever uses again for the 15-minute idle window. It also
-    // tests the configuration given, not a pooled client built from an
-    // older one.
-    let client: MongoClient | undefined;
-    try {
-      const connectionString = this.buildMongoDBConnectionString(database);
-      client = new MongoClient(connectionString, {
-        ...this.defaultMongoOptions,
-        maxPoolSize: 1,
-      });
-      await client.connect();
-      await client.db("admin").command({ ping: 1 });
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "MongoDB connection failed",
-      };
-    } finally {
-      await client?.close().catch(() => undefined);
-    }
-  }
-
-  private buildMongoDBConnectionString(database: IDatabaseConnection): string {
-    const conn = database.connection;
-
-    // If connection string is provided, use it directly
-    if (conn.connectionString) {
-      return conn.connectionString;
-    }
-
-    // Build connection string from individual parameters
-    let connectionString = "mongodb://";
-
-    if (conn.username && conn.password) {
-      connectionString += `${encodeURIComponent(conn.username)}:${encodeURIComponent(conn.password)}@`;
-    }
-
-    connectionString += `${conn.host || "localhost"}:${conn.port || 27017}`;
-
-    if (conn.database) {
-      connectionString += `/${conn.database}`;
-    }
-
-    const params: string[] = [];
-
-    if (conn.authSource) {
-      params.push(`authSource=${conn.authSource}`);
-    }
-
-    if (conn.replicaSet) {
-      params.push(`replicaSet=${conn.replicaSet}`);
-    }
-
-    if (conn.ssl) {
-      params.push("ssl=true");
-    }
-
-    if (params.length > 0) {
-      connectionString += `?${params.join("&")}`;
-    }
-
-    return connectionString;
-  }
-
-  private async executeMongoDBQuery(
-    database: IDatabaseConnection,
-    query: any,
-    options?: QueryExecuteOptions,
-  ): Promise<QueryResult> {
-    const client = (await this.getConnection(database)) as MongoClient;
-    // Use database from options or fallback to connection default
-    const dbName = options?.databaseName || database.connection.database;
-    const db = client.db(dbName);
-
-    const executionId = options?.executionId;
-    let abortController: AbortController | undefined;
-    let session: ClientSession | undefined;
-
-    // Track this query for cancellation if executionId is provided
-    if (executionId) {
-      abortController = new AbortController();
-      session = client.startSession();
-      this.runningMongoQueries.set(executionId, {
-        database,
-        client,
-        abortController,
-        session,
-      });
-    }
-    // The caller's signal stops the await too, with or without an
-    // executionId (and, with one, runs the same session kill as cancelQuery).
-    const callerSignal = options?.signal;
-    const onCallerAbort = () => {
-      if (executionId && this.runningMongoQueries.has(executionId)) {
-        void this.cancelMongoDBQuery(executionId);
-      } else {
-        abortController?.abort();
-      }
-    };
-    if (callerSignal) {
-      abortController ??= new AbortController();
-      if (callerSignal.aborted) {
-        abortController.abort();
-      } else {
-        callerSignal.addEventListener("abort", onCallerAbort, { once: true });
-      }
-    }
-
-    try {
-      // Check if aborted before starting
-      if (abortController?.signal.aborted) {
-        return { success: false, error: "Query cancelled" };
-      }
-
-      // Handle different MongoDB operations
-      if (typeof query === "string") {
-        // Parse JavaScript-style query
-        const { data, truncated } = await this.executeMongoDBJavaScriptQuery(
-          db,
-          query,
-          abortController?.signal,
-          options?.maxRows,
-        );
-        return truncated
-          ? {
-              success: true,
-              data,
-              truncated: true,
-              rowCount: Array.isArray(data) ? data.length : undefined,
-            }
-          : { success: true, data };
-      } else if (query.collection && query.operation) {
-        // Handle structured query
-        const collection = db.collection(query.collection);
-        let result: any;
-
-        // Helper to race a promise against abort signal for cancellation support
-        const raceWithAbort = async <T>(promise: Promise<T>): Promise<T> => {
-          if (!abortController?.signal) return promise;
-          const signal = abortController.signal;
-          return Promise.race([
-            promise,
-            new Promise<never>((_, reject) => {
-              if (signal.aborted) {
-                reject(new Error("Query cancelled"));
-              }
-              signal.addEventListener(
-                "abort",
-                () => {
-                  reject(new Error("Query cancelled"));
-                },
-                { once: true },
-              );
-            }),
-          ]);
-        };
-
-        // A row cap reads one row past it, so the caller knows it cut.
-        const capRead =
-          options?.maxRows !== undefined ? options.maxRows + 1 : undefined;
-        switch (query.operation) {
-          case "find": {
-            const findOptions = { ...(query.options || {}) };
-            if (
-              capRead !== undefined &&
-              !(findOptions.limit > 0 && findOptions.limit <= capRead)
-            ) {
-              findOptions.limit = capRead;
-            }
-            result = await raceWithAbort(
-              collection.find(query.filter || {}, findOptions).toArray(),
-            );
-            break;
-          }
-          case "findOne":
-            result = await raceWithAbort(
-              collection.findOne(query.filter || {}, query.options || {}),
-            );
-            break;
-          case "aggregate": {
-            const pipeline: Record<string, unknown>[] = [
-              ...(query.pipeline || []),
-            ];
-            const last = pipeline[pipeline.length - 1];
-            if (
-              capRead !== undefined &&
-              !(last && ("$out" in last || "$merge" in last))
-            ) {
-              pipeline.push({ $limit: capRead });
-            }
-            result = await raceWithAbort(
-              collection.aggregate(pipeline, query.options || {}).toArray(),
-            );
-            break;
-          }
-          case "insertMany":
-            result = await raceWithAbort(
-              collection.insertMany(query.documents || [], query.options || {}),
-            );
-            break;
-          case "updateMany":
-            result = await raceWithAbort(
-              collection.updateMany(
-                query.filter || {},
-                query.update || {},
-                query.options || {},
-              ),
-            );
-            break;
-          case "deleteMany":
-            result = await raceWithAbort(
-              collection.deleteMany(query.filter || {}, query.options || {}),
-            );
-            break;
-          case "updateOne":
-            result = await raceWithAbort(
-              collection.updateOne(
-                query.filter || {},
-                query.update || {},
-                query.options || {},
-              ),
-            );
-            break;
-          case "deleteOne":
-            result = await raceWithAbort(
-              collection.deleteOne(query.filter || {}, query.options || {}),
-            );
-            break;
-          default:
-            return {
-              success: false,
-              error: `Unsupported MongoDB operation: ${query.operation}`,
-            };
-        }
-
-        return { success: true, data: result };
-      } else {
-        return { success: false, error: "Invalid MongoDB query format" };
-      }
-    } catch (error) {
-      // Check if this was a cancellation
-      if (
-        error instanceof Error &&
-        (error.message.includes("cancelled") ||
-          error.message.includes("aborted") ||
-          error.name === "AbortError")
-      ) {
-        return { success: false, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "MongoDB query failed",
-      };
-    } finally {
-      callerSignal?.removeEventListener("abort", onCallerAbort);
-      // Clean up tracking and end session
-      if (executionId) {
-        this.runningMongoQueries.delete(executionId);
-      }
-      if (session) {
-        try {
-          await session.endSession();
-        } catch {
-          // Ignore errors when ending session
-        }
-      }
-    }
-  }
-
-  private async executeMongoDBJavaScriptQuery(
-    db: Db,
-    query: string,
-    signal?: AbortSignal,
-    maxRows?: number,
-  ): Promise<{ data: unknown; truncated: boolean }> {
-    logger.debug("Executing MongoDB query", { query: query.substring(0, 200) });
-
-    // Check if already aborted
-    if (signal?.aborted) {
-      throw new Error("Query cancelled");
-    }
-
-    // Interpreted, never evaluated: the query is parsed and only `db` chains,
-    // literals and the shell's value helpers run (mongo-shell-interpreter.ts).
-    // A write method runs only if the query was classified as a write, and
-    // so went through checkConnectionWrite in executeQuery.
-    try {
-      const { value: finalResult, truncated } = await runMongoShellQuery(
-        db,
-        query,
-        {
-          allowWrites: isWrite("mongodb", query),
-          signal,
-          maxRows,
-        },
-      );
-
-      logger.debug("Final result info", {
-        type: typeof finalResult,
-        isArray: Array.isArray(finalResult),
-        length: Array.isArray(finalResult) ? finalResult.length : undefined,
-        truncated,
-      });
-
-      // Ensure the result can be safely serialized to JSON (avoid circular refs)
-      const getCircularReplacer = () => {
-        const seen = new WeakSet();
-        return (_key: string, value: any) => {
-          // Handle BigInt explicitly (convert to string)
-          if (typeof value === "bigint") return value.toString();
-
-          if (typeof value === "object" && value !== null) {
-            // Replace common MongoDB driver objects with descriptive strings
-            const ctor = value.constructor?.name;
-            if (
-              ctor === "Collection" ||
-              ctor === "Db" ||
-              ctor === "MongoClient" ||
-              ctor === "Cursor" ||
-              ctor === "AggregationCursor" ||
-              ctor === "FindCursor"
-            ) {
-              // Provide minimal useful info instead of the full object
-              if (ctor === "Collection") {
-                return {
-                  _type: "Collection",
-                  name: (value as any).collectionName,
-                };
-              }
-              return `[${ctor}]`;
-            }
-
-            // Handle circular structures
-            if (seen.has(value)) {
-              return "[Circular]";
-            }
-            seen.add(value);
-          }
-          return value;
-        };
-      };
-
-      let serializedResult: any;
-      try {
-        serializedResult = JSON.parse(
-          JSON.stringify(finalResult, getCircularReplacer()),
-        );
-      } catch (e) {
-        logger.warn(
-          "Failed to serialize result, falling back to string representation",
-          { error: e },
-        );
-        serializedResult = String(finalResult);
-      }
-
-      return { data: serializedResult, truncated };
-    } catch (error) {
-      // A refused query (MongoShellError) is the user's to fix, and a
-      // cancellation is expected: neither is a server error.
-      if (error instanceof MongoShellError) {
-        logger.info("Refused a MongoDB shell query", { error: error.message });
-        throw error;
-      }
-      const isCancellation =
-        error instanceof Error &&
-        (error.message.includes("cancelled") ||
-          error.message.includes("aborted") ||
-          error.name === "AbortError");
-      if (!isCancellation) {
-        logger.error("Error in executeMongoDBJavaScriptQuery", { error });
-      }
-      throw error;
     }
   }
 

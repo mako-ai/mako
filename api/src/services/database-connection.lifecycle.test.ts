@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { DatabaseConnectionService } from "./database-connection.service";
 import { databaseRegistry } from "../databases/registry";
 import type { DatabaseDriver } from "../databases/driver";
+import { mongoEngine } from "../databases/drivers/mongodb/engine";
 import { mysqlEngine } from "../databases/drivers/mysql/engine";
 import { postgresEngine } from "../databases/drivers/postgresql/engine";
 
@@ -68,10 +69,9 @@ async function testInvalidateConnection() {
   pgPools.set(`${ID}:other`, closable("pg:other"));
   pgPools.set(`${OTHER}:app`, closable("pg:keep"));
   (mysqlEngine.pools as any).set(`${ID}:app`, closable("mysql:app"));
-  svc.mongoConnections.set(`datasource:${ID}`, {
+  (mongoEngine.connections as any).set(`datasource:${ID}`, {
     client: closable("mongo"),
     db: {},
-    lastUsed: new Date(),
     context: "datasource",
     identifier: ID,
   });
@@ -101,7 +101,7 @@ async function testInvalidateConnection() {
   );
   assert.deepEqual(pgPools.keys(), [`${OTHER}:app`]);
   assert.equal(mysqlEngine.pools.size, 0);
-  assert.equal(svc.mongoConnections.size, 0);
+  assert.equal(mongoEngine.connections.size, 0);
   assert.equal(svc.connections.size, 0);
   assert.ok(driverCalls.includes(`lifecycle-failing:${ID}`));
   assert.ok(
@@ -145,48 +145,47 @@ async function testSharedDriverInstances() {
 
 async function testMongoDedupeAndGuard() {
   const svc = new DatabaseConnectionService() as any;
+  const pool = mongoEngine.connections;
   const gate = deferred<void>();
   let creates = 0;
   const client = { close: async () => undefined };
-  svc.createMongoConnection = async (context: string, identifier: string) => {
-    creates++;
-    await gate.promise;
-    const entry = {
-      client,
-      db: { name: "db" },
-      lastUsed: new Date(),
-      context,
-      identifier,
-    };
-    svc.mongoConnections.set(`${context}:${identifier}`, entry);
-    return { client, db: entry.db };
-  };
+  const restoreCreate = stub(
+    mongoEngine,
+    "createConnection",
+    async (context: string, identifier: string) => {
+      creates++;
+      await gate.promise;
+      return { client, db: { name: "db" }, context, identifier };
+    },
+  );
   const config = { connectionString: "mongodb://x", database: "db" };
-  const first = svc.getMongoConnection("datasource", ID, config);
-  const second = svc.getMongoConnection("datasource", ID, config);
+  const first = mongoEngine.connect("datasource", ID, config);
+  const second = mongoEngine.connect("datasource", ID, config);
   gate.resolve();
   const [a, b] = await Promise.all([first, second]);
   assert.equal(creates, 1, "concurrent first connects share one client");
   assert.equal(a.client, b.client);
-  assert.equal(svc.mongoConnecting.size, 0, "in-flight entry is cleared");
+  assert.equal(pool.pendingKeys().length, 0, "in-flight entry is cleared");
 
   // Reuse needs no ping (the old health check cost a round trip per query).
-  await svc.getMongoConnection("datasource", ID, config);
+  await mongoEngine.connect("datasource", ID, config);
   assert.equal(creates, 1);
 
   // A replaced client's late close/error must not evict the live entry.
   const live = { close: async () => undefined };
-  svc.mongoConnections.set(`datasource:${ID}`, {
+  (pool as any).set(`datasource:${ID}`, {
     client: live,
     db: {},
-    lastUsed: new Date(),
     context: "datasource",
     identifier: ID,
   });
-  assert.equal(svc.forgetMongoClient(`datasource:${ID}`, client), false);
-  assert.equal(svc.mongoConnections.get(`datasource:${ID}`).client, live);
-  assert.equal(svc.forgetMongoClient(`datasource:${ID}`, live), true);
-  assert.equal(svc.mongoConnections.size, 0);
+  assert.equal(
+    mongoEngine.forgetClient(`datasource:${ID}`, client as any),
+    false,
+  );
+  assert.equal(pool.entry(`datasource:${ID}`)?.value.client, live);
+  assert.equal(mongoEngine.forgetClient(`datasource:${ID}`, live as any), true);
+  assert.equal(pool.size, 0);
 
   // Invalidating while a connect is in flight closes that client once it
   // lands instead of leaving it pooled with the retired configuration.
@@ -197,32 +196,31 @@ async function testMongoDedupeAndGuard() {
       closedInFlight++;
     },
   };
-  svc.createMongoConnection = async (context: string, identifier: string) => {
-    await slow.promise;
-    svc.mongoConnections.set(`${context}:${identifier}`, {
-      client: pendingClient,
-      db: {},
-      lastUsed: new Date(),
-      context,
-      identifier,
-    });
-    return { client: pendingClient, db: {} };
-  };
-  const connecting = svc.getMongoConnection("datasource", ID, config);
+  restoreCreate();
+  const restoreSlow = stub(
+    mongoEngine,
+    "createConnection",
+    async (context: string, identifier: string) => {
+      await slow.promise;
+      return { client: pendingClient, db: {}, context, identifier };
+    },
+  );
+  const connecting = mongoEngine.connect("datasource", ID, config);
   const invalidating = svc.invalidateConnection(ID);
   slow.resolve();
   await connecting;
   await invalidating;
   assert.equal(closedInFlight, 1);
-  assert.equal(svc.mongoConnections.size, 0);
+  assert.equal(pool.size, 0);
+  restoreSlow();
 
   // A connection test (often an unsaved candidate with a random _id) never
   // goes through the pool.
   let pooled = 0;
-  svc.getMongoConnection = async () => {
+  const restoreConnect = stub(mongoEngine, "connect", async () => {
     pooled++;
     throw new Error("must not pool");
-  };
+  });
   const test = await svc.testConnection({
     _id: { toString: () => "candidate" },
     type: "mongodb",
@@ -230,6 +228,7 @@ async function testMongoDedupeAndGuard() {
   });
   assert.equal(test.success, false);
   assert.equal(pooled, 0, "testConnection uses a throwaway client");
+  restoreConnect();
   await svc.closeAllConnections();
 }
 
