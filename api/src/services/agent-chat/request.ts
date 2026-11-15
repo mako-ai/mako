@@ -13,6 +13,7 @@ import type { UIMessage } from "ai";
 import type { AgentContext } from "../../agents";
 import { authorizeAppChat } from "../../apps/app-chat.service";
 import { workspaceService } from "../workspace.service";
+import { workspaceAccessDenial } from "../../routes/lib/workspace-access";
 import type { ScreenshotVisionAttachment } from "../agent-stream.service";
 
 /** A failed pipeline step: the status and message the route answers with. */
@@ -128,19 +129,8 @@ export async function authorizeWorkspaceAccess(
   principal: ChatPrincipal,
   workspaceId: string,
 ): Promise<StepFailure | null> {
-  const { user, workspace } = principal;
-  if (workspace) {
-    if (workspace._id.toString() !== workspaceId) {
-      return stepFailure(403, "API key not authorized for this workspace");
-    }
-    return null;
-  }
-  if (user) {
-    const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-    return hasAccess ? null : stepFailure(403, "Access denied to workspace");
-  }
-  // Neither API key nor session auth succeeded — reject.
-  return stepFailure(401, "Unauthorized");
+  const denial = await workspaceAccessDenial(principal, workspaceId);
+  return denial ? stepFailure(denial.status, denial.error) : null;
 }
 
 export interface ValidatedChatRequest {

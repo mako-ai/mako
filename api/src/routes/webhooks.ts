@@ -15,14 +15,15 @@ import {
   webhookTokenMatches,
 } from "../utils/webhook-token";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { workspaceService } from "../services/workspace.service";
-import { enrichContextWithWorkspace, loggers } from "../logging";
+import { loggers } from "../logging";
 import {
   AUTH_SECURITY,
   OPEN_RESPONSES,
   createRouter,
   type AuthEnv,
 } from "../openapi/core";
+import { fail } from "./lib/respond";
+import { checkWorkspaceAccess } from "./lib/workspace-access";
 
 const logger = loggers.inngest("webhook");
 
@@ -39,26 +40,8 @@ async function requireWebhookTestAccess(
   c: Context<AuthEnv>,
   workspaceId: string,
 ) {
-  const authenticatedWorkspace = c.get("workspace");
-  const user = c.get("user");
-
-  if (authenticatedWorkspace) {
-    if (authenticatedWorkspace._id.toString() !== workspaceId) {
-      return c.json(
-        { error: "API key not authorized for this workspace" },
-        403,
-      );
-    }
-  } else if (user) {
-    const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-    if (!hasAccess) {
-      return c.json({ error: "Access denied to workspace" }, 403);
-    }
-  } else {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
-  enrichContextWithWorkspace(workspaceId);
+  const refused = await checkWorkspaceAccess(c, workspaceId);
+  if (refused) return refused;
   c.set("workspaceId", workspaceId);
   return null;
 }
@@ -105,26 +88,27 @@ router.openapi(
 
       if (!flow || !isWebhookFlow(flow)) {
         logger.warn("Webhook received for invalid flow", { flowId });
-        return c.json({ error: "Invalid webhook endpoint" }, 404);
+        return fail(c, 404, "Invalid webhook endpoint");
       }
 
       if (!flow.webhookConfig?.enabled) {
         logger.warn("Webhook received for disabled flow", { flowId });
-        return c.json({ error: "Webhook endpoint disabled" }, 403);
+        return fail(c, 403, "Webhook endpoint disabled");
       }
 
       const sourceConnection = await SourceConnection.findById(
         flow.dataSourceId,
       );
       if (!sourceConnection) {
-        return c.json({ error: "Data source not found" }, 404);
+        return fail(c, 404, "Data source not found");
       }
 
       const connector = connectorRegistry.getConnectorFor(sourceConnection);
       if (!connector) {
-        return c.json(
-          { error: `Connector not found for type: ${sourceConnection.type}` },
+        return fail(
+          c,
           500,
+          `Connector not found for type: ${sourceConnection.type}`,
         );
       }
 
@@ -142,10 +126,7 @@ router.openapi(
           logger.error("Webhook signature verification failed", {
             error: verificationResult.error,
           });
-          return c.json(
-            { error: verificationResult.error || "Invalid signature" },
-            400,
-          );
+          return fail(c, 400, verificationResult.error || "Invalid signature");
         }
 
         event = verificationResult.event;
@@ -157,12 +138,10 @@ router.openapi(
           logger.warn("Webhook refused: flow has no shared secret", {
             flowId,
           });
-          return c.json(
-            {
-              error:
-                "Webhook secret not configured for this flow. Set one and send it as the X-Mako-Webhook-Token header.",
-            },
+          return fail(
+            c,
             401,
+            "Webhook secret not configured for this flow. Set one and send it as the X-Mako-Webhook-Token header.",
           );
         }
         if (
@@ -172,13 +151,13 @@ router.openapi(
           )
         ) {
           logger.warn("Webhook refused: missing or invalid token", { flowId });
-          return c.json({ error: "Invalid webhook token" }, 401);
+          return fail(c, 401, "Invalid webhook token");
         }
         try {
           event = JSON.parse(rawBodyText);
         } catch (e) {
           logger.error("Invalid JSON payload", { error: e });
-          return c.json({ error: "Invalid JSON payload" }, 400);
+          return fail(c, 400, "Invalid JSON payload");
         }
       }
 
@@ -257,7 +236,7 @@ router.openapi(
         !Types.ObjectId.isValid(workspaceId) ||
         !Types.ObjectId.isValid(flowId)
       ) {
-        return c.json({ error: "Invalid webhook test endpoint" }, 400);
+        return fail(c, 400, "Invalid webhook test endpoint");
       }
 
       const accessDenied = await requireWebhookTestAccess(c, workspaceId);
@@ -305,7 +284,7 @@ router.openapi(
       });
     } catch (error) {
       logger.error("Test webhook error", { error });
-      return c.json({ error: "Failed to send test webhook" }, 500);
+      return fail(c, 500, "Failed to send test webhook");
     }
   },
 );

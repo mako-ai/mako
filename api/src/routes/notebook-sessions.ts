@@ -28,6 +28,7 @@ import {
   kernelSessionService,
 } from "../services/kernel-session.service";
 import { loggers } from "../logging";
+import { fail, failFromThrown } from "./lib/respond";
 
 const logger = loggers.api("notebook-sessions");
 
@@ -73,17 +74,10 @@ notebookSessionRoutes.openapi(
       return c.json({ success: true, data: session });
     } catch (error) {
       if (error instanceof KernelUnavailableError) {
-        return c.json({ success: false, error: error.message }, 503);
+        return fail(c, 503, error.message);
       }
       logger.error("failed to start kernel session", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error ? error.message : "Failed to start kernel",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Failed to start kernel");
     }
   },
 );
@@ -104,7 +98,7 @@ notebookSessionRoutes.openapi(
       workspaceId(c),
       c.req.valid("param").id,
     );
-    if (!session) return c.json({ success: false, error: "No session" }, 404);
+    if (!session) return fail(c, 404, "No session");
     return c.json({ success: true, data: session });
   },
 );

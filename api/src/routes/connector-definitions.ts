@@ -29,6 +29,7 @@ import {
   registerGitHistoryRoutes,
   type GitHistoryEntity,
 } from "./lib/git-history-routes";
+import { fail } from "./lib/respond";
 
 export const connectorDefinitionRoutes = createRouter();
 
@@ -63,23 +64,17 @@ registerGitHistoryRoutes<GitHistoryEntity & { slug: string }>(
       const workspaceId = c.req.param("workspaceId") as string;
       const slug = c.req.param("slug") ?? "";
       if (!Types.ObjectId.isValid(workspaceId) || !isValidSlug(slug)) {
-        return c.json({ success: false, error: "Connector not found" }, 404);
+        return fail(c, 404, "Connector not found");
       }
       // The folder at main is the connector — its index row can lag a push
       // (or be missing entirely), and history is about the files anyway.
       if (!(await connectorFolderAtMain(workspaceId, slug))) {
-        return c.json({ success: false, error: "Connector not found" }, 404);
+        return fail(c, 404, "Connector not found");
       }
       // Restoring commits code that runs with the workspace's credentials:
       // the same editing role that may reorganise the workspace tree.
       if (write && !canOrganizeWorkspaceTree(c.get("memberRole"))) {
-        return c.json(
-          {
-            success: false,
-            error: "Only workspace editors can restore a connector",
-          },
-          403,
-        );
+        return fail(c, 403, "Only workspace editors can restore a connector");
       }
       return {
         scope: connectorGitScope(workspaceId, slug),

@@ -12,9 +12,8 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { Types } from "mongoose";
-import { loggers, enrichContextWithWorkspace } from "../logging";
+import { loggers } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import {
   deleteSkillById,
@@ -26,16 +25,15 @@ import {
 } from "../services/skills.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { RepoRequiredError } from "../apps/config";
+import { fail, failFromThrown } from "./lib/respond";
+import { requireWorkspaceAccess } from "./lib/workspace-access";
 
 const logger = loggers.api("skills");
 
 export const skillsRoutes = createRouter();
 
 function repoRequired(c: AuthenticatedContext, error: RepoRequiredError) {
-  return c.json(
-    { success: false, code: error.code, error: error.message },
-    error.status as 412,
-  );
+  return fail(c, error.status as 412, error.message, { code: error.code });
 }
 
 const WorkspaceParam = z.object({
@@ -50,40 +48,7 @@ const SkillIdParam = WorkspaceParam.extend({
 skillsRoutes.use("*", unifiedAuthMiddleware);
 
 // Workspace access check — mirrors custom-prompt.ts
-skillsRoutes.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId");
-  if (!workspaceId) {
-    await next();
-    return;
-  }
-  const user = c.get("user");
-  const workspace = c.get("workspace");
-
-  if (workspace) {
-    if (workspace._id.toString() !== workspaceId) {
-      return c.json(
-        {
-          success: false,
-          error: "API key not authorized for this workspace",
-        },
-        403,
-      );
-    }
-  } else if (user) {
-    const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-    if (!hasAccess) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-  } else {
-    return c.json({ success: false, error: "Unauthorized" }, 401);
-  }
-
-  enrichContextWithWorkspace(workspaceId);
-  await next();
-});
+skillsRoutes.use("*", requireWorkspaceAccess());
 
 skillsRoutes.openapi(
   createRoute({
@@ -99,10 +64,7 @@ skillsRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId");
       if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-        return c.json(
-          { success: false, error: "Valid workspace ID is required" },
-          400,
-        );
+        return fail(c, 400, "Valid workspace ID is required");
       }
       const skills = await listSkillsForAdmin(workspaceId);
       return c.json({ success: true, skills });
@@ -111,14 +73,7 @@ skillsRoutes.openapi(
         return c.json({ success: true, skills: [] }, 200);
       }
       logger.error("Error listing skills", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error ? error.message : "Failed to list skills",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Failed to list skills");
     }
   },
 );
@@ -138,28 +93,19 @@ skillsRoutes.openapi(
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
       if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-        return c.json(
-          { success: false, error: "Valid workspace ID is required" },
-          400,
-        );
+        return fail(c, 400, "Valid workspace ID is required");
       }
       const skill = await getSkillForAdmin(workspaceId, id);
       if (!skill) {
-        return c.json({ success: false, error: "Skill not found" }, 404);
+        return fail(c, 404, "Skill not found");
       }
       return c.json({ success: true, skill });
     } catch (error) {
       if (error instanceof RepoRequiredError) {
-        return c.json({ success: false, error: "Skill not found" }, 404);
+        return fail(c, 404, "Skill not found");
       }
       logger.error("Error getting skill", { error });
-      return c.json(
-        {
-          success: false,
-          error: error instanceof Error ? error.message : "Failed to get skill",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Failed to get skill");
     }
   },
 );
@@ -194,14 +140,11 @@ skillsRoutes.openapi(
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
       if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-        return c.json(
-          { success: false, error: "Valid workspace ID is required" },
-          400,
-        );
+        return fail(c, 400, "Valid workspace ID is required");
       }
       const existing = await getSkillForAdmin(workspaceId, id);
       if (!existing) {
-        return c.json({ success: false, error: "Skill not found" }, 404);
+        return fail(c, 404, "Skill not found");
       }
       const body = (await c.req.json()) as {
         loadWhen?: unknown;
@@ -234,20 +177,13 @@ skillsRoutes.openapi(
         actorId,
       );
       if (!result.success) {
-        return c.json({ success: false, error: result.error }, 400);
+        return fail(c, 400, result.error);
       }
       return c.json({ success: true, skill: result.skill });
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error updating skill", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error ? error.message : "Failed to update skill",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Failed to update skill");
     }
   },
 );
@@ -277,10 +213,7 @@ skillsRoutes.openapi(
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
       if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-        return c.json(
-          { success: false, error: "Valid workspace ID is required" },
-          400,
-        );
+        return fail(c, 400, "Valid workspace ID is required");
       }
       const body = (await c.req.json().catch(() => ({}))) as {
         suppressed?: unknown;
@@ -294,22 +227,13 @@ skillsRoutes.openapi(
         c.get("user")?.id,
       );
       if (!ok) {
-        return c.json({ success: false, error: "Skill not found" }, 404);
+        return fail(c, 404, "Skill not found");
       }
       return c.json({ success: true, suppressed });
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error toggling skill suppressed", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to update suppressed flag",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Failed to update suppressed flag");
     }
   },
 );
@@ -339,10 +263,7 @@ skillsRoutes.openapi(
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
       if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-        return c.json(
-          { success: false, error: "Valid workspace ID is required" },
-          400,
-        );
+        return fail(c, 400, "Valid workspace ID is required");
       }
       const body = (await c.req.json().catch(() => ({}))) as {
         pinned?: unknown;
@@ -355,22 +276,13 @@ skillsRoutes.openapi(
         c.get("user")?.id,
       );
       if (!ok) {
-        return c.json({ success: false, error: "Skill not found" }, 404);
+        return fail(c, 404, "Skill not found");
       }
       return c.json({ success: true, pinned });
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error toggling skill pinned", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to update pinned flag",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Failed to update pinned flag");
     }
   },
 );
@@ -390,27 +302,17 @@ skillsRoutes.openapi(
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
       if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-        return c.json(
-          { success: false, error: "Valid workspace ID is required" },
-          400,
-        );
+        return fail(c, 400, "Valid workspace ID is required");
       }
       const ok = await deleteSkillById(workspaceId, id, c.get("user")?.id);
       if (!ok) {
-        return c.json({ success: false, error: "Skill not found" }, 404);
+        return fail(c, 404, "Skill not found");
       }
       return c.json({ success: true });
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error deleting skill", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error ? error.message : "Failed to delete skill",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Failed to delete skill");
     }
   },
 );

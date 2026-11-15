@@ -17,7 +17,7 @@
  */
 import { createRoute, z } from "@hono/zod-openapi";
 import { Types } from "mongoose";
-import { loggers, enrichContextWithWorkspace } from "../logging";
+import { loggers } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
   concurrencyLimit,
@@ -53,6 +53,8 @@ import {
   worktreeStatus,
   workspaceScope,
 } from "../apps/worktree.service";
+import { fail, failFromThrown } from "./lib/respond";
+import { requireWorkspaceAccess } from "./lib/workspace-access";
 
 const logger = loggers.api("workspace-repo");
 
@@ -66,36 +68,7 @@ const WorkspaceParam = z.object({
 
 workspaceRepoRoutes.use("*", unifiedAuthMiddleware);
 
-workspaceRepoRoutes.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId");
-  if (workspaceId) {
-    const user = c.get("user");
-    const workspace = c.get("workspace");
-    if (workspace) {
-      if (workspace._id.toString() !== workspaceId) {
-        return c.json(
-          {
-            success: false,
-            error: "API key not authorized for this workspace",
-          },
-          403,
-        );
-      }
-    } else if (user) {
-      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-      if (!hasAccess) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-    } else {
-      return c.json({ success: false, error: "Unauthorized" }, 401);
-    }
-    enrichContextWithWorkspace(workspaceId);
-  }
-  await next();
-});
+workspaceRepoRoutes.use("*", requireWorkspaceAccess());
 
 // Same per-instance cap as the apps routes: these read git and sandboxes.
 for (const route of ["/status", "/branches"]) {
@@ -108,16 +81,10 @@ function actingUserId(c: AuthenticatedContext): string {
 
 function handleError(c: AuthenticatedContext, error: unknown) {
   if (error instanceof WorktreeConflictError) {
-    return c.json({ success: false, error: error.message }, 409);
+    return fail(c, 409, error.message);
   }
   logger.error("Workspace repo route error", { error });
-  return c.json(
-    {
-      success: false,
-      error: error instanceof Error ? error.message : "Internal error",
-    },
-    500,
-  );
+  return failFromThrown(c, error, "Internal error");
 }
 
 const SafeRepoPath = z
@@ -511,26 +478,20 @@ workspaceRepoRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const slug = getGitHubAppSlug();
       if (!slug) {
-        return c.json(
-          {
-            success: false,
-            error:
-              "GitHub App is not configured (set GITHUB_APP_SLUG/GITHUB_APP_ID)",
-          },
+        return fail(
+          c,
           400,
+          "GitHub App is not configured (set GITHUB_APP_SLUG/GITHUB_APP_ID)",
         );
       }
       // Connecting a repo is a deployment-config mutation → admin+ (the
       // /setup callback consumes this signed state).
       const user = c.get("user");
       if (!user || !(await workspaceService.isAdmin(workspaceId, user.id))) {
-        return c.json(
-          {
-            success: false,
-            error:
-              "Connecting GitHub requires the admin or owner workspace role",
-          },
+        return fail(
+          c,
           403,
+          "Connecting GitHub requires the admin or owner workspace role",
         );
       }
       const returnClientUrl = process.env.CLIENT_URL || "http://localhost:5173";
@@ -576,10 +537,7 @@ workspaceRepoRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { owner, repo, installationId } = c.req.valid("query");
       if (!isValidRepoSegment(owner) || !isValidRepoSegment(repo)) {
-        return c.json(
-          { success: false, error: "Invalid owner or repo name" },
-          400,
-        );
+        return fail(c, 400, "Invalid owner or repo name");
       }
       if (installationId) {
         const installation = await GitHubInstallation.findOne({
@@ -587,10 +545,7 @@ workspaceRepoRoutes.openapi(
           installationId,
         });
         if (!installation) {
-          return c.json(
-            { success: false, error: "Installation not found" },
-            404,
-          );
+          return fail(c, 404, "Installation not found");
         }
       }
       const token = await resolveRepoToken(installationId);

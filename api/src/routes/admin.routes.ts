@@ -20,6 +20,7 @@ import {
 } from "../services/model-catalog.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { backfillWorkflowCosts } from "../workflows/cost-backfill";
+import { fail } from "./lib/respond";
 
 const logger = loggers.app();
 
@@ -55,13 +56,7 @@ adminRoutes.openapi(
       return c.json({ success: true, ...view });
     } catch (err) {
       logger.error("Admin catalog GET failed", { error: String(err) });
-      return c.json(
-        {
-          success: false,
-          error: err instanceof Error ? err.message : String(err),
-        },
-        500,
-      );
+      return fail(c, 500, err instanceof Error ? err.message : String(err));
     }
   },
 );
@@ -83,7 +78,7 @@ adminRoutes.openapi(
   async c => {
     const result = await adminRefreshCatalog();
     if (!result.ok) {
-      return c.json({ success: false, error: result.error }, 502);
+      return fail(c, 502, result.error);
     }
     const view = await getAdminCatalogView();
     return c.json({
@@ -105,7 +100,7 @@ adminRoutes.openapi(
 adminRoutes.post("/catalog/hard-refresh", async c => {
   const result = await adminHardRefreshCatalog();
   if (!result.ok) {
-    return c.json({ success: false, error: result.error }, 502);
+    return fail(c, 502, result.error);
   }
   const view = await getAdminCatalogView();
   return c.json({
@@ -143,7 +138,7 @@ adminRoutes.openapi(
     try {
       const modelId = c.req.param("modelId");
       if (!modelId) {
-        return c.json({ success: false, error: "modelId is required" }, 400);
+        return fail(c, 400, "modelId is required");
       }
       const body = (await c.req.json()) as {
         visible?: unknown;
@@ -155,13 +150,7 @@ adminRoutes.openapi(
       if (body.tier === "free" || body.tier === "pro") update.tier = body.tier;
 
       if (update.visible === undefined && update.tier === undefined) {
-        return c.json(
-          {
-            success: false,
-            error: "Body must include `visible` and/or `tier`",
-          },
-          400,
-        );
+        return fail(c, 400, "Body must include `visible` and/or `tier`");
       }
 
       await setCuratedModel(modelId, update);
@@ -172,13 +161,7 @@ adminRoutes.openapi(
         error: String(err),
         modelId: c.req.param("modelId"),
       });
-      return c.json(
-        {
-          success: false,
-          error: err instanceof Error ? err.message : String(err),
-        },
-        500,
-      );
+      return fail(c, 500, err instanceof Error ? err.message : String(err));
     }
   },
 );
@@ -242,13 +225,7 @@ adminRoutes.openapi(
       return c.json({ success: true, ...view });
     } catch (err) {
       logger.error("Admin catalog defaults PUT failed", { error: String(err) });
-      return c.json(
-        {
-          success: false,
-          error: err instanceof Error ? err.message : String(err),
-        },
-        500,
-      );
+      return fail(c, 500, err instanceof Error ? err.message : String(err));
     }
   },
 );

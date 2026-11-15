@@ -23,11 +23,8 @@ import {
   assertCredentialCharacters,
   createSourceConnection,
 } from "../connectors/source-connection-create.service";
-import { loggers, enrichContextWithWorkspace } from "../logging";
+import { loggers } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { workspaceService } from "../services/workspace.service";
-import { AuthenticatedContext } from "../middleware/workspace.middleware";
-import { Types } from "mongoose";
 import {
   VIEWER_REFUSAL,
   actingManagers,
@@ -58,6 +55,7 @@ import { sourceConnectionKeyLinkRoutes } from "./source-connections/key-links";
 import { sourceConnectionManagerRoutes } from "./source-connections/managers";
 import { sourceConnectionWriterRoutes } from "./source-connections/writers";
 import { fail, failFromThrown } from "./lib/respond";
+import { requireWorkspaceAccess } from "./lib/workspace-access";
 
 const logger = loggers.connector();
 
@@ -67,38 +65,7 @@ export const sourceConnectionRoutes = createRouter();
 sourceConnectionRoutes.use("*", unifiedAuthMiddleware);
 
 // Middleware to verify workspace access and enrich logging context
-sourceConnectionRoutes.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId");
-  if (workspaceId) {
-    // Validate ObjectId format early to return 400 instead of 500
-    if (!Types.ObjectId.isValid(workspaceId)) {
-      return fail(c, 400, "Invalid workspace ID format");
-    }
-
-    const user = c.get("user");
-    const workspace = c.get("workspace");
-
-    if (workspace) {
-      // For API key auth, verify the URL workspace matches the API key's workspace
-      if (workspace._id.toString() !== workspaceId) {
-        return fail(c, 403, "API key not authorized for this workspace");
-      }
-    } else if (user) {
-      // For session auth, verify user has access to this workspace
-      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-      if (!hasAccess) {
-        return fail(c, 403, "Access denied to workspace");
-      }
-    } else {
-      // Neither API key nor session auth succeeded - reject request
-      return fail(c, 401, "Unauthorized");
-    }
-
-    // Only enrich logging context after authorization succeeds
-    enrichContextWithWorkspace(workspaceId);
-  }
-  await next();
-});
+sourceConnectionRoutes.use("*", requireWorkspaceAccess({ validateId: true }));
 
 // The schema-driven encryption helper lives with the create path it guards
 // (connectors/source-connection-create.service.ts); re-exported for the
