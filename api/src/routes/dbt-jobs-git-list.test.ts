@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-const route = readFileSync(join(__dirname, "dbt.routes.ts"), "utf8");
+// The dbt router and its sub-routers (./dbt/*.ts), read as one source.
+const route = [
+  join(__dirname, "dbt.routes.ts"),
+  ...readdirSync(join(__dirname, "dbt"))
+    .filter(name => name.endsWith(".ts") && !name.endsWith(".test.ts"))
+    .map(name => join(__dirname, "dbt", name)),
+]
+  .map(file => readFileSync(file, "utf8"))
+  .join("\n");
 const service = readFileSync(
   join(__dirname, "../dbt/dbt-config.service.ts"),
   "utf8",
