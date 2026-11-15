@@ -332,7 +332,7 @@ export class ClaapConnector extends BaseConnector {
     const base = super.validateConfig();
     const errors = [...base.errors];
 
-    if (!this.dataSource.config.api_key) {
+    if (!this.sourceConnection.config.api_key) {
       errors.push("Claap API key is required");
     }
 
@@ -340,7 +340,7 @@ export class ClaapConnector extends BaseConnector {
   }
 
   private getBaseUrl(): string {
-    const configured = this.dataSource.config.api_base_url;
+    const configured = this.sourceConnection.config.api_base_url;
     if (typeof configured === "string" && configured.trim().length > 0) {
       return configured.trim().replace(/\/+$/, "");
     }
@@ -349,14 +349,14 @@ export class ClaapConnector extends BaseConnector {
 
   private getClaapClient(): AxiosInstance {
     if (!this.claapApi) {
-      if (!this.dataSource.config.api_key) {
+      if (!this.sourceConnection.config.api_key) {
         throw new Error("Claap API key not configured");
       }
 
       this.claapApi = axios.create({
         baseURL: this.getBaseUrl(),
         headers: {
-          "X-Claap-Key": this.dataSource.config.api_key,
+          "X-Claap-Key": this.sourceConnection.config.api_key,
           "Content-Type": "application/json",
         },
       });
@@ -549,7 +549,7 @@ export class ClaapConnector extends BaseConnector {
   }
 
   private getRecordingsLookbackMs(): number {
-    const days = Number(this.dataSource.config.recordings_lookback_days);
+    const days = Number(this.sourceConnection.config.recordings_lookback_days);
     if (!Number.isFinite(days) || days <= 0) return 0;
     return Math.min(days, RECORDINGS_LOOKBACK_MAX_DAYS) * DAY_MS;
   }

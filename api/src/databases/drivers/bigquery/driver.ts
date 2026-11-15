@@ -527,7 +527,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
 
   /**
    * Infer column definitions from sample data
-   * @deprecated Prefer getQuerySchema() which is more reliable
+   * Fallback for when getQuerySchema() is unavailable or fails (destination-writer).
    */
   inferSchema(rows: Record<string, unknown>[]): ColumnDefinition[] {
     if (rows.length === 0) return [];

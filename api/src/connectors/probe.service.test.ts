@@ -64,7 +64,6 @@ vi.mock("../services/workspace.service", () => ({
 vi.mock("../sync/connector-registry", () => ({
   syncConnectorRegistry: {
     getConnectorFor: vi.fn(async () => state.connector),
-    getConnector: vi.fn(async () => state.connector),
   },
 }));
 
@@ -81,11 +80,6 @@ vi.mock("../sync/database-data-source-manager", () => {
   return {
     sourceConnectionManager: {
       getSourceConnection,
-      getDataSource: getSourceConnection,
-    },
-    databaseDataSourceManager: {
-      getSourceConnection,
-      getDataSource: getSourceConnection,
     },
   };
 });
@@ -97,7 +91,7 @@ vi.mock("./workspace/reconcile.service", () => ({
   }),
 }));
 
-import { Connector } from "../database/workspace-schema";
+import { SourceConnection } from "../database/workspace-schema";
 import { requestContextStorage } from "../logging/context";
 import {
   PROBE_MAX_LIMIT,
@@ -192,14 +186,14 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await Connector.deleteMany({});
+  await SourceConnection.deleteMany({});
   mine = new Types.ObjectId();
   theirs = new Types.ObjectId();
   for (const [id, workspaceId] of [
     [mine, WS],
     [theirs, WS_THEIRS],
   ] as const) {
-    await Connector.create({
+    await SourceConnection.create({
       _id: id,
       workspaceId,
       name: "Vercel AI Gateway Usage",
@@ -425,7 +419,7 @@ describe("who may probe records", () => {
       fn,
     );
   const access = (fields: Record<string, unknown>) =>
-    Connector.updateOne({ _id: mine }, { $set: fields });
+    SourceConnection.updateOne({ _id: mine }, { $set: fields });
 
   beforeEach(() => {
     fake.page = [{ day: "2026-11-01" }];

@@ -26,10 +26,8 @@ assert.ok(
 );
 
 assert.ok(
-  /const repos = await listWorkspaceRepos\(workspaceId\);[\s\S]*?if \(repos\.length === 0\)/.test(
-    apps,
-  ),
-  "POST /apps must 412 when listWorkspaceRepos is empty",
+  /if \(!\(await getWorkspaceRepo\(workspaceId\)\)\) \{[\s\S]*?412/.test(apps),
+  "POST /apps must 412 when the workspace has no repo binding",
 );
 
 assert.ok(

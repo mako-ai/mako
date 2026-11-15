@@ -1643,9 +1643,6 @@ sourceConnectionRoutes.openapi(
   },
 );
 
-/** @deprecated use sourceConnectionRoutes */
-export const dataSourceRoutes = sourceConnectionRoutes;
-
 // --- Who may write through this connection's proxy ---------------------------
 // The same Access tab as a database connection's (access/connection-writes.ts):
 // everyone reads (when live reads are on), or only the live readers listed

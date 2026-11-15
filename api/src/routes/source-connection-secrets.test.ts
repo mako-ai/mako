@@ -60,7 +60,7 @@ vi.mock("../connectors/registry", () => ({
 }));
 
 import { sourceConnectionRoutes } from "./source-connections";
-import { Connector } from "../database/workspace-schema";
+import { SourceConnection } from "../database/workspace-schema";
 import { encryptString } from "../services/crypto.service";
 import { SECRET_KEPT } from "../utils/connection-secrets";
 import { syncConnectorRegistry } from "../sync/connector-registry";
@@ -110,7 +110,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await Connector.deleteMany({});
+  await SourceConnection.deleteMany({});
   vi.mocked(syncConnectorRegistry.getConfigSchemaForType).mockResolvedValue(
     defaultSchema,
   );
@@ -118,7 +118,7 @@ beforeEach(async () => {
 
 async function seed() {
   const ciphertext = encryptString(SECRET);
-  const row = await Connector.create({
+  const row = await SourceConnection.create({
     workspaceId: new Types.ObjectId(WS),
     name: "Stripe",
     type: "stripe",
@@ -189,7 +189,7 @@ describe("source-connection reads never return a credential", () => {
     expect(body.data.config.api_key).toBe(SECRET_KEPT);
     expect(JSON.stringify(body)).not.toContain(ciphertext);
 
-    const stored = await Connector.findById(id).lean();
+    const stored = await SourceConnection.findById(id).lean();
     expect(
       (stored as unknown as { config: { api_key: string; account: string } })
         .config.api_key,
@@ -215,7 +215,7 @@ describe("source-connection reads never return a credential", () => {
     expect(body.data.config.api_key).toBe(SECRET_KEPT);
     expect(JSON.stringify(body)).not.toContain(SECRET);
 
-    const stored = await Connector.findById(body.data._id).lean();
+    const stored = await SourceConnection.findById(body.data._id).lean();
     expect((stored as { createdBy: string }).createdBy).toBe("u1");
     expect((stored as { createdBy: string }).createdBy).not.toBe("system");
   });
@@ -230,7 +230,7 @@ describe("source-connection reads never return a credential", () => {
       null,
     );
     const ciphertext = encryptString(SECRET);
-    const row = await Connector.create({
+    const row = await SourceConnection.create({
       workspaceId: new Types.ObjectId(WS),
       name: "Hasura",
       type: "graphql",

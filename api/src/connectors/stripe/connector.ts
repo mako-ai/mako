@@ -103,7 +103,7 @@ export class StripeConnector extends BaseConnector {
     const base = super.validateConfig();
     const errors = [...base.errors];
 
-    if (!this.dataSource.config.api_key) {
+    if (!this.sourceConnection.config.api_key) {
       errors.push("Stripe API key is required");
     }
 
@@ -112,10 +112,10 @@ export class StripeConnector extends BaseConnector {
 
   private getStripeClient(): Stripe {
     if (!this.stripe) {
-      if (!this.dataSource.config.api_key) {
+      if (!this.sourceConnection.config.api_key) {
         throw new Error("Stripe API key not configured");
       }
-      this.stripe = new Stripe(this.dataSource.config.api_key, {
+      this.stripe = new Stripe(this.sourceConnection.config.api_key, {
         apiVersion: STRIPE_API_VERSION,
         ...this.resolveHostConfig(),
       });
@@ -132,7 +132,7 @@ export class StripeConnector extends BaseConnector {
     Stripe.StripeConfig,
     "host" | "protocol" | "port"
   > {
-    const baseUrl = this.dataSource.config.api_base_url;
+    const baseUrl = this.sourceConnection.config.api_base_url;
     if (!baseUrl || typeof baseUrl !== "string") {
       return {};
     }

@@ -73,10 +73,7 @@ import {
   isSecretField,
   type ConnectorFieldSchema,
 } from "../../connectors/source-connection-create.service";
-import {
-  Flow,
-  Connector as SourceConnection,
-} from "../../database/workspace-schema";
+import { Flow, SourceConnection } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import { workspaceService } from "../../services/workspace.service";
 import { syncConnectorRegistry } from "../../sync/connector-registry";

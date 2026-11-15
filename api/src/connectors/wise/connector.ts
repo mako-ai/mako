@@ -341,11 +341,11 @@ export class WiseConnector extends BaseConnector {
     const base = super.validateConfig();
     const errors = [...base.errors];
 
-    if (!this.dataSource.config.api_key) {
+    if (!this.sourceConnection.config.api_key) {
       errors.push("Wise API token is required");
     }
 
-    const profileId = this.dataSource.config.profile_id;
+    const profileId = this.sourceConnection.config.profile_id;
     if (
       profileId != null &&
       profileId !== "" &&
@@ -358,7 +358,7 @@ export class WiseConnector extends BaseConnector {
   }
 
   private getBaseUrl(): string {
-    const configured = this.dataSource.config.api_base_url;
+    const configured = this.sourceConnection.config.api_base_url;
     if (typeof configured === "string" && configured.trim().length > 0) {
       return configured.trim().replace(/\/+$/, "");
     }
@@ -387,14 +387,14 @@ export class WiseConnector extends BaseConnector {
 
   private getClient(): AxiosInstance {
     if (!this.wiseApi) {
-      if (!this.dataSource.config.api_key) {
+      if (!this.sourceConnection.config.api_key) {
         throw new Error("Wise API token not configured");
       }
 
       this.wiseApi = axios.create({
         baseURL: this.getBaseUrl(),
         headers: {
-          Authorization: `Bearer ${this.dataSource.config.api_key}`,
+          Authorization: `Bearer ${this.sourceConnection.config.api_key}`,
           "Content-Type": "application/json",
         },
       });
@@ -464,7 +464,7 @@ export class WiseConnector extends BaseConnector {
   }
 
   private async resolveProfileIds(): Promise<string[]> {
-    const configured = this.dataSource.config.profile_id;
+    const configured = this.sourceConnection.config.profile_id;
     if (configured != null && String(configured).trim().length > 0) {
       return [String(configured).trim()];
     }
@@ -678,7 +678,7 @@ export class WiseConnector extends BaseConnector {
       };
     }
 
-    const configured = this.dataSource.config.profile_id;
+    const configured = this.sourceConnection.config.profile_id;
     let profiles = await this.listProfiles();
     if (configured != null && String(configured).trim().length > 0) {
       const wanted = String(configured).trim();
@@ -1059,7 +1059,7 @@ export class WiseConnector extends BaseConnector {
         throw error;
       }
 
-      const privateKey = this.dataSource.config.sca_private_key;
+      const privateKey = this.sourceConnection.config.sca_private_key;
       if (typeof privateKey !== "string" || privateKey.trim().length === 0) {
         throw new Error(messages.noKey, { cause: error });
       }

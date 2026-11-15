@@ -385,6 +385,3 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
     },
   })),
 );
-
-/** @deprecated use useSourceConnectionEntitiesStore */
-export const useConnectorEntitiesStore = useSourceConnectionEntitiesStore;

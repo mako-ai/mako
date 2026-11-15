@@ -285,13 +285,6 @@ class SyncConnectorRegistry {
     return new entry.connectorClass(asSourceConnection(connection));
   }
 
-  /** @deprecated use getConnectorFor */
-  async getConnector(
-    dataSource: SourceConnectionConfig,
-  ): Promise<BaseConnector | null> {
-    return this.getConnectorFor(dataSource);
-  }
-
   /**
    * Check if a connector type is registered
    */

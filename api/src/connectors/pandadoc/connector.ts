@@ -196,7 +196,7 @@ export class PandaDocConnector extends BaseConnector {
     const base = super.validateConfig();
     const errors = [...base.errors];
 
-    if (!this.dataSource.config.api_key) {
+    if (!this.sourceConnection.config.api_key) {
       errors.push("PandaDoc API key is required");
     }
 
@@ -204,7 +204,7 @@ export class PandaDocConnector extends BaseConnector {
   }
 
   private getBaseUrl(): string {
-    const configured = this.dataSource.config.api_base_url;
+    const configured = this.sourceConnection.config.api_base_url;
     if (typeof configured === "string" && configured.trim().length > 0) {
       return configured.trim().replace(/\/+$/, "");
     }
@@ -213,14 +213,14 @@ export class PandaDocConnector extends BaseConnector {
 
   private getClient(): AxiosInstance {
     if (!this.pandaDocApi) {
-      if (!this.dataSource.config.api_key) {
+      if (!this.sourceConnection.config.api_key) {
         throw new Error("PandaDoc API key not configured");
       }
 
       this.pandaDocApi = axios.create({
         baseURL: this.getBaseUrl(),
         headers: {
-          Authorization: `API-Key ${this.dataSource.config.api_key}`,
+          Authorization: `API-Key ${this.sourceConnection.config.api_key}`,
           "Content-Type": "application/json",
         },
       });
@@ -281,7 +281,7 @@ export class PandaDocConnector extends BaseConnector {
    * rate-limit-constrained workspaces.
    */
   private shouldFetchDocumentDetails(): boolean {
-    const configured = this.dataSource.config.fetch_document_details;
+    const configured = this.sourceConnection.config.fetch_document_details;
     return configured !== false && configured !== "false";
   }
 

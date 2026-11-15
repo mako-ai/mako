@@ -131,16 +131,18 @@ export class BigQueryConnector extends BaseConnector {
     const base = super.validateConfig();
     const errors = [...base.errors];
 
-    if (!this.dataSource.config.project_id) {
+    if (!this.sourceConnection.config.project_id) {
       errors.push("BigQuery project_id is required");
     }
-    if (!this.dataSource.config.service_account_json) {
+    if (!this.sourceConnection.config.service_account_json) {
       errors.push("Service account JSON is required");
     } else if (
-      typeof this.dataSource.config.service_account_json === "string"
+      typeof this.sourceConnection.config.service_account_json === "string"
     ) {
       try {
-        const sa = JSON.parse(this.dataSource.config.service_account_json);
+        const sa = JSON.parse(
+          this.sourceConnection.config.service_account_json,
+        );
         if (!sa.client_email || !sa.private_key) {
           errors.push(
             "Service account JSON must include client_email and private_key",
@@ -152,8 +154,8 @@ export class BigQueryConnector extends BaseConnector {
     }
 
     if (
-      !Array.isArray(this.dataSource.config.queries) ||
-      this.dataSource.config.queries.length === 0
+      !Array.isArray(this.sourceConnection.config.queries) ||
+      this.sourceConnection.config.queries.length === 0
     ) {
       errors.push("At least one SQL query must be configured");
     }
@@ -162,7 +164,7 @@ export class BigQueryConnector extends BaseConnector {
   }
 
   private getServiceAccount(): ServiceAccount {
-    const raw = this.dataSource.config.service_account_json;
+    const raw = this.sourceConnection.config.service_account_json;
     const obj = typeof raw === "string" ? JSON.parse(raw) : raw;
     return {
       client_email: obj.client_email,
@@ -228,10 +230,10 @@ export class BigQueryConnector extends BaseConnector {
   /** Job labels (services/bigquery-labels.ts): a flow reading this source. */
   private jobLabels(source: string): Record<string, string> {
     return bigQueryJobLabels({
-      workspaceId: this.dataSource.workspaceId,
+      workspaceId: this.sourceConnection.workspaceId,
       explicit: {
         mako_source: source,
-        mako_connector: this.dataSource._id?.toString(),
+        mako_connector: this.sourceConnection._id?.toString(),
       },
     });
   }
@@ -239,7 +241,8 @@ export class BigQueryConnector extends BaseConnector {
   private async getHttpClient(): Promise<AxiosInstance> {
     if (!this.httpClient) {
       const rawBase: string = (
-        this.dataSource.config.api_base_url || "https://bigquery.googleapis.com"
+        this.sourceConnection.config.api_base_url ||
+        "https://bigquery.googleapis.com"
       )
         .toString()
         .trim();
@@ -273,8 +276,9 @@ export class BigQueryConnector extends BaseConnector {
       }
 
       const client = await this.getHttpClient();
-      const projectId = this.dataSource.config.project_id as string;
-      const location = this.dataSource.config.location as string | undefined;
+      const projectId = this.sourceConnection.config.project_id as string;
+      const location = this.sourceConnection.config.location as
+        string | undefined;
 
       const body: JsonRecord = {
         query: "SELECT 1 AS one",
@@ -296,7 +300,7 @@ export class BigQueryConnector extends BaseConnector {
   }
 
   getAvailableEntities(): string[] {
-    const list = this.dataSource.config.queries || [];
+    const list = this.sourceConnection.config.queries || [];
     return list.map((q: any) => q.name);
   }
 
@@ -311,8 +315,8 @@ export class BigQueryConnector extends BaseConnector {
     const def = this.getQueryConfig(entity);
     if (!def) throw new Error(`Query configuration '${entity}' not found`);
 
-    const projectId = this.dataSource.config.project_id as string;
-    const configuredLocation = this.dataSource.config.location as
+    const projectId = this.sourceConnection.config.project_id as string;
+    const configuredLocation = this.sourceConnection.config.location as
       string | undefined;
     const batchSize = Number(
       def.batch_size || options.batchSize || this.getBatchSize(),
@@ -435,7 +439,7 @@ export class BigQueryConnector extends BaseConnector {
         batch_size?: number;
       }
     | undefined {
-    const queries = this.dataSource.config.queries || [];
+    const queries = this.sourceConnection.config.queries || [];
     const found = queries.find((q: any) => q.name === name);
     if (!found) return undefined;
     return {

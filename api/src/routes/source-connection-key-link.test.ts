@@ -115,7 +115,7 @@ vi.mock("../connectors/probe.service", async importOriginal => ({
 }));
 
 import { sourceConnectionRoutes } from "./source-connections";
-import { Connector } from "../database/workspace-schema";
+import { SourceConnection } from "../database/workspace-schema";
 import { createConnectionWriteTools } from "../agent-lib/tools/connection-write-tools";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { hashKeyToken } from "../connectors/connection-key-request.service";
@@ -211,7 +211,7 @@ beforeEach(async () => {
   ctx.authType = "session";
   ctx.duringProbe = null;
   ctx.probe = { success: true, message: "ok" };
-  await Connector.deleteMany({});
+  await SourceConnection.deleteMany({});
 });
 
 describe("create_connection without the key", () => {
@@ -226,10 +226,9 @@ describe("create_connection without the key", () => {
     );
     expect(link.hash.slice(1)).toBe(token);
 
-    const row = (await Connector.findById(connectionId).lean()) as Record<
-      string,
-      any
-    >;
+    const row = (await SourceConnection.findById(
+      connectionId,
+    ).lean()) as Record<string, any>;
     expect(row.isActive).toBe(false);
     expect(row.config.api_key).toBeUndefined();
     expect(row.config.account).toBe("acct_1");
@@ -252,7 +251,9 @@ describe("create_connection without the key", () => {
     });
     expect(result.status).toBeUndefined();
     expect(result.keyLink).toBeUndefined();
-    const row = (await Connector.findById(result.connectionId).lean()) as any;
+    const row = (await SourceConnection.findById(
+      result.connectionId,
+    ).lean()) as any;
     expect(row.keyRequest).toBeUndefined();
     expect(row.isActive).toBe(true);
   });
@@ -280,14 +281,15 @@ describe("the key link", () => {
     });
     expect(unconfirmed.status).toBe(400);
     expect(
-      ((await Connector.findById(connectionId).lean()) as any).keyRequest,
+      ((await SourceConnection.findById(connectionId).lean()) as any)
+        .keyRequest,
     ).toBeDefined();
 
     const saved = await call("POST", token, { config: { api_key: SECRET } });
     expect(saved.status).toBe(200);
     expect(await saved.text()).not.toContain(SECRET);
 
-    const row = (await Connector.findById(connectionId).lean()) as any;
+    const row = (await SourceConnection.findById(connectionId).lean()) as any;
     expect(row.keyRequest).toBeUndefined();
     expect(row.isActive).toBe(true);
     expect(row.config.api_key).not.toBe(SECRET);
@@ -298,7 +300,7 @@ describe("the key link", () => {
     const again = await call("POST", token, { config: { api_key: "other" } });
     expect(again.status).toBe(404);
     expect((await call("GET", token)).status).toBe(404);
-    const after = (await Connector.findById(connectionId).lean()) as any;
+    const after = (await SourceConnection.findById(connectionId).lean()) as any;
     expect(decryptString(after.config.api_key)).toBe(SECRET);
   });
 
@@ -315,7 +317,7 @@ describe("the key link", () => {
 
   it("is refused once expired", async () => {
     const { connectionId, token } = await createWithoutKey();
-    await Connector.updateOne(
+    await SourceConnection.updateOne(
       { _id: connectionId },
       { $set: { "keyRequest.expiresAt": new Date(Date.now() - 1000) } },
     );
@@ -354,7 +356,7 @@ describe("the key link", () => {
     expect(((await failed.json()) as { error: string }).error).toMatch(
       /Invalid API key/,
     );
-    const row = (await Connector.findById(connectionId).lean()) as any;
+    const row = (await SourceConnection.findById(connectionId).lean()) as any;
     expect(row.config.api_key).toBeUndefined();
     expect(row.isActive).toBe(false);
     expect(row.keyRequest.tokenHash).toBe(hashKeyToken(token));
@@ -380,14 +382,14 @@ describe("the key link", () => {
     const theirs = encryptString("sk_live_saved_in_the_form");
     ctx.probe = { success: false, message: "Invalid API key" };
     ctx.duringProbe = async () => {
-      await Connector.updateOne(
+      await SourceConnection.updateOne(
         { _id: connectionId },
         { $set: { "config.api_key": theirs } },
       );
     };
     const res = await call("POST", token, { config: { api_key: "typo" } });
     expect(res.status).toBe(422);
-    const row = (await Connector.findById(connectionId).lean()) as any;
+    const row = (await SourceConnection.findById(connectionId).lean()) as any;
     expect(row.config.api_key).toBe(theirs);
   });
 });
@@ -414,7 +416,7 @@ describe("a Custom API connection", () => {
       { name: "auth_type", label: "Credential type", value: "bearer" },
     ]);
     expect(
-      ((await Connector.findById(connectionId).lean()) as any).isActive,
+      ((await SourceConnection.findById(connectionId).lean()) as any).isActive,
     ).toBe(false);
   });
 });
@@ -450,7 +452,7 @@ describe("enabling a connection that waits for its key", () => {
     const updated = await update({ connectionId, active: true });
     expect(String(updated.error)).toMatch(/waiting for its key/);
     expect(
-      ((await Connector.findById(connectionId).lean()) as any).isActive,
+      ((await SourceConnection.findById(connectionId).lean()) as any).isActive,
     ).toBe(false);
 
     expect(

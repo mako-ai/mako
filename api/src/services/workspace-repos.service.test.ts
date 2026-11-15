@@ -8,8 +8,8 @@ import {
   connectWorkspaceRepo,
   disconnectWorkspaceRepo,
   findWorkspaceIdsByRepoBinding,
+  getWorkspaceRepo,
   isValidRepoSegment,
-  listWorkspaceRepos,
   WorkspaceRepoNotBoundError,
 } from "./workspace-repos.service";
 import {
@@ -20,6 +20,12 @@ import {
   SavedConsole,
   Workspace,
 } from "../database/workspace-schema";
+
+/** The workspace's repo binding as a list: [] when unbound (§10: at most one). */
+async function boundRepos(workspaceId: string) {
+  const repo = await getWorkspaceRepo(workspaceId);
+  return repo ? [repo] : [];
+}
 
 let mongo: MongoMemoryServer;
 let workspaceId: string;
@@ -71,12 +77,12 @@ describe("connect / list / disconnect", () => {
     expect(binding.subdirectory).toBe("mako");
     expect(binding.provider).toBe("github");
 
-    const repos = await listWorkspaceRepos(workspaceId);
+    const repos = await boundRepos(workspaceId);
     expect(repos).toHaveLength(1);
     expect(repos[0].repo).toBe("test-mako-apps");
 
     await disconnectWorkspaceRepo(workspaceId, "realadvisor", "test-mako-apps");
-    expect(await listWorkspaceRepos(workspaceId)).toHaveLength(0);
+    expect(await boundRepos(workspaceId)).toHaveLength(0);
   });
 
   it("defaults the Mako root to '' and treats '/' as root", async () => {
@@ -127,7 +133,7 @@ describe("connect / list / disconnect", () => {
       subdirectory: "mako",
       linkedBy: "u1",
     });
-    const repos = await listWorkspaceRepos(workspaceId);
+    const repos = await boundRepos(workspaceId);
     expect(repos).toHaveLength(1);
     expect(repos[0].defaultBranch).toBe("dev");
     expect(repos[0].subdirectory).toBe("mako");
@@ -151,7 +157,7 @@ describe("connect / list / disconnect", () => {
         },
       },
     );
-    const repos = await listWorkspaceRepos(workspaceId);
+    const repos = await boundRepos(workspaceId);
     expect(repos).toHaveLength(1);
     expect(repos[0].owner).toBe("legacy");
     // §10: the legacy binding counts as THE workspace repo — a different
@@ -281,7 +287,7 @@ describe("git is the only store (issue #956)", () => {
       disconnectWorkspaceRepo(workspaceId, "mako-ai", "typo-workspace"),
     ).rejects.toBeInstanceOf(WorkspaceRepoNotBoundError);
     expect(await Flow.countDocuments({ workspaceId })).toBe(1);
-    const repos = await listWorkspaceRepos(workspaceId);
+    const repos = await boundRepos(workspaceId);
     expect(repos).toHaveLength(1);
     expect(repos[0].owner).toBe("mako-ai");
     expect(repos[0].repo).toBe("test-workspace");
@@ -314,7 +320,7 @@ describe("git is the only store (issue #956)", () => {
     expect(await Flow.countDocuments({ workspaceId })).toBe(1);
     await disconnectWorkspaceRepo(workspaceId, "mako-ai", "test-workspace");
     expect(await Flow.countDocuments({ workspaceId })).toBe(0);
-    expect(await listWorkspaceRepos(workspaceId)).toHaveLength(0);
+    expect(await boundRepos(workspaceId)).toHaveLength(0);
   });
 
   it("disconnect purges every console row and folder, not only saved files", async () => {

@@ -5,7 +5,6 @@ import {
   isChatGptRejectedCodexModel,
   isCodexChatGptModelRejectedError,
   isForeignGatewayCodexModel,
-  isUnsupportedCodexChatGptModel,
   pickChatGptCompatibleCodexModel,
   pickSafeCodexModel,
 } from "./codex-models";
@@ -17,7 +16,6 @@ describe("codex-models", () => {
     assert.equal(isForeignGatewayCodexModel("gpt-5.6-luna"), false);
     assert.equal(isForeignGatewayCodexModel("gpt-5.1-codex"), false);
     assert.equal(isForeignGatewayCodexModel("openai/gpt-5.3-codex"), true);
-    assert.equal(isUnsupportedCodexChatGptModel("openai/foo"), true);
   });
 
   it("treats Sol as ChatGPT-rejected and prefers Terra", () => {

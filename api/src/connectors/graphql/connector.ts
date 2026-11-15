@@ -127,17 +127,17 @@ export class GraphQLConnector extends BaseConnector {
     const base = super.validateConfig();
     const errors = [...base.errors];
 
-    if (!this.dataSource.config.endpoint) {
+    if (!this.sourceConnection.config.endpoint) {
       errors.push("GraphQL endpoint is required");
     }
 
     // Validate headers JSON if provided (at top level)
     if (
-      this.dataSource.config.headers &&
-      typeof this.dataSource.config.headers === "string"
+      this.sourceConnection.config.headers &&
+      typeof this.sourceConnection.config.headers === "string"
     ) {
       try {
-        JSON.parse(this.dataSource.config.headers);
+        JSON.parse(this.sourceConnection.config.headers);
       } catch {
         errors.push("Headers must be valid JSON format");
       }
@@ -146,20 +146,22 @@ export class GraphQLConnector extends BaseConnector {
     // Note: queries are validated at sync time when provided by the transfer
     // Validate queries if present (for backward compatibility and sync-time validation)
     if (
-      this.dataSource.config.queries &&
-      this.dataSource.config.queries.length > 0
+      this.sourceConnection.config.queries &&
+      this.sourceConnection.config.queries.length > 0
     ) {
-      this.dataSource.config.queries.forEach((query: any, index: number) => {
-        if (!query.name) {
-          errors.push(`Query ${index + 1} is missing a name`);
-        }
-        if (!query.query) {
-          errors.push(`Query ${index + 1} is missing the GraphQL query`);
-        }
-        if (!query.data_path && !query.dataPath) {
-          errors.push(`Query ${index + 1} is missing the data path`);
-        }
-      });
+      this.sourceConnection.config.queries.forEach(
+        (query: any, index: number) => {
+          if (!query.name) {
+            errors.push(`Query ${index + 1} is missing a name`);
+          }
+          if (!query.query) {
+            errors.push(`Query ${index + 1} is missing the GraphQL query`);
+          }
+          if (!query.data_path && !query.dataPath) {
+            errors.push(`Query ${index + 1} is missing the data path`);
+          }
+        },
+      );
     }
 
     return { valid: errors.length === 0, errors };
@@ -167,7 +169,7 @@ export class GraphQLConnector extends BaseConnector {
 
   private getGraphQLClient(): AxiosInstance {
     if (!this.graphqlClient) {
-      if (!this.dataSource.config.endpoint) {
+      if (!this.sourceConnection.config.endpoint) {
         throw new Error("GraphQL endpoint not configured");
       }
 
@@ -177,16 +179,16 @@ export class GraphQLConnector extends BaseConnector {
       };
 
       // Parse headers from JSON string if provided
-      if (this.dataSource.config.headers) {
+      if (this.sourceConnection.config.headers) {
         try {
           let parsedHeaders: any;
 
-          if (typeof this.dataSource.config.headers === "string") {
+          if (typeof this.sourceConnection.config.headers === "string") {
             // Parse JSON string
-            parsedHeaders = JSON.parse(this.dataSource.config.headers);
-          } else if (typeof this.dataSource.config.headers === "object") {
+            parsedHeaders = JSON.parse(this.sourceConnection.config.headers);
+          } else if (typeof this.sourceConnection.config.headers === "object") {
             // Already an object (legacy format)
-            parsedHeaders = this.dataSource.config.headers;
+            parsedHeaders = this.sourceConnection.config.headers;
           }
 
           if (parsedHeaders && typeof parsedHeaders === "object") {
@@ -202,7 +204,7 @@ export class GraphQLConnector extends BaseConnector {
 
       // User-supplied endpoint: SSRF-guarded (no private/metadata targets).
       this.graphqlClient = createSsrfSafeAxios({
-        baseURL: this.dataSource.config.endpoint,
+        baseURL: this.sourceConnection.config.endpoint,
         headers,
       });
     }
@@ -257,8 +259,8 @@ export class GraphQLConnector extends BaseConnector {
   }
 
   getAvailableEntities(): string[] {
-    if (!this.dataSource.config.queries) return [];
-    return this.dataSource.config.queries.map((q: any) => q.name);
+    if (!this.sourceConnection.config.queries) return [];
+    return this.sourceConnection.config.queries.map((q: any) => q.name);
   }
 
   /**
@@ -294,8 +296,9 @@ export class GraphQLConnector extends BaseConnector {
         batchSize || queryConfig.batch_size || this.getBatchSize(),
       ),
       rateLimitDelay: rateLimitDelay || this.getRateLimitDelay(),
-      maxRetries: maxRetries || this.dataSource.settings?.max_retries || 3,
-      timeout: this.dataSource.settings?.timeout_ms || 30000,
+      maxRetries:
+        maxRetries || this.sourceConnection.settings?.max_retries || 3,
+      timeout: this.sourceConnection.settings?.timeout_ms || 30000,
     };
 
     // Initialize or restore state
@@ -503,8 +506,9 @@ export class GraphQLConnector extends BaseConnector {
         batchSize || queryConfig.batch_size || this.getBatchSize(),
       ),
       rateLimitDelay: rateLimitDelay || this.getRateLimitDelay(),
-      maxRetries: maxRetries || this.dataSource.settings?.max_retries || 3,
-      timeout: this.dataSource.settings?.timeout_ms || 30000,
+      maxRetries:
+        maxRetries || this.sourceConnection.settings?.max_retries || 3,
+      timeout: this.sourceConnection.settings?.timeout_ms || 30000,
     };
 
     // Fetch total count if available
@@ -793,8 +797,8 @@ export class GraphQLConnector extends BaseConnector {
   }
 
   private getQueryConfig(name: string): any {
-    if (!this.dataSource.config.queries) return undefined;
-    const query = this.dataSource.config.queries.find(
+    if (!this.sourceConnection.config.queries) return undefined;
+    const query = this.sourceConnection.config.queries.find(
       (q: any) => q.name === name,
     );
     if (!query) return undefined;

@@ -718,7 +718,7 @@ export class CloseConnector extends BaseConnector {
     const base = super.validateConfig();
     const errors = [...base.errors];
 
-    if (!this.dataSource.config.api_key) {
+    if (!this.sourceConnection.config.api_key) {
       errors.push("Close API key is required");
     }
 
@@ -727,11 +727,11 @@ export class CloseConnector extends BaseConnector {
 
   private getCloseClient(): AxiosInstance {
     if (!this.closeApi) {
-      if (!this.dataSource.config.api_key) {
+      if (!this.sourceConnection.config.api_key) {
         throw new Error("Close API key not configured");
       }
 
-      const apiKey = this.dataSource.config.api_key;
+      const apiKey = this.sourceConnection.config.api_key;
       // The rate gate's key as the connection proxy keys it (trimmed,
       // connections/callable.ts), so sync and proxy wait at one gate.
       const gateKey = String(apiKey).trim();

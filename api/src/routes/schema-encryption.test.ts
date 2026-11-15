@@ -15,7 +15,7 @@ import { isEncryptedValue } from "../services/crypto.service";
 
 async function main(): Promise<void> {
   const { applySchemaEncryption, SecretEncryptionError } =
-    await import("./sources");
+    await import("./source-connections");
   const schema = {
     fields: [
       { name: "account", type: "text" },

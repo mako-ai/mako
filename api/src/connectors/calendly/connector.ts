@@ -193,7 +193,7 @@ export class CalendlyConnector extends BaseConnector {
     const base = super.validateConfig();
     const errors = [...base.errors];
 
-    if (!this.dataSource.config.access_token) {
+    if (!this.sourceConnection.config.access_token) {
       errors.push("Calendly access token is required");
     }
 
@@ -201,7 +201,7 @@ export class CalendlyConnector extends BaseConnector {
   }
 
   private getBaseUrl(): string {
-    const configured = this.dataSource.config.api_base_url;
+    const configured = this.sourceConnection.config.api_base_url;
     if (typeof configured === "string" && configured.trim().length > 0) {
       return configured.trim().replace(/\/+$/, "");
     }
@@ -220,14 +220,14 @@ export class CalendlyConnector extends BaseConnector {
 
   private getClient(): AxiosInstance {
     if (!this.calendlyApi) {
-      if (!this.dataSource.config.access_token) {
+      if (!this.sourceConnection.config.access_token) {
         throw new Error("Calendly access token not configured");
       }
 
       this.calendlyApi = axios.create({
         baseURL: this.getBaseUrl(),
         headers: {
-          Authorization: `Bearer ${this.dataSource.config.access_token}`,
+          Authorization: `Bearer ${this.sourceConnection.config.access_token}`,
           "Content-Type": "application/json",
         },
       });

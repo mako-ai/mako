@@ -48,7 +48,7 @@ import {
 import {
   connectWorkspaceRepo,
   disconnectWorkspaceRepo,
-  listWorkspaceRepos,
+  getWorkspaceRepo,
   WorkspaceRepoNotBoundError,
 } from "../services/workspace-repos.service";
 import {
@@ -623,7 +623,8 @@ appsRoutes.openapi(
     const { workspaceId } = c.req.valid("param");
     // Apps is not feature-flagged (the v1→v2 rollout flag is gone): the
     // probe reports repo linkage, which is the only real precondition.
-    const repos = await listWorkspaceRepos(workspaceId);
+    const repo = await getWorkspaceRepo(workspaceId);
+    const repos = repo ? [repo] : [];
     return c.json(
       {
         success: true as const,
@@ -665,7 +666,8 @@ appsRoutes.openapi(
     })
       .select("installationId accountLogin accountType repositorySelection")
       .lean();
-    const repos = await listWorkspaceRepos(workspaceId);
+    const repo = await getWorkspaceRepo(workspaceId);
+    const repos = repo ? [repo] : [];
     return c.json(
       {
         success: true as const,
@@ -1108,8 +1110,7 @@ appsRoutes.openapi(
       // Apps live in the workspace's own GitHub repo (apps.md §17). Creating
       // one without a connected repo is refused — there is no local-only
       // Cloud Storage skip (issue #956).
-      const repos = await listWorkspaceRepos(workspaceId);
-      if (repos.length === 0) {
+      if (!(await getWorkspaceRepo(workspaceId))) {
         return c.json(
           {
             success: false,

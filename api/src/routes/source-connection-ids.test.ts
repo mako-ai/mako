@@ -80,8 +80,8 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  const { Connector } = await import("../database/workspace-schema");
-  await Connector.deleteMany({});
+  const { SourceConnection } = await import("../database/workspace-schema");
+  await SourceConnection.deleteMany({});
 });
 
 describe("invalid source-connection ids are 400, not 500", () => {

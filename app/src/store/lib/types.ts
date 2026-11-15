@@ -208,10 +208,3 @@ export interface DatabaseExplorerState {
 export interface ConsoleExplorerState {
   expandedFolders: Set<string>;
 }
-
-/**
- * View explorer expanded state
- */
-export interface ViewExplorerState {
-  expandedCollections: Set<string>;
-}

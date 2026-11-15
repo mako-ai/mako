@@ -207,9 +207,6 @@ export interface IWorkspaceRepoBinding {
   linkedAt?: Date;
 }
 
-/** @deprecated old name — repos are workspace-level, not apps-scoped. */
-export type IAppsRepoBinding = IWorkspaceRepoBinding;
-
 /**
  * API Key interface for workspace authentication
  */
@@ -347,9 +344,6 @@ export interface IConnectionWriter {
   addedAt?: Date;
 }
 
-/** @deprecated Use IDatabaseConnection instead */
-export type IDatabase = IDatabaseConnection;
-
 /**
  * Source connection: a credential a workspace configured with a connector
  * (Stripe key, Close account, …). Stored in collection `connectors`.
@@ -446,9 +440,6 @@ export interface ISourceConnectionKeyRequest {
   requestedBy: string;
   createdAt: Date;
 }
-
-/** @deprecated use ISourceConnection */
-export type IConnector = ISourceConnection;
 
 /**
  * ConsoleFolder model interface
@@ -3687,14 +3678,10 @@ export const DatabaseConnection = mongoose.model<IDatabaseConnection>(
   "DatabaseConnection",
   DatabaseConnectionSchema,
 );
-/** @deprecated Use DatabaseConnection instead */
-export const Database = DatabaseConnection;
 export const SourceConnection = mongoose.model<ISourceConnection>(
   "Connector",
   SourceConnectionSchema,
 );
-/** @deprecated use SourceConnection */
-export const Connector = SourceConnection;
 /**
  * EntityVersion — immutable append-only version snapshots for consoles.
  * (The collection also still holds rows from the removed dashboards feature,
