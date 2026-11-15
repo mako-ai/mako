@@ -12,11 +12,7 @@ import {
 } from "./types";
 
 export type AppCapabilityPack =
-  | "app-orient"
-  | "app-edit"
-  | "app-data"
-  | "app-versions"
-  | "app-ui";
+  "app-orient" | "app-edit" | "app-data" | "app-versions" | "app-ui";
 
 export type AppCapabilityDefinition = AgentCapabilityDefinition<
   "app",
@@ -28,6 +24,19 @@ const define = (
 ): AppCapabilityDefinition => ({ domain: "app", ...definition });
 
 export const APP_CAPABILITIES = [
+  // Read-only access to the whole workspace repo (repo-tools.ts): dbt
+  // files, the ontology registry, skills, flows, other apps' bindings. Git
+  // reads only, path-sandboxed, with the app visibility rule applied, so
+  // every role on every surface.
+  ...["repo_glob", "repo_grep", "repo_read_file"].map(name =>
+    define({
+      name,
+      pack: "app-orient",
+      risk: "read",
+      surfaces: ALL_AGENT_SURFACES,
+      resultKind: "data",
+    }),
+  ),
   // Legacy (pre-git) app authoring capabilities were removed with Apps v1;
   // what remains serves the retained draft/publish preview surface.
   define({

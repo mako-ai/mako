@@ -493,13 +493,21 @@ export async function grepTree(
     ignoreCase?: boolean;
     pathspec?: string;
     maxMatches?: number;
+    /** Output cap for the git process (default 16 MB). */
+    maxBufferBytes?: number;
   } = {},
 ): Promise<GrepMatch[]> {
+  // core.quotePath=false + -z: paths come back raw and NUL-terminated. With
+  // the default quoting a non-ASCII path arrives as `"users/b/s\303\251"`,
+  // which no path rule downstream recognises.
   const args = [
     "-C",
     repoDir,
+    "-c",
+    "core.quotePath=false",
     "grep",
     "--no-color",
+    "-z",
     "-n", // line numbers
     "-I", // skip binary files
     "-E", // extended regex
@@ -510,7 +518,9 @@ export async function grepTree(
 
   let stdout: string;
   try {
-    ({ stdout } = await runGit(args, { maxBufferBytes: 16 * 1024 * 1024 }));
+    ({ stdout } = await runGit(args, {
+      maxBufferBytes: options.maxBufferBytes ?? 16 * 1024 * 1024,
+    }));
   } catch (error) {
     // `git grep` exits 1 when there are simply no matches — not an error.
     if (error instanceof GitError && error.exitCode === 1) return [];
@@ -518,19 +528,37 @@ export async function grepTree(
   }
 
   const max = options.maxMatches ?? 200;
+  return parseGrepZ(stdout, refOrOid, max);
+}
+
+/**
+ * Parse `git grep -z -n <ref>` output: `<ref>:<path>\0<line>\0<text>\n`
+ * per match. Exported for tests.
+ */
+export function parseGrepZ(
+  stdout: string,
+  refOrOid: string,
+  max = 200,
+): GrepMatch[] {
   const matches: GrepMatch[] = [];
-  for (const raw of stdout.split("\n")) {
-    if (!raw) continue;
-    // Format: "<ref>:<path>:<lineno>:<text>"
-    const afterRef = raw.slice(refOrOid.length + 1);
-    const firstColon = afterRef.indexOf(":");
-    const secondColon = afterRef.indexOf(":", firstColon + 1);
-    if (firstColon < 0 || secondColon < 0) continue;
-    const path = afterRef.slice(0, firstColon);
-    const line = Number(afterRef.slice(firstColon + 1, secondColon));
-    const text = afterRef.slice(secondColon + 1);
-    matches.push({ path, line, text: text.slice(0, 500) });
-    if (matches.length >= max) break;
+  let at = 0;
+  while (at < stdout.length && matches.length < max) {
+    const pathEnd = stdout.indexOf("\0", at);
+    if (pathEnd < 0) break;
+    const lineEnd = stdout.indexOf("\0", pathEnd + 1);
+    if (lineEnd < 0) break;
+    let textEnd = stdout.indexOf("\n", lineEnd + 1);
+    if (textEnd < 0) textEnd = stdout.length;
+    const head = stdout.slice(at, pathEnd);
+    const path = head.startsWith(`${refOrOid}:`)
+      ? head.slice(refOrOid.length + 1)
+      : head;
+    const line = Number(stdout.slice(pathEnd + 1, lineEnd));
+    const text = stdout.slice(lineEnd + 1, textEnd);
+    if (path && Number.isFinite(line)) {
+      matches.push({ path, line, text: text.slice(0, 500) });
+    }
+    at = textEnd + 1;
   }
   return matches;
 }

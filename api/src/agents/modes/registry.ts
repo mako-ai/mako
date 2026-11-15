@@ -15,6 +15,20 @@ import {
 } from "./prompts";
 
 /**
+ * The ontology and semantic-layer tools every mode starts a business
+ * question with, in the order the prompts name them.
+ */
+export const METRIC_FIRST_TOOL_NAMES: readonly string[] = [
+  "get_workspace_context",
+  "lookup_term",
+  "list_metrics",
+  "query_metric",
+  "compile_metric",
+  "find_models",
+  "describe_model",
+];
+
+/**
  * Tools that are always active regardless of the enabled expertise mode.
  * Deliberately small — every entry here is paid for in context on every
  * request. Rarely-used cross-cutting tools live in
@@ -40,6 +54,18 @@ export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
   // Public web access (useful in every modality, not modality-specific)
   "fetch_url",
   "web_search",
+  // Business numbers start here in every mode: the term registry and the
+  // dbt manifest (dbt-ontology-tools.ts), then the semantic layer
+  // (dbt-metric-tools.ts). A number asked from an app, a workflow or a
+  // notebook tab is answered from the metric definition, not re-derived.
+  // query_metric keeps its own gate: it needs query access
+  // (requiresQueryAccess in dbt-capabilities.ts), checked at execution.
+  ...METRIC_FIRST_TOOL_NAMES,
+  // Read-only reads of the whole workspace repo (repo-tools.ts): the dbt
+  // YAML, the registry, skills and other apps' bindings, in every mode.
+  "repo_glob",
+  "repo_grep",
+  "repo_read_file",
 ];
 
 /**
@@ -127,12 +153,6 @@ const QUERY_MODE_TOOL_NAMES: string[] = [
   "check_query_status",
   "cancel_query",
   "list_console_executions",
-  // Semantic layer: a business number the dbt project defines as a metric is
-  // computed from that definition, not re-derived (dbt-metric-tools.ts).
-  // query_metric returns the SQL with the rows, so compile_metric stays out
-  // of this mode: every tool here is paid for on every request.
-  "list_metrics",
-  "query_metric",
 ];
 
 const FLOW_MODE_TOOL_NAMES: string[] = [
@@ -187,17 +207,10 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "inspect_data_source",
   "query_duckdb",
   "capture_screenshot",
-  // Ontology: a binding that aggregates a business metric reads the
-  // canonical dbt model when one exists (dbt-ontology-tools.ts).
-  "lookup_term",
-  "find_models",
-  "describe_model",
+  // Ontology: before joining two entities in a binding, the join the
+  // registry declares (lookup_term, find_models, describe_model and the
+  // metric tools are core).
   "find_join_path",
-  // Semantic layer: a binding that shows a metric takes its SQL from
-  // compile_metric (dbt-metric-tools.ts) and validates it with
-  // sql_execute_query like any other binding.
-  "list_metrics",
-  "compile_metric",
   // Discovery for validating binding queries
   "search_consoles",
   "list_connections",
@@ -241,11 +254,6 @@ const WORKFLOW_MODE_TOOL_NAMES: string[] = [
   "workflow_status",
   "workflow_commit",
   "workflow_merge_to_main",
-  // Semantic layer: a step that reads a metric takes its SQL from
-  // compile_metric and checks it with sql_execute_query, as an app binding
-  // does (dbt-metric-tools.ts).
-  "list_metrics",
-  "compile_metric",
   // Discovery: look at the data before writing a query into a step.
   "list_connections",
   "list_databases",
@@ -277,10 +285,6 @@ const NOTEBOOK_MODE_TOOL_NAMES: string[] = [
   "edit_notebook_cell",
   "run_notebook_sql_cell",
   "run_notebook_code_cell",
-  // Semantic layer: a SQL cell that shows a metric takes its SQL from
-  // compile_metric and runs it with run_notebook_sql_cell.
-  "list_metrics",
-  "compile_metric",
   // Discovery: find data sources + tables for SQL cells
   "list_connections",
   "list_databases",
@@ -412,6 +416,11 @@ export function resolveExpertiseModeId(
  * Pick the expertise mode to enable by default for a fresh request, based on
  * what the user is currently looking at. This replaces PostHog's small-model
  * router with a zero-cost heuristic; a model router can be layered on later.
+ *
+ * The tab decides the mode, not the question: a number asked from an app tab
+ * lands in App mode. That is fine because the metric path is core
+ * (METRIC_FIRST_TOOL_NAMES) and the base prompt's Business numbers rule
+ * applies in every mode, so App mode answers with query_metric.
  */
 export function defaultExpertiseMode(
   context: Pick<AgentContext, "activeView">,

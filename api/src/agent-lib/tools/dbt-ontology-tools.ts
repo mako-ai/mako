@@ -17,7 +17,7 @@
  * are capped and say how many there were.
  */
 import { tool } from "ai";
-import { Types } from "mongoose";
+import { z } from "zod";
 import {
   describeModelSchema,
   findJoinPathSchema,
@@ -25,10 +25,6 @@ import {
   lookupTermSchema,
   modelReadersSchema,
 } from "@mako/agent-tools";
-import { AppProject } from "../../database/workspace-schema";
-import { canSeeIndexedApp } from "../../apps/app-authorization";
-import { loadAppsIndex } from "../../apps/app-index.service";
-import { workspaceService } from "../../services/workspace.service";
 import { loggers } from "../../logging";
 import {
   capList,
@@ -43,7 +39,6 @@ import {
   type ProjectManifestIndex,
 } from "../../dbt/ontology/manifest-index.service";
 import {
-  bindingReadsOf,
   readerCountsByNode,
   readersOfNode,
   readersOfRelation,
@@ -62,6 +57,10 @@ import {
   type RegistryEntry,
 } from "../../dbt/ontology/registry";
 import { loadOntologyRegistry } from "../../dbt/ontology/registry.service";
+import {
+  buildWorkspaceContextPack,
+  loadVisibleAppReads,
+} from "../../dbt/ontology/workspace-context";
 import { findMetricByPhrase } from "../../dbt/semantic/semantic-manifest";
 import {
   loadSemanticProjects,
@@ -335,29 +334,8 @@ export const createDbtOntologyTools = (
    * never leaks through a reader count. Null when the index cannot be read:
    * readers are then reported as unknown, not as zero.
    */
-  const visibleAppReads = async (): Promise<AppBindingReads[] | null> => {
-    try {
-      const [snapshot, docs, member] = await Promise.all([
-        loadAppsIndex(workspaceId),
-        AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) }),
-        userId
-          ? workspaceService.getMember(workspaceId, userId)
-          : Promise.resolve(null),
-      ]);
-      const stateById = new Map(docs.map(doc => [doc._id.toString(), doc]));
-      return snapshot.apps
-        .filter(app =>
-          canSeeIndexedApp(app, stateById.get(app.appId), userId, member?.role),
-        )
-        .map(bindingReadsOf);
-    } catch (error) {
-      logger.warn("Apps index unavailable for model readers", {
-        workspaceId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return null;
-    }
-  };
+  const visibleAppReads = (): Promise<AppBindingReads[] | null> =>
+    loadVisibleAppReads(workspaceId, userId);
 
   const describeNode = (
     project: ProjectManifestIndex,
@@ -477,6 +455,21 @@ export const createDbtOntologyTools = (
   };
 
   return {
+    get_workspace_context: tool({
+      description:
+        "The workspace's business vocabulary in about 4k chars: every governed and draft registry term and entity with its canonical model.column (and its metric, when one exists), every metric with a one-line description, and the 30 dbt models the most apps read. Call it once at the start of a data question when you do not know the names yet; then lookup_term, list_metrics or describe_model for details.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        try {
+          const pack = await buildWorkspaceContextPack(workspaceId, userId);
+          return { success: true as const, ...pack };
+        } catch (error) {
+          logger.error("get_workspace_context failed", { error });
+          return toolError(error, "Failed to build the workspace context");
+        }
+      },
+    }),
+
     find_models: tool({
       description:
         "Search the dbt models, sources and seeds of the last production build by name, description, column names and descriptions, tags, meta and the term registry's synonyms. Call this BEFORE writing a new dbt model or a binding that aggregates a business metric: when a model already answers the question, read or extend it instead of deriving the number again. Each hit has its layer, grain (when stated), relation name, column count, how many apps read it and the registry term or entity it is canonical for. Canonical models rank first. Follow up with describe_model.",

@@ -93,7 +93,16 @@ export interface SkillRetrievalResult {
   index: SkillIndexEntry[];
   /** Pinned workspace skills, full body. */
   injected: SkillRetrievalHit[];
+  /**
+   * Offered skills left out of `index` because the turn shows only the best
+   * matches for the user's message (selectSkillIndexForTurn). 0 or absent:
+   * the index is complete.
+   */
+  omitted?: number;
 }
+
+/** Index entries a chat turn's prompt carries; the rest are one search away. */
+export const SKILL_INDEX_TURN_LIMIT = 15;
 
 function validateInput(input: SkillInput): string | null {
   if (!input.name || input.name.trim().length === 0) return "name is required";
@@ -583,20 +592,80 @@ export async function retrieveRelevantSkills(
   return { index, injected };
 }
 
+/**
+ * The index a turn carries: pinned skills, then the skills `ranked` names
+ * (best match first), then the rest of the index in its order, up to
+ * `limit`. Pinned skills are always kept. `omitted` counts what was left
+ * out.
+ */
+export function selectSkillIndexForTurn(
+  result: SkillRetrievalResult,
+  ranked: readonly { name: string; scope: "workspace" | "system" }[],
+  limit: number = SKILL_INDEX_TURN_LIMIT,
+): SkillRetrievalResult {
+  if (result.index.length <= limit) return { ...result, omitted: 0 };
+  const key = (entry: { name: string; scope: string }) =>
+    `${entry.scope}:${entry.name}`;
+  const byKey = new Map(result.index.map(entry => [key(entry), entry]));
+  const chosen = new Map<string, SkillIndexEntry>();
+  for (const entry of result.index) {
+    if (entry.pinned) chosen.set(key(entry), entry);
+  }
+  for (const hit of ranked) {
+    if (chosen.size >= limit) break;
+    const entry = byKey.get(key(hit));
+    if (entry) chosen.set(key(entry), entry);
+  }
+  for (const entry of result.index) {
+    if (chosen.size >= limit) break;
+    chosen.set(key(entry), entry);
+  }
+  // Keep the index's own order (workspace, then system).
+  const index = result.index.filter(entry => chosen.has(key(entry)));
+  return {
+    ...result,
+    index,
+    omitted: result.index.length - index.length,
+  };
+}
+
+/**
+ * The turn's skills: the full index cut to the SKILL_INDEX_TURN_LIMIT best
+ * matches for the user's message, ranked by searchSkills (the ranking
+ * get_relevant_skills uses), with the pinned bodies.
+ */
+export async function retrieveSkillsForTurn(
+  workspaceId: string,
+  userText: string,
+  limit: number = SKILL_INDEX_TURN_LIMIT,
+): Promise<SkillRetrievalResult> {
+  const [full, ranked] = await Promise.all([
+    retrieveRelevantSkills(workspaceId),
+    searchSkills(workspaceId, userText, limit).catch(() => []),
+  ]);
+  return selectSkillIndexForTurn(full, ranked, limit);
+}
+
 export function renderSkillsPromptBlock(result: SkillRetrievalResult): string {
   if (result.index.length === 0) return "";
   const lines: string[] = [];
+  const omitted = result.omitted ?? 0;
   lines.push("\n\n---\n");
   lines.push("### Skills (workspace + system knowledge)");
   lines.push(
     "Skills extend or refine the self-directive for specific contexts. " +
       "If a skill conflicts with the directive, follow the directive. " +
-      "This is the complete index: read it, and `load_skill` any skill " +
-      "whose description matches what you are about to do — before you " +
-      "start, not after. Pinned skill bodies are loaded below within a " +
-      "fixed prompt budget. " +
-      "`search_skills` finds a skill by keyword when the index line did " +
-      "not ring a bell; `save_skill` proposes a new one.",
+      (omitted > 0
+        ? `This index shows the ${result.index.length} skills that best match ` +
+          `this message; ${omitted} more exist. \`search_skills\` or ` +
+          "`list_skills` find the rest (activate them with `load_tools`), " +
+          "and `get_relevant_skills({ query })` returns the best matches " +
+          "with their bodies. "
+        : "This is the complete index. ") +
+      "`load_skill` any skill whose description matches what you are " +
+      "about to do — before you start, not after. Pinned skill bodies are " +
+      "loaded below within a fixed prompt budget. `save_skill` proposes " +
+      "a new one.",
   );
   lines.push("");
   lines.push("#### Available skills (index)");
@@ -614,12 +683,12 @@ export function renderSkillsPromptBlock(result: SkillRetrievalResult): string {
     lines.push("");
     lines.push("#### Pinned skill excerpts (budgeted)");
     let remainingBodyChars = MAX_PINNED_SKILL_BODY_CHARS;
-    let omitted = 0;
+    let omittedPinned = 0;
     for (const s of result.injected) {
       const trimmedBody = s.body.trim();
       if (!trimmedBody) continue;
       if (remainingBodyChars <= 0) {
-        omitted++;
+        omittedPinned++;
         continue;
       }
       const excerptLength = Math.min(
@@ -642,10 +711,10 @@ export function renderSkillsPromptBlock(result: SkillRetrievalResult): string {
         );
       }
     }
-    if (omitted > 0) {
+    if (omittedPinned > 0) {
       lines.push("");
       lines.push(
-        `[${omitted} additional pinned skill${omitted === 1 ? " was" : "s were"} omitted by the prompt budget; use load_skill by name from the index.]`,
+        `[${omittedPinned} additional pinned skill${omittedPinned === 1 ? " was" : "s were"} omitted by the prompt budget; use load_skill by name from the index.]`,
       );
     }
   }

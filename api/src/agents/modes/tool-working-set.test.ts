@@ -24,6 +24,7 @@ import {
   CORE_ALWAYS_TOOL_NAMES,
   DEFERRED_BUILTIN_TOOL_NAMES,
   EXPERTISE_MODE_IDS,
+  METRIC_FIRST_TOOL_NAMES as CORE_METRIC_FIRST,
   toolNamesForModes,
 } from "./registry";
 import type { ModeState } from "./types";
@@ -550,13 +551,31 @@ async function endToEnd() {
     );
   }
 
-  // Every mode that writes SQL can take a metric's SQL from its definition:
-  // the app, workflow and notebook modes compile it, the query mode runs it.
-  for (const mode of ["app", "workflow", "notebook"] as const) {
+  // Every mode can answer a business number from its definition: the
+  // ontology and metric tools are core, so they are in every mode's set.
+  for (const mode of EXPERTISE_MODE_IDS) {
     const tools = toolNamesForModes(new Set([mode]));
-    for (const name of ["list_metrics", "compile_metric"]) {
+    for (const name of CORE_METRIC_FIRST) {
       assert.ok(tools.has(name), `${mode} mode should have ${name}`);
     }
+  }
+
+  // Routing: a number asked from an app tab stays in App mode (the tab
+  // decides the mode), and App mode now holds the metric path, so the
+  // answer comes from query_metric without a mode switch.
+  const appTabRuntime = buildUnifiedModeRuntime({
+    context,
+    messages: [user("what was MRR by country last month?")],
+    tabKind: "app",
+    modelId: "xai/grok-4.5",
+  });
+  assert.deepEqual([...appTabRuntime.modeState.enabledModes], ["app"]);
+  const appTabStep = appTabRuntime.prepareStep({ stepNumber: 0 });
+  for (const name of ["lookup_term", "list_metrics", "query_metric"]) {
+    assert.ok(
+      appTabStep?.activeTools.includes(name),
+      `${name} is active from an app tab`,
+    );
   }
 
   // Preload: a Slack-flavored user message pre-activates relevant tools

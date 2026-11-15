@@ -68,6 +68,22 @@ const DEFAULT_OUTPUT_RESERVE_TOKENS = 16_000;
 /** A tool output bigger than this (estimated tokens) is elided when old. */
 const ELIDE_TOOL_OUTPUT_TOKENS = 400;
 
+/**
+ * Tool outputs the always-on elision keeps, up to ELISION_EXEMPT_MAX_TOKENS
+ * each: the definitions a later turn's answer rests on (a term, the metric
+ * list, a model's columns, the workspace context pack, a skill). Eliding
+ * them sent agents back to re-derive a governed number by hand. The
+ * budget-driven passes (over the context window) still elide them.
+ */
+export const ELISION_EXEMPT_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "lookup_term",
+  "list_metrics",
+  "describe_model",
+  "get_workspace_context",
+  "load_skill",
+]);
+export const ELISION_EXEMPT_MAX_TOKENS = 4_000;
+
 /** Cap on the transcript (chars) fed to the summarizer to protect ITS window. */
 const SUMMARY_INPUT_CHAR_CAP = 120_000;
 
@@ -144,9 +160,23 @@ function groupIntoTurns(messages: UIMessage[]): Turn[] {
 // Tool-output elision (lossless-ish)
 // ---------------------------------------------------------------------------
 
+interface ElisionExemption {
+  toolNames: ReadonlySet<string>;
+  maxTokens: number;
+}
+
+function toolNameOfPart(part: Record<string, unknown>): string | undefined {
+  const type = typeof part.type === "string" ? part.type : "";
+  if (type === "dynamic-tool") {
+    return typeof part.toolName === "string" ? part.toolName : undefined;
+  }
+  return type.startsWith("tool-") ? type.slice("tool-".length) : undefined;
+}
+
 function elideToolOutputsInMessage(
   message: UIMessage,
   minTokens: number = ELIDE_TOOL_OUTPUT_TOKENS,
+  exempt?: ElisionExemption,
 ): {
   message: UIMessage;
   changed: boolean;
@@ -165,7 +195,17 @@ function elideToolOutputsInMessage(
     ) {
       return part;
     }
-    if (estimateTokensFromValue(part.output) < minTokens) {
+    const tokens = estimateTokensFromValue(part.output);
+    if (tokens < minTokens) {
+      return part;
+    }
+    const name = exempt ? toolNameOfPart(part) : undefined;
+    if (
+      exempt &&
+      name &&
+      exempt.toolNames.has(name) &&
+      tokens <= exempt.maxTokens
+    ) {
       return part;
     }
     count += 1;
@@ -183,13 +223,14 @@ function elideToolOutputs(
   messages: UIMessage[],
   range: { from: number; to: number },
   minTokens: number = ELIDE_TOOL_OUTPUT_TOKENS,
+  exempt?: ElisionExemption,
 ): { messages: UIMessage[]; changed: boolean; count: number } {
   let changed = false;
   let count = 0;
   const next = messages.map((msg, idx) => {
     if (idx < range.from || idx >= range.to) return msg;
     if (msg.role !== "assistant") return msg;
-    const res = elideToolOutputsInMessage(msg, minTokens);
+    const res = elideToolOutputsInMessage(msg, minTokens, exempt);
     if (res.changed) {
       changed = true;
       count += res.count;
@@ -208,6 +249,13 @@ export interface ElideOldToolOutputsOptions {
   keepRecentTurns?: number;
   /** Only elide tool outputs estimated at or above this many tokens. */
   minTokens?: number;
+  /**
+   * Tools whose outputs stay, up to `maxTokens` each. Defaults to
+   * ELISION_EXEMPT_TOOL_NAMES / ELISION_EXEMPT_MAX_TOKENS; pass an empty
+   * set to elide everything.
+   */
+  exemptToolNames?: ReadonlySet<string>;
+  exemptMaxTokens?: number;
 }
 
 export interface ElideOldToolOutputsResult {
@@ -255,6 +303,10 @@ export function elideOldToolOutputs(
     messages,
     { from: 0, to: recentStartIdx },
     minTokens,
+    {
+      toolNames: opts?.exemptToolNames ?? ELISION_EXEMPT_TOOL_NAMES,
+      maxTokens: opts?.exemptMaxTokens ?? ELISION_EXEMPT_MAX_TOKENS,
+    },
   );
   return {
     messages: res.messages,

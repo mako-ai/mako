@@ -295,8 +295,18 @@ async function main() {
     );
     assert.match(
       result.instructions ?? "",
-      /Before creating a dbt model or a binding that aggregates a business metric[\s\S]*lookup_term[\s\S]*find_models[\s\S]*extend it/,
+      /before creating a dbt model or a binding that aggregates a business metric[\s\S]*lookup_term[\s\S]*find_models[\s\S]*extend it/,
       "initialize should tell agents to check the ontology before writing SQL",
+    );
+    const instructions = result.instructions ?? "";
+    assert.ok(
+      instructions.length < 4_000,
+      `instructions stay under 4,000 chars (${instructions.length})`,
+    );
+    assert.ok(
+      instructions.indexOf("lookup_term") <
+        instructions.indexOf("list_connections"),
+      "a business question starts from the ontology, not the connections",
     );
     assert.match(
       result.instructions ?? "",
@@ -377,8 +387,6 @@ async function main() {
       "list_databases",
       "list_tables",
       "inspect_table",
-      "sql_list_tables",
-      "sql_inspect_table",
       "sql_execute_query",
       "run_console",
       "read_console",
@@ -400,6 +408,9 @@ async function main() {
       "list_metrics",
       "compile_metric",
       "query_metric",
+      "repo_glob",
+      "repo_grep",
+      "repo_read_file",
     ]) {
       assert.equal(
         byName.get(readOnlyTool)?.annotations?.readOnlyHint,
@@ -412,12 +423,7 @@ async function main() {
       "list_databases",
       "list_tables",
       "inspect_table",
-      "sql_list_connections",
-      "sql_list_databases",
-      "sql_list_tables",
-      "sql_inspect_table",
       "sql_execute_query",
-      "mongo_list_connections",
       "search_consoles",
       "search_skills",
       "list_skills",
@@ -458,11 +464,16 @@ async function main() {
       "lookup_term",
       "model_readers",
       "find_join_path",
+      "get_workspace_context",
       // Semantic layer: listing and compiling are metadata only; running a
       // metric is a read-only query, bridged for every query:read key.
       "list_metrics",
       "compile_metric",
       "query_metric",
+      // Read-only reads of the whole workspace repo.
+      "repo_glob",
+      "repo_grep",
+      "repo_read_file",
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }
@@ -470,6 +481,37 @@ async function main() {
       names.has("app_get_data_binding"),
       false,
       "redundant app_get_data_binding must not be exposed over MCP",
+    );
+    // The 10 deprecated aliases leave the MCP surface: each one's
+    // replacement is bridged above.
+    for (const alias of [
+      "sql_list_connections",
+      "sql_list_databases",
+      "sql_list_tables",
+      "sql_inspect_table",
+      "mongo_list_connections",
+      "mongo_list_databases",
+      "mongo_list_collections",
+      "mongo_inspect_collection",
+      "add_notebook_cell",
+      "delete_notebook_cell",
+    ]) {
+      assert.equal(names.has(alias), false, `${alias} should not be bridged`);
+    }
+    // A business question's tools lead the list.
+    assert.deepEqual(
+      tools.slice(0, 9).map(t => t.name),
+      [
+        "get_workspace_context",
+        "lookup_term",
+        "list_metrics",
+        "query_metric",
+        "compile_metric",
+        "find_models",
+        "describe_model",
+        "find_join_path",
+        "model_readers",
+      ],
     );
     for (const tool of tools) {
       assert.equal(
@@ -1494,6 +1536,11 @@ async function main() {
     const { resources } = listRes.result as { resources: { uri: string }[] };
     const uris = new Set(resources.map(r => r.uri));
     assert.ok(uris.has("mako://skills/apps"), "apps skill resource missing");
+    assert.equal(
+      resources[0]?.uri,
+      "mako://context",
+      "the workspace context pack is the first resource",
+    );
 
     const [readRes] = await exchange([
       {
