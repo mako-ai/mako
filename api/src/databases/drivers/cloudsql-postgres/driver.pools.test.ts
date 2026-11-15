@@ -14,6 +14,7 @@
  * Run: tsx src/databases/drivers/cloudsql-postgres/driver.pools.test.ts
  */
 import assert from "node:assert/strict";
+import type { ConnectionCache } from "../../connection-cache";
 import { CloudSQLPostgresDatabaseDriver } from "./driver";
 
 type FakeConnector = {
@@ -38,8 +39,7 @@ function fakeDriver() {
     connectors.push(connector);
     return connector;
   };
-  const pools = () =>
-    (driver as any).pools as Map<string, { pool: any; lastUsed: number }>;
+  const pools = () => (driver as any).pools as ConnectionCache<any>;
   return { driver, connectors, pools };
 }
 
@@ -80,7 +80,7 @@ async function main() {
     // closeConnection(id) closes every `${id}:*` pool and the connector —
     // and only that connection's.
     let ended = 0;
-    for (const { pool } of pools().values()) {
+    for (const [, { value: pool }] of pools().entryList()) {
       const end = pool.end.bind(pool);
       pool.end = async () => {
         ended++;
@@ -121,7 +121,7 @@ async function main() {
     const { driver, connectors, pools } = fakeDriver();
     await driver.getConnection(connection(A));
     await driver.getConnection(connection(B));
-    const idle = pools().get(`${A}:default`);
+    const idle = pools().entry(`${A}:default`);
     assert.ok(idle);
     idle.lastUsed = Date.now() - 60_000;
     await driver.sweepIdleConnections(30_000);
