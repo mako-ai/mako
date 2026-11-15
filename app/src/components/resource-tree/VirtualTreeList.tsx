@@ -49,8 +49,17 @@ interface VirtualTreeListProps {
   canManage: (row: Extract<FlatRow, { kind: "folder" | "file" }>) => boolean;
 }
 
-/** The nearest scrollable ancestor — the explorer's scroll container. */
+/**
+ * The nearest scrollable ancestor — the explorer's scroll container. The
+ * explorers scroll inside VSScrollArea (OverlayScrollbars), whose viewport is
+ * marked `data-overlayscrollbars-viewport`; it is created after a deferred
+ * init, so it may not exist yet on the first layout pass.
+ */
 function findScrollParent(el: HTMLElement | null): HTMLElement | null {
+  const overlayViewport = el?.closest<HTMLElement>(
+    "[data-overlayscrollbars-viewport]",
+  );
+  if (overlayViewport) return overlayViewport;
   let node = el?.parentElement ?? null;
   while (node && node !== document.body) {
     const { overflowY } = window.getComputedStyle(node);
@@ -81,6 +90,18 @@ const VirtuosoRowList: Components<FlatRow>["List"] = memo(
   ),
 );
 
+function sameRendered(a: RenderedItem[], b: RenderedItem[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every(
+      (item, i) =>
+        item.index === b[i].index &&
+        item.offset === b[i].offset &&
+        item.size === b[i].size,
+    )
+  );
+}
+
 const VIRTUOSO_COMPONENTS: Components<FlatRow> = { List: VirtuosoRowList };
 const VIEWPORT_OVERSCAN = { top: 400, bottom: 600 };
 
@@ -108,7 +129,21 @@ export const VirtualTreeList = forwardRef<
   const [totalHeight, setTotalHeight] = useState(0);
 
   useLayoutEffect(() => {
-    setScrollParent(findScrollParent(wrapperRef.current));
+    const resolved = findScrollParent(wrapperRef.current);
+    setScrollParent(resolved);
+    if (resolved) return;
+    // Inside an OverlayScrollbars host whose deferred init hasn't run yet:
+    // pick the viewport up once it appears (bounded, then stay unvirtualized).
+    if (!wrapperRef.current?.closest("[data-overlayscrollbars-initialize]")) {
+      return;
+    }
+    let frames = 0;
+    let handle = requestAnimationFrame(function retry() {
+      const found = findScrollParent(wrapperRef.current);
+      if (found) setScrollParent(found);
+      else if (++frames < 120) handle = requestAnimationFrame(retry);
+    });
+    return () => cancelAnimationFrame(handle);
   }, []);
 
   const virtualized = !!scrollParent;
@@ -131,18 +166,19 @@ export const VirtualTreeList = forwardRef<
           size: el.offsetHeight,
         });
       });
-    setRendered(items);
+    // Bail out when nothing moved: a fresh array every pass re-renders, and
+    // re-measuring after that render would never settle.
+    setRendered(prev => (sameRendered(prev, items) ? prev : items));
     setTotalHeight(wrapper.offsetHeight);
   }, [rows, scrollParent]);
 
   const handleItemsRendered = useCallback((items: ListItem<FlatRow>[]) => {
-    setRendered(
-      items.map(item => ({
-        index: item.index,
-        offset: item.offset,
-        size: item.size,
-      })),
-    );
+    const next = items.map(item => ({
+      index: item.index,
+      offset: item.offset,
+      size: item.size,
+    }));
+    setRendered(prev => (sameRendered(prev, next) ? prev : next));
   }, []);
 
   useImperativeHandle(
