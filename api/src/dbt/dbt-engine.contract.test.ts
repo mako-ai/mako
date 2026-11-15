@@ -25,10 +25,10 @@ import {
 
 const ENABLED = process.env.RUN_DBT_ENGINE_CONTRACT === "1";
 
-describe.skipIf(!ENABLED)("dbt engine contract (real dbt-core 1.9.10)", () => {
+describe.skipIf(!ENABLED)("dbt engine contract (real dbt-core 1.12.7)", () => {
   const ctx = {
     adapterPackage: "dbt-duckdb",
-    dbtVersion: "1.9.10",
+    dbtVersion: "1.12.7",
     connectionEnv: {},
   };
   // Assigned in beforeAll so the env mutation + fixture writes never run during
@@ -45,9 +45,9 @@ describe.skipIf(!ENABLED)("dbt engine contract (real dbt-core 1.9.10)", () => {
       "--python",
       "3.11",
       "--with",
-      "dbt-core==1.9.10",
+      "dbt-core==1.12.7",
       "--with",
-      "dbt-duckdb==1.9.4",
+      "dbt-duckdb==1.11.1",
       "python",
     ]);
 

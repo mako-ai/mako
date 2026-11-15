@@ -726,7 +726,7 @@ export const createDbtServerTools = (
           const project = new DbtProject({
             workspaceId: new Types.ObjectId(workspaceId),
             name,
-            dbtVersion: dbtVersion ?? "1.9",
+            dbtVersion: dbtVersion ?? "1.12",
             environments: [
               {
                 name: environmentName,

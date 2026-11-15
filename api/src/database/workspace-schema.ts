@@ -4008,7 +4008,7 @@ export interface IDbtProject extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   name: string;
-  /** Pinned dbt-core minor version, e.g. "1.9". Informational for now. */
+  /** Pinned dbt-core minor version, e.g. "1.12". Informational for now. */
   dbtVersion: string;
   environments: IDbtEnvironment[];
   defaultEnvironment: string;
@@ -4064,7 +4064,7 @@ const DbtProjectSchema = new Schema<IDbtProject>(
       required: true,
     },
     name: { type: String, required: true, trim: true },
-    dbtVersion: { type: String, default: "1.9" },
+    dbtVersion: { type: String, default: "1.12" },
     environments: { type: [DbtEnvironmentSchema], default: [] },
     defaultEnvironment: { type: String, default: "dev" },
     prodEnvironment: { type: String },

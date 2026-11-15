@@ -12,7 +12,7 @@ import { existsSync } from "fs";
 import { spawnSync } from "child_process";
 import { dirname, join } from "path";
 
-export const DEFAULT_DBT_CORE_VERSION = "1.9.10";
+export const DEFAULT_DBT_CORE_VERSION = "1.12.7";
 
 /**
  * Variables a dbt child (subprocess runner or resident engine) legitimately
