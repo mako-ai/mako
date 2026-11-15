@@ -52,6 +52,46 @@ describe("Notifier", () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
+  it("does not wedge when two toasts are queued in the same tick", () => {
+    vi.useFakeTimers();
+    render(<Notifier />);
+    act(() => {
+      notify.info("Preparing CSV…");
+      notify.success("CSV downloaded");
+    });
+    // The never-shown head is dropped; the newer toast takes its place.
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(screen.getByText("CSV downloaded")).toBeTruthy();
+    expect(useNotificationStore.getState().queue).toHaveLength(1);
+    // And the queue keeps working afterwards.
+    act(() => {
+      notify.error("Later failure");
+    });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(screen.getByText("Later failure")).toBeTruthy();
+  });
+
+  it("drops a toast dismissed in the same tick it was added", () => {
+    vi.useFakeTimers();
+    render(<Notifier />);
+    act(() => {
+      const id = notify.info("Gone before it showed");
+      notify.dismiss(id);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(useNotificationStore.getState().queue).toHaveLength(0);
+    act(() => {
+      notify.success("Next one");
+    });
+    expect(screen.getByText("Next one")).toBeTruthy();
+  });
+
   it("auto-hides and then removes the toast from the queue", () => {
     vi.useFakeTimers();
     render(<Notifier />);

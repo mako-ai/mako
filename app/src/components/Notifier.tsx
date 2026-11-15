@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert, Button, IconButton, Snackbar } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import {
@@ -27,15 +27,25 @@ export function Notifier() {
   const hasNext = useNotificationStore(s => s.queue.length > 1);
   const [open, setOpen] = useState(false);
 
-  const currentId = current?.id;
-  useEffect(() => {
-    if (currentId !== undefined) setOpen(true);
-  }, [currentId]);
+  // The id of the head toast that was actually shown. A head that must give
+  // way before it was ever shown (a newer toast queued in the same tick, or
+  // dismissed as soon as it was added) never runs an exit transition, so it
+  // is removed directly — otherwise it would sit at the head of the queue
+  // forever and every later toast would stay hidden.
+  const shownId = useRef<number | undefined>(undefined);
 
+  const currentId = current?.id;
   const closing = current?.closing ?? false;
   useEffect(() => {
-    if (hasNext || closing) setOpen(false);
-  }, [hasNext, closing]);
+    if (currentId === undefined) return;
+    if (hasNext || closing) {
+      if (shownId.current === currentId) setOpen(false);
+      else removeNotification(currentId);
+      return;
+    }
+    shownId.current = currentId;
+    setOpen(true);
+  }, [currentId, hasNext, closing]);
 
   if (!current) return null;
 
