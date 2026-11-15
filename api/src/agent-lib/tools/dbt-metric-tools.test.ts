@@ -70,7 +70,11 @@ vi.mock("./sql-tools", async importOriginal => ({
 import { compileMetricSchema } from "@mako/agent-tools";
 import { sqlReadOnlyAccessError } from "../../services/read-only-query.service";
 import { createDbtServerTools } from "./dbt-tools";
-import { NO_SEMANTIC_MANIFEST, createDbtMetricTools } from "./dbt-metric-tools";
+import {
+  NO_SEMANTIC_MANIFEST,
+  createDbtMetricTools,
+  normalizeMetricRows,
+} from "./dbt-metric-tools";
 import {
   DatabaseConnection,
   DbtProject,
@@ -435,6 +439,7 @@ describe("compile_metric", () => {
         endTime: "2026-12-31",
       },
       undefined,
+      undefined,
     );
     expect(result).toMatchObject({
       success: true,
@@ -785,13 +790,20 @@ describe("query_metric", () => {
     expect(executor.run).toHaveBeenCalledWith(
       PROD_CONN.toString(),
       undefined,
-      "SELECT 1 AS revenue",
+      // The default LIMIT is appended here, so the SQL returned is what ran.
+      "SELECT 1 AS revenue\nLIMIT 500;",
       WS,
       ANA,
       undefined,
       // Whatever the caller holds, a metric query runs with read access.
       "read",
       20,
+      {
+        // The database dbt built the relations in, for a Postgres
+        // connection that names no default database.
+        fallbackDatabase: "probe",
+        mapRows: normalizeMetricRows,
+      },
     );
     expect(result).toMatchObject({
       success: true,
@@ -801,8 +813,109 @@ describe("query_metric", () => {
       source: "prod",
       metrics: ["revenue"],
       connectionId: PROD_CONN.toString(),
-      sql: "SELECT 1 AS revenue",
+      sql: "SELECT 1 AS revenue\nLIMIT 500;",
+      sqlNote:
+        "LIMIT 500 was appended to the SQL MetricFlow compiled; compile_metric returns it without.",
     });
+    // One row is not the cap.
+    expect(result).not.toHaveProperty("limited");
+  });
+
+  it("says the result was cut when the appended LIMIT is reached", async () => {
+    await seedProject();
+    executor.run.mockResolvedValue({
+      success: true,
+      rowCount: 500,
+      table: "| revenue |",
+      truncated: true,
+      note: "Showing 2 of 500 rows.",
+      sqlDialect: "postgresql",
+    });
+    const result = await run<Record<string, unknown>>(tools.query_metric, {
+      metrics: ["revenue"],
+      groupBy: ["customer"],
+      maxRows: 2,
+    });
+    expect(result).toMatchObject({ limited: true, rowLimit: 500 });
+    expect(result.note).toMatch(
+      /^Capped at 500 rows: the metric has MORE rows than the 500 this query read/,
+    );
+    expect(result.note).toMatch(/Pass limit \(up to 10000\) with orderBy/);
+    expect(result.note).toMatch(/Showing 2 of 500 rows\.$/);
+  });
+
+  it("leaves a limit the caller wrote alone", async () => {
+    await seedProject();
+    engine.compile.mockResolvedValue("SELECT 1 AS revenue\nLIMIT 500");
+    executor.run.mockResolvedValue({
+      success: true,
+      rowCount: 500,
+      table: "| revenue |",
+      sqlDialect: "postgresql",
+    });
+    const result = await run<Record<string, unknown>>(tools.query_metric, {
+      metrics: ["revenue"],
+      limit: 500,
+    });
+    expect(executor.run.mock.calls[0][2]).toBe(
+      "SELECT 1 AS revenue\nLIMIT 500",
+    );
+    expect(result.sql).toBe("SELECT 1 AS revenue\nLIMIT 500");
+    expect(result).not.toHaveProperty("limited");
+    expect(result).not.toHaveProperty("sqlNote");
+  });
+
+  it("gives compile and query one budget when the caller sets one", async () => {
+    await seedProject();
+    const overMcp = createDbtMetricTools(WS, ANA, { maxWaitMs: 45_000 });
+    await run(overMcp.query_metric, { metrics: ["revenue"] });
+    const compileBudget = engine.compile.mock.calls[0][4] as number;
+    const queryBudget = (executor.run.mock.calls[0][8] as { timeoutMs: number })
+      .timeoutMs;
+    expect(compileBudget).toBeGreaterThan(40_000);
+    expect(compileBudget).toBeLessThanOrEqual(45_000);
+    // What the query may take is what compiling left, never a second 60s.
+    expect(queryBudget).toBeLessThanOrEqual(compileBudget);
+
+    // Without a budget (the in-product agent) nothing is shortened.
+    engine.compile.mockClear();
+    executor.run.mockClear();
+    await run(tools.query_metric, { metrics: ["revenue"] });
+    expect(engine.compile.mock.calls[0][4]).toBeUndefined();
+    expect(executor.run.mock.calls[0][8]).not.toHaveProperty("timeoutMs");
+  });
+
+  it("writes timestamps and floats one way", () => {
+    expect(
+      normalizeMetricRows([
+        {
+          // BigQuery TIMESTAMP and DATETIME, as the driver returns them.
+          metric_time__day: "2026-10-12 00:00:00.000 UTC",
+          signup__created_at__day: "2026-05-01T00:00:00",
+          precise: "2026-10-12 08:30:15.250 UTC",
+          revenue: 1574958.9400000046,
+          rate: 0.30000000000000004,
+          orders: 5188,
+          tiny: 1.5e-12,
+          big: 123456789012345,
+          label: "ch",
+          missing: null,
+        },
+      ]),
+    ).toEqual([
+      {
+        metric_time__day: "2026-10-12T00:00:00Z",
+        signup__created_at__day: "2026-05-01T00:00:00",
+        precise: "2026-10-12T08:30:15.250Z",
+        revenue: 1574958.94,
+        rate: 0.3,
+        orders: 5188,
+        tiny: 1.5e-12,
+        big: 123456789012345,
+        label: "ch",
+        missing: null,
+      },
+    ]);
   });
 
   it("refuses a key without query access, before compiling", async () => {
@@ -827,7 +940,7 @@ describe("query_metric", () => {
     expect(result).toEqual({
       success: false,
       error: 'relation "orders" does not exist',
-      sql: "SELECT 1 AS revenue",
+      sql: "SELECT 1 AS revenue\nLIMIT 500;",
     });
   });
 

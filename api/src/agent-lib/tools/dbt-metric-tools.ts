@@ -56,7 +56,11 @@ import { loggers } from "../../logging";
 import { sqlReadOnlyAccessError } from "../../services/read-only-query.service";
 import { getDialect } from "./shared/sql-dialects";
 import { isAgentToolAbortError } from "./shared/truncation";
-import { executeQueryImpl } from "./sql-tools";
+import {
+  AGENT_DEFAULT_ROW_LIMIT,
+  appendLimitIfMissing,
+  executeQueryImpl,
+} from "./sql-tools";
 
 const logger = loggers.api("dbt-metric-tools");
 
@@ -170,6 +174,46 @@ function describedMetric(metric: CatalogMetric) {
     ...(metric.grainToDate ? { grainToDate: metric.grainToDate } : {}),
     ...(metric.filtered ? { filtered: true } : {}),
   };
+}
+
+const BIGQUERY_TIMESTAMP =
+  /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d+)? UTC$/;
+
+/**
+ * One cell of a metric result, in one form whatever the column type:
+ *  - a BigQuery TIMESTAMP arrives as "2026-10-12 00:00:00.000 UTC" and a
+ *    DATETIME as "2026-05-01T00:00:00": the first becomes ISO 8601 too
+ *    ("2026-10-12T00:00:00Z"), keeping the Z that tells them apart;
+ *  - a float carries binary noise (1574958.9400000046): 15 significant
+ *    digits is all a double holds exactly, so rounding to them removes the
+ *    noise and nothing else. Integers are left alone.
+ * Only metric results are normalised: the driver's own output feeds
+ * consoles, exports and app bindings, which keep their format.
+ */
+export function normalizeMetricCell(value: unknown): unknown {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || Number.isInteger(value)) return value;
+    return Number(value.toPrecision(15));
+  }
+  if (typeof value === "string") {
+    const timestamp = BIGQUERY_TIMESTAMP.exec(value);
+    if (!timestamp) return value;
+    const fraction = /^\.0+$/.test(timestamp[3] ?? ".0") ? "" : timestamp[3];
+    return `${timestamp[1]}T${timestamp[2]}${fraction}Z`;
+  }
+  return value;
+}
+
+export function normalizeMetricRows(rows: unknown[]): unknown[] {
+  return rows.map(row => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return row;
+    return Object.fromEntries(
+      Object.entries(row).map(([key, value]) => [
+        key,
+        normalizeMetricCell(value),
+      ]),
+    );
+  });
 }
 
 /** A metric_time bound as epoch ms: a date or a naive datetime, read as UTC. */
@@ -307,14 +351,21 @@ export const createDbtMetricTools = (
   options?: {
     /** What the caller may run. query_metric never uses more than read. */
     queryAccess?: QueryAccess;
+    /**
+     * One budget for compiling AND running a metric query. Over MCP the
+     * client gives up at 60s, and compile (60s) then query (60s) could
+     * outlast it: the caller then saw a transport timeout, not an answer.
+     */
+    maxWaitMs?: number;
     toolExecutionContext?: AgentToolExecutionContext;
   },
 ) => {
   const queryAccess = options?.queryAccess ?? "write";
   const toolExecutionContext = options?.toolExecutionContext;
+  const maxWaitMs = options?.maxWaitMs;
 
   /** A metric query compiled for the warehouse its project builds into. */
-  const compile = async (input: CompileMetricInput) => {
+  const compile = async (input: CompileMetricInput, deadline?: number) => {
     assertTimeRange(input.startTime, input.endTime);
     const projects = await loadSemanticProjects(workspaceId, {
       projectId: input.projectId,
@@ -368,6 +419,7 @@ export const createDbtMetricTools = (
         endTime: input.endTime,
       },
       toolExecutionContext?.signal,
+      deadline === undefined ? undefined : deadline - Date.now(),
     ).catch(async error => {
       throw await withValidGroupBys(error, project, input.metrics);
     });
@@ -382,6 +434,11 @@ export const createDbtMetricTools = (
       connectionId: project.connectionId,
       connectionName: connection.name,
       sqlDialect: getDialect(connection.type),
+      // The database dbt built the metric's relations in: where to run when
+      // the connection names no default database (Postgres).
+      relationDatabase: project.catalog.semanticModels.find(
+        model => model.database,
+      )?.database,
     };
   };
 
@@ -515,7 +572,10 @@ export const createDbtMetricTools = (
       inputSchema: compileMetricSchema,
       execute: async input => {
         try {
-          const compiled = await compile(input);
+          const compiled = await compile(
+            input,
+            maxWaitMs === undefined ? undefined : Date.now() + maxWaitMs,
+          );
           return {
             success: true as const,
             ...projectNote(compiled.project),
@@ -554,27 +614,65 @@ export const createDbtMetricTools = (
                 "This API key does not have query access. compile_metric still returns the SQL.",
             };
           }
-          const compiled = await compile(input);
-          sql = compiled.sql;
+          const deadline =
+            maxWaitMs === undefined ? undefined : Date.now() + maxWaitMs;
+          const compiled = await compile(input, deadline);
+          // The statement that runs: the agent's default LIMIT is appended
+          // here, not inside the executor, so what is returned is what ran.
+          const executedSql = appendLimitIfMissing(compiled.sql);
+          const limitAppended = executedSql !== compiled.sql;
+          sql = executedSql;
           // A metric query is a SELECT: read access is all it ever needs,
           // whatever the caller holds.
           const result = await executeQueryImpl(
             compiled.connectionId,
             undefined,
-            compiled.sql,
+            executedSql,
             workspaceId,
             userId,
             toolExecutionContext,
             "read",
             maxRows,
+            {
+              fallbackDatabase: compiled.relationDatabase,
+              mapRows: normalizeMetricRows,
+              ...(deadline === undefined
+                ? {}
+                : { timeoutMs: Math.max(1000, deadline - Date.now()) }),
+            },
           );
+          const rowCount =
+            "rowCount" in result && typeof result.rowCount === "number"
+              ? result.rowCount
+              : undefined;
+          // Exactly the cap came back: the result was cut, not complete.
+          const limited =
+            limitAppended &&
+            rowCount !== undefined &&
+            rowCount >= AGENT_DEFAULT_ROW_LIMIT;
+          const note =
+            "note" in result && typeof result.note === "string"
+              ? result.note
+              : undefined;
           return {
             ...result,
+            ...(limited
+              ? {
+                  limited: true as const,
+                  rowLimit: AGENT_DEFAULT_ROW_LIMIT,
+                  note: `Capped at ${AGENT_DEFAULT_ROW_LIMIT} rows: the metric has MORE rows than the ${AGENT_DEFAULT_ROW_LIMIT} this query read, because Mako appended LIMIT ${AGENT_DEFAULT_ROW_LIMIT}. Totals over these rows are wrong. Pass limit (up to 10000) with orderBy, or cut the rows with where, startTime/endTime, fewer group-bys or a coarser grain.${note ? ` ${note}` : ""}`,
+                }
+              : {}),
             ...projectNote(compiled.project),
             metrics: input.metrics,
             connectionId: compiled.connectionId,
             connectionName: compiled.connectionName,
-            sql: compiled.sql,
+            sql: executedSql,
+            ...(limitAppended
+              ? {
+                  sqlNote: `LIMIT ${AGENT_DEFAULT_ROW_LIMIT} was appended to the SQL MetricFlow compiled; compile_metric returns it without.`,
+                }
+              : {}),
           };
         } catch (error) {
           if (isAgentToolAbortError(error)) {

@@ -82,12 +82,16 @@ const needsDefaultLimit = (sql: string): boolean => {
   return firstToken === "select" || firstToken === "with";
 };
 
-const appendLimitIfMissing = (sql: string): string => {
+/** The LIMIT appended to an agent's SELECT that names none. */
+export const AGENT_DEFAULT_ROW_LIMIT = 500;
+
+/** The query as an agent tool runs it: with a default LIMIT when it has none. */
+export const appendLimitIfMissing = (sql: string): string => {
   if (!needsDefaultLimit(sql)) return sql;
   if (/\blimit\s+\d+/i.test(sql)) return sql;
 
   const trimmed = sql.trim().replace(/;\s*$/i, "");
-  return `${trimmed}\nLIMIT 500;`;
+  return `${trimmed}\nLIMIT ${AGENT_DEFAULT_ROW_LIMIT};`;
 };
 
 // Fetch and validate database connection
@@ -1004,6 +1008,8 @@ export async function resolveSqlQueryTarget(
   query: string,
   workspaceId: string,
   queryAccess: QueryAccess,
+  /** Used when neither the caller nor the connection names a database. */
+  fallbackDatabase?: string,
 ): Promise<SqlQueryTarget> {
   if (typeof query !== "string" || query.trim().length === 0) {
     throw new Error("'query' must be a non-empty string");
@@ -1039,8 +1045,10 @@ export async function resolveSqlQueryTarget(
   let databaseName = requestedDatabase?.trim() || undefined;
   if (!databaseName) {
     if (dialect === "postgresql" || dialect === "mysql") {
-      databaseName = (connection.database ?? connection.db) as
-        string | undefined;
+      databaseName =
+        ((connection.database ?? connection.db) as string | undefined) ||
+        fallbackDatabase?.trim() ||
+        undefined;
     } else if (dialect === "sqlite") {
       databaseName = connection.database_id as string | undefined;
     }
@@ -1138,6 +1146,16 @@ export function trackSqlExecution(input: {
   });
 }
 
+/** What a caller other than sql_execute_query may set on a query. */
+export interface ExecuteQueryExtras {
+  /** Database to use when neither the caller nor the connection names one. */
+  fallbackDatabase?: string;
+  /** A shorter timeout than the agent's default (a budget shared with other work). */
+  timeoutMs?: number;
+  /** Applied to the result rows before they are formatted for the model. */
+  mapRows?: (rows: unknown[]) => unknown[];
+}
+
 export async function executeQueryImpl(
   connectionId: string,
   requestedDatabase: string | undefined,
@@ -1147,8 +1165,13 @@ export async function executeQueryImpl(
   toolExecutionContext?: AgentToolExecutionContext,
   queryAccess: QueryAccess = "write",
   maxRows?: number,
+  extras: ExecuteQueryExtras = {},
 ) {
   const startTime = Date.now();
+  const timeoutMs = Math.min(
+    extras.timeoutMs ?? AGENT_QUERY_TIMEOUT_MS,
+    AGENT_QUERY_TIMEOUT_MS,
+  );
 
   const target = await resolveSqlQueryTarget(
     connectionId,
@@ -1156,6 +1179,7 @@ export async function executeQueryImpl(
     query,
     workspaceId,
     queryAccess,
+    extras.fallbackDatabase,
   );
   const { database, dialect, databaseName, options } = target;
 
@@ -1182,7 +1206,7 @@ export async function executeQueryImpl(
             readOnly: target.readOnly,
           },
         ),
-      { signal },
+      { signal, timeoutMs },
     );
 
     // Track successful/error query execution (fire-and-forget)
@@ -1203,7 +1227,7 @@ export async function executeQueryImpl(
       return {
         success: true,
         rowCount: result.rowCount ?? result.data.length,
-        ...formatRowsForModel(result.data, {
+        ...formatRowsForModel(extras.mapRows?.(result.data) ?? result.data, {
           fields: result.fields,
           maxRows,
           moreHint: SQL_MORE_ROWS_HINT,
@@ -1254,7 +1278,7 @@ export async function executeQueryImpl(
       return {
         success: false,
         status: "timeout",
-        message: `Query timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s (this is a short timeout for quick exploration only). The query may be valid but slow. Either: (1) Add LIMIT / narrow the date range to make it fast enough to test here, OR (2) for a genuinely long query, write the full query into a console (create_console / modify_console) and run it with run_console — that path is resumable: it keeps running server-side past the timeout and you poll check_query_status for the result.`,
+        message: `Query timed out after ${Math.round(timeoutMs / 1000)}s (this is a short timeout for quick exploration only). The query may be valid but slow. Either: (1) Add LIMIT / narrow the date range to make it fast enough to test here, OR (2) for a genuinely long query, write the full query into a console (create_console / modify_console) and run it with run_console — that path is resumable: it keeps running server-side past the timeout and you poll check_query_status for the result.`,
         sqlDialect: dialect,
       };
     }

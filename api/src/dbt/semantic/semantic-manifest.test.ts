@@ -72,11 +72,13 @@ describe("buildSemanticCatalog", () => {
         name: "orders",
         description: "One row per order.",
         relation: '"probe"."main"."orders"',
+        database: "probe",
       },
       {
         name: "customers",
         description: "One row per customer.",
         relation: '"probe"."main"."customers"',
+        database: "probe",
       },
     ]);
   });

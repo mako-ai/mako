@@ -64,6 +64,10 @@ process.stdin.on("end", () => {
     manifest: fs.readFileSync(req.manifest_path, "utf8"),
     leaked: process.env.SESSION_SECRET ?? null,
   }) + "\\n");
+  if (req.metrics.includes("slow")) {
+    setTimeout(() => console.log(JSON.stringify({ ok: true, sql: "late" })), 20000);
+    return;
+  }
   if (req.metrics.includes("crash")) {
     console.error("Traceback: boom");
     process.exit(3);
@@ -200,6 +204,20 @@ describe("compileMetricQuery", () => {
     expect(failure).toBeInstanceOf(Error);
     expect(failure).not.toBeInstanceOf(MetricflowQueryError);
     expect((failure as Error).message).toMatch(/exit 3.*Traceback: boom/);
+  });
+
+  it("gives up at the caller's budget, not at the engine's 60s", async () => {
+    const started = Date.now();
+    await expect(
+      compileMetricQuery(
+        "runs/1/semantic_manifest.json",
+        "postgres",
+        { metrics: ["slow"] },
+        undefined,
+        1000,
+      ),
+    ).rejects.toThrow(/MetricFlow did not answer within 1s/);
+    expect(Date.now() - started).toBeLessThan(10_000);
   });
 
   it("fails when the manifest is gone from the store", async () => {

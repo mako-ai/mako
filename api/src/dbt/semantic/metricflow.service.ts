@@ -137,7 +137,12 @@ type EngineResponse =
 function runEngine(
   request: Record<string, unknown>,
   signal?: AbortSignal,
+  maxWaitMs?: number,
 ): Promise<{ ok: true; [key: string]: unknown }> {
+  const timeoutMs = Math.max(
+    1000,
+    Math.min(maxWaitMs ?? ENGINE_TIMEOUT_MS, ENGINE_TIMEOUT_MS),
+  );
   return new Promise((resolve, reject) => {
     const { bin, prefixArgs } = resolveMetricflowPython(ENGINE_SCRIPT);
     // SECURITY: allowlisted base env only, as for every dbt child. A where
@@ -163,11 +168,11 @@ function runEngine(
       finish(() =>
         reject(
           new Error(
-            `MetricFlow did not answer within ${ENGINE_TIMEOUT_MS / 1000}s`,
+            `MetricFlow did not answer within ${Math.round(timeoutMs / 1000)}s`,
           ),
         ),
       );
-    }, ENGINE_TIMEOUT_MS);
+    }, timeoutMs);
 
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
@@ -319,6 +324,8 @@ export async function compileMetricQuery(
   dialect: MetricflowDialect,
   query: MetricQuery,
   signal?: AbortSignal,
+  /** Give up sooner than the engine's own timeout (a caller's budget). */
+  maxWaitMs?: number,
 ): Promise<string> {
   const manifestPath = await materializeManifest(semanticManifestKey);
   const response = await runEngine(
@@ -335,6 +342,7 @@ export async function compileMetricQuery(
       end_time: query.endTime ?? null,
     },
     signal,
+    maxWaitMs,
   );
   if (typeof response.sql !== "string" || !response.sql.trim()) {
     throw new Error("MetricFlow returned no SQL");

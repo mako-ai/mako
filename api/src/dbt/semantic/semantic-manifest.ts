@@ -41,7 +41,10 @@ interface RawMetric {
 interface RawSemanticModel {
   name?: string;
   description?: string | null;
-  node_relation?: { relation_name?: string | null } | null;
+  node_relation?: {
+    relation_name?: string | null;
+    database?: string | null;
+  } | null;
 }
 
 export interface RawSemanticManifest {
@@ -87,6 +90,8 @@ export interface SemanticCatalog {
     name: string;
     description?: string;
     relation?: string;
+    /** The database (BigQuery: project) the relation lives in. */
+    database?: string;
   }>;
   savedQueries: string[];
   /**
@@ -170,6 +175,9 @@ export function buildSemanticCatalog(
             : {}),
           ...(text(model.node_relation?.relation_name)
             ? { relation: text(model.node_relation?.relation_name) }
+            : {}),
+          ...(text(model.node_relation?.database)
+            ? { database: text(model.node_relation?.database) }
             : {}),
         },
       ];

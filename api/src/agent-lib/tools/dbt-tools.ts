@@ -380,6 +380,8 @@ export const createDbtServerTools = (
     ...createDbtMetricTools(workspaceId, userId, {
       queryAccess: options?.queryAccess,
       toolExecutionContext: options?.toolExecutionContext,
+      // Set over MCP only: compile + query share the wait a client allows.
+      maxWaitMs: options?.maxRunWaitMs,
     }),
 
     read_dbt_project_tree: tool({
