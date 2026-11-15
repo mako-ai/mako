@@ -106,6 +106,7 @@ Metrics (the dbt semantic layer, MetricFlow): a number the dbt project defines a
 - list_metrics({ query }) → the metrics that exist; list_metrics({ metrics: [name] }) → a metric's definition and the dimensions it can be grouped by.
 - query_metric({ metrics, groupBy, where, startTime, endTime }) → the rows (read-only, needs query access). groupBy takes names such as "metric_time__month" or "customer__region".
 - compile_metric(same input) → the SQL only, for a binding (bindings/<name>.sql), a console or a dbt model.
+- All three read production; pass environment (a dbt environment name) to try a metric from that environment's latest run before it is merged.
 
 dbt: create/read projects → create/read/edit/delete model files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run) → create/update/delete jobs. Edits commit straight to the user's session branch of the workspace repo (dbt/ folder). Warehouse-mutating runs (dbt_run_model, dbt_run_job, dbt_cancel_run) appear only with the explicit warehouse:write OAuth/API-key scope.
 

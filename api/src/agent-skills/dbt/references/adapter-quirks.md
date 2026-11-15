@@ -43,7 +43,9 @@ mssql → dbt-sqlserver. MongoDB, SQLite, Cloudflare D1/KV are NOT dbt targets.
 
 - dbt-mysql lags on dbt-core 1.7 (separate venv in the Mako runner image) —
   avoid dbt ≥1.8-only features (e.g. new YAML snapshot format, `data_tests:`
-  key; use legacy `tests:` in schema.yml for MySQL projects).
+  key; use legacy `tests:` in schema.yml for MySQL projects). Write a generic
+  test's arguments directly under the test name there: dbt 1.7 does not know
+  the `arguments:` key the other adapters use.
 - No schemas: the target "schema" IS the database name.
 - Window function support requires MySQL 8+.
 

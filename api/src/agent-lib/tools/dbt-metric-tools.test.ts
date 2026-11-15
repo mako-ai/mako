@@ -521,6 +521,115 @@ describe("compile_metric", () => {
   });
 });
 
+describe("a named dbt environment", () => {
+  /** A metric that exists on a dev branch only. */
+  const DEV_MANIFEST = Buffer.from(
+    JSON.stringify({
+      semantic_models: [],
+      metrics: [
+        { name: "churn_rate", label: "Churn rate", type: "ratio" },
+        { name: "revenue", label: "Revenue", type: "simple" },
+      ],
+    }),
+  );
+
+  /** Prod built the fixture; a later dev run stored DEV_MANIFEST. */
+  async function seedProdAndDev() {
+    const project = await seedProject();
+    stored.set("runs/Analytics/dev/semantic_manifest.json", DEV_MANIFEST);
+    await DbtRun.collection.insertOne({
+      workspaceId: new Types.ObjectId(WS),
+      projectId: project._id,
+      environment: "dev",
+      status: "success",
+      createdAt: new Date("2026-11-03T00:00:00Z"),
+      artifactKeys: {
+        semanticManifest: "runs/Analytics/dev/semantic_manifest.json",
+      },
+    });
+    return project;
+  }
+
+  it("keeps production as the default while a dev run holds other metrics", async () => {
+    await seedProdAndDev();
+    const prod = await run<{ metrics: Array<{ name: string }> }>(
+      tools.list_metrics,
+      {},
+    );
+    expect(prod).toMatchObject({ source: "prod", environment: "prod" });
+    expect(prod.metrics.map(metric => metric.name)).not.toContain("churn_rate");
+  });
+
+  it("lists the metrics of the environment's latest run", async () => {
+    await seedProdAndDev();
+    const dev = await run<{
+      metrics: Array<{ name: string }>;
+      note: string;
+    }>(tools.list_metrics, { environment: "dev" });
+    expect(dev).toMatchObject({
+      success: true,
+      source: "environment",
+      environment: "dev",
+    });
+    expect(dev.metrics.map(metric => metric.name)).toEqual([
+      "churn_rate",
+      "revenue",
+    ]);
+    expect(dev.note).toMatch(/environment "dev", not from production/);
+  });
+
+  it("compiles and runs against that environment's manifest and connection", async () => {
+    await seedProdAndDev();
+    const compiled = await run(tools.compile_metric, {
+      metrics: ["churn_rate"],
+      environment: "dev",
+    });
+    expect(compiled).toMatchObject({
+      success: true,
+      source: "environment",
+      environment: "dev",
+      connectionId: DEV_CONN.toString(),
+      connectionName: "Warehouse (dev)",
+    });
+    expect(engine.compile.mock.calls[0][0]).toBe(
+      "runs/Analytics/dev/semantic_manifest.json",
+    );
+
+    await run(tools.query_metric, {
+      metrics: ["churn_rate"],
+      environment: "dev",
+    });
+    expect(executor.run.mock.calls[0][0]).toBe(DEV_CONN.toString());
+
+    // The same metric does not exist in production.
+    const prod = await run<{ success: boolean; error: string }>(
+      tools.compile_metric,
+      { metrics: ["churn_rate"] },
+    );
+    expect(prod.success).toBe(false);
+    expect(prod.error).toMatch(/Unknown metric: churn_rate/);
+  });
+
+  it("says so when the environment has no run with a manifest", async () => {
+    await seedProdAndDev();
+    const listed = await run<{ metrics: unknown[]; message: string }>(
+      tools.list_metrics,
+      { environment: "joan" },
+    );
+    expect(listed.metrics).toEqual([]);
+    expect(listed.message).toMatch(
+      /No run of the dbt environment "joan" has stored a semantic manifest/,
+    );
+    const compiled = await run<{ success: boolean; error: string }>(
+      tools.compile_metric,
+      { metrics: ["revenue"], environment: "joan" },
+    );
+    expect(compiled.success).toBe(false);
+    expect(compiled.error).toMatch(/dbt environment "joan"/);
+    expect(engine.compile).not.toHaveBeenCalled();
+  });
+});
+
 describe("query_metric", () => {
   it("runs the compiled SQL read-only on the production connection", async () => {
     await seedProject();

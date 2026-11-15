@@ -116,13 +116,20 @@ models:
       - name: status
         data_tests:
           - accepted_values:
-              values: ['pending', 'paid', 'shipped', 'cancelled']
+              arguments:
+                values: ['pending', 'paid', 'shipped', 'cancelled']
       - name: customer_id
         data_tests:
           - relationships:
-              to: ref('stg_shop_customers')
-              field: customer_id
+              arguments:
+                to: ref('stg_shop_customers')
+                field: customer_id
 ```
+
+A generic test's arguments go under `arguments:`. dbt 1.12 warns on the older
+form with the arguments directly under the test name, and will refuse it
+later. MySQL projects are the exception: they run dbt 1.7, which only knows
+the older form (see `references/adapter-quirks.md`).
 
 `dbt_run_model` runs `dbt build --select <model>`, which executes the model
 AND its tests — always add at least `unique` + `not_null` on the primary key.

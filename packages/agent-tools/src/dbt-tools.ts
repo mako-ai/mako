@@ -195,7 +195,15 @@ const metricNamesField = z
   .min(1)
   .max(10)
   .describe(
-    'Metric names exactly as list_metrics returns them: ["revenue"], ["revenue", "average_order_value"].',
+    'Metric names from list_metrics: ["revenue", "average_order_value"].',
+  );
+
+const metricEnvironmentField = z
+  .string()
+  .max(100)
+  .optional()
+  .describe(
+    'dbt environment to read instead of production, e.g. a personal dev one ("joan"): tries a metric from that environment\'s latest run before it is merged.',
   );
 
 const metricQueryFields = {
@@ -205,21 +213,21 @@ const metricQueryFields = {
     .max(20)
     .optional()
     .describe(
-      'Dimensions and entities to group by, as list_metrics({ metrics }) names them: "metric_time__month" (any grain: day, week, month, quarter, year), "customer__region". Omit for one total row.',
+      'Group-bys as list_metrics({ metrics }) names them: "metric_time__month" (day, week, month, quarter, year), "customer__region". Omit for one total row.',
     ),
   where: z
     .array(z.string().min(1).max(2000))
     .max(10)
     .optional()
     .describe(
-      "Filters, ANDed. Each is a SQL condition that names dimensions through MetricFlow templates: \"{{ Dimension('customer__region') }} = 'EU'\", \"{{ TimeDimension('metric_time', 'day') }} >= '2026-01-01'\", \"{{ Entity('customer') }} = 42\".",
+      "Filters, ANDed: SQL conditions naming dimensions through templates: \"{{ Dimension('customer__region') }} = 'EU'\", \"{{ TimeDimension('metric_time', 'day') }} >= '2026-01-01'\", \"{{ Entity('customer') }} = 42\".",
     ),
   orderBy: z
     .array(z.string().min(1).max(300))
     .max(10)
     .optional()
     .describe(
-      'Metric or group-by names to order by; prefix "-" for descending: ["-metric_time__month"].',
+      'Names to order by; "-" prefix for descending: ["-revenue"].',
     ),
   limit: z
     .number()
@@ -233,19 +241,20 @@ const metricQueryFields = {
     .max(40)
     .optional()
     .describe(
-      'Start of the metric_time range, inclusive, ISO 8601: "2026-01-01". MetricFlow widens the range to whole periods of the grain grouped by (a week grain starts on its Monday).',
+      'Start of the metric_time range, inclusive: "2026-01-01". Widened to whole periods of the grain grouped by (a week starts on Monday).',
     ),
   endTime: z
     .string()
     .max(40)
     .optional()
-    .describe('End of the metric_time range, inclusive, ISO 8601: "2026-03-31".'),
+    .describe('End of the metric_time range, inclusive: "2026-03-31".'),
   projectId: z
     .string()
     .optional()
     .describe(
-      "dbt project ID. Omit when one project defines the metrics (the usual case).",
+      "dbt project ID. Only needed when several projects define the metric.",
     ),
+  environment: metricEnvironmentField,
 };
 
 export const listMetricsSchema = z.object({
@@ -254,16 +263,17 @@ export const listMetricsSchema = z.object({
     .max(200)
     .optional()
     .describe(
-      'Keep metrics whose name, label or description contains this text: "revenue", "churn". Omit to list them all.',
+      'Keep metrics whose name, label or description contains this: "revenue". Omit to list all.',
     ),
   metrics: z
     .array(z.string().min(1).max(200))
     .max(10)
     .optional()
     .describe(
-      "Metric names to describe in full: definition, inputs, and the dimensions and entities they can ALL be grouped by together.",
+      "Metric names to describe in full, with the group-bys they share.",
     ),
   projectId: ontologyProjectIdField,
+  environment: metricEnvironmentField,
 });
 
 export const compileMetricSchema = z.object(metricQueryFields);

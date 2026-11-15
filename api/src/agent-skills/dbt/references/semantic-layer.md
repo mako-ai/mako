@@ -173,6 +173,8 @@ metrics:
     type: cumulative
     type_params:
       measure: order_total
+      cumulative_type_params:
+        period_agg: last # the value at the END of each week, month, …
 
   - name: revenue_last_7_days # cumulative: trailing window
     label: Revenue, trailing 7 days
@@ -182,6 +184,12 @@ metrics:
       cumulative_type_params:
         window: 7 days
 ```
+
+A cumulative metric is computed per day. Grouped by a coarser grain
+(`metric_time__month`) it reports ONE day of each period, chosen by
+`period_agg`: `first` (the default), `last` or `average`. A running total
+almost always wants `last`: without it, a month shows the total as of its
+first day.
 
 Always give a metric a `label` and a `description`: `list_metrics` and
 `lookup_term` match on them.
@@ -207,10 +215,14 @@ metric accepts.
 3. `dbt_parse` — fix what it reports.
 4. Build the models the semantic models read (`dbt_run_model`), time spine
    included.
-5. `compile_metric` on the new metric reads the manifest of the last
-   **production** build (a project with no production build yet uses its
-   latest run), so a new metric shows up there after the change is merged
-   and prod has built. Tell the user this.
+5. Try it before merging: `list_metrics`, `compile_metric` and
+   `query_metric` take `environment`. Pass the environment you ran
+   `dbt_parse` and built the models in (your personal dev one) and they read
+   that run's definitions and relations.
+6. Without `environment` the tools read the last **production** build (a
+   project with no production build yet uses its latest run), so everyone
+   else sees the new metric after the change is merged and prod has built.
+   Tell the user this.
 
 ## Linking a metric to the ontology registry
 

@@ -129,9 +129,10 @@ const QUERY_MODE_TOOL_NAMES: string[] = [
   "list_console_executions",
   // Semantic layer: a business number the dbt project defines as a metric is
   // computed from that definition, not re-derived (dbt-metric-tools.ts).
+  // query_metric returns the SQL with the rows, so compile_metric stays out
+  // of this mode: every tool here is paid for on every request.
   "list_metrics",
   "query_metric",
-  "compile_metric",
 ];
 
 const FLOW_MODE_TOOL_NAMES: string[] = [
@@ -193,10 +194,10 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "describe_model",
   "find_join_path",
   // Semantic layer: a binding that shows a metric takes its SQL from
-  // compile_metric (dbt-metric-tools.ts).
+  // compile_metric (dbt-metric-tools.ts) and validates it with
+  // sql_execute_query like any other binding.
   "list_metrics",
   "compile_metric",
-  "query_metric",
   // Discovery for validating binding queries
   "search_consoles",
   "list_connections",

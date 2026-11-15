@@ -68,6 +68,10 @@ const GROUP_BY_DESCRIPTION_CHARS = 200;
 export const NO_SEMANTIC_MANIFEST =
   "No semantic manifest is stored for this workspace yet: a dbt run has to finish first (dbt_parse is enough). Until then compute the number from the dbt models: lookup_term and find_models.";
 
+/** What to say when the named environment has no run with a manifest. */
+const noEnvironmentManifest = (environment: string) =>
+  `No run of the dbt environment "${environment}" has stored a semantic manifest. Check the name with read_dbt_project_tree, then run dbt_parse in that environment (and build the models a metric reads before querying it).`;
+
 const NO_METRICS =
   "This workspace's dbt projects define no metrics yet. A metric is YAML in the dbt project (a semantic model over a dbt model, then a metric over its measures): load the dbt skill and read its semantic-layer reference to add one, then run dbt_parse. Until then compute the number from the dbt models: lookup_term and find_models.";
 
@@ -90,6 +94,11 @@ function projectNote(project: SemanticProject) {
     ...(project.source === "latest-run"
       ? {
           note: `No production build has stored a semantic manifest yet: this is the project's latest run (environment "${project.environmentName}"), which may be a dev build. Its SQL reads that environment's relations.`,
+        }
+      : {}),
+    ...(project.source === "environment"
+      ? {
+          note: `Read from the latest run of the environment "${project.environmentName}", not from production: definitions and relations are that environment's.`,
         }
       : {}),
   };
@@ -188,8 +197,15 @@ export const createDbtMetricTools = (
   const compile = async (input: CompileMetricInput) => {
     const projects = await loadSemanticProjects(workspaceId, {
       projectId: input.projectId,
+      environment: input.environment,
     });
-    if (projects.length === 0) throw new Error(NO_SEMANTIC_MANIFEST);
+    if (projects.length === 0) {
+      throw new Error(
+        input.environment
+          ? noEnvironmentManifest(input.environment)
+          : NO_SEMANTIC_MANIFEST,
+      );
+    }
     const project = projectDefining(projects, input.metrics);
     if (!project.connectionId) {
       throw new Error(
@@ -240,18 +256,21 @@ export const createDbtMetricTools = (
 
   return {
     list_metrics: tool({
-      description: `The metrics the workspace's dbt projects define for MetricFlow (the semantic layer): business numbers such as revenue, active users or churn rate, each defined ONCE in the dbt project. Without \`metrics\`: every metric (or those matching \`query\`) with its label, type and description. With \`metrics\`: each one's definition and the dimensions and entities they can all be grouped by together, through the joins the project declares. Call this BEFORE writing SQL that computes a business number: when a metric exists, use query_metric or compile_metric instead of aggregating by hand. Reads metadata only; never the warehouse.`,
+      description: `The metrics the dbt project defines (MetricFlow semantic layer): business numbers such as revenue or churn rate, each defined once. Without \`metrics\`: all of them, or those matching \`query\`. With \`metrics\`: their definition and the dimensions and entities they can be grouped by together. Call it BEFORE writing SQL for a business number: when a metric exists, use query_metric (or compile_metric for the SQL) instead of aggregating by hand. Metadata only.`,
       inputSchema: listMetricsSchema,
-      execute: async ({ query, metrics, projectId }) => {
+      execute: async ({ query, metrics, projectId, environment }) => {
         try {
           const projects = await loadSemanticProjects(workspaceId, {
             projectId,
+            environment,
           });
           if (projects.length === 0) {
             return {
               success: true as const,
               metrics: [],
-              message: NO_SEMANTIC_MANIFEST,
+              message: environment
+                ? noEnvironmentManifest(environment)
+                : NO_SEMANTIC_MANIFEST,
             };
           }
 
@@ -357,7 +376,7 @@ export const createDbtMetricTools = (
     }),
 
     compile_metric: tool({
-      description: `The SQL MetricFlow writes for a metric query, in the dialect of the dbt project's warehouse. Nothing runs. Use it when the SQL itself is the deliverable: an app binding, a console, a dbt model built on a metric. Give metric names from list_metrics and, optionally, group-bys, filters, an order, a limit and a metric_time range. Returns the SQL with the connectionId it is written for. Do NOT edit the aggregation or the joins in the result: when the number is wrong, the metric's definition in the dbt project is what changes. To get rows, call query_metric instead.`,
+      description: `The SQL MetricFlow writes for a metric query, in the warehouse's dialect, with the connectionId to run it on. Nothing runs. Use it when the SQL is the deliverable: an app binding, a console, a dbt model. Do NOT edit its aggregation or joins: a wrong number is fixed in the metric's definition. For rows, call query_metric.`,
       inputSchema: compileMetricSchema,
       execute: async input => {
         try {
@@ -388,7 +407,7 @@ export const createDbtMetricTools = (
     }),
 
     query_metric: tool({
-      description: `Compute one or more metrics from their definition in the dbt project and return the rows: MetricFlow compiles the query (aggregation, joins, grain, ratio-of-sums), and the SELECT runs read-only on the project's warehouse connection. This is the way to answer "what was <metric> last month / by region / over time" when the metric exists: prefer it to writing the aggregation in SQL. Give metric names from list_metrics and, optionally, group-bys (e.g. "metric_time__month"), filters, an order, a limit and a metric_time range; list_metrics({ metrics }) names the valid group-bys. Returns the rows as a markdown table, fenced as untrusted data, with the SQL that produced them.`,
+      description: `Compute metrics from their definition in the dbt project and return the rows: MetricFlow writes the aggregation, joins and grain, and the SELECT runs read-only on the project's warehouse. The way to answer "what was <metric> last month / by region / over time" when the metric exists. Names come from list_metrics; list_metrics({ metrics }) names the valid group-bys. Returns a markdown table, fenced as untrusted data, with the SQL.`,
       inputSchema: queryMetricSchema,
       execute: async ({ maxRows, ...input }) => {
         let sql: string | undefined;

@@ -9,6 +9,10 @@
  * run that stored one, and the result says so: that SQL names the relations
  * of whatever environment that run built.
  *
+ * A caller can name a dbt environment instead (a personal dev one): the
+ * catalog then comes from that environment's latest run, so a metric written
+ * on a branch can be listed, compiled and queried before it is merged.
+ *
  * A manifest is parsed once per version, like the manifest index
  * (ontology/manifest-index.service.ts).
  */
@@ -27,8 +31,12 @@ const logger = loggers.api("dbt-semantic");
 export interface SemanticProject {
   projectId: string;
   projectName: string;
-  /** `prod`: the last production build. `latest-run`: see the file header. */
-  source: "prod" | "latest-run";
+  /**
+   * `prod`: the last production build. `latest-run`: no prod build stored a
+   * semantic manifest. `environment`: the latest run of the environment the
+   * caller named.
+   */
+  source: "prod" | "latest-run" | "environment";
   /** Artifact-store key of the semantic manifest the catalog was built from. */
   semanticManifestKey: string;
   /** The environment whose relations the manifest names. */
@@ -43,7 +51,10 @@ interface CacheEntry {
   catalog: Promise<SemanticCatalog | null>;
 }
 
-/** `${workspaceId}:${projectId}` → the catalog of that project's manifest. */
+/**
+ * `${workspaceId}:${projectId}:${environment ?? ""}` → the catalog of that
+ * project's manifest.
+ */
 const cache = new Map<string, CacheEntry>();
 
 /** Forget every cached catalog (tests). */
@@ -83,11 +94,29 @@ type ProjectFields = {
  * built it. Every lookup names the workspace, so it walks the
  * `{workspaceId, projectId, createdAt}` index.
  */
-async function semanticKeysFor(project: ProjectFields): Promise<{
+async function semanticKeysFor(
+  project: ProjectFields,
+  environment?: string,
+): Promise<{
   key: string;
   source: SemanticProject["source"];
   environmentName: string;
 } | null> {
+  if (environment) {
+    const run = await DbtRun.findOne({
+      workspaceId: project.workspaceId,
+      projectId: project._id,
+      environment,
+      "artifactKeys.semanticManifest": { $exists: true, $ne: null },
+    })
+      .select("artifactKeys environment")
+      .sort({ createdAt: -1 })
+      .lean();
+    const key = run?.artifactKeys?.semanticManifest;
+    return key
+      ? { key, source: "environment", environmentName: environment }
+      : null;
+  }
   if (project.lastProdManifestKey) {
     const owner = await DbtRun.findOne({
       workspaceId: project.workspaceId,
@@ -120,13 +149,14 @@ async function semanticKeysFor(project: ProjectFields): Promise<{
 
 /**
  * The semantic catalog of every dbt project in the workspace that has one
- * (optionally one project). Never throws: a project whose manifest is
- * missing or unreadable is left out and logged. A project with a manifest
- * but no metrics IS returned, with an empty catalog.
+ * (optionally one project, optionally as one dbt environment last built it).
+ * Never throws: a project whose manifest is missing or unreadable is left
+ * out and logged. A project with a manifest but no metrics IS returned, with
+ * an empty catalog.
  */
 export async function loadSemanticProjects(
   workspaceId: string,
-  options: { projectId?: string } = {},
+  options: { projectId?: string; environment?: string } = {},
 ): Promise<SemanticProject[]> {
   if (!Types.ObjectId.isValid(workspaceId)) return [];
   if (options.projectId && !Types.ObjectId.isValid(options.projectId)) {
@@ -145,9 +175,9 @@ export async function loadSemanticProjects(
   const out: SemanticProject[] = [];
   for (const project of projects) {
     try {
-      const keys = await semanticKeysFor(project);
+      const keys = await semanticKeysFor(project, options.environment);
       if (!keys) continue;
-      const cacheKey = `${workspaceId}:${project._id.toString()}`;
+      const cacheKey = `${workspaceId}:${project._id.toString()}:${options.environment ?? ""}`;
       let entry = cache.get(cacheKey);
       if (!entry || entry.key !== keys.key) {
         entry = { key: keys.key, catalog: buildCatalog(keys.key) };

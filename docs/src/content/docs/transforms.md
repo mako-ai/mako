@@ -137,7 +137,7 @@ The **lineage** view renders the model DAG (nodes + edges) from the latest run t
 
 The runner ships [MetricFlow](https://github.com/dbt-labs/metricflow) next to dbt Core. A project that declares **semantic models** and **metrics** (YAML under `models/`) defines each business number once, and every surface computes it from that definition:
 
-- The AI agent calls `list_metrics` before aggregating a business number, `query_metric` to answer "revenue by region last quarter", and `compile_metric` when the SQL itself is the deliverable (an app binding, a console).
+- The AI agent calls `list_metrics` before aggregating a business number, `query_metric` to answer "revenue by region last quarter" (Query mode), and `compile_metric` when the SQL itself is the deliverable (an app binding in App mode). Transforms mode has all three.
 - External agents get the same three tools through the [MCP server](/mcp-server/).
 - `lookup_term` marks an [ontology](/mcp-server/) term that is also a metric, so a governed term leads to its one definition.
 
@@ -196,7 +196,7 @@ Cumulative metrics and time-spine joins also need a `metricflow_time_spine` mode
 Limits:
 
 - MetricFlow renders SQL for **PostgreSQL** (including Cloud SQL), **Redshift** and **BigQuery** connections. On ClickHouse, MySQL and SQL Server projects the YAML parses but metric queries are refused.
-- A new or changed metric is visible to the tools once a production build has stored its semantic manifest.
+- By default the tools read production, so a new or changed metric shows up once a production build has stored its semantic manifest. To try one earlier, pass `environment` (for example your personal dev environment): the tools then read that environment's latest run, and `query_metric` runs on its warehouse connection and relations. Run `dbt_parse` there first, and build the models the metric reads.
 
 ## API
 
