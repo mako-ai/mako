@@ -1,5 +1,13 @@
-import crypto from "node:crypto";
-import axios, { AxiosInstance } from "axios";
+/**
+ * The Wise (TransferWise) connector. The class is the public entry point;
+ * the work lives in sibling modules:
+ *
+ * - client.ts        base URL, bearer client, API errors, SCA signing
+ * - fetchers.ts      per-entity backfill (per profile, resumable)
+ * - records.ts       ids, dates, money values, statement rows
+ * - webhooks.ts      RSA verification, event mapping, payload extraction
+ * - subscriptions.ts profile-level webhook subscription reconcile
+ */
 import {
   BaseConnector,
   ConnectionTestResult,
@@ -19,50 +27,45 @@ import {
   type ProvisionWebhookResult,
   type UpdateWebhookSubscriptionOptions,
 } from "../base/BaseConnector";
+import type { AxiosInstance } from "axios";
 import { resolveWiseEntitySchema } from "./schema";
 import { loggers } from "../../logging";
-import { withHttpRetry } from "../base/http-retry";
+import { createRetryExecutor } from "../base/http-client";
+import {
+  WISE_DEFAULT_BASE_URL,
+  createWiseClient,
+  formatWiseApiError,
+  isWiseSandboxBaseUrl,
+  resolveWiseBaseUrl,
+} from "./client";
+import {
+  fetchWiseActivitiesChunk,
+  fetchWiseBalanceStatementsChunk,
+  fetchWiseBalancesChunk,
+  fetchWiseProfilesChunk,
+  fetchWiseRecipientsChunk,
+  fetchWiseTransfersChunk,
+  type WiseFetchContext,
+  type WiseProfile,
+} from "./fetchers";
+import { wiseRecordTimestamp } from "./records";
+import {
+  WISE_SUPPORTED_WEBHOOK_EVENTS,
+  extractWiseWebhookData,
+  verifyWiseWebhook,
+  wiseWebhookEventMapping,
+  wiseWebhookPublicKeys,
+} from "./webhooks";
+import {
+  deleteWiseProfileSubscriptions,
+  reconcileWiseProfileSubscriptions,
+  type WiseSubscriptionContext,
+} from "./subscriptions";
+
+export { normalizePemKey, publicKeyFingerprint } from "./client";
+export { toStatementRecord } from "./records";
 
 const logger = loggers.connector("wise");
-
-const DEFAULT_BASE_URL = "https://api.wise.com";
-const SANDBOX_HOST_MARKERS = [
-  "sandbox.transferwise.tech",
-  "api.sandbox.transferwise",
-  "sandbox.wise.com",
-];
-const TRANSFER_PAGE_LIMIT = 100;
-const RECIPIENT_PAGE_LIMIT = 100;
-const ACTIVITY_PAGE_LIMIT = 50;
-// Balance statements: one request per balance per window. Wise caps a
-// statement at 469 days; 90 keeps each response small.
-const STATEMENT_WINDOW_DAYS = 90;
-// Incremental pulls restart a few days before `since`: transactions that
-// settle late land in an earlier window (upserts dedupe them).
-const STATEMENT_OVERLAP_DAYS = 7;
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-// Wise signs webhooks with RSA-SHA256 (not a shared HMAC secret).
-// https://docs.wise.com/guides/developer/webhooks/event-handling
-const WISE_PRODUCTION_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvO8vXV+JksBzZAY6GhSO
-XdoTCfhXaaiZ+qAbtaDBiu2AGkGVpmEygFmWP4Li9m5+Ni85BhVvZOodM9epgW3F
-bA5Q1SexvAF1PPjX4JpMstak/QhAgl1qMSqEevL8cmUeTgcMuVWCJmlge9h7B1CS
-D4rtlimGZozG39rUBDg6Qt2K+P4wBfLblL0k4C4YUdLnpGYEDIth+i8XsRpFlogx
-CAFyH9+knYsDbR43UJ9shtc42Ybd40Afihj8KnYKXzchyQ42aC8aZ/h5hyZ28yVy
-Oj3Vos0VdBIs/gAyJ/4yyQFCXYte64I7ssrlbGRaco4nKF3HmaNhxwyKyJafz19e
-HwIDAQAB
------END PUBLIC KEY-----`;
-
-const WISE_SANDBOX_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwpb91cEYuyJNQepZAVfP
-ZIlPZfNUefH+n6w9SW3fykqKu938cR7WadQv87oF2VuT+fDt7kqeRziTmPSUhqPU
-ys/V2Q1rlfJuXbE+Gga37t7zwd0egQ+KyOEHQOpcTwKmtZ81ieGHynAQzsn1We3j
-wt760MsCPJ7GMT141ByQM+yW1Bx+4SG3IGjXWyqOWrcXsxAvIXkpUD/jK/L958Cg
-nZEgz0BSEh0QxYLITnW1lLokSx/dTianWPFEhMC9BgijempgNXHNfcVirg1lPSyg
-z7KqoKUN0oHqWLr2U1A+7kqrl6O2nx3CKs1bj1hToT1+p4kcMoHXA7kA+VBLUpEs
-VwIDAQAB
------END PUBLIC KEY-----`;
 
 const SUPPORTED_ENTITIES = [
   "profiles",
@@ -76,214 +79,17 @@ const SUPPORTED_ENTITIES = [
 
 type SupportedEntity = (typeof SUPPORTED_ENTITIES)[number];
 
-const SUPPORTED_WEBHOOK_EVENTS = [
-  "transfers#state-change",
-  "transfers#refund",
-  "transfers#payout-failure",
-  "transfers#active-cases",
-  "balances#update",
-  "balances#account-state-change",
-  "profiles#state-change",
-  "recipients#state-change",
-] as const;
-
-/**
- * Events a PROFILE-level subscription may carry, with the schema version
- * Mako asks for (the latest each event documents). `balances#account-state-
- * change` and `profiles#state-change` are application-level only, so a token
- * acting for a profile cannot subscribe to them.
- * https://docs.wise.com/api-reference/webhook-event
- */
-const PROFILE_WEBHOOK_SCHEMA_VERSIONS: Record<string, string> = {
-  "transfers#state-change": "4.0.0",
-  "transfers#refund": "4.0.0",
-  "transfers#payout-failure": "5.0.0",
-  "transfers#active-cases": "4.0.0",
-  "balances#update": "4.0.0",
-  "recipients#state-change": "4.0.0",
-};
-
-/** Event type a Wise test notification is recorded under (maps to nothing). */
-const WISE_TEST_NOTIFICATION_EVENT = "wise#test-notification";
-
-/** Name Mako gives the subscriptions it creates, so they read as its own. */
-const MAKO_SUBSCRIPTION_NAME_PREFIX = "Mako";
-
-type WiseSubscription = {
-  id: string;
-  name?: string;
-  trigger_on?: string;
-  delivery?: { version?: string; url?: string };
-};
-
-type WiseProfile = {
-  id: number | string;
-  [key: string]: unknown;
-};
-
-type StatementBalance = {
-  id: string;
-  currency: string;
-  start: string;
-};
-
-type MultiProfileState = {
-  profileIds: string[];
-  profileIndex: number;
-};
-
-function formatWiseApiError(error: unknown): string {
-  if (axios.isAxiosError(error)) {
-    const status = error.response?.status;
-    const data = error.response?.data as
-      | {
-          error?: string;
-          error_description?: string;
-          message?: string;
-          errors?: Array<{ code?: string; message?: string }>;
-        }
-      | string
-      | undefined;
-
-    const direct =
-      typeof data === "string"
-        ? data
-        : typeof data?.error_description === "string"
-          ? data.error_description
-          : typeof data?.message === "string"
-            ? data.message
-            : typeof data?.error === "string"
-              ? data.error
-              : undefined;
-
-    const nested = Array.isArray((data as { errors?: unknown[] })?.errors)
-      ? (data as { errors: Array<{ code?: string; message?: string }> }).errors
-          .map(e => `${e.code ?? "?"}: ${e.message ?? "?"}`)
-          .join("; ")
-      : undefined;
-
-    const detail = [direct, nested].filter(Boolean).join(" — ");
-    return status
-      ? `HTTP ${status}: ${detail || error.message}`
-      : detail || error.message;
-  }
-
-  return error instanceof Error ? error.message : String(error);
-}
-
-/** Coerce Wise numeric ids onto a string `id` key column. */
-function withStringId(
-  record: Record<string, unknown>,
-  preferredKeys: string[] = ["id"],
-): Record<string, unknown> {
-  if (record == null) return record;
-  for (const key of preferredKeys) {
-    const value = record[key];
-    if (value != null && String(value).length > 0) {
-      return { ...record, id: String(value) };
-    }
-  }
-  return record;
-}
-
-function parseWiseDate(value: unknown): Date | null {
-  if (value == null) return null;
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const ms = value > 1e12 ? value : value * 1000;
-    const date = new Date(ms);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-  if (typeof value !== "string" || value.trim().length === 0) return null;
-
-  const trimmed = value.trim();
-  // Transfers use "YYYY-MM-DD HH:mm:ss" without a timezone — treat as UTC.
-  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(trimmed)
-    ? `${trimmed.replace(" ", "T")}Z`
-    : trimmed;
-  const date = new Date(normalized);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function formatDateParam(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
-function moneyValue(value: unknown): number | null {
-  if (value == null) return null;
-  if (typeof value === "number") return value;
-  if (typeof value === "object" && "value" in (value as object)) {
-    const v = (value as { value?: unknown }).value;
-    return typeof v === "number" ? v : v == null ? null : Number(v);
-  }
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-/**
- * A PEM key as pasted into a single-line secret field: line breaks become
- * spaces, vanish, or arrive as literal "\n". Rebuild the PEM (header, base64
- * body in 64-character lines, footer) so node's crypto can read it.
- */
-export function normalizePemKey(raw: string): string {
-  const text = raw.replace(/\\n/g, "\n").trim();
-  const match = text.match(
-    /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/,
-  );
-  if (!match) return text;
-  const body = match[2].replace(/\s+/g, "");
-  const lines = body.match(/.{1,64}/g) ?? [];
-  return (
-    [`-----BEGIN ${match[1]}-----`, ...lines, `-----END ${match[1]}-----`].join(
-      "\n",
-    ) + "\n"
-  );
-}
-
-/** SHA-256 of a private key's public half (DER), hex: identifies the key, reveals nothing. */
-export function publicKeyFingerprint(privatePem: string): string {
-  const der = crypto
-    .createPublicKey(privatePem)
-    .export({ type: "spki", format: "der" });
-  return crypto.createHash("sha256").update(der).digest("hex").slice(0, 16);
-}
-
-/** One balance-statement transaction as a flat record keyed per balance. */
-export function toStatementRecord(
-  transaction: Record<string, unknown>,
-  balance: { id: string; currency: string },
-  profileId: string,
-): Record<string, unknown> {
-  const details = (transaction.details ?? {}) as Record<string, unknown>;
-  const reference = String(transaction.referenceNumber ?? "");
-  const type = String(transaction.type ?? "");
-  const date = String(transaction.date ?? "");
-  return {
-    // a reference can appear on several balances (a conversion debits one
-    // and credits another) and twice on one (a card payment and its refund)
-    id: `${balance.id}:${reference}:${type}:${date}`,
-    profileId,
-    balanceId: balance.id,
-    currency: balance.currency,
-    referenceNumber: reference || null,
-    type: type || null,
-    date: date || null,
-    amount: moneyValue(transaction.amount),
-    totalFees: moneyValue(transaction.totalFees),
-    runningBalance: moneyValue(transaction.runningBalance),
-    detailsType: typeof details.type === "string" ? details.type : null,
-    description:
-      typeof details.description === "string" ? details.description : null,
-    details: transaction.details ?? null,
-    exchangeDetails: transaction.exchangeDetails ?? null,
-  };
-}
-
 export class WiseConnector extends BaseConnector {
   private wiseApi: AxiosInstance | null = null;
   private cachedProfiles: WiseProfile[] | null = null;
+
+  /** Shared policy: backoff with jitter, Retry-After, 429/5xx/network. */
+  private readonly executeWithRetry = createRetryExecutor({
+    label: "Wise",
+    logger,
+    sleep: ms => this.sleep(ms),
+    formatError: formatWiseApiError,
+  });
 
   static getConfigSchema() {
     return {
@@ -319,7 +125,7 @@ export class WiseConnector extends BaseConnector {
           label: "API Base URL",
           type: "string",
           required: false,
-          default: DEFAULT_BASE_URL,
+          default: WISE_DEFAULT_BASE_URL,
           helperText:
             "Production: https://api.wise.com. Sandbox: https://api.sandbox.transferwise.tech",
         },
@@ -358,16 +164,11 @@ export class WiseConnector extends BaseConnector {
   }
 
   private getBaseUrl(): string {
-    const configured = this.sourceConnection.config.api_base_url;
-    if (typeof configured === "string" && configured.trim().length > 0) {
-      return configured.trim().replace(/\/+$/, "");
-    }
-    return DEFAULT_BASE_URL;
+    return resolveWiseBaseUrl(this.sourceConnection.config.api_base_url);
   }
 
   private isSandboxBaseUrl(): boolean {
-    const base = this.getBaseUrl().toLowerCase();
-    return SANDBOX_HOST_MARKERS.some(marker => base.includes(marker));
+    return isWiseSandboxBaseUrl(this.getBaseUrl());
   }
 
   /**
@@ -377,12 +178,7 @@ export class WiseConnector extends BaseConnector {
    * misconfigured base URL does not hard-fail delivery.
    */
   private getWebhookPublicKeys(secret?: string): string[] {
-    const preferSandbox =
-      this.isSandboxBaseUrl() ||
-      (typeof secret === "string" && secret.trim().toLowerCase() === "sandbox");
-    return preferSandbox
-      ? [WISE_SANDBOX_PUBLIC_KEY, WISE_PRODUCTION_PUBLIC_KEY]
-      : [WISE_PRODUCTION_PUBLIC_KEY, WISE_SANDBOX_PUBLIC_KEY];
+    return wiseWebhookPublicKeys(this.isSandboxBaseUrl(), secret);
   }
 
   private getClient(): AxiosInstance {
@@ -390,63 +186,12 @@ export class WiseConnector extends BaseConnector {
       if (!this.sourceConnection.config.api_key) {
         throw new Error("Wise API token not configured");
       }
-
-      this.wiseApi = axios.create({
-        baseURL: this.getBaseUrl(),
-        headers: {
-          Authorization: `Bearer ${this.sourceConnection.config.api_key}`,
-          "Content-Type": "application/json",
-        },
-      });
+      this.wiseApi = createWiseClient(
+        this.getBaseUrl(),
+        this.sourceConnection.config.api_key,
+      );
     }
     return this.wiseApi;
-  }
-
-  private headerValue(
-    headers: Record<string, string | string[] | undefined>,
-    name: string,
-  ): string | undefined {
-    const lower = name.toLowerCase();
-    for (const [key, value] of Object.entries(headers)) {
-      if (key.toLowerCase() !== lower) continue;
-      return Array.isArray(value) ? value[0] : value;
-    }
-    return undefined;
-  }
-
-  /** Shared policy: backoff with jitter, Retry-After, 429/5xx/network. */
-  private async executeWithRetry<T>(
-    fn: () => Promise<T>,
-    maxRetries = 5,
-  ): Promise<T> {
-    try {
-      return await withHttpRetry(fn, {
-        maxRetries,
-        sleep: ms => this.sleep(ms),
-        onRetry: ({ status, attempt, delayMs }) =>
-          logger.warn("Wise API rate limited or server error, retrying", {
-            status,
-            attempt,
-            delayMs,
-          }),
-      });
-    } catch (error) {
-      // Surface the API's own error body instead of the opaque "Request
-      // failed with status code 400"; keep it an axios error so callers can
-      // still inspect error.response.status.
-      if (axios.isAxiosError(error)) {
-        error.message = formatWiseApiError(error);
-      }
-      throw error;
-    }
-  }
-
-  private resolvePageSize(batchSize: number | undefined, max: number): number {
-    const requested =
-      typeof batchSize === "number" && batchSize > 0
-        ? batchSize
-        : this.getBatchSize();
-    return Math.min(Math.max(requested, 1), max);
   }
 
   private async listProfiles(): Promise<WiseProfile[]> {
@@ -475,22 +220,22 @@ export class WiseConnector extends BaseConnector {
       .filter(id => id.length > 0);
   }
 
-  private async initMultiProfileState(
-    state: FetchState | undefined,
-  ): Promise<MultiProfileState> {
-    const existingIds = state?.metadata?.profileIds;
-    if (Array.isArray(existingIds) && existingIds.length > 0) {
-      return {
-        profileIds: existingIds.map(String),
-        profileIndex:
-          typeof state?.metadata?.profileIndex === "number"
-            ? state.metadata.profileIndex
-            : 0,
-      };
-    }
-
-    const profileIds = await this.resolveProfileIds();
-    return { profileIds, profileIndex: 0 };
+  /** What the fetch and subscription modules read, always late-bound. */
+  private context(): WiseFetchContext & WiseSubscriptionContext {
+    return {
+      api: () => this.getClient(),
+      execute: (fn, maxRetries) => this.executeWithRetry(fn, maxRetries),
+      sleep: ms => this.sleep(ms),
+      batchSize: () => this.getBatchSize(),
+      rateLimitDelay: () => this.getRateLimitDelay(),
+      configuredProfileId: () => this.sourceConnection.config.profile_id,
+      scaPrivateKey: () => this.sourceConnection.config.sca_private_key,
+      listProfiles: () => this.listProfiles(),
+      resolveProfileIds: () => this.resolveProfileIds(),
+      webhookKeySet: () => this.webhookKeySet(),
+      supportedEvents: () => this.getSupportedWebhookEvents(),
+      eventsForEntities: entities => this.getWebhookEventsForEntities(entities),
+    };
   }
 
   async resolveSchema(entity: string): Promise<ConnectorEntitySchema | null> {
@@ -498,27 +243,9 @@ export class WiseConnector extends BaseConnector {
   }
 
   protected resolveRecordTimestamp(payload?: Record<string, unknown>): Date {
-    const candidates = [
-      payload?.occurred_at,
-      payload?.modificationTime,
-      payload?.updatedOn,
-      payload?.updatedAt,
-      payload?.updated_at,
-      payload?.createdOn,
-      payload?.createdAt,
-      payload?.created_at,
-      payload?.creationTime,
-      payload?.created,
-      payload?.sent_at,
-      payload?.date,
-    ];
-
-    for (const candidate of candidates) {
-      const date = parseWiseDate(candidate);
-      if (date) return date;
-    }
-
-    return super.resolveRecordTimestamp(payload);
+    return (
+      wiseRecordTimestamp(payload) ?? super.resolveRecordTimestamp(payload)
+    );
   }
 
   normalizeBackfillRecord(
@@ -637,12 +364,13 @@ export class WiseConnector extends BaseConnector {
 
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
     const { entity } = options;
+    const ctx = this.context();
 
     switch (entity as SupportedEntity) {
       case "profiles":
-        return this.fetchProfilesChunk(options);
+        return fetchWiseProfilesChunk(ctx, options);
       case "balances":
-        return this.fetchBalancesChunk(options);
+        return fetchWiseBalancesChunk(ctx, options);
       case "balance_updates":
         // Wise has no list endpoint for balance movements; CDC is webhook-only.
         logger.warn(
@@ -654,588 +382,16 @@ export class WiseConnector extends BaseConnector {
           iterationsInChunk: 0,
         };
       case "transfers":
-        return this.fetchTransfersChunk(options);
+        return fetchWiseTransfersChunk(ctx, options);
       case "recipients":
-        return this.fetchRecipientsChunk(options);
+        return fetchWiseRecipientsChunk(ctx, options);
       case "activities":
-        return this.fetchActivitiesChunk(options);
+        return fetchWiseActivitiesChunk(ctx, options);
       case "balance_statements":
-        return this.fetchBalanceStatementsChunk(options);
+        return fetchWiseBalanceStatementsChunk(ctx, options);
       default:
         throw new Error(`Unsupported entity for Wise connector: ${entity}`);
     }
-  }
-
-  private async fetchProfilesChunk(
-    options: ResumableFetchOptions,
-  ): Promise<FetchState> {
-    const { onBatch, onProgress, state } = options;
-    if (state && state.totalProcessed > 0) {
-      return {
-        totalProcessed: state.totalProcessed,
-        hasMore: false,
-        iterationsInChunk: 0,
-      };
-    }
-
-    const configured = this.sourceConnection.config.profile_id;
-    let profiles = await this.listProfiles();
-    if (configured != null && String(configured).trim().length > 0) {
-      const wanted = String(configured).trim();
-      profiles = profiles.filter(profile => String(profile.id) === wanted);
-    }
-
-    const records = profiles.map(profile =>
-      withStringId(profile as Record<string, unknown>),
-    );
-
-    if (records.length > 0) {
-      await onBatch(records);
-      onProgress?.(records.length, records.length);
-    }
-
-    return {
-      totalProcessed: records.length,
-      hasMore: false,
-      iterationsInChunk: 1,
-    };
-  }
-
-  private async fetchBalancesChunk(
-    options: ResumableFetchOptions,
-  ): Promise<FetchState> {
-    const { onBatch, onProgress, state } = options;
-    const maxIterations = options.maxIterations ?? 10;
-    const multi = await this.initMultiProfileState(state);
-    let profileIndex = multi.profileIndex;
-    let recordCount = state?.totalProcessed ?? 0;
-    let iterations = 0;
-
-    const api = this.getClient();
-
-    while (
-      profileIndex < multi.profileIds.length &&
-      iterations < maxIterations
-    ) {
-      const profileId = multi.profileIds[profileIndex];
-      const response = await this.executeWithRetry(() =>
-        api.get(`/v4/profiles/${encodeURIComponent(profileId)}/balances`, {
-          params: { types: "STANDARD" },
-        }),
-      );
-
-      const balances = Array.isArray(response.data)
-        ? (response.data as Array<Record<string, unknown>>)
-        : [];
-      const records = balances.map(balance =>
-        withStringId({ ...balance, profileId: String(profileId) }),
-      );
-
-      if (records.length > 0) {
-        await onBatch(records);
-        recordCount += records.length;
-        onProgress?.(recordCount, undefined);
-      }
-
-      profileIndex++;
-      iterations++;
-      await this.sleep(options.rateLimitDelay ?? this.getRateLimitDelay());
-    }
-
-    return {
-      totalProcessed: recordCount,
-      hasMore: profileIndex < multi.profileIds.length,
-      iterationsInChunk: iterations,
-      metadata: {
-        profileIds: multi.profileIds,
-        profileIndex,
-      },
-    };
-  }
-
-  private async fetchTransfersChunk(
-    options: ResumableFetchOptions,
-  ): Promise<FetchState> {
-    const { onBatch, onProgress, since, state, batchSize } = options;
-    const maxIterations = options.maxIterations ?? 10;
-    const multi = await this.initMultiProfileState(state);
-    let profileIndex = multi.profileIndex;
-    let offset =
-      typeof state?.metadata?.offset === "number" ? state.metadata.offset : 0;
-    let recordCount = state?.totalProcessed ?? 0;
-    let iterations = 0;
-    const limit = this.resolvePageSize(batchSize, TRANSFER_PAGE_LIMIT);
-
-    const api = this.getClient();
-
-    while (
-      profileIndex < multi.profileIds.length &&
-      iterations < maxIterations
-    ) {
-      const profileId = multi.profileIds[profileIndex];
-      const params: Record<string, string | number> = {
-        profile: profileId,
-        limit,
-        offset,
-      };
-      if (since instanceof Date) {
-        params.createdDateStart = formatDateParam(since);
-      }
-
-      const response = await this.executeWithRetry(() =>
-        api.get("/v1/transfers", { params }),
-      );
-      const page = Array.isArray(response.data)
-        ? (response.data as Array<Record<string, unknown>>)
-        : [];
-      const records = page.map(transfer =>
-        withStringId({
-          ...transfer,
-          profile_id:
-            transfer.business ?? transfer.profile_id ?? Number(profileId),
-        }),
-      );
-
-      if (records.length > 0) {
-        await onBatch(records);
-        recordCount += records.length;
-        onProgress?.(recordCount, undefined);
-      }
-
-      iterations++;
-
-      if (page.length < limit) {
-        profileIndex++;
-        offset = 0;
-      } else {
-        offset += page.length;
-      }
-
-      if (
-        profileIndex < multi.profileIds.length ||
-        (page.length >= limit && profileIndex < multi.profileIds.length + 1)
-      ) {
-        await this.sleep(options.rateLimitDelay ?? this.getRateLimitDelay());
-      }
-
-      if (iterations >= maxIterations) break;
-    }
-
-    return {
-      totalProcessed: recordCount,
-      hasMore: profileIndex < multi.profileIds.length,
-      iterationsInChunk: iterations,
-      metadata: {
-        profileIds: multi.profileIds,
-        profileIndex,
-        offset,
-      },
-    };
-  }
-
-  private async fetchRecipientsChunk(
-    options: ResumableFetchOptions,
-  ): Promise<FetchState> {
-    const { onBatch, onProgress, state, batchSize } = options;
-    const maxIterations = options.maxIterations ?? 10;
-    const multi = await this.initMultiProfileState(state);
-    let profileIndex = multi.profileIndex;
-    let seekPosition =
-      typeof state?.metadata?.seekPosition === "number" ||
-      typeof state?.metadata?.seekPosition === "string"
-        ? state.metadata.seekPosition
-        : undefined;
-    let recordCount = state?.totalProcessed ?? 0;
-    let iterations = 0;
-    const size = this.resolvePageSize(batchSize, RECIPIENT_PAGE_LIMIT);
-
-    const api = this.getClient();
-
-    while (
-      profileIndex < multi.profileIds.length &&
-      iterations < maxIterations
-    ) {
-      const profileId = multi.profileIds[profileIndex];
-      const params: Record<string, string | number> = {
-        profile: profileId,
-        size,
-      };
-      if (seekPosition != null) {
-        params.seekPosition = seekPosition as string | number;
-      }
-
-      const response = await this.executeWithRetry(() =>
-        api.get("/v2/accounts", { params }),
-      );
-      const body = response.data as {
-        content?: Array<Record<string, unknown>>;
-        seekPositionForNext?: number | string | null;
-      };
-      const page = Array.isArray(body.content) ? body.content : [];
-      const records = page.map(account => withStringId(account));
-
-      if (records.length > 0) {
-        await onBatch(records);
-        recordCount += records.length;
-        onProgress?.(recordCount, undefined);
-      }
-
-      iterations++;
-      const nextSeek = body.seekPositionForNext;
-
-      // End of profile when: empty page, missing next seek, or Wise echoes
-      // the same seekPositionForNext (no forward progress).
-      // Do NOT treat short pages as terminal — Wise caps `size` (often at 20)
-      // below our requested page size while still returning seekPositionForNext.
-      if (
-        page.length === 0 ||
-        nextSeek == null ||
-        String(nextSeek) === String(seekPosition)
-      ) {
-        profileIndex++;
-        seekPosition = undefined;
-      } else {
-        seekPosition = nextSeek;
-      }
-
-      if (profileIndex < multi.profileIds.length || seekPosition != null) {
-        await this.sleep(options.rateLimitDelay ?? this.getRateLimitDelay());
-      }
-
-      if (iterations >= maxIterations) break;
-    }
-
-    return {
-      totalProcessed: recordCount,
-      hasMore: profileIndex < multi.profileIds.length,
-      iterationsInChunk: iterations,
-      metadata: {
-        profileIds: multi.profileIds,
-        profileIndex,
-        seekPosition: seekPosition ?? null,
-      },
-    };
-  }
-
-  private async fetchActivitiesChunk(
-    options: ResumableFetchOptions,
-  ): Promise<FetchState> {
-    const { onBatch, onProgress, since, state, batchSize } = options;
-    const maxIterations = options.maxIterations ?? 10;
-    const multi = await this.initMultiProfileState(state);
-    let profileIndex = multi.profileIndex;
-    let cursor =
-      typeof state?.metadata?.cursor === "string"
-        ? state.metadata.cursor
-        : undefined;
-    let recordCount = state?.totalProcessed ?? 0;
-    let iterations = 0;
-    const size = this.resolvePageSize(batchSize, ACTIVITY_PAGE_LIMIT);
-
-    const api = this.getClient();
-
-    while (
-      profileIndex < multi.profileIds.length &&
-      iterations < maxIterations
-    ) {
-      const profileId = multi.profileIds[profileIndex];
-      // Wise paginates with response `cursor` → next request `nextCursor`
-      // (not `cursor`). Sending the wrong param ignores pagination and
-      // re-fetches page 1 forever.
-      const params: Record<string, string | number> = { size };
-      if (cursor) {
-        params.nextCursor = cursor;
-      }
-      // Native server-side filter (ISO 8601). Prefer this over client-side
-      // scanning of the newest-first feed.
-      if (since instanceof Date) {
-        params.since = since.toISOString();
-      }
-
-      const response = await this.executeWithRetry(() =>
-        api.get(`/v1/profiles/${encodeURIComponent(profileId)}/activities`, {
-          params,
-        }),
-      );
-      const body = response.data as {
-        activities?: Array<Record<string, unknown>>;
-        cursor?: string | null;
-      };
-      const page = Array.isArray(body.activities) ? body.activities : [];
-
-      const records = page.map(activity =>
-        withStringId({ ...activity, profileId: String(profileId) }),
-      );
-
-      if (records.length > 0) {
-        await onBatch(records);
-        recordCount += records.length;
-        onProgress?.(recordCount, undefined);
-      }
-
-      iterations++;
-      const nextCursor =
-        typeof body.cursor === "string" && body.cursor.length > 0
-          ? body.cursor
-          : null;
-
-      // End of profile when: empty page, missing next cursor, or Wise echoes
-      // the same cursor (no forward progress — otherwise backfill never ends).
-      if (
-        page.length === 0 ||
-        !nextCursor ||
-        (cursor != null && nextCursor === cursor)
-      ) {
-        profileIndex++;
-        cursor = undefined;
-      } else {
-        cursor = nextCursor;
-      }
-
-      if (profileIndex < multi.profileIds.length || cursor) {
-        await this.sleep(options.rateLimitDelay ?? this.getRateLimitDelay());
-      }
-
-      if (iterations >= maxIterations) break;
-    }
-
-    return {
-      totalProcessed: recordCount,
-      hasMore: profileIndex < multi.profileIds.length,
-      iterationsInChunk: iterations,
-      metadata: {
-        profileIds: multi.profileIds,
-        profileIndex,
-        cursor: cursor ?? null,
-      },
-    };
-  }
-
-  /**
-   * GET that answers Wise's strong customer authentication (see `withSca`).
-   */
-  private async getWithSca(
-    path: string,
-    params: Record<string, string | number>,
-  ): Promise<{ data: unknown }> {
-    const api = this.getClient();
-    return this.withSca(
-      headers => api.get(path, { params, ...(headers && { headers }) }),
-      {
-        noChallenge:
-          "Wise refused the request with HTTP 403 and no SCA challenge (x-2fa-approval): " +
-          "the API token itself may lack access to balance statements (a read-only token, or a user without access to the profile)",
-        noKey:
-          "Wise requires strong customer authentication for balance statements: add an SCA private key to this connection and register its public key in Wise (Settings → API tokens → Manage public keys)",
-      },
-    );
-  }
-
-  /**
-   * Send a request, answering Wise's strong customer authentication: a 403
-   * carrying `x-2fa-approval` is retried once with that one-time token signed
-   * (SHA256withRSA) by `sca_private_key`. `messages` explain the two refusals
-   * Mako cannot answer itself (no challenge to sign, no key to sign with).
-   */
-  private async withSca<T>(
-    send: (headers?: Record<string, string>) => Promise<T>,
-    messages: { noChallenge: string; noKey: string },
-  ): Promise<T> {
-    try {
-      return await this.executeWithRetry(() => send());
-    } catch (error) {
-      const response = axios.isAxiosError(error) ? error.response : undefined;
-      const approval =
-        response?.status === 403
-          ? this.headerValue(
-              (response.headers ?? {}) as Record<string, string | undefined>,
-              "x-2fa-approval",
-            )
-          : undefined;
-      if (!approval) {
-        if (response?.status === 403) {
-          throw new Error(messages.noChallenge, { cause: error });
-        }
-        throw error;
-      }
-
-      const privateKey = this.sourceConnection.config.sca_private_key;
-      if (typeof privateKey !== "string" || privateKey.trim().length === 0) {
-        throw new Error(messages.noKey, { cause: error });
-      }
-      const pem = normalizePemKey(privateKey);
-      const signature = crypto
-        .createSign("SHA256")
-        .update(approval)
-        .sign(pem, "base64");
-      try {
-        return await this.executeWithRetry(() =>
-          send({ "x-2fa-approval": approval, "X-Signature": signature }),
-        );
-      } catch (signedError) {
-        // Wise says why it refused a signed request in x-2fa-approval-result;
-        // the key's fingerprint (SHA-256 of its public key, never the key)
-        // tells which key signed, to compare with the one registered in Wise
-        const signedResponse = axios.isAxiosError(signedError)
-          ? signedError.response
-          : undefined;
-        const result = this.headerValue(
-          (signedResponse?.headers ?? {}) as Record<string, string | undefined>,
-          "x-2fa-approval-result",
-        );
-        const body =
-          typeof signedResponse?.data === "string"
-            ? signedResponse.data
-            : JSON.stringify(signedResponse?.data ?? "");
-        throw new Error(
-          `Wise refused the signed (SCA) request: HTTP ${signedResponse?.status ?? "?"}` +
-            `, x-2fa-approval-result: ${result ?? "none"}` +
-            `, signed with key ${publicKeyFingerprint(pem)}` +
-            (body && body !== '""' ? `, body: ${body.slice(0, 300)}` : ""),
-          { cause: signedError },
-        );
-      }
-    }
-  }
-
-  private async listStatementBalances(
-    profileId: string,
-  ): Promise<StatementBalance[]> {
-    const api = this.getClient();
-    const response = await this.executeWithRetry(() =>
-      api.get(`/v4/profiles/${encodeURIComponent(profileId)}/balances`, {
-        params: { types: "STANDARD" },
-      }),
-    );
-    const balances = Array.isArray(response.data)
-      ? (response.data as Array<Record<string, unknown>>)
-      : [];
-    return balances
-      .filter(balance => balance.id != null && balance.currency != null)
-      .map(balance => ({
-        id: String(balance.id),
-        currency: String(balance.currency),
-        start: (
-          parseWiseDate(balance.creationTime) ??
-          new Date("2011-01-01T00:00:00Z")
-        ).toISOString(),
-      }));
-  }
-
-  /**
-   * Every balance of every profile (one per currency), its statement in
-   * windows of STATEMENT_WINDOW_DAYS from the balance's creation (or from
-   * `since`, less an overlap) to now. One request per window.
-   */
-  private async fetchBalanceStatementsChunk(
-    options: ResumableFetchOptions,
-  ): Promise<FetchState> {
-    const { onBatch, onProgress, since, state } = options;
-    const maxIterations = options.maxIterations ?? 10;
-    const multi = await this.initMultiProfileState(state);
-    let profileIndex = multi.profileIndex;
-    let balances = Array.isArray(state?.metadata?.balances)
-      ? (state.metadata.balances as StatementBalance[])
-      : null;
-    let balanceIndex =
-      typeof state?.metadata?.balanceIndex === "number"
-        ? state.metadata.balanceIndex
-        : 0;
-    let windowStart =
-      typeof state?.metadata?.windowStart === "string"
-        ? state.metadata.windowStart
-        : null;
-    let recordCount = state?.totalProcessed ?? 0;
-    let iterations = 0;
-    const now = new Date();
-    const from =
-      since instanceof Date
-        ? new Date(since.getTime() - STATEMENT_OVERLAP_DAYS * DAY_MS)
-        : null;
-
-    while (
-      profileIndex < multi.profileIds.length &&
-      iterations < maxIterations
-    ) {
-      const profileId = multi.profileIds[profileIndex];
-      if (!balances) {
-        balances = await this.listStatementBalances(profileId);
-        balanceIndex = 0;
-        windowStart = null;
-      }
-      if (balanceIndex >= balances.length) {
-        profileIndex++;
-        balances = null;
-        continue;
-      }
-
-      const balance = balances[balanceIndex];
-      const created = new Date(balance.start);
-      const start = windowStart
-        ? new Date(windowStart)
-        : from && from > created
-          ? from
-          : created;
-      if (start >= now) {
-        balanceIndex++;
-        windowStart = null;
-        continue;
-      }
-      const end = new Date(
-        Math.min(
-          start.getTime() + STATEMENT_WINDOW_DAYS * DAY_MS,
-          now.getTime(),
-        ),
-      );
-
-      const response = await this.getWithSca(
-        `/v1/profiles/${encodeURIComponent(profileId)}/balance-statements/${encodeURIComponent(balance.id)}/statement.json`,
-        {
-          currency: balance.currency,
-          intervalStart: start.toISOString(),
-          intervalEnd: end.toISOString(),
-          type: "COMPACT",
-        },
-      );
-      const body = (response.data ?? {}) as {
-        transactions?: Array<Record<string, unknown>>;
-      };
-      const transactions = Array.isArray(body.transactions)
-        ? body.transactions
-        : [];
-      const records = transactions.map(transaction =>
-        toStatementRecord(transaction, balance, String(profileId)),
-      );
-
-      if (records.length > 0) {
-        await onBatch(records);
-        recordCount += records.length;
-        onProgress?.(recordCount, undefined);
-      }
-
-      iterations++;
-      if (end >= now) {
-        balanceIndex++;
-        windowStart = null;
-      } else {
-        windowStart = end.toISOString();
-      }
-
-      await this.sleep(options.rateLimitDelay ?? this.getRateLimitDelay());
-    }
-
-    return {
-      totalProcessed: recordCount,
-      hasMore: profileIndex < multi.profileIds.length,
-      iterationsInChunk: iterations,
-      metadata: {
-        profileIds: multi.profileIds,
-        profileIndex,
-        balances,
-        balanceIndex,
-        windowStart,
-      },
-    };
   }
 
   async fetchEntity(options: FetchOptions): Promise<void> {
@@ -1256,7 +412,7 @@ export class WiseConnector extends BaseConnector {
   supportsWebhookProvisioning(): boolean {
     // Profile-level subscriptions through `/v3/profiles/{id}/subscriptions`.
     // Wise only lets a token allowed to manage the profile's webhooks do it;
-    // a refusal is explained by `subscriptionRefusal`.
+    // a refusal is explained by subscriptions.ts.
     return true;
   }
 
@@ -1286,237 +442,6 @@ export class WiseConnector extends BaseConnector {
   }
 
   /**
-   * Events a profile subscription should carry: the explicitly requested
-   * ones, else those of the flow's enabled entities — restricted to the
-   * events Wise offers at profile level. Throws when nothing remains, naming
-   * the application-only events that were asked for.
-   */
-  private resolveProfileWebhookEvents(
-    options: ProvisionWebhookOptions,
-  ): string[] {
-    const requested = Array.isArray(options.events)
-      ? options.events.map(event => event.trim()).filter(Boolean)
-      : [];
-    const wanted =
-      requested.length > 0
-        ? requested
-        : this.getWebhookEventsForEntities(options.enabledEntities ?? []);
-    const supported = new Set(this.getSupportedWebhookEvents());
-    const profileLevel = wanted.filter(
-      event => supported.has(event) && event in PROFILE_WEBHOOK_SCHEMA_VERSIONS,
-    );
-    if (profileLevel.length === 0) {
-      const applicationOnly = wanted.filter(
-        event =>
-          supported.has(event) && !(event in PROFILE_WEBHOOK_SCHEMA_VERSIONS),
-      );
-      throw new Error(
-        applicationOnly.length > 0
-          ? `Wise offers ${applicationOnly.join(", ")} to application-level subscriptions only, which a profile token cannot create. Enable an entity with a profile-level event (balance_updates, transfers or recipients), or keep the scheduled sync for these entities.`
-          : requested.length > 0
-            ? `No valid Wise webhook events requested. Unsupported events: ${requested.join(", ")}`
-            : "No Wise webhook events resolved for the selected entities",
-      );
-    }
-    return profileLevel;
-  }
-
-  /**
-   * Turn a Wise refusal of a subscription call into what the user must do.
-   * Wise documents profile subscriptions for user tokens; personal API tokens
-   * are documented for quotes, recipients, transfers and transfer tracking
-   * only, and a token with limited (read-only) permissions is refused.
-   */
-  private subscriptionRefusal(
-    status: number | undefined,
-    detail: string,
-    action: string,
-    profileId: string,
-    options: { endpointUrl: string; events?: string[] },
-  ): Error {
-    if (status !== 401 && status !== 403) {
-      return new Error(
-        `Failed to ${action} Wise webhook subscriptions on profile ${profileId}: ${detail}`,
-      );
-    }
-    const events = options.events?.length
-      ? options.events.join(", ")
-      : "the events you need";
-    return new Error(
-      `Wise refused to ${action} webhook subscriptions on profile ${profileId} (${detail}). ` +
-        "Wise lets only a token allowed to manage the profile's webhooks do this: an OAuth user access token, " +
-        "or a personal API token with full access — a token with limited (read-only) permissions is refused. " +
-        "Either replace this connection's API token with a full-access one (Wise → Your account → " +
-        "Integrations and tools → API tokens) and try again, or create the subscription by hand in Wise " +
-        "(Your account → Integrations and tools → Developer tools → Webhooks → Create a new webhook) " +
-        `with URL ${options.endpointUrl} for ${events}, then set this flow's Webhook Secret to "${this.webhookKeySet()}".`,
-    );
-  }
-
-  /** A Wise subscription call, with SCA answered and refusals explained. */
-  private async subscriptionCall<T>(
-    action: string,
-    profileId: string,
-    options: { endpointUrl: string; events?: string[] },
-    send: (headers?: Record<string, string>) => Promise<T>,
-  ): Promise<T> {
-    const noChallenge = "HTTP 403 without an SCA challenge";
-    try {
-      return await this.withSca(send, {
-        noChallenge,
-        noKey: `Wise requires strong customer authentication to ${action} webhook subscriptions: add an SCA private key to this connection and register its public key in Wise (Settings → API tokens → Manage public keys)`,
-      });
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        throw this.subscriptionRefusal(
-          error.response?.status,
-          formatWiseApiError(error),
-          action,
-          profileId,
-          options,
-        );
-      }
-      if (error instanceof Error && error.message === noChallenge) {
-        throw this.subscriptionRefusal(
-          403,
-          noChallenge,
-          action,
-          profileId,
-          options,
-        );
-      }
-      throw error;
-    }
-  }
-
-  private async listProfileSubscriptions(
-    profileId: string,
-    options: { endpointUrl: string; events?: string[] },
-  ): Promise<WiseSubscription[]> {
-    const api = this.getClient();
-    const response = await this.subscriptionCall(
-      "list",
-      profileId,
-      options,
-      headers =>
-        api.get(
-          `/v3/profiles/${profileId}/subscriptions`,
-          headers ? { headers } : undefined,
-        ),
-    );
-    const data = response.data as unknown;
-    return Array.isArray(data) ? (data as WiseSubscription[]) : [];
-  }
-
-  /**
-   * Make each synced profile carry exactly one subscription per needed event
-   * on `endpointUrl`: reuse what exists (same URL + event), create what is
-   * missing, delete duplicates and events the flow no longer needs. Only
-   * subscriptions delivering to this flow's URL are ever touched.
-   *
-   * `createWhenAbsent: false` leaves profiles alone when none of them has a
-   * subscription on the URL yet, and resolves to `null` (the
-   * `updateWebhookSubscription` contract).
-   */
-  private async reconcileProfileSubscriptions(
-    options: ProvisionWebhookOptions,
-    createWhenAbsent: boolean,
-  ): Promise<ProvisionWebhookResult | null> {
-    const events = this.resolveProfileWebhookEvents(options);
-    const context = { endpointUrl: options.endpointUrl, events };
-    const profileIds = await this.resolveProfileIds();
-    if (profileIds.length === 0) {
-      throw new Error(
-        "The Wise API token sees no profile to subscribe: set Profile ID on the connection or check the token",
-      );
-    }
-
-    const existingByProfile = new Map<string, WiseSubscription[]>();
-    for (const profileId of profileIds) {
-      const subscriptions = await this.listProfileSubscriptions(
-        profileId,
-        context,
-      );
-      existingByProfile.set(
-        profileId,
-        subscriptions.filter(
-          subscription => subscription.delivery?.url === options.endpointUrl,
-        ),
-      );
-    }
-    const anyExisting = [...existingByProfile.values()].some(
-      list => list.length > 0,
-    );
-    if (!createWhenAbsent && !anyExisting) {
-      return null;
-    }
-
-    const api = this.getClient();
-    const kept: string[] = [];
-    for (const profileId of profileIds) {
-      const ours = existingByProfile.get(profileId) ?? [];
-      const keptHere = new Set<string>();
-      for (const event of events) {
-        const match = ours.find(
-          subscription =>
-            subscription.trigger_on === event && !keptHere.has(subscription.id),
-        );
-        if (match) {
-          keptHere.add(match.id);
-          kept.push(`${profileId}:${match.id}`);
-          continue;
-        }
-        const body = {
-          name: `${MAKO_SUBSCRIPTION_NAME_PREFIX} ${event}`,
-          trigger_on: event,
-          delivery: {
-            version: PROFILE_WEBHOOK_SCHEMA_VERSIONS[event],
-            url: options.endpointUrl,
-          },
-        };
-        const created = await this.subscriptionCall(
-          "create",
-          profileId,
-          context,
-          headers =>
-            api.post(
-              `/v3/profiles/${profileId}/subscriptions`,
-              body,
-              headers ? { headers } : undefined,
-            ),
-        );
-        const id = (created.data as WiseSubscription | undefined)?.id;
-        if (!id) {
-          throw new Error(
-            `Wise created no subscription id for ${event} on profile ${profileId}`,
-          );
-        }
-        keptHere.add(id);
-        kept.push(`${profileId}:${id}`);
-      }
-
-      // Duplicates and events no longer needed: each would POST to the flow
-      // for nothing (or twice).
-      for (const subscription of ours) {
-        if (keptHere.has(subscription.id)) continue;
-        await this.subscriptionCall("delete", profileId, context, headers =>
-          api.delete(
-            `/v3/profiles/${profileId}/subscriptions/${subscription.id}`,
-            headers ? { headers } : undefined,
-          ),
-        );
-      }
-    }
-
-    return {
-      // Every subscription, as `profileId:subscriptionId`, sorted so the flow
-      // file only changes when the set does.
-      providerWebhookId: kept.sort().join(","),
-      endpointUrl: options.endpointUrl,
-    };
-  }
-
-  /**
    * Subscribe `endpointUrl` to the flow's events on every profile the
    * connection syncs (`profile_id`, or every profile the token sees).
    * Idempotent: an existing subscription with the same URL and event is
@@ -1525,7 +450,11 @@ export class WiseConnector extends BaseConnector {
   async createWebhookSubscription(
     options: ProvisionWebhookOptions,
   ): Promise<ProvisionWebhookResult> {
-    const result = await this.reconcileProfileSubscriptions(options, true);
+    const result = await reconcileWiseProfileSubscriptions(
+      this.context(),
+      options,
+      true,
+    );
     if (!result) {
       throw new Error("Wise webhook subscriptions could not be created");
     }
@@ -1543,7 +472,11 @@ export class WiseConnector extends BaseConnector {
   async updateWebhookSubscription(
     options: UpdateWebhookSubscriptionOptions,
   ): Promise<ProvisionWebhookResult | null> {
-    const result = await this.reconcileProfileSubscriptions(options, false);
+    const result = await reconcileWiseProfileSubscriptions(
+      this.context(),
+      options,
+      false,
+    );
     // Wise signs with its public keys: the "secret" is only the key set, the
     // same whether the subscription is new or adopted.
     return result ? { ...result, signingSecret: this.webhookKeySet() } : null;
@@ -1557,26 +490,7 @@ export class WiseConnector extends BaseConnector {
   async deleteWebhookSubscription(
     options: DeleteWebhookSubscriptionOptions,
   ): Promise<number> {
-    const context = { endpointUrl: options.endpointUrl };
-    const api = this.getClient();
-    let removed = 0;
-    for (const profileId of await this.resolveProfileIds()) {
-      const subscriptions = await this.listProfileSubscriptions(
-        profileId,
-        context,
-      );
-      for (const subscription of subscriptions) {
-        if (subscription.delivery?.url !== options.endpointUrl) continue;
-        await this.subscriptionCall("delete", profileId, context, headers =>
-          api.delete(
-            `/v3/profiles/${profileId}/subscriptions/${subscription.id}`,
-            headers ? { headers } : undefined,
-          ),
-        );
-        removed++;
-      }
-    }
-    return removed;
+    return deleteWiseProfileSubscriptions(this.context(), options.endpointUrl);
   }
 
   getIncrementalCapabilities(): IncrementalCapabilities {
@@ -1612,130 +526,17 @@ export class WiseConnector extends BaseConnector {
   async verifyWebhook(
     options: WebhookHandlerOptions,
   ): Promise<WebhookVerificationResult> {
-    const { payload, headers, secret } = options;
-
-    // Creating a subscription makes Wise POST a test notification (dummy
-    // data, `X-Test-Notification: true`) to check the URL answers. Answer it
-    // whatever its signature, as an event no entity maps: its dummy record
-    // must never land in a table, and refusing it could fail the creation.
-    const testNotification = this.headerValue(headers, "X-Test-Notification");
-    if (testNotification?.trim().toLowerCase() === "true") {
-      const deliveryId = this.headerValue(headers, "X-Delivery-Id");
-      return {
-        valid: true,
-        event: {
-          type: WISE_TEST_NOTIFICATION_EVENT,
-          event_type: WISE_TEST_NOTIFICATION_EVENT,
-          id: deliveryId ? `test:${deliveryId}` : `test:${crypto.randomUUID()}`,
-        },
-      };
-    }
-
-    const signature = this.headerValue(headers, "X-Signature-SHA256");
-    if (!signature) {
-      return {
-        valid: false,
-        error: "Missing X-Signature-SHA256 header",
-      };
-    }
-
-    const rawBody =
-      typeof payload === "string" ? payload : JSON.stringify(payload);
-
-    const keysToTry = this.getWebhookPublicKeys(secret);
-
-    let verified = false;
-    for (const publicKey of keysToTry) {
-      try {
-        const verifier = crypto.createVerify("RSA-SHA256");
-        verifier.update(rawBody);
-        verifier.end();
-        if (verifier.verify(publicKey, signature, "base64")) {
-          verified = true;
-          break;
-        }
-      } catch (error) {
-        logger.warn("Wise webhook signature verify attempt failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    // Test notifications sent during subscription setup may arrive without a
-    // usable signature in some environments — still require a valid signature
-    // when present; reject when verification fails.
-    if (!verified) {
-      return { valid: false, error: "Invalid Wise webhook signature" };
-    }
-
-    try {
-      const parsed =
-        typeof payload === "string" ? JSON.parse(payload) : payload;
-      const eventType =
-        typeof parsed?.event_type === "string"
-          ? parsed.event_type
-          : typeof parsed?.type === "string"
-            ? parsed.type
-            : undefined;
-
-      const deliveryId = this.headerValue(headers, "X-Delivery-Id");
-      const data = (parsed?.data ?? {}) as Record<string, unknown>;
-      const resource = (data.resource ?? {}) as Record<string, unknown>;
-      const resourceId =
-        resource.id != null
-          ? String(resource.id)
-          : data.balance_id != null
-            ? String(data.balance_id)
-            : undefined;
-      const occurredAt =
-        typeof data.occurred_at === "string" ? data.occurred_at : "";
-      const stepId = data.step_id != null ? String(data.step_id) : "";
-
-      const eventId =
-        deliveryId ||
-        (eventType && resourceId
-          ? `${eventType}:${resourceId}:${occurredAt || stepId || parsed?.sent_at || ""}`
-          : parsed?.subscription_id);
-
-      return {
-        valid: true,
-        event: {
-          ...parsed,
-          type: eventType,
-          event_type: eventType,
-          id: eventId,
-        },
-      };
-    } catch (err) {
-      return {
-        valid: false,
-        error: err instanceof Error ? err.message : "Failed to parse webhook",
-      };
-    }
+    return verifyWiseWebhook(options, () =>
+      this.getWebhookPublicKeys(options.secret),
+    );
   }
 
   getWebhookEventMapping(eventType: string): WebhookEventMapping | null {
-    const mappings: Record<string, WebhookEventMapping> = {
-      "transfers#state-change": { entity: "transfers", operation: "upsert" },
-      "transfers#refund": { entity: "transfers", operation: "upsert" },
-      "transfers#payout-failure": { entity: "transfers", operation: "upsert" },
-      "transfers#active-cases": { entity: "transfers", operation: "upsert" },
-      "balances#update": { entity: "balance_updates", operation: "upsert" },
-      // Wise's own webhook screen offers "Account deposit events" but not
-      // balances#update, so a hand-made subscription lands here
-      "balances#credit": { entity: "balance_updates", operation: "upsert" },
-      "balances#account-state-change": {
-        entity: "balances",
-        operation: "upsert",
-      },
-      "profiles#state-change": { entity: "profiles", operation: "upsert" },
-      "recipients#state-change": { entity: "recipients", operation: "upsert" },
-    };
-    return mappings[eventType] ?? null;
+    return wiseWebhookEventMapping(eventType);
   }
 
   getSupportedWebhookEvents(): string[] {
-    return [...SUPPORTED_WEBHOOK_EVENTS];
+    return [...WISE_SUPPORTED_WEBHOOK_EVENTS];
   }
 
   getWebhookEventsForEntities(entities: string[]): string[] {
@@ -1753,167 +554,7 @@ export class WiseConnector extends BaseConnector {
   extractWebhookData(
     event: any,
   ): { id: string; data: Record<string, unknown> } | null {
-    if (!event || typeof event !== "object") {
-      return null;
-    }
-
-    const eventType =
-      typeof event.event_type === "string"
-        ? event.event_type
-        : typeof event.type === "string"
-          ? event.type
-          : undefined;
-    const data = (event.data ?? {}) as Record<string, unknown>;
-    const resource = (data.resource ?? {}) as Record<string, unknown>;
-
-    if (eventType === "balances#update" || eventType === "balances#credit") {
-      // balances#credit (2.0.0) has no balance_id or step_id: only the
-      // balance account in `resource`, so its id adds the currency
-      const balanceId =
-        data.balance_id ??
-        (eventType === "balances#credit" && resource.id != null
-          ? `${resource.id}:${data.currency ?? ""}`
-          : resource.id);
-      const stepId = data.step_id;
-      const occurredAt = data.occurred_at;
-      if (balanceId == null) return null;
-
-      const id = String(
-        stepId != null
-          ? `${balanceId}:${stepId}`
-          : `${balanceId}:${occurredAt ?? event.sent_at ?? event.id ?? ""}`,
-      );
-
-      return {
-        id,
-        data: withStringId({
-          id,
-          balance_id:
-            data.balance_id == null
-              ? null
-              : typeof data.balance_id === "number"
-                ? data.balance_id
-                : Number(data.balance_id),
-          profile_id: resource.profile_id ?? null,
-          resource_id: resource.id ?? null,
-          resource_type: resource.type ?? null,
-          amount: data.amount ?? null,
-          currency: data.currency ?? null,
-          channel_name: data.channel_name ?? null,
-          transaction_type:
-            data.transaction_type ??
-            (eventType === "balances#credit" ? "credit" : null),
-          transfer_reference: data.transfer_reference ?? null,
-          post_transaction_balance_amount:
-            data.post_transaction_balance_amount ?? null,
-          step_id: data.step_id ?? null,
-          occurred_at: data.occurred_at ?? null,
-          subscription_id: event.subscription_id ?? null,
-          event_type: eventType,
-          schema_version: event.schema_version ?? null,
-          sent_at: event.sent_at ?? null,
-        }),
-      };
-    }
-
-    if (
-      eventType === "transfers#state-change" ||
-      eventType === "transfers#refund" ||
-      eventType === "transfers#payout-failure" ||
-      eventType === "transfers#active-cases"
-    ) {
-      // payout-failure 5.0.0 has no `resource`: `data.transfer_id` instead
-      const transferId = resource.id ?? data.transfer_id;
-      if (transferId == null) return null;
-      const id = String(transferId);
-      return {
-        id,
-        data: withStringId({
-          id,
-          profile_id: resource.profile_id ?? data.profile_id ?? null,
-          account_id: resource.account_id ?? null,
-          status: data.current_state ?? data.status ?? null,
-          current_state: data.current_state ?? null,
-          previous_state: data.previous_state ?? null,
-          occurred_at: data.occurred_at ?? null,
-          failure_reason_code:
-            data.failure_reason_code ?? data.failureReasonCode ?? null,
-          failure_description:
-            data.failure_description ?? data.failureDescription ?? null,
-          refund_amount:
-            resource.refund_amount ?? data.amount ?? data.refund_amount ?? null,
-          refund_currency:
-            resource.refund_currency ??
-            data.currency ??
-            data.refund_currency ??
-            null,
-          hasActiveIssues:
-            data.has_active_issues ?? data.hasActiveIssues ?? null,
-          details: data.details ?? data.active_cases ?? null,
-        }),
-      };
-    }
-
-    if (eventType === "balances#account-state-change") {
-      const balanceId = resource.id ?? data.balance_id ?? data.id;
-      if (balanceId == null) return null;
-      return {
-        id: String(balanceId),
-        data: withStringId({
-          id: String(balanceId),
-          profileId:
-            resource.profile_id != null ? String(resource.profile_id) : null,
-          current_state: data.current_state ?? null,
-          previous_state: data.previous_state ?? null,
-          occurred_at: data.occurred_at ?? null,
-          ...data,
-        }),
-      };
-    }
-
-    if (eventType === "profiles#state-change") {
-      const profileId = resource.id ?? data.profile_id ?? data.id;
-      if (profileId == null) return null;
-      return {
-        id: String(profileId),
-        data: withStringId({
-          id: String(profileId),
-          currentState: data.current_state ?? data.currentState ?? null,
-          previous_state: data.previous_state ?? null,
-          occurred_at: data.occurred_at ?? null,
-          ...data,
-        }),
-      };
-    }
-
-    if (eventType === "recipients#state-change") {
-      // 4.0.0 nests the recipient under `resource.data`; `resource.id` there
-      // is the event's own id, not the recipient's
-      const nested = (resource.data ?? {}) as Record<string, unknown>;
-      const recipientId =
-        nested.recipientId ?? resource.id ?? data.account_id ?? data.id;
-      if (recipientId == null) return null;
-      return {
-        id: String(recipientId),
-        data: withStringId({
-          id: String(recipientId),
-          profileId:
-            nested.profileId ?? resource.profile_id ?? data.profile_id ?? null,
-          current_state: nested.state ?? data.current_state ?? null,
-          previous_state: data.previous_state ?? null,
-          occurred_at: resource.occurred_at ?? data.occurred_at ?? null,
-          ...data,
-        }),
-      };
-    }
-
-    // Generic fallback
-    const fallbackId = resource.id ?? data.id;
-    if (fallbackId == null) return null;
-    return {
-      id: String(fallbackId),
-      data: withStringId({ id: String(fallbackId), ...data }),
-    };
+    return extractWiseWebhookData(event);
   }
 
   extractWebhookCdcRecords(
