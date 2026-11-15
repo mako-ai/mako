@@ -3,7 +3,6 @@
  * payload extraction, signature verification and subscription provisioning.
  */
 import axios, { AxiosInstance } from "axios";
-import crypto from "node:crypto";
 import type {
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
@@ -11,7 +10,11 @@ import type {
   WebhookHandlerOptions,
   WebhookVerificationResult,
 } from "../base/BaseConnector";
-import { rawWebhookBody } from "../base/webhook-signature";
+import {
+  hmacHex,
+  rawWebhookBody,
+  timingSafeEqualString,
+} from "../base/webhook-signature";
 import { loggers } from "../../logging";
 
 const logger = loggers.connector("close");
@@ -345,18 +348,9 @@ export function verifyCloseWebhook(
     const body = rawWebhookBody(payload);
     // Close: HMAC-SHA256(hex_decoded_key, timestamp + body) — no separator
     const data = sigTimestamp + body;
-    const keyBytes = Buffer.from(secret, "hex");
-    const expectedSignature = crypto
-      .createHmac("sha256", keyBytes)
-      .update(data, "utf-8")
-      .digest("hex");
+    const expectedSignature = hmacHex(Buffer.from(secret, "hex"), data);
 
-    if (
-      !crypto.timingSafeEqual(
-        Buffer.from(sigHash),
-        Buffer.from(expectedSignature),
-      )
-    ) {
+    if (!timingSafeEqualString(expectedSignature, sigHash)) {
       return { valid: false, error: "Invalid signature" };
     }
 
