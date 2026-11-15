@@ -16,6 +16,7 @@ import {
   commitConsoleState,
 } from "../../apps/workspace-consoles.service";
 import { RepoRequiredError } from "../../apps/config";
+import { canReadConsoleWithInheritance, canWriteConsole } from "./access";
 import { ensureConsoleFolderPath, findFolderByPath } from "./folders";
 
 const logger = getLogger(["api", "consoles"]);
@@ -414,6 +415,7 @@ export async function restoreConsole(
   consoleId: string,
   workspaceId: string,
   userId?: string,
+  memberRole?: string,
 ): Promise<boolean> {
   if (!Types.ObjectId.isValid(consoleId)) return false;
   const current = await SavedConsole.findOne({
@@ -421,6 +423,8 @@ export async function restoreConsole(
     workspaceId: new Types.ObjectId(workspaceId),
   });
   if (!current) return false;
+  // A console the caller cannot write is "not found", not restorable.
+  if (userId && !canWriteConsole(current, userId, memberRole)) return false;
   const set: Record<string, unknown> = { is_deleted: false };
   if (current.isSaved) {
     const committed = await commitConsoleState({
@@ -455,6 +459,9 @@ export async function duplicateConsole(
     workspaceId: new Types.ObjectId(workspaceId),
   });
   if (!original) return null;
+  // Same read rule as execute and export: a console the caller cannot read
+  // (private, or in a folder they cannot see) is "not found", not copyable.
+  if (!(await canReadConsoleWithInheritance(original, userId))) return null;
 
   const copy = new SavedConsole({
     workspaceId: original.workspaceId,
