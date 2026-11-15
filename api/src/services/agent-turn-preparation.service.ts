@@ -2,15 +2,15 @@ import { resolveDbtRulesBlockForTurn } from "../dbt/dbt-rules-turn.service";
 import {
   MAX_SKILL_EXCERPT_CHARS,
   renderSkillsPromptBlock,
-  retrieveRelevantSkills,
+  retrieveSkillsForTurn,
 } from "./skills.service";
 
 export { MAX_SKILL_EXCERPT_CHARS };
 
 export function renderCompactSkillBlock(
   retrieval: Pick<
-    Awaited<ReturnType<typeof retrieveRelevantSkills>>,
-    "index" | "injected"
+    Awaited<ReturnType<typeof retrieveSkillsForTurn>>,
+    "index" | "injected" | "omitted"
   >,
 ): string {
   return renderSkillsPromptBlock(retrieval);
@@ -32,7 +32,9 @@ export async function prepareAgentTurnGuidance(input: {
   dbtProjectId?: string;
 }): Promise<AgentTurnGuidance> {
   const [retrieval, dbtRulesBlock] = await Promise.all([
-    retrieveRelevantSkills(input.workspaceId).catch(() => null),
+    // The best SKILL_INDEX_TURN_LIMIT matches for this message, not the
+    // whole index: a 134-skill workspace paid ~32k chars every turn.
+    retrieveSkillsForTurn(input.workspaceId, input.userText).catch(() => null),
     input.includeDbtRules
       ? resolveDbtRulesBlockForTurn({
           workspaceId: input.workspaceId,
