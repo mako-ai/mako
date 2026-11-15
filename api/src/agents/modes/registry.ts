@@ -19,6 +19,7 @@ import {
  * question with, in the order the prompts name them.
  */
 export const METRIC_FIRST_TOOL_NAMES: readonly string[] = [
+  "get_workspace_context",
   "lookup_term",
   "list_metrics",
   "query_metric",

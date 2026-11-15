@@ -581,6 +581,12 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "table",
   },
+  get_workspace_context: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Reading the workspace's terms and metrics",
+    icon: "list",
+  },
   lookup_term: {
     domain: "dbt",
     execution: "server",

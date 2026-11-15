@@ -62,6 +62,16 @@ export const DBT_CAPABILITIES = [
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "data",
   }),
+  // The context pack: the registry's terms, the metric names and the
+  // most-read models in ~4k chars (dbt/ontology/workspace-context.ts).
+  // Metadata only, same gate as lookup_term.
+  define({
+    name: "get_workspace_context",
+    pack: "dbt-orient",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+  }),
   define({
     name: "model_readers",
     pack: "dbt-orient",

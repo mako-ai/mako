@@ -55,6 +55,10 @@ import { createFlowSyncTools } from "../agent-lib/tools/flow-sync-tools";
 import { createMemberTools } from "../agent-lib/tools/member-tools";
 import { createWebTools } from "../agent-lib/tools/web-tools";
 import { createRepoTools } from "../agent-lib/tools/repo-tools";
+import {
+  WORKSPACE_CONTEXT_URI,
+  buildWorkspaceContextPack,
+} from "../dbt/ontology/workspace-context";
 import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
 import { METRIC_FIRST_TOOL_NAMES } from "../agents/modes/registry";
 import {
@@ -89,7 +93,7 @@ const SERVER_VERSION = "0.1.0";
 const SERVER_INSTRUCTIONS = `Mako is one workspace's data platform: governed dbt metrics and terms, warehouse connections, and data apps (git-backed React + data bindings).
 
 Business numbers first (revenue, MRR, paying customers, churn, renewal rate, …):
-1. lookup_term({ query }) and list_metrics({ query }) → the governed term (canonical model.column, grain, variants) and the metric with its group-bys.
+1. lookup_term({ query }) and list_metrics({ query }) → the governed term (canonical model.column, grain, variants) and the metric with its group-bys. get_workspace_context (or resource mako://context) lists every term, metric and most-read model in ~4k chars.
 2. A metric exists: query_metric({ metrics, groupBy, where, startTime, endTime }) → the rows (read-only, needs query access). compile_metric(same input) → its SQL only, for a binding, a console or a dbt model. groupBy names look like "metric_time__month" or "customer__region".
 3. No metric: find_models({ query }) → describe_model({ name }) → query the canonical model with sql_execute_query.
 4. list_connections / list_tables / inspect_table only for data outside dbt.
@@ -756,16 +760,34 @@ export function buildMakoMcpServer(
   // api/src/agent-skills) exposed as MCP resources, so external agents can
   // read the same guidance the in-product agent retrieves.
   server.setRequestHandler(ListResourcesRequestSchema, () => ({
-    resources: getSystemSkillIndex().map(skill => ({
-      uri: `${SKILL_URI_PREFIX}${skill.name}`,
-      name: skill.name,
-      description: skill.description,
-      mimeType: "text/markdown",
-    })),
+    resources: [
+      {
+        uri: WORKSPACE_CONTEXT_URI,
+        name: "workspace-context",
+        description:
+          "The workspace's governed and draft terms with their canonical model.column, its metrics and its most-read dbt models, in about 4k chars. Read it before a business question.",
+        mimeType: "text/markdown",
+      },
+      ...getSystemSkillIndex().map(skill => ({
+        uri: `${SKILL_URI_PREFIX}${skill.name}`,
+        name: skill.name,
+        description: skill.description,
+        mimeType: "text/markdown",
+      })),
+    ],
   }));
 
-  server.setRequestHandler(ReadResourceRequestSchema, request => {
+  server.setRequestHandler(ReadResourceRequestSchema, async request => {
     const uri = request.params.uri;
+    if (uri === WORKSPACE_CONTEXT_URI) {
+      const pack = await buildWorkspaceContextPack(
+        context.workspaceId,
+        context.userId,
+      );
+      return {
+        contents: [{ uri, mimeType: "text/markdown", text: pack.text }],
+      };
+    }
     if (!uri.startsWith(SKILL_URI_PREFIX)) {
       throw new Error(`Unknown resource: ${uri}`);
     }

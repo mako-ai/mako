@@ -464,6 +464,7 @@ async function main() {
       "lookup_term",
       "model_readers",
       "find_join_path",
+      "get_workspace_context",
       // Semantic layer: listing and compiling are metadata only; running a
       // metric is a read-only query, bridged for every query:read key.
       "list_metrics",
@@ -499,8 +500,9 @@ async function main() {
     }
     // A business question's tools lead the list.
     assert.deepEqual(
-      tools.slice(0, 8).map(t => t.name),
+      tools.slice(0, 9).map(t => t.name),
       [
+        "get_workspace_context",
         "lookup_term",
         "list_metrics",
         "query_metric",
@@ -1534,6 +1536,11 @@ async function main() {
     const { resources } = listRes.result as { resources: { uri: string }[] };
     const uris = new Set(resources.map(r => r.uri));
     assert.ok(uris.has("mako://skills/apps"), "apps skill resource missing");
+    assert.equal(
+      resources[0]?.uri,
+      "mako://context",
+      "the workspace context pack is the first resource",
+    );
 
     const [readRes] = await exchange([
       {
