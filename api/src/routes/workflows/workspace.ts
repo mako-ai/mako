@@ -20,6 +20,7 @@ import {
 import { HatchetError, requireTenant, startRun } from "../../workflows/hatchet";
 import {
   readWorkflowFlow,
+  readWorkflowRuns,
   readWorkflowsOverview,
   retryRun,
 } from "../../workflows/runs";
@@ -34,7 +35,7 @@ import { setTriggers } from "../../workflows/webhook";
 import { fail } from "../lib/respond";
 import { onRouteError } from "./shared";
 
-/** How many recent runs the Workflows screen lists. */
+/** How many recent runs the Workflows screen lists, of the workspace or of one workflow. */
 const RUNS_SHOWN = 100;
 // --- Workspace routes -------------------------------------------------------
 
@@ -146,6 +147,29 @@ workflowRoutes.openapi(
     const { workspaceId, name } = c.req.valid("param");
     const flow = await readWorkflowFlow(await requireTenant(workspaceId), name);
     return c.json({ success: true as const, ...flow }, 200);
+  },
+);
+
+workflowRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{name}/runs",
+    tags: ["Workflows"],
+    summary:
+      "A workflow's own recent deployed runs, newest first, however often the workspace's other workflows run",
+    security: AUTH_SECURITY,
+    request: { params: NameParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    const { workspaceId, name } = c.req.valid("param");
+    const runs = await readWorkflowRuns(
+      workspaceId,
+      await requireTenant(workspaceId),
+      name,
+      RUNS_SHOWN,
+    );
+    return c.json({ success: true as const, ...runs }, 200);
   },
 );
 

@@ -1,12 +1,13 @@
 /**
  * How a run reads (its steps in order, with the steps each waited for, and
- * the log the agent and the screen get) and how a retry asks Hatchet.
+ * the log the agent and the screen get), how a retry asks Hatchet, and that
+ * a workflow's runs are its own.
  *
  * Run with: pnpm --filter api exec tsx src/workflows/runs.test.ts
  */
 import assert from "node:assert/strict";
 
-import { readWorkflowFlow, retryRun, shapeRun } from "./runs";
+import { listWorkflowRuns, readWorkflowFlow, retryRun, shapeRun } from "./runs";
 
 const RUN = "22222222-2222-2222-2222-222222222222";
 const WORKFLOW = "33333333-3333-3333-3333-333333333333";
@@ -46,6 +47,33 @@ const detail = {
     { stepId: "s3", childrenStepIds: [] },
   ],
 };
+// What the tenant holds: more workflows than a page of Hatchet's list (those
+// of earlier commits come first), one that runs all the time, and `flow`,
+// whose only run is older than a list's worth of the busy one's.
+const BUSY = "44444444-4444-4444-4444-444444444444";
+const tenantWorkflows = [
+  ...Array.from({ length: 60 }, (_, i) => ({
+    name: `gone-${i}`,
+    metadata: { id: `99999999-9999-9999-9999-${String(i).padStart(12, "0")}` },
+  })),
+  { name: "busy", metadata: { id: BUSY } },
+  { name: "flow", metadata: { id: WORKFLOW } },
+];
+const tenantRuns = [
+  ...Array.from({ length: 150 }, (_, i) => ({
+    metadata: { id: `88888888-8888-8888-8888-${String(i).padStart(12, "0")}` },
+    workflowId: BUSY,
+    workflowName: "busy",
+    status: "COMPLETED",
+  })),
+  {
+    metadata: { id: RUN },
+    workflowId: WORKFLOW,
+    workflowName: "flow",
+    status: "COMPLETED",
+  },
+];
+
 const lines = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ message: `line ${i + 1}` }));
 
@@ -83,20 +111,32 @@ void (async () => {
       url: String(url),
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     });
+    const { pathname, searchParams } = new URL(String(url));
+    const page = <T>(rows: T[]) => ({
+      rows: rows.slice(0, Number(searchParams.get("limit") ?? 50)),
+    });
     const body = String(url).includes("/workflow-runs/")
       ? detail
-      : String(url).endsWith(`/tenants/${tenant.tenantId}/workflows`)
-        ? { rows: [{ name: "flow", metadata: { id: WORKFLOW } }] }
-        : String(url).endsWith(`/workflows/${WORKFLOW}/versions`)
-          ? {
-              workflowConfig: {
-                Tasks: [
-                  { ReadableId: "select", Parents: [], Timeout: "60s" },
-                  { ReadableId: "write", Parents: ["select"], Retries: 2 },
-                ],
-              },
-            }
-          : {};
+      : pathname.endsWith("/workflow-runs")
+        ? // As Hatchet lists them: newest first, of the workflows asked for.
+          page(
+            tenantRuns.filter(run =>
+              searchParams.getAll("workflow_ids").includes(run.workflowId),
+            ),
+          )
+        : pathname.endsWith(`/tenants/${tenant.tenantId}/workflows`)
+          ? // As Hatchet pages them: 50 unless asked for more.
+            page(tenantWorkflows)
+          : String(url).endsWith(`/workflows/${WORKFLOW}/versions`)
+            ? {
+                workflowConfig: {
+                  Tasks: [
+                    { ReadableId: "select", Parents: [], Timeout: "60s" },
+                    { ReadableId: "write", Parents: ["select"], Retries: 2 },
+                  ],
+                },
+              }
+            : {};
     return new Response(JSON.stringify(body), { status: 200 });
   }) as typeof fetch;
 
@@ -119,6 +159,22 @@ void (async () => {
     ],
   });
   await assert.rejects(readWorkflowFlow(tenant, "other"), /not deployed/);
+
+  // A workflow's runs are its own: one that runs all the time leaves the
+  // tenant's last runs without any of this one's, and its list still has it.
+  assert.deepEqual(
+    (await listWorkflowRuns(tenant, "flow", 100)).map(run => [
+      run.runId,
+      run.workflowId,
+      run.status,
+    ]),
+    [[RUN, "flow", "COMPLETED"]],
+  );
+  assert.equal((await listWorkflowRuns(tenant, "busy", 100)).length, 100);
+  // A workflow Hatchet does not know has none, and is not asked about.
+  const asked = sent.length;
+  assert.deepEqual(await listWorkflowRuns(tenant, "never-deployed", 100), []);
+  assert.equal(sent.length, asked + 1);
 
   console.info("runs.test.ts: ok");
 })();

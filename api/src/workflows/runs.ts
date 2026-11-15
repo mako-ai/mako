@@ -25,6 +25,8 @@ import { type RunCost, readRunCosts } from "./costs";
 import { webhookUrls } from "./webhook";
 
 const RECENT_RUNS_DAYS = 30;
+/** More workflows than a tenant holds, previews and earlier commits included. */
+const KNOWN_WORKFLOWS = 1000;
 const LOG_LINES_PER_STEP = 20;
 /** The screen's whole log: a step's newest lines, up to this many. */
 const FULL_LOG_LINES = 5000;
@@ -87,6 +89,16 @@ const runSummary = (run: Row, workflowName: unknown = run.workflowName) => ({
   trigger: metadataOf(run).trigger,
 });
 
+/**
+ * Every workflow the tenant knows, with its id. Hatchet answers 50 a page
+ * unless asked for more, and keeps the workflows of earlier commits: one
+ * past the first page would have no id, and so no runs and no flow.
+ */
+const knownWorkflows = (tenant: WorkspaceTenant) =>
+  tenantJson<Rows>(tenant, `/api/v1/tenants/${tenant.tenantId}/workflows`, {
+    query: new URLSearchParams({ limit: String(KNOWN_WORKFLOWS) }),
+  });
+
 /** What a screen shows of one slot. */
 function deployment(slot?: IWorkflowSlot) {
   return {
@@ -141,7 +153,8 @@ async function loadState(workspaceId: string) {
 
 /**
  * Everything a screen or an agent shows first: what is deployed, the
- * workflows and schedules, and the last `limit` runs.
+ * workflows and schedules, and the workspace's last `limit` runs, whichever
+ * workflows they are of. One workflow's own runs: `readWorkflowRuns`.
  */
 export async function readWorkflowsOverview(
   workspaceId: string,
@@ -205,6 +218,53 @@ export async function readWorkflowsOverview(
     recentRuns: await withRunCosts(
       workspaceId,
       (runs.rows ?? []).map(run => runSummary(run)),
+    ),
+  };
+}
+
+/**
+ * One workflow's own last `limit` runs, newest first. Asked of Hatchet for
+ * that workflow alone: the workspace's last runs are those of whichever
+ * workflow runs most often, and one that runs every few minutes leaves none
+ * of a weekly one's. A workflow Hatchet does not know (never deployed) has
+ * none.
+ */
+export async function listWorkflowRuns(
+  tenant: WorkspaceTenant,
+  name: string,
+  limit: number,
+) {
+  const known = await knownWorkflows(tenant);
+  const id = idOf((known.rows ?? []).find(row => row.name === name) ?? {});
+  if (!id || !isHatchetId(id)) return [];
+  const since = new Date(Date.now() - RECENT_RUNS_DAYS * 864e5).toISOString();
+  const runs = await tenantJson<Rows>(
+    tenant,
+    `/api/v1/stable/tenants/${tenant.tenantId}/workflow-runs`,
+    {
+      query: new URLSearchParams({
+        since,
+        only_tasks: "false",
+        limit: String(limit),
+        workflow_ids: id,
+      }),
+    },
+  );
+  return (runs.rows ?? []).map(run => runSummary(run, name));
+}
+
+/** `listWorkflowRuns`, each run with its AI cost. */
+export async function readWorkflowRuns(
+  workspaceId: string,
+  tenant: WorkspaceTenant,
+  name: string,
+  limit: number,
+) {
+  return {
+    workflowId: name,
+    runs: await withRunCosts(
+      workspaceId,
+      await listWorkflowRuns(tenant, name, limit),
     ),
   };
 }
@@ -584,10 +644,7 @@ const isActiveRun = (status: unknown) =>
  * timeout. The flow before any run, or the same for every run.
  */
 export async function readWorkflowFlow(tenant: WorkspaceTenant, name: string) {
-  const list = await tenantJson<Rows>(
-    tenant,
-    `/api/v1/tenants/${tenant.tenantId}/workflows`,
-  );
+  const list = await knownWorkflows(tenant);
   const id = idOf((list.rows ?? []).find(row => row.name === name) ?? {});
   if (!id || !isHatchetId(id)) {
     throw new HatchetError(`"${name}" is not deployed`, 404);
