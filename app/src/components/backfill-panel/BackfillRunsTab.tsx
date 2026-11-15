@@ -230,7 +230,7 @@ export function BackfillRunsTab({ model }: { model: BackfillPanelModel }) {
             </Typography>
           )}
           {/* BUI Task Rows: badge + started time + duration/log meta +
-                    status pill; click loads the run's logs. */}
+              status pill; click loads the run's logs. */}
           <Box
             sx={{
               borderRadius: "14px",
