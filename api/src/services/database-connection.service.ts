@@ -17,7 +17,17 @@ import { ConnectionPool, Request as MSSQLRequest } from "mssql";
 import { IDatabaseConnection } from "../database/workspace-schema";
 import axios, { AxiosInstance } from "axios";
 import crypto from "crypto";
-import { DatabaseDriver, StreamingQueryOptions } from "../databases/driver";
+import { DatabaseDriver } from "../databases/driver";
+import type {
+  CursorReadOptions,
+  QueryExecuteOptions,
+  QueryPreviewOptions,
+  QueryPreviewResult,
+  QueryResult,
+  ReadingRowsOptions,
+  StreamingQueryOptions,
+} from "../databases/query-types";
+import { withRetry } from "../databases/retry";
 import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-postgres/driver";
 import { CloudflareD1DatabaseDriver } from "../databases/drivers/cloudflare-d1/driver";
 import { CloudflareKVDatabaseDriver } from "../databases/drivers/cloudflare-kv/driver";
@@ -32,9 +42,8 @@ import { createBigQueryPollBudget } from "./bigquery-poll-budget";
 import { sshTunnelManager, type SshTunnelConfig } from "./ssh-tunnel.service";
 import { databaseRegistry } from "../databases/registry";
 import { isLocalBigQueryEmulator } from "../utils/bigquery-emulator";
-import { bigQueryJobLabels, type QueryLabels } from "./bigquery-labels";
+import { bigQueryJobLabels } from "./bigquery-labels";
 import {
-  type PreviewPageInfo,
   buildBigQueryCursor,
   buildPreviewPage,
   checkPreviewQuerySafety,
@@ -52,25 +61,12 @@ import { StopReading } from "./query-row-cap";
 
 const logger = loggers.db();
 
-export interface QueryResult {
-  success: boolean;
-  data?: any;
-  error?: string;
-  rowCount?: number;
-  fields?: any[];
-  /** Rows were cut at the caller's `maxRows`: `data` holds the first ones. */
-  truncated?: boolean;
-}
-
-export interface QueryPreviewResult {
-  success: boolean;
-  rows?: Record<string, unknown>[];
-  error?: string;
-  rowCount?: number;
-  fields?: Array<{ name: string; type?: string }>;
-  pageInfo?: PreviewPageInfo;
-  warnings?: string[];
-}
+export type {
+  QueryExecuteOptions,
+  QueryPreviewOptions,
+  QueryPreviewResult,
+  QueryResult,
+} from "../databases/query-types";
 
 // Types for different connection contexts
 export type ConnectionContext =
@@ -82,64 +78,6 @@ export type ConnectionContext =
 export interface ConnectionConfig {
   connectionString: string;
   database: string;
-}
-
-/**
- * Options for query execution
- * Used consistently across all database drivers
- */
-export interface QueryExecuteOptions {
-  /** Set once checkConnectionWrite ran at an outer entry point. */
-  writeChecked?: boolean;
-  /**
-   * Run in a read-only transaction (or setting) without readOnly's lexical
-   * single-SELECT rule: set by checkConnectionWrite for a person's reads.
-   */
-  readOnlyTransaction?: boolean;
-  /** Target database name (for cluster/server-level connections) */
-  databaseName?: string;
-  /** Sub-database ID (e.g., Cloudflare D1 database UUID) */
-  databaseId?: string;
-  /** Batch size for paginated queries (BigQuery) */
-  batchSize?: number;
-  /** Location/region for query execution (BigQuery) */
-  location?: string;
-  /** Abort signal for cancellation */
-  signal?: AbortSignal;
-  /** Execution ID for job tracking (enables cancellation) */
-  executionId?: string;
-  /**
-   * Enforce read-only execution at the database/session layer. Unsupported
-   * engines fail closed instead of falling back to lexical SQL checks.
-   */
-  readOnly?: boolean;
-  /**
-   * Who runs this query when it is not the person or workflow of the
-   * request being served, e.g. "user:<id>" for a scheduled console run as
-   * its owner (access/connection-writes.ts).
-   */
-  actor?: string;
-  /**
-   * BigQuery only: max time to poll jobs.query until jobComplete (default 5m).
-   * Large MERGE/DML jobs need a higher value or we return a false timeout while BQ keeps running.
-   */
-  bigQueryJobMaxWaitMs?: number;
-  /**
-   * The most rows to read, where the engine can stop early (MongoDB shell
-   * queries read their cursor up to it). Engines that cannot ignore it; the
-   * caller cuts their result (query-row-cap.ts).
-   */
-  maxRows?: number;
-  /**
-   * Given each batch of rows as it is read (BigQuery: each result page).
-   * Throwing stops the read; the query fails with that error.
-   */
-  onRows?: (rows: Record<string, unknown>[]) => void;
-  /**
-   * BigQuery only: job labels for cost attribution, merged over the
-   * enclosing withQueryLabels context (these win). See bigquery-labels.ts.
-   */
-  labels?: QueryLabels;
 }
 
 /** Rows a Postgres cursor fetches at a time. */
@@ -162,181 +100,12 @@ function cursorReadable(query: string): string | null {
   return null;
 }
 
-export interface QueryPreviewOptions extends QueryExecuteOptions {
-  pageSize?: number;
-  cursor?: string | null;
-}
-
 interface PooledConnection {
   client: MongoClient;
   db: Db;
   lastUsed: Date;
   context: ConnectionContext;
   identifier: string;
-}
-
-/**
- * Options for the retry utility
- */
-interface RetryOptions {
-  /** Maximum number of retry attempts */
-  maxRetries: number;
-  /** Base delay in milliseconds (doubles with each retry) */
-  baseDelayMs: number;
-  /** Optional: only retry if error matches these patterns */
-  retryableErrorPatterns?: RegExp[];
-  /** Optional: abort signal to cancel retries */
-  signal?: AbortSignal;
-}
-
-/**
- * Default patterns for retryable connection errors
- * These indicate transient failures that may succeed on retry
- */
-const DEFAULT_RETRYABLE_ERROR_PATTERNS: RegExp[] = [
-  // Connection errors
-  /ECONNREFUSED/i,
-  /ECONNRESET/i,
-  /ETIMEDOUT/i,
-  /ENOTFOUND/i,
-  /ENETUNREACH/i,
-  /EHOSTUNREACH/i,
-  /EAI_AGAIN/i,
-  // Timeout errors
-  /timeout/i,
-  /timed out/i,
-  // Connection closed/reset
-  /connection.*closed/i,
-  /connection.*reset/i,
-  /connection.*terminated/i,
-  /socket hang up/i,
-  // Server temporarily unavailable (cold start)
-  /service unavailable/i,
-  /503/i,
-  /502/i,
-  /temporarily unavailable/i,
-  // ClickHouse specific
-  /Code: 159/i, // TIMEOUT_EXCEEDED
-  /Code: 209/i, // SOCKET_TIMEOUT
-  /Code: 210/i, // NETWORK_ERROR
-];
-
-/**
- * Patterns for errors that should NOT be retried
- * These indicate permanent failures (syntax errors, auth issues, etc.)
- */
-const NON_RETRYABLE_ERROR_PATTERNS: RegExp[] = [
-  // SQL syntax errors
-  /syntax error/i,
-  /parse error/i,
-  // Authentication/authorization
-  /authentication failed/i,
-  /access denied/i,
-  /permission denied/i,
-  /unauthorized/i,
-  /invalid.*password/i,
-  /invalid.*credentials/i,
-  // Invalid queries
-  /unknown.*table/i,
-  /unknown.*column/i,
-  /unknown.*database/i,
-  /does not exist/i,
-  /no such/i,
-  // Query cancelled by user
-  /cancelled/i,
-  /aborted/i,
-];
-
-/**
- * Check if an error is retryable based on error patterns
- */
-function isRetryableError(error: Error, customPatterns?: RegExp[]): boolean {
-  const errorMessage = error.message || "";
-  const errorName = error.name || "";
-  const fullErrorString = `${errorName}: ${errorMessage}`;
-
-  // First check if it's explicitly non-retryable
-  for (const pattern of NON_RETRYABLE_ERROR_PATTERNS) {
-    if (pattern.test(fullErrorString)) {
-      return false;
-    }
-  }
-
-  // Then check if it matches retryable patterns
-  const patterns = customPatterns || DEFAULT_RETRYABLE_ERROR_PATTERNS;
-  for (const pattern of patterns) {
-    if (pattern.test(fullErrorString)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
- * Execute a function with retry logic and exponential backoff
- * Used for transient connection failures and cold starts
- */
-async function withRetry<T>(
-  fn: () => Promise<T>,
-  options: RetryOptions,
-): Promise<T> {
-  const { maxRetries, baseDelayMs, retryableErrorPatterns, signal } = options;
-  let lastError: Error | undefined;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    // Check if cancelled
-    if (signal?.aborted) {
-      throw new Error("Operation cancelled");
-    }
-
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-
-      // Don't retry if this is the last attempt
-      if (attempt >= maxRetries) {
-        break;
-      }
-
-      // Don't retry non-retryable errors
-      if (!isRetryableError(lastError, retryableErrorPatterns)) {
-        break;
-      }
-
-      // Calculate delay with exponential backoff
-      const delayMs = baseDelayMs * Math.pow(2, attempt);
-      logger.debug("Retry attempt failed, retrying", {
-        attempt: attempt + 1,
-        maxRetries: maxRetries + 1,
-        error: lastError.message,
-        delayMs,
-      });
-
-      // Wait before retrying
-      await new Promise<void>((resolve, reject) => {
-        const abortHandler = () => {
-          clearTimeout(timeoutId);
-          reject(new Error("Operation cancelled"));
-        };
-
-        const timeoutId = setTimeout(() => {
-          // Clean up abort listener when timeout completes normally
-          if (signal) {
-            signal.removeEventListener("abort", abortHandler);
-          }
-          resolve();
-        }, delayMs);
-
-        if (signal) {
-          signal.addEventListener("abort", abortHandler, { once: true });
-        }
-      });
-    }
-  }
-
-  throw lastError;
 }
 
 /**
@@ -714,11 +483,7 @@ export class DatabaseConnectionService {
   async executeQueryReadingRows(
     database: IDatabaseConnection,
     query: string,
-    options: QueryExecuteOptions & {
-      onRows: (rows: Record<string, unknown>[]) => void;
-      /** Statement timeout for the cursor read and BigQuery's job wait. */
-      timeoutMs?: number;
-    },
+    options: ReadingRowsOptions,
   ): Promise<QueryResult> {
     const check = await checkConnectionWrite(database, query, options);
     if (check.refused) return { success: false, error: check.refused };
@@ -767,12 +532,7 @@ export class DatabaseConnectionService {
   private async executePostgreSQLCursor(
     database: IDatabaseConnection,
     query: string,
-    options: QueryExecuteOptions & {
-      onRows: (rows: Record<string, unknown>[]) => void | Promise<void>;
-      timeoutMs?: number;
-      fetchRows?: number;
-      keepRows?: boolean;
-    },
+    options: CursorReadOptions,
   ): Promise<QueryResult> {
     const { executionId, signal, timeoutMs } = options;
     const fetchRows = Math.max(

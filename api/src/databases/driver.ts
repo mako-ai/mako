@@ -1,4 +1,16 @@
 import { IDatabaseConnection } from "../database/workspace-schema";
+import type {
+  CancelResult,
+  QueryExecuteOptions,
+  QueryResult,
+} from "./query-types";
+
+export type {
+  CancelResult,
+  QueryExecuteOptions,
+  QueryResult,
+  StreamingQueryOptions,
+} from "./query-types";
 
 export interface DatabaseTreeNode {
   id: string;
@@ -79,20 +91,6 @@ export interface UpsertOptions extends InsertOptions {
   conflictStrategy?: "update" | "ignore" | "replace";
 }
 
-/**
- * Options for streaming query execution (cursor-based reading)
- */
-export interface StreamingQueryOptions {
-  /** Batch size for streaming reads */
-  batchSize?: number;
-  /** Callback for each batch of rows */
-  onBatch: (rows: Record<string, unknown>[]) => Promise<void>;
-  /** Abort signal for cancellation */
-  signal?: AbortSignal;
-  /** Target database name (for cluster mode) */
-  databaseName?: string;
-}
-
 export interface DatabaseDriver {
   getMetadata(): DatabaseDriverMetadata;
   getTreeRoot(database: IDatabaseConnection): Promise<DatabaseTreeNode[]>;
@@ -115,22 +113,15 @@ export interface DatabaseDriver {
   executeQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: any,
-  ): Promise<{
-    success: boolean;
-    data?: any;
-    error?: string;
-    rowCount?: number;
-  }>;
+    options?: QueryExecuteOptions,
+  ): Promise<QueryResult>;
 
   /**
    * Optional: cancel an in-flight query started via executeQuery that was provided an executionId.
    * Implementations should return { success: false, error: "Query not found or already completed" }
    * when the executionId is unknown.
    */
-  cancelQuery?(
-    executionId: string,
-  ): Promise<{ success: boolean; error?: string }>;
+  cancelQuery?(executionId: string): Promise<CancelResult>;
 
   /**
    * Optional: drop whatever this driver caches for one connection (pools,
