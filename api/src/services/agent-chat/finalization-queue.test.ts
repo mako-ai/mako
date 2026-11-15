@@ -3,7 +3,7 @@ import {
   scheduleChatFinalization,
   awaitChatFinalization,
   getChatFinalizationChainCount,
-} from "./chat-finalization-queue";
+} from "./finalization-queue";
 
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 

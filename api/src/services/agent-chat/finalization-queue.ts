@@ -1,4 +1,4 @@
-import { loggers } from "../logging";
+import { loggers } from "../../logging";
 
 const logger = loggers.agent();
 
@@ -22,7 +22,7 @@ const logger = loggers.agent();
  *
  * This regression has been re-introduced multiple times (PR #424, PR #440) by
  * awaiting finalization inline again. `scheduleChatFinalization` MUST stay
- * non-blocking — see `chat-finalization-queue.test.ts`.
+ * non-blocking — see `finalization-queue.test.ts`.
  */
 const chatFinalizationChains = new Map<string, Promise<void>>();
 
