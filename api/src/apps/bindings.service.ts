@@ -16,6 +16,7 @@
  * fetches a relative URL and reads it with DuckDB-WASM (v1's useRows
  * pattern ports over with a one-line URL change).
  */
+import { isValidBindingName } from "./binding-name";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -212,7 +213,6 @@ import { reportBindingPhase } from "./binding-progress";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps");
-const NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 
 export interface AppBinding {
   name: string;
@@ -296,7 +296,7 @@ export async function bindingArtifactKeyByName(
   /** Resolve the binding as of this commit (published serving). */
   at?: string,
 ): Promise<string | null> {
-  if (!NAME_RE.test(name)) return null;
+  if (!isValidBindingName(name)) return null;
   // ONE binding file, not every binding in the app. This is the serving path
   // — each `__data/<name>.parquet` request resolves its key here — and every
   // file read re-resolves the actor's source, which asks the sandbox provider
@@ -366,7 +366,7 @@ export async function readCommittedBinding(
   /** Read the binding as of this commit rather than the actor's view. */
   at?: string,
 ): Promise<AppBinding | null> {
-  if (!NAME_RE.test(name)) return null;
+  if (!isValidBindingName(name)) return null;
   let file: { contents: string };
   try {
     file = await readFile(project, `bindings/${name}.sql`, actorId, at);
@@ -395,7 +395,7 @@ export async function readMainBinding(
   project: IAppProject,
   name: string,
 ): Promise<AppBinding | null> {
-  if (!NAME_RE.test(name)) return null;
+  if (!isValidBindingName(name)) return null;
   // Best-effort and throttled: a mirror that cannot be reached leaves the
   // local copy of main, which is still never a sandbox.
   await freshenForServe(project.workspaceId.toString());
@@ -448,7 +448,7 @@ export async function readBindingMaterialization(
   actorId: string,
   at?: string,
 ): Promise<AppBinding["materialization"] | null> {
-  if (!NAME_RE.test(name)) return null;
+  if (!isValidBindingName(name)) return null;
   let file: { contents: string };
   try {
     file = await readFile(project, `bindings/${name}.sql`, actorId, at);
@@ -592,7 +592,7 @@ export async function readBindingsTolerant(
   const skipped: BindingsReadResult["skipped"] = [];
   for (const path of paths) {
     const name = path.replace(/^bindings\//, "").replace(/\.sql$/, "");
-    if (!NAME_RE.test(name)) {
+    if (!isValidBindingName(name)) {
       skipped.push({ path, error: `Invalid binding filename: ${path}` });
       continue;
     }
