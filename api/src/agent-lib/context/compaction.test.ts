@@ -487,4 +487,82 @@ t("artifacts: whitespace-only texts are never collapsed together", () => {
   assert.equal(res.changed, false);
 });
 
+function assistantWithNamedTool(
+  id: string,
+  toolName: string,
+  output: unknown,
+): UIMessage {
+  return {
+    id,
+    role: "assistant",
+    parts: [
+      {
+        type: `tool-${toolName}`,
+        toolCallId: `call-${id}`,
+        toolName,
+        input: { query: "mrr" },
+        output,
+        state: "output-available",
+      },
+    ],
+  } as UIMessage;
+}
+
+t(
+  "keeps definition tools' outputs (lookup_term, list_metrics, …) in old turns",
+  () => {
+    // Over the 400-token elision threshold, under the 4,000-token exemption cap.
+    const definition = {
+      success: true,
+      data: Array.from({ length: 60 }, (_, i) => ({
+        id: i,
+        value: `row-${i}-${"x".repeat(40)}`,
+      })),
+    };
+    const msgs: UIMessage[] = [];
+    const names = [
+      "lookup_term",
+      "list_metrics",
+      "describe_model",
+      "get_workspace_context",
+      "load_skill",
+      "sql_execute_query",
+    ];
+    names.forEach((name, i) => {
+      msgs.push(userMsg(`u${i}`, `Question ${i}`));
+      msgs.push(assistantWithNamedTool(`a${i}`, name, definition));
+    });
+    msgs.push(userMsg("u-last", "and now?"));
+    msgs.push(assistantWithTool("a-last", "last"));
+    msgs.push(userMsg("u-final", "final"));
+    const res = elideOldToolOutputs(msgs);
+    const byId = new Map(res.messages.map(m => [m.id, m]));
+    for (const [i, name] of names.entries()) {
+      const elided = isElided(byId.get(`a${i}`) as UIMessage);
+      assert.equal(
+        elided,
+        name === "sql_execute_query",
+        `${name} output should ${name === "sql_execute_query" ? "" : "not "}be elided`,
+      );
+    }
+    assert.equal(res.elidedCount, 1);
+  },
+);
+
+t("an exempt tool's output over the cap is still elided", () => {
+  const huge = {
+    success: true,
+    data: Array.from({ length: 2_000 }, (_, i) => `row-${i}-${"x".repeat(40)}`),
+  };
+  const msgs: UIMessage[] = [
+    userMsg("u0", "q0"),
+    assistantWithNamedTool("a0", "lookup_term", huge),
+    userMsg("u1", "q1"),
+    assistantWithTool("a1", "1"),
+    userMsg("u2", "q2"),
+  ];
+  const res = elideOldToolOutputs(msgs);
+  assert.equal(isElided(res.messages[1]), true);
+});
+
 process.stdout.write("\nAll compaction tests passed.\n");
