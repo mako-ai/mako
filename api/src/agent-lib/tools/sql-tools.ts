@@ -1020,8 +1020,19 @@ export async function resolveSqlQueryTarget(
   if (queryAccess === "none") {
     throw new Error("This API key does not have query access");
   }
+  if (queryAccess === "read") {
+    // Refused before any lookup when no engine would read it as one
+    // read-only statement (a backslash escapes a quote on some engines and
+    // not on others, so both readings are asked).
+    const accessError = sqlReadOnlyAccessError(query, "postgresql");
+    if (accessError && sqlReadOnlyAccessError(query, "bigquery")) {
+      throw new Error(accessError);
+    }
+  }
+
   const database = await fetchSqlDatabase(connectionId, workspaceId);
   if (queryAccess === "read") {
+    // And by the rules of the engine it will run on.
     const accessError = sqlReadOnlyAccessError(query, database.type);
     if (accessError) throw new Error(accessError);
   }
