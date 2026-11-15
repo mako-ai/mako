@@ -62,10 +62,6 @@ consoleHistoryRoutes.openapi(
   }),
   async c => {
     try {
-      // The comment is generated against the stored console: only someone
-      // who can read that console may ask for one.
-      const loaded = await loadReadableConsole(c, { write: false });
-      if (loaded instanceof Response) return loaded;
       const user = c.get("user");
       if (!user) return accessDenied(c);
 
@@ -84,7 +80,10 @@ consoleHistoryRoutes.openapi(
         source,
         aiPrompt,
         user,
+        memberRole: c.get("memberRole") as string | undefined,
       });
+      // Null: the console exists and the caller cannot read it.
+      if (!generated) return fail(c, 404, "Console not found");
       return c.json({ success: true, ...generated });
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);

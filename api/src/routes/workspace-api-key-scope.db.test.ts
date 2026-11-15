@@ -148,6 +148,22 @@ async function main() {
       "no version comment on a private console",
     );
 
+    // A draft (never saved: no row) still gets a comment request through:
+    // the read check applies only to a stored console. Generation itself
+    // needs an AI gateway, so only "not refused as not-found" is asserted.
+    const draftComment = await app.request(
+      `/api/workspaces/${wsA}/consoles/${new Types.ObjectId()}/version-comment`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${KEY_A_VIC}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ newContent: "select 3" }),
+      },
+    );
+    assert.notEqual(draftComment.status, 404, "a draft is not refused");
+
     console.info("workspace api-key scope tests passed");
   } finally {
     await mongoose.disconnect();

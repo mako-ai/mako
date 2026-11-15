@@ -7,6 +7,7 @@ import { SavedConsole } from "../../database/workspace-schema";
 import { getLogger } from "../../logging";
 import { savedConsoleStateFromRepo } from "../../apps/workspace-consoles.service";
 import { generateVersionComment } from "../version-comment.service";
+import { canReadConsole } from "./access";
 
 const logger = getLogger(["api", "consoles"]);
 
@@ -20,6 +21,7 @@ export async function consoleVersionComment(input: {
   source: unknown;
   aiPrompt: unknown;
   user: { id: string; email?: string };
+  memberRole?: string;
 }) {
   const { workspaceId, consoleId, newContent } = input;
   let previousContent = "";
@@ -28,7 +30,12 @@ export async function consoleVersionComment(input: {
     const row = await SavedConsole.findOne({
       _id: new Types.ObjectId(consoleId),
       workspaceId: new Types.ObjectId(workspaceId),
-    }).select("workspaceId path");
+    });
+    // A stored console the caller cannot read gets no comment (it would
+    // summarise its content). A draft has no row yet: empty baseline.
+    if (row && !canReadConsole(row, input.user.id, input.memberRole)) {
+      return null;
+    }
     const saved = row ? await savedConsoleStateFromRepo(row) : null;
     if (saved?.code) {
       previousContent = saved.code;
