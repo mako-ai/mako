@@ -10,7 +10,6 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { Workspace } from "../database/workspace-schema";
 import { User } from "../database/schema";
@@ -21,7 +20,7 @@ import {
   getBillingStatus,
   PortalUnavailableError,
 } from "../billing/billing.service";
-import { loggers, enrichContextWithWorkspace } from "../logging";
+import { loggers } from "../logging";
 import {
   AUTH_SECURITY,
   OPEN_RESPONSES,
@@ -31,6 +30,8 @@ import {
   pathParam,
   type AuthEnv,
 } from "../openapi/core";
+import { fail } from "./lib/respond";
+import { requireWorkspaceAccess } from "./lib/workspace-access";
 
 const logger = loggers.api("billing");
 
@@ -56,32 +57,13 @@ const StripeUrlResponse = jsonContent(
 
 billingRoutes.use("*", unifiedAuthMiddleware);
 
-billingRoutes.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId");
-  if (!workspaceId) return c.json({ error: "Missing workspaceId" }, 400);
-
-  const user = c.get("user");
-  const workspace = c.get("workspace");
-
-  if (workspace) {
-    if (workspace._id.toString() !== workspaceId) {
-      return c.json(
-        { error: "API key not authorized for this workspace" },
-        403,
-      );
-    }
-  } else if (user) {
-    const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-    if (!hasAccess) {
-      return c.json({ error: "Access denied" }, 403);
-    }
-  } else {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
-  enrichContextWithWorkspace(workspaceId);
-  await next();
-});
+billingRoutes.use(
+  "*",
+  requireWorkspaceAccess({
+    whenMissing: "reject",
+    deniedMessage: "Access denied",
+  }),
+);
 
 async function assertOwnerOrAdminBillingAccess(
   c: Context<AuthEnv>,
@@ -89,10 +71,7 @@ async function assertOwnerOrAdminBillingAccess(
 ) {
   const user = c.get("user");
   if (!user) {
-    return c.json(
-      { error: "Session auth required for billing management" },
-      401,
-    );
+    return fail(c, 401, "Session auth required for billing management");
   }
 
   const isOwnerOrAdmin = await workspaceService.hasRole(workspaceId, user.id, [
@@ -100,7 +79,7 @@ async function assertOwnerOrAdminBillingAccess(
     "admin",
   ]);
   if (!isOwnerOrAdmin) {
-    return c.json({ error: "Owner/admin role required" }, 403);
+    return fail(c, 403, "Owner/admin role required");
   }
 
   return null;
@@ -122,7 +101,7 @@ billingRoutes.openapi(
   async c => {
     const workspaceId = c.req.param("workspaceId");
     if (!workspaceId) {
-      return c.json({ error: "Missing workspaceId" }, 400);
+      return fail(c, 400, "Missing workspaceId");
     }
 
     if (!isBillingEnabled()) {
@@ -147,7 +126,7 @@ billingRoutes.openapi(
       return c.json({ billingEnabled: true, ...status });
     } catch (err) {
       logger.error("Error fetching billing status", { error: err });
-      return c.json({ error: "Internal server error" }, 500);
+      return fail(c, 500, "Internal server error");
     }
   },
 );
@@ -168,12 +147,12 @@ billingRoutes.openapi(
   }),
   async c => {
     if (!isBillingEnabled()) {
-      return c.json({ error: "Billing is not enabled" }, 400);
+      return fail(c, 400, "Billing is not enabled");
     }
 
     const workspaceId = c.req.param("workspaceId");
     if (!workspaceId) {
-      return c.json({ error: "Missing workspaceId" }, 400);
+      return fail(c, 400, "Missing workspaceId");
     }
     const roleError = await assertOwnerOrAdminBillingAccess(c, workspaceId);
     if (roleError) {
@@ -182,14 +161,14 @@ billingRoutes.openapi(
 
     const user = c.get("user");
     if (!user) {
-      return c.json({ error: "Session auth required for checkout" }, 401);
+      return fail(c, 401, "Session auth required for checkout");
     }
 
     let body: { successUrl?: string; cancelUrl?: string };
     try {
       body = await c.req.json();
     } catch {
-      return c.json({ error: "Invalid request body" }, 400);
+      return fail(c, 400, "Invalid request body");
     }
 
     const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
@@ -200,19 +179,19 @@ billingRoutes.openapi(
     const allowedOrigin = new URL(clientUrl).origin;
     try {
       if (new URL(successUrl).origin !== allowedOrigin) {
-        return c.json({ error: "Invalid successUrl" }, 400);
+        return fail(c, 400, "Invalid successUrl");
       }
       if (new URL(cancelUrl).origin !== allowedOrigin) {
-        return c.json({ error: "Invalid cancelUrl" }, 400);
+        return fail(c, 400, "Invalid cancelUrl");
       }
     } catch {
-      return c.json({ error: "Invalid redirect URL" }, 400);
+      return fail(c, 400, "Invalid redirect URL");
     }
 
     try {
       const workspace = await Workspace.findById(workspaceId);
       if (!workspace) {
-        return c.json({ error: "Workspace not found" }, 404);
+        return fail(c, 404, "Workspace not found");
       }
 
       const subStatus = workspace.billing?.subscriptionStatus;
@@ -220,10 +199,7 @@ billingRoutes.openapi(
         workspace.billing?.plan === "pro" &&
         (subStatus === "active" || subStatus === "trialing")
       ) {
-        return c.json(
-          { error: "Workspace already has an active Pro plan" },
-          400,
-        );
+        return fail(c, 400, "Workspace already has an active Pro plan");
       }
 
       const userDoc = await User.findById(user.id);
@@ -239,7 +215,7 @@ billingRoutes.openapi(
       return c.json({ url }, 200);
     } catch (err) {
       logger.error("Error creating checkout session", { error: err });
-      return c.json({ error: "Failed to create checkout session" }, 500);
+      return fail(c, 500, "Failed to create checkout session");
     }
   },
 );
@@ -260,12 +236,12 @@ billingRoutes.openapi(
   }),
   async c => {
     if (!isBillingEnabled()) {
-      return c.json({ error: "Billing is not enabled" }, 400);
+      return fail(c, 400, "Billing is not enabled");
     }
 
     const workspaceId = c.req.param("workspaceId");
     if (!workspaceId) {
-      return c.json({ error: "Missing workspaceId" }, 400);
+      return fail(c, 400, "Missing workspaceId");
     }
     const roleError = await assertOwnerOrAdminBillingAccess(c, workspaceId);
     if (roleError) {
@@ -274,7 +250,7 @@ billingRoutes.openapi(
 
     const user = c.get("user");
     if (!user) {
-      return c.json({ error: "Session auth required for portal" }, 401);
+      return fail(c, 401, "Session auth required for portal");
     }
 
     let body: { returnUrl?: string } = {};
@@ -290,20 +266,20 @@ billingRoutes.openapi(
     const allowedOrigin = new URL(clientUrl).origin;
     try {
       if (new URL(returnUrl).origin !== allowedOrigin) {
-        return c.json({ error: "Invalid returnUrl" }, 400);
+        return fail(c, 400, "Invalid returnUrl");
       }
     } catch {
-      return c.json({ error: "Invalid redirect URL" }, 400);
+      return fail(c, 400, "Invalid redirect URL");
     }
 
     try {
       const workspace = await Workspace.findById(workspaceId);
       if (!workspace) {
-        return c.json({ error: "Workspace not found" }, 404);
+        return fail(c, 404, "Workspace not found");
       }
 
       if (!workspace.billing?.stripeCustomerId) {
-        return c.json({ error: "No billing account to manage" }, 400);
+        return fail(c, 400, "No billing account to manage");
       }
 
       const url = await createPortalSession(workspace, returnUrl);
@@ -311,10 +287,10 @@ billingRoutes.openapi(
       return c.json({ url }, 200);
     } catch (err) {
       if (err instanceof PortalUnavailableError) {
-        return c.json({ error: "No billing account to manage" }, 400);
+        return fail(c, 400, "No billing account to manage");
       }
       logger.error("Error creating portal session", { error: err });
-      return c.json({ error: "Failed to create portal session" }, 500);
+      return fail(c, 500, "Failed to create portal session");
     }
   },
 );

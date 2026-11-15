@@ -17,6 +17,7 @@ import {
   previewableWorkspaceApp,
   rasterThumbnail,
 } from "../services/share-og.service";
+import { fail } from "./lib/respond";
 
 const logger = loggers.api("og");
 
@@ -77,7 +78,7 @@ ogRoutes.openapi(
       });
     } catch (error) {
       logger.error("Error serving app preview image", { error });
-      return c.json({ success: false, error: "Failed to load image" }, 500);
+      return fail(c, 500, "Failed to load image");
     }
   },
 );

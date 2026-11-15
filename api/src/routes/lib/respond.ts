@@ -29,6 +29,15 @@ export function fail<S extends ContentfulStatusCode, E extends object = object>(
   );
 }
 
+/**
+ * A 500 carrying the thrown error's message, or `fallback` when the thrown
+ * value is not an Error — the shape most route catch blocks have always
+ * answered with. Prefer a fixed message for new code.
+ */
+export function failFromThrown(c: Context, error: unknown, fallback: string) {
+  return fail(c, 500, error instanceof Error ? error.message : fallback);
+}
+
 /** The message of an unknown thrown value, for logs (never raw to clients on 5xx). */
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

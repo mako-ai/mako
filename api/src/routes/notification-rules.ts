@@ -34,6 +34,7 @@ import {
 } from "../services/flow-run-notification.helpers";
 import { inngest } from "../inngest";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { fail, failFromThrown } from "./lib/respond";
 
 const logger = loggers.api("notification-rules");
 
@@ -73,14 +74,11 @@ notificationRulesRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const user = c.get("user");
 
   if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-    return c.json(
-      { success: false, error: "Invalid workspace ID format" },
-      400,
-    );
+    return fail(c, 400, "Invalid workspace ID format");
   }
 
   if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-    return c.json({ success: false, error: "Access denied to workspace" }, 403);
+    return fail(c, 403, "Access denied to workspace");
   }
 
   await next();
@@ -188,8 +186,7 @@ notificationRulesRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId") as string;
       const resourceType = c.req.query("resourceType") as
-        | NotificationResourceType
-        | undefined;
+        NotificationResourceType | undefined;
       const resourceId = c.req.query("resourceId");
 
       if (
@@ -198,10 +195,7 @@ notificationRulesRoutes.openapi(
         !resourceId ||
         !Types.ObjectId.isValid(resourceId)
       ) {
-        return c.json(
-          { success: false, error: "resourceType and resourceId required" },
-          400,
-        );
+        return fail(c, 400, "resourceType and resourceId required");
       }
 
       const ok = await assertResourceInWorkspace(
@@ -210,7 +204,7 @@ notificationRulesRoutes.openapi(
         resourceId,
       );
       if (!ok) {
-        return c.json({ success: false, error: "Resource not found" }, 404);
+        return fail(c, 404, "Resource not found");
       }
 
       const rules = await NotificationRule.find({
@@ -225,16 +219,7 @@ notificationRulesRoutes.openapi(
       });
     } catch (error) {
       logger.error("List notification rules failed", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to list notification rules",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Failed to list notification rules");
     }
   },
 );
@@ -261,8 +246,7 @@ notificationRulesRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId") as string;
       const resourceType = c.req.query("resourceType") as
-        | NotificationResourceType
-        | undefined;
+        NotificationResourceType | undefined;
       const resourceId = c.req.query("resourceId");
       const limitRaw = c.req.query("limit");
       const limit = Math.min(
@@ -276,10 +260,7 @@ notificationRulesRoutes.openapi(
         !resourceId ||
         !Types.ObjectId.isValid(resourceId)
       ) {
-        return c.json(
-          { success: false, error: "resourceType and resourceId required" },
-          400,
-        );
+        return fail(c, 400, "resourceType and resourceId required");
       }
 
       const ok = await assertResourceInWorkspace(
@@ -288,7 +269,7 @@ notificationRulesRoutes.openapi(
         resourceId,
       );
       if (!ok) {
-        return c.json({ success: false, error: "Resource not found" }, 404);
+        return fail(c, 404, "Resource not found");
       }
 
       const deliveries = await NotificationDelivery.find({
@@ -319,16 +300,7 @@ notificationRulesRoutes.openapi(
       });
     } catch (error) {
       logger.error("List notification deliveries failed", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to list deliveries",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Failed to list deliveries");
     }
   },
 );
@@ -363,10 +335,7 @@ notificationRulesRoutes.openapi(
         !Types.ObjectId.isValid(resourceId) ||
         !triggers
       ) {
-        return c.json(
-          { success: false, error: "Invalid resource or triggers" },
-          400,
-        );
+        return fail(c, 400, "Invalid resource or triggers");
       }
 
       const ok = await assertResourceInWorkspace(
@@ -375,15 +344,12 @@ notificationRulesRoutes.openapi(
         resourceId,
       );
       if (!ok) {
-        return c.json({ success: false, error: "Resource not found" }, 404);
+        return fail(c, 404, "Resource not found");
       }
 
       const parsed = parseChannelFromBody(body);
       if (!parsed) {
-        return c.json(
-          { success: false, error: "Invalid channel configuration" },
-          400,
-        );
+        return fail(c, 400, "Invalid channel configuration");
       }
 
       const channel = encryptNotificationChannel(parsed.channel);
@@ -412,16 +378,7 @@ notificationRulesRoutes.openapi(
       return c.json(response);
     } catch (error) {
       logger.error("Create notification rule failed", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to create notification rule",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Failed to create notification rule");
     }
   },
 );
@@ -441,7 +398,7 @@ notificationRulesRoutes.openapi(
       const workspaceId = c.req.param("workspaceId") as string;
       const ruleId = c.req.param("ruleId") as string;
       if (!Types.ObjectId.isValid(ruleId)) {
-        return c.json({ success: false, error: "Invalid rule id" }, 400);
+        return fail(c, 400, "Invalid rule id");
       }
 
       const existing = await NotificationRule.findOne({
@@ -449,7 +406,7 @@ notificationRulesRoutes.openapi(
         workspaceId: new Types.ObjectId(workspaceId),
       });
       if (!existing) {
-        return c.json({ success: false, error: "Rule not found" }, 404);
+        return fail(c, 404, "Rule not found");
       }
 
       const body = (await c.req.json()) as Record<string, unknown>;
@@ -471,20 +428,14 @@ notificationRulesRoutes.openapi(
         if (channelType === "email") {
           const parsed = parseChannelFromBody(body);
           if (!parsed || parsed.channel.type !== "email") {
-            return c.json(
-              { success: false, error: "Invalid email recipients" },
-              400,
-            );
+            return fail(c, 400, "Invalid email recipients");
           }
           channel = encryptNotificationChannel(parsed.channel);
         } else if (channelType === "webhook") {
           if (existing.channel.type !== "webhook") {
             const parsed = parseChannelFromBody(body);
             if (!parsed || parsed.channel.type !== "webhook") {
-              return c.json(
-                { success: false, error: "Webhook URL required" },
-                400,
-              );
+              return fail(c, 400, "Webhook URL required");
             }
             channel = encryptNotificationChannel(parsed.channel);
           } else {
@@ -522,10 +473,7 @@ notificationRulesRoutes.openapi(
           if (existing.channel.type !== "slack") {
             const parsed = parseChannelFromBody(body);
             if (!parsed || parsed.channel.type !== "slack") {
-              return c.json(
-                { success: false, error: "Slack webhook URL required" },
-                400,
-              );
+              return fail(c, 400, "Slack webhook URL required");
             }
             channel = encryptNotificationChannel(parsed.channel);
           } else {
@@ -549,7 +497,7 @@ notificationRulesRoutes.openapi(
             });
           }
         } else {
-          return c.json({ success: false, error: "Invalid channel type" }, 400);
+          return fail(c, 400, "Invalid channel type");
         }
 
         update.channel = channel;
@@ -571,16 +519,7 @@ notificationRulesRoutes.openapi(
       });
     } catch (error) {
       logger.error("Update notification rule failed", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to update notification rule",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Failed to update notification rule");
     }
   },
 );
@@ -600,7 +539,7 @@ notificationRulesRoutes.openapi(
       const workspaceId = c.req.param("workspaceId") as string;
       const ruleId = c.req.param("ruleId") as string;
       if (!Types.ObjectId.isValid(ruleId)) {
-        return c.json({ success: false, error: "Invalid rule id" }, 400);
+        return fail(c, 400, "Invalid rule id");
       }
 
       const result = await NotificationRule.deleteOne({
@@ -609,22 +548,13 @@ notificationRulesRoutes.openapi(
       });
 
       if (result.deletedCount === 0) {
-        return c.json({ success: false, error: "Rule not found" }, 404);
+        return fail(c, 404, "Rule not found");
       }
 
       return c.json({ success: true });
     } catch (error) {
       logger.error("Delete notification rule failed", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to delete notification rule",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Failed to delete notification rule");
     }
   },
 );
@@ -655,7 +585,7 @@ notificationRulesRoutes.openapi(
         !resourceId ||
         !Types.ObjectId.isValid(resourceId)
       ) {
-        return c.json({ success: false, error: "Invalid resource" }, 400);
+        return fail(c, 400, "Invalid resource");
       }
 
       const ok = await assertResourceInWorkspace(
@@ -664,7 +594,7 @@ notificationRulesRoutes.openapi(
         resourceId,
       );
       if (!ok) {
-        return c.json({ success: false, error: "Resource not found" }, 404);
+        return fail(c, 404, "Resource not found");
       }
 
       let channel: INotificationRuleChannel;
@@ -675,16 +605,13 @@ notificationRulesRoutes.openapi(
           workspaceId: new Types.ObjectId(workspaceId),
         });
         if (!rule) {
-          return c.json({ success: false, error: "Rule not found" }, 404);
+          return fail(c, 404, "Rule not found");
         }
         channel = rule.channel as INotificationRuleChannel;
       } else {
         const parsed = parseChannelFromBody(body);
         if (!parsed) {
-          return c.json(
-            { success: false, error: "Invalid channel configuration" },
-            400,
-          );
+          return fail(c, 400, "Invalid channel configuration");
         }
         channel = encryptNotificationChannel(parsed.channel);
       }
@@ -750,16 +677,7 @@ notificationRulesRoutes.openapi(
       return c.json({ success: true, message: "Test notification sent" });
     } catch (error) {
       logger.error("Test notification failed", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to queue test notification",
-        },
-        500,
-      );
+      return failFromThrown(c, error, "Failed to queue test notification");
     }
   },
 );

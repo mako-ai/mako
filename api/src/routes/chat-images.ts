@@ -1,14 +1,14 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { ObjectId } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import {
   getChatAttachmentForUser,
   openChatAttachmentStream,
 } from "../services/chat-attachment.service";
-import { loggers, enrichContextWithWorkspace } from "../logging";
-import { workspaceService } from "../services/workspace.service";
+import { loggers } from "../logging";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { fail } from "./lib/respond";
+import { requireWorkspaceAccess } from "./lib/workspace-access";
 
 const logger = loggers.api("chat-images");
 
@@ -27,32 +27,7 @@ export const chatImagesRoutes = createRouter();
 chatImagesRoutes.use("*", unifiedAuthMiddleware);
 
 // Verify workspace access (same defense-in-depth pattern as chats route).
-chatImagesRoutes.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId");
-  if (workspaceId) {
-    const user = c.get("user");
-    const workspace = c.get("workspace");
-
-    if (workspace) {
-      if (workspace._id.toString() !== workspaceId) {
-        return c.json(
-          { error: "API key not authorized for this workspace" },
-          403,
-        );
-      }
-    } else if (user) {
-      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-      if (!hasAccess) {
-        return c.json({ error: "Access denied to workspace" }, 403);
-      }
-    } else {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
-
-    enrichContextWithWorkspace(workspaceId);
-  }
-  await next();
-});
+chatImagesRoutes.use("*", requireWorkspaceAccess());
 
 function nodeStreamToWeb(
   nodeStream: NodeJS.ReadableStream,
@@ -126,17 +101,17 @@ chatImagesRoutes.openapi(
       const user = c.get("user");
       const userId = user?.id;
       if (!userId) {
-        return c.json({ error: "User not authenticated" }, 401);
+        return fail(c, 401, "User not authenticated");
       }
 
       const workspaceId = c.req.param("workspaceId") as string;
       const attachmentId = c.req.param("attachmentId");
 
       if (!ObjectId.isValid(workspaceId)) {
-        return c.json({ error: "Invalid workspace id" }, 400);
+        return fail(c, 400, "Invalid workspace id");
       }
       if (!ObjectId.isValid(attachmentId)) {
-        return c.json({ error: "Invalid attachment id" }, 400);
+        return fail(c, 400, "Invalid attachment id");
       }
 
       const attachment = await getChatAttachmentForUser(
@@ -145,7 +120,7 @@ chatImagesRoutes.openapi(
         userId.toString(),
       );
       if (!attachment) {
-        return c.json({ error: "Attachment not found" }, 404);
+        return fail(c, 404, "Attachment not found");
       }
 
       // Content-addressed id => safe to cache forever in the browser.
@@ -160,7 +135,7 @@ chatImagesRoutes.openapi(
           attachmentId,
           workspaceId,
         });
-        return c.json({ error: "Attachment not available" }, 404);
+        return fail(c, 404, "Attachment not available");
       }
 
       const headers: Record<string, string> = {
@@ -177,7 +152,7 @@ chatImagesRoutes.openapi(
       return c.body(nodeStreamToWeb(stream), 200, headers);
     } catch (error) {
       logger.error("Error serving chat image", { error });
-      return c.json({ error: "Failed to load attachment" }, 500);
+      return fail(c, 500, "Failed to load attachment");
     }
   },
 );

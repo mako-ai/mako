@@ -9,10 +9,8 @@ import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { ObjectId } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { AuthenticatedContext } from "../middleware/workspace.middleware";
-import { workspaceService } from "../services/workspace.service";
 import { LlmUsage } from "../database/schema";
-import { loggers, enrichContextWithWorkspace } from "../logging";
+import { loggers } from "../logging";
 import {
   AUTH_SECURITY,
   STD_ERRORS,
@@ -21,6 +19,8 @@ import {
   pathParam,
   queryParam,
 } from "../openapi/core";
+import { fail } from "./lib/respond";
+import { requireWorkspaceAccess } from "./lib/workspace-access";
 
 const logger = loggers.api("usage");
 
@@ -67,32 +67,13 @@ const ChatInvocationTotalsSchema = z.object({
 usageRoutes.use("*", unifiedAuthMiddleware);
 
 // Workspace access verification middleware
-usageRoutes.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId");
-  if (!workspaceId) return c.json({ error: "Missing workspaceId" }, 400);
-
-  const user = c.get("user");
-  const workspace = c.get("workspace");
-
-  if (workspace) {
-    if (workspace._id.toString() !== workspaceId) {
-      return c.json(
-        { error: "API key not authorized for this workspace" },
-        403,
-      );
-    }
-  } else if (user) {
-    const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-    if (!hasAccess) {
-      return c.json({ error: "Access denied" }, 403);
-    }
-  } else {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
-  enrichContextWithWorkspace(workspaceId);
-  await next();
-});
+usageRoutes.use(
+  "*",
+  requireWorkspaceAccess({
+    whenMissing: "reject",
+    deniedMessage: "Access denied",
+  }),
+);
 
 function parseDateRange(
   c: Context,
@@ -136,9 +117,9 @@ usageRoutes.openapi(
   }),
   async c => {
     const workspaceId = c.req.param("workspaceId");
-    if (!workspaceId) return c.json({ error: "Missing workspaceId" }, 400);
+    if (!workspaceId) return fail(c, 400, "Missing workspaceId");
     const parsed = parseDateRange(c);
-    if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+    if (!parsed.ok) return fail(c, 400, parsed.error);
     const dateFilter = parsed.match;
 
     try {
@@ -180,7 +161,7 @@ usageRoutes.openapi(
       );
     } catch (err) {
       logger.error("Error fetching usage summary", { error: err });
-      return c.json({ error: "Internal server error" }, 500);
+      return fail(c, 500, "Internal server error");
     }
   },
 );
@@ -203,9 +184,9 @@ usageRoutes.openapi(
   }),
   async c => {
     const workspaceId = c.req.param("workspaceId");
-    if (!workspaceId) return c.json({ error: "Missing workspaceId" }, 400);
+    if (!workspaceId) return fail(c, 400, "Missing workspaceId");
     const parsed = parseDateRange(c);
-    if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+    if (!parsed.ok) return fail(c, 400, parsed.error);
     const dateFilter = parsed.match;
 
     try {
@@ -249,7 +230,7 @@ usageRoutes.openapi(
       return c.json({ users: results }, 200);
     } catch (err) {
       logger.error("Error fetching usage by user", { error: err });
-      return c.json({ error: "Internal server error" }, 500);
+      return fail(c, 500, "Internal server error");
     }
   },
 );
@@ -278,10 +259,10 @@ usageRoutes.openapi(
   }),
   async c => {
     const workspaceId = c.req.param("workspaceId");
-    if (!workspaceId) return c.json({ error: "Missing workspaceId" }, 400);
+    if (!workspaceId) return fail(c, 400, "Missing workspaceId");
     const chatId = c.req.param("chatId");
     if (!chatId || !ObjectId.isValid(chatId)) {
-      return c.json({ error: "Invalid chatId" }, 400);
+      return fail(c, 400, "Invalid chatId");
     }
 
     try {
@@ -324,7 +305,7 @@ usageRoutes.openapi(
       );
     } catch (err) {
       logger.error("Error fetching usage by chat", { error: err });
-      return c.json({ error: "Internal server error" }, 500);
+      return fail(c, 500, "Internal server error");
     }
   },
 );
@@ -347,9 +328,9 @@ usageRoutes.openapi(
   }),
   async c => {
     const workspaceId = c.req.param("workspaceId");
-    if (!workspaceId) return c.json({ error: "Missing workspaceId" }, 400);
+    if (!workspaceId) return fail(c, 400, "Missing workspaceId");
     const parsed = parseDateRange(c);
-    if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+    if (!parsed.ok) return fail(c, 400, parsed.error);
     const dateFilter = parsed.match;
 
     try {
@@ -393,7 +374,7 @@ usageRoutes.openapi(
       return c.json({ models: results }, 200);
     } catch (err) {
       logger.error("Error fetching usage by model", { error: err });
-      return c.json({ error: "Internal server error" }, 500);
+      return fail(c, 500, "Internal server error");
     }
   },
 );
