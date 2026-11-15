@@ -18,7 +18,7 @@ import { getInstallationToken } from "../../integrations/github/app-auth";
 import { listInstallationRepos } from "../../integrations/github/github-api";
 import {
   disconnectWorkspaceRepo,
-  getWorkspaceRepo,
+  storedBindings,
 } from "../../services/workspace-repos.service";
 import {
   AUTH_SECURITY,
@@ -51,8 +51,7 @@ appsGithubRoutes.openapi(
     const { workspaceId } = c.req.valid("param");
     // Apps is not feature-flagged (the v1→v2 rollout flag is gone): the
     // probe reports repo linkage, which is the only real precondition.
-    const repo = await getWorkspaceRepo(workspaceId);
-    const repos = repo ? [repo] : [];
+    const repos = await storedBindings(workspaceId);
     return c.json(
       {
         success: true as const,
@@ -94,8 +93,7 @@ appsGithubRoutes.openapi(
     })
       .select("installationId accountLogin accountType repositorySelection")
       .lean();
-    const repo = await getWorkspaceRepo(workspaceId);
-    const repos = repo ? [repo] : [];
+    const repos = await storedBindings(workspaceId);
     return c.json(
       {
         success: true as const,

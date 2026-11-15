@@ -45,9 +45,10 @@ export async function getWorkspaceRepo(
 
 /**
  * Every stored binding. §10 allows one, but a pre-§10 document can hold
- * several, and connect/disconnect must see them all.
+ * several: connect/disconnect must see them all, and so must anything that
+ * lists them to the user (connect refuses while any other binding exists).
  */
-async function storedBindings(
+export async function storedBindings(
   workspaceId: string,
 ): Promise<IWorkspaceRepoBinding[]> {
   const ws = await Workspace.findById(workspaceId)

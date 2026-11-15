@@ -10,6 +10,7 @@ import {
   findWorkspaceIdsByRepoBinding,
   getWorkspaceRepo,
   isValidRepoSegment,
+  storedBindings,
   WorkspaceRepoNotBoundError,
 } from "./workspace-repos.service";
 import {
@@ -139,6 +140,25 @@ describe("connect / list / disconnect", () => {
     expect(repos[0].subdirectory).toBe("mako");
     // getWorkspaceRepo is the singular read API.
     const { getWorkspaceRepo } = await import("./workspace-repos.service");
+    expect((await getWorkspaceRepo(workspaceId))?.repo).toBe("a");
+  });
+
+  it("lists every binding a pre-§10 workspace still holds", async () => {
+    const binding = (repo: string) => ({
+      provider: "github",
+      owner: "acme",
+      repo,
+      defaultBranch: "main",
+      subdirectory: "",
+    });
+    await Workspace.updateOne(
+      { _id: new Types.ObjectId(workspaceId) },
+      { $set: { workspaceRepos: [binding("a"), binding("b")] } },
+    );
+    // Both are shown (connect refuses while either exists), while the
+    // singular read still answers with the first.
+    const all = await storedBindings(workspaceId);
+    expect(all.map(r => r.repo)).toEqual(["a", "b"]);
     expect((await getWorkspaceRepo(workspaceId))?.repo).toBe("a");
   });
 
