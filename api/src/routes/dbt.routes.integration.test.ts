@@ -440,6 +440,70 @@ describe("project CRUD", () => {
     expect((await res.json()).error).toMatch(/not dbt-compatible/i);
   });
 
+  it("stores an environment's read connection, in the row and in dbt/environments.yml", async () => {
+    const READ = new Types.ObjectId();
+    await DatabaseConnection.collection.insertOne({
+      _id: READ,
+      workspaceId: new Types.ObjectId(WS),
+      name: "pg (read-only)",
+      type: "postgresql",
+      connection: { host: "localhost", port: 5432 },
+    });
+    ctx.role = "owner";
+    const created = await req("POST", "/projects", {
+      ...NEW_PROJECT,
+      environments: [{ ...ENV, readConnectionId: READ.toString() }],
+    });
+    expect(created.status).toBe(200);
+    const { project } = await created.json();
+    expect(project.environments[0].readConnectionId).toBe(READ.toString());
+    expect(project.environments[0].connectionId).toBe(CONN);
+
+    // Dropping it in a settings save removes it: the field is optional.
+    const cleared = await req("PATCH", `/projects/${project._id}`, {
+      environments: [ENV],
+    });
+    expect(cleared.status).toBe(200);
+    expect(
+      (await cleared.json()).project.environments[0].readConnectionId,
+    ).toBeUndefined();
+  });
+
+  it("refuses a read connection that is missing or reaches another warehouse", async () => {
+    ctx.role = "owner";
+    const missing = await req("POST", "/projects", {
+      ...NEW_PROJECT,
+      environments: [
+        { ...ENV, readConnectionId: new Types.ObjectId().toString() },
+      ],
+    });
+    expect(missing.status).toBe(400);
+    expect((await missing.json()).error).toMatch(/Read connection not found/);
+
+    const BQ = new Types.ObjectId();
+    await DatabaseConnection.collection.insertOne({
+      _id: BQ,
+      workspaceId: new Types.ObjectId(WS),
+      name: "bq",
+      type: "bigquery",
+      connection: {},
+    });
+    const otherWarehouse = await req("POST", "/projects", {
+      ...NEW_PROJECT,
+      environments: [{ ...ENV, readConnectionId: BQ.toString() }],
+    });
+    expect(otherWarehouse.status).toBe(400);
+    expect((await otherWarehouse.json()).error).toMatch(
+      /Both must reach the same warehouse/,
+    );
+
+    const notAnId = await req("POST", "/projects", {
+      ...NEW_PROJECT,
+      environments: [{ ...ENV, readConnectionId: "nope" }],
+    });
+    expect(notAnId.status).toBe(400);
+  });
+
   it("rejects a defaultEnvironment not present in environments", async () => {
     const res = await req("POST", "/projects", {
       ...NEW_PROJECT,

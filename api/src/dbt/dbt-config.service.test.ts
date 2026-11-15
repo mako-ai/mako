@@ -20,6 +20,7 @@ import {
   DBT_ENVIRONMENTS_PATH,
   jobFilePath,
   parseJobFile,
+  parseEnvironmentsFile,
   serializeEnvironmentsFile,
   serializeJobFile,
 } from "./dbt-config-files";
@@ -377,6 +378,78 @@ describe("GET/list from git", () => {
     expect(
       (await DbtJob.findById(job._id))?.definitionInvalid?.reason,
     ).toBeUndefined();
+  });
+});
+
+describe("an environment's read connection", () => {
+  it("round-trips through dbt/environments.yml and is absent when unset", () => {
+    const read = new Types.ObjectId().toString();
+    const file = {
+      defaultEnvironment: "prod",
+      environments: [
+        {
+          name: "prod",
+          connectionId: CONN.toString(),
+          readConnectionId: read,
+          targetSchema: "dbt_prod",
+          threads: 4,
+        },
+        {
+          name: "dev",
+          connectionId: CONN.toString(),
+          targetSchema: "dbt_dev",
+          threads: 4,
+        },
+      ],
+    };
+    const yml = serializeEnvironmentsFile(file);
+    expect(yml).toContain(`read_connection_id: ${read}`);
+    expect(yml.match(/read_connection_id/g)).toHaveLength(1);
+    const parsed = parseEnvironmentsFile(yml);
+    expect(parsed?.environments[0].readConnectionId).toBe(read);
+    expect(parsed?.environments[1]).not.toHaveProperty("readConnectionId");
+    // A file written before the field existed still parses.
+    expect(
+      parseEnvironmentsFile(
+        "default_environment: dev\nenvironments:\n  - name: dev\n    connection_id: abc\n    target_schema: s\n",
+      )?.environments[0],
+    ).not.toHaveProperty("readConnectionId");
+  });
+
+  it("reaches the project row from the file", async () => {
+    const project = await seedProject();
+    const read = new Types.ObjectId();
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [DBT_ENVIRONMENTS_PATH]: serializeEnvironmentsFile({
+            defaultEnvironment: "prod",
+            environments: [
+              {
+                name: "prod",
+                connectionId: CONN.toString(),
+                readConnectionId: read.toString(),
+                targetSchema: "dbt_prod",
+                threads: 4,
+              },
+            ],
+          }),
+        },
+      },
+      { message: "prod reads through a read-only credential" },
+    );
+    await ensureEnvironmentsDerivedCache(project);
+    const stored = await DbtProject.findById(project._id);
+    expect(stored?.environments[0].readConnectionId?.toString()).toBe(
+      read.toString(),
+    );
+    // And back out to the file unchanged.
+    await commitDbtEnvironmentsFile(stored as NonNullable<typeof stored>);
+    expect(await fileAt(DBT_ENVIRONMENTS_PATH)).toContain(
+      `read_connection_id: ${read.toString()}`,
+    );
   });
 });
 

@@ -434,17 +434,34 @@ export const createDbtMetricTools = (
         `The dbt project "${project.projectName}" has no environment "${project.environmentName}" any more, so its metrics have no warehouse to run on. Run a production build to refresh the semantic manifest.`,
       );
     }
-    const connection = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(project.connectionId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    })
-      .select("name type")
-      .lean();
-    if (!connection) {
+    const findConnection = (id: string) =>
+      DatabaseConnection.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      })
+        .select("name type")
+        .lean();
+    const buildConnection = await findConnection(project.connectionId);
+    if (!buildConnection) {
       throw new Error(
         `The warehouse connection of environment "${project.environmentName}" no longer exists.`,
       );
     }
+    // The build connection's credential can write: dbt builds with it. An
+    // environment may name a read-only connection to the same warehouse,
+    // and a metric query then runs on that one. A read connection that is
+    // gone, or that reaches another kind of warehouse than the SQL is
+    // written for, is not used.
+    const readConnection = project.readConnectionId
+      ? await findConnection(project.readConnectionId)
+      : null;
+    const useRead =
+      readConnection !== null && readConnection.type === buildConnection.type;
+    const connection = useRead ? readConnection : buildConnection;
+    const connectionId =
+      useRead && project.readConnectionId
+        ? project.readConnectionId
+        : project.connectionId;
     const dialect: MetricflowDialect | undefined = metricflowDialectFor(
       connection.type,
     );
@@ -480,8 +497,9 @@ export const createDbtMetricTools = (
     return {
       sql,
       project,
-      connectionId: project.connectionId,
+      connectionId,
       connectionName: connection.name,
+      connectionRole: useRead ? ("read" as const) : ("build" as const),
       sqlDialect: getDialect(connection.type),
       // The database dbt built the metric's relations in: where to run when
       // the connection names no default database (Postgres).
@@ -641,6 +659,7 @@ export const createDbtMetricTools = (
             metrics: input.metrics,
             connectionId: compiled.connectionId,
             connectionName: compiled.connectionName,
+            connectionRole: compiled.connectionRole,
             sqlDialect: compiled.sqlDialect,
             sql: compiled.sql,
             next: "Run it with sql_execute_query({ connectionId, query: sql }), or save it as a binding or console.",
@@ -726,6 +745,7 @@ export const createDbtMetricTools = (
             metrics: input.metrics,
             connectionId: compiled.connectionId,
             connectionName: compiled.connectionName,
+            connectionRole: compiled.connectionRole,
             sql: executedSql,
             ...(limitAppended
               ? {

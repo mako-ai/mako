@@ -668,9 +668,18 @@ export default function DbtProjectSettingsDrawer({
             labelId={`dbt-settings-conn-${index}`}
             label="Connection"
             value={env.connectionId}
-            onChange={e =>
-              updateEditEnv(index, { connectionId: e.target.value })
-            }
+            onChange={e => {
+              const next = connections.find(c => c.id === e.target.value);
+              const read = connections.find(c => c.id === env.readConnectionId);
+              updateEditEnv(index, {
+                connectionId: e.target.value,
+                // The read connection has to reach the same warehouse.
+                readConnectionId:
+                  read && next && read.type === next.type
+                    ? env.readConnectionId
+                    : undefined,
+              });
+            }}
           >
             {connections.map(conn => (
               <MenuItem key={conn.id} value={conn.id}>
@@ -678,6 +687,47 @@ export default function DbtProjectSettingsDrawer({
               </MenuItem>
             ))}
           </Select>
+        </FormControl>
+        <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
+          <InputLabel id={`dbt-settings-read-conn-${index}`}>
+            Read connection
+          </InputLabel>
+          <Select
+            labelId={`dbt-settings-read-conn-${index}`}
+            label="Read connection"
+            value={env.readConnectionId ?? ""}
+            onChange={e =>
+              updateEditEnv(index, {
+                readConnectionId: e.target.value || undefined,
+              })
+            }
+          >
+            <MenuItem value="">None — use the connection above</MenuItem>
+            {connections
+              .filter(
+                conn =>
+                  conn.id !== env.connectionId &&
+                  conn.type ===
+                    connections.find(c => c.id === env.connectionId)?.type,
+              )
+              .map(conn => (
+                <MenuItem key={conn.id} value={conn.id}>
+                  {conn.name} ({conn.type})
+                </MenuItem>
+              ))}
+          </Select>
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+              mt: 0.5,
+              display: "block",
+            }}
+          >
+            Metric queries run on this connection. Pick one whose credential can
+            only read: dbt builds with the connection above, so that one can
+            write.
+          </Typography>
         </FormControl>
         <TextField
           fullWidth
@@ -927,6 +977,15 @@ export default function DbtProjectSettingsDrawer({
                 label="Connection"
                 value={connectionLabel(selectedEnv.connectionId, connections)}
               />
+              {selectedEnv.readConnectionId && (
+                <ReadOnlyField
+                  label="Read connection"
+                  value={connectionLabel(
+                    selectedEnv.readConnectionId,
+                    connections,
+                  )}
+                />
+              )}
               <ReadOnlyField
                 label="Target schema"
                 value={selectedEnv.targetSchema}

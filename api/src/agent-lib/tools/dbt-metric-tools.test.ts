@@ -724,6 +724,67 @@ describe("compile_metric", () => {
   });
 });
 
+describe("an environment's read connection", () => {
+  const READ_CONN = new Types.ObjectId();
+
+  async function seedWithReadConnection(type = "postgresql") {
+    await seedConnection(READ_CONN, "Warehouse (read-only)", type);
+    const project = await seedProject();
+    await DbtProject.updateOne(
+      { _id: project._id, "environments.name": "prod" },
+      { $set: { "environments.$.readConnectionId": READ_CONN } },
+    );
+    clearSemanticCatalogCache();
+  }
+
+  it("runs metric queries on the read connection, not the build one", async () => {
+    await seedWithReadConnection();
+    const compiled = await run(tools.compile_metric, { metrics: ["revenue"] });
+    expect(compiled).toMatchObject({
+      success: true,
+      connectionId: READ_CONN.toString(),
+      connectionName: "Warehouse (read-only)",
+      connectionRole: "read",
+    });
+    await run(tools.query_metric, { metrics: ["revenue"] });
+    expect(executor.run.mock.calls[0][0]).toBe(READ_CONN.toString());
+  });
+
+  it("uses the build connection when the environment names none", async () => {
+    await seedProject();
+    expect(
+      await run(tools.compile_metric, { metrics: ["revenue"] }),
+    ).toMatchObject({
+      connectionId: PROD_CONN.toString(),
+      connectionRole: "build",
+    });
+  });
+
+  it("falls back to the build connection when the read one is gone or another warehouse", async () => {
+    await seedWithReadConnection();
+    await DatabaseConnection.deleteOne({ _id: READ_CONN });
+    expect(
+      await run(tools.compile_metric, { metrics: ["revenue"] }),
+    ).toMatchObject({
+      success: true,
+      connectionId: PROD_CONN.toString(),
+      connectionRole: "build",
+    });
+
+    await DbtProject.deleteMany({});
+    await DbtRun.deleteMany({});
+    await seedWithReadConnection("bigquery");
+    expect(
+      await run(tools.compile_metric, { metrics: ["revenue"] }),
+    ).toMatchObject({
+      connectionId: PROD_CONN.toString(),
+      connectionRole: "build",
+    });
+    // The SQL is written for the warehouse dbt built in.
+    expect(engine.compile.mock.calls.at(-1)?.[1]).toBe("postgres");
+  });
+});
+
 describe("a named dbt environment", () => {
   /** A metric that exists on a dev branch only. */
   const DEV_MANIFEST = Buffer.from(

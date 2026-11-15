@@ -44,6 +44,17 @@ const environmentSchema = z.object({
   connectionId: z
     .string()
     .refine(Types.ObjectId.isValid, "Invalid connection id"),
+  /**
+   * Optional read-only connection to the same warehouse: metric queries run
+   * on it instead of the build connection. Empty or absent: none.
+   */
+  readConnectionId: z
+    .string()
+    .refine(
+      value => value === "" || Types.ObjectId.isValid(value),
+      "Invalid read connection id",
+    )
+    .optional(),
   targetSchema: z.string().min(1).max(128),
   threads: z.number().int().min(1).max(16).default(4),
   vars: z.record(z.string(), z.unknown()).optional(),
@@ -130,8 +141,38 @@ async function validateEnvironments(
         `Supported: ${DBT_COMPATIBLE_CONNECTION_TYPES.join(", ")}`
       );
     }
+    if (env.readConnectionId) {
+      const read = await DatabaseConnection.findOne({
+        _id: new Types.ObjectId(env.readConnectionId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      }).select("type");
+      if (!read) {
+        return `Read connection not found for environment "${env.name}"`;
+      }
+      // MetricFlow writes SQL for the warehouse dbt built in: the read
+      // connection has to be that warehouse under another credential.
+      if (read.type !== connection.type) {
+        return (
+          `The read connection of environment "${env.name}" is a ` +
+          `"${read.type}" connection, but the environment builds on ` +
+          `"${connection.type}". Both must reach the same warehouse.`
+        );
+      }
+    }
   }
   return null;
+}
+
+/** An environment as the route received it, as the model stores it. */
+function toStoredEnvironment(env: z.infer<typeof environmentSchema>) {
+  const { readConnectionId, ...rest } = env;
+  return {
+    ...rest,
+    connectionId: new Types.ObjectId(env.connectionId),
+    ...(readConnectionId
+      ? { readConnectionId: new Types.ObjectId(readConnectionId) }
+      : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -232,10 +273,7 @@ dbtProjectRoutes.post("/projects", async (c: AuthenticatedContext) => {
       workspaceId: new Types.ObjectId(workspaceId),
       name: body.name,
       dbtVersion: body.dbtVersion ?? "1.12",
-      environments: body.environments.map(env => ({
-        ...env,
-        connectionId: new Types.ObjectId(env.connectionId),
-      })),
+      environments: body.environments.map(toStoredEnvironment),
       defaultEnvironment: body.defaultEnvironment,
       createdBy: userId,
     });
@@ -314,10 +352,7 @@ dbtProjectRoutes.patch(
           body.environments,
         );
         if (envError) return badRequest(c, envError);
-        project.environments = body.environments.map(env => ({
-          ...env,
-          connectionId: new Types.ObjectId(env.connectionId),
-        }));
+        project.environments = body.environments.map(toStoredEnvironment);
       }
       if (body.name) project.name = body.name;
       if (body.dbtVersion) project.dbtVersion = body.dbtVersion;

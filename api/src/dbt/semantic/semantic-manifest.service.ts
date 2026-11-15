@@ -43,6 +43,12 @@ export interface SemanticProject {
   environmentName: string;
   /** That environment's warehouse connection, when it still exists. */
   connectionId?: string;
+  /**
+   * That environment's read-only connection, when it names one. Metric
+   * queries prefer it: `connectionId` is the credential dbt builds with,
+   * so it can write.
+   */
+  readConnectionId?: string;
   catalog: SemanticCatalog;
 }
 
@@ -86,7 +92,11 @@ type ProjectFields = {
   workspaceId: Types.ObjectId;
   name: string;
   lastProdManifestKey?: string;
-  environments: Array<{ name: string; connectionId?: Types.ObjectId }>;
+  environments: Array<{
+    name: string;
+    connectionId?: Types.ObjectId;
+    readConnectionId?: Types.ObjectId;
+  }>;
 };
 
 /**
@@ -204,6 +214,9 @@ export async function loadSemanticProjects(
         environmentName: keys.environmentName,
         ...(environment?.connectionId
           ? { connectionId: environment.connectionId.toString() }
+          : {}),
+        ...(environment?.readConnectionId
+          ? { readConnectionId: environment.readConnectionId.toString() }
           : {}),
         catalog,
       });
