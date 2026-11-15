@@ -95,7 +95,6 @@ import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { isDbFlowQueryModelUri } from "../lib/sql-autocomplete/modelScope";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { trackEvent } from "../lib/analytics";
-import { getApiBasePath } from "../lib/api-base-path";
 import { separatorDragRef } from "../lib/iframe-drag-guard";
 import { consoleLeafName } from "../lib/console-name";
 import { generateObjectId } from "../utils/objectId";
@@ -1261,7 +1260,6 @@ function Editor({
         return;
       }
 
-      const action = `${getApiBasePath(import.meta.env.VITE_API_URL)}/workspaces/${currentWorkspace.id}/execute/export`;
       const baseName = tab.title || "query-results";
 
       setSnackbarMessage(
@@ -1274,38 +1272,16 @@ function Editor({
         // errors — preview-safety rejections, BigQuery auth/permission
         // failures, etc. — surface to the user instead of being swallowed
         // by an invisible iframe that always shows a "download started" toast.
-        const response = await fetch(action, {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        const blob = await useConsoleStore
+          .getState()
+          .exportQueryResults(currentWorkspace.id, {
             connectionId: tab.connectionId,
             databaseId: tab.databaseId,
             databaseName: tab.databaseName,
             query: tab.content,
             format,
             filename: baseName,
-          }),
-        });
-
-        if (!response.ok) {
-          let message = `Export failed (HTTP ${response.status})`;
-          try {
-            const errorBody = await response.json();
-            if (errorBody?.error) {
-              message = errorBody.error;
-            }
-          } catch {
-            const text = await response.text().catch(() => "");
-            if (text) message = text;
-          }
-          setSnackbarOpen(false);
-          setErrorMessage(message);
-          setErrorModalOpen(true);
-          return;
-        }
-
-        const blob = await response.blob();
+          });
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement("a");
         anchor.href = url;
@@ -1905,32 +1881,24 @@ function Editor({
       }
 
       // Both "new" and "save-as-copy" use POST to create a new record.
-      const response = await fetch(
-        `/api/workspaces/${currentWorkspace.id}/consoles`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({
-            id: targetId,
-            path: savePath,
-            content: saveDialogContent,
-            connectionId,
-            databaseName,
-            databaseId,
-            folderId: folderId || undefined,
-            access: section === "workspace" ? "workspace" : "private",
-            isPrivate: section !== "workspace",
-            chartSpec: tabChartSpecs[saveDialogTabId] ?? null,
-            resultsViewMode: tabViewModes[saveDialogTabId],
-            comment: "",
-          }),
-        },
-      );
+      const { status, body: result } = await useConsoleStore
+        .getState()
+        .createConsoleRecord(currentWorkspace.id, {
+          id: targetId,
+          path: savePath,
+          content: saveDialogContent,
+          connectionId,
+          databaseName,
+          databaseId,
+          folderId: folderId || undefined,
+          access: section === "workspace" ? "workspace" : "private",
+          isPrivate: section !== "workspace",
+          chartSpec: tabChartSpecs[saveDialogTabId] ?? null,
+          resultsViewMode: tabViewModes[saveDialogTabId],
+          comment: "",
+        });
 
-      const result = await response.json();
-
-      if (response.status === 409 && result.error === "conflict") {
+      if (status === 409 && result.error === "conflict") {
         setPendingSaveData({
           tabId: targetId,
           content: saveDialogContent,
@@ -1940,7 +1908,7 @@ function Editor({
           databaseName,
           access: section === "workspace" ? "workspace" : "private",
         });
-        setConflictData(result.conflict);
+        setConflictData(result.conflict ?? null);
         setConflictDialogOpen(true);
         setIsSaving(false);
         return;

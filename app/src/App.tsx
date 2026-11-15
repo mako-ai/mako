@@ -144,7 +144,7 @@ function InvitePage() {
 
 import { UrlSync } from "./components/UrlSync";
 import CommandPalette from "./components/CommandPalette";
-import { getActiveWorkspaceId } from "./lib/active-workspace";
+import { getCurrentWorkspaceId } from "./store/workspaceStore";
 
 // Main application component (extracted from original App)
 
@@ -187,7 +187,7 @@ function MainApp() {
   useEffect(() => {
     if (!activeTabId) return;
     const tab = useConsoleStore.getState().tabs[activeTabId];
-    const workspaceId = useUIStore.getState().currentWorkspaceId;
+    const workspaceId = getCurrentWorkspaceId();
     if (!tab || !workspaceId) return;
     const kind = tab.kind ?? "console";
     const record = useRecentsStore.getState().record;
@@ -486,7 +486,7 @@ function MainApp() {
       let prefill = `db.getCollection(${JSON.stringify(collection.name)}).find({}).limit(500)`;
       try {
         const { useSchemaStore } = await import("./store/schemaStore");
-        const workspaceId = getActiveWorkspaceId();
+        const workspaceId = getCurrentWorkspaceId();
         if (workspaceId) {
           const tpl = await useSchemaStore
             .getState()

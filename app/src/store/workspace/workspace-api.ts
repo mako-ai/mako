@@ -1,107 +1,25 @@
 /**
- * Workspace client for handling all workspace-related API calls.
- *
- * Uses the spec-typed `api` client: every path, path parameter, and request
- * body below is checked against the generated OpenAPI types at compile time.
- * Responses are mapped to the richer frontend domain types declared here (the
- * API DTOs are a structural subset — e.g. the frontend always treats `role`
- * as present and adds `billing`).
+ * Workspace, member and invite API calls, on the spec-typed `api` client:
+ * every path, path parameter and request body is checked against the
+ * generated OpenAPI types. Responses are mapped to the frontend domain types
+ * in `./types`. Only `workspaceStore` calls these — components go through the
+ * store's actions.
  */
+import { api, unwrap } from "../../api";
+import type {
+  Workspace,
+  WorkspaceMember,
+  WorkspaceInvite,
+  InviteDetails,
+  PendingInvite,
+  CreateWorkspaceData,
+  InviteMemberData,
+  UpdateMemberRoleData,
+  WorkspaceAutoJoin,
+  WorkspaceDatabase,
+} from "./types";
 
-import { api, unwrap } from "../api";
-import { setActiveWorkspaceId } from "./active-workspace";
-
-// Types
-export interface WorkspaceBilling {
-  stripeCustomerId: string | null;
-  stripeSubscriptionId: string | null;
-  subscriptionStatus:
-    "active" | "past_due" | "canceled" | "trialing" | "incomplete" | null;
-  currentPeriodStart: string | null;
-  currentPeriodEnd: string | null;
-  usageQuotaUsd: number;
-  hardLimitUsd: number | null;
-  plan: "free" | "pro" | "enterprise";
-}
-
-export interface Workspace {
-  id: string;
-  name: string;
-  slug: string;
-  role: string;
-  createdAt: string;
-  updatedAt: string;
-  settings: {
-    maxDatabases: number;
-    maxMembers: number;
-    billingTier: "free" | "pro" | "enterprise";
-  };
-  billing?: WorkspaceBilling;
-}
-
-export interface WorkspaceMember {
-  id: string;
-  userId: string;
-  email: string;
-  role: "owner" | "admin" | "member" | "viewer";
-  joinedAt: string;
-}
-
-export interface WorkspaceInvite {
-  id: string;
-  email: string;
-  role: "admin" | "member" | "viewer";
-  token?: string;
-  invitedBy: string;
-  expiresAt: string;
-}
-
-export interface InviteDetails {
-  workspaceName: string;
-  inviterEmail: string;
-  inviteeEmail: string;
-  role: string;
-  expiresAt: string;
-}
-
-export interface PendingInvite {
-  token: string;
-  workspaceName: string;
-  inviterEmail: string;
-  role: string;
-  expiresAt: string;
-}
-
-export interface CreateWorkspaceData {
-  name: string;
-  slug?: string;
-}
-
-export interface InviteMemberData {
-  email: string;
-  role: "admin" | "member" | "viewer";
-}
-
-export interface UpdateMemberRoleData {
-  role: "admin" | "member" | "viewer";
-}
-
-/** Domain auto-join: who joins by email domain, and with which access. null = off. */
-export interface WorkspaceAutoJoin {
-  domains: string[];
-  role: "member" | "viewer";
-}
-
-export interface WorkspaceDatabase {
-  id: string;
-  name: string;
-  type: "mongodb" | "postgresql" | "mysql" | "sqlite" | "mssql";
-  createdAt: string;
-  updatedAt: string;
-  lastConnectedAt?: string;
-}
-
-class WorkspaceClient {
+class WorkspaceApi {
   /**
    * Get all workspaces for the current user
    */
@@ -170,8 +88,6 @@ class WorkspaceClient {
         params: { path: { id } },
       }),
     );
-    // Update local storage
-    setActiveWorkspaceId(id);
   }
 
   /**
@@ -339,5 +255,4 @@ class WorkspaceClient {
   }
 }
 
-// Export singleton instance
-export const workspaceClient = new WorkspaceClient();
+export const workspaceApi = new WorkspaceApi();

@@ -96,6 +96,15 @@ interface EntitiesState {
     workspaceId: string,
     connectorId: string,
   ) => Promise<{ success: boolean; message: string }>;
+  /** Reveal one stored secret. The server reads the ciphertext from its own
+   * record; admin/owner only, server-enforced. */
+  revealSecret: (
+    workspaceId: string,
+    connectorId: string,
+    field: string,
+  ) => Promise<
+    { value: string; wasEncrypted: boolean } | { error: string | null }
+  >;
 }
 
 function makeKey(workspaceId: string, connectorId: string) {
@@ -381,6 +390,23 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
           success: false,
           message: err?.message || "The test failed",
         };
+      }
+    },
+    revealSecret: async (workspaceId, connectorId, field) => {
+      try {
+        const body = unwrapBody(
+          await api.POST(
+            "/api/workspaces/{workspaceId}/connections/sources/{id}/reveal-secret",
+            {
+              params: { path: { workspaceId, id: connectorId } },
+              body: { field },
+            },
+          ),
+        ) as ApiResponse<{ value: string; wasEncrypted: boolean }>;
+        if (body.success && body.data) return body.data;
+        return { error: body.error || null };
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : null };
       }
     },
   })),

@@ -3,16 +3,14 @@ import { Alert, Box, Button, Snackbar, TextField } from "@mui/material";
 import { Save as SaveIcon, Refresh as RefreshIcon } from "@mui/icons-material";
 import SettingsLayout from "./SettingsLayout";
 import { useCustomPrompt } from "../../hooks/useCustomPrompt";
-import { useWorkspace } from "../../contexts/workspace-context";
 
 export default function SettingsPrompt() {
-  const { currentWorkspace } = useWorkspace();
   const {
     content: customPromptContent,
     isLoading,
     error,
     updateCustomPrompt,
-    fetchCustomPrompt,
+    resetCustomPrompt,
   } = useCustomPrompt();
 
   const [local, setLocal] = useState("");
@@ -33,21 +31,8 @@ export default function SettingsPrompt() {
   };
 
   const handleReset = async () => {
-    if (!currentWorkspace?.id) return;
-    try {
-      const res = await fetch(
-        `/api/workspaces/${currentWorkspace.id}/custom-prompt/reset`,
-        { method: "POST" },
-      );
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success) {
-          await fetchCustomPrompt();
-          setSnackbar("Custom prompt reset to default!");
-        }
-      }
-    } catch (err) {
-      console.error("Error resetting custom prompt:", err);
+    if (await resetCustomPrompt()) {
+      setSnackbar("Custom prompt reset to default!");
     }
   };
 

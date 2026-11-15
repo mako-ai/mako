@@ -55,7 +55,7 @@ import {
 import { useAppsStore } from "../store/appsStore";
 import { useDbtStore } from "../store/dbtStore";
 import { useFlowStore } from "../store/flowStore";
-import { useUIStore } from "../store/uiStore";
+import { useWorkspaceStore } from "../store/workspaceStore";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 const SEARCH_DEBOUNCE_MS = 200;
@@ -87,7 +87,7 @@ export default function CommandPalette() {
   const isMobile = useIsMobile();
   const consoleResults = useCommandPaletteStore(state => state.consoleResults);
   const searching = useCommandPaletteStore(state => state.searching);
-  const workspaceId = useUIStore(state => state.currentWorkspaceId);
+  const workspaceId = useWorkspaceStore(state => state.currentWorkspaceId);
   const { user } = useAuth();
   const { setMode } = useAppTheme();
   const appsList = useAppsStore(state => state.apps);

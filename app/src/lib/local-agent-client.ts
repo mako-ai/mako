@@ -1,7 +1,7 @@
 /**
  * Client for the Mako Local Agent: a small daemon on 127.0.0.1 that executes
  * queries and browses schemas on databases only reachable from the user's
- * machine (e.g. localhost Postgres). Counterpart of `apiClient` for
+ * machine (e.g. localhost Postgres). Counterpart of the typed `api` client for
  * connections whose id starts with `local_`.
  *
  * Requests are annotated with `targetAddressSpace: "loopback"` so Chromium's

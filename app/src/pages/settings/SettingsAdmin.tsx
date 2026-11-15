@@ -22,52 +22,13 @@ import {
 } from "@mui/material";
 import { Refresh as RefreshIcon } from "@mui/icons-material";
 import SettingsLayout from "./SettingsLayout";
+import {
+  useAdminCatalogStore,
+  type AdminCatalogResponse,
+  type AdminCuratedModel,
+} from "../../store/adminCatalogStore";
 
-interface AdminCuratedModel {
-  id: string;
-  provider: string;
-  name: string;
-  description: string;
-  contextWindow: number | null;
-  blendedCostPerM: number | null;
-  /** Unix seconds the model was released (gateway `released`). */
-  releasedAt: number | null;
-  /** Knowledge cutoff date string (gateway `knowledge`). */
-  knowledgeCutoff: string | null;
-  /** Accepts image input (gateway modalities). */
-  imageInput: boolean | null;
-  visible: boolean;
-  tier: "free" | "pro";
-}
-
-interface AdminCatalogResponse {
-  models: AdminCuratedModel[];
-  defaultChatModelId: string | null;
-  defaultFreeChatModelId: string | null;
-  utilityModelId: string | null;
-  gatewayFetchedAt: string | null;
-  curationUpdatedAt: string | null;
-  lastRefreshError: string | null;
-}
-
-async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!res.ok) {
-    let msg = `${res.status} ${res.statusText}`;
-    try {
-      const data = await res.json();
-      if (data?.error) msg = data.error;
-    } catch {
-      // ignore
-    }
-    throw new Error(msg);
-  }
-  return (await res.json()) as T;
-}
+const catalogApi = () => useAdminCatalogStore.getState();
 
 export default function SettingsAdmin() {
   const [data, setData] = useState<AdminCatalogResponse | null>(null);
@@ -86,7 +47,7 @@ export default function SettingsAdmin() {
     setLoading(true);
     setLoadError(null);
     try {
-      const res = await apiJson<AdminCatalogResponse>("/api/admin/catalog");
+      const res = await catalogApi().getCatalog();
       setData(res);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
@@ -104,11 +65,7 @@ export default function SettingsAdmin() {
     setRefreshError(null);
     setRefreshNotice(null);
     try {
-      const res = await apiJson<{
-        success: boolean;
-        refreshed?: { models: number; pricedModels: number };
-        error?: string;
-      }>("/api/admin/catalog/refresh", { method: "POST" });
+      const res = await catalogApi().refresh();
       if (!res.success) {
         setRefreshError(res.error ?? "Unknown error");
       } else if (res.refreshed) {
@@ -129,15 +86,7 @@ export default function SettingsAdmin() {
     setRefreshError(null);
     setRefreshNotice(null);
     try {
-      const res = await apiJson<{
-        success: boolean;
-        refreshed?: {
-          models: number;
-          pricedModels: number;
-          droppedEntries?: number;
-        };
-        error?: string;
-      }>("/api/admin/catalog/hard-refresh", { method: "POST" });
+      const res = await catalogApi().hardRefresh();
       if (!res.success) {
         setRefreshError(res.error ?? "Unknown error");
       } else if (res.refreshed) {
@@ -170,16 +119,10 @@ export default function SettingsAdmin() {
       models: data.models.map(m => (m.id === modelId ? optimistic : m)),
     });
     try {
-      await apiJson(
-        `/api/admin/catalog/models/${encodeURIComponent(modelId)}`,
-        {
-          method: "PUT",
-          body: JSON.stringify({
-            visible: optimistic.visible,
-            tier: optimistic.tier,
-          }),
-        },
-      );
+      await catalogApi().updateModel(modelId, {
+        visible: optimistic.visible,
+        tier: optimistic.tier,
+      });
     } catch (err) {
       await loadCatalog();
       setRefreshError(err instanceof Error ? err.message : String(err));
@@ -212,13 +155,10 @@ export default function SettingsAdmin() {
     };
     setData(next);
     try {
-      await apiJson("/api/admin/catalog/defaults", {
-        method: "PUT",
-        body: JSON.stringify({
-          defaultChatModelId: next.defaultChatModelId,
-          defaultFreeChatModelId: next.defaultFreeChatModelId,
-          utilityModelId: next.utilityModelId,
-        }),
+      await catalogApi().updateDefaults({
+        defaultChatModelId: next.defaultChatModelId,
+        defaultFreeChatModelId: next.defaultFreeChatModelId,
+        utilityModelId: next.utilityModelId,
       });
     } catch (err) {
       await loadCatalog();
