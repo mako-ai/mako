@@ -124,7 +124,7 @@ async function main() {
     const idle = pools().get(`${A}:default`);
     assert.ok(idle);
     idle.lastUsed = Date.now() - 60_000;
-    await driver.cleanupIdleConnections(30_000);
+    await driver.sweepIdleConnections(30_000);
     assert.deepEqual([...pools().keys()], [`${B}:default`]);
     assert.equal(connectors[0].closed, 1, "idle connection's connector closed");
     assert.equal(connectors[1].closed, 0);

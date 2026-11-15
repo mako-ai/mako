@@ -22,7 +22,7 @@ import {
   withDefaultQueryLabels,
   withQueryLabels,
 } from "./bigquery-labels";
-import { databaseConnectionService } from "./database-connection.service";
+import { bigQueryEngine } from "../databases/drivers/bigquery/engine";
 import { withToolQueryLabels } from "../agent-lib/tool-query-labels";
 import { resolveCdcDestinationAdapter } from "../sync-cdc/adapters/registry";
 import { BigQueryDestinationAdapter } from "../sync-cdc/adapters/bigquery";
@@ -165,12 +165,12 @@ async function testRequestBodies(): Promise<void> {
     },
     get: async () => ({ data: { jobComplete: true, rows: [] } }),
   };
-  const service = databaseConnectionService as unknown as Record<
+  const service = bigQueryEngine as unknown as Record<
     string,
     (...args: unknown[]) => Promise<unknown>
   >;
-  const original = service.getBigQueryHttpClient;
-  service.getBigQueryHttpClient = async () => fakeClient;
+  const original = service.getHttpClient;
+  service.getHttpClient = async () => fakeClient;
 
   const database = (apiBaseUrl?: string) => ({
     _id: "db1",
@@ -194,12 +194,12 @@ async function testRequestBodies(): Promise<void> {
     await withQueryLabels(
       { mako_source: "app_binding", mako_app: "Sales" },
       async () => {
-        await service.executeBigQueryQuery(database(), "SELECT 1", {});
-        await service.executeBigQueryPreviewQuery(database(), "SELECT 1", {});
-        await service.executeBigQueryStreamingQuery(database(), "SELECT 1", {
+        await service.executeQuery(database(), "SELECT 1", {});
+        await service.executePreviewQuery(database(), "SELECT 1", {});
+        await service.executeStreamingQuery(database(), "SELECT 1", {
           onBatch: async () => undefined,
         });
-        await service.getBigQueryQuerySchema(database(), "SELECT 1");
+        await service.getQuerySchema(database(), "SELECT 1");
       },
     );
     assert.equal(posts.length, 4);
@@ -212,7 +212,7 @@ async function testRequestBodies(): Promise<void> {
     // Explicit labels on the query win over the context.
     posts.length = 0;
     await withQueryLabels({ mako_source: "agent" }, () =>
-      service.executeBigQueryQuery(database(), "SELECT 1", {
+      service.executeQuery(database(), "SELECT 1", {
         labels: { mako_source: "console", mako_console: "c1" },
       }),
     );
@@ -224,7 +224,7 @@ async function testRequestBodies(): Promise<void> {
 
     // No context at all still says where to look.
     posts.length = 0;
-    await service.executeBigQueryQuery(database(), "SELECT 1", {});
+    await service.executeQuery(database(), "SELECT 1", {});
     assert.deepEqual(posts[0].body.labels, {
       mako_source: "other",
       mako_workspace: "ws1",
@@ -232,14 +232,14 @@ async function testRequestBodies(): Promise<void> {
 
     // A local emulator gets no labels: its jobs cost nothing.
     posts.length = 0;
-    await service.executeBigQueryQuery(
+    await service.executeQuery(
       database("http://localhost:9050"),
       "SELECT 1",
       {},
     );
     assert.equal("labels" in posts[0].body, false);
   } finally {
-    service.getBigQueryHttpClient = original;
+    service.getHttpClient = original;
   }
 }
 

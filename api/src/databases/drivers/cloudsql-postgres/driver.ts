@@ -728,7 +728,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
    * Close pools unused for longer than `maxIdleMs` that have no client
    * checked out, and the Connector of any connection left with no pool.
    */
-  async cleanupIdleConnections(maxIdleMs: number): Promise<void> {
+  async sweepIdleConnections(maxIdleMs: number): Promise<void> {
     const now = Date.now();
     for (const [key, entry] of this.pools) {
       const busy =

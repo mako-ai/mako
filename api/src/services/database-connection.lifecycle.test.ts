@@ -18,6 +18,7 @@
 import assert from "node:assert/strict";
 import { DatabaseConnectionService } from "./database-connection.service";
 import { databaseRegistry } from "../databases/registry";
+import { engineFor } from "../databases/engines";
 import type { DatabaseDriver } from "../databases/driver";
 import { mongoEngine } from "../databases/drivers/mongodb/engine";
 import { mysqlEngine } from "../databases/drivers/mysql/engine";
@@ -122,14 +123,8 @@ async function testInvalidateConnection() {
 async function testSharedDriverInstances() {
   const svc = new DatabaseConnectionService() as any;
   for (const type of ["cloudsql-postgres", "cloudflare-d1", "cloudflare-kv"]) {
-    const getter =
-      type === "cloudsql-postgres"
-        ? "cloudSqlDriver"
-        : type === "cloudflare-d1"
-          ? "d1Driver"
-          : "kvDriver";
     assert.equal(
-      svc[getter],
+      engineFor(type),
       databaseRegistry.getDriver(type),
       `${type}: the service uses the registry's instance`,
     );
@@ -139,7 +134,7 @@ async function testSharedDriverInstances() {
     databaseRegistry.getOrRegister("cloudsql-postgres", () => {
       throw new Error("must not construct a second instance");
     }),
-    svc.cloudSqlDriver,
+    engineFor("cloudsql-postgres"),
   );
   await svc.closeAllConnections();
 }

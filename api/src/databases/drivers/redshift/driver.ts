@@ -18,7 +18,7 @@ import {
   InsertOptions,
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
-import { databaseConnectionService } from "../../../services/database-connection.service";
+import { executeCheckedQuery } from "../../checked-query";
 import { PostgreSQLDatabaseDriver } from "../postgresql/driver";
 import { listPostgresTableColumns } from "../postgresql/introspection";
 
@@ -76,7 +76,7 @@ export class RedshiftDatabaseDriver implements DatabaseDriver {
     const opts = dbName ? { databaseName: dbName } : undefined;
 
     // pg_namespace lists all schemas; filter out system ones in SQL
-    const result = await databaseConnectionService.executeQuery(
+    const result = await executeCheckedQuery(
       database,
       `SELECT nspname AS schema_name
        FROM pg_catalog.pg_namespace

@@ -281,22 +281,6 @@ export class PostgresEngine implements QueryEngine {
   }
 
   /**
-   * A PostgreSQL read through a cursor, or null when `query` is not one
-   * readable statement (or the connection is Redshift, whose cursors this
-   * path does not use).
-   */
-  readRows(
-    database: IDatabaseConnection,
-    query: string,
-    options: CursorReadOptions,
-  ): Promise<QueryResult> | null {
-    if (database.type !== "postgresql") return null;
-    const readable = cursorReadable(query);
-    if (readable === null) return null;
-    return this.readCursor(database, readable, options);
-  }
-
-  /**
    * `query` (one statement `cursorReadable` passed) through a cursor:
    * DECLARE once, FETCH a batch at a time in one transaction (read-only
    * where the caller may not write), so the statement runs once and is one

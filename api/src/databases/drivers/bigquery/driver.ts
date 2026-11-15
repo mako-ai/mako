@@ -10,7 +10,10 @@ import {
   TableClustering,
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
-import { databaseConnectionService } from "../../../services/database-connection.service";
+import { executeCheckedQuery } from "../../checked-query";
+import type { QueryExecuteOptions, QueryResult } from "../../query-types";
+import { getSchema, listDatasets, listTables } from "./catalog";
+import { bigQueryEngine } from "./engine";
 import { loggers } from "../../../logging";
 import { BIGQUERY_WORKING_DATASET } from "../../../utils/bigquery-working-dataset";
 import { escapeSqlLiteral } from "../../sql-utils";
@@ -329,8 +332,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
   async getTreeRoot(
     database: IDatabaseConnection,
   ): Promise<DatabaseTreeNode[]> {
-    const datasets =
-      await databaseConnectionService.listBigQueryDatasets(database);
+    const datasets = await listDatasets(bigQueryEngine, database);
     return datasets.map<DatabaseTreeNode>(ds => ({
       id: ds,
       label: ds,
@@ -346,10 +348,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
   ): Promise<DatabaseTreeNode[]> {
     if (parent.kind !== "dataset") return [];
     const datasetId = parent.metadata?.datasetId || parent.id;
-    const items = await databaseConnectionService.listBigQueryTables(
-      database,
-      datasetId,
-    );
+    const items = await listTables(bigQueryEngine, database, datasetId);
     const groups: Record<string, true> = {};
     for (const it of items) {
       const [, tableIdRaw] = it.name.split(".");
@@ -370,15 +369,15 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
   async executeQuery(
     database: IDatabaseConnection,
     query: string,
-    options?: any,
-  ) {
-    return databaseConnectionService.executeQuery(database, query, options);
+    options?: QueryExecuteOptions,
+  ): Promise<QueryResult> {
+    return executeCheckedQuery(database, query, options);
   }
 
   async getAutocompleteData(
     database: IDatabaseConnection,
   ): Promise<Record<string, any>> {
-    return databaseConnectionService.getBigQuerySchema(database);
+    return getSchema(bigQueryEngine, database);
   }
 
   // ============ DESTINATION DIALECT CAPABILITIES ============
@@ -506,10 +505,7 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     columns?: ColumnDefinition[];
     error?: string;
   }> {
-    const result = await databaseConnectionService.getBigQueryQuerySchema(
-      database,
-      query,
-    );
+    const result = await bigQueryEngine.getQuerySchema(database, query);
 
     if (!result.success || !result.columns) {
       return { success: false, error: result.error };
