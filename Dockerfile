@@ -84,8 +84,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3-venv \
 # The dbt runner (api/src/dbt/dbt-bin.ts) resolves the binary via DBT_VENV_BIN.
 #
 # dbt-metricflow (the `mf` CLI + the `metricflow` library, Apache 2.0 since
-# 0.209) shares this venv: it compiles a project's semantic_manifest.json into
-# SQL through the same dbt adapter. It caps dbt-core below 1.13, and
+# 0.209) shares this venv. The semantic-layer tools (list_metrics /
+# compile_metric / query_metric) run api/src/dbt/engine/metricflow_engine.py
+# with this venv's python: it imports `metricflow` only and compiles a stored
+# semantic_manifest.json into SQL, with no dbt project and no warehouse
+# connection. Keep metricflow in step with DEFAULT_METRICFLOW_VERSION
+# (api/src/dbt/dbt-bin.ts). dbt-metricflow caps dbt-core below 1.13, and
 # dbt-clickhouse caps dbt-adapters below 1.25, so move these pins together.
 RUN python3 -m venv /opt/dbt \
     && /opt/dbt/bin/pip install --no-cache-dir \

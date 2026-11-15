@@ -11,7 +11,7 @@ You get a file IDE, saved jobs with cron schedules, run history with artifacts, 
 
 A **project** is a dbt Core project scoped to one workspace. It holds:
 
-- A pinned `dbtVersion` (default `1.9`, informational for now).
+- A pinned `dbtVersion` (default `1.12`, informational for now). The runner ships dbt Core 1.12 with [MetricFlow](#semantic-layer-metrics).
 - A set of **environments** — each maps a name (e.g. `dev`, `prod`) to a database **connection** + **target schema**, with `threads` (1–16, default 4), optional dbt `vars`, and optional **ownership** (see [Personal environments](#personal-environments)).
 - A `defaultEnvironment` (default `dev`). Ad-hoc and agent-triggered builds resolve their target as: explicit selection → your saved per-user dev environment → your personal environment (when provisioned) → the project default. Production targets require an explicit job or selection.
 
@@ -112,6 +112,7 @@ Every execution produces a **run** record with per-node status, timing, and logs
 | Artifact | Contents |
 | -------- | -------- |
 | `manifest` | Full project graph (nodes, refs, sources) |
+| `semanticManifest` | Semantic models, metrics and time spines ([semantic layer](#semantic-layer-metrics)) |
 | `runResults` | Per-node execution results and timing |
 | `catalog` | Column-level metadata from `docs generate` |
 | `sources` | Source freshness results |
@@ -131,6 +132,71 @@ dbt model code can call `env_var()`, so the runner does **not** inherit the API'
 ## Lineage
 
 The **lineage** view renders the model DAG (nodes + edges) from the latest run that produced a `manifest.json`, overlaid with each node's last run status from that same run. It's the same dependency graph dbt builds from `{{ ref() }}` and `{{ source() }}`, so undeclared sources and broken refs show up here.
+
+## Semantic layer (metrics)
+
+The runner ships [MetricFlow](https://github.com/dbt-labs/metricflow) next to dbt Core. A project that declares **semantic models** and **metrics** (YAML under `models/`) defines each business number once, and every surface computes it from that definition:
+
+- The AI agent calls `list_metrics` before aggregating a business number, `query_metric` to answer "revenue by region last quarter", and `compile_metric` when the SQL itself is the deliverable (an app binding, a console).
+- External agents get the same three tools through the [MCP server](/mcp-server/).
+- `lookup_term` marks an [ontology](/mcp-server/) term that is also a metric, so a governed term leads to its one definition.
+
+How it works: every `dbt parse` writes `semantic_manifest.json`, and the runner stores it with the run's other artifacts. The tools read the semantic manifest of the **last production build** (a project that has no production build yet uses its latest run, and says so). MetricFlow compiles a metric query into SQL from that file alone — no warehouse connection — and `query_metric` then runs the SELECT read-only through the project's warehouse connection, under the same access checks, timeout and query history as any other agent query.
+
+A minimal definition:
+
+```yaml
+# models/semantic/orders.yml
+semantic_models:
+  - name: orders
+    model: ref('fct_orders')
+    defaults:
+      agg_time_dimension: ordered_at
+    entities:
+      - name: order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+    dimensions:
+      - name: ordered_at
+        type: time
+        type_params:
+          time_granularity: day
+    measures:
+      - name: order_total
+        agg: sum
+        expr: amount
+      - name: order_count
+        agg: count
+        expr: order_id
+
+metrics:
+  - name: revenue
+    label: Revenue
+    type: simple
+    type_params:
+      measure: order_total
+  - name: average_order_value
+    label: Average order value
+    type: ratio
+    type_params:
+      numerator: revenue
+      denominator: orders
+  - name: orders
+    label: Orders
+    type: simple
+    type_params:
+      measure: order_count
+```
+
+Cumulative metrics and time-spine joins also need a `metricflow_time_spine` model (one row per day) declared with `time_spine:`; the agent's dbt skill has the full reference (`references/semantic-layer.md`) and writes these files for you in Transforms mode.
+
+Limits:
+
+- MetricFlow renders SQL for **PostgreSQL** (including Cloud SQL), **Redshift** and **BigQuery** connections. On ClickHouse, MySQL and SQL Server projects the YAML parses but metric queries are refused.
+- A new or changed metric is visible to the tools once a production build has stored its semantic manifest.
 
 ## API
 

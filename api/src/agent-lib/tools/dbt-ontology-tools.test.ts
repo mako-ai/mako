@@ -72,6 +72,7 @@ import { invalidateAppsIndexCache } from "../../apps/app-index.service";
 import { invalidateOwnerDirectory } from "../../apps/user-handles.service";
 import { clearManifestIndexCache } from "../../dbt/ontology/manifest-index.service";
 import { clearOntologyRegistryCache } from "../../dbt/ontology/registry.service";
+import { clearSemanticCatalogCache } from "../../dbt/semantic/semantic-manifest.service";
 import {
   ONTOLOGY_RAW_RELATIONSHIPS_PATH,
   ONTOLOGY_REGISTRY_PATH,
@@ -207,6 +208,7 @@ beforeEach(async () => {
   reads.count = 0;
   clearManifestIndexCache();
   clearOntologyRegistryCache();
+  clearSemanticCatalogCache();
   invalidateOwnerDirectory();
   invalidateAppsIndexCache();
   await unbindTestWorkspaceRepo(WS);
@@ -672,6 +674,111 @@ describe("lookup_term", () => {
     expect(result.suggestion).toContain(
       'find_models({ query: "listing price" })',
     );
+    expect(result.suggestion).toContain(
+      'list_metrics({ query: "listing price" })',
+    );
+  });
+
+  describe("with a semantic layer", () => {
+    /** The prod build also stored a semantic manifest with these metrics. */
+    async function seedMetrics(
+      metrics: Array<{ name: string; label?: string; type?: string }>,
+    ) {
+      await seedProject();
+      stored.set(
+        "runs/1/semantic_manifest.json",
+        Buffer.from(
+          JSON.stringify({
+            semantic_models: [],
+            metrics: metrics.map(metric => ({
+              type: "simple",
+              type_params: {},
+              ...metric,
+            })),
+          }),
+        ),
+      );
+      await DbtRun.collection.updateOne(
+        { "artifactKeys.manifest": "runs/1/manifest.json" },
+        {
+          $set: {
+            environment: "prod",
+            "artifactKeys.semanticManifest": "runs/1/semantic_manifest.json",
+          },
+        },
+      );
+    }
+
+    it("marks a term the dbt project also defines as a metric", async () => {
+      // The metric is named after one of the term's synonyms.
+      await seedMetrics([
+        { name: "monthly_recurring_revenue", label: "MRR", type: "derived" },
+        { name: "orders" },
+      ]);
+      const result = await run<{
+        matches: Array<Record<string, unknown>>;
+        next: string;
+      }>(tools.lookup_term, { query: "mrr" });
+      expect(result.matches[0]).toMatchObject({
+        kind: "term",
+        name: "mrr",
+        canonical: { model: "fct_account_product_month", column: "mrr_eur" },
+        metric: {
+          name: "monthly_recurring_revenue",
+          label: "MRR",
+          type: "derived",
+        },
+      });
+      expect(result.next).toContain("query_metric");
+      expect(result.next).toContain("describe_model");
+    });
+
+    it("leaves a term without a metric as it was, and never marks an entity", async () => {
+      await seedMetrics([{ name: "account" }, { name: "orders" }]);
+      const term = await run<{
+        matches: Array<Record<string, unknown>>;
+        next: string;
+      }>(tools.lookup_term, { query: "paying customers" });
+      expect(term.matches[0]).not.toHaveProperty("metric");
+      expect(term.next).not.toContain("query_metric");
+      // "account" is an entity: a metric of the same name is not its definition.
+      const entity = await run<{ matches: Array<Record<string, unknown>> }>(
+        tools.lookup_term,
+        { query: "account" },
+      );
+      expect(entity.matches[0]).toMatchObject({ kind: "entity" });
+      expect(entity.matches[0]).not.toHaveProperty("metric");
+    });
+
+    it("points to a metric the registry has no term for", async () => {
+      await seedMetrics([{ name: "listing_price", label: "Listing price" }]);
+      const result = await run<{
+        matches: unknown[];
+        metric: Record<string, unknown>;
+        suggestion: string;
+      }>(tools.lookup_term, { query: "Listing Price" });
+      expect(result.matches).toEqual([]);
+      expect(result.metric).toEqual({
+        name: "listing_price",
+        label: "Listing price",
+        type: "simple",
+      });
+      expect(result.suggestion).toContain(
+        'query_metric({ metrics: ["listing_price"] })',
+      );
+    });
+
+    it("still answers when the semantic manifest is unreadable", async () => {
+      await seedMetrics([{ name: "mrr" }]);
+      stored.set("runs/1/semantic_manifest.json", Buffer.from("{not json"));
+      const result = await run<{
+        success: boolean;
+        matches: Array<Record<string, unknown>>;
+      }>(tools.lookup_term, { query: "mrr" });
+      expect(result.success).toBe(true);
+      expect(result.matches[0]).toMatchObject({ name: "mrr" });
+      expect(result.matches[0]).not.toHaveProperty("metric");
+    });
   });
 
   it("answers with an empty registry when the file is absent", async () => {

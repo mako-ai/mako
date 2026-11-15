@@ -128,6 +128,10 @@ export {
   lookupTermSchema,
     modelReadersSchema,
   findJoinPathSchema,
+  // Semantic layer (api/src/agent-lib/tools/dbt-metric-tools.ts).
+  listMetricsSchema,
+  compileMetricSchema,
+  queryMetricSchema,
 } from "./dbt-tools";
 export type {
   DbtCreateFileInput,
@@ -138,6 +142,9 @@ export type {
   LookupTermInput,
     ModelReadersInput,
   FindJoinPathInput,
+  ListMetricsInput,
+  CompileMetricInput,
+  QueryMetricInput,
 } from "./dbt-tools";
 
 export { clientDataSourceTools } from "./data-source-tools";

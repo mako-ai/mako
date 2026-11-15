@@ -4400,6 +4400,8 @@ export interface IDbtRun extends Document {
   };
   artifactKeys: {
     manifest?: string;
+    /** semantic_manifest.json of the same parse (MetricFlow metrics). */
+    semanticManifest?: string;
     runResults?: string;
     catalog?: string;
     sources?: string;
@@ -4521,6 +4523,7 @@ const DbtRunSchema = new Schema<IDbtRun>(
     },
     artifactKeys: {
       manifest: { type: String },
+      semanticManifest: { type: String },
       runResults: { type: String },
       catalog: { type: String },
       sources: { type: String },

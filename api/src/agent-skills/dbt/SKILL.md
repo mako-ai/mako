@@ -1,6 +1,6 @@
 ---
 name: dbt
-description: Load when building, editing, running, or debugging dbt models, dbt projects, schema.yml tests, sources, seeds, snapshots, incremental models, materializations, or dbt jobs in the Transforms section.
+description: Load when building, editing, running, or debugging dbt models, dbt projects, schema.yml tests, sources, seeds, snapshots, incremental models, materializations, semantic models and metrics (MetricFlow semantic layer), or dbt jobs in the Transforms section.
 entities:
   - dbt
   - transform
@@ -20,6 +20,11 @@ entities:
   - dbt run
   - dbt build
   - dbt test
+  - metric
+  - metrics
+  - semantic layer
+  - semantic model
+  - metricflow
 ---
 
 # dbt in Mako (Transforms)
@@ -236,3 +241,6 @@ Load with `read_skill_resource` when needed:
 - `references/snapshots.md` — SCD2 snapshots, timestamp vs check strategy.
 - `references/adapter-quirks.md` — Postgres/BigQuery/ClickHouse/MySQL/
   Redshift/SQL Server differences that affect model SQL and configs.
+- `references/semantic-layer.md` — defining metrics with MetricFlow: time
+  spine, semantic models, simple/ratio/derived/cumulative metrics, and how
+  `list_metrics` / `query_metric` / `compile_metric` use them.

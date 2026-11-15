@@ -76,6 +76,33 @@ export const DBT_CAPABILITIES = [
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "data",
   }),
+  // Semantic layer: the metrics the project defines for MetricFlow. Listing
+  // and compiling read the stored semantic manifest only (no warehouse), so
+  // they carry the ontology gate. query_metric runs the compiled SELECT
+  // read-only on the project's warehouse connection: query access, like
+  // sql_execute_query, and never a write.
+  define({
+    name: "list_metrics",
+    pack: "dbt-orient",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+  }),
+  define({
+    name: "compile_metric",
+    pack: "dbt-orient",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+  }),
+  define({
+    name: "query_metric",
+    pack: "dbt-orient",
+    risk: "read",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "data",
+    requiresQueryAccess: true,
+  }),
   define({
     name: "create_dbt_file",
     pack: "dbt-edit",

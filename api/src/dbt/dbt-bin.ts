@@ -214,3 +214,56 @@ export function resolveDbtEnginePython(
       "(production bakes /opt/dbt/bin/python) or install uv for local dev.",
   );
 }
+
+/** metricflow pinned for the local `uv` fallback; the image pins it via dbt-metricflow. */
+export const DEFAULT_METRICFLOW_VERSION = "0.213.0";
+
+/**
+ * Resolve how to launch the MetricFlow engine (a one-shot Python process
+ * running `enginePath`, see engine/metricflow_engine.py). It imports
+ * `metricflow` only — no dbt, no adapter — so one interpreter serves every
+ * warehouse:
+ *
+ *   1. MF_ENGINE_PYTHON_CMD — JSON array override (tests / custom infra);
+ *      enginePath is appended.
+ *   2. The baked venv's python (sibling of DBT_VENV_BIN) in production: the
+ *      Dockerfile installs dbt-metricflow into that venv.
+ *   3. `uv run` dev fallback with metricflow injected.
+ */
+export function resolveMetricflowPython(enginePath: string): ResolvedDbtBin {
+  const override = process.env.MF_ENGINE_PYTHON_CMD;
+  if (override) {
+    const parts = JSON.parse(override) as string[];
+    return { bin: parts[0], prefixArgs: [...parts.slice(1), enginePath] };
+  }
+
+  const venvBin = process.env.DBT_VENV_BIN;
+  if (venvBin) {
+    const python = join(dirname(venvBin), "python");
+    if (!existsSync(python)) {
+      throw new Error(
+        `dbt venv python "${python}" does not exist (check DBT_VENV_BIN)`,
+      );
+    }
+    return { bin: python, prefixArgs: [enginePath] };
+  }
+
+  if (isUvxAvailable()) {
+    return {
+      bin: "uv",
+      prefixArgs: [
+        "run",
+        "--no-project",
+        "--with",
+        `metricflow==${DEFAULT_METRICFLOW_VERSION}`,
+        "python",
+        enginePath,
+      ],
+    };
+  }
+
+  throw new Error(
+    "No Python available for MetricFlow. Set DBT_VENV_BIN (production bakes " +
+      "/opt/dbt/bin/python with dbt-metricflow) or install uv for local dev.",
+  );
+}

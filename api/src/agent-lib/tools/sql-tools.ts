@@ -1139,7 +1139,7 @@ export function trackSqlExecution(input: {
   });
 }
 
-async function executeQueryImpl(
+export async function executeQueryImpl(
   connectionId: string,
   requestedDatabase: string | undefined,
   query: string,
