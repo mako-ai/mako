@@ -1,0 +1,11 @@
+# Stripe, as a connector folder (RFC connector-runtime, iteration 4).
+#
+# Production still runs the in-process connector in api/src/connectors/stripe.
+# This folder is the port the registry will later install as mako/stripe; the
+# parity harness in fixtures/ holds the two to the same output.
+runtime: node
+entry: connector.ts
+page:
+  vendor: Stripe
+  category: payments
+  docs: https://docs.stripe.com/api

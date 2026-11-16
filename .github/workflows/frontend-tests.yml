@@ -81,6 +81,11 @@ jobs:
       - name: App SDK tests
         run: pnpm --filter @makoai/app-sdk test
 
+      # node --test in packages/connector-sdk: defineConnector, the runner,
+      # the protocol writer and pagination.
+      - name: Connector SDK tests
+        run: pnpm --filter @makoai/connector-sdk test
+
       # The CLI supports Node 22 (`engines`): `mako workflow run` must load a
       # workflow's TypeScript there too, including 22.12-22.17, where Node
       # does not strip types by default. --no-experimental-strip-types stands

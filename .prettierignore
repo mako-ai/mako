@@ -9,6 +9,8 @@ coverage/
 
 # Generated files
 *.d.ts
+# Recorded connector cassettes: one interaction per line, written by parity.mjs
+connectors/*/fixtures/cassettes/
 
 # Configuration files
 *.config.js
