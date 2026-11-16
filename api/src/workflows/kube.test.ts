@@ -29,7 +29,14 @@ async function main() {
   process.env.WORKFLOWS_RUNTIME_IMAGE = NEW;
   process.env.BASE_URL = "https://mako.test";
   delete process.env.WORKFLOWS_NAME_PREFIX;
-  const { rollWorkersToRuntimeImage, workerSelector } = await import("./kube");
+  const {
+    WORKER_MAX_REPLICAS,
+    WORKER_STEPS,
+    autoscalerBodies,
+    ensureAutoscaler,
+    rollWorkersToRuntimeImage,
+    workerSelector,
+  } = await import("./kube");
 
   // Production has no env label; a preview selects its own.
   assert.equal(
@@ -82,6 +89,104 @@ async function main() {
     body.spec?.template.metadata?.annotations?.["mako.ai/restarted"],
     "the pod template changes, so new pods start",
   );
+
+  // The pod and its slots are sized together, and a replace keeps the
+  // number of pods the autoscaler chose.
+  const [container] = body.spec?.template.spec?.containers ?? [];
+  assert.deepEqual(container.resources, {
+    requests: { cpu: "250m", memory: "512Mi" },
+    limits: { cpu: "2", memory: "3Gi" },
+  });
+  const env = Object.fromEntries(
+    (container.env ?? []).map(e => [e.name, e.value]),
+  );
+  assert.equal(env.WORKFLOWS_MAX_STEPS, String(WORKER_STEPS));
+  assert.equal(
+    env.WORKFLOWS_MAX_RUNS,
+    String(WORKER_STEPS * WORKER_MAX_REPLICAS),
+  );
+  assert.equal(env.WORKFLOWS_RATE_LIMITS, undefined);
+  assert.equal(body.spec?.replicas, 1);
+  process.env.WORKFLOWS_RATE_LIMITS = "model=300/minute";
+  process.env.WORKFLOWS_MAX_RUNS = "20";
+  asked.replaced.length = 0;
+  apps.listNamespacedDeployment = async () => ({
+    items: [
+      {
+        ...worker("grown", OLD),
+        spec: { ...worker("grown", OLD).spec, replicas: 4 },
+      },
+    ],
+  });
+  assert.deepEqual(await rollWorkersToRuntimeImage(apps as never), ["grown"]);
+  assert.equal(asked.replaced[0].spec?.replicas, 4);
+  const grownEnv = Object.fromEntries(
+    (asked.replaced[0].spec?.template.spec?.containers[0].env ?? []).map(e => [
+      e.name,
+      e.value,
+    ]),
+  );
+  assert.equal(grownEnv.WORKFLOWS_RATE_LIMITS, "model=300/minute");
+  assert.equal(grownEnv.WORKFLOWS_MAX_RUNS, "20");
+  delete process.env.WORKFLOWS_RATE_LIMITS;
+  delete process.env.WORKFLOWS_MAX_RUNS;
+
+  // The autoscaler: off unless asked for; with KEDA, an object that reads
+  // Mako's demand with the worker's own key and sleeps at zero pods.
+  const made: Array<{ plural: string; body: Record<string, unknown> }> = [];
+  const custom = {
+    getNamespacedCustomObject: async (req: { plural: string }) => {
+      if (req.plural === "scaledobjects") {
+        return { metadata: { resourceVersion: "3" } };
+      }
+      throw Object.assign(new Error(), { code: 404 });
+    },
+    createNamespacedCustomObject: async (req: {
+      plural: string;
+      body: Record<string, unknown>;
+    }) => {
+      made.push({ plural: req.plural, body: req.body });
+    },
+    replaceNamespacedCustomObject: async (req: {
+      plural: string;
+      body: Record<string, unknown>;
+    }) => {
+      made.push({ plural: req.plural, body: req.body });
+    },
+  };
+  await ensureAutoscaler("ws1", custom as never);
+  assert.equal(
+    made.length,
+    0,
+    "no autoscaler unless WORKFLOWS_AUTOSCALER=keda",
+  );
+  process.env.WORKFLOWS_AUTOSCALER = "keda";
+  await ensureAutoscaler("ws1", custom as never);
+  assert.deepEqual(
+    made.map(m => m.plural),
+    ["triggerauthentications", "scaledobjects"],
+  );
+  const scaled = autoscalerBodies("ws1").ScaledObject;
+  assert.equal(scaled.spec.scaleTargetRef.name, "wf-ws1");
+  assert.equal(scaled.spec.minReplicaCount, 0);
+  assert.equal(scaled.spec.maxReplicaCount, WORKER_MAX_REPLICAS);
+  assert.deepEqual(scaled.spec.triggers[0].metadata, {
+    url: "https://mako.test/api/workflows/runtime/demand",
+    valueLocation: "steps",
+    targetValue: String(WORKER_STEPS),
+    activationTargetValue: "0",
+    authMode: "bearer",
+  });
+  assert.deepEqual(
+    autoscalerBodies("ws1").TriggerAuthentication.spec.secretTargetRef,
+    [{ parameter: "token", name: "wf-ws1", key: "MAKO_API_KEY" }],
+  );
+  // An existing object is replaced at its version.
+  assert.equal(
+    (made[1].body.metadata as { resourceVersion?: string }).resourceVersion,
+    "3",
+  );
+  delete process.env.WORKFLOWS_AUTOSCALER;
 
   // Without an image there is nothing to move to.
   delete process.env.WORKFLOWS_RUNTIME_IMAGE;

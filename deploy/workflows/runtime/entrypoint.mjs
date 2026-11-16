@@ -105,9 +105,17 @@ async function switchTo(target, hatchetToken, active) {
   current = { key, child };
   failed = null;
   child.once("exit", () => {
-    rmSync(root, { recursive: true, force: true });
-    // What its steps left in their homes goes with it.
-    rmSync(join(WORKER_HOMES, run), { recursive: true, force: true });
+    // Never fatal: this process is the new worker's parent, and an error
+    // here would stop the pod with the steps that worker is running. The
+    // worker empties its step homes itself (worker.mjs `emptyHomes`): they
+    // belong to other users, whose files this process may not read.
+    for (const dir of [root, join(WORKER_HOMES, run)]) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        console.error(`Could not remove ${dir}: ${err.message}`);
+      }
+    }
     // If this worker died on its own, the next poll starts it again.
     if (current?.child === child) current = null;
   });

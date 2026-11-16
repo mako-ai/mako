@@ -12,8 +12,9 @@
 // it is active (WORKFLOWS_ACTIVE, comma-separated names).
 //
 // Env: WORKFLOWS_ROOT, GIT_SHA, HATCHET_CLIENT_TOKEN, WORKFLOWS_ACTIVE,
-// MAKO_URL, MAKO_API_KEY.
-import { fork } from "node:child_process";
+// MAKO_URL, MAKO_API_KEY; and the limits below: WORKFLOWS_MAX_STEPS,
+// WORKFLOWS_MAX_RUNS, WORKFLOWS_SCHEDULE_TIMEOUT, WORKFLOWS_RATE_LIMITS.
+import { execFileSync, fork } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -25,8 +26,10 @@ import {
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  ConcurrencyLimitStrategy,
   HatchetClient,
   NonRetryableError,
+  RateLimitDuration,
 } from "@hatchet-dev/typescript-sdk/v1";
 
 const READY_TIMEOUT_MS = 45_000;
@@ -83,6 +86,8 @@ if (canSwitchUsers) {
   chmodSync("/tmp/wf", 0o711);
 }
 
+const homes = new Map(); // home -> uid
+
 /** A step program's environment: no key, no token, a home of its own. */
 function stepEnv(uid) {
   // Each user may enter its own home and no other's.
@@ -91,6 +96,7 @@ function stepEnv(uid) {
   const home = join(HOMES, canSwitchUsers ? String(uid) : "steps");
   mkdirSync(home, { mode: 0o700, recursive: true });
   if (canSwitchUsers) chownSync(home, uid, uid);
+  homes.set(home, uid);
   return {
     PATH: process.env.PATH,
     ...(process.env.NODE_ENV ? { NODE_ENV: process.env.NODE_ENV } : {}),
@@ -100,6 +106,26 @@ function stepEnv(uid) {
     HOME: home,
     TMPDIR: home,
   };
+}
+
+/**
+ * Empty the step homes and open them, each as its own user. This process is
+ * root without the right to read another user's files, so neither it nor
+ * the entrypoint can remove what a step left: the user that wrote it can.
+ */
+function emptyHomes() {
+  if (!canSwitchUsers) return;
+  for (const [home, uid] of homes) {
+    try {
+      execFileSync(
+        "sh",
+        ["-c", 'find "$1" -mindepth 1 -delete; chmod 755 "$1"', "sh", home],
+        { uid, gid: uid, stdio: "ignore", timeout: 30_000 },
+      );
+    } catch {
+      // Left for the pod's end: /tmp goes with the pod.
+    }
+  }
 }
 
 function startStepProgram(args, uid) {
@@ -137,13 +163,27 @@ function describeWorkflows() {
   });
 }
 
-/** A pass for one step of one run, from Mako; retried while Mako is busy. */
+// A pass is asked again for this long while Mako or its Hatchet does not
+// answer (a restart of either takes a minute or two): the step waits
+// instead of failing.
+const PASS_PATIENCE_MS = 3 * 60_000;
+
+/**
+ * A pass for one step of one run, from Mako. A refusal (the run is not
+ * executing, the workflow is not deployed) ends the step for good after a
+ * few seconds. Mako or Hatchet not answering is not a refusal: it is asked
+ * again for PASS_PATIENCE_MS, and then the step fails as any step does, so
+ * its retries apply.
+ */
 async function passFor(workflow, runId, step) {
+  const started = Date.now();
   let last;
-  // Hatchet can lag a run it just started (its tasks show up a moment
-  // later), so a refusal is asked again too, for a few seconds.
-  for (let attempt = 0; attempt < 6; attempt++) {
-    if (attempt) await new Promise(r => setTimeout(r, 250 * 2 ** attempt));
+  let refusals = 0;
+  for (let attempt = 0; ; attempt++) {
+    if (attempt) {
+      await new Promise(r => setTimeout(r, Math.min(250 * 2 ** attempt, 8000)));
+    }
+    let refused = false;
     try {
       const res = await fetch(`${makoUrl}/api/workflows/runtime/passes`, {
         method: "POST",
@@ -152,14 +192,25 @@ async function passFor(workflow, runId, step) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ workflow, runId, step }),
+        signal: AbortSignal.timeout(30_000),
       });
       const body = await res.json().catch(() => ({}));
       if (res.ok && typeof body.pass === "string") return body.pass;
       last = new Error(body.error ?? `Mako answered ${res.status}`);
       // A mistake (400) or a key Mako refuses (401) stays so.
       if (res.status === 400 || res.status === 401) break;
+      refused = res.status === 403 || res.status === 404;
     } catch (err) {
       last = err;
+    }
+    if (refused) {
+      // Hatchet can lag a run it just started (its tasks show up a moment
+      // later), so a refusal is asked again too, for a few seconds.
+      if (++refusals >= 6) break;
+    } else if (Date.now() - started > PASS_PATIENCE_MS) {
+      throw new Error(
+        `Mako gave no pass for this step in ${PASS_PATIENCE_MS / 60_000} minutes: ${last?.message ?? last}`,
+      );
     }
   }
   throw new NonRetryableError(
@@ -177,8 +228,51 @@ const idle = new Map(); // workflow -> [{ child, timer, at }]
 // Step programs alive at once, busy or idle: each is a Node process, and the
 // pod has a memory limit. Past it a step waits for one to finish (or an idle
 // one of another workflow is stopped), and Hatchet is given as many slots,
-// so it does not hand out more steps than run.
+// so it does not hand out more steps than run. The pod's size and this
+// number are set together (api/src/workflows/kube.ts).
 const MAX_STEPS = Math.max(1, Number(process.env.WORKFLOWS_MAX_STEPS) || 8);
+
+// Runs of one workflow executing at once, in the whole workspace. More wait
+// in Hatchet, oldest first, instead of all starting together: a burst of a
+// thousand webhook calls is a queue, not a stampede. A workflow that
+// declares its own `concurrency` keeps it.
+const MAX_RUNS = Math.max(1, Number(process.env.WORKFLOWS_MAX_RUNS) || 50);
+
+// How long a step may wait to start. Hatchet's own default is 5m, after
+// which it cancels the step, and the wait behind MAX_RUNS counts (measured:
+// with 30s, runs queued behind the limit were cancelled). A backlog of a few
+// thousand runs takes hours to drain, so the default is a day. A step's own
+// value is kept.
+const SCHEDULE_TIMEOUT = process.env.WORKFLOWS_SCHEDULE_TIMEOUT || "24h";
+
+/**
+ * The workspace's named rate limits, from WORKFLOWS_RATE_LIMITS:
+ * `model=300/minute,mail=120/minute`. A step takes from one with
+ * `rateLimits: [{ staticKey: "model", units: 1 }]`; a step over the limit
+ * waits in Hatchet. Units: second, minute, hour, day.
+ */
+function rateLimitsOf(text) {
+  const limits = [];
+  for (const part of (text ?? "").split(",")) {
+    if (!part.trim()) continue;
+    const match =
+      /^\s*([A-Za-z0-9_-]+)\s*=\s*(\d+)\s*\/\s*(second|minute|hour|day)\s*$/.exec(
+        part,
+      );
+    if (!match) {
+      console.error(
+        `WORKFLOWS_RATE_LIMITS: "${part.trim()}" is not <name>=<n>/<second|minute|hour|day>; ignored`,
+      );
+      continue;
+    }
+    limits.push({
+      key: match[1],
+      limit: Number(match[2]),
+      duration: RateLimitDuration[match[3].toUpperCase()],
+    });
+  }
+  return limits;
+}
 let live = 0;
 let waiting = [];
 const wake = () => {
@@ -440,6 +534,17 @@ const hatchet = HatchetClient.init();
 const workflows = definitions.map(definition => {
   const { name } = definition;
   const options = { ...definition.workflow, name };
+  // One group for the whole workflow; GROUP_ROUND_ROBIN is the strategy
+  // that queues (the SDK's default cancels the run in progress).
+  options.concurrency ??= {
+    expression: "'runs'",
+    maxRuns: MAX_RUNS,
+    limitStrategy: ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
+  };
+  options.taskDefaults = {
+    ...options.taskDefaults,
+    scheduleTimeout: options.taskDefaults?.scheduleTimeout ?? SCHEDULE_TIMEOUT,
+  };
   if (!active.has(name)) {
     for (const trigger of ["on", "onCrons", "onEvents"])
       delete options[trigger];
@@ -483,9 +588,34 @@ if (workflows.length === 0) {
   // idles, so what was deleted stops running.
   console.log(`Worker started at ${process.env.GIT_SHA}: no workflows`);
   process.send?.("ready");
-  process.on("SIGTERM", () => process.exit(0));
+  process.on("SIGTERM", () => {
+    emptyHomes();
+    process.exit(0);
+  });
   await new Promise(() => {});
 }
+
+// A step naming a limit Hatchet does not have is never started: it stays
+// queued, with no error anywhere (measured). So the name is checked here,
+// and a commit that names an unknown limit does not build.
+const rateLimits = rateLimitsOf(process.env.WORKFLOWS_RATE_LIMITS);
+const limitNames = new Set(rateLimits.map(limit => limit.key));
+for (const definition of definitions) {
+  for (const task of definition.tasks) {
+    for (const limit of task.options.rateLimits ?? []) {
+      const key = limit.staticKey ?? limit.key;
+      if (key === undefined || limitNames.has(key)) continue;
+      console.error(
+        `workflows/${definition.name}: task ${task.name} takes from the rate limit "${key}", which this installation does not have` +
+          (limitNames.size
+            ? ` (it has: ${[...limitNames].join(", ")}).`
+            : " (it has none: WORKFLOWS_RATE_LIMITS is not set)."),
+      );
+      process.exit(1);
+    }
+  }
+}
+for (const limit of rateLimits) await hatchet.ratelimits.upsert(limit);
 
 const worker = await hatchet.worker("workspace", {
   workflows,
@@ -497,8 +627,9 @@ process.on("SIGTERM", async () => {
   console.log(`${process.env.GIT_SHA}: finishing running tasks`);
   await worker.stop();
   for (const list of idle.values()) {
-    for (const { child } of list) child.kill("SIGTERM");
+    for (const { child } of list) child.kill("SIGKILL");
   }
+  emptyHomes();
   process.exit(0);
 });
 

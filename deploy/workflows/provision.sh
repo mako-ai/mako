@@ -34,8 +34,14 @@ CHART_VERSION="0.19.0"
 REGION="${REGION:-europe-west1}"
 NETWORK="${NETWORK:-mako-vpc}"
 SQL_INSTANCE="${SQL_INSTANCE:-mako-hatchet}"
-# Hatchet holds many connections; the smallest shared-core tier allows too few.
-SQL_TIER="${SQL_TIER:-db-g1-small}"
+# Hatchet's queue is this database, so it is the part that must not be
+# short: 2 dedicated vCPUs and 7.5 GB. A shared-core tier (db-g1-small:
+# half a core, 1.7 GB) runs a few workflows and falls over under a burst
+# (README.md, "Sizing"). Smaller is fine where nothing bursts:
+#   SQL_TIER=db-g1-small PROJECT_ID=mako-ai-dev ./provision.sh
+# An instance that exists keeps its tier; change it with
+#   gcloud sql instances patch mako-hatchet --tier=db-custom-2-7680
+SQL_TIER="${SQL_TIER:-db-custom-2-7680}"
 
 echo "→ Project=${PROJECT_ID} Cluster=${CLUSTER} (${CLUSTER_LOCATION})"
 gcloud container clusters get-credentials "${CLUSTER}" \

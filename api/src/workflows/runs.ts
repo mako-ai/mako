@@ -488,9 +488,10 @@ export function setFirstReadRetryForTests(waits: number[]) {
 async function readNewRunDetail(
   tenant: WorkspaceTenant,
   runId: string,
+  read: () => Promise<RunDetail | null>,
 ): Promise<RunDetail | null> {
   for (let attempt = 0; ; attempt++) {
-    const detail = await readDetail(tenant, runId).catch(() => null);
+    const detail = await read();
     // A run's tasks, which name its workflow, can show up after the run
     // itself: a run without them yet is not known yet either.
     if (
@@ -531,30 +532,52 @@ export async function runStartedBy(
   runId: string | undefined,
   workflow: string | undefined,
 ): Promise<RunOrigin | null> {
-  if (!runId || !isHatchetId(runId) || !workflow) return null;
+  return (await executingRun(workspaceId, runId, workflow)).origin;
+}
+
+/**
+ * `runStartedBy`, and whether a null is Hatchet not answering (`unreadable`)
+ * rather than a run that is not executing. The one who asks for a pass is
+ * told which: a step waits out a Hatchet that restarts, and ends for good
+ * only when its run is known to be over.
+ */
+export async function executingRun(
+  workspaceId: string,
+  runId: string | undefined,
+  workflow: string | undefined,
+): Promise<{ origin: RunOrigin | null; unreadable: boolean }> {
+  const no = { origin: null, unreadable: false };
+  if (!runId || !isHatchetId(runId) || !workflow) return no;
   const tenant = await readWorkspaceTenant(workspaceId).catch(() => null);
-  if (!tenant) return null;
+  if (!tenant) return no;
   const key = `${tenant.tenantId}:${runId}`;
   const wanted = workflow.toLowerCase();
   const known = knownRuns.get(key);
-  if (known && known.workflow !== wanted) return null;
+  if (known && known.workflow !== wanted) return no;
   const now = Date.now();
   if (known?.activeAt !== undefined && now - known.activeAt < ACTIVE_FOR_MS) {
-    return known.origin;
+    return { origin: known.origin, unreadable: false };
   }
+  let unreadable = false;
+  const read = () =>
+    readDetail(tenant, runId).catch(error => {
+      // No answer, or a 5xx: Hatchet is down or too slow. A 404 is an answer.
+      unreadable = !(error instanceof HatchetError) || error.status >= 500;
+      return null;
+    });
   const detail = known
-    ? await readDetail(tenant, runId).catch(() => null)
-    : await readNewRunDetail(tenant, runId);
+    ? await read()
+    : await readNewRunDetail(tenant, runId, read);
   if (!detail?.run || idOf(detail.run) !== runId) {
     // Hatchet did not answer: a run seen executing a short while ago is
     // taken as still executing.
     return known?.activeAt !== undefined &&
       now - known.activeAt < ACTIVE_WHEN_UNREADABLE_MS
-      ? known.origin
-      : null;
+      ? { origin: known.origin, unreadable: false }
+      : { origin: null, unreadable };
   }
   // Never kept without its workflow: that would refuse the run for good.
-  if (!known && workflowOfRunDetail(detail) === "") return null;
+  if (!known && workflowOfRunDetail(detail) === "") return no;
   const run: KnownRun = known ?? {
     origin: originOf(detail.run),
     workflow: workflowOfRunDetail(detail),
@@ -563,8 +586,8 @@ export async function runStartedBy(
   else delete run.activeAt;
   remember(key, run);
   return run.workflow === wanted && run.activeAt !== undefined
-    ? run.origin
-    : null;
+    ? { origin: run.origin, unreadable: false }
+    : no;
 }
 
 /** One run of the workspace's Hatchet; `full` keeps every log line. */

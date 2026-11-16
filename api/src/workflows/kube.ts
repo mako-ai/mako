@@ -4,11 +4,12 @@
  * named `wf-<prefix><id>`, created once: the pod holds its Mako API key and
  * asks Mako which commit to run, so a deploy never touches Kubernetes.
  */
-import type { V1Deployment } from "@kubernetes/client-node";
+import { CustomObjectsApi, type V1Deployment } from "@kubernetes/client-node";
 
 import { loggers } from "../logging";
 import {
   gkeClients,
+  gkeCustomObjects,
   isGkeProviderConfigured,
 } from "../services/kernel-provider/gke-kernel-provider";
 import { workflowsNamePrefix } from "./hatchet";
@@ -20,6 +21,35 @@ const NAMESPACE = "mako-workflows";
 const POD_NAME_LABEL = "mako-workflow-worker";
 const WORKSPACE_LABEL = "mako.ai/workspace";
 const ENV_LABEL = "mako.ai/env";
+
+/**
+ * The size of one worker pod, set together. A step runs in a Node process
+ * of its own, measured at 80 to 120 MB while it waits on I/O, and the
+ * dispatcher and entrypoint take about 300 MB with a typecheck running:
+ * 16 steps fit under 3Gi with room for a step that holds a large result.
+ * Steps wait on the network, so 16 of them share 2 CPUs; the request is
+ * what an idle pod uses.
+ */
+export const WORKER_STEPS = 16;
+const WORKER_RESOURCES = {
+  requests: { cpu: "250m", memory: "512Mi" },
+  limits: { cpu: "2", memory: "3Gi" },
+};
+
+/**
+ * The most pods one workspace's worker grows to (the autoscaler below):
+ * 5 x 16 steps at once. The namespace quota (deploy/workflows/k8s) holds
+ * 16 such pods for all workspaces together.
+ */
+export const WORKER_MAX_REPLICAS = 5;
+
+/**
+ * Runs of one workflow executing at once, unless the workflow declares its
+ * own `concurrency` (worker.mjs): as many as the workspace's pods can hold
+ * steps when grown out, so a run that was let in finds a slot, and the rest
+ * wait in Hatchet in the order they came.
+ */
+const MAX_RUNS = WORKER_STEPS * WORKER_MAX_REPLICAS;
 
 /** True when this API instance can create worker pods. */
 export function isGkeWorkerConfigured(): boolean {
@@ -99,7 +129,24 @@ export async function writeWorkerSecret(
   }
 }
 
-function deploymentBody(workspaceId: string): V1Deployment {
+/** Settings an operator may pass to every worker, each with its default. */
+function limitsEnv(): Array<{ name: string; value: string }> {
+  const env = [
+    { name: "WORKFLOWS_MAX_STEPS", value: String(WORKER_STEPS) },
+    {
+      name: "WORKFLOWS_MAX_RUNS",
+      value: process.env.WORKFLOWS_MAX_RUNS || String(MAX_RUNS),
+    },
+  ];
+  // Named rate limits a step can take from: `model=300/minute,mail=60/minute`.
+  const rateLimits = process.env.WORKFLOWS_RATE_LIMITS;
+  if (rateLimits) {
+    env.push({ name: "WORKFLOWS_RATE_LIMITS", value: rateLimits });
+  }
+  return env;
+}
+
+function deploymentBody(workspaceId: string, replicas = 1): V1Deployment {
   const name = workerName(workspaceId);
   const labels = {
     "app.kubernetes.io/name": POD_NAME_LABEL,
@@ -109,7 +156,10 @@ function deploymentBody(workspaceId: string): V1Deployment {
   return {
     metadata: { name, labels },
     spec: {
-      replicas: 1,
+      // More than one pod is fine: each is a Hatchet worker of its own, and
+      // Hatchet hands a step to one of them. A replace keeps the count the
+      // autoscaler chose.
+      replicas,
       // A new pod (a new runtime image) is ready only once it runs a commit,
       // and the old pod is stopped only then.
       strategy: {
@@ -153,6 +203,7 @@ function deploymentBody(workspaceId: string): V1Deployment {
               env: [
                 { name: "MAKO_URL", value: makoUrl() },
                 { name: "HOME", value: "/tmp" },
+                ...limitsEnv(),
                 // A Hatchet without TLS on its gRPC port, as Mako's own is.
                 ...(tls
                   ? [{ name: "HATCHET_CLIENT_TLS_STRATEGY", value: tls }]
@@ -163,14 +214,8 @@ function deploymentBody(workspaceId: string): V1Deployment {
                 exec: { command: ["test", "-f", "/tmp/ready"] },
                 periodSeconds: 5,
               },
-              // Each step runs in a program of its own, ~120 MB: up to
-              // WORKFLOWS_MAX_STEPS (8, worker.mjs) of them, the dispatcher
-              // and the entrypoint fit under the limit. Only the request is
-              // reserved.
-              resources: {
-                requests: { cpu: "100m", memory: "256Mi" },
-                limits: { cpu: "1", memory: "2Gi" },
-              },
+              // Sized with WORKER_STEPS, above. Only the request is reserved.
+              resources: WORKER_RESOURCES,
               securityContext: {
                 allowPrivilegeEscalation: false,
                 readOnlyRootFilesystem: true,
@@ -206,7 +251,7 @@ async function replaceWorker(
   existing: V1Deployment,
   reason: string,
 ): Promise<void> {
-  const body = deploymentBody(workspaceId);
+  const body = deploymentBody(workspaceId, existing.spec?.replicas ?? 1);
   body.metadata = {
     ...body.metadata,
     resourceVersion: existing.metadata?.resourceVersion,
@@ -252,15 +297,150 @@ export async function ensureWorkerDeployment(
       body: deploymentBody(workspaceId),
     });
     logger.info("Created workflow worker", { workspaceId });
+    await ensureAutoscaler(workspaceId);
     return;
   }
-  if (workerImage(existing) === runtimeImage() && !restart) return;
-  await replaceWorker(
-    apps,
-    workspaceId,
-    existing,
-    restart ? "new credential" : "new runtime image",
-  );
+  if (workerImage(existing) !== runtimeImage() || restart) {
+    await replaceWorker(
+      apps,
+      workspaceId,
+      existing,
+      restart ? "new credential" : "new runtime image",
+    );
+  }
+  await ensureAutoscaler(workspaceId);
+}
+
+// --- Autoscaling (optional) ---------------------------------------------------
+
+type CustomObjects = Pick<
+  CustomObjectsApi,
+  | "getNamespacedCustomObject"
+  | "createNamespacedCustomObject"
+  | "replaceNamespacedCustomObject"
+>;
+
+/** True when workers are scaled by KEDA (WORKFLOWS_AUTOSCALER=keda). */
+export function isAutoscaled(): boolean {
+  return process.env.WORKFLOWS_AUTOSCALER === "keda";
+}
+
+const KEDA = { group: "keda.sh", version: "v1alpha1" };
+
+/**
+ * The KEDA objects that scale a workspace's worker between 0 pods and
+ * WORKER_MAX_REPLICAS. KEDA asks Mako how many steps the workspace has to
+ * run (`GET /api/workflows/runtime/demand`, with the worker's own key from
+ * its Secret) and keeps one pod per WORKER_STEPS of them. Mako answers from
+ * Hatchet's queue, and counts a deploy the worker has not built yet as work,
+ * so a sleeping worker wakes for a push as it does for a run.
+ */
+export function autoscalerBodies(workspaceId: string) {
+  const name = workerName(workspaceId);
+  const metadata = {
+    name,
+    namespace: NAMESPACE,
+    labels: resourceLabels(workspaceId),
+  };
+  return {
+    TriggerAuthentication: {
+      apiVersion: `${KEDA.group}/${KEDA.version}`,
+      kind: "TriggerAuthentication",
+      metadata,
+      spec: {
+        secretTargetRef: [{ parameter: "token", name, key: "MAKO_API_KEY" }],
+      },
+    },
+    ScaledObject: {
+      apiVersion: `${KEDA.group}/${KEDA.version}`,
+      kind: "ScaledObject",
+      metadata,
+      spec: {
+        scaleTargetRef: { name },
+        minReplicaCount: 0,
+        maxReplicaCount: WORKER_MAX_REPLICAS,
+        pollingInterval: 15,
+        // Ten minutes without work before the last pod stops: a schedule
+        // that fires every few minutes keeps its worker.
+        cooldownPeriod: 600,
+        // Mako or Hatchet not answering is not "no work": keep one pod.
+        fallback: { failureThreshold: 3, replicas: 1 },
+        advanced: {
+          horizontalPodAutoscalerConfig: {
+            behavior: {
+              // Grow at once; shrink one pod at a time, five minutes after
+              // the queue allows it. A pod asked to stop finishes its steps
+              // first (terminationGracePeriodSeconds).
+              scaleUp: { stabilizationWindowSeconds: 0 },
+              scaleDown: {
+                stabilizationWindowSeconds: 300,
+                policies: [{ type: "Pods", value: 1, periodSeconds: 60 }],
+              },
+            },
+          },
+        },
+        triggers: [
+          {
+            type: "metrics-api",
+            metricType: "AverageValue",
+            metadata: {
+              url: `${makoUrl()}/api/workflows/runtime/demand`,
+              valueLocation: "steps",
+              targetValue: String(WORKER_STEPS),
+              // One step is enough to start the first pod.
+              activationTargetValue: "0",
+              authMode: "bearer",
+            },
+            authenticationRef: { name },
+          },
+        ],
+      },
+    },
+  };
+}
+
+/**
+ * Create or update the workspace's KEDA objects. Nothing without
+ * WORKFLOWS_AUTOSCALER=keda: the worker then stays at the pods it has.
+ */
+export async function ensureAutoscaler(
+  workspaceId: string,
+  custom?: CustomObjects,
+): Promise<void> {
+  if (!isAutoscaled()) return;
+  const client = custom ?? (await gkeCustomObjects());
+  const bodies = autoscalerBodies(workspaceId);
+  const kinds = [
+    ["triggerauthentications", bodies.TriggerAuthentication],
+    ["scaledobjects", bodies.ScaledObject],
+  ] as const;
+  for (const [plural, body] of kinds) {
+    const at = { ...KEDA, namespace: NAMESPACE, plural };
+    let existing: { metadata?: { resourceVersion?: string } } | undefined;
+    try {
+      existing = await client.getNamespacedCustomObject({
+        ...at,
+        name: body.metadata.name,
+      });
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+    if (!existing) {
+      await client.createNamespacedCustomObject({ ...at, body });
+      continue;
+    }
+    await client.replaceNamespacedCustomObject({
+      ...at,
+      name: body.metadata.name,
+      body: {
+        ...body,
+        metadata: {
+          ...body.metadata,
+          resourceVersion: existing.metadata?.resourceVersion,
+        },
+      },
+    });
+  }
 }
 
 /** This environment's workers: previews by their label, the rest without. */
