@@ -95,10 +95,14 @@ export async function withBoxPushLock<T>(
   const mine = new Promise<void>(resolve => (release = resolve));
   const tail = previous.then(() => mine);
   pushLocks.set(sessionKey, tail);
-  const done = () => {
-    release();
+  // The entry goes only when the whole queue up to and including this slot
+  // has finished: `tail` settles after every earlier holder AND this slot
+  // released. Deleting it at release time instead would let a waiter that
+  // timed out, while the holder still runs, clear the lock for the next
+  // caller.
+  void tail.then(() => {
     if (pushLocks.get(sessionKey) === tail) pushLocks.delete(sessionKey);
-  };
+  });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timedOut = await Promise.race([
     previous.then(() => false),
@@ -108,15 +112,15 @@ export async function withBoxPushLock<T>(
   ]);
   clearTimeout(timer);
   if (timedOut) {
-    // Our slot is released at once: whoever queued behind it waits only for
-    // the holder, not for a caller that gave up.
-    done();
+    // Only our own slot is released: whoever queued behind it still waits
+    // for the holder (through `tail`), never for a caller that gave up.
+    release();
     throw new BoxPushLockTimeoutError(waitMs);
   }
   try {
     return await fn();
   } finally {
-    done();
+    release();
   }
 }
 

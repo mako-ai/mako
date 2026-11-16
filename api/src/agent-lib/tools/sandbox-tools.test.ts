@@ -955,6 +955,28 @@ describe("settleMainScript against real git", () => {
     expect(originMain()).toBe(base);
   });
 
+  it("origin unreadable, no sha read before: parks even when the command moved the tracking ref", async () => {
+    const { settleMainScript, parseSettled } = await import("./sandbox-tools");
+    const base = originMain();
+    fs.writeFileSync(path.join(box, "a.txt"), "6\n");
+    git(box, "commit", "-qam", "moved ref");
+    const sha = git(box, "rev-parse", "--short=8", "HEAD");
+    // The command points the tracking ref at its own commit, so a settle
+    // step trusting it would see nothing to move, and leave main ahead.
+    git(box, "update-ref", "refs/remotes/origin/main", "HEAD");
+    git(box, "remote", "set-url", "origin", path.join(root, "missing.git"));
+    expect(parseSettled(sh(box, settleMainScript("sandbox/x/1")))).toEqual({
+      state: "parked",
+      branch: `sandbox/x/1-${sha}`,
+    });
+    expect(() =>
+      git(box, "rev-parse", "-q", "--verify", "refs/heads/main"),
+    ).toThrow();
+    git(box, "remote", "set-url", "origin", path.join(root, "origin.git"));
+    git(box, "push", "-q", "origin", "HEAD");
+    expect(originMain()).toBe(base);
+  });
+
   it("ignores a known base that is not a sha", async () => {
     const { settleMainScript } = await import("./sandbox-tools");
     expect(settleMainScript("p", "$(rm -rf /)")).not.toContain("rm -rf");

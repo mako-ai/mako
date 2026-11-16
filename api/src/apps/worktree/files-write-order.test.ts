@@ -136,4 +136,29 @@ describe("withBoxPushLock", () => {
     });
     expect(ran).toBe(true);
   });
+
+  it("keeps the holder's lock when the last waiter times out (H start, A times out, C waits for H)", async () => {
+    const { withBoxPushLock, BoxPushLockTimeoutError } =
+      await import("./files");
+    const order: string[] = [];
+    let releaseHolder!: () => void;
+    const holder = withBoxPushLock("h-a-c", async () => {
+      order.push("H start");
+      await new Promise<void>(resolve => (releaseHolder = resolve));
+      order.push("H end");
+    });
+    await expect(
+      withBoxPushLock("h-a-c", async () => order.push("A ran"), { waitMs: 20 }),
+    ).rejects.toBeInstanceOf(BoxPushLockTimeoutError);
+    order.push("A timed out");
+    const late = withBoxPushLock("h-a-c", async () => {
+      order.push("C ran");
+    });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(order).toEqual(["H start", "A timed out"]);
+    releaseHolder();
+    await holder;
+    await late;
+    expect(order).toEqual(["H start", "A timed out", "H end", "C ran"]);
+  });
 });

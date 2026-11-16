@@ -169,12 +169,15 @@ export function sandboxBranchPrefix(owner: string, now = new Date()): string {
  *   OFFMAIN <branch>   not on main: the caller pushes the session branch
  *   CLEAN <verified>   on main, nothing origin's main lacks
  *   MOVED <n> <keep|soft> <pushed 0|1> <branch> <verified 0|1>
- *   PARKED <branch>    on main, no base known at all: the checkout moved to
- *                      <branch> and local main was deleted
+ *   PARKED <branch>    on main, origin unreadable and no sha read before the
+ *                      command: the checkout moved to <branch> and local
+ *                      main was deleted
  *
  * The base is origin's main as `git ls-remote` reads it (verified). When the
  * remote cannot be read, it is the last-known origin main: the sha the tool
- * read before the command (`knownBase`), else the tracking ref. Either way,
+ * read before the command ran (`knownBase`). Never the tracking ref read
+ * now, which the command could have moved: with no sha read before the
+ * command, the work is parked. Either way,
  * commits left on main move to `<prefix>-<short sha>` and local main is
  * reset to the base, so no later push from this box (app_bash, the terminal)
  * can carry them to main. The branch is pushed by explicit refspec only when
@@ -192,7 +195,6 @@ export function settleMainScript(prefix: string, knownBase = ""): string {
     `if [ -n "$r" ]; then ${git} cat-file -e "$r^{commit}" 2>/dev/null || ${git} fetch -q origin ${main} 2>/dev/null; ${git} cat-file -e "$r^{commit}" 2>/dev/null || r=""; fi`,
     `if [ -z "$r" ]; then v=0; r="${known}"; fi`,
     `if [ -n "$r" ] && ! ${git} cat-file -e "$r^{commit}" 2>/dev/null; then r=""; fi`,
-    `if [ -z "$r" ]; then r=$(${git} rev-parse -q --verify refs/remotes/origin/${main} 2>/dev/null || true); fi`,
     `br="${prefix}-$(${git} rev-parse --short=8 HEAD)"`,
     `if [ -z "$r" ]; then ${git} branch -f "$br" HEAD && ${git} checkout -q "$br" && ${git} branch -q -D ${main}; echo "PARKED $br"; exit 0; fi`,
     `n=$(${git} rev-list --count "$r"..HEAD)`,
