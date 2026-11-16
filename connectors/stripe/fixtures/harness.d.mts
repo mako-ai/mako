@@ -20,6 +20,7 @@ export interface StripeTestConfig {
   api_key: string;
   api_base_url: string;
   __page_size?: number;
+  __rate_limit_delay_ms?: number;
 }
 
 export interface ChunkState {
@@ -27,17 +28,29 @@ export interface ChunkState {
   hasMore: boolean;
 }
 
+export interface SourceTimestamps {
+  byId: Map<string, string | null>;
+  /** Rows whose timestamp came out within a minute of now. */
+  fellBackToNow: number;
+}
+
 export interface Run {
   rows: Array<Record<string, unknown>>;
   chunks: ChunkState[];
   requests?: string[];
+  timestamps?: SourceTimestamps;
 }
 
 export interface InProcessConnector {
   fetchEntityChunk(
     options: any,
-  ): Promise<{ cursor?: string; hasMore: boolean }>;
+  ): Promise<{ cursor?: string; hasMore: boolean; metadata?: any }>;
   testConnection(): Promise<{ success: boolean; message?: string }>;
+  resolveSchema?(entity: string): Promise<unknown>;
+  normalizeBackfillRecord?(
+    entity: string,
+    record: Record<string, unknown>,
+  ): { sourceTs: Date } | null;
 }
 
 export interface FixtureServer {
@@ -66,6 +79,11 @@ export interface Comparison {
   chunkStates: boolean;
   requests: [number, number];
   requestsEqual: boolean;
+  /** Row ids whose source timestamp differs between the two sides. */
+  timestampMismatches: string[];
+  timestampsChecked: number;
+  /** Rows per side whose timestamp fell back to now. */
+  timestampsFellBackToNow?: [number, number];
   /** Set when either side threw; such a run never counts as a match. */
   error?: string;
   ok: boolean;
@@ -93,6 +111,8 @@ export interface SchemaComparison {
   keyColumns: boolean;
   policy: boolean;
   systemFields: number;
+  /** Ignored (system) columns whose definitions differ between the sides. */
+  systemDiffs: string[];
   ok: boolean;
 }
 
@@ -111,6 +131,7 @@ export function runFolderCommand(
     catalog?: unknown;
     state?: unknown;
     maxIterations?: number;
+    maxBytes?: number;
   },
 ): Promise<FolderCommandResult>;
 export function readFolder(options: {
@@ -129,6 +150,12 @@ export function readInProcess(
     pageSize?: number;
   },
 ): Promise<Run>;
+export const readBoxed: typeof readInProcess;
+export function sourceTimestamps(
+  connector: InProcessConnector,
+  entity: string,
+  rows: Array<Record<string, unknown>>,
+): SourceTimestamps;
 export function canonicalJson(value: unknown): string;
 export function rowChecksum(row: unknown): string;
 export function compareRuns(
@@ -138,6 +165,8 @@ export function compareRuns(
 export function runParity(options: {
   entities: string[];
   makeInProcess: (config: StripeTestConfig) => InProcessConnector;
+  /** Run the folder through SandboxedConnector instead of the bare runner. */
+  makeBoxed?: (config: StripeTestConfig) => InProcessConnector;
   server: FixtureServer;
   scenarios?: Scenario[];
   concurrency?: number;

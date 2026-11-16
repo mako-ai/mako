@@ -15,7 +15,14 @@
  *   enters the sandbox.
  */
 import path from "node:path";
-import { ConnectionConfig, Sandbox, SandboxNotFoundError } from "e2b";
+import {
+  ConnectionConfig,
+  FileNotFoundError,
+  Sandbox,
+  SandboxNotFoundError,
+  SandboxNotRunningError,
+  SandboxUnreachableError,
+} from "e2b";
 import { clearBoxResume, noteBoxResume } from "../box-activity";
 import {
   APPS_EXEC_DEFAULT_TIMEOUT_MS,
@@ -270,6 +277,7 @@ export function pinE2bSession(sessionKey: string, sandboxId: string): void {
 /** Test seam: forget every in-process session and leave pinned-only mode. */
 export function resetE2bProviderStateForTests(): void {
   pinnedOnly = false;
+  held.clear();
   sessions.clear();
   connecting.clear();
   knownAlive.clear();
@@ -394,12 +402,332 @@ async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
 }
 
 // ---------------------------------------------------------------------------
-// Host <-> sandbox sync (tar streams over the E2B filesystem API)
+// Held handles
 // ---------------------------------------------------------------------------
+
+/**
+ * One connected `Sandbox` handle per session, reused across calls.
+ *
+ * Every call used to start with `Sandbox.connect`, and every exec with
+ * `setTimeout` as well: an exec cost 3 round trips to E2B and a file transfer
+ * 2. A connector chunk made 8 provider calls, 20 round trips, about 3.7 s
+ * (bench/g1/RESULTS.md). A handle stays valid while its box runs, so it is
+ * held, and `connect` happens only when there is no handle or the box may
+ * have paused since.
+ *
+ * `deadline` is when E2B will pause the box, as of the last `setTimeout` this
+ * process made. A handle is trusted until shortly before it. A handle whose
+ * deadline is unknown (it came from a `connect` with no `setTimeout` after
+ * it) is trusted for HANDLE_TTL_MS only.
+ *
+ * Another API instance can still pause or kill the box under a held handle.
+ * Any failure that is not a command's own result then drops the handle, so
+ * the next call connects again (which resumes a paused box, as the old
+ * per-call `connect` did). Whether the failed call itself is retried depends
+ * on whether it can have run: see `withSandbox`.
+ */
+interface HeldSandbox {
+  sandbox: Sandbox;
+  deadline: number | null;
+  /** When this process last called `setTimeout` on it. */
+  lifetimeSetAt: number;
+  connectedAt: number;
+}
+
+const held = new Map<string, HeldSandbox>();
+
+/** How long a handle with an unknown deadline is trusted without a connect. */
+const HANDLE_TTL_MS = 30_000;
+/** A handle is not used this close to the box's known pause time. */
+const DEADLINE_MARGIN_MS = 5_000;
+/**
+ * `setTimeout` is skipped while the box's remaining lifetime is within this
+ * much of the lifetime a call wants. Each exec used to reset it exactly, so
+ * a box paused 10 minutes after its last command; now it pauses 9 to 10
+ * minutes after it, for one `setTimeout` a minute instead of one per call.
+ */
+const LIFETIME_SLACK_MS = 60_000;
+
+function heldUsable(entry: HeldSandbox, now: number): boolean {
+  return entry.deadline !== null
+    ? now < entry.deadline - DEADLINE_MARGIN_MS
+    : now < entry.connectedAt + HANDLE_TTL_MS;
+}
+
+function dropHandle(sessionKey: string, sandbox?: Sandbox): void {
+  const entry = held.get(sessionKey);
+  if (!entry) return;
+  if (sandbox && entry.sandbox !== sandbox) return;
+  held.delete(sessionKey);
+}
+
+/**
+ * Set the box's remaining lifetime to `lifetime`, unless it is already
+ * within LIFETIME_SLACK_MS of that and at least `floor` (the time the call
+ * itself may take). Shortening is kept on purpose: the old per-exec
+ * `setTimeout` also brought a long hold back down once the long command was
+ * done, and keepAlive holds are already folded into `lifetime`.
+ */
+async function ensureLifetime(
+  sessionKey: string,
+  entry: HeldSandbox,
+  lifetime: number,
+  floor = 0,
+): Promise<void> {
+  const now = Date.now();
+  // The cached deadline is only what THIS process set. Another API instance
+  // can shorten the real timeout behind it (its routine exec knows nothing
+  // of our keepAlive hold). So it is trusted for one slack window after it
+  // was written, and never while this process holds a keepAlive: then every
+  // call re-applies the hold, as every exec did before.
+  const holding = (keepAliveUntil.get(sessionKey) ?? 0) > now;
+  if (entry.deadline !== null && !holding) {
+    const remaining = entry.deadline - now;
+    if (
+      now - entry.lifetimeSetAt < LIFETIME_SLACK_MS &&
+      remaining >= floor &&
+      Math.abs(remaining - lifetime) <= LIFETIME_SLACK_MS
+    ) {
+      return;
+    }
+  }
+  await entry.sandbox.setTimeout(lifetime);
+  entry.deadline = now + lifetime;
+  entry.lifetimeSetAt = now;
+}
+
+/**
+ * The session's held handle, connecting only when there is none or it may
+ * have gone stale. `reused` says whether a connect was skipped.
+ */
+async function heldSandbox(
+  sessionKey: string,
+  expectSandboxId?: string,
+): Promise<{ entry: HeldSandbox; reused: boolean }> {
+  const current = held.get(sessionKey);
+  if (current && heldUsable(current, Date.now())) {
+    // A pinned call never runs in a box other than the one it pinned.
+    if (expectSandboxId && current.sandbox.sandboxId !== expectSandboxId) {
+      throw new SandboxNotFoundError(
+        `Sandbox ${expectSandboxId} for ${sessionKey} was replaced by ${current.sandbox.sandboxId}.`,
+      );
+    }
+    return { entry: current, reused: true };
+  }
+  const sandbox = await connectPinned(sessionKey, expectSandboxId);
+  const now = Date.now();
+  // A pinned box the session key no longer names is used, but not held:
+  // the held handle is the key's current box.
+  if (sessions.get(sessionKey) !== sandbox.sandboxId) {
+    return {
+      entry: { sandbox, deadline: null, lifetimeSetAt: 0, connectedAt: now },
+      reused: false,
+    };
+  }
+  let entry = held.get(sessionKey);
+  if (!entry || entry.sandbox !== sandbox) {
+    // Handles nobody can use any more are dropped as new ones arrive, so an
+    // instance that served thousands of sessions holds only the live ones.
+    for (const [key, other] of held) {
+      if (!heldUsable(other, now)) held.delete(key);
+    }
+    entry = { sandbox, deadline: null, lifetimeSetAt: 0, connectedAt: now };
+    held.set(sessionKey, entry);
+  }
+  return { entry, reused: false };
+}
+
+/**
+ * A command that the box provably never accepted: the request to start it
+ * failed before envd answered with a pid. Only such a command may be sent
+ * again; one that started may still be running, or resume with its box.
+ */
+class CommandNotStartedError extends Error {
+  constructor(readonly original: unknown) {
+    super(original instanceof Error ? original.message : String(original));
+    this.name = "CommandNotStartedError";
+  }
+}
+
+const unwrapNotStarted = (error: unknown): unknown =>
+  error instanceof CommandNotStartedError ? error.original : error;
+
+/** The SDK's errors for a box that is gone, paused or unreachable. */
+const BOX_ERROR_NAMES = new Set([
+  "SandboxNotFoundError",
+  "SandboxNotRunningError",
+  "SandboxUnreachableError",
+]);
+
+/** Walk an error and its causes, as the SDK wraps transport failures. */
+function someInChain(
+  error: unknown,
+  test: (link: { name?: unknown; message?: unknown }) => boolean,
+): boolean {
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 5; depth += 1) {
+    if (test(current as { name?: unknown; message?: unknown })) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/** The SDK's "no such file": an answer from a live box, not a box failure. */
+function isFileNotFound(error: unknown): boolean {
+  return (
+    error instanceof FileNotFoundError ||
+    (error as { name?: unknown } | null)?.name === "FileNotFoundError"
+  );
+}
+
+/** Any error that says the box, not the call, is the problem. */
+export function isBoxConnectionError(error: unknown): boolean {
+  return (
+    isSandboxGone(error) ||
+    someInChain(
+      error,
+      link =>
+        link instanceof SandboxNotRunningError ||
+        link instanceof SandboxUnreachableError ||
+        BOX_ERROR_NAMES.has(String(link.name)),
+    )
+  );
+}
+
+/**
+ * The request never reached a running box: E2B's API or proxy answered that
+ * the sandbox does not exist. Not true of "killed while the request was in
+ * flight" (the box may have taken it) or of an unreachable box (state
+ * unknown), so neither of those makes a command safe to send again.
+ */
+export function neverReachedBox(error: unknown): boolean {
+  return someInChain(error, link => {
+    const name = String(link.name);
+    const message = String(link.message ?? "");
+    if (
+      link instanceof SandboxNotFoundError ||
+      name === "SandboxNotFoundError"
+    ) {
+      return true;
+    }
+    if (
+      link instanceof SandboxNotRunningError ||
+      name === "SandboxNotRunningError"
+    ) {
+      return !/while the request was in flight/i.test(message);
+    }
+    return false;
+  });
+}
+
+/**
+ * How a failed call may be retried on a fresh connect.
+ * - `idempotent`: file transfers, `setTimeout`: sending them twice is safe.
+ * - `unstarted-only`: commands and shells: only when the box never accepted
+ *   them (`CommandNotStartedError` around a `neverReachedBox` error).
+ */
+type RetryPolicy = "idempotent" | "unstarted-only";
+
+/**
+ * Run `fn` on the session's sandbox, after making sure it has `lifetime`
+ * left when one is given.
+ *
+ * Any error from a HELD handle drops it, whatever the error says: a stale
+ * handle must never be reused until its deadline. Errors that say the box is
+ * gone also forget the session. Then the call is retried once on a fresh
+ * connect, but only when that cannot run anything twice (see RetryPolicy).
+ * A failure on a fresh connect is final, as before.
+ */
+async function withSandbox<T>(
+  sessionKey: string,
+  lifetime: number | undefined,
+  fn: (sandbox: Sandbox) => Promise<T>,
+  options: {
+    floor?: number;
+    policy?: RetryPolicy;
+    /** Refuse any box but this one (SandboxExecOptions.expectSandboxId). */
+    expectSandboxId?: string;
+  } = {},
+): Promise<T> {
+  const floor = options.floor ?? 0;
+  const policy = options.policy ?? "idempotent";
+  const pin = options.expectSandboxId;
+  const { entry, reused } = await heldSandbox(sessionKey, pin);
+  let phase: "lifetime" | "call" = "lifetime";
+  try {
+    if (lifetime !== undefined) {
+      await ensureLifetime(sessionKey, entry, lifetime, floor);
+    }
+    phase = "call";
+    return await fn(entry.sandbox);
+  } catch (error) {
+    // A missing file says nothing about the box: keep the handle, and spare
+    // the next call a connect (about 176 ms).
+    if (reused && !isFileNotFound(unwrapNotStarted(error))) {
+      dropHandle(sessionKey, entry.sandbox);
+    }
+    if (isSandboxGone(unwrapNotStarted(error))) forgetSession(sessionKey);
+    const retry =
+      reused &&
+      (phase === "lifetime" || policy === "idempotent"
+        ? isBoxConnectionError(unwrapNotStarted(error))
+        : error instanceof CommandNotStartedError &&
+          neverReachedBox(error.original));
+    if (!retry) throw unwrapNotStarted(error);
+    // With a pin, the retry reconnects to the pinned box or fails: it never
+    // moves to a replacement.
+    const fresh = await heldSandbox(sessionKey, pin);
+    try {
+      if (lifetime !== undefined) {
+        await ensureLifetime(sessionKey, fresh.entry, lifetime, floor);
+      }
+      return await fn(fresh.entry.sandbox);
+    } catch (again) {
+      if (isBoxConnectionError(unwrapNotStarted(again))) {
+        dropHandle(sessionKey, fresh.entry.sandbox);
+      }
+      throw unwrapNotStarted(again);
+    }
+  }
+}
+
+/** Test hook: how many handles this process holds. */
+export function heldSandboxCountForTests(): number {
+  return held.size;
+}
+
+/** Test hook: forget every held handle and lifetime. */
+export function resetHeldSandboxesForTests(): void {
+  held.clear();
+  keepAliveUntil.clear();
+  sessions.clear();
+  knownAlive.clear();
+  knownAbsent.clear();
+}
 
 // ---------------------------------------------------------------------------
 // Exec
 // ---------------------------------------------------------------------------
+
+type CommandStartOptions = NonNullable<
+  Parameters<Sandbox["commands"]["run"]>[1]
+>;
+
+/** Start a command; a failure to start is a CommandNotStartedError. */
+async function startCommand(
+  sandbox: Sandbox,
+  command: string,
+  options: Omit<CommandStartOptions, "background">,
+) {
+  try {
+    return await sandbox.commands.run(command, {
+      ...options,
+      background: true,
+    });
+  } catch (error) {
+    throw new CommandNotStartedError(error);
+  }
+}
 
 async function execE2b(
   ctx: SandboxExecContext,
@@ -411,12 +739,6 @@ async function execE2b(
     APPS_EXEC_MAX_TIMEOUT_MS,
   );
   const startedAt = Date.now();
-  const sandbox = await connectPinned(ctx.sessionKey, options.expectSandboxId);
-  // Keep the sandbox alive long enough for this command + sync overhead —
-  // without clobbering a longer hold someone asked keepAlive() for.
-  await sandbox.setTimeout(
-    lifetimeMs(ctx.sessionKey, Math.max(IDLE_TIMEOUT_MS, timeoutMs + 60_000)),
-  );
 
   const cwd = options.cwd
     ? path.posix.join(REMOTE_ROOT, options.cwd)
@@ -427,24 +749,29 @@ async function execE2b(
     );
   }
 
-  let stdout = "";
-  let stderr = "";
-  let truncated = false;
-  let exitCode: number;
-  let timedOut = false;
-  const cap = APPS_EXEC_MAX_OUTPUT_BYTES;
-  const push = (target: "out" | "err", data: string) => {
-    if (target === "out") {
-      if (stdout.length < cap) stdout += data.slice(0, cap - stdout.length);
-      else truncated = true;
-    } else {
-      if (stderr.length < cap) stderr += data.slice(0, cap - stderr.length);
-      else truncated = true;
-    }
-  };
+  const run = async (
+    sandbox: Sandbox,
+  ): Promise<Omit<SandboxExecResult, "durationMs">> => {
+    let stdout = "";
+    let stderr = "";
+    let truncated = false;
+    let exitCode: number;
+    let timedOut = false;
+    const cap = APPS_EXEC_MAX_OUTPUT_BYTES;
+    const push = (target: "out" | "err", data: string) => {
+      if (target === "out") {
+        if (stdout.length < cap) stdout += data.slice(0, cap - stdout.length);
+        else truncated = true;
+      } else {
+        if (stderr.length < cap) stderr += data.slice(0, cap - stderr.length);
+        else truncated = true;
+      }
+    };
 
-  try {
-    const result = await sandbox.commands.run(command, {
+    // Started and awaited in two steps, so a failure can be told apart: one
+    // before envd accepted the command (it never ran) from one after (it may
+    // still be running). Only the first may be retried; see withSandbox.
+    const handle = await startCommand(sandbox, command, {
       user: userFor(options),
       cwd,
       timeoutMs,
@@ -463,44 +790,65 @@ async function execE2b(
       onStdout: d => push("out", d),
       onStderr: d => push("err", d),
     });
-    exitCode = result.exitCode;
-  } catch (error) {
-    // e2b throws CommandExitError on non-zero exit and TimeoutError on
-    // deadline; normalize both into the result contract.
-    const err = error as {
-      exitCode?: number;
-      stdout?: string;
-      stderr?: string;
-      name?: string;
-      message?: string;
-    };
-    if (typeof err.exitCode === "number") {
-      exitCode = err.exitCode;
-      if (err.stdout && !stdout) push("out", err.stdout);
-      if (err.stderr && !stderr) push("err", err.stderr);
-    } else if (err.name === "TimeoutError") {
-      exitCode = 124;
-      timedOut = true;
-    } else {
-      // The box is gone, not busy: drop the remembered session so the next
-      // `hasSession` asks E2B instead of repeating this instance's stale
-      // "yes" — otherwise every later discovery call execs into nothing and
-      // throws again. The error still propagates; callers that promise an
-      // empty answer rather than a failure catch it themselves.
-      if (isSandboxGone(error)) forgetSession(ctx.sessionKey);
-      throw error;
+    try {
+      const result = await handle.wait();
+      exitCode = result.exitCode;
+    } catch (error) {
+      // e2b throws CommandExitError on non-zero exit and TimeoutError on
+      // deadline; normalize both into the result contract. Anything else
+      // propagates, so withSandbox can tell a gone box from a failed command.
+      const err = error as {
+        exitCode?: number;
+        stdout?: string;
+        stderr?: string;
+        name?: string;
+        message?: string;
+      };
+      if (typeof err.exitCode === "number") {
+        exitCode = err.exitCode;
+        if (err.stdout && !stdout) push("out", err.stdout);
+        if (err.stderr && !stderr) push("err", err.stderr);
+      } else if (err.name === "TimeoutError") {
+        exitCode = 124;
+        timedOut = true;
+      } else {
+        throw error;
+      }
     }
-  }
-
-  return {
-    exitCode,
-    stdout,
-    stderr,
-    timedOut,
-    durationMs: Date.now() - startedAt,
-    truncated,
-    sandboxId: sandbox.sandboxId,
+    return {
+      exitCode,
+      stdout,
+      stderr,
+      timedOut,
+      truncated,
+      sandboxId: sandbox.sandboxId,
+    };
   };
+
+  try {
+    // Keep the sandbox alive long enough for this command + sync overhead —
+    // without clobbering a longer hold someone asked keepAlive() for.
+    const result = await withSandbox(
+      ctx.sessionKey,
+      lifetimeMs(ctx.sessionKey, Math.max(IDLE_TIMEOUT_MS, timeoutMs + 60_000)),
+      run,
+      {
+        // The box must outlive this command whatever the slack allows.
+        floor: timeoutMs + DEADLINE_MARGIN_MS,
+        policy: "unstarted-only",
+        expectSandboxId: options.expectSandboxId,
+      },
+    );
+    return { ...result, durationMs: Date.now() - startedAt };
+  } catch (error) {
+    // The box is gone, not busy: drop the remembered session so the next
+    // `hasSession` asks E2B instead of repeating this instance's stale
+    // "yes" — otherwise every later discovery call execs into nothing and
+    // throws again. The error still propagates; callers that promise an
+    // empty answer rather than a failure catch it themselves.
+    if (isSandboxGone(error)) forgetSession(ctx.sessionKey);
+    throw error;
+  }
 }
 
 /**
@@ -516,8 +864,6 @@ async function execDetachedE2b(
   command: string,
   options: SandboxExecOptions = {},
 ): Promise<void> {
-  const sandbox = await connectSession(ctx.sessionKey);
-  await sandbox.setTimeout(lifetimeMs(ctx.sessionKey, IDLE_TIMEOUT_MS));
   const cwd = options.cwd
     ? path.posix.join(REMOTE_ROOT, options.cwd)
     : REMOTE_ROOT;
@@ -526,18 +872,35 @@ async function execDetachedE2b(
       `cwd escapes the session root: ${JSON.stringify(options.cwd)}`,
     );
   }
-  const result = await sandbox.commands.run(command, {
-    user: SANDBOX_USER,
-    cwd,
-    timeoutMs: 60_000,
-    envs: {
-      HOME: "/home/user",
-      LANG: "C.UTF-8",
-      TERM: "dumb",
-      CI: "1",
-      ...(options.env ?? {}),
+  const result = await withSandbox(
+    ctx.sessionKey,
+    lifetimeMs(ctx.sessionKey, IDLE_TIMEOUT_MS),
+    async sandbox => {
+      const handle = await startCommand(sandbox, command, {
+        user: SANDBOX_USER,
+        cwd,
+        timeoutMs: 60_000,
+        envs: {
+          HOME: "/home/user",
+          LANG: "C.UTF-8",
+          TERM: "dumb",
+          CI: "1",
+          ...(options.env ?? {}),
+        },
+      });
+      try {
+        return await handle.wait();
+      } catch (error) {
+        // A non-zero exit of the launching shell is a result, as before.
+        const exit = error as { exitCode?: number; stderr?: string };
+        if (typeof exit.exitCode === "number") {
+          return { exitCode: exit.exitCode, stderr: exit.stderr ?? "" };
+        }
+        throw error;
+      }
     },
-  });
+    { policy: "unstarted-only" },
+  );
   if (result.exitCode !== 0) {
     throw new Error(
       `Failed to start detached process: ${result.stderr.slice(0, 500)}`,
@@ -550,13 +913,25 @@ async function readFileE2b(
   remotePath: string,
   options?: SandboxFileOptions,
 ): Promise<Uint8Array> {
-  const sandbox = await connectPinned(ctx.sessionKey, options?.expectSandboxId);
-  const data = await sandbox.files.read(remotePath, {
-    format: "bytes",
-    user: userFor(options),
-  });
+  const data = await withSandbox(
+    ctx.sessionKey,
+    undefined,
+    sandbox =>
+      sandbox.files.read(remotePath, {
+        format: "bytes",
+        user: userFor(options),
+      }),
+    { expectSandboxId: options?.expectSandboxId },
+  );
   return new Uint8Array(data as Uint8Array);
 }
+
+/** The bytes a view covers, as the ArrayBuffer the E2B SDK wants. */
+const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer =>
+  bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
 
 async function writeFileE2b(
   ctx: SandboxExecContext,
@@ -564,18 +939,45 @@ async function writeFileE2b(
   bytes: Uint8Array,
   options?: SandboxFileOptions,
 ): Promise<void> {
-  const sandbox = await connectPinned(ctx.sessionKey, options?.expectSandboxId);
-  await sandbox.files.write(remotePath, bytes.buffer as ArrayBuffer, {
-    user: userFor(options),
-  });
+  await withSandbox(
+    ctx.sessionKey,
+    undefined,
+    sandbox =>
+      sandbox.files.write(remotePath, toArrayBuffer(bytes), {
+        user: userFor(options),
+      }),
+    { expectSandboxId: options?.expectSandboxId },
+  );
+}
+
+/** Several files in one multipart request: one round trip, not one each. */
+async function writeFilesE2b(
+  ctx: SandboxExecContext,
+  files: Array<{ path: string; bytes: Uint8Array }>,
+  options?: SandboxFileOptions,
+): Promise<void> {
+  if (files.length === 0) return;
+  await withSandbox(
+    ctx.sessionKey,
+    undefined,
+    sandbox =>
+      sandbox.files.write(
+        files.map(file => ({
+          path: file.path,
+          data: toArrayBuffer(file.bytes),
+        })),
+        { user: userFor(options) },
+      ),
+    { expectSandboxId: options?.expectSandboxId },
+  );
 }
 
 async function publicUrlForPortE2b(
   ctx: SandboxExecContext,
   port: number,
 ): Promise<string> {
-  const sandbox = await connectSession(ctx.sessionKey);
-  return `https://${sandbox.getHost(port)}`;
+  const { entry } = await heldSandbox(ctx.sessionKey);
+  return `https://${entry.sandbox.getHost(port)}`;
 }
 
 /**
@@ -636,9 +1038,18 @@ async function keepAliveE2b(
   ctx: SandboxExecContext,
   ms: number,
 ): Promise<void> {
-  const sandbox = await connectSession(ctx.sessionKey);
   keepAliveUntil.set(ctx.sessionKey, Date.now() + Math.max(0, ms));
-  await sandbox.setTimeout(Math.max(IDLE_TIMEOUT_MS, ms));
+  const lifetime = Math.max(IDLE_TIMEOUT_MS, ms);
+  // Always set, never skipped as "close enough": a hold is an explicit ask.
+  await withSandbox(ctx.sessionKey, undefined, async sandbox => {
+    const now = Date.now();
+    await sandbox.setTimeout(lifetime);
+    const entry = held.get(ctx.sessionKey);
+    if (entry?.sandbox === sandbox) {
+      entry.deadline = now + lifetime;
+      entry.lifetimeSetAt = now;
+    }
+  });
 }
 
 /**
@@ -669,7 +1080,7 @@ async function keepAliveE2b(
  * missing file says nothing about the machine.
  */
 const SANDBOX_GONE_MESSAGE =
-  /sandbox (?:was not found|is (?:probably )?not running)|not found: This error/i;
+  /sandbox\b[^:\n]*?\bwas not found|sandbox (?:is (?:probably )?not running)|not found: This error|sandbox was killed or reached its|killed or reached its end of life/i;
 
 /**
  * Session keys of boxes that live for one job and are never resumed.
@@ -692,13 +1103,23 @@ export function onTimeoutFor(
 export function isSandboxGone(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; current && depth < 5; depth += 1) {
-    if (current instanceof SandboxNotFoundError) return true;
+    // e2b 2.x: a killed, paused or expired box is SandboxNotRunningError
+    // (TimeoutError's subclass), e.g. "Sandbox abc was not found" from the
+    // proxy, or "killed ... while the request was in flight".
+    if (
+      current instanceof SandboxNotFoundError ||
+      current instanceof SandboxNotRunningError
+    ) {
+      return true;
+    }
     const { name, message, cause } = current as {
       name?: unknown;
       message?: unknown;
       cause?: unknown;
     };
-    if (name === "SandboxNotFoundError") return true;
+    if (name === "SandboxNotFoundError" || name === "SandboxNotRunningError") {
+      return true;
+    }
     if (typeof message === "string" && SANDBOX_GONE_MESSAGE.test(message)) {
       return true;
     }
@@ -717,6 +1138,7 @@ export function isSandboxGone(error: unknown): boolean {
  * memory becomes wrong, so that is where it is dropped.
  */
 function forgetSession(sessionKey: string): void {
+  held.delete(sessionKey);
   sessions.delete(sessionKey);
   knownAlive.delete(sessionKey);
   knownAbsent.set(sessionKey, Date.now() + KNOWN_ABSENT_TTL_MS);
@@ -728,8 +1150,6 @@ async function openTerminalE2b(
   // so adding one there cannot leave this signature quietly behind.
   opts: Parameters<SandboxProvider["openTerminal"]>[1],
 ): Promise<SandboxTerminal> {
-  const sandbox = await connectSession(ctx.sessionKey);
-  await sandbox.setTimeout(lifetimeMs(ctx.sessionKey, IDLE_TIMEOUT_MS));
   const cwd = path.posix.join(REMOTE_ROOT, opts.cwd);
   if (!cwd.startsWith(REMOTE_ROOT)) {
     throw new Error(
@@ -737,23 +1157,38 @@ async function openTerminalE2b(
     );
   }
 
-  const handle = await sandbox.pty.create({
-    cols: opts.cols,
-    rows: opts.rows,
-    cwd,
-    user: SANDBOX_USER,
-    onData: opts.onData,
-    // Long enough that a shell left open over lunch is still there.
-    timeoutMs: IDLE_TIMEOUT_MS,
-    envs: {
-      HOME: "/home/user",
-      LANG: "C.UTF-8",
-      // A real terminal, so colour and redrawing work — this is the whole
-      // reason for a PTY over one-shot commands.
-      TERM: "xterm-256color",
-      COLORTERM: "truecolor",
+  // The shell is created through withSandbox like any command: a held
+  // handle to a paused box is dropped, and the create is retried once only
+  // when the box never received it.
+  const { sandbox, handle } = await withSandbox(
+    ctx.sessionKey,
+    lifetimeMs(ctx.sessionKey, IDLE_TIMEOUT_MS),
+    async box => {
+      try {
+        const pty = await box.pty.create({
+          cols: opts.cols,
+          rows: opts.rows,
+          cwd,
+          user: SANDBOX_USER,
+          onData: opts.onData,
+          // Long enough that a shell left open over lunch is still there.
+          timeoutMs: IDLE_TIMEOUT_MS,
+          envs: {
+            HOME: "/home/user",
+            LANG: "C.UTF-8",
+            // A real terminal, so colour and redrawing work — this is the
+            // whole reason for a PTY over one-shot commands.
+            TERM: "xterm-256color",
+            COLORTERM: "truecolor",
+          },
+        });
+        return { sandbox: box, handle: pty };
+      } catch (error) {
+        throw new CommandNotStartedError(error);
+      }
     },
-  });
+    { policy: "unstarted-only" },
+  );
 
   // Announce the shell's death exactly once, however we learn of it.
   let exited = false;
@@ -990,6 +1425,8 @@ const boxLifecycleE2b: SandboxBoxLifecycle = {
     const id = await sandboxIdFor(sessionKey);
     if (!id) return;
     await Sandbox.pause(id, { apiKey: apiKey() });
+    // The held handle points at a paused box now: drop it, so the next call
+    // connects (and resumes) instead of failing on it first.
     noteSessionPaused(sessionKey);
   },
   async snapshot(sessionKey, name) {
@@ -1098,6 +1535,13 @@ export function noteSessionPaused(sessionKey: string): void {
   }
 }
 
+// A paused box makes its held handle stale: the next call must connect (and
+// resume) instead of failing on the handle first. noteSessionPaused (the
+// idle sweep, boxLifecycle.pause) tells every listener.
+onSessionPaused(sessionKey => {
+  held.delete(sessionKey);
+});
+
 export const e2bSandboxProvider: SandboxProvider = {
   id: "e2b",
   supportsRunUsers: true,
@@ -1144,6 +1588,7 @@ export const e2bSandboxProvider: SandboxProvider = {
     }
   },
   writeFile: writeFileE2b,
+  writeFiles: writeFilesE2b,
   readFile: readFileE2b,
   openTerminal: openTerminalE2b,
   publicUrlForPort: publicUrlForPortE2b,
@@ -1151,6 +1596,7 @@ export const e2bSandboxProvider: SandboxProvider = {
   keepAlive: keepAliveE2b,
   destroySession: async sessionKey => {
     const sandboxId = sessions.get(sessionKey);
+    held.delete(sessionKey);
     sessions.delete(sessionKey);
     knownAlive.delete(sessionKey);
     keepAliveUntil.delete(sessionKey);
