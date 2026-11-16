@@ -13,6 +13,7 @@ installation needs none of it.
 | `hatchet-values.yaml` | Helm values for `hatchet/hatchet-stack` 0.19.0: Cloud SQL Postgres, Postgres queue, nothing exposed                                                                                   |
 | `k8s/`                | Namespace, quota and network policy for worker pods                                                                                                                                   |
 | `runtime/`            | The worker image: follow the commit Mako names, typecheck it, run a Hatchet worker. `runtime/defaults/` are the shared files (`hatchet.ts`, `lib/mako.ts`) it supplies to every repo. |
+| `loadtest/`           | A Hatchet of its own, a synthetic workflow and a driver, to measure a burst without touching a shared engine ("Load test" below)                                                      |
 
 ## Environments
 
@@ -38,12 +39,98 @@ on the direct endpoint, so the tables are created in `public`, the engine logs
 
 - a Hatchet tenant and API token, saved on the workspace
 - Secret `wf-<prefix><workspaceId>`: the worker's Mako API key
-- Deployment `wf-<prefix><workspaceId>`: one replica of the runtime image.
-  Created once, replaced only for a new image or a new key. The image is
+- Deployment `wf-<prefix><workspaceId>`: the runtime image, one pod unless
+  the autoscaler says otherwise ("Autoscaling" below). Created once, replaced only for a new image or a new key. The image is
   tagged `runtime-<git tree of runtime/>`; the app deploy names that tag in
   `WORKFLOWS_RUNTIME_IMAGE` (`resolve-runtime-image.sh`), and the API moves
   every worker to it when it starts. A `:latest` name would never change, so
   workers would keep the image they first pulled.
+
+## Sizing
+
+What each part must be at least, and why. The numbers come from the outage
+of 2026-11-16 and from the load test below.
+
+| Part                  | Size                                                                  | Why                                                                                                                                                                                                                                                                                                 |
+| --------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hatchet's database    | `db-custom-2-7680` (2 dedicated vCPUs, 7.5 GB), `max_connections=200` | The queue is this database. On `db-g1-small` (half a shared core, 1.7 GB) the API and engine hold 35 connections idle and 80 to 100 busy; under a burst it swapped up to 0.95 GB, stayed at its CPU allowance, and answered too slowly for everything else. Never a shared-core tier in production. |
+| Hatchet API, engine   | one pod each, the chart's 250m CPU and 1Gi                            | They used 0.1 CPU and 60 MB at the worst. They were restarted 57 times by their liveness probes, which ask the database; `hatchet-values.yaml` gives the probes a minute instead of 15 s.                                                                                                           |
+| A worker pod          | 250m / 512Mi requested, 2 CPU / 3Gi limit, 16 steps at once           | A step is a Node process of its own, 80 to 120 MB while it waits on I/O (`api/src/workflows/kube.ts`, `WORKER_STEPS`).                                                                                                                                                                              |
+| A workspace's workers | 1 pod, or 0 to 5 with the autoscaler                                  | 5 x 16 = 80 steps at once. The namespace quota (`k8s/namespace.yaml`: 32 CPU and 64Gi of limits) holds 16 such pods for all workspaces.                                                                                                                                                             |
+
+## Limits on a burst
+
+A POST to a workflow's webhook always starts a run, so a caller can start a
+thousand in a minute. They queue instead of all running at once:
+
+- **Runs per workflow.** `worker.mjs` gives every workflow a Hatchet
+  concurrency limit: `WORKFLOWS_MAX_RUNS` runs executing at once (80: what a
+  workspace's pods hold when grown out), the rest waiting in the order they
+  came (`GROUP_ROUND_ROBIN` on one group; the SDK's default strategy would
+  cancel the run in progress). A workflow that declares its own `concurrency`
+  keeps it.
+- **Steps per pod.** `WORKFLOWS_MAX_STEPS` (16) is both the number of step
+  programs and the worker's Hatchet slots. The SDK's default is 100 slots.
+- **Waiting is not failing.** A step waits up to 24 h to start
+  (`WORKFLOWS_SCHEDULE_TIMEOUT`); Hatchet's default cancels it after 5 min.
+  A step whose pass cannot be checked because Hatchet does not answer waits
+  up to 3 min and then fails as a step does, so its `retries` apply; it used
+  to end for good after 15 s.
+- **Rate limits.** `WORKFLOWS_RATE_LIMITS` on the Mako API
+  (`model=300/minute,mail=60/minute`) names limits every worker registers
+  with Hatchet. A step takes from one with
+  `rateLimits: [{ staticKey: "model", units: 1 }]` and waits while it is
+  used up. None is set by default: set them to the quotas of the providers
+  the workflows call.
+
+Starting many runs from code: one `workflow.runNoWait([...])` (Hatchet's
+bulk call, up to 1000 a request) costs the engine less than a thousand
+webhook calls. Mako's webhook starts one run per POST.
+
+## Autoscaling (optional)
+
+With `WORKFLOWS_AUTOSCALER=keda` on the Mako API, each worker Deployment
+gets a KEDA `ScaledObject` and `TriggerAuthentication` of the same name
+(`api/src/workflows/kube.ts`, `autoscalerBodies`): 0 to 5 pods, one per 16
+steps the workspace has to run.
+
+- KEDA reads `GET <mako>/api/workflows/runtime/demand` every 15 s with the
+  worker's own key, from its Secret. Mako answers `steps`: the steps queued
+  or running in Hatchet (its `task-stats`), and 1 while a commit or a change
+  of triggers has not been reported by a worker yet, so a push wakes a
+  sleeping worker as a run does.
+- The last pod stops after 10 minutes without work. Pods are removed one a
+  minute, and a pod asked to stop finishes its steps first.
+- No answer from Mako or Hatchet is not "no work": KEDA keeps one pod.
+- A run started while no pod is up waits `QUEUED`: about a minute for the
+  pod to start and build, longer when a node must start.
+
+It needs KEDA in the cluster and the Mako API's Kubernetes identity allowed
+to manage `scaledobjects` and `triggerauthentications` (`keda.sh`) in
+`mako-workflows`. Without the setting nothing changes: one pod, always on.
+
+## Load test
+
+`loadtest/` is a Hatchet Lite of the production version with its own
+Postgres, a stand-in for the Mako API and the real `worker.mjs`, all on
+this machine. It never touches a shared engine. `burst` is the synthetic
+workflow: five steps in a row, each waiting on one HTTP call.
+
+```bash
+cd deploy/workflows/loadtest
+# The outage: a shared-core database, one pod of 8 steps, no limits.
+./stage.sh --runs 200 --step-ms 2000
+# The sizes above: 2 vCPU / 7.5 GB database, 5 pods of 16 steps.
+PG_CPUS=2 PG_MEMORY=7680m PG_SHARED_BUFFERS=2500MB HATCHET_CPUS=2 \
+  WORKER_CPUS=2 WORKER_MEMORY=3g WORKERS=5 WORKFLOWS_MAX_STEPS=16 WORKFLOWS_MAX_RUNS=80 \
+  ./stage.sh --runs 1600 --step-ms 2000
+docker compose down
+```
+
+Each stage starts from an empty Hatchet and prints one line of JSON: the
+steps by final status, steps and runs a minute, the peaks, and
+`runsReadModel`, the runs' statuses as the API shows them a minute after the
+last step ended.
 
 ## Sandbox runs
 
