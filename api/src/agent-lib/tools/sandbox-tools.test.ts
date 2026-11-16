@@ -278,6 +278,22 @@ describe("sandbox_status", () => {
 });
 
 describe("sandbox_read_file and sandbox_write_file", () => {
+  it("refuses to write back a file whose read was redacted", async () => {
+    const original = "index = https://user:secretpass@pypi.internal/simple\n";
+    state.files.set("pip.conf", original);
+    const read = await call("sandbox_read_file", { path: "pip.conf" });
+    expect(read).toMatchObject({ success: true, redacted: true });
+    expect(String(read.contents)).not.toContain("secretpass");
+    const write = await call("sandbox_write_file", {
+      path: "pip.conf",
+      contents: String(read.contents),
+      expectedHash: read.hash,
+    });
+    expect(write.error).toMatch(/redacted/);
+    expect(state.files.get("pip.conf")).toBe(original);
+    expect(state.writes).toHaveLength(0);
+  });
+
   it("reads a file by its path from the repo root, redacted", async () => {
     state.files.set("dbt/profiles.yml", "a\ntoken: mgt_abcdefghijklmnop\n");
     const result = await call("sandbox_read_file", {

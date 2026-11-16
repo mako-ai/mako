@@ -65,6 +65,8 @@ const logger = loggers.agent();
 
 /** The longest command text kept in the log line. */
 const LOGGED_COMMAND_CHARS = 2_000;
+/** Marks the hash of a read whose text was redacted: never writable back. */
+const REDACTED_HASH_PREFIX = "redacted-";
 /** Changed files listed by sandbox_status. */
 const STATUS_MAX_CHANGES = 200;
 
@@ -403,10 +405,22 @@ export function createSandboxTools({
           if ("error" in opened) return { success: false, error: opened.error };
           const contents = await readSessionFile(opened.handle, path);
           const page = pageLines(contents, { offset, limit });
+          // A file whose credentials were redacted on the way out cannot be
+          // written back whole: the write would save the [REDACTED] markers.
+          // Its hash says so, and sandbox_write_file refuses it.
+          const redacted = redactSandboxSecrets(contents) !== contents;
           return {
             success: true,
             path,
-            hash: contentHash(contents),
+            hash: redacted
+              ? `${REDACTED_HASH_PREFIX}${contentHash(contents)}`
+              : contentHash(contents),
+            ...(redacted
+              ? {
+                  redacted: true,
+                  note: "Credentials in this file were redacted. sandbox_write_file refuses to replace it; change it in place with sed in sandbox_bash.",
+                }
+              : {}),
             contents: redactSandboxSecrets(
               page.lines
                 .map(
@@ -449,6 +463,12 @@ export function createSandboxTools({
             existing = await readSessionFile(handle, path);
           } catch {
             existing = undefined;
+          }
+          if (expectedHash?.startsWith(REDACTED_HASH_PREFIX)) {
+            return {
+              success: false,
+              error: `${path} holds credentials that sandbox_read_file redacted, so writing it back whole would replace them with [REDACTED]. Change it in place with sed in sandbox_bash.`,
+            };
           }
           if (
             existing !== undefined &&
