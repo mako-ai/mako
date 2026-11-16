@@ -57,6 +57,7 @@ const rescue = () =>
     userId: USER,
     now: NOW,
     author: { name: "ana", email: "ana@x.io" },
+    expectedOrigin: origin,
   });
 
 beforeEach(async () => {
@@ -392,6 +393,56 @@ describe("rescueCommit", () => {
     ).toBe("x");
   });
 
+  it("a failed origin read keeps the box instead of calling it clean", async () => {
+    const failing: BoxRun = async command =>
+      command.includes("remote get-url origin") &&
+      !command.includes("rev-parse")
+        ? { exitCode: 137, stdout: "", stderr: "killed" }
+        : run(command);
+    const result = await rescueCommit({
+      run: failing,
+      root,
+      userId: USER,
+      now: NOW,
+      expectedOrigin: origin,
+    });
+    expect(result).toMatchObject({ status: "manual" });
+    expect((result as { reason: string }).reason).toMatch(
+      /reading the origin failed/,
+    );
+  });
+
+  it("output without an explicit repo answer keeps the box", async () => {
+    const silent: BoxRun = async command =>
+      command.includes("remote get-url origin") &&
+      !command.includes("rev-parse")
+        ? { exitCode: 0, stdout: "", stderr: "" }
+        : run(command);
+    expect(
+      await rescueCommit({
+        run: silent,
+        root,
+        userId: USER,
+        now: NOW,
+        expectedOrigin: origin,
+      }),
+    ).toMatchObject({ status: "manual" });
+  });
+
+  it("a directory with no repository is clean", async () => {
+    const empty = path.join(tmp, "empty");
+    await fs.mkdir(empty);
+    expect(
+      await rescueCommit({
+        run,
+        root: empty,
+        userId: USER,
+        now: NOW,
+        expectedOrigin: origin,
+      }),
+    ).toMatchObject({ status: "clean" });
+  });
+
   it("refuses a box whose origin is not this workspace's endpoint, even when clean", async () => {
     for (const dirty of [false, true]) {
       if (dirty) await write("apps/sales/App.tsx", "export default 6;\n");
@@ -405,6 +456,19 @@ describe("rescueCommit", () => {
       expect(result).toMatchObject({ status: "manual" });
       expect((result as { reason: string }).reason).toMatch(/origin/);
     }
+    expect(await git(origin, "branch", "--list", "mako-presave/*")).toBe("");
+  });
+
+  it("an empty expected origin refuses, even when the box is dirty", async () => {
+    await write("apps/sales/App.tsx", "export default 10;\n");
+    const result = await rescueCommit({
+      run,
+      root,
+      userId: USER,
+      now: NOW,
+      expectedOrigin: "",
+    });
+    expect(result).toMatchObject({ status: "manual" });
     expect(await git(origin, "branch", "--list", "mako-presave/*")).toBe("");
   });
 

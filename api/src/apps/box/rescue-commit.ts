@@ -359,8 +359,10 @@ export async function rescueCommit(input: {
   /**
    * The only origin a rescue may push to: this workspace's production
    * apps-git endpoint (config.ts appsGitOriginUrl). Anything else is manual.
+   * Required: a rescue with no expected origin would push wherever the box
+   * points.
    */
-  expectedOrigin?: string;
+  expectedOrigin: string;
   /** Refresh the box's git credential; runs before the server's refs are read. */
   prepareRemote?: () => Promise<void>;
 }): Promise<RescueResult> {
@@ -374,16 +376,22 @@ export async function rescueCommit(input: {
     ignored,
   });
 
-  const where = parseInspection(
-    (await run(originScript(root), { timeoutMs: 30_000 })).stdout,
-  );
-  if (!where.hasRepo) return { status: "clean", excluded, ignored };
+  const origin = await run(originScript(root), { timeoutMs: 30_000 });
+  if (origin.exitCode !== 0) {
+    return manual(`reading the origin failed: ${origin.stderr.slice(-200)}`);
+  }
+  // "No repository" must be said, not inferred: anything but an explicit
+  // repo=no or repo=yes keeps the box.
+  if (/^repo=no$/m.test(origin.stdout)) {
+    return { status: "clean", excluded, ignored };
+  }
+  if (!/^repo=yes$/m.test(origin.stdout)) {
+    return manual("could not tell whether the box holds a repository");
+  }
+  const where = parseInspection(origin.stdout);
   // A box pointing anywhere but this workspace's apps-git endpoint is not
   // one we can save to: push nothing, and never delete it.
-  if (
-    input.expectedOrigin !== undefined &&
-    where.origin !== input.expectedOrigin
-  ) {
+  if (!input.expectedOrigin || where.origin !== input.expectedOrigin) {
     return manual(
       `origin is not this workspace's apps-git endpoint (${where.origin || "none"})`,
     );
