@@ -8,10 +8,11 @@
  * already knows how to write. Neither of those changes here — a sandboxed
  * connector has to arrive speaking them, or nothing downstream would work.
  */
-import type {
-  ConnectorEntitySchema,
-  ConnectorFieldSchema as EngineFieldSchema,
-  ConnectorLogicalType,
+import {
+  MAKO_SYSTEM_FIELDS,
+  type ConnectorEntitySchema,
+  type ConnectorFieldSchema as EngineFieldSchema,
+  type ConnectorLogicalType,
 } from "../base/BaseConnector";
 
 /**
@@ -167,6 +168,13 @@ function normalizeType(type: unknown): string | undefined {
  * large share of real connector catalogs declare `additionalProperties: true`
  * or no properties at all, and a stream that arrives with fields the schema
  * never mentioned must land as columns rather than fail the sync.
+ *
+ * Mako's 8 system columns (`_syncedAt`, `is_deleted`, `deleted_at`, the
+ * `_mako_*` ordering columns, the data source id and name) are merged in, as
+ * every in-process connector's schema spreads `MAKO_SYSTEM_FIELDS`. A
+ * connector cannot declare them over the wire, and without them a boxed run
+ * landed `_syncedAt` as a string and left `is_deleted` unset. A stream field
+ * with a system column's name is overridden, as in-process.
  */
 export function jsonSchemaToEntitySchema(
   entity: string,
@@ -188,6 +196,9 @@ export function jsonSchemaToEntitySchema(
       nullable: isNullable(property, required.has(name)),
       required: required.has(name),
     };
+  }
+  for (const [name, field] of Object.entries(MAKO_SYSTEM_FIELDS)) {
+    fields[name] = { ...field };
   }
 
   return {

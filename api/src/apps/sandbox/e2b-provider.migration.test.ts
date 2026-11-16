@@ -21,7 +21,16 @@ const e2b = vi.hoisted(() => {
     setTimeout: vi.fn(async () => undefined),
     getHost: (port: number) => `${port}-${sandboxId}.e2b.app`,
     commands: {
-      run: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" })),
+      // Started in the background, then awaited (e2b-provider startCommand);
+      // the create path still runs one command directly.
+      run: vi.fn(async (_cmd: string, opts?: { background?: boolean }) =>
+        opts?.background
+          ? {
+              pid: 1,
+              wait: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+            }
+          : { exitCode: 0, stdout: "", stderr: "" },
+      ),
     },
   });
   const listed: { items: Array<{ sandboxId: string; startedAt?: Date }> } = {
@@ -39,7 +48,8 @@ const e2b = vi.hoisted(() => {
   return { Sandbox, SandboxNotFoundError, listed, fakeBox };
 });
 
-vi.mock("e2b", () => ({
+vi.mock("e2b", async importOriginal => ({
+  ...(await importOriginal<typeof import("e2b")>()),
   Sandbox: e2b.Sandbox,
   SandboxNotFoundError: e2b.SandboxNotFoundError,
 }));

@@ -56,6 +56,8 @@ export default defineConfig({
       "src/apps/box-presave.git.test.ts",
       // The drain's key and swap-time guards.
       "src/apps/box-drain.test.ts",
+      // Owner backfill for ownerless app rows + the gated owner stamp.
+      "src/apps/app-row-owners.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",
       // Phase events on the request doing the work (NDJSON), no shared state.
@@ -190,6 +192,8 @@ export default defineConfig({
       "src/connectors/workspace/boxes/**/*.test.ts",
       "src/connectors/workspace/SandboxedConnector.leases.test.ts",
       "src/apps/sandbox/e2b-provider.boxes.test.ts",
+      // One held E2B handle per session: connect and setTimeout counts.
+      "src/apps/sandbox/e2b-provider.handles.test.ts",
       // Connector bundles: hash, guard, build box, storage, build-once.
       "src/connectors/workspace/bundle/bundle.test.ts",
       // Bundles through the push reconciler and the run path, flag on and off.

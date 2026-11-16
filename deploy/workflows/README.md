@@ -55,8 +55,8 @@ of 2026-11-16 and from the load test below.
 | --------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Hatchet's database    | `db-custom-2-7680` (2 dedicated vCPUs, 7.5 GB), `max_connections=200` | The queue is this database. On `db-g1-small` (half a shared core, 1.7 GB) the API and engine hold 35 connections idle and 80 to 100 busy; under a burst it swapped up to 0.95 GB, stayed at its CPU allowance, and answered too slowly for everything else. Never a shared-core tier in production. |
 | Hatchet API, engine   | two pods each, the chart's 250m CPU and 1Gi, PDB `minAvailable: 1`    | They used 0.1 CPU and 60 MB at the worst. They were restarted 57 times by their liveness probes, which ask the database; `hatchet-values.yaml` gives the probes a minute instead of 15 s. With one pod each, a rollout and an eviction on 2026-11-16 caused 56 x 500 on the runs list.              |
-| A worker pod          | 250m / 512Mi requested, 2 CPU / 3Gi limit, 16 steps at once           | A step is a Node process of its own, 80 to 120 MB while it waits on I/O (`api/src/workflows/kube.ts`, `WORKER_STEPS`).                                                                                                                                                                              |
-| A workspace's workers | 1 pod, or 0 to 5 with the autoscaler                                  | 5 x 16 = 80 steps at once. The namespace quota (`k8s/namespace.yaml`: 32 CPU and 64Gi of limits) holds 16 such pods for all workspaces.                                                                                                                                                             |
+| A worker pod          | 250m / 512Mi requested, 2 CPU / 3Gi limit, 128 steps at once          | 16 step programs, each a Node process of about 100 MB running up to 8 steps of one workflow at a time: 1.45 GiB measured with all 128 under way (`api/src/workflows/kube.ts`, `WORKER_STEPS`).                                                                                                      |
+| A workspace's workers | 1 pod, or 0 to 5 with the autoscaler                                  | 5 x 128 = 640 steps at once. The namespace quota (`k8s/namespace.yaml`: 32 CPU and 64Gi of limits) holds 16 such pods for all workspaces.                                                                                                                                                           |
 
 ## Limits on a burst
 
@@ -64,13 +64,19 @@ A POST to a workflow's webhook always starts a run, so a caller can start a
 thousand in a minute. They queue instead of all running at once:
 
 - **Runs per workflow.** `worker.mjs` gives every workflow a Hatchet
-  concurrency limit: `WORKFLOWS_MAX_RUNS` runs executing at once (80: what a
-  workspace's pods hold when grown out), the rest waiting in the order they
+  concurrency limit: `WORKFLOWS_MAX_RUNS` runs executing at once (250: the most the load
+  test has run), the rest waiting in the order they
   came (`GROUP_ROUND_ROBIN` on one group; the SDK's default strategy would
   cancel the run in progress). A workflow that declares its own `concurrency`
   keeps it.
-- **Steps per pod.** `WORKFLOWS_MAX_STEPS` (16) is both the number of step
-  programs and the worker's Hatchet slots. The SDK's default is 100 slots.
+- **Steps per pod.** `WORKFLOWS_MAX_STEPS` (128) is the worker's Hatchet
+  slots: `WORKFLOWS_MAX_PROGRAMS` (16) step programs of
+  `WORKFLOWS_STEPS_PER_PROGRAM` (8) steps each. A program runs the steps of
+  one workflow only, as that workflow's user, so workflows stay apart;
+  steps of the same workflow share it. Each step keeps its own pass: a
+  request made outside any step's own flow goes without a pass, and is
+  refused, rather than with a neighbour's. A cancelled step is told to
+  stop, and its program is stopped once the steps beside it have ended.
 - **Waiting is not failing.** A step waits up to 24 h to start
   (`WORKFLOWS_SCHEDULE_TIMEOUT`); Hatchet's default cancels it after 5 min.
   A step whose pass cannot be checked because Hatchet does not answer waits
@@ -91,7 +97,7 @@ webhook calls. Mako's webhook starts one run per POST.
 
 With `WORKFLOWS_AUTOSCALER=keda` on the Mako API, each worker Deployment
 gets a KEDA `ScaledObject` and `TriggerAuthentication` of the same name
-(`api/src/workflows/kube.ts`, `autoscalerBodies`): 0 to 5 pods, one per 16
+(`api/src/workflows/kube.ts`, `autoscalerBodies`): 0 to 5 pods, one per 128
 steps the workspace has to run.
 
 - KEDA reads `GET <mako>/api/workflows/runtime/demand` every 15 s with the
@@ -120,9 +126,9 @@ workflow: five steps in a row, each waiting on one HTTP call.
 cd deploy/workflows/loadtest
 # The outage: a shared-core database, one pod of 8 steps, no limits.
 ./stage.sh --runs 200 --step-ms 2000
-# The sizes above: 2 vCPU / 7.5 GB database, 5 pods of 16 steps.
+# The sizes above: 2 vCPU / 7.5 GB database, 2 pods of 128 steps.
 PG_CPUS=2 PG_MEMORY=7680m PG_SHARED_BUFFERS=2500MB HATCHET_CPUS=2 \
-  WORKER_CPUS=2 WORKER_MEMORY=3g WORKERS=5 WORKFLOWS_MAX_STEPS=16 WORKFLOWS_MAX_RUNS=80 \
+  WORKER_CPUS=2 WORKER_MEMORY=3g WORKERS=2 WORKFLOWS_MAX_PROGRAMS=16 WORKFLOWS_STEPS_PER_PROGRAM=8 WORKFLOWS_MAX_RUNS=250 \
   ./stage.sh --runs 1600 --step-ms 2000
 docker compose down
 ```

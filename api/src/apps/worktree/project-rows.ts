@@ -14,7 +14,7 @@ import { USERS_DIR, parseAppRepoPath } from "../app-paths";
 import { loadOwnerDirectory } from "../user-handles.service";
 
 import { appRootFor } from "./repo";
-import { isUserActor } from "./worktrees";
+import { isPersonActorId, isUserActor } from "./worktrees";
 
 // ---------------------------------------------------------------------------
 // Apps are folders (§13): the repo is the list, not the database
@@ -53,6 +53,33 @@ export async function listAppFolderPaths(
 }
 
 /**
+ * Env flag that lets real 15-character user ids (isPersonActorId) own the
+ * rows they CREATE. Off by default, so merging changes nothing; turned on
+ * after scripts/backfill-app-row-owners.ts. It never widens the claim of an
+ * EXISTING ownerless row: that stays isUserActor (24-hex), as before, so a
+ * row the backfill left ownerless is not handed to whoever touches it next.
+ */
+export const ROW_OWNER_PERSON_IDS_FLAG = "APPS_ROW_OWNER_PERSON_IDS";
+
+function rowOwnerPersonIdsOn(): boolean {
+  const raw = (process.env[ROW_OWNER_PERSON_IDS_FLAG] ?? "")
+    .trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
+}
+
+/**
+ * The acting id when it may own a row, else undefined. System actors
+ * (publish, api-key, scheduler, app-chat, "") never qualify, flag or not.
+ */
+export function rowOwnerActor(actorId: string): string | undefined {
+  const person = rowOwnerPersonIdsOn()
+    ? isPersonActorId(actorId)
+    : isUserActor(actorId);
+  return person ? actorId : undefined;
+}
+
+/**
  * Persist the row for a folder-only app, keeping the DERIVED id so every
  * artifact key and worktree doc stays stable. The three row-creating acts
  * (§13.6: restrict, publish, share) all converge here; everything else keeps
@@ -73,24 +100,32 @@ export async function ensureProjectRow(
   // ownerless; otherwise the auto-deploy of every repo-imported folder would
   // stamp the literal "publish" as owner_id, nobody could ever restrict or
   // share it, and a private access setting would lock out even admins.
-  const actor = isUserActor(actorId) ? actorId : undefined;
+  const actor = rowOwnerActor(actorId);
   // A folder under users/<handle>/apps belongs to its owner (§29). The owner
   // is the handle mapping's answer for the folder, whoever's action creates
   // or first touches the row. A segment the mapping does not know is nobody's:
   // the row stays ownerless.
   const personal = await personalTreeOwner(project);
   const owner = personal ? personal.ownerId : actor;
+  // Claiming an existing ownerless row keeps the legacy 24-hex rule whatever
+  // the flag says: those rows are the backfill's to settle, not the next
+  // person's to take.
+  const claimant = personal
+    ? personal.ownerId
+    : isUserActor(actorId)
+      ? actorId
+      : undefined;
   const existing = await AppProject.findOne({
     _id: project._id,
     workspaceId: project.workspaceId,
   });
   if (existing) {
-    // An ownerless row gets its owner on the first act by a person (resource-acl
-    // reads owner_id, then createdBy). A personal row's owner is the mapping's
+    // An ownerless row gets its owner on the first act by a 24-hex actor
+    // (resource-acl reads owner_id, then createdBy; see claimant above). A personal row's owner is the mapping's
     // answer. Outside a personal tree, a private row stays as it is: only a
     // workspace-visible app takes the acting person as its owner.
     if (
-      owner &&
+      claimant &&
       !existing.owner_id &&
       !existing.createdBy &&
       (personal || existing.access !== "private")
@@ -101,7 +136,7 @@ export async function ensureProjectRow(
           workspaceId: project.workspaceId,
           owner_id: { $in: [null, ""] },
         },
-        { $set: { owner_id: owner, createdBy: owner } },
+        { $set: { owner_id: claimant, createdBy: claimant } },
       );
       return (
         (await AppProject.findOne({

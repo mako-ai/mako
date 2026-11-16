@@ -79,6 +79,19 @@ export interface EntityDefinition<Config = Record<string, unknown>> {
   schema?: EntitySchema;
   /** Declare a field here to make the entity incrementally syncable. */
   cursorField?: string;
+  /**
+   * What `read` does with `state.mako.since` (ISO 8601), which Mako sets on an
+   * incremental sync: filter on a real update time (`native`), on creation
+   * time only (`created-anchor`), or after reading everything
+   * (`client-filter`). Omit when the entity ignores `since`.
+   */
+  incremental?: "native" | "client-filter" | "created-anchor";
+  /** How a warehouse destination should partition and cluster the table. */
+  layout?: {
+    partitionField?: string;
+    partitionGranularity?: "day" | "hour" | "month" | "year";
+    clusterFields?: string[];
+  };
   /** For APIs whose fields differ per account; overrides `schema`. */
   discoverSchema?(ctx: Context<Config>): Promise<EntitySchema> | EntitySchema;
   /** Yield one page at a time. Stop when there is nothing left. */

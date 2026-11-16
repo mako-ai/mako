@@ -96,7 +96,12 @@ function stateFor(state, stream) {
 
 export async function run(argv = process.argv.slice(2)) {
   const { command, options } = parseArgs(argv);
-  const log = (level, message) => emitLog(level, message);
+  // LOG lines share the chunk's stdout with the records, so they count
+  // toward `--max-bytes` too.
+  let logBytes = 0;
+  const log = (level, message) => {
+    logBytes += emitLog(level, message);
+  };
 
   const connector = await loadConnector(options.connector ?? "./connector.ts");
   const config = options.config ? readJson(options.config) : {};
@@ -134,23 +139,49 @@ export async function run(argv = process.argv.slice(2)) {
     // engine could never checkpoint. Airbyte sources have no such flag,
     // which is exactly why they need a different adapter.
     const maxIterations = Number(options["max-iterations"] ?? 0) || Infinity;
+    // The byte budget, per stream. Pages vary in size and Mako's box caps a
+    // chunk's output (32 MiB): 10 pages of 200 large emails is about 65 MB.
+    // A chunk ends after the page that takes its records past this many
+    // bytes, at a page boundary like `--max-iterations`, so it resumes
+    // exactly there. One page is never split.
+    const maxBytes = Number(options["max-bytes"] ?? 0) || Infinity;
 
     for (const name of selectedStreams(catalog, connector)) {
       const entity = connector.entity(name);
       const ctx = createContext({ config, state: stateFor(state, name), log, entity: name });
       let iterations = 0;
+      let bytes = 0;
+      logBytes = 0;
       let latest = ctx.state;
       let exhausted = true;
 
       for await (const batch of entity.read(ctx, ctx.state)) {
-        for (const record of batch.records ?? []) emitRecord(name, record);
+        for (const record of batch.records ?? []) bytes += emitRecord(name, record);
         if (batch.state !== undefined) latest = batch.state;
         iterations++;
         if (batch.hasMore === false) {
           exhausted = true;
           break;
         }
-        if (iterations >= maxIterations) {
+        const overBytes = bytes + logBytes >= maxBytes;
+        if (overBytes && iterations < maxIterations && batch.hasMore !== true) {
+          // A connector that does not say hasMore is not failed by the byte
+          // budget, which it never asked for. It stops at this page with
+          // "more may follow" when its state moved, so the next chunk resumes
+          // there; with no state to resume from it reads on, as it always did.
+          if (latest === ctx.state) continue;
+          // A state that came back unchanged would make the next chunk read
+          // these same pages, and the one after it too, forever.
+          if (JSON.stringify(latest) === JSON.stringify(ctx.state)) {
+            throw new Error(
+              `Entity "${name}" hit the chunk byte budget with its state unchanged, so the next chunk would re-read the same pages. ` +
+                "Advance the state with every read batch, or yield hasMore.",
+            );
+          }
+          exhausted = false;
+          break;
+        }
+        if (iterations >= maxIterations || overBytes) {
           if (batch.hasMore !== true) {
             throw new Error(
               `Entity "${name}" reached a chunk boundary without saying whether another page exists. ` +
