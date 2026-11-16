@@ -207,6 +207,11 @@ export interface SandboxProvider {
       onExit?: (reason: string) => void;
     },
   ): Promise<SandboxTerminal>;
+  /**
+   * Something outside the provider paused this session's box (an idle
+   * sweep). Drop any connected handle, so the next call connects and resumes.
+   */
+  noteSessionPaused?(sessionKey: string): void;
   /** Tear down any remote session for the given affinity key (best effort). */
   destroySession?(sessionKey: string): Promise<void>;
   /**

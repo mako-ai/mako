@@ -453,13 +453,14 @@ export async function runConnectorCommand(input: {
         timedOut: true,
       };
     }
-    inputsDeleted = true;
-
     const markerLine = result.stdout
       .split("\n")
       .map(line => line.trim())
       .filter(line => line.startsWith(`${BOUNDED_MARKER} `))
       .at(-1);
+    // The marker is printed after `rm -f` of the inputs. Without it, the
+    // script may have died before deleting them, so the cleanup is awaited.
+    inputsDeleted = markerLine !== undefined;
     const sizeText = markerLine?.slice(BOUNDED_MARKER.length + 1) ?? "";
     let outputBytes = 0;
     if (sizeText !== "missing") {

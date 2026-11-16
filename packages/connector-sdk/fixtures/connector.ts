@@ -35,11 +35,12 @@ export default defineConnector({
         while (offset < PEOPLE.length) {
           const records = PEOPLE.slice(offset, offset + pageSize);
           offset += records.length;
-          yield {
-            records,
-            state: { offset },
-            hasMore: offset < PEOPLE.length,
-          };
+          // Test knobs: a log line per page, and a connector that never
+          // says whether another page exists.
+          if (ctx.config.logEveryPage) ctx.log(ctx.config.logEveryPage);
+          yield ctx.config.omitHasMore
+            ? { records, state: { offset } }
+            : { records, state: { offset }, hasMore: offset < PEOPLE.length };
         }
       },
     },

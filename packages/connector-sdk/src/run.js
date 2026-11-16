@@ -96,7 +96,12 @@ function stateFor(state, stream) {
 
 export async function run(argv = process.argv.slice(2)) {
   const { command, options } = parseArgs(argv);
-  const log = (level, message) => emitLog(level, message);
+  // LOG lines share the chunk's stdout with the records, so they count
+  // toward `--max-bytes` too.
+  let logBytes = 0;
+  const log = (level, message) => {
+    logBytes += emitLog(level, message);
+  };
 
   const connector = await loadConnector(options.connector ?? "./connector.ts");
   const config = options.config ? readJson(options.config) : {};
@@ -146,6 +151,7 @@ export async function run(argv = process.argv.slice(2)) {
       const ctx = createContext({ config, state: stateFor(state, name), log, entity: name });
       let iterations = 0;
       let bytes = 0;
+      logBytes = 0;
       let latest = ctx.state;
       let exhausted = true;
 
@@ -157,7 +163,19 @@ export async function run(argv = process.argv.slice(2)) {
           exhausted = true;
           break;
         }
-        if (iterations >= maxIterations || bytes >= maxBytes) {
+        const overBytes = bytes + logBytes >= maxBytes;
+        if (overBytes && iterations < maxIterations && batch.hasMore !== true) {
+          // A connector that does not say hasMore is not failed by the byte
+          // budget, which it never asked for. It stops at this page with
+          // "more may follow" when its state moved, so the next chunk resumes
+          // there; with no state to resume from it reads on, as it always did.
+          if (latest !== ctx.state) {
+            exhausted = false;
+            break;
+          }
+          continue;
+        }
+        if (iterations >= maxIterations || overBytes) {
           if (batch.hasMore !== true) {
             throw new Error(
               `Entity "${name}" reached a chunk boundary without saying whether another page exists. ` +

@@ -60,6 +60,10 @@ const logger = loggers.connector();
  * that crosses it still fits. 10 pages of large emails measured 33 MB in
  * bench G1 and broke the 32 MiB cap on 4 of 30 chunks.
  */
+/** The settings every connection gets at create time when none are given. */
+const CREATE_DEFAULT_BATCH_SIZE = 100;
+const CREATE_DEFAULT_RATE_LIMIT_MS = 200;
+
 export const CHUNK_BYTE_BUDGET = Math.floor(MAX_CONNECTOR_PROTOCOL_BYTES / 2);
 
 /**
@@ -100,22 +104,46 @@ export function recordTimestamp(
   return null;
 }
 
+/** Outside this window a "timestamp" is a misread number, not a time. */
+const EARLIEST_SOURCE_TS = Date.UTC(1990, 0, 1);
+const LATEST_SOURCE_TS = Date.UTC(2100, 0, 1);
+
+/** An epoch in seconds, milliseconds or microseconds, by its size. */
+function fromEpoch(value: number): Date | null {
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const ms = value > 1e14 ? value / 1000 : value > 1e12 ? value : value * 1000;
+  return new Date(ms);
+}
+
 function toDate(value: unknown): Date | null {
   if (value === null || value === undefined || value === "") return null;
-  let date: Date;
+  let date: Date | null;
   if (value instanceof Date) {
     date = value;
   } else if (typeof value === "number") {
-    if (!Number.isFinite(value) || value <= 0) return null;
-    // Seconds unless it is clearly milliseconds, as the in-process Stripe
-    // connector decides.
-    date = new Date(value > 1e12 ? value : value * 1000);
+    date = fromEpoch(value);
   } else if (typeof value === "string") {
-    date = new Date(value);
+    const text = value.trim();
+    if (/^\d+$/.test(text)) {
+      // A digit string is an epoch or nothing. `new Date("2024")` would read
+      // a year, and `new Date("7")` a July 2001.
+      date = text.length >= 9 ? fromEpoch(Number(text)) : null;
+    } else if (/^\d{4}-\d{2}-\d{2}/.test(text) || /[a-z]{3}/i.test(text)) {
+      // ISO 8601, or a written date such as an RFC 2822 header.
+      date = new Date(text);
+    } else {
+      date = null;
+    }
   } else {
     return null;
   }
-  return Number.isNaN(date.getTime()) ? null : date;
+  if (!date) return null;
+  const time = date.getTime();
+  return Number.isNaN(time) ||
+    time < EARLIEST_SOURCE_TS ||
+    time >= LATEST_SOURCE_TS
+    ? null
+    : date;
 }
 
 /** `ws:acme` -> `acme`. */
@@ -153,7 +181,7 @@ function mapLogLevel(
  *
  * The engine passes `since` as `options.since`, the in-process connectors read
  * it there, and a boxed connector can only read its files, so it goes into
- * the stream state as ISO 8601 (`state.since`). Without this every boxed read
+ * the stream state as ISO 8601 (`state.mako.since`). Without this every boxed read
  * was a full read.
  *
  * A backfill passes `options.since` on every chunk, but a scheduled
@@ -198,10 +226,37 @@ export function readState(
       stream: {
         ...stream,
         stream_descriptor: stream.stream_descriptor ?? { name: entity },
-        stream_state: { ...(stream.stream_state ?? {}), since: anchor },
+        stream_state: withMakoSince(stream.stream_state, anchor),
       },
     },
   ];
+}
+
+/**
+ * `since` lives under `mako` in the stream state (`state.mako.since`): the
+ * `mako` key is Mako's, so a connector's own `since` (a vendor cursor, say)
+ * is never overwritten. A connector whose state uses `mako` for something
+ * that is not an object fails loudly rather than losing either value.
+ */
+function withMakoSince(
+  streamState: unknown,
+  since: string,
+): Record<string, unknown> {
+  const own =
+    streamState && typeof streamState === "object"
+      ? (streamState as Record<string, unknown>)
+      : {};
+  const mako = own.mako;
+  if (mako !== undefined && (mako === null || typeof mako !== "object")) {
+    throw new Error(
+      "The connector's state uses the reserved key `mako`; Mako keeps " +
+        "`state.mako.since` there. Rename the connector's own key.",
+    );
+  }
+  return {
+    ...own,
+    mako: { ...((mako as Record<string, unknown>) ?? {}), since },
+  };
 }
 
 /** Chunk metadata that remembers the run's `since` for the next chunk. */
@@ -369,10 +424,16 @@ export class SandboxedConnector extends BaseConnector {
 
   /**
    * The config a `read` gets: the credential, plus the batch size and rate
-   * limit the engine knows, under the SDK's reserved `__` keys. The in-process
-   * connectors read these from `options` or `settings`; a box has no other
-   * way to learn them. Absent values are left out, so the connector's own
-   * defaults apply, as in-process.
+   * limit the engine knows, under the SDK's reserved `__` keys. A box has no
+   * other way to learn them.
+   *
+   * Every saved connection carries `sync_batch_size` 100 and
+   * `rate_limit_delay_ms` 200 whether or not anyone chose them: they are
+   * filled in at create time (source-connection-create.service.ts). Passing
+   * those would override every connector's own defaults. So a setting goes
+   * to the box only when it differs from the create-time default, or when
+   * the caller passes it in `options`; otherwise the connector's default
+   * applies.
    */
   private readConfig(options: ResumableFetchOptions): Record<string, unknown> {
     const settings = (this.sourceConnection.settings ?? {}) as {
@@ -383,11 +444,16 @@ export class SandboxedConnector extends BaseConnector {
       typeof value === "number" && Number.isFinite(value) && value > 0
         ? value
         : undefined;
+    const chosen = (value: unknown, createDefault: number) => {
+      const number = positive(value);
+      return number === createDefault ? undefined : number;
+    };
     const pageSize =
-      positive(options.batchSize) ?? positive(settings.sync_batch_size);
+      positive(options.batchSize) ??
+      chosen(settings.sync_batch_size, CREATE_DEFAULT_BATCH_SIZE);
     const rateLimitDelay =
       positive(options.rateLimitDelay) ??
-      positive(settings.rate_limit_delay_ms);
+      chosen(settings.rate_limit_delay_ms, CREATE_DEFAULT_RATE_LIMIT_MS);
     return {
       ...this.config(),
       ...(pageSize !== undefined ? { __page_size: pageSize } : {}),
@@ -661,7 +727,7 @@ export class SandboxedConnector extends BaseConnector {
 
   getIncrementalCapabilities(): IncrementalCapabilities {
     // Honest by default: only entities whose spec declares what they do with
-    // `state.since` (the SDK's `incremental`) are offered incremental. A
+    // `state.mako.since` (the SDK's `incremental`) are offered incremental. A
     // connector that declares nothing re-reads everything, and says so.
     const declared = ((this.loaded?.spec?.mako as any)?.entities ??
       {}) as Record<string, { incremental?: unknown }>;

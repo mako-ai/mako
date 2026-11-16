@@ -224,6 +224,35 @@ describe("workspace connector protocol output", () => {
     expect(sandbox.readFile).not.toHaveBeenCalled();
   });
 
+  it("awaits the cleanup when the marker never came back", async () => {
+    let cleanedUp = false;
+    sandbox.exec.mockImplementation((_ctx, command: string) => {
+      if (command.includes("mako-connector.js")) {
+        // Killed before the bounding step: no marker, inputs maybe on disk.
+        return Promise.resolve({ ...result(""), exitCode: 137 });
+      }
+      if (command.startsWith("rm -rf")) {
+        return new Promise(resolve =>
+          setTimeout(() => {
+            cleanedUp = true;
+            resolve(result());
+          }, 10),
+        );
+      }
+      return Promise.resolve(result());
+    });
+    await expect(
+      runConnectorCommand({
+        ctx: { sessionKey: "connector-sync:test" },
+        runtimeId: "runtime",
+        connectorDir: "/scratch/connector",
+        command: "read",
+        config: { api_key: "secret" },
+      }),
+    ).rejects.toThrow(/protocol size/);
+    expect(cleanedUp).toBe(true);
+  });
+
   it("skips the read when the command wrote nothing", async () => {
     sandbox.exec.mockImplementation((_ctx, command: string) =>
       Promise.resolve(

@@ -178,6 +178,28 @@ test("a chunk also stops at its byte budget, after a whole page, and resumes the
   assert.equal(third.at(-1).state.mako.hasMore, false);
 });
 
+test("log lines count toward the byte budget", async () => {
+  const dir = tmp();
+  const config = writeJson(dir, "config.json", { apiKey: "good-key", logEveryPage: "x".repeat(4000) });
+  // Records of a page are about 1.4 KB; with a 4 KB log line per page a
+  // 5 KB budget is crossed on the first page by the log alone.
+  const messages = await protocol(["read", "--config", config, "--max-bytes", "5000"]);
+  assert.equal(messages.filter(m => m.type === "RECORD").length, 10);
+  assert.equal(messages.at(-1).state.mako.hasMore, true);
+});
+
+test("a connector that omits hasMore is not failed by the byte budget", async () => {
+  const dir = tmp();
+  const config = writeJson(dir, "config.json", { apiKey: "good-key", omitHasMore: true });
+  const messages = await protocol(["read", "--config", config, "--max-bytes", "1"]);
+  assert.equal(messages.some(m => m.type === "TRACE"), false);
+  // It stops at the page, with state to resume from.
+  assert.equal(messages.filter(m => m.type === "RECORD").length, 10);
+  const state = messages.at(-1).state;
+  assert.equal(state.mako.hasMore, true);
+  assert.deepEqual(state.stream.stream_state, { offset: 10 });
+});
+
 test("a catalog restricts which streams are read", async () => {
   const dir = tmp();
   const config = writeJson(dir, "config.json", { apiKey: "good-key" });

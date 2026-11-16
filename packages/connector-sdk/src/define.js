@@ -16,7 +16,7 @@ const SLUG = /^[a-z][a-z0-9-]*$/;
 // Entity names become table names, and Airbyte's own streams use snake_case
 // (`payment_intents`, `balance_transactions`). Hyphens stay legal too.
 const ENTITY_NAME = /^[a-z][a-z0-9_-]*$/;
-// What a read does with `state.since`, in Mako's words (IncrementalMode).
+// What a read does with `state.mako.since`, in Mako's words (IncrementalMode).
 const INCREMENTAL_MODES = ["native", "client-filter", "created-anchor"];
 
 export function defineConnector(definition) {
@@ -55,7 +55,7 @@ export function defineConnector(definition) {
                 label: entity.label,
                 description: entity.description,
                 // How a destination should lay the table out, and how far
-                // `state.since` narrows a read. Mako reads both from the spec
+                // `state.mako.since` narrows a read. Mako reads both from the spec
                 // it indexes, without running the connector.
                 ...(entity.layout ? { layout: entity.layout } : {}),
                 ...(entity.incremental ? { incremental: entity.incremental } : {}),

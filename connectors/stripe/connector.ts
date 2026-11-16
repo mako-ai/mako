@@ -6,10 +6,11 @@
  * production yet. `fixtures/parity.mjs` runs both against the same recorded
  * Stripe responses and compares them entity by entity.
  *
- * Read state is `{ cursor, since }`:
+ * Read state is `{ cursor, mako: { since } }`:
  * - `cursor` is Stripe's `starting_after`, the in-process `FetchState.cursor`.
  *   Nested entities carry the last parent id (payout or customer).
- * - `since` (ISO 8601) is the incremental anchor, sent as `created[gte]`. The
+ * - `mako.since` (ISO 8601) is the incremental anchor, sent as `created[gte]`.
+ *   Mako owns the `mako` key. The
  *   connector never moves it. The engine passes `since` to the in-process
  *   connector as `options.since`; `SandboxedConnector` puts the same value
  *   into the stream state on every chunk.
@@ -71,7 +72,8 @@ function pageSize(config: StripeConfig): number {
 
 interface StripeReadState {
   cursor?: string;
-  since?: string;
+  /** Mako's own keys; `since` is the incremental anchor. */
+  mako?: { since?: string };
 }
 
 /** Entity, label, and whether `since` applies (cursor `created`). */
@@ -139,7 +141,7 @@ function parseSince(value: unknown): Date | undefined {
   if (typeof value !== "string" || !value) return undefined;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
-    throw new Error(`state.since is not a date: ${value}`);
+    throw new Error(`state.mako.since is not a date: ${value}`);
   }
   return date;
 }
@@ -163,7 +165,8 @@ function entity(
     async *read(ctx, rawState) {
       const state = rawState as StripeReadState;
       const stripe = stripeClient(ctx);
-      const since = incremental ? parseSince(state.since) : undefined;
+      const anchor = state.mako?.since;
+      const since = incremental ? parseSince(anchor) : undefined;
       let cursor = typeof state.cursor === "string" ? state.cursor : undefined;
       let first = true;
 
@@ -185,7 +188,7 @@ function entity(
           records: page.data,
           state: {
             ...(cursor ? { cursor } : {}),
-            ...(state.since ? { since: state.since } : {}),
+            ...(anchor ? { mako: { since: anchor } } : {}),
           },
           hasMore,
         };

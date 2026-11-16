@@ -100,7 +100,12 @@ const noop = async () => undefined;
 void test("since reaches the stream state on the first chunk and every later one", async () => {
   const box = make();
   box.answers.push(
-    ok([state({ cursor: "c1", since: "2026-01-01T00:00:00.000Z" }, true)]),
+    ok([
+      state(
+        { cursor: "c1", mako: { since: "2026-01-01T00:00:00.000Z" } },
+        true,
+      ),
+    ]),
     ok([state({ cursor: "c2" }, false)]),
   );
   const since = new Date("2026-01-01T00:00:00Z");
@@ -122,14 +127,14 @@ void test("since reaches the stream state on the first chunk and every later one
       type: "STREAM",
       stream: {
         stream_descriptor: { name: "rows" },
-        stream_state: { since: "2026-01-01T00:00:00.000Z" },
+        stream_state: { mako: { since: "2026-01-01T00:00:00.000Z" } },
       },
     },
   ]);
   // The resumed chunk keeps the connector's cursor AND the engine's since,
   // even though this connector dropped `since` from its own state.
   assert.equal(b[0].stream.stream_state.cursor, "c1");
-  assert.equal(b[0].stream.stream_state.since, "2026-01-01T00:00:00.000Z");
+  assert.equal(b[0].stream.stream_state.mako.since, "2026-01-01T00:00:00.000Z");
 });
 
 void test("since given on chunk 1 only still reaches chunk 2, as on a scheduled incremental sync", async () => {
@@ -156,11 +161,40 @@ void test("since given on chunk 1 only still reaches chunk 2, as on a scheduled 
   await box.fetchEntityChunk({ entity: "rows", state: second, onBatch: noop });
   for (const call of box.calls) {
     const [entry] = call.options.state as any[];
-    assert.equal(entry.stream.stream_state.since, "2026-01-01T00:00:00.000Z");
+    assert.equal(
+      entry.stream.stream_state.mako.since,
+      "2026-01-01T00:00:00.000Z",
+    );
   }
   assert.equal(
     (box.calls[2].options.state as any[])[0].stream.stream_state.cursor,
     "c2",
+  );
+});
+
+void test("since is namespaced, so a connector's own since survives", () => {
+  const previous = {
+    type: "STREAM",
+    stream: { stream_state: { cursor: 1, since: "vendor-token" } },
+  };
+  const [entry] = readState(
+    "rows",
+    previous,
+    new Date("2026-01-01T00:00:00Z"),
+  ) as any[];
+  assert.equal(entry.stream.stream_state.since, "vendor-token");
+  assert.equal(
+    entry.stream.stream_state.mako.since,
+    "2026-01-01T00:00:00.000Z",
+  );
+  assert.throws(
+    () =>
+      readState(
+        "rows",
+        { stream: { stream_state: { mako: "mine" } } },
+        new Date("2026-01-01T00:00:00Z"),
+      ),
+    /reserved key `mako`/,
   );
 });
 
@@ -201,6 +235,13 @@ void test("the batch size and rate limit the engine knows reach the box's config
   bare.answers.push(ok([state({}, false)]));
   await bare.fetchEntityChunk({ entity: "rows", onBatch: noop });
   assert.deepEqual(bare.calls[0].options.config, { api_key: "k" });
+
+  // The create-time defaults every connection carries are not a choice:
+  // they must not override the connector's own defaults.
+  const created = make({ sync_batch_size: 100, rate_limit_delay_ms: 200 });
+  created.answers.push(ok([state({}, false)]));
+  await created.fetchEntityChunk({ entity: "rows", onBatch: noop });
+  assert.deepEqual(created.calls[0].options.config, { api_key: "k" });
 });
 
 void test("a chunk asks for at most half the protocol cap", async () => {
@@ -299,6 +340,28 @@ void test("a record's own time is its source timestamp, never now", () => {
     "2023-11-14T22:13:20.000Z",
   );
   assert.equal(recordTimestamp({ id: "x" }), null);
+  // Microseconds are read as microseconds.
+  assert.equal(
+    recordTimestamp({ created: 1_700_000_000_000_000 })?.toISOString(),
+    "2023-11-14T22:13:20.000Z",
+  );
+  // Outside 1990–2100 is a misread number, not a time.
+  assert.equal(recordTimestamp({ created: 42 }), null);
+  assert.equal(recordTimestamp({ updated_at: "2150-01-01T00:00:00Z" }), null);
+  // Short digit strings are not years or months; long ones are epochs.
+  assert.equal(recordTimestamp({ updated_at: "2024" }), null);
+  assert.equal(recordTimestamp({ updated_at: "7" }), null);
+  assert.equal(
+    recordTimestamp({ updated_at: "1700000000" })?.toISOString(),
+    "2023-11-14T22:13:20.000Z",
+  );
+  assert.equal(recordTimestamp({ updated_at: "soon" }), null);
+  assert.equal(
+    recordTimestamp({
+      updated_at: "Tue, 14 Nov 2023 22:13:20 GMT",
+    })?.toISOString(),
+    "2023-11-14T22:13:20.000Z",
+  );
 
   const box = make();
   const normalized = box.normalizeBackfillRecord("rows", {

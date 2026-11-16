@@ -108,8 +108,9 @@ export function emitState(stream, streamState, { hasMore } = {}) {
   write({ type: STATE, state });
 }
 
+/** Returns the line's size in bytes: logs count toward the byte budget too. */
 export function emitLog(level, message) {
-  write({ type: LOG, log: { level, message } });
+  return write({ type: LOG, log: { level, message } });
 }
 
 /** A failure the runner could not hide, in the shape Airbyte reserves for it. */

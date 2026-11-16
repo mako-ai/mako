@@ -62,10 +62,11 @@ drive it.
 
 ## What Mako passes to `read`
 
-- `state.since`: on an incremental sync, the time to read from (ISO 8601).
-  Mako puts it in the stream state next to whatever the connector keeps
-  there, on every chunk of the run, so the connector need not carry it
-  forward. Declare `incremental` on the entity to say how it is used.
+- `state.mako.since`: on an incremental sync, the time to read from (ISO
+  8601). Mako puts it in the stream state next to whatever the connector
+  keeps there, on every chunk of the run, so the connector need not carry it
+  forward. The `mako` key is reserved for Mako. Declare `incremental` on the
+  entity to say how it is used.
 - `config.__page_size` and `config.__rate_limit_delay_ms`: the connection's
   batch size and rate-limit delay, when it sets them. Like `__http`, these
   `__` keys come from Mako, never from the credential form.

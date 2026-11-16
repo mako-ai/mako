@@ -80,7 +80,7 @@ export interface EntityDefinition<Config = Record<string, unknown>> {
   /** Declare a field here to make the entity incrementally syncable. */
   cursorField?: string;
   /**
-   * What `read` does with `state.since` (ISO 8601), which Mako sets on an
+   * What `read` does with `state.mako.since` (ISO 8601), which Mako sets on an
    * incremental sync: filter on a real update time (`native`), on creation
    * time only (`created-anchor`), or after reading everything
    * (`client-filter`). Omit when the entity ignores `since`.

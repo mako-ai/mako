@@ -385,7 +385,7 @@ export async function readFolder({ entity, config, since, maxIterations }) {
           type: "STREAM",
           stream: {
             stream_descriptor: { name: entity },
-            stream_state: { since },
+            stream_state: { mako: { since } },
           },
         },
       ]
