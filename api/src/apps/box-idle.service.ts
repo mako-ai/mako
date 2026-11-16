@@ -642,30 +642,37 @@ export interface RunningWork {
  *   `agetty` on tty1 and the console held every box awake until the 2 h
  *   cap. Mako's own dev-server sessions (`mako-term-dev-<slug>`) and system
  *   processes (getty, agetty, login, systemd, init, sshd, cron) never count,
- *   whatever their tty.
+ *   whatever their tty. The tmux fallback names dev servers `mako-dev-<slug>`,
+ *   and one tmux server runs every session, so its argv can name the wrong
+ *   one. A tmux pane's session therefore comes from `tmux list-panes`, by
+ *   the pane's tty.
  *
  * Output: `busy\t<reason>\t<tty>\t<session>` for a terminal, `busy
  * workflow run` for a run.
  */
 export const RUNNING_WORK_PROBE = [
   `for p in /tmp/mako-workflow-runs/*.pid; do [ -e "$p" ] || continue; b="\${p%.pid}"; [ -e "$b.exit" ] && continue; kill -0 "$(cat "$p")" 2>/dev/null && { echo "busy workflow run"; exit 0; }; done`,
-  `ps -eo pid=,ppid=,stat=,tty=,args= 2>/dev/null | awk '` +
+  `tp=$(tmux list-panes -a -F '#{pane_tty} #{session_name}' 2>/dev/null | tr '\\n' ';')`,
+  `ps -eo pid=,ppid=,stat=,tty=,args= 2>/dev/null | awk -v tp="$tp" '` +
     `{ pid=$1; pp[pid]=$2; st[pid]=$3; tt[pid]=$4; a=$0; ` +
     `sub(/^[ \\t]*[0-9]+[ \\t]+[0-9]+[ \\t]+[^ \\t]+[ \\t]+[^ \\t]+[ \\t]*/, "", a); args[pid]=a; ` +
     `split(a, w, " "); nm=w[1]; sub(/.*\\//, "", nm); name[pid]=nm; order[++k]=pid } ` +
-    `END { for (i=1;i<=k;i++) { p=order[i]; ` +
+    `END { n=split(tp, L, ";"); for (j=1;j<=n;j++) { if (split(L[j], f, " ") < 2) continue; t=f[1]; sub(/^\\/dev\\//, "", t); ts[t]=f[2] } ` +
+    `for (i=1;i<=k;i++) { p=order[i]; ` +
     `if (tt[p]=="?" || st[p] !~ /\\+/) continue; ` +
     `if (name[p] ~ /^-?(bash|sh|zsh|dash|fish)$/ || name[p] ~ /^(tmux|tmux:|dtach|script|ps|awk)$/) continue; ` +
     `if (name[p] ~ /^(a?getty|mingetty|login|systemd.*|init|sshd|cron|crond)$/) continue; ` +
     `q=pp[p]; shell=0; mark=""; d=0; ` +
     `while (q != "" && q+0 > 1 && d < 64) { d++; ` +
     `if (name[q] ~ /^-?(bash|sh|zsh|dash|fish)$/) shell=1; ` +
-    `if (index(args[q], "mako-term-dev-") > 0) { mark=""; break } ` +
+    `if (args[q] ~ /mako-(term-)?dev-/ && !(name[q] ~ /^tmux/ && (tt[p] in ts))) { mark=""; break } ` +
     `if (args[q] ~ /mako-term-[A-Za-z0-9_-]+/ || args[q] ~ /tmux.* -s mako-[A-Za-z0-9_-]+/) { mark=args[q]; break } ` +
     `q=pp[q] } ` +
     `if (mark == "" || !shell) continue; ` +
     `if (match(mark, /mako-term-[A-Za-z0-9_-]+/) == 0) match(mark, /mako-[A-Za-z0-9_-]+/); ` +
     `sess=substr(mark, RSTART, RLENGTH); sub(/\\.sock$/, "", sess); ` +
+    `if (tt[p] in ts) sess=ts[tt[p]]; ` +
+    `if (sess ~ /^mako-(term-)?dev-/ || sess !~ /^mako-/) continue; ` +
     `printf "busy\\tterminal command %s\\t%s\\t%s\\n", name[p], tt[p], sess; exit } }'`,
   "true",
 ].join("\n");

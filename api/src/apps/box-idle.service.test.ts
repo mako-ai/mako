@@ -597,12 +597,22 @@ describe("sweepIdleBoxes: no pause while active", () => {
 });
 
 describe("terminal work probe", () => {
-  async function probeWith(psOutput: string) {
+  async function probeWith(psOutput: string, tmuxPanes?: string) {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ps-"));
     try {
       const ps = path.join(dir, "ps");
       await fs.writeFile(ps, `#!/bin/sh\ncat <<'EOF'\n${psOutput}\nEOF\n`);
       await fs.chmod(ps, 0o755);
+      // `tmux list-panes -a -F '#{pane_tty} #{session_name}'`; no server
+      // (exit 1, no output) unless the case gives panes.
+      const tmux = path.join(dir, "tmux");
+      await fs.writeFile(
+        tmux,
+        tmuxPanes === undefined
+          ? "#!/bin/sh\nexit 1\n"
+          : `#!/bin/sh\ncat <<'EOF'\n${tmuxPanes}\nEOF\n`,
+      );
+      await fs.chmod(tmux, 0o755);
       const { stdout } = await promisify(execFile)(
         "bash",
         ["-c", RUNNING_WORK_PROBE],
@@ -661,6 +671,50 @@ describe("terminal work probe", () => {
           "  901   900 Ss   pts/3    -bash",
           "  902   901 S+   pts/3    vim notes.md",
         ].join("\n"),
+      ),
+    ).toEqual({ reason: "terminal command vim", pty: "pts/3 (mako-t2)" });
+  });
+
+  it("a tmux-fallback dev server is not work", async () => {
+    expect(
+      await probeWith(
+        [
+          ...BASE,
+          "  960     1 Ss   ?        tmux new-session -d -s mako-dev-xyz node /tmp/mako-dev-xyz.mjs 2>&1 | tee -a /tmp/mako-dev-xyz.log",
+          "  961   960 Ss   pts/4    sh -c node /tmp/mako-dev-xyz.mjs 2>&1 | tee -a /tmp/mako-dev-xyz.log",
+          "  962   961 Sl+  pts/4    node /tmp/mako-dev-xyz.mjs",
+          "  963   961 S+   pts/4    tee -a /tmp/mako-dev-xyz.log",
+        ].join("\n"),
+        "/dev/pts/4 mako-dev-xyz",
+      ),
+    ).toBeNull();
+  });
+
+  it("tmux: a dev server under a server a terminal started is not work", async () => {
+    expect(
+      await probeWith(
+        [
+          ...BASE,
+          "  900     1 Ss   ?        tmux new -A -s mako-t2",
+          "  901   900 Ss   pts/3    -bash",
+          "  961   900 Ss   pts/4    sh -c node /tmp/launch.mjs 2>&1 | tee -a /tmp/dev.log",
+          "  962   961 Sl+  pts/4    node /tmp/launch.mjs",
+        ].join("\n"),
+        "/dev/pts/3 mako-t2\n/dev/pts/4 mako-dev-xyz",
+      ),
+    ).toBeNull();
+  });
+
+  it("tmux: a terminal under a server a dev server started is work, named by its pane", async () => {
+    expect(
+      await probeWith(
+        [
+          ...BASE,
+          "  960     1 Ss   ?        tmux new-session -d -s mako-dev-xyz node /tmp/launch.mjs",
+          "  901   960 Ss   pts/3    -bash",
+          "  902   901 S+   pts/3    vim notes.md",
+        ].join("\n"),
+        "/dev/pts/3 mako-t2\n/dev/pts/4 mako-dev-xyz",
       ),
     ).toEqual({ reason: "terminal command vim", pty: "pts/3 (mako-t2)" });
   });
