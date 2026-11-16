@@ -17,8 +17,15 @@ import { randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  CHUNK_MARKER,
+  INPUTS_MISSING_EXIT,
+  ISOLATED_INCOMING,
   ISOLATED_RUNS,
+  chunkScript,
   cleanupScript,
+  incomingPath,
+  prepareBoxScript,
+  resultPath,
   launchScript,
   runLayout,
   setupScript,
@@ -452,4 +459,137 @@ suite("connector run isolation in e2bdev/base (Docker)", () => {
       await root("mv /usr/sbin/useradd.off /usr/sbin/useradd");
     }
   }, 60_000);
+
+  // The chunk path: setup, launch, bounding and cleanup in ONE root command.
+  describe("one chunk in one command (chunkScript)", () => {
+    const fresh = () => {
+      counter++;
+      return runLayout(
+        randomBytes(8).toString("hex"),
+        `mkc${randomBytes(6).toString("hex")}`,
+        310_000 + counter * 1_000 + Math.floor(Math.random() * 900),
+        510_000 + counter * 1_000 + Math.floor(Math.random() * 900),
+      );
+    };
+    /** Write an input into the root-only inbox, as the API's one writeFiles does. */
+    const toInbox = async (l: RunLayout, name: string, body: string) => {
+      const target = incomingPath(l.runId, name);
+      const res = await root(
+        `umask 022; mkdir -p ${shellQuote(target.replace(/\/[^/]+$/, ""))} && printf %s ${shellQuote(body)} > ${shellQuote(target)}`,
+      );
+      expect(res.code).toBe(0);
+      return `${l.dir}/${name}`;
+    };
+    const marker = (stdout: string) =>
+      stdout
+        .split("\n")
+        .filter(line => line.startsWith(`${CHUNK_MARKER} `))
+        .at(-1)
+        ?.split(" ")
+        .slice(1);
+
+    beforeAll(async () => {
+      if (!ENABLED) return;
+      const prep = await root(prepareBoxScript());
+      expect(prep.stdout.trim()).toBe("");
+      expect(prep.code).toBe(0);
+    });
+
+    it("keeps the inbox root-only, so no run reads an input before its own launch", async () => {
+      const mode = await root(
+        `stat -c '%U %a' ${shellQuote(ISOLATED_INCOMING)}`,
+      );
+      expect(mode.stdout.trim()).toBe("root 700");
+      const victim = fresh();
+      const secret = `sk_v_${randomBytes(8).toString("hex")}`;
+      await toInbox(victim, "config.json", secret);
+      // A concurrent run, as its own user, tries to read it.
+      const thief = fresh();
+      const res = await root(
+        chunkScript(
+          thief,
+          [],
+          `sh -c ${shellQuote(`cat ${shellQuote(incomingPath(victim.runId, "config.json"))} && echo READ-OK; ls ${shellQuote(ISOLATED_INCOMING)} && echo LIST-OK; true`)}`,
+          1024 * 1024,
+        ),
+      );
+      const [size, cleanup] = marker(res.stdout) ?? [];
+      expect(cleanup).toBe("0");
+      const out = (await root(`cat ${shellQuote(resultPath(thief.runId))}`))
+        .stdout;
+      expect(Number(size)).toBe(out.length);
+      expect(out).not.toMatch(/READ-OK|LIST-OK/);
+      expect(out).not.toContain(secret);
+      await root(
+        `rm -rf ${shellQuote(`${ISOLATED_INCOMING}/${victim.runId}`)} ${shellQuote(resultPath(thief.runId))}`,
+      );
+    }, 120_000);
+
+    it("runs a connector end to end and leaves only its bounded output", async () => {
+      const l = fresh();
+      const secret = `sk_c_${randomBytes(8).toString("hex")}`;
+      const file = await toInbox(l, "config.json", secret);
+      // The connector reads its credential, leaves a child behind, exits 0.
+      const res = await root(
+        chunkScript(
+          l,
+          [file],
+          `sh -c ${shellQuote(`printf 'got %s' "$(cat ${shellQuote(file)})"; (sleep 300 &) ; true`)}`,
+          1024 * 1024,
+        ),
+      );
+      expect(res.code, res.stderr).toBe(0);
+      const [size, cleanup] = marker(res.stdout) ?? [];
+      expect(cleanup).toBe("0");
+      const out = (await root(`cat ${shellQuote(resultPath(l.runId))}`)).stdout;
+      expect(out).toBe(`got ${secret}`);
+      expect(Number(size)).toBe(out.length);
+      // Nothing of the run is left but that output: no user, no directory,
+      // no inbox, no process.
+      expect((await root(`id ${shellQuote(l.user)}`)).code).not.toBe(0);
+      expect((await root(`test -e ${shellQuote(l.dir)}`)).code).not.toBe(0);
+      expect(
+        (await root(`test -e ${shellQuote(`${ISOLATED_INCOMING}/${l.runId}`)}`))
+          .code,
+      ).not.toBe(0);
+      const procs = await root(
+        `awk '/^Uid:/ && $2 == ${l.uid}' /proc/[0-9]*/status 2>/dev/null | wc -l`,
+      );
+      expect(procs.stdout.trim()).toBe("0");
+      await root(`rm -f ${shellQuote(resultPath(l.runId))}`);
+    }, 120_000);
+
+    it("bounds the output at the cap", async () => {
+      const l = fresh();
+      const res = await root(
+        chunkScript(
+          l,
+          [],
+          `sh -c ${shellQuote("head -c 5000 /dev/zero")}`,
+          1000,
+        ),
+      );
+      const [size, cleanup] = marker(res.stdout) ?? [];
+      expect(size).toBe("1001");
+      expect(cleanup).toBe("0");
+      await root(`rm -f ${shellQuote(resultPath(l.runId))}`);
+    }, 120_000);
+
+    it("refuses to launch when its inputs never reached this box, and still cleans up", async () => {
+      const l = fresh();
+      const res = await root(
+        chunkScript(
+          l,
+          [`${l.dir}/config.json`],
+          `sh -c ${shellQuote("echo SHOULD-NOT-RUN")}`,
+          1024 * 1024,
+        ),
+      );
+      expect(res.code).toBe(INPUTS_MISSING_EXIT);
+      expect(marker(res.stdout)).toEqual(["inputs-missing", "0"]);
+      expect(res.stdout).not.toContain("SHOULD-NOT-RUN");
+      expect((await root(`id ${shellQuote(l.user)}`)).code).not.toBe(0);
+      expect((await root(`test -e ${shellQuote(l.dir)}`)).code).not.toBe(0);
+    }, 120_000);
+  });
 });

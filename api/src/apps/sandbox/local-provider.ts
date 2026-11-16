@@ -250,6 +250,12 @@ export const localSandboxProvider: SandboxProvider = {
     await fs.writeFile(target, bytes);
   },
 
+  async writeFiles(ctx, files) {
+    for (const file of files) {
+      await localSandboxProvider.writeFile(ctx, file.path, file.bytes);
+    }
+  },
+
   async readFile(ctx, remotePath) {
     assertNotProduction();
     return new Uint8Array(await fs.readFile(toLocal(ctx, remotePath)));

@@ -17,7 +17,7 @@
  *    gets its own Unix user and a 0700 directory owned by that user, so two
  *    runs sharing a box cannot read each other's credential files, and the
  *    runtime they execute is owned by root, so no run can plant code for the
- *    next one. See `openRun`.
+ *    next one. See `runIsolated` and run-isolation.ts.
  * 3. NOTHING BUT A BOUNDED PROTOCOL COMES BACK. stdout is redirected to a file
  *    because `exec`'s output cap would truncate legitimate records. A bounded
  *    snapshot is made before that file crosses into the API process, so tenant
@@ -25,17 +25,17 @@
  */
 import { randomBytes, randomInt } from "node:crypto";
 import {
+  abandonScript,
+  CHUNK_MARKER,
+  chunkScript,
   CLEANUP_SURVIVORS_EXIT,
-  cleanupScript,
+  incomingPath,
   ISOLATED_ROOT,
   ISOLATED_RUNTIME,
-  launchScript,
-  preflightScript,
+  prepareBoxScript,
+  resultPath,
   runLayout,
-  stagedPath,
-  setupScript,
   shellQuote,
-  snapshotScript,
   type RunLayout,
 } from "./run-isolation";
 import path from "node:path";
@@ -44,6 +44,8 @@ import {
   isSandboxGone,
   type SandboxExecContext,
   type SandboxExecOptions,
+  type SandboxExecResult,
+  type SandboxFileOptions,
 } from "../../apps/sandbox/provider";
 import { loggers } from "../../logging";
 
@@ -71,6 +73,24 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 /** A protocol chunk may be large, but it may never be unbounded. */
 export const MAX_CONNECTOR_PROTOCOL_BYTES = 32 * 1024 * 1024;
 export const MAX_CONNECTOR_PROTOCOL_MESSAGES = 50_000;
+
+/**
+ * A chunk's protocol output passed MAX_CONNECTOR_PROTOCOL_BYTES or
+ * MAX_CONNECTOR_PROTOCOL_MESSAGES. Typed, because the same chunk retried with
+ * the same budget fails the same way: the caller has to ask for less.
+ */
+export class ConnectorOutputTooLargeError extends Error {
+  constructor(
+    message: string,
+    readonly limit: "bytes" | "messages",
+  ) {
+    super(message);
+    this.name = "ConnectorOutputTooLargeError";
+  }
+}
+
+/** The line the bounding step prints: the bounded file's size, or `missing`. */
+const BOUNDED_MARKER = "MAKO_BOUNDED_OUTPUT";
 
 /**
  * The sandbox template is not the connector runtime. Templates in the wild
@@ -431,32 +451,6 @@ async function mustSucceed(
   }
 }
 
-/**
- * One run's private corner of the box.
- *
- * `dir` holds the run's inputs. `launch` turns a connector command line into
- * one that runs it with stdout on `outputFile`; `snapshot` makes the bounded
- * copy at `boundedFile`. `close` deletes everything the run left behind.
- */
-export interface OpenRun {
-  dir: string;
-  /** The run's Unix user, or null where the provider has no real users. */
-  user: string | null;
-  /**
-   * Options for the API's own file and exec calls for this run: as root,
-   * and pinned to the sandbox the run was set up in.
-   */
-  owner: { asRoot: true; expectSandboxId?: string } | undefined;
-  outputFile: string;
-  boundedFile: string;
-  /** Where to write the input whose final path is `input` (isolated: the root-only stage). */
-  stagePath(input: string): string;
-  launch(inputs: string[], command: string): string;
-  snapshot(maxBytes: number): string;
-  /** Throws when cleanup could not prove the run is gone (isolated only). */
-  close(): Promise<void>;
-}
-
 /** The run's cleanup failed: the box may still hold its credential or code. */
 export class RunCleanupError extends Error {
   constructor(message: string) {
@@ -465,17 +459,24 @@ export class RunCleanupError extends Error {
   }
 }
 
-/** Boxes whose template passed the tool preflight, per process. */
-const preflighted = new Set<string>();
+/**
+ * Boxes prepared for isolated runs, per process: the tool preflight passed
+ * and the root-only inbox exists. Keyed by session, valued by the sandbox id
+ * that was prepared, which every later call of a run is pinned to: a box
+ * replaced since was never prepared, and must not receive a credential.
+ */
+const prepared = new Map<string, string | undefined>();
 
 /**
- * Check, once per box, that the template has every tool run isolation needs.
- * A template without them cannot isolate a run, and every run would fail at
- * setup; this says which tool is missing, in the log and in the error.
+ * Prepare a box once: check it has every tool run isolation needs, and make
+ * the root-only inbox and results directories. A template without the tools
+ * cannot isolate a run; this says which tool is missing.
  */
-async function preflight(ctx: SandboxExecContext): Promise<void> {
-  if (preflighted.has(ctx.sessionKey)) return;
-  const result = await getSandboxProvider().exec(ctx, preflightScript(), {
+async function prepareBox(
+  ctx: SandboxExecContext,
+): Promise<string | undefined> {
+  if (prepared.has(ctx.sessionKey)) return prepared.get(ctx.sessionKey);
+  const result = await getSandboxProvider().exec(ctx, prepareBoxScript(), {
     timeoutMs: 30_000,
     asRoot: true,
   });
@@ -493,7 +494,8 @@ async function preflight(ctx: SandboxExecContext): Promise<void> {
       `This box cannot isolate connector runs: missing ${missing.join(", ") || "tools (preflight failed)"}.`,
     );
   }
-  preflighted.add(ctx.sessionKey);
+  prepared.set(ctx.sessionKey, result.sandboxId);
+  return result.sandboxId;
 }
 
 /**
@@ -512,114 +514,8 @@ export async function retireSyncBox(
     workspaceId,
     reason,
   });
-  preflighted.delete(key);
+  prepared.delete(key);
   await getSandboxProvider().destroySession?.(key);
-}
-
-/**
- * Open a run: on E2B a fresh Unix user, its directories and nothing else
- * (see run-isolation.ts for the layout and why root never opens a path the
- * run user controls); elsewhere a plain directory, as before.
- */
-export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
-  const provider = getSandboxProvider();
-  const runId = randomBytes(8).toString("hex");
-
-  if (!runsIsolated()) {
-    const dir = path.posix.join(provider.scratch(ctx), "connector-runs", runId);
-    const outputFile = path.posix.join(dir, "out.jsonl");
-    const boundedFile = path.posix.join(dir, "out.bounded.jsonl");
-    await provider.exec(ctx, `mkdir -p ${shellQuote(dir)}`, {
-      timeoutMs: 30_000,
-    });
-    return {
-      dir,
-      user: null,
-      owner: undefined,
-      outputFile,
-      boundedFile,
-      stagePath: input => input,
-      launch: (_inputs, command) => `${command} > ${shellQuote(outputFile)}`,
-      snapshot: maxBytes =>
-        `if test -f ${shellQuote(outputFile)}; then head -c ${maxBytes + 1} ${shellQuote(outputFile)} > ${shellQuote(boundedFile)} && wc -c < ${shellQuote(boundedFile)}; else echo missing; fi`,
-      close: async () => {
-        await provider
-          .exec(ctx, `rm -rf ${shellQuote(dir)}`, { timeoutMs: 30_000 })
-          .catch(error =>
-            logger.error("Failed to clean a connector run directory", {
-              error,
-              runDir: dir,
-            }),
-          );
-      },
-    };
-  }
-
-  await preflight(ctx);
-  let layout: RunLayout | null = null;
-  let pinned: string | undefined;
-  let lastError = "";
-  // A random UID can collide with one in use; a fresh name and UID fixes it.
-  for (let attempt = 0; attempt < 3 && !layout; attempt++) {
-    const candidate = runLayout(
-      runId,
-      `mkc${randomBytes(6).toString("hex")}`,
-      randomInt(200_000, 2_000_000_000),
-      randomInt(200_000, 2_000_000_000),
-    );
-    const setup = await provider.exec(ctx, setupScript(candidate), {
-      timeoutMs: 30_000,
-      asRoot: true,
-    });
-    if (setup.exitCode === 0) {
-      layout = candidate;
-      pinned = setup.sandboxId;
-    } else lastError = (setup.stderr || setup.stdout).trim().slice(0, 2000);
-  }
-  if (!layout) {
-    throw new Error(
-      `Could not create an isolated user for the connector run${lastError ? `: ${lastError}` : "."}`,
-    );
-  }
-
-  const l = layout;
-  return {
-    dir: l.dir,
-    user: l.user,
-    owner: { asRoot: true, expectSandboxId: pinned },
-    outputFile: l.outputFile,
-    boundedFile: l.boundedFile,
-    stagePath: input => stagedPath(l, input),
-    launch: (inputs, command) => launchScript(l, inputs, command),
-    snapshot: maxBytes => snapshotScript(l, maxBytes),
-    close: async () => {
-      let detail: string;
-      try {
-        const result = await provider.exec(ctx, cleanupScript(l), {
-          timeoutMs: 60_000,
-          asRoot: true,
-          expectSandboxId: pinned,
-        });
-        if (result.exitCode === 0 && !result.timedOut) return;
-        detail = result.timedOut
-          ? "cleanup timed out"
-          : result.exitCode === CLEANUP_SURVIVORS_EXIT
-            ? "the run's processes would not die"
-            : (result.stderr || `exit ${result.exitCode}`).slice(0, 500);
-      } catch (error) {
-        // The box itself is gone (killed under the run, e.g. by another
-        // run's failed cleanup): so is everything the run left in it.
-        if (isSandboxGone(error)) return;
-        detail = error instanceof Error ? error.message : String(error);
-      }
-      logger.error("Failed to remove a connector run", {
-        runDir: l.dir,
-        user: l.user,
-        detail,
-      });
-      throw new RunCleanupError(`Connector run cleanup failed: ${detail}`);
-    },
-  };
 }
 
 /** The pinned Node binary of a runtime root, for boxes that build bundles. */
@@ -691,6 +587,17 @@ export async function installConnectorBundle(input: {
  * Inputs that are objects (config, catalog, state) are written as files rather
  * than passed as arguments: a command line is visible in the box's process
  * table, and a credential must not be.
+ *
+ * Three round trips to the box on the critical path, where bench G1 measured
+ * 8 provider calls (and per-run users would have added 3 more):
+ * 1. one request writes every input file;
+ * 2. one command runs the connector, deletes its inputs the moment it exits,
+ *    takes the bounded snapshot of its output and prints the snapshot's size.
+ *    On E2B the same command first creates the run's own Unix user and last
+ *    removes it with every thread and file it left (run-isolation.ts);
+ * 3. one read brings the snapshot back.
+ * Removing the snapshot is a 4th call, off the critical path: the credential
+ * is already gone by then.
  */
 export async function runConnectorCommand(input: {
   ctx: SandboxExecContext;
@@ -701,6 +608,12 @@ export async function runConnectorCommand(input: {
   catalog?: Record<string, unknown>;
   state?: Record<string, unknown> | unknown[];
   maxIterations?: number;
+  /**
+   * A `read` stops after the page that takes its records past this many
+   * bytes (`--max-bytes`), so a chunk of large rows stays under
+   * MAX_CONNECTOR_PROTOCOL_BYTES however many pages it was allowed.
+   */
+  maxBytes?: number;
   timeoutMs?: number;
   entry?: string;
   /**
@@ -709,168 +622,425 @@ export async function runConnectorCommand(input: {
    */
   onCleanupFailure?: (reason: string) => void;
 }): Promise<RunResult> {
-  const provider = getSandboxProvider();
-  const { ctx, command } = input;
-  const run = await openRun(ctx);
-  const runDir = run.dir;
-  const boundedOutputPath = run.boundedFile;
+  const { ctx } = input;
   const encoder = new TextEncoder();
-
-  const args = [
-    command,
-    "--connector",
-    path.posix.join(input.connectorDir, input.entry ?? "connector.ts"),
-  ];
-
-  try {
-    const inputs: string[] = [];
-    for (const [name, value] of [
-      ["config", input.config],
-      ["catalog", input.catalog],
-      ["state", input.state],
-    ] as const) {
-      if (value === undefined) continue;
-      const file = path.posix.join(runDir, `${name}.json`);
-      // Isolated runs: written into the root-only stage, handed to the run
-      // user and moved to `file` only at launch, so no other run can open
-      // it while it still has the mode the write gave it.
-      await writeBoxFile(
-        ctx,
-        run.stagePath(file),
-        encoder.encode(JSON.stringify(value)),
-        run.owner,
+  const inputs: RunFiles = [];
+  for (const [name, value] of [
+    ["config", input.config],
+    ["catalog", input.catalog],
+    ["state", input.state],
+  ] as const) {
+    if (value === undefined) continue;
+    inputs.push({
+      name: `${name}.json`,
+      bytes: encoder.encode(JSON.stringify(value)),
+    });
+  }
+  const bin = path.posix.join(
+    runtimeRoot(ctx, input.runtimeId),
+    "node_modules",
+    "@makoai",
+    "connector-sdk",
+    "bin",
+    "mako-connector.js",
+  );
+  /** The connector's argv, given where its inputs will be. */
+  const argv = (inputDir: string): string => {
+    const args = [
+      input.command,
+      "--connector",
+      path.posix.join(input.connectorDir, input.entry ?? "connector.ts"),
+    ];
+    for (const file of inputs) {
+      args.push(
+        `--${file.name.replace(/\.json$/, "")}`,
+        path.posix.join(inputDir, file.name),
       );
-      inputs.push(file);
-      args.push(`--${name}`, file);
     }
     if (input.maxIterations !== undefined) {
       args.push("--max-iterations", String(input.maxIterations));
     }
+    if (input.maxBytes !== undefined) {
+      args.push("--max-bytes", String(input.maxBytes));
+    }
+    return `${shellQuote(runtimeNode(ctx, input.runtimeId))} ${shellQuote(bin)} ${args.map(shellQuote).join(" ")}`;
+  };
+  return runsIsolated()
+    ? runIsolated(input, inputs, argv)
+    : runShared(input, inputs, argv);
+}
 
-    const bin = path.posix.join(
-      runtimeRoot(ctx, input.runtimeId),
-      "node_modules",
-      "@makoai",
-      "connector-sdk",
-      "bin",
-      "mako-connector.js",
-    );
-    // stdout is opened by the API's own shell (root on E2B) on a file the
-    // connector cannot reach by path; the connector only holds the descriptor.
-    const command_ = run.launch(
-      inputs,
-      `${shellQuote(runtimeNode(ctx, input.runtimeId))} ${shellQuote(bin)} ${args.map(shellQuote).join(" ")}`,
-    );
+type RunInput = Parameters<typeof runConnectorCommand>[0];
+type RunFiles = Array<{ name: string; bytes: Uint8Array }>;
 
-    const result = await provider.exec(ctx, command_, {
-      ...run.owner,
-      timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      // Nothing is ADDED to the environment on purpose: a connector has no
-      // business reading even what an app may read. What it does see is the
-      // provider's own fixed allowlist (PATH, HOME, LANG, TERM and a couple
-      // of non-interactive flags) — `env` is spread over that base, so this
-      // omission is the whole of the story and the isolation is the
-      // provider's, not this call's.
-    });
+/** Write files in one request where the provider can, as `options` says. */
+async function writeAll(
+  ctx: SandboxExecContext,
+  files: Array<{ path: string; bytes: Uint8Array }>,
+  options?: SandboxFileOptions,
+): Promise<void> {
+  if (files.length === 0) return;
+  const provider = getSandboxProvider();
+  if (provider.writeFiles) {
+    await (options
+      ? provider.writeFiles(ctx, files, options)
+      : provider.writeFiles(ctx, files));
+    return;
+  }
+  for (const file of files) {
+    await (options
+      ? provider.writeFile(ctx, file.path, file.bytes, options)
+      : provider.writeFile(ctx, file.path, file.bytes));
+  }
+}
 
-    // Never read the connector's own file directly. `head` creates an immutable
-    // snapshot of at most limit + 1 bytes inside the sandbox, even if malicious
-    // connector code left a child process appending to stdout after it exited.
-    const snapshot = await provider.exec(
-      ctx,
-      run.snapshot(MAX_CONNECTOR_PROTOCOL_BYTES),
-      { ...run.owner, timeoutMs: 30_000 },
+/**
+ * The run in a box with real Unix users (E2B): the per-run user, its setup
+ * and its cleanup all happen inside the one command (chunkScript).
+ */
+async function runIsolated(
+  input: RunInput,
+  inputs: RunFiles,
+  argv: (inputDir: string) => string,
+): Promise<RunResult> {
+  const provider = getSandboxProvider();
+  const { ctx } = input;
+  let pinned: string | undefined;
+  try {
+    pinned = await prepareBox(ctx);
+  } catch (error) {
+    if (isSandboxGone(error)) prepared.delete(ctx.sessionKey);
+    throw error;
+  }
+  // Every call of the run is pinned to the box that was prepared. A box
+  // replaced since then fails the call instead of receiving the credential.
+  const owner = { asRoot: true as const, expectSandboxId: pinned };
+
+  let lastError = "";
+  // A random UID can collide with one in use; a fresh user and run fixes it.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const layout = runLayout(
+      randomBytes(8).toString("hex"),
+      `mkc${randomBytes(6).toString("hex")}`,
+      randomInt(200_000, 2_000_000_000),
+      randomInt(200_000, 2_000_000_000),
     );
-    const sizeText = snapshot.stdout.trim();
-    // Root opens the output file before an isolated connector starts, so it
-    // exists whatever the connector did. Missing means the box under the run
-    // was replaced: fail the chunk rather than report a short, empty success.
-    if (sizeText === "missing" && run.user) {
+    const finalInputs = inputs.map(file =>
+      path.posix.join(layout.dir, file.name),
+    );
+    let result: SandboxExecResult;
+    let marker: string | undefined;
+    try {
+      // Round trip 1: every input into the root-only inbox.
+      await writeAll(
+        ctx,
+        inputs.map(file => ({
+          path: incomingPath(layout.runId, file.name),
+          bytes: file.bytes,
+        })),
+        owner,
+      );
+      // Round trip 2: setup, launch, bound, cleanup.
+      result = await provider.exec(
+        ctx,
+        chunkScript(
+          layout,
+          finalInputs,
+          argv(layout.dir),
+          MAX_CONNECTOR_PROTOCOL_BYTES,
+        ),
+        { ...owner, timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS },
+      );
+      marker = lastMarker(result.stdout, CHUNK_MARKER);
+    } catch (error) {
+      if (isSandboxGone(error)) prepared.delete(ctx.sessionKey);
+      await abandonRun(input, layout, owner);
+      throw error;
+    }
+
+    // Cut off before the end (a timeout, a kill): the command's own cleanup
+    // may not have run, so it runs now, and the chunk fails.
+    if (!marker || result.timedOut) {
+      await abandonRun(input, layout, owner);
+      if (result.timedOut) {
+        return {
+          exitCode: result.exitCode,
+          messages: [],
+          malformed: [],
+          stderr: result.stderr,
+          timedOut: true,
+        };
+      }
+      throw new Error(
+        `The connector run ended without its report${result.stderr ? `: ${result.stderr.trim().slice(0, 500)}` : "."}`,
+      );
+    }
+
+    const [sizeText, cleanupText] = marker.split(/\s+/);
+    if (sizeText === "setup-failed") {
+      lastError = (result.stderr || result.stdout).trim().slice(0, 2000);
+      continue;
+    }
+    const cleanupCode = Number(cleanupText);
+    if (cleanupCode !== 0) {
+      const reason =
+        cleanupCode === CLEANUP_SURVIVORS_EXIT
+          ? "the run's processes would not die"
+          : `cleanup exited ${cleanupText}: ${result.stderr.trim().slice(0, 500)}`;
+      logger.error("Failed to remove a connector run", {
+        runDir: layout.dir,
+        user: layout.user,
+        reason,
+      });
+      input.onCleanupFailure?.(`Connector run cleanup failed: ${reason}`);
+    }
+    if (sizeText === "inputs-missing") {
+      prepared.delete(ctx.sessionKey);
+      throw new Error(
+        "The connector's inputs are missing: its box was replaced before the run.",
+      );
+    }
+    // Root opens the output file before the connector starts, so it exists
+    // whatever the connector did. Missing means the box under the run was
+    // replaced: fail the chunk rather than report a short, empty success.
+    if (sizeText === "missing") {
       throw new Error(
         "The connector's output is missing: its box was replaced during the run.",
       );
     }
-    if (sizeText !== "missing") {
-      const outputBytes = Number(sizeText);
-      if (!Number.isSafeInteger(outputBytes) || outputBytes < 0) {
-        throw new Error("Could not determine the connector protocol size.");
-      }
-      if (outputBytes > MAX_CONNECTOR_PROTOCOL_BYTES) {
-        throw new Error(
-          `Connector protocol output exceeded the ${MAX_CONNECTOR_PROTOCOL_BYTES} byte limit. Reduce the page or batch size.`,
-        );
-      }
-    }
-
-    // A command that died before creating its output file is a failure with
-    // stderr as the only evidence; that is more useful than a read error.
-    const raw =
-      sizeText === "missing"
-        ? ""
-        : new TextDecoder().decode(
-            await (run.owner
-              ? provider.readFile(ctx, boundedOutputPath, run.owner)
-              : provider.readFile(ctx, boundedOutputPath)),
-          );
-
-    const messages: ProtocolMessage[] = [];
-    const malformed: string[] = [];
-    let cursor = 0;
-    let protocolLines = 0;
-    while (cursor < raw.length) {
-      const newline = raw.indexOf("\n", cursor);
-      const line = raw.slice(cursor, newline < 0 ? raw.length : newline);
-      cursor = newline < 0 ? raw.length : newline + 1;
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      protocolLines++;
-      if (protocolLines > MAX_CONNECTOR_PROTOCOL_MESSAGES) {
-        throw new Error(
-          `Connector protocol output exceeded the ${MAX_CONNECTOR_PROTOCOL_MESSAGES} message limit. Reduce the page or batch size.`,
-        );
-      }
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (
-          parsed &&
-          typeof parsed === "object" &&
-          typeof parsed.type === "string"
-        ) {
-          messages.push(parsed as ProtocolMessage);
-        } else {
-          malformed.push(trimmed);
-        }
-      } catch {
-        malformed.push(trimmed);
-      }
-    }
-
-    if (malformed.length > 0) {
-      logger.warn("Connector emitted lines that are not protocol messages", {
-        command,
-        count: malformed.length,
-        sample: malformed[0]?.slice(0, 200),
-      });
-    }
-
-    return {
-      exitCode: result.exitCode,
-      messages,
-      malformed,
-      stderr: result.stderr,
-      timedOut: result.timedOut,
-    };
-  } finally {
-    // The credential was in this directory. A paused box snapshots its disk,
-    // so leaving it would mean the key outlives the run inside a suspended VM.
+    const resultFile = resultPath(layout.runId);
     try {
-      await run.close();
-    } catch (error) {
-      input.onCleanupFailure?.(
-        error instanceof Error ? error.message : String(error),
-      );
+      const outputBytes = boundedSize(sizeText);
+      // Round trip 3: the bounded output.
+      const raw =
+        outputBytes === 0
+          ? ""
+          : new TextDecoder().decode(
+              await provider.readFile(ctx, resultFile, owner),
+            );
+      return parseProtocol(raw, input.command, result);
+    } finally {
+      // Data, not a credential: removed off the critical path.
+      void provider
+        .exec(ctx, `rm -f ${shellQuote(resultFile)}`, {
+          ...owner,
+          timeoutMs: 30_000,
+        })
+        .catch(error =>
+          logger.error("Failed to remove a connector run's output", {
+            error,
+            resultFile,
+          }),
+        );
     }
   }
+  throw new Error(
+    `Could not create an isolated user for the connector run${lastError ? `: ${lastError}` : "."}`,
+  );
+}
+
+/**
+ * The cleanup for a run whose command was cut off. Awaited: the credential
+ * may still be on disk. A box that is gone took the run with it.
+ */
+async function abandonRun(
+  input: RunInput,
+  layout: RunLayout,
+  owner: SandboxFileOptions & { asRoot: true },
+): Promise<void> {
+  let detail: string;
+  try {
+    const result = await getSandboxProvider().exec(
+      input.ctx,
+      abandonScript(layout),
+      { ...owner, timeoutMs: 60_000 },
+    );
+    if (result.exitCode === 0 && !result.timedOut) return;
+    detail = result.timedOut
+      ? "cleanup timed out"
+      : result.exitCode === CLEANUP_SURVIVORS_EXIT
+        ? "the run's processes would not die"
+        : (result.stderr || `exit ${result.exitCode}`).slice(0, 500);
+  } catch (error) {
+    if (isSandboxGone(error)) return;
+    detail = error instanceof Error ? error.message : String(error);
+  }
+  logger.error("Failed to remove a connector run", {
+    runDir: layout.dir,
+    user: layout.user,
+    detail,
+  });
+  input.onCleanupFailure?.(`Connector run cleanup failed: ${detail}`);
+}
+
+/**
+ * The run where the provider has one user (local development): a plain run
+ * directory, the same three round trips.
+ */
+async function runShared(
+  input: RunInput,
+  inputs: RunFiles,
+  argv: (inputDir: string) => string,
+): Promise<RunResult> {
+  const provider = getSandboxProvider();
+  const { ctx } = input;
+  const runId = randomBytes(8).toString("hex");
+  const runDir = path.posix.join(
+    provider.scratch(ctx),
+    "connector-runs",
+    runId,
+  );
+  const outputPath = path.posix.join(runDir, "out.jsonl");
+  const boundedOutputPath = path.posix.join(runDir, "out.bounded.jsonl");
+  const files = inputs.map(file => ({
+    path: path.posix.join(runDir, file.name),
+    bytes: file.bytes,
+  }));
+
+  // Set once the command has deleted its inputs itself. Until then the run
+  // directory may hold a credential, and the cleanup below must finish
+  // before this function returns.
+  let inputsDeleted = false;
+  try {
+    // Round trip 1: every input in one request.
+    await writeAll(ctx, files);
+
+    // Round trip 2: run, delete the inputs, bound the output, report its
+    // size. `head` makes an immutable snapshot of at most limit + 1 bytes,
+    // even if connector code left a child process appending to stdout.
+    const inputPaths = files.map(file => shellQuote(file.path)).join(" ");
+    const script = [
+      `mkdir -p ${shellQuote(runDir)}`,
+      `${argv(runDir)} > ${shellQuote(outputPath)}`,
+      `status=$?`,
+      ...(inputPaths ? [`rm -f ${inputPaths}`] : []),
+      `if test -f ${shellQuote(outputPath)}; then`,
+      `  if head -c ${MAX_CONNECTOR_PROTOCOL_BYTES + 1} ${shellQuote(outputPath)} > ${shellQuote(boundedOutputPath)}; then`,
+      `    echo "${BOUNDED_MARKER} $(wc -c < ${shellQuote(boundedOutputPath)})"`,
+      `  else echo "${BOUNDED_MARKER} error"; fi`,
+      `  rm -f ${shellQuote(outputPath)}`,
+      `else echo "${BOUNDED_MARKER} missing"; fi`,
+      `exit $status`,
+    ].join("\n");
+    const result = await provider.exec(ctx, script, {
+      timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      // Nothing is ADDED to the environment on purpose: a connector has no
+      // business reading even what an app may read. What it does see is the
+      // provider's own fixed allowlist.
+    });
+    if (result.timedOut) {
+      return {
+        exitCode: result.exitCode,
+        messages: [],
+        malformed: [],
+        stderr: result.stderr,
+        timedOut: true,
+      };
+    }
+    const marker = lastMarker(result.stdout, BOUNDED_MARKER);
+    // The marker is printed after `rm -f` of the inputs. Without it, the
+    // script may have died before deleting them, so the cleanup is awaited.
+    inputsDeleted = marker !== undefined;
+    const outputBytes = marker === "missing" ? 0 : boundedSize(marker ?? "");
+    // Round trip 3: the bounded snapshot.
+    const raw =
+      outputBytes === 0
+        ? ""
+        : new TextDecoder().decode(
+            await provider.readFile(ctx, boundedOutputPath),
+          );
+    return parseProtocol(raw, input.command, result);
+  } finally {
+    const cleanup = provider
+      .exec(ctx, `rm -rf ${shellQuote(runDir)}`, { timeoutMs: 30_000 })
+      .catch(error =>
+        logger.error("Failed to clean a connector run directory", {
+          error,
+          runDir,
+        }),
+      );
+    if (!inputsDeleted) await cleanup;
+  }
+}
+
+/** The value after the last `<marker> ` line, if the command printed one. */
+function lastMarker(stdout: string, marker: string): string | undefined {
+  return stdout
+    .split("\n")
+    .map(line => line.trim())
+    .filter(line => line.startsWith(`${marker} `))
+    .at(-1)
+    ?.slice(marker.length + 1)
+    .trim();
+}
+
+/** The bounded output's size, refusing anything over the cap. */
+function boundedSize(sizeText: string): number {
+  const outputBytes = Number(sizeText);
+  if (!sizeText || !Number.isSafeInteger(outputBytes) || outputBytes < 0) {
+    throw new Error("Could not determine the connector protocol size.");
+  }
+  if (outputBytes > MAX_CONNECTOR_PROTOCOL_BYTES) {
+    throw new ConnectorOutputTooLargeError(
+      `Connector protocol output exceeded the ${MAX_CONNECTOR_PROTOCOL_BYTES} byte limit. Reduce the page or batch size.`,
+      "bytes",
+    );
+  }
+  return outputBytes;
+}
+
+/** JSON lines -> messages, capped, with non-protocol lines kept aside. */
+function parseProtocol(
+  raw: string,
+  command: ConnectorCommand,
+  result: SandboxExecResult,
+): RunResult {
+  const messages: ProtocolMessage[] = [];
+  const malformed: string[] = [];
+  let cursor = 0;
+  let protocolLines = 0;
+  while (cursor < raw.length) {
+    const newline = raw.indexOf("\n", cursor);
+    const line = raw.slice(cursor, newline < 0 ? raw.length : newline);
+    cursor = newline < 0 ? raw.length : newline + 1;
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    protocolLines++;
+    if (protocolLines > MAX_CONNECTOR_PROTOCOL_MESSAGES) {
+      throw new ConnectorOutputTooLargeError(
+        `Connector protocol output exceeded the ${MAX_CONNECTOR_PROTOCOL_MESSAGES} message limit. Reduce the page or batch size.`,
+        "messages",
+      );
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        typeof parsed.type === "string"
+      ) {
+        messages.push(parsed as ProtocolMessage);
+      } else {
+        malformed.push(trimmed);
+      }
+    } catch {
+      malformed.push(trimmed);
+    }
+  }
+  if (malformed.length > 0) {
+    logger.warn("Connector emitted lines that are not protocol messages", {
+      command,
+      count: malformed.length,
+      sample: malformed[0]?.slice(0, 200),
+    });
+  }
+  return {
+    exitCode: result.exitCode,
+    messages,
+    malformed,
+    stderr: result.stderr,
+    timedOut: result.timedOut,
+  };
 }
 
 /** The first message of a given type, which is all most commands emit. */

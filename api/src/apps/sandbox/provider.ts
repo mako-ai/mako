@@ -211,6 +211,19 @@ export interface SandboxProvider {
     options?: SandboxFileOptions,
   ): Promise<void>;
   /**
+   * Write several files in ONE request, where the provider can.
+   *
+   * A connector chunk writes its config, catalog and state together; as three
+   * `writeFile` calls that was three round trips to the box (bench G1). Each
+   * file's parent directories are created as `writeFile` creates them.
+   * Optional: callers fall back to one `writeFile` per file.
+   */
+  writeFiles?(
+    ctx: SandboxExecContext,
+    files: Array<{ path: string; bytes: Uint8Array }>,
+    options?: SandboxFileOptions,
+  ): Promise<void>;
+  /**
    * Read raw bytes back out of the sandbox.
    *
    * The counterpart to writeFile: raw bytes out of the sandbox, used for
@@ -260,6 +273,11 @@ export interface SandboxProvider {
    * Absent where there is no VM to pause or snapshot (local).
    */
   boxLifecycle?: SandboxBoxLifecycle;
+  /**
+   * Something outside the provider paused this session's box (an idle
+   * sweep). Drop any connected handle, so the next call connects and resumes.
+   */
+  noteSessionPaused?(sessionKey: string): void;
   /** Tear down any remote session for the given affinity key (best effort). */
   destroySession?(sessionKey: string): Promise<void>;
   /**
