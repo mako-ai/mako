@@ -68,6 +68,19 @@ The folder shape is identical across tiers, as RFC #947 required. Promotion and 
 
 What leaves `api/src`: the 10 vendor-facing connector directories (`calendly`, `claap`, `close`, `custom_api`, `graphql`, `pandadoc`, `posthog`, `rest`, `stripe`, `wise`). What stays: `base/` (the contract), `registry.ts`, `rate-gate.ts`, `probe.service.ts`, `workspace/` (the adapter and runtime), and `bigquery/` and `gcs/` while they are warehouse readers rather than vendor APIs.
 
+### 4.1 What stays in the API: the connection gateway and workflows
+
+Two paths reach vendor APIs without running connector code. Neither moves.
+
+- **The connection gateway (#1178).** Hatchet workflows and agents call a vendor through `api/src/connections/proxy.service.ts`.
+  - The API forwards the request with the stored key, so the key never leaves Mako.
+  - Each connection lists who may read and who may write. A deployed workflow acts as itself (`workflow:<name>` or `workflow:*`). A write is bound to an executing run and recorded.
+  - It holds no vendor SDK and no tenant code: it is credential handling plus HTTP forwarding. Moving it into a box would put the key back into a sandbox and undo #1178's guarantee.
+- **Named live-read operations (#1269).** `call_connection` operations such as Close `search_leads` or PostHog `hogql` are request builders on that gateway. They execute in the API in milliseconds and need no box, so they are not runs and not P0 (§6.5).
+- **Hatchet workflows.** Workflow step programs run on Hatchet workers (`deploy/workflows/`), a separate runtime this RFC does not touch. A workflow that needs synced data reads the warehouse. A workflow that needs a vendor calls the gateway.
+
+**Where the two meet later.** A connector in a box could make its vendor calls through the gateway too, with a run-scoped token in place of the raw key. The box would then never hold a credential at all. The cost is vendor responses passing through the API twice during a backfill. Left as an open question (§12).
+
 ## 5. Build: a source hash in, one bundle out
 
 ### 5.1 The pipeline
@@ -97,7 +110,7 @@ Rules:
 
 ### 6.1 The unit is a run
 
-Every `spec`, `check`, `discover` and `read` chunk, every webhook batch and every live-read operation (`call_connection`, #1269) is a **run**. A run carries:
+Every `spec`, `check`, `discover` and `read` chunk and every webhook batch is a **run**. Live reads through `call_connection` are not runs: they go through the connection gateway in the API and execute no connector code (§4.1). A run carries:
 
 - the connection;
 - the bundle hash;
@@ -142,11 +155,11 @@ Rules:
 
 ### 6.5 Priorities
 
-| Priority            | Runs                                                                                   | Rule                                                                                                     |
-| ------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| **P0, interactive** | Live reads from agents (`call_connection`), connection tests, `discover` in the picker | May take a box from P2 at the next chunk boundary. Target lease wait under 2 s at p95.                   |
-| **P1, steady**      | Webhook batches, polls, the daily resync                                               | Normal                                                                                                   |
-| **P2, bulk**        | Backfills, full resyncs                                                                | Pre-emptible after any chunk; the cursor makes that safe. At most 50% of a workspace's concurrent boxes. |
+| Priority            | Runs                                                                                        | Rule                                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **P0, interactive** | Connection tests, `discover` in the picker, the first chunk of a flow a person just started | May take a box from P2 at the next chunk boundary. Target lease wait under 2 s at p95.                   |
+| **P1, steady**      | Webhook batches, polls, the daily resync                                                    | Normal                                                                                                   |
+| **P2, bulk**        | Backfills, full resyncs                                                                     | Pre-emptible after any chunk; the cursor makes that safe. At most 50% of a workspace's concurrent boxes. |
 
 The existing chunk caps give natural pre-emption points: 32 MB or 50,000 protocol messages per command (`MAX_CONNECTOR_PROTOCOL_BYTES`, `MAX_CONNECTOR_PROTOCOL_MESSAGES`) and a 10-minute timeout.
 
@@ -238,7 +251,7 @@ Each iteration ships behind a flag and has a gate that is watched, not inferred.
 | **G1** | **Benchmark**                         | A test workspace replays RealAdvisor's ES Close backfill shape through `SandboxedConnector` in a box                                           | E2B snapshot restore under 1 s at p95. Per-chunk overhead under 300 ms. Total backfill time within 1.5× the in-process 3 h 54 min. Cost per backfill recorded. A failure here reopens the Workers for Platforms option for HTTP connectors. |
 | 1      | **Bundles for workspace connectors**  | `package.json` and lockfile in a folder; the build box; bundles by hash; the `node_modules/` guard; build status on the connector              | An existing workspace connector gains an npm dependency, builds, runs, and the repo holds no `node_modules/`. Repo size per connector recorded before and after.                                                                            |
 | 2      | **Leases and lifecycle**              | Scheduler, leases, heartbeats, reaper, box per connection plus hash, snapshot templates, pause on idle, TTL kill, metrics                      | All of RealAdvisor's workspace connectors run through leases for 7 days with zero leaked boxes (running with no lease), and the box-seconds per day reported.                                                                               |
-| 3      | **Priorities and budgets**            | P0–P2, chunk pre-emption, per-connection caps, per-workspace budgets, the global ceiling, the cost panel                                       | During a forced backfill, an agent live read gets a box in under 2 s at p95. A test workspace hits its budget, P2 pauses, P0 keeps working, and an alert fires.                                                                             |
+| 3      | **Priorities and budgets**            | P0–P2, chunk pre-emption, per-connection caps, per-workspace budgets, the global ceiling, the cost panel                                       | During a forced backfill, a connection test gets a box in under 2 s at p95. A test workspace hits its budget, P2 pauses, P0 keeps working, and an alert fires.                                                                              |
 | 4      | **Registry and install by reference** | `source:` in `connector.yaml`, the registry, release CI for `connectors/`, upgrade within range, eject                                         | Stripe, moved to `connectors/stripe/` and built by CI, installed by reference in a test workspace, matches the in-process Stripe output on the same account, entity for entity.                                                             |
 | 5      | **Mako connectors out of the API**    | Stripe, Wise, Calendly, PandaDoc, Claap and PostHog switch per connection behind a flag; then Close, gated on G1 numbers holding in production | For each connector, 7 days of parity on row counts and key checksums between in-process and boxed runs on RealAdvisor's connections. Then the old directory and its dependency (the `stripe` SDK) are removed from `api/`.                  |
 | 6      | **Marketplace**                       | Catalog UI, changelogs, the major-version PR, publish flow for workspace connectors                                                            | A workspace installs, upgrades and ejects a connector without touching code.                                                                                                                                                                |
@@ -262,9 +275,11 @@ Each iteration ships behind a flag and has a gate that is watched, not inferred.
 - **Credential isolation today:** confirm whether two flows running at once in today's shared workspace box can read each other's per-run credential directory. If they can, iteration 2 is also a security fix, and a per-run Unix user should ship ahead of it.
 - **Egress:** an E2B network policy per box (allowlisted vendor hosts) is now cheap to add per connection. Decide whether it ships with iteration 2 or stays out of scope, as RFC #947 §6.4 left it.
 - **Pricing:** whether box-seconds become a visible plan limit or stay internal.
+- **Keys out of the box:** whether boxed connectors call vendors through the connection gateway (§4.1) with a run-scoped token, so no credential ever enters a box. Measure the extra API traffic on the ES Close backfill before deciding.
 
 ## Related
 
 - RFC #947, [connectors as code](./connectors-as-code.md): the folder, protocol, tiers and security model this builds on.
-- #1269: live reads of Close, PostHog and Stripe through named operations, which become P0 runs here.
+- #1178: the connection gateway (`api/src/connections/proxy.service.ts`), through which Hatchet workflows and agents call vendors with keys that never leave Mako. Unchanged (§4.1).
+- #1269: live reads of Close, PostHog and Stripe through named operations on that gateway. Unchanged (§4.1).
 - #1271: the user sandbox shell, which shares the E2B provider but not these boxes.
