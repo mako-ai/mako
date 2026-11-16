@@ -410,7 +410,7 @@ fork these components — override a single token, or ask for the kit to grow.
 Every row-level list is a `DataTable`. For anything beyond the kit (sheets,
 dialogs, command menus): Tailwind
 v4 + shadcn/ui — install, mapping Tailwind onto the SDK's theme tokens, the
-cursor-pointer base rule, and v1-CDN migration notes — read
+cursor rule (in `ui.css` from SDK 2.18), and v1-CDN migration notes — read
 `references/ui-toolkit.md`
 (`read_skill_resource("apps", "references/ui-toolkit.md")`).
 

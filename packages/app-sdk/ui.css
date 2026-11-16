@@ -40,7 +40,19 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 button, input, select, textarea { font-family: inherit; }
-button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
+/* A hand on everything clickable, the kit's controls and the shadcn/Radix
+ * menus apps vendor. shadcn gives menu items `cursor-default`, so items
+ * showed an arrow. Unlayered on purpose: it beats Tailwind v4's layered
+ * utilities. Disabled items (disabled, aria-disabled, Radix data-disabled)
+ * keep not-allowed. */
+:is(button, summary, select, input[type="checkbox"], input[type="radio"], [role="button"], [role="tab"],
+  [role="option"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]):not(:disabled, [aria-disabled="true"], [data-disabled]) {
+  cursor: pointer;
+}
+:is(button, select, input[type="checkbox"], input[type="radio"], [role="button"], [role="tab"],
+  [role="option"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]):is(:disabled, [aria-disabled="true"], [data-disabled]) {
+  cursor: not-allowed;
+}
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
@@ -297,7 +309,8 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
   border: 1px solid var(--input); background: var(--background); color: transparent; box-shadow: var(--mk-shadow-xs);
   transition: background .12s, border-color .12s, color .12s;
 }
-.mk-ms-box.on { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
+/* Ticked in the brand blue (white tick), --primary where a theme has no --brand. */
+.mk-ms-box.on { background: var(--brand, var(--primary)); border-color: var(--brand, var(--primary)); color: #fff; }
 .mk-ms-swatch { width: 8px; height: 8px; border-radius: 999px; flex-shrink: 0; }
 .mk-ms-sep { height: 1px; background: var(--border); margin: 4px -4px; flex: none; }
 .mk-ms-only {

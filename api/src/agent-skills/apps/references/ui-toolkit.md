@@ -71,17 +71,13 @@ map them, and the app follows the host theme for free. `src/index.css`:
 @layer base {
   * { @apply border-border outline-ring/50; }
   body { @apply bg-background text-foreground antialiased; }
-  /* Tailwind preflight leaves buttons on cursor: default — every enabled
-   * click target must read as clickable. */
-  a[href], button:not(:disabled), select:not(:disabled), summary, label[for],
-  [role="button"]:not([aria-disabled="true"]),
-  [role="tab"]:not([aria-disabled="true"]),
-  [role="menuitem"], [role="menuitemcheckbox"], [role="option"],
-  [role="checkbox"]:not([aria-disabled="true"]) {
-    cursor: pointer;
-  }
 }
 ```
+
+Cursor: `@makoai/app-sdk/ui.css` (SDK ≥ 2.18) gives every enabled button,
+tab, option and Radix menu item a pointer, unlayered so it beats shadcn's
+`cursor-default`. Don't add a cursor rule in `@layer base`: Tailwind's
+utilities win over it.
 
 Import it once from `main.tsx` (`import "./index.css"`).
 
@@ -192,6 +188,8 @@ own All logic, and don't override `.mk-ms-*` classes to change its trigger.
 - One dropdown open at a time. Kit popovers close each other. A Radix menu
   calls `closePopovers()` from `@makoai/app-sdk/ui` in
   `onOpenChange={o => o && closePopovers()}`, with `modal={false}`.
+- Ticks are white on `--brand` from SDK 2.18. Don't override `.mk-ms-box`.
+- `MultiSelect` can sit inside a `<label>` from SDK 2.18.
 - An app-side menu draws its ticks with the kit `Checkbox`
   (`checked` true / false / "mixed") and follows the same rule with
   `multiSelectState` / `multiSelectToggle` / `multiSelectText`.
