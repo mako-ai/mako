@@ -181,7 +181,12 @@ async function connectPinned(
         apiKey: apiKey(),
       });
       return sandbox;
-    } catch {
+    } catch (error) {
+      // Only a box E2B says is gone is gone. A timeout or a 5xx is not an
+      // answer: rethrown as-is, so a run's cleanup fails (and the box is
+      // retired) rather than counting a box that may still hold the run's
+      // credential as cleaned.
+      if (!isSandboxGone(error)) throw error;
       throw new SandboxNotFoundError(
         `Sandbox ${expectSandboxId} for ${sessionKey} was replaced or is gone.`,
       );

@@ -619,3 +619,51 @@ describe("box hardening", () => {
     ).toHaveLength(2);
   });
 });
+
+describe("cleanup that cannot reach the box", () => {
+  beforeEach(() => {
+    sandbox.supportsRunUsers = true;
+    sandbox.exec.mockReset();
+    sandbox.readFile.mockReset();
+    sandbox.writeFile.mockReset();
+  });
+  afterEach(() => {
+    sandbox.supportsRunUsers = undefined;
+  });
+
+  const runWith = async (cleanupError: Error) => {
+    sandbox.exec.mockImplementation((_ctx, command: string) => {
+      if (command.includes("kill -9 -1")) return Promise.reject(cleanupError);
+      if (command.includes("head -c")) return Promise.resolve(result("0\n"));
+      return Promise.resolve(result());
+    });
+    sandbox.readFile.mockResolvedValue(new Uint8Array());
+    const onCleanupFailure = vi.fn();
+    await runConnectorCommand({
+      ctx: { sessionKey: "connector-sync:v2:ws1" },
+      runtimeId: "runtime",
+      connectorDir: "/x",
+      command: "spec",
+      onCleanupFailure,
+    });
+    return onCleanupFailure;
+  };
+
+  it("fails the cleanup on a transient error: the box may still hold the credential", async () => {
+    const onCleanupFailure = await runWith(new Error("ETIMEDOUT"));
+    expect(onCleanupFailure).toHaveBeenCalledWith(
+      expect.stringContaining("ETIMEDOUT"),
+    );
+  });
+
+  it("counts a box that is really gone as cleaned", async () => {
+    const gone = Object.assign(
+      new Error("Sandbox is probably not running anymore"),
+      {
+        name: "SandboxNotFoundError",
+      },
+    );
+    const onCleanupFailure = await runWith(gone);
+    expect(onCleanupFailure).not.toHaveBeenCalled();
+  });
+});

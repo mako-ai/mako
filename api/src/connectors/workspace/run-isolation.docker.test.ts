@@ -475,6 +475,33 @@ suite("connector run isolation in e2bdev/base (Docker)", () => {
     expect((await root(`set -eu\n${hardenScript()}`)).code).toBe(0);
   }, 60_000);
 
+  it("locks a password kept in /etc/passwd or /etc/group, which the shadow files never see", async () => {
+    // An account with its (empty) password in /etc/passwd and no shadow line,
+    // and a group with an empty password in /etc/group and none in gshadow.
+    await root(
+      "grep -q '^legacy:' /etc/passwd || { echo 'legacy::2001:2001::/nonexistent:/bin/sh' >> /etc/passwd && echo 'legacy::2001:' >> /etc/group; }",
+    );
+    await root("id plainuser >/dev/null 2>&1 || useradd -M plainuser");
+    expect(
+      (await root("runuser -u plainuser -- su -c id legacy </dev/null 2>&1"))
+        .stdout,
+    ).toContain("uid=2001(legacy)");
+
+    const l = await open();
+    await connector(l, [], "su -c id legacy </dev/null 2>&1");
+    const out = await bounded(l);
+    expect(out).not.toContain("uid=2001(legacy)");
+    expect(out).toMatch(/Authentication failure/);
+    expect(
+      (
+        await root(
+          "awk -F: '$2 != \"x\"' /etc/passwd /etc/group | wc -l; grep '^legacy:' /etc/shadow | cut -d: -f2",
+        )
+      ).stdout.trim(),
+    ).toBe("0\n!");
+    expect((await root(cleanupScript(l))).code).toBe(0);
+  }, 60_000);
+
   it("refuses to start a run without useradd", async () => {
     await root("mv /usr/sbin/useradd /usr/sbin/useradd.off");
     try {

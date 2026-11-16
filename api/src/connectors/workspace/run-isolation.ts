@@ -57,6 +57,8 @@ export const REQUIRED_TOOLS = [
   "mv",
   "usermod",
   "groupmod",
+  "pwconv",
+  "grpconv",
 ] as const;
 
 export interface RunLayout {
@@ -131,7 +133,20 @@ true`;
  * shadow lock, so concurrent runs retry them like useradd.
  */
 export function hardenScript(): string {
-  return `for account in $(awk -F: '$2 == "" { print $1 }' /etc/shadow); do
+  return `# A password kept in /etc/passwd or /etc/group itself (anything but "x",
+# e.g. "node::" with no shadow line) bypasses the shadow files below. Move
+# every such field into the shadow files first, so the lock below sees it.
+n=0
+while awk -F: '$2 != "x" { found = 1 } END { exit !found }' /etc/passwd; do
+  pwconv 2>/dev/null && break
+  n=$((n + 1)); if [ "$n" -ge 20 ]; then echo "could not move passwords out of /etc/passwd" >&2; exit 1; fi; sleep 0.2
+done
+n=0
+while awk -F: '$2 != "x" { found = 1 } END { exit !found }' /etc/group; do
+  grpconv 2>/dev/null && break
+  n=$((n + 1)); if [ "$n" -ge 20 ]; then echo "could not move passwords out of /etc/group" >&2; exit 1; fi; sleep 0.2
+done
+for account in $(awk -F: '$2 == "" { print $1 }' /etc/shadow); do
   n=0
   until usermod -p '!' "$account" 2>/dev/null; do
     n=$((n + 1)); if [ "$n" -ge 20 ]; then echo "could not lock $account" >&2; exit 1; fi; sleep 0.2
@@ -145,7 +160,7 @@ if [ -r /etc/gshadow ]; then
     done
   done
 fi
-left=$(awk -F: '$2 == "" { print $1 }' /etc/shadow; if [ -r /etc/gshadow ]; then awk -F: '$2 == "" { print "group:" $1 }' /etc/gshadow; fi)
+left=$(awk -F: '$2 == "" { print $1 }' /etc/shadow; if [ -r /etc/gshadow ]; then awk -F: '$2 == "" { print "group:" $1 }' /etc/gshadow; fi; awk -F: '$2 != "x" { print "passwd:" $1 }' /etc/passwd; awk -F: '$2 != "x" { print "grouppw:" $1 }' /etc/group)
 if [ -n "$left" ]; then echo "empty passwords left: $left" >&2; exit 1; fi`;
 }
 

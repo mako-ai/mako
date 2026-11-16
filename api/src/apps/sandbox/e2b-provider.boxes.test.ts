@@ -149,3 +149,30 @@ describe("a run pinned to its sandbox", () => {
     expect(e2b.Sandbox.create).not.toHaveBeenCalled();
   });
 });
+
+describe("a pinned call whose connect fails", () => {
+  const ctx = { sessionKey: "connector-sync:v2:ws-transient" };
+
+  it("rethrows a transient error as-is, never as a gone box", async () => {
+    e2b.page.items = [{ sandboxId: "sbx_live" }];
+    e2b.Sandbox.connect.mockImplementation(async () => {
+      throw new Error("503 Service Unavailable");
+    });
+    const failure = await e2bSandboxProvider
+      .exec(ctx, "true", { expectSandboxId: "sbx_pinned" })
+      .catch((error: unknown) => error);
+    expect(String(failure)).toContain("503 Service Unavailable");
+    expect((failure as Error).name).not.toBe("SandboxNotFoundError");
+  });
+
+  it("labels a not-found answer as gone", async () => {
+    e2b.Sandbox.connect.mockImplementation(async () => {
+      throw new e2b.SandboxNotFoundError(
+        "Sandbox is probably not running anymore",
+      );
+    });
+    await expect(
+      e2bSandboxProvider.exec(ctx, "true", { expectSandboxId: "sbx_pinned" }),
+    ).rejects.toThrow(/was replaced or is gone/);
+  });
+});
