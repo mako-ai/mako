@@ -21,6 +21,13 @@ export interface MongoShellOptions {
    * read is refused.
    */
   allowWrites: boolean;
+  /**
+   * A read-only run (an MCP key, a viewer): no database command at all,
+   * read ones included, and no db.admin() method but listDatabases.
+   * usersInfo, getLog or serverStatus return credentials, logs and server
+   * state, not data.
+   */
+  readOnly?: boolean;
   signal?: AbortSignal;
   /**
    * The most documents a cursor read returns; one more is looked for, so a

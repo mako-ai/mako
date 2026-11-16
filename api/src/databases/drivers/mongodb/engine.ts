@@ -352,6 +352,7 @@ export class MongoEngine implements QueryEngine {
           query,
           abortController?.signal,
           options?.maxRows,
+          options?.readOnly,
         );
         return truncated
           ? {
