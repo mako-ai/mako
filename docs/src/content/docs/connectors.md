@@ -65,7 +65,7 @@ A **Google service account** connection stores the service account's JSON key fi
 
 The connection's **Access** tab decides who may call it:
 
-- **Live reads**: off for every connection until a manager turns them on. Then anyone in the workspace (workflows and agents included) may read: GET and HEAD, a GraphQL query, a Close search or a Close POST read as GET, and on PostHog a GET or a query (HogQL, events, trends, …) in the connection's own project. An agent acting for one of the connection's managers or the workspace owner reads even with live reads off, as `probe_connection` does.
+- **Live reads**: off for every connection until a manager turns them on. Then anyone in the workspace (workflows and agents included) may read: GET and HEAD, a GraphQL query, a Close search or a Close POST read as GET, and on PostHog a GET or a query (HogQL, events, trends, …) in the connection's own project. An agent acting for one of the connection's managers or the workspace owner, signed in rather than through an API key, reads even with live reads off, as `probe_connection` does.
 - **Writers**: who may write (POST, PUT, PATCH, DELETE). Add people, single deployed workflows, or **All deployed workflows**. Each deployed workflow acts as itself (its step's pass), so one can be allowed without the others. Viewers and agents never write, and a person who left the workspace can no longer call it at all.
 - **Refused attempts**: every write, allowed or not, is logged; refused ones are listed with who tried, so a manager can allow that person or the deployed workflows (an agent's attempt cannot be allowed).
 

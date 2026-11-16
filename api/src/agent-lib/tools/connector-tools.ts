@@ -658,7 +658,7 @@ export function createConnectorTools(workspaceId: string) {
         "Read a SOURCE connection LIVE (Close, Stripe, PostHog, Wise, a Custom API): Mako adds the credential, which you never see, and returns status, headers and body. Use it for fresh or unsynced data; synced tables and metrics come first.",
         "Two ways. (1) A named operation: `operation` + `params`, e.g. Close `search_leads` { query }, PostHog `hogql` { query }, Stripe `get_customer` { id }. inspect_connection lists a connection's `operations`. (2) A raw request: `method` + `path` (+ `query`, `body`) under the connection's base URL (Close: /lead/, Stripe: /v1/customers, PostHog: /api/projects/<project_id>/persons/).",
         "Reads only: GET, a Close search or a Close POST with x-http-method-override: GET, a PostHog query in the connection's project, a GraphQL query (Custom API with GraphQL on). Writes are refused; they belong to a workflow on the writers list.",
-        "Needs live reads on in the connection's Access tab and you on its live readers list when it has one, unless you manage the connection or own the workspace. Answers over 40,000 characters come back cut (`truncated`).",
+        "Needs live reads on in the connection's Access tab and you on its live readers list when it has one, unless you manage the connection or own the workspace and are signed in (not an API key). Answers over 40,000 characters come back cut (`truncated`).",
       ].join("\n"),
       inputSchema: z.object({
         connectionId: z
@@ -668,7 +668,7 @@ export function createConnectorTools(workspaceId: string) {
           .string()
           .optional()
           .describe(
-            "A named read operation from inspect_connection's `operations` (e.g. search_leads, hogql, get_customer). Replaces method, path, query and body.",
+            "A named read operation from inspect_connection's `operations` (e.g. search_leads, hogql, get_customer). Replaces method, path, query and body; headers still apply (Stripe-Account).",
           ),
         params: z
           .record(z.string(), z.unknown())
@@ -726,7 +726,13 @@ export function createConnectorTools(workspaceId: string) {
             workspaceId,
             connection: connectionId,
             ...(operation
-              ? { operation: { name: operation, params: params ?? {} } }
+              ? {
+                  operation: {
+                    name: operation,
+                    params: params ?? {},
+                    ...(headers ? { headers } : {}),
+                  },
+                }
               : {
                   request: {
                     method: method ?? "GET",

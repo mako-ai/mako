@@ -1168,6 +1168,16 @@ describe("PostHog: reads in its own project, a query included", () => {
     }
   });
 
+  it("a numeric project_id reads as its string", () => {
+    expect(
+      isReadRequest(
+        type("posthog"),
+        { method: "GET", path: "/api/projects/175702/persons/", headers: {} },
+        { ...config, project_id: 175702 },
+      ),
+    ).toBe(true);
+  });
+
   it("a project with no project_id reads nothing", () => {
     expect(
       isReadRequest(

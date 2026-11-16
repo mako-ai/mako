@@ -41,6 +41,7 @@ import {
   WorkspaceMember,
 } from "../database/workspace-schema";
 import { loggingMiddleware } from "../logging";
+import { requestContextStorage } from "../logging/context";
 import { workflowRuntimeRoutes } from "../routes/workflows";
 import { encryptString } from "../services/crypto.service";
 import { databaseConnectionService } from "../services/database-connection.service";
@@ -1280,6 +1281,22 @@ async function main() {
     assert.equal(await lookAs("user:deployer"), "ok");
     assert.match(await lookAs("user:vera"), /^Live reads are off/);
     assert.match(await lookAs("workflow:other-flow"), /^Live reads are off/);
+    // The owner's API key (a CI key, a sandbox run's key) acts as the owner
+    // but gets no manager's look.
+    assert.match(
+      await requestContextStorage.run(
+        {
+          requestId: "key",
+          method: "POST",
+          path: "/api/mcp",
+          startTime: Date.now(),
+          userId: "deployer",
+          apiKey: true,
+        },
+        () => lookAs("user:deployer"),
+      ),
+      /^Live reads are off/,
+    );
     // A named operation builds the request and passes the same checks.
     const sentBeforeOperation = sent.length;
     assert.equal(

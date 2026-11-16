@@ -503,7 +503,8 @@ const POSTHOG_QUERY_BODY_KEYS = new Set([
  * may reach other projects and organizations; the connection reads one.
  */
 function inPosthogProject(path: string, config: Config): boolean {
-  const project = text(config.project_id);
+  // Stored as a string or a number (the field asks for a numeric id).
+  const project = String(config.project_id ?? "").trim();
   if (!project) return false;
   const match = /^\/api\/(?:projects|environments)\/([^/]+)(?:\/|$)/.exec(path);
   return match?.[1] === project;

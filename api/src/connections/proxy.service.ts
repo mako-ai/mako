@@ -89,13 +89,20 @@ export interface ConnectionRequestParams {
    * A named read operation of the connection's type (connections/operations.ts)
    * instead of `request`: it builds the request, which is checked as any other.
    */
-  operation?: { name: string; params?: Record<string, unknown> };
+  operation?: {
+    name: string;
+    params?: Record<string, unknown>;
+    /** Caller headers (Stripe-Account, …), filtered as a request's are. */
+    headers?: Record<string, string>;
+  };
   /** An agent: reads only, whoever it acts for. */
   readOnly?: boolean;
   /**
    * A person's own live look, as probe_connection takes one: its managers and
    * the workspace owner read even with live reads off (they could turn them
-   * on). Only the agent's call_connection passes it; a workflow never does.
+   * on). Only the agent's call_connection passes it; a workflow never does,
+   * and a request made with an API key (a CI key, a sandbox run's key) never
+   * gets it.
    */
   managerReads?: boolean;
   /** Who is acting, when not the request's own person or workflow. */
@@ -164,6 +171,9 @@ async function managesConnection(
   principal: string | undefined,
 ): Promise<boolean> {
   if (!principal?.startsWith("user:")) return false;
+  // A key acts as its creator, but is not that person looking: a CI key or
+  // a sandbox run's key reads only as live reads allow.
+  if (getRequestContext()?.apiKey) return false;
   const userId = principal.slice("user:".length);
   const people = peopleOf(params.workspaceId);
   const role = await people.roleOf(userId);
@@ -330,12 +340,17 @@ export async function connectionRequest(
   }
   const config = loaded.connection ?? {};
   const input = params.operation
-    ? operationRequest(
-        row.type,
-        config,
-        params.operation.name,
-        params.operation.params,
-      )
+    ? {
+        ...operationRequest(
+          row.type,
+          config,
+          params.operation.name,
+          params.operation.params,
+        ),
+        ...(params.operation.headers
+          ? { headers: params.operation.headers }
+          : {}),
+      }
     : params.request;
   if (!input) {
     throw new ConnectionRequestError("Pass a request or an operation.");

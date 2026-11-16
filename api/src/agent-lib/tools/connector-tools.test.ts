@@ -488,6 +488,22 @@ describe("call_connection: a named operation instead of a path", () => {
     expect(proxied.calls[0].request).toBeUndefined();
   });
 
+  it("keeps the caller's headers with an operation (Stripe-Account)", async () => {
+    proxied.calls = [];
+    proxied.body = {};
+    await tools().call_connection.execute({
+      connectionId: "fr_stripe",
+      operation: "get_customer",
+      params: { id: "cus_1" },
+      headers: { "stripe-account": "acct_1" },
+    });
+    expect(proxied.calls[0].operation).toEqual({
+      name: "get_customer",
+      params: { id: "cus_1" },
+      headers: { "stripe-account": "acct_1" },
+    });
+  });
+
   it("asks for an operation or a path when given neither", async () => {
     proxied.calls = [];
     const result = await tools().call_connection.execute({

@@ -34,6 +34,12 @@ export interface RequestContext {
    */
   workflowWorker?: boolean;
   /**
+   * Authenticated with a workspace API key (a CI key, a script, a sandbox
+   * run's key): it acts as its creator, but is not that person at a
+   * keyboard (connections/proxy.service.ts `managerReads`).
+   */
+  apiKey?: boolean;
+  /**
    * The run and step a workflow pass names (workflows/pass.ts), with
    * `workflow`: what a model call's cost is counted against, and the run a
    * write is recorded under.
@@ -324,6 +330,11 @@ export function enrichContextWithWorkflowRun(
 export function enrichContextWithWorkflowWorker(): void {
   const context = requestContextStorage.getStore();
   if (context) context.workflowWorker = true;
+}
+
+export function enrichContextWithApiKey(): void {
+  const context = requestContextStorage.getStore();
+  if (context) context.apiKey = true;
 }
 
 export function enrichContextWithWorkspace(workspaceId: string): void {

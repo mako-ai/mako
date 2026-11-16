@@ -16,6 +16,7 @@ export {
   enrichContextWithWorkflow,
   enrichContextWithWorkflowRun,
   enrichContextWithWorkflowWorker,
+  enrichContextWithApiKey,
   getRequestContext,
 } from "./context";
 export type { RequestContext, HttpLoggingOptions } from "./context";
