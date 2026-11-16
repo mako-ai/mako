@@ -73,6 +73,11 @@ drive it.
 - `--max-bytes`: a chunk ends after the page that takes its records past this
   many bytes, as it ends after `--max-iterations` pages. A page is never
   split, so a single page must fit Mako's 32 MiB chunk cap.
+- `--session` (with `--since`): one process reads the whole entity, chunk
+  after chunk, each chunk ending in its STATE as a separate process would.
+  It first prints a `MAKO_SESSION` line once its inputs are read. Each chunk
+  restarts `read` from the previous chunk's state, so a connector reads the
+  same pages either way. Nothing changes for the connector author.
 
 ## `config.properties` is not optional
 

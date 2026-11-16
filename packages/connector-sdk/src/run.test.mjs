@@ -237,3 +237,109 @@ test("parseArgs takes flags with and without values", () => {
     options: { config: "c.json", verbose: true },
   });
 });
+
+/** Split a session's stream where Mako's supervisor does: after each STATE. */
+function batches(messages) {
+  const out = [];
+  let current = [];
+  for (const message of messages) {
+    current.push(message);
+    if (message.type === "STATE") {
+      out.push(current);
+      current = [];
+    }
+  }
+  if (current.length) out.push(current);
+  return out;
+}
+
+/** Drive chunk processes the way Mako does: STATE back as `--state`. */
+async function chunkByChunk(dir, configFile, extra = [], since) {
+  const chunks = [];
+  let stateFile = since
+    ? writeJson(dir, "state-0.json", [
+        { type: "STREAM", stream: { stream_descriptor: { name: "people" }, stream_state: { mako: { since } } } },
+      ])
+    : undefined;
+  for (let i = 1; i < 20; i++) {
+    const messages = await protocol([
+      "read",
+      "--config",
+      configFile,
+      ...(stateFile ? ["--state", stateFile] : []),
+      ...extra,
+    ]);
+    chunks.push(messages);
+    const state = messages.findLast(m => m.type === "STATE").state;
+    if (!state.mako.hasMore) break;
+    // What SandboxedConnector's readState does with `since` between chunks.
+    const streamState = since
+      ? { ...state.stream.stream_state, mako: { ...(state.stream.stream_state.mako ?? {}), since } }
+      : state.stream.stream_state;
+    stateFile = writeJson(dir, `state-${i}.json`, [
+      { ...state, stream: { ...state.stream, stream_state: streamState } },
+    ]);
+  }
+  return chunks;
+}
+
+test("a session prints its hello first, then one batch per chunk, identical to chunk processes", async () => {
+  const dir = tmp();
+  const config = writeJson(dir, "config.json", { apiKey: "good-key" });
+  const session = await protocol(["read", "--session", "--config", config, "--max-iterations", "1"]);
+  assert.deepEqual(session[0], { type: "MAKO_SESSION", session: { version: 1 } });
+  const perChunk = await chunkByChunk(dir, config, ["--max-iterations", "1"]);
+  assert.deepEqual(batches(session.slice(1)).map(strip), perChunk.map(strip));
+  assert.equal(perChunk.length, 3);
+});
+
+test("a session keeps Mako's since anchor in every chunk's state, as Mako does between chunks", async () => {
+  const dir = tmp();
+  const config = writeJson(dir, "config.json", { apiKey: "good-key" });
+  const since = "2026-01-01T00:00:00.000Z";
+  const state = writeJson(dir, "state.json", [
+    { type: "STREAM", stream: { stream_descriptor: { name: "people" }, stream_state: { mako: { since } } } },
+  ]);
+  const session = await protocol([
+    "read",
+    "--session",
+    "--since",
+    since,
+    "--config",
+    config,
+    "--state",
+    state,
+    "--max-iterations",
+    "1",
+  ]);
+  const perChunk = await chunkByChunk(dir, config, ["--max-iterations", "1"], since);
+  assert.deepEqual(batches(session.slice(1)).map(strip), perChunk.map(strip));
+});
+
+test("a session's byte budget ends each batch where a chunk process would", async () => {
+  const dir = tmp();
+  const config = writeJson(dir, "config.json", { apiKey: "good-key" });
+  const session = await protocol(["read", "--session", "--config", config, "--max-bytes", "1"]);
+  const perChunk = await chunkByChunk(dir, config, ["--max-bytes", "1"]);
+  assert.deepEqual(batches(session.slice(1)).map(strip), perChunk.map(strip));
+});
+
+test("a session that fails mid-stream ends with a TRACE error after its last complete batch", async () => {
+  const dir = tmp();
+  // The frozen state with no hasMore fails on the second chunk.
+  const config = writeJson(dir, "config.json", { apiKey: "good-key", omitHasMore: true, frozenState: true });
+  const session = await protocol(["read", "--session", "--config", config, "--max-bytes", "1"], {
+    expectFailure: true,
+  });
+  const split = batches(session.slice(1));
+  assert.equal(split[0].at(-1).type, "STATE");
+  assert.equal(split.at(-1).at(-1).type, "TRACE");
+  assert.match(split.at(-1).at(-1).trace.error.message, /state unchanged/);
+});
+
+/** Records carry their emit time; everything else must match exactly. */
+function strip(messages) {
+  return messages.map(m =>
+    m.type === "RECORD" ? { ...m, record: { ...m.record, emitted_at: 0 } } : m,
+  );
+}
