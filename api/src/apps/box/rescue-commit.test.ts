@@ -235,6 +235,40 @@ describe("rescueCommit", () => {
     );
   }
 
+  it("the rescue is authored by the person and committed by Mako Agent", async () => {
+    await write("apps/sales/App.tsx", "export default 2;\n");
+    await rescue();
+    expect(
+      await git(origin, "log", "-1", "--format=%an <%ae> / %cn <%ce>", BRANCH),
+    ).toBe("ana <ana@x.io> / Mako Agent <agent@mako.ai>");
+  });
+
+  it("build output forced into an unpushed commit blocks the push", async () => {
+    await write("apps/sales/Dist/bundle.js", "x\n");
+    await git(root, "add", "-f", "apps/sales/Dist/bundle.js");
+    await git(root, "commit", "-qm", "forced build output");
+    const blob = await git(root, "rev-parse", "HEAD:apps/sales/Dist/bundle.js");
+    await write("apps/sales/App.tsx", "export default 3;\n");
+
+    const result = await rescue();
+
+    expect(result).toMatchObject({ status: "manual" });
+    expect((result as { reason: string }).reason).toMatch(
+      /Dist\/bundle\.js \(excluded directory\)/,
+    );
+    expect(await git(origin, "branch", "--list", "mako-presave/*")).toBe("");
+    expect(await blobOnServer(blob)).toBe(false);
+  });
+
+  it("build output already on the server does not block a rescue", async () => {
+    await write("apps/sales/dist/bundle.js", "x\n");
+    await git(root, "add", "-f", "apps/sales/dist/bundle.js");
+    await git(root, "commit", "-qm", "forced, and pushed");
+    await git(root, "push", "-q", "origin", "main");
+    await write("apps/sales/App.tsx", "export default 3;\n");
+    expect(await rescue()).toMatchObject({ status: "saved", branch: BRANCH });
+  });
+
   it("leak 1: an unpushed commit on main holding .env blocks the push", async () => {
     await write(".env", "SECRET=1\n");
     await git(root, "add", "-f", ".env");

@@ -6,7 +6,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   drainOldBoxes,
-  foreignOriginSessionKeys,
+  foreignOriginSandboxIds,
   sha256Hex,
   type DrainBox,
 } from "./box-drain";
@@ -90,24 +90,55 @@ describe("drainOldBoxes", () => {
     ).toMatch(/swap time/);
   });
 
-  it("ignores sessions the pre-save dry run classed foreign-origin", async () => {
+  it("ignores the boxes the pre-save dry run classed foreign-origin, by sandbox id", async () => {
     const o = ops([
       mako("a", "2026-11-10T00:00:00Z"),
-      mako("laptop", "2026-11-16T16:00:00Z"),
+      mako("laptop", "2026-11-16T14:00:00Z"),
     ]);
-    const ignore = foreignOriginSessionKeys(
+    const ignore = foreignOriginSandboxIds(
       [
         '{"mode":"dry-run"}',
-        '{"sessionKey":"ws:laptop","action":"foreign-origin"}',
-        '{"sessionKey":"ws:a","action":"would-save"}',
+        '{"sandboxId":"laptop","sessionKey":"ws:laptop","action":"foreign-origin"}',
+        '{"sandboxId":"a","sessionKey":"ws:a","action":"would-save"}',
         "not json",
       ].join("\n"),
     );
-    expect([...ignore]).toEqual(["ws:laptop"]);
-    const report = await drainOldBoxes(o, opts({ ignoreSessionKeys: ignore }));
+    expect([...ignore]).toEqual(["laptop"]);
+    const report = await drainOldBoxes(o, opts({ ignoreSandboxIds: ignore }));
     expect(report.aborted).toBeUndefined();
-    expect(report.ignored).toBe(1);
+    expect(report).toMatchObject({ ignored: 1, ignoredIds: ["laptop"] });
     expect(report.killed).toEqual(["a"]);
+  });
+
+  it("a production box sharing a session key with a foreign box is still killed", async () => {
+    const prod: DrainBox = {
+      ...mako("prod", "2026-11-10T00:00:00Z"),
+      sessionKey: "ws:u1",
+    };
+    const preview: DrainBox = {
+      ...mako("preview", "2026-11-10T00:00:00Z"),
+      sessionKey: "ws:u1",
+    };
+    const o = ops([prod, preview]);
+    const report = await drainOldBoxes(
+      o,
+      opts({ ignoreSandboxIds: new Set(["preview"]) }),
+    );
+    expect(report.killed).toEqual(["prod"]);
+    expect(report.ignoredIds).toEqual(["preview"]);
+  });
+
+  it("a foreign box started after the swap is ignored only if the dry run named it", async () => {
+    const o = ops([
+      mako("a", "2026-11-10T00:00:00Z"),
+      mako("new-laptop", "2026-11-16T16:00:00Z"),
+    ]);
+    const report = await drainOldBoxes(
+      o,
+      opts({ ignoreSandboxIds: new Set(["old-laptop"]) }),
+    );
+    expect(report.aborted).toMatch(/1 Mako box/);
+    expect(o.kill).not.toHaveBeenCalled();
   });
 
   it("a failed kill is reported and the rest continue", async () => {

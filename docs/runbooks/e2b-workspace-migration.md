@@ -81,7 +81,15 @@ least 20.
    export OLD_KEY_SHA256="$(gcloud secrets versions access "$OLD_VERSION" --secret=E2B_API_KEY --project=mako-ai-dev | tr -d '\n' | shasum -a 256 | cut -d' ' -f1)"
    echo "$OLD_KEY_SHA256"   # a hash, not the key; write it in the change log
    ```
-4. Add a new version of `mako-ai-dev`'s `E2B_API_KEY` with the `mako-dev` key.
+4. Record the `mako-prod` key's hash too. Rollback step 3 drains `mako-prod`
+   with the drain script, which refuses any key but the one this hash names.
+   ```bash
+   export PROD_KEY_SHA256="$(gcloud secrets versions access latest --secret=E2B_API_KEY --project=mako-ai-prod | tr -d '\n' | shasum -a 256 | cut -d' ' -f1)"
+   echo "$PROD_KEY_SHA256"   # a hash, not the key; write it in the change log
+   ```
+5. Add a new version of `mako-ai-dev`'s `E2B_API_KEY` with the `mako-dev` key.
+
+Both hashes go in the change log as hashes only. Never write a key there.
 
 Check: the old version is really the key production runs today. This must
 print the same hash as `OLD_KEY_SHA256`.
@@ -272,10 +280,11 @@ Check: the step 2 describe-and-jq command against `mako-canary` prints no
   rescue refs.
 - **Publish and connector boxes** are rebuilt on first use. They hold no
   user work.
-- **Laptops** keep the old key until `pnpm secrets:pull` runs. Ask
-  developers to re-pull after step 2.
-- **Open PR previews** keep the old key until they redeploy. Push to the PR
-  or rerun its deploy with `pr_number`. Previews die 14 days after creation.
+- **Laptops and open PR previews** moved to `mako-dev` at step 6, before
+  this swap. A laptop that missed the re-pull, or a preview that missed the
+  redeploy, still starts boxes in the old account. Step 10's gate stops on
+  such a box, because step 5's dry run did not name it. Re-pull or redeploy
+  it, then run the gate again.
 
 ## Step 10. Wait for the old revision to drain
 
@@ -310,7 +319,7 @@ Step 11 must not race a live user, so all 3 gates must hold:
      --ignore-foreign-from presave-dry.jsonl
    ```
    Check: exit code 0 and `"startedAfterSwap":[]`. `--ignore-foreign-from`
-   leaves out the sessions step 5 classed `foreign-origin` (preview and laptop
+   leaves out the boxes step 5 classed `foreign-origin`, by sandbox id (preview and laptop
    boxes), which are not production's to gate on or kill.
 
 ## Step 11. Pre-save apply on every old box
@@ -396,8 +405,8 @@ Rollback works for the 7 days of the drain, while the old boxes still exist.
    step 3 used another name, also run
    `gh variable delete APPS_E2B_TEMPLATE_PROD --env production`.
 3. Wait for the drain as in step 10. Gate 3 uses the drain script with the
-   `mako-ai-prod` key and its hash, because `mako-prod` is now the account
-   being left.
+   `mako-ai-prod` key and `--expect-key-sha256 "$PROD_KEY_SHA256"` (recorded
+   in step 2), because `mako-prod` is now the account being left.
 4. Save what only the `mako-prod` boxes hold. Run step 11 with the
    `mako-ai-prod` key.
 
@@ -430,8 +439,9 @@ On day 7:
 2. Kill the old Mako boxes with the drain script. It aborts, killing nothing,
    unless the key's sha256 equals `OLD_KEY_SHA256` and no Mako box in that
    account started after `SWAP_TIME`. It only touches `mako-apps` boxes that
-   carry `makoAppsSessionKey`, so Aura's boxes are never candidates. Sessions
-   the final dry run classed `foreign-origin` are skipped too.
+   carry `makoAppsSessionKey`, so Aura's boxes are never candidates. Boxes
+   the final dry run classed `foreign-origin` are skipped too, by sandbox id,
+   and listed in the report's `ignoredIds`.
    ```bash
    export E2B_API_KEY="$(gcloud secrets versions access "$OLD_VERSION" --secret=E2B_API_KEY --project=mako-ai-dev)"
    pnpm --filter api exec tsx src/scripts/e2b-drain-old-boxes.ts \
@@ -443,8 +453,18 @@ On day 7:
    unset E2B_API_KEY
    ```
    Check: `killed` equals the dry run's `candidates`, and `failed` is empty.
-3. Run the account check. Check: only `aura-sandbox` boxes remain.
-4. Delete the `mako-apps` template from the old project in the dashboard.
+   Keep the `--apply` output: its `ignoredIds` are the expected leftovers.
+3. Run the account check. Check: the only `mako-apps` boxes left are the
+   `ignoredIds` from item 2, and nothing else but `aura-sandbox` boxes. Those
+   leftovers are preview and laptop boxes whose work belongs to staging or a
+   laptop, not production.
+4. Delete the `mako-apps` template from the old project only when the account
+   check shows 0 `mako-apps` boxes. A box needs its template to resume, so
+   while any leftover exists the template stays. For each leftover, tell its
+   owner (a developer for a laptop box, the PR author for a preview) to push
+   what they need. When they confirm, or after 7 more days, kill the
+   leftovers with the same drain command without `--ignore-foreign-from`,
+   run the account check again, and then delete the template.
 5. Disable `OLD_VERSION` of `mako-ai-dev`'s `E2B_API_KEY`. That ends rollback.
 
 ## Aura stays untouched

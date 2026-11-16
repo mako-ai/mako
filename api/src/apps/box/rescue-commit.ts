@@ -159,6 +159,23 @@ export function blockedBecause(path: string, size: number): string | null {
   return null;
 }
 
+/**
+ * blockedBecause, plus build output (node_modules/, target/, dist/, any
+ * letter case) for commits the server lacks. Those folders are in
+ * NEVER_COMMIT, so a commit carrying them was forced in by hand, and a
+ * rescue push must not be the thing that uploads a dependency tree or a
+ * build. Not applied to HEAD's whole tree: content already on the server
+ * does not travel, and one committed `dist/` there would block every rescue.
+ */
+export function blockedInHistory(path: string, size: number): string | null {
+  const blocked = blockedBecause(path, size);
+  if (blocked) return blocked;
+  const dirs = path.split("/").slice(0, -1);
+  return dirs.some(dir => DIR_RULES.includes(dir.toLowerCase()))
+    ? "excluded directory"
+    : null;
+}
+
 /** Every blob in a tree: `<size>\t<path>\0` (ls-tree -l). */
 export function treeScript(root: string, rev: string): string {
   return (
@@ -183,9 +200,12 @@ export function unpushedBlobsScript(root: string, rev: string): string {
 }
 
 /** The first blocked blob in a `<size>\t<path>\0` listing, or null. */
-export function firstBlocked(stdout: string): string | null {
+export function firstBlocked(
+  stdout: string,
+  rule: (path: string, size: number) => string | null = blockedBecause,
+): string | null {
   for (const { path, size } of parseChanges(stdout)) {
-    const why = blockedBecause(path, size);
+    const why = rule(path, size);
     if (why) return `${path} (${why})`;
   }
   return null;
@@ -326,11 +346,14 @@ export function commitScript(input: {
   author?: { name?: string; email?: string };
 }): string {
   const list = Buffer.from(input.paths.join("\0")).toString("base64");
+  // Authored by the person whose work it is (the git endpoint checks the
+  // author against the token), COMMITTED by "Mako Agent", as agent turns
+  // are: `git log --format='%an / %cn'` shows Mako made the rescue.
   const who =
-    input.author?.name && input.author?.email
-      ? `GIT_AUTHOR_NAME=${sh(input.author.name)} GIT_AUTHOR_EMAIL=${sh(input.author.email)} ` +
-        `GIT_COMMITTER_NAME=${sh(input.author.name)} GIT_COMMITTER_EMAIL=${sh(input.author.email)} `
-      : "";
+    (input.author?.name && input.author?.email
+      ? `GIT_AUTHOR_NAME=${sh(input.author.name)} GIT_AUTHOR_EMAIL=${sh(input.author.email)} `
+      : "") +
+    "GIT_COMMITTER_NAME='Mako Agent' GIT_COMMITTER_EMAIL='agent@mako.ai' ";
   return [
     `cd ${sh(input.root)} || exit 1`,
     "idx=$(mktemp) && lst=$(mktemp) || exit 1",
@@ -587,7 +610,7 @@ export async function scanUnpushed(
   if (history.exitCode !== 0 || history.truncated) {
     return { status: "error", reason: "could not scan the unpushed history" };
   }
-  const leak = firstBlocked(history.stdout);
+  const leak = firstBlocked(history.stdout, blockedInHistory);
   return leak ? { status: "blocked", path: leak } : { status: "clean" };
 }
 
