@@ -268,6 +268,62 @@ describe("rule b: folder author on real git", () => {
 // Rule d: an app Mako's scaffold commit created
 // ---------------------------------------------------------------------------
 
+describe("rule d: the Mako-Requested-By trailer, read first", () => {
+  it("reads the requester off the creating commit", async () => {
+    const repo = await makeRepo();
+    repo.commit(
+      "bot@mako.ai",
+      { "apps/req/mako.json": manifest("req") },
+      `Create app "req" (apps/req)\n\nMako-Requested-By: ${ALICE}`,
+    );
+    repo.commit("bob@example.com", { "apps/req/a.ts": "1" });
+    expect(await folderCreatorFromGit(repo.dir, "apps/req")).toEqual({
+      email: "bot@mako.ai",
+      requestedBy: ALICE,
+    });
+  });
+
+  const viaTrailer = (requestedBy: string, email = "bob@example.com") =>
+    proposeOwner(
+      row("apps/req"),
+      sources({
+        folderCreator: async () => ({ email, requestedBy }),
+        // Heuristic evidence that would name someone else: never consulted.
+        scaffoldEvidence: async () => ({ builderEmails: ["bob@example.com"] }),
+      }),
+    );
+
+  it("wins over the commit author and the builder heuristic", async () => {
+    expect(await viaTrailer(ALICE)).toMatchObject({
+      rule: "scaffold-builder",
+      ownerId: ALICE,
+    });
+    expect(await viaTrailer(ALICE, "bot@mako.ai")).toMatchObject({
+      rule: "scaffold-builder",
+      ownerId: ALICE,
+    });
+  });
+
+  it("names no one for a requester who left or a system actor", async () => {
+    expect(
+      await proposeOwner(
+        row("apps/req"),
+        sources({
+          folderCreator: async () => ({
+            email: "bot@mako.ai",
+            requestedBy: ALICE,
+          }),
+          isMember: () => false,
+        }),
+      ),
+    ).toMatchObject({ rule: "none", reason: "requester left workspace" });
+    expect(await viaTrailer("publish")).toMatchObject({
+      rule: "none",
+      reason: "requester is not a person",
+    });
+  });
+});
+
 describe("rule d: scaffold builder on real git", () => {
   const T0 = "2026-10-12T12:00:00Z";
   const at = (minutes: number) =>

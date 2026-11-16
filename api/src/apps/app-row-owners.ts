@@ -13,7 +13,9 @@
  *   b. folder-author  apps/…: the author of the commit on main that created
  *                     the folder's mako.json (followed across moves), mapped
  *                     to a Mako user by email, who must still be a member.
- *   d. scaffold-builder  apps/… created by Mako's own scaffold commit
+ *   d. scaffold-builder  the Mako-Requested-By trailer on the creating
+ *                     commit, when there is one (exact). Else, for apps/…
+ *                     created by Mako's own scaffold commit
  *                     (author bot@mako.ai, "Create app …": app_create_app
  *                     commits as Mako, not as the person): the person whose
  *                     personal tree it was scaffolded into, else the one
@@ -46,6 +48,7 @@ import { DEFAULT_BRANCH } from "./repository.service";
 import { OwnerDirectory } from "./user-handles";
 import { planWorkspaceHandles } from "./user-handles.service";
 import { isPersonActorId } from "./worktree/worktrees";
+import { REQUESTED_BY_TRAILER } from "./worktree/projects";
 
 /** A creating commit that adds more app manifests than this is a sweep. */
 export const CREATION_SWEEP_LIMIT = 3;
@@ -92,7 +95,7 @@ export interface WorkspaceOwnerSources {
   /** Who created the folder on main, or why nobody can be named. */
   folderCreator(
     appPath: string,
-  ): Promise<{ email: string } | { missing: string }>;
+  ): Promise<{ email: string; requestedBy?: string } | { missing: string }>;
   /** A Mako user id for a commit email, if one exists. */
   userIdForEmail(email: string): Promise<string | undefined>;
   /** Whether the user is a member of this workspace today. */
@@ -137,6 +140,14 @@ export async function proposeOwner(
   if (row.access === "private") return none("private row in workspace tree");
   const creator = await sources.folderCreator(row.path);
   if ("missing" in creator) return none(creator.missing);
+  // Rule d, exact: the creating commit names its requester in a
+  // Mako-Requested-By trailer (createProject writes it on every surface).
+  if (creator.requestedBy) {
+    const id = creator.requestedBy;
+    if (!isPersonActorId(id)) return none("requester is not a person");
+    if (!sources.isMember(id)) return none("requester left workspace");
+    return { ...row, rule: "scaffold-builder", ownerId: id };
+  }
   if (creator.email === MAKO_SCAFFOLD_AUTHOR) {
     return proposeScaffoldBuilder(row, sources, none);
   }
@@ -288,7 +299,7 @@ export async function folderCreatorFromGit(
   repoDir: string,
   appPath: string,
   ref = `refs/heads/${DEFAULT_BRANCH}`,
-): Promise<{ email: string } | { missing: string }> {
+): Promise<{ email: string; requestedBy?: string } | { missing: string }> {
   const manifest = `${appPath}/${APP_MANIFEST}`;
   let log: string;
   try {
@@ -300,7 +311,7 @@ export async function folderCreatorFromGit(
         ref,
         "--follow",
         "--diff-filter=A",
-        "--format=%H%x09%ae",
+        `--format=%H%x09%ae%x09%(trailers:key=${REQUESTED_BY_TRAILER},valueonly,separator=%x2C)`,
         "--",
         manifest,
       ],
@@ -320,8 +331,13 @@ export async function folderCreatorFromGit(
       missing: `folder created more than once on main (${lines.length} adds)`,
     };
   }
-  const [sha, email] = oldest.split("\t");
+  const [sha, email, trailer] = oldest.split("\t");
   if (!sha || !email) return { missing: "creating commit has no author" };
+  // One requester only: a commit naming several is nobody's alone.
+  const requesters = (trailer ?? "")
+    .split(",")
+    .map(v => v.trim())
+    .filter(Boolean);
   const { stdout: added } = await runGit(
     [
       "-C",
@@ -344,7 +360,10 @@ export async function folderCreatorFromGit(
   if (manifests > CREATION_SWEEP_LIMIT) {
     return { missing: `created in a sweep commit (${manifests} apps)` };
   }
-  return { email: email.trim().toLowerCase() };
+  return {
+    email: email.trim().toLowerCase(),
+    ...(requesters.length === 1 ? { requestedBy: requesters[0] } : {}),
+  };
 }
 
 /** Every ownerless row, with the path the apps index knows it by. */
