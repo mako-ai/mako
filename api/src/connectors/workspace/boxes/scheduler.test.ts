@@ -189,6 +189,17 @@ describe("lease acquire and release", () => {
     expect(provider.ping).toHaveBeenCalledTimes(1);
   });
 
+  it("pings after success, then a failure, even within the TTL of the success", async () => {
+    const s = scheduler();
+    await s.withLease(run(), async lease => lease.boxId);
+    await s
+      .withLease(run(), async lease => lease.markFailed("timed out"))
+      .catch(() => undefined);
+    provider.ping.mockClear();
+    await s.withLease(run(), async lease => lease.boxId);
+    expect(provider.ping).toHaveBeenCalledTimes(1);
+  });
+
   it("pings a paused box, which a lease resumes", async () => {
     const s = scheduler();
     const id = await s.withLease(run(), async lease => lease.boxId);

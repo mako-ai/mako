@@ -614,7 +614,8 @@ export class BoxScheduler {
         heartbeatAt: new Date(at),
         lastUsedAt: new Date(at),
         priorUseAt: held.fresh ? held.box.priorUseAt : held.box.lastUsedAt,
-        ...(failure ? {} : { lastOkAt: new Date(at) }),
+        // A failed run voids the earlier success: the next lease pings.
+        lastOkAt: failure ? null : new Date(at),
         ...(held.runtimeId ? { runtimeId: held.runtimeId } : {}),
       },
       { runs: 1, failures: failure ? 1 : 0, boxSeconds: seconds },
