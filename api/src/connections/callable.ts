@@ -489,25 +489,59 @@ const POSTHOG_READ_QUERY_KINDS = new Set([
   "LifecycleQuery",
 ]);
 
-/** The only fields a query request may carry. */
-const POSTHOG_QUERY_BODY_KEYS = new Set([
-  "query",
-  "refresh",
-  "client_query_id",
-  "name",
-]);
+/**
+ * The only fields a query request may carry. Not `refresh`: an agent reads
+ * PostHog's cached result and cannot force a recompute on every call.
+ */
+const POSTHOG_QUERY_BODY_KEYS = new Set(["query", "client_query_id", "name"]);
 
 /**
- * Whether `path` is in the project the connection is configured for
- * (`/api/projects/<id>/…` or `/api/environments/<id>/…`). A personal API key
- * may reach other projects and organizations; the connection reads one.
+ * The resource a path names in the project the connection is configured for
+ * (`/api/projects/<id>/<resource>/…` or `/api/environments/<id>/…`), as
+ * `{ resource, rest }`; null for another project, the project root itself,
+ * or a path outside a project. A personal API key may reach other projects
+ * and organizations; the connection reads one.
  */
-function inPosthogProject(path: string, config: Config): boolean {
+function posthogResource(
+  path: string,
+  config: Config,
+): { resource: string; rest: string[] } | null {
   // Stored as a string or a number (the field asks for a numeric id).
   const project = String(config.project_id ?? "").trim();
-  if (!project) return false;
-  const match = /^\/api\/(?:projects|environments)\/([^/]+)(?:\/|$)/.exec(path);
-  return match?.[1] === project;
+  if (!project) return null;
+  const match =
+    /^\/api\/(?:projects|environments)\/([^/]+)\/([^/]+)(\/.*)?$/.exec(path);
+  if (!match || match[1] !== project) return null;
+  return {
+    resource: match[2],
+    rest: (match[3] ?? "").split("/").filter(Boolean),
+  };
+}
+
+/**
+ * Whether a GET of a project path only returns analytics data: persons,
+ * events, insights, cohorts, query results, and feature flags as the flag
+ * list or one flag. Everything else is refused: the project root (it holds
+ * the project's secret token and its integration settings), local
+ * evaluation and remote config (signed with that token), destinations,
+ * integrations, and any resource not listed.
+ */
+function isPosthogDataRead(path: string, config: Config): boolean {
+  const target = posthogResource(path, config);
+  if (!target) return false;
+  const { resource, rest } = target;
+  switch (resource) {
+    case "persons":
+    case "events":
+    case "insights":
+    case "cohorts":
+    case "query":
+      return true;
+    case "feature_flags":
+      return rest.length === 0 || (rest.length === 1 && /^\d+$/.test(rest[0]));
+    default:
+      return false;
+  }
 }
 
 /**
@@ -536,9 +570,10 @@ export function isPosthogQueryBody(body: unknown): boolean {
 
 /**
  * PostHog: the API key the sync uses, sent as the connector sends it. Only
- * requests in the connection's project read: a GET there, or a POST of a
- * query that reads to its query API. Everything else, a GET elsewhere
- * included, is a write, so an agent never reaches it.
+ * analytics data in the connection's project reads: a GET of an allowed
+ * resource (isPosthogDataRead), or a POST of a query that reads to its query
+ * API. Everything else, the project root and every other GET included, is a
+ * write, so an agent never reaches it.
  */
 const posthog: CallableConnection = {
   type: "posthog",
@@ -553,13 +588,14 @@ const posthog: CallableConnection = {
         }
       : { type: "bearer", token: text(config.api_key) },
   reads(request, config) {
-    if (!inPosthogProject(request.path, config)) return false;
-    if (SAFE_METHODS.has(request.method)) return true;
+    if (request.method === "GET" || request.method === "HEAD") {
+      return isPosthogDataRead(request.path, config);
+    }
+    const target = posthogResource(request.path, config);
     return (
       request.method === "POST" &&
-      /^\/api\/(?:projects|environments)\/[^/]+\/query\/?$/.test(
-        request.path,
-      ) &&
+      target?.resource === "query" &&
+      target.rest.length === 0 &&
       isPosthogQueryBody(request.body)
     );
   },

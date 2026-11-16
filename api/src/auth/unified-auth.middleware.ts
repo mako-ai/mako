@@ -18,7 +18,6 @@ import {
   enrichContextWithWorkflowRun,
   enrichContextWithWorkflowWorker,
   enrichContextWithWorkspace,
-  enrichContextWithApiKey,
 } from "../logging";
 import { Types } from "mongoose";
 import { isWorkerKey, workerKeyName } from "../workflows/worker-key";
@@ -217,8 +216,6 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
           c.set("workspaceId", workspace._id.toString());
 
           enrichContextWithUser(creator._id);
-          // Acts as its creator, but no manager's live look (proxy.service).
-          enrichContextWithApiKey();
           // Enrich logging context with workspace ID (API key auth)
           enrichContextWithWorkspace(workspace._id.toString());
           // A deployed workflow acts as itself only with a pass: the worker

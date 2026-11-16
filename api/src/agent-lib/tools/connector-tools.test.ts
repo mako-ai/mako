@@ -483,8 +483,9 @@ describe("call_connection: a named operation instead of a path", () => {
       connection: "fr_close",
       operation: { name: "search_leads", params: { query: "Dupont" } },
       readOnly: true,
-      managerReads: true,
+      agentBudget: true,
     });
+    expect(proxied.calls[0].managerReads).toBeUndefined();
     expect(proxied.calls[0].request).toBeUndefined();
   });
 
@@ -502,6 +503,26 @@ describe("call_connection: a named operation instead of a path", () => {
       params: { id: "cus_1" },
       headers: { "stripe-account": "acct_1" },
     });
+  });
+
+  it("refuses an operation mixed with raw request fields", async () => {
+    proxied.calls = [];
+    for (const raw of [
+      { method: "POST" },
+      { path: "/lead/" },
+      { query: { _limit: 1 } },
+      { body: {} },
+    ]) {
+      const result = await tools().call_connection.execute({
+        connectionId: "fr_close",
+        operation: "search_leads",
+        params: { query: "Dupont" },
+        ...raw,
+      });
+      expect(result.error).toMatch(/^Pass either `operation`/);
+      expect(result.error).toContain(Object.keys(raw)[0]);
+    }
+    expect(proxied.calls).toHaveLength(0);
   });
 
   it("asks for an operation or a path when given neither", async () => {

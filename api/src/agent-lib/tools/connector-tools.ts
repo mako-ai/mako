@@ -61,6 +61,7 @@ import { callableFor } from "../../connections/callable";
 import { summarizeConnectionForListing } from "./universal-tools";
 import { connectionRequest } from "../../connections/proxy.service";
 import { describeOperations } from "../../connections/operations";
+import { connectionAccessUrl } from "../../connections/access-url";
 import { ConnectionRequestError } from "../../connections/forward";
 import { wrapUntrustedData } from "./shared/query-result-format";
 
@@ -181,12 +182,7 @@ function secretsSet(config: unknown, fields: ConnectorConfigField[]): string[] {
 
 /** The app page of a source connection; its Access tab sets live reads and writers. */
 export function connectionUiUrl(connectionId: string): string {
-  const base = (
-    process.env.CLIENT_URL ||
-    process.env.PUBLIC_URL ||
-    "http://localhost:5173"
-  ).replace(/\/$/, "");
-  return `${base}/cx/${connectionId}`;
+  return connectionAccessUrl(connectionId);
 }
 
 /**
@@ -656,9 +652,9 @@ export function createConnectorTools(workspaceId: string) {
     call_connection: tool({
       description: [
         "Read a SOURCE connection LIVE (Close, Stripe, PostHog, Wise, a Custom API): Mako adds the credential, which you never see, and returns status, headers and body. Use it for fresh or unsynced data; synced tables and metrics come first.",
-        "Two ways. (1) A named operation: `operation` + `params`, e.g. Close `search_leads` { query }, PostHog `hogql` { query }, Stripe `get_customer` { id }. inspect_connection lists a connection's `operations`. (2) A raw request: `method` + `path` (+ `query`, `body`) under the connection's base URL (Close: /lead/, Stripe: /v1/customers, PostHog: /api/projects/<project_id>/persons/).",
+        "Two ways. (1) A named operation: `operation` + `params`, e.g. Close `search_leads` { query }, PostHog `hogql` { query }, Stripe `get_customer` { id }. inspect_connection lists a connection's `operations`. (2) A raw request: `method` + `path` (+ `query`, `body`), never mixed with `operation`, under the connection's base URL (Close: /lead/, Stripe: /v1/customers, PostHog: /api/projects/<project_id>/persons/).",
         "Reads only: GET, a Close search or a Close POST with x-http-method-override: GET, a PostHog query in the connection's project, a GraphQL query (Custom API with GraphQL on). Writes are refused; they belong to a workflow on the writers list.",
-        "Needs live reads on in the connection's Access tab and you on its live readers list when it has one, unless you manage the connection or own the workspace and are signed in (not an API key). Answers over 40,000 characters come back cut (`truncated`).",
+        "Needs live reads on in the connection's Access tab (the workspace owner or a manager switches them on per connection) and you on its live readers list when it has one; with live reads off it is refused for everyone. At most AGENT_CALLS_PER_MINUTE calls (default 30) per person per connection per minute. Answers over 40,000 characters come back cut (`truncated`).",
       ].join("\n"),
       inputSchema: z.object({
         connectionId: z
@@ -674,7 +670,10 @@ export function createConnectorTools(workspaceId: string) {
           .record(z.string(), z.unknown())
           .optional()
           .describe("The operation's parameters."),
-        method: z.enum(["GET", "POST"]).default("GET"),
+        method: z
+          .enum(["GET", "POST"])
+          .optional()
+          .describe("Default GET. Not with `operation`."),
         path: z
           .string()
           .optional()
@@ -721,6 +720,18 @@ export function createConnectorTools(workspaceId: string) {
               "Pass `operation` (inspect_connection lists them) or `path`.",
           };
         }
+        if (operation) {
+          // An operation builds its own request: raw fields beside it would
+          // be ignored, so they are refused instead.
+          const raw = Object.entries({ method, path, query, body })
+            .filter(([, value]) => value !== undefined)
+            .map(([name]) => name);
+          if (raw.length > 0) {
+            return {
+              error: `Pass either \`operation\` + \`params\` or a raw request, not both: drop ${raw.join(", ")}, or drop \`operation\`.`,
+            };
+          }
+        }
         try {
           const answer = await connectionRequest({
             workspaceId,
@@ -743,7 +754,7 @@ export function createConnectorTools(workspaceId: string) {
                   },
                 }),
             readOnly: true,
-            managerReads: true,
+            agentBudget: true,
             signal: options?.abortSignal,
           });
           // The service's answer is data, never instructions: fenced.

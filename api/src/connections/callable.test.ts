@@ -1131,12 +1131,45 @@ describe("PostHog: reads in its own project, a query included", () => {
     expect(
       read("POST", "/api/projects/175702/query/", JSON.stringify(hogql)),
     ).toBe(true);
-    expect(
-      read("POST", "/api/projects/175702/query/", {
-        ...hogql,
-        refresh: "blocking",
-      }),
-    ).toBe(true);
+  });
+
+  it("an agent cannot force a recompute: refresh is refused", () => {
+    for (const refresh of ["blocking", "force_blocking", true]) {
+      expect(
+        read("POST", "/api/projects/175702/query/", { ...hogql, refresh }),
+      ).toBe(false);
+    }
+  });
+
+  it("a GET reads only allowlisted analytics data, never the project root", () => {
+    // The project root returns the project's secret token and integrations.
+    expect(read("GET", "/api/projects/175702/")).toBe(false);
+    expect(read("GET", "/api/projects/175702")).toBe(false);
+    expect(read("GET", "/api/environments/175702/")).toBe(false);
+    for (const path of [
+      "/api/projects/175702/persons/",
+      "/api/projects/175702/persons/abc/",
+      "/api/projects/175702/events/",
+      "/api/projects/175702/insights/42/",
+      "/api/projects/175702/cohorts/7/persons/",
+      "/api/projects/175702/query/q_123/",
+      "/api/projects/175702/feature_flags/",
+      "/api/projects/175702/feature_flags/12/",
+    ]) {
+      expect(read("GET", path), path).toBe(true);
+    }
+    for (const path of [
+      "/api/projects/175702/feature_flags/local_evaluation/",
+      "/api/projects/175702/feature_flags/12/remote_config/",
+      "/api/projects/175702/hog_functions/",
+      "/api/projects/175702/integrations/",
+      "/api/projects/175702/batch_exports/",
+      "/api/projects/175702/plugin_configs/",
+      "/api/projects/175702/surveys/",
+      "/api/environments/175702/secret_token/",
+    ]) {
+      expect(read("GET", path), path).toBe(false);
+    }
   });
 
   it("anything else POSTed writes", () => {

@@ -7,9 +7,8 @@
  * with no `liveReads` stored, is off), and then for everyone in the
  * workspace, or, when the connection has a live readers list, only for the
  * principals on it and its writers (same identity rule as writers; a request
- * that identifies no one reads nothing there). An agent's own look (call_connection,
- * `managerReads`) is read, as probe_connection is, also by the connection's
- * managers and the workspace owner while live reads are off. GET, HEAD, OPTIONS, a connection's `reads` (a Close search POST)
+ * that identifies no one reads nothing there). Live reads off refuse every
+ * read, whoever asks. GET, HEAD, OPTIONS, a connection's `reads` (a Close search POST)
  * and a GraphQL query are reads; everything else is a write, for the
  * principals on the connection's writers list only (the same list and the
  * same identity rule as database connections, access/connection-writes.ts):
@@ -48,11 +47,9 @@ import {
   principalsOutsideWorkspace,
   viewerPrincipals,
 } from "../access/connection-writes";
-import {
-  mayChangeSourceConnection,
-  peopleOf,
-} from "../access/source-connection-access";
 import { operationRequest } from "./operations";
+import { connectionAccessUrl } from "./access-url";
+import { addToCounter } from "../middleware/rate-limit";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers } from "../logging";
 import { getRequestContext } from "../logging/context";
@@ -98,13 +95,10 @@ export interface ConnectionRequestParams {
   /** An agent: reads only, whoever it acts for. */
   readOnly?: boolean;
   /**
-   * A person's own live look, as probe_connection takes one: its managers and
-   * the workspace owner read even with live reads off (they could turn them
-   * on). Only the agent's call_connection passes it; a workflow never does,
-   * and a request made with an API key (a CI key, a sandbox run's key) never
-   * gets it.
+   * An agent's own call (call_connection): counted against a per-person,
+   * per-connection budget (AGENT_CALLS_PER_MINUTE) before it is sent.
    */
-  managerReads?: boolean;
+  agentBudget?: boolean;
   /** Who is acting, when not the request's own person or workflow. */
   actor?: string;
   /**
@@ -161,23 +155,50 @@ export function mayReadLive(
   );
 }
 
+/** The budget window: one minute. */
+const AGENT_BUDGET_WINDOW_MS = 60_000;
+
 /**
- * Whether `principal` is a person who manages `row` or owns the workspace:
- * who may probe its records with live reads off (connectors/probe.service.ts).
+ * Agent calls one person may send through one connection per minute
+ * (env AGENT_CALLS_PER_MINUTE, default 30). Vendor limits are per key and
+ * shared with the syncs: an agent in a loop must not spend them.
  */
-async function managesConnection(
-  params: Pick<ConnectionRequestParams, "workspaceId">,
-  row: Pick<ISourceConnection, "managers" | "createdBy">,
+export function agentCallsPerMinute(): number {
+  const parsed = Number(process.env.AGENT_CALLS_PER_MINUTE);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 30;
+}
+
+/**
+ * Count one agent call against its budget; refuse it past the budget. The
+ * shared counter store (Redis when configured, else in-process) is the one
+ * the API and auth limiters use. A store error lets the call through: a
+ * Redis blip must not refuse reads the vendor would answer.
+ */
+async function chargeAgentCall(
+  workspaceId: string,
+  connection: Pick<ISourceConnection, "_id" | "name">,
   principal: string | undefined,
-): Promise<boolean> {
-  if (!principal?.startsWith("user:")) return false;
-  // A key acts as its creator, but is not that person looking: a CI key or
-  // a sandbox run's key reads only as live reads allow.
-  if (getRequestContext()?.apiKey) return false;
-  const userId = principal.slice("user:".length);
-  const people = peopleOf(params.workspaceId);
-  const role = await people.roleOf(userId);
-  return mayChangeSourceConnection({ ...people, role, userId }, row);
+): Promise<void> {
+  const window = Math.floor(Date.now() / AGENT_BUDGET_WINDOW_MS);
+  const key = `call-connection:${workspaceId}:${String(connection._id)}:${principal ?? "anonymous"}:${window}`;
+  let total: number;
+  try {
+    total = await addToCounter(key, 1, AGENT_BUDGET_WINDOW_MS);
+  } catch (error) {
+    logger.warn("Agent call budget unavailable", { error });
+    return;
+  }
+  const budget = agentCallsPerMinute();
+  if (total > budget) {
+    const retryAfter = Math.max(
+      1,
+      Math.ceil(((window + 1) * AGENT_BUDGET_WINDOW_MS - Date.now()) / 1000),
+    );
+    throw new ConnectionRequestError(
+      `Too many live reads of ${connection.name}: ${budget} a minute per person. Try again in ${retryAfter}s, or read its synced tables.`,
+      429,
+    );
+  }
 }
 
 /**
@@ -386,18 +407,12 @@ export async function connectionRequest(
     );
   }
 
-  if (
-    read &&
-    params.managerReads &&
-    (await managesConnection(params, row, principal))
-  ) {
-    logger.info("Connection read by a manager", where);
-  } else if (read) {
+  if (read) {
     // Off unless a manager turned it on: a missing field on a connection
     // made before live reads existed means off.
     if (row.liveReads !== true) {
       throw new ConnectionRequestError(
-        `Live reads are off for ${row.name}: read its synced tables, or ask one of this connection's managers or the workspace owner to turn live reads on in its Access tab.`,
+        `Live reads are off for ${row.name}, so nobody can read it live, whoever asks. Read its synced tables, or ask the workspace owner or one of its managers to switch live reads on for this connection in its Access tab: ${connectionAccessUrl(String(row._id))}`,
         403,
       );
     }
@@ -409,6 +424,10 @@ export async function connectionRequest(
           : `Only some people and workflows may read ${row.name} live, and Mako could not tell who is reading.`,
         403,
       );
+    }
+    // Counted only once allowed: a refusal costs the vendor nothing.
+    if (params.agentBudget) {
+      await chargeAgentCall(params.workspaceId, row, principal);
     }
     logger.info("Connection read", where);
   } else {
