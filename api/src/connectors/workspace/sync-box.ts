@@ -172,9 +172,10 @@ export async function materializeConnector(input: {
   runtimeId: string;
   slug: string;
   sourceSha: string;
-  files: Map<string, Uint8Array>;
+  /** The folder's files, or a loader called only when the box lacks them. */
+  files: Map<string, Uint8Array> | (() => Promise<Map<string, Uint8Array>>);
 }): Promise<string> {
-  const { ctx, runtimeId, slug, sourceSha, files } = input;
+  const { ctx, runtimeId, slug, sourceSha } = input;
   const provider = getSandboxProvider();
   const dir = connectorDir(ctx, runtimeId, slug, sourceSha);
 
@@ -186,6 +187,8 @@ export async function materializeConnector(input: {
   );
   if (check.stdout.trim() === "yes") return dir;
 
+  const files =
+    typeof input.files === "function" ? await input.files() : input.files;
   for (const [relative, bytes] of files) {
     // A path from the repo tree must not escape the directory it is being
     // written into. Nothing in a normal connector folder ever contains "..",
@@ -212,6 +215,38 @@ export async function materializeConnector(input: {
   }
   await writeBoxFile(ctx, marker, new TextEncoder().encode(sourceSha));
   return dir;
+}
+
+/**
+ * THE BUNDLE HOOK: given a box and a bundle hash, make the box's runtime root
+ * hold that bundle, and say where it is.
+ *
+ * Every leased run calls this right after it gets its box, and the reconcile
+ * `spec` does too. Today a "bundle" is the SDK runtime plus the connector
+ * folder copied in, keyed by the folder's source sha. Iteration 1 (bundles,
+ * RFC connector-runtime §5) replaces the body with "fetch the `.mjs` for this
+ * hash and put it under the runtime root"; the callers do not change.
+ *
+ * Idempotent per box and hash: a box that already holds the bundle (a
+ * resumed box, or one restored from its key's snapshot) costs one marker
+ * check and never loads the files.
+ */
+export async function ensureBundle(input: {
+  ctx: SandboxExecContext;
+  hash: string;
+  slug: string;
+  files: () => Promise<Map<string, Uint8Array>>;
+  ensureRuntime: (ctx: SandboxExecContext) => Promise<string>;
+}): Promise<{ runtimeId: string; dir: string }> {
+  const runtimeId = await input.ensureRuntime(input.ctx);
+  const dir = await materializeConnector({
+    ctx: input.ctx,
+    runtimeId,
+    slug: input.slug,
+    sourceSha: input.hash,
+    files: input.files,
+  });
+  return { runtimeId, dir };
 }
 
 /** Is this exact SDK present and completely materialized in the box? */

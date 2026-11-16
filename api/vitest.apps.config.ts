@@ -168,6 +168,10 @@ export default defineConfig({
       "src/connectors/workspace/workspace-connectors.test.ts",
       "src/connectors/workspace/resolver.test.ts",
       "src/connectors/workspace/sync-box.test.ts",
+      // Connector box leases: mocked provider, fake timers, and the Mongo
+      // store against a real in-memory Mongo.
+      "src/connectors/workspace/boxes/**/*.test.ts",
+      "src/connectors/workspace/SandboxedConnector.leases.test.ts",
       "src/apps/repository.service.test.ts",
       "src/services/workspace-repos.service.test.ts",
     ],

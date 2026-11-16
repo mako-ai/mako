@@ -24,10 +24,17 @@ import {
   parseConnectorFile,
   validateSpec,
 } from "./connector-file";
-import { listConnectorFoldersAtMain, ensureConnectorRuntime } from "./resolver";
+import {
+  connectorRuntimeId,
+  listConnectorFoldersAtMain,
+  ensureConnectorRuntime,
+} from "./resolver";
+import { connectorBoxLeasesEnabled } from "./boxes/config";
+import { getBoxScheduler } from "./boxes/scheduler";
 import {
   failureMessage,
   firstOfType,
+  ensureBundle,
   materializeConnector,
   runConnectorCommand,
   syncBoxContext,
@@ -294,24 +301,40 @@ async function runSpec(
 ): Promise<
   { ok: true; spec: Record<string, unknown> } | { ok: false; reason: string }
 > {
-  const ctx = syncBoxContext(workspaceId);
-  const runtimeId = await ensureConnectorRuntime(ctx);
-  const dir = await materializeConnector({
-    ctx,
-    runtimeId,
-    slug,
-    sourceSha,
-    files,
-  });
-
-  const result = await runConnectorCommand({
-    ctx,
-    runtimeId,
-    connectorDir: dir,
-    command: "spec",
-    entry,
-    timeoutMs: 60_000,
-  });
+  const result = connectorBoxLeasesEnabled()
+    ? await getBoxScheduler().withLease(
+        {
+          workspaceId,
+          // `spec` takes no credential. Its boxes are the workspace's own and
+          // never hold a connection's config.
+          connectionId: `spec:${workspaceId}`,
+          bundleHash: sourceSha,
+          command: "spec",
+          runtimeId: await connectorRuntimeId(),
+          timeoutMs: 60_000,
+        },
+        async lease => {
+          const { runtimeId, dir } = await ensureBundle({
+            ctx: lease.ctx,
+            hash: sourceSha,
+            slug,
+            files: async () => files,
+            ensureRuntime: ensureConnectorRuntime,
+          });
+          lease.noteRuntime(runtimeId);
+          const run = await runConnectorCommand({
+            ctx: lease.ctx,
+            runtimeId,
+            connectorDir: dir,
+            command: "spec",
+            entry,
+            timeoutMs: 60_000,
+          });
+          if (run.timedOut) lease.markFailed("timed out");
+          return run;
+        },
+      )
+    : await runSpecInWorkspaceBox(workspaceId, slug, sourceSha, files, entry);
 
   const failure = failureMessage(result);
   if (failure) return { ok: false, reason: failure };
@@ -323,6 +346,34 @@ async function runSpec(
   const validation = validateSpec(message?.spec);
   if (!validation.ok) return { ok: false, reason: validation.reason };
   return { ok: true, spec: message!.spec! };
+}
+
+/** The flag-off path: the workspace's one sync box, as before leases. */
+async function runSpecInWorkspaceBox(
+  workspaceId: string,
+  slug: string,
+  sourceSha: string,
+  files: Map<string, Uint8Array>,
+  entry: string,
+) {
+  const ctx = syncBoxContext(workspaceId);
+  const runtimeId = await ensureConnectorRuntime(ctx);
+  const dir = await materializeConnector({
+    ctx,
+    runtimeId,
+    slug,
+    sourceSha,
+    files,
+  });
+
+  return runConnectorCommand({
+    ctx,
+    runtimeId,
+    connectorDir: dir,
+    command: "spec",
+    entry,
+    timeoutMs: 60_000,
+  });
 }
 
 async function block(

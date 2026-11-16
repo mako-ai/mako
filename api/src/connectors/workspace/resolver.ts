@@ -263,6 +263,14 @@ export async function ensureConnectorRuntime(
   return runtimeId;
 }
 
+/**
+ * The id of the SDK runtime this API ships, without touching a box. Leases
+ * use it to pick the snapshot template that already holds this runtime.
+ */
+export async function connectorRuntimeId(): Promise<string> {
+  return sdkRuntimeId(await readSdkFiles());
+}
+
 let sdkFilesCache: Map<string, Uint8Array> | null = null;
 let sdkRuntimeIdCache: string | null = null;
 

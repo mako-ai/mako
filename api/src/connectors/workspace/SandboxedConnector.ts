@@ -24,22 +24,29 @@ import {
   type IncrementalCapabilities,
   type ResumableFetchOptions,
 } from "../base/BaseConnector";
+import { randomBytes } from "node:crypto";
 import { loggers } from "../../logging";
 import {
+  ensureBundle,
   failureMessage,
   firstOfType,
   materializeConnector,
   runConnectorCommand,
   syncBoxContext,
+  type ConnectorCommand,
   type ProtocolMessage,
+  type RunResult,
 } from "./sync-box";
 import { jsonSchemaToEntitySchema } from "./spec-translation";
 import {
+  connectorRuntimeId,
   ensureConnectorRuntime,
   loadConnectorDefinition,
   readConnectorFolder,
   type LoadedConnector,
 } from "./resolver";
+import { connectorBoxLeasesEnabled } from "./boxes/config";
+import { getBoxScheduler } from "./boxes/scheduler";
 
 const logger = loggers.connector();
 
@@ -140,21 +147,90 @@ export class SandboxedConnector extends BaseConnector {
     };
   }
 
+  /** The saved data source's id, or null for a connection not saved yet. */
+  private connectionId(): string | null {
+    const id = (this.sourceConnection as { _id?: unknown })._id;
+    return id ? String(id) : null;
+  }
+
+  /**
+   * Run one protocol command.
+   *
+   * Flag off (CONNECTOR_BOX_LEASES unset): exactly the old path, the
+   * workspace's one sync box. Flag on: a lease on a box keyed by this
+   * connection and the connector's hash, released when the command ends.
+   */
+  private async run(
+    command: ConnectorCommand,
+    options: {
+      config?: Record<string, unknown>;
+      catalog?: Record<string, unknown>;
+      state?: Record<string, unknown> | unknown[];
+      maxIterations?: number;
+      timeoutMs?: number;
+    },
+  ): Promise<RunResult> {
+    if (!connectorBoxLeasesEnabled()) {
+      const { dir, runtimeId, entry, ctx } = await this.ready();
+      return runConnectorCommand({
+        ctx,
+        runtimeId,
+        connectorDir: dir,
+        command,
+        entry,
+        ...options,
+      });
+    }
+
+    const definition = await this.definition();
+    const saved = this.connectionId();
+    return getBoxScheduler().withLease(
+      {
+        workspaceId: this.workspaceId,
+        // A connection being tested before it is saved has no id. It gets a
+        // one-off key, so its credential never enters a box another run uses.
+        connectionId: saved ?? `unsaved:${randomBytes(8).toString("hex")}`,
+        bundleHash: definition.sourceSha,
+        command,
+        runtimeId: await connectorRuntimeId(),
+        timeoutMs: options.timeoutMs,
+        oneOff: saved === null,
+      },
+      async lease => {
+        const { dir, runtimeId } = await ensureBundle({
+          ctx: lease.ctx,
+          hash: definition.sourceSha,
+          slug: definition.slug,
+          files: () =>
+            readConnectorFolder(
+              this.workspaceId,
+              definition.slug,
+              definition.sha,
+            ),
+          ensureRuntime: ensureConnectorRuntime,
+        });
+        lease.noteRuntime(runtimeId);
+        const result = await runConnectorCommand({
+          ctx: lease.ctx,
+          runtimeId,
+          connectorDir: dir,
+          command,
+          entry: definition.entry,
+          ...options,
+        });
+        if (result.timedOut) lease.markFailed("timed out");
+        return result;
+      },
+    );
+  }
+
   private config(): Record<string, unknown> {
     return (this.sourceConnection.config ?? {}) as Record<string, unknown>;
   }
 
   async testConnection(): Promise<ConnectionTestResult> {
     try {
-      const { dir, runtimeId, entry, ctx } = await this.ready();
-      const result = await runConnectorCommand({
-        ctx,
-        runtimeId,
-        connectorDir: dir,
-        command: "check",
-        entry,
-        config: this.config(),
-      });
+      const result = await this.run("check", { config: this.config() });
       const failure = failureMessage(result);
       if (failure) return { success: false, message: failure };
 
@@ -221,15 +297,7 @@ export class SandboxedConnector extends BaseConnector {
 
   private async catalog(): Promise<ProtocolMessage | null> {
     if (this.catalogCache) return this.catalogCache;
-    const { dir, runtimeId, entry, ctx } = await this.ready();
-    const result = await runConnectorCommand({
-      ctx,
-      runtimeId,
-      connectorDir: dir,
-      command: "discover",
-      entry,
-      config: this.config(),
-    });
+    const result = await this.run("discover", { config: this.config() });
     const failure = failureMessage(result);
     if (failure) throw new Error(`discover failed: ${failure}`);
     this.catalogCache = firstOfType(result.messages, "CATALOG") ?? null;
@@ -255,7 +323,10 @@ export class SandboxedConnector extends BaseConnector {
    * stop need a different adapter, and they are not this iteration.
    */
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
-    const { dir, runtimeId, entry, ctx } = await this.ready();
+    // Flag off keeps the old order: the box is readied before the entity
+    // check. With leases the box is taken only for the command itself.
+    if (connectorBoxLeasesEnabled()) await this.definition();
+    else await this.ready();
 
     // An entity the connector does not declare is a failure, not an empty
     // sync. The runner's stream selection silently drops an unknown name, so
@@ -272,12 +343,7 @@ export class SandboxedConnector extends BaseConnector {
     const maxIterations = options.maxIterations ?? 10;
     const previous = options.state;
 
-    const result = await runConnectorCommand({
-      ctx,
-      runtimeId,
-      connectorDir: dir,
-      command: "read",
-      entry,
+    const result = await this.run("read", {
       config: this.config(),
       catalog: {
         streams: [

@@ -79,6 +79,25 @@ export interface SandboxExecResult {
   truncated: boolean;
 }
 
+/** Lifecycle calls the connector box scheduler makes on a session. */
+export interface SandboxBoxLifecycle {
+  /**
+   * Create the session's box now, from `template` when given (a snapshot id),
+   * else from the configured template. Resumes it if it already exists.
+   */
+  create(sessionKey: string, options: { template?: string }): Promise<void>;
+  /** Pause with memory. The next command on the session resumes it. */
+  pause(sessionKey: string): Promise<void>;
+  /** Snapshot the box; returns an id `create` accepts as a template. */
+  snapshot(sessionKey: string, name: string): Promise<string>;
+  deleteSnapshot(snapshotId: string): Promise<void>;
+  /**
+   * Running sandboxes on the whole account: app sessions, sync boxes and
+   * connector boxes alike. The account's concurrency limit counts all of them.
+   */
+  countRunning(): Promise<number>;
+}
+
 /** A live pseudo-terminal in a sandbox. */
 export interface SandboxTerminal {
   /** Process id, so a dropped client can reattach to the same shell. */
@@ -225,6 +244,11 @@ export interface SandboxProvider {
       onExit?: (reason: string) => void;
     },
   ): Promise<SandboxTerminal>;
+  /**
+   * Explicit lifecycle for leased connector boxes (connectors/workspace/boxes).
+   * Absent where there is no VM to pause or snapshot (local).
+   */
+  boxLifecycle?: SandboxBoxLifecycle;
   /** Tear down any remote session for the given affinity key (best effort). */
   destroySession?(sessionKey: string): Promise<void>;
   /**

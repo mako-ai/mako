@@ -24,6 +24,7 @@ import {
 } from "../config";
 import { loggers } from "../../logging";
 import type {
+  SandboxBoxLifecycle,
   SandboxTerminal,
   SandboxExecContext,
   SandboxExecOptions,
@@ -153,6 +154,12 @@ async function convergeToSingle(
  */
 const connecting = new Map<string, Promise<Sandbox>>();
 
+/**
+ * The template a session's FIRST create should use instead of the configured
+ * one: a connector box restored from its snapshot (boxLifecycle.create).
+ */
+const templateOverrides = new Map<string, string>();
+
 function connectSession(sessionKey: string): Promise<Sandbox> {
   const inflight = connecting.get(sessionKey);
   if (inflight) return inflight;
@@ -228,21 +235,24 @@ async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
     }
   }
 
-  const sandbox = await Sandbox.create(templateId(), {
-    apiKey: apiKey(),
-    timeoutMs: IDLE_TIMEOUT_MS,
-    metadata: { makoAppsSessionKey: sessionKey },
-    // Pause WITH MEMORY on idle: the sandbox is a stateful computer now —
-    // tmux sessions, per-app dev servers, a user's running processes — so
-    // idling must be sleep, not death. A full memory snapshot means resume
-    // restores every process exactly where it was: reopening the page after
-    // a night away reattaches to the same dev server and the same shells
-    // instead of cold-booting (fs-only snapshots reboot the VM on resume,
-    // which is how "why did my dev server restart overnight" happened).
-    // Resume is explicit via Sandbox.connect() in connectSession; a sandbox
-    // that is fully dead still falls through to a fresh create + hydrate.
-    lifecycle: { onTimeout: { action: "pause", keepMemory: true } },
-  });
+  const sandbox = await Sandbox.create(
+    templateOverrides.get(sessionKey) ?? templateId(),
+    {
+      apiKey: apiKey(),
+      timeoutMs: IDLE_TIMEOUT_MS,
+      metadata: { makoAppsSessionKey: sessionKey },
+      // Pause WITH MEMORY on idle: the sandbox is a stateful computer now —
+      // tmux sessions, per-app dev servers, a user's running processes — so
+      // idling must be sleep, not death. A full memory snapshot means resume
+      // restores every process exactly where it was: reopening the page after
+      // a night away reattaches to the same dev server and the same shells
+      // instead of cold-booting (fs-only snapshots reboot the VM on resume,
+      // which is how "why did my dev server restart overnight" happened).
+      // Resume is explicit via Sandbox.connect() in connectSession; a sandbox
+      // that is fully dead still falls through to a fresh create + hydrate.
+      lifecycle: { onTimeout: { action: "pause", keepMemory: true } },
+    },
+  );
   await sandbox.commands.run(`mkdir -p ${REMOTE_ROOT}`, {
     user: SANDBOX_USER,
   });
@@ -806,9 +816,58 @@ async function sessionExists(sessionKey: string): Promise<boolean> {
   }
 }
 
+/** The sandbox id behind a session, without creating one. */
+async function sandboxIdFor(sessionKey: string): Promise<string | null> {
+  const known = sessions.get(sessionKey);
+  if (known) return known;
+  const paginator = Sandbox.list({
+    apiKey: apiKey(),
+    query: { metadata: { makoAppsSessionKey: sessionKey } },
+    limit: 5,
+  });
+  if (!paginator.hasNext) return null;
+  return pickWinner([...(await paginator.nextItems())])?.sandboxId ?? null;
+}
+
+const boxLifecycleE2b: SandboxBoxLifecycle = {
+  async create(sessionKey, { template }) {
+    if (template) templateOverrides.set(sessionKey, template);
+    try {
+      await connectSession(sessionKey);
+    } finally {
+      templateOverrides.delete(sessionKey);
+    }
+  },
+  async pause(sessionKey) {
+    const id = await sandboxIdFor(sessionKey);
+    if (!id) return;
+    await Sandbox.pause(id, { apiKey: apiKey() });
+    knownAlive.delete(sessionKey);
+  },
+  async snapshot(sessionKey, name) {
+    const sandbox = await connectSession(sessionKey);
+    const info = await sandbox.createSnapshot({ name });
+    return info.snapshotId;
+  },
+  async deleteSnapshot(snapshotId) {
+    await Sandbox.deleteSnapshot(snapshotId, { apiKey: apiKey() });
+  },
+  async countRunning() {
+    const paginator = Sandbox.list({
+      apiKey: apiKey(),
+      query: { state: ["running"] },
+      limit: 100,
+    });
+    let count = 0;
+    while (paginator.hasNext) count += (await paginator.nextItems()).length;
+    return count;
+  },
+};
+
 export const e2bSandboxProvider: SandboxProvider = {
   id: "e2b",
   supportsRunUsers: true,
+  boxLifecycle: boxLifecycleE2b,
   exec: execE2b,
   execDetached: execDetachedE2b,
   root: () => REMOTE_ROOT,
