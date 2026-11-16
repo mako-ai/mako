@@ -1,4 +1,5 @@
 import type { Context, Next } from "hono";
+import { repoCloneInProgress } from "../apps/cloud-repo/clone-state";
 import { loggers } from "../logging";
 
 const logger = loggers.api("concurrency-limit");
@@ -29,6 +30,7 @@ export interface ConcurrencyPool {
   readonly name: string;
   /** Resolves with a release function, or null when no slot freed in time. */
   acquire(): Promise<(() => void) | null>;
+  readonly max: number;
   readonly active: number;
   readonly waiting: number;
 }
@@ -59,6 +61,7 @@ export function createConcurrencyPool(
 
   return {
     name: options.name,
+    max: options.max,
     get active() {
       return active;
     },
@@ -86,9 +89,56 @@ export function createConcurrencyPool(
   };
 }
 
+/**
+ * Set on a refusal that already waited `maxWaitMs` for a slot. The app's
+ * client does not retry it: the request has spent its time, and a retry
+ * would add load to a full instance.
+ */
+export const POOL_WAITED_HEADER = "X-Mako-Pool-Waited-Ms";
+
+function busy(c: Context, waitedMs?: number): Response {
+  return c.json(
+    {
+      success: false,
+      error: "This server is busy; retry in a moment.",
+    },
+    {
+      status: 503,
+      headers: {
+        "Retry-After": "2",
+        ...(waitedMs === undefined
+          ? {}
+          : { [POOL_WAITED_HEADER]: String(waitedMs) }),
+      },
+    },
+  );
+}
+
+export interface ConcurrencyLimitOptions {
+  /**
+   * Asked only when the pool has no free slot: refuse at once (503 +
+   * Retry-After) instead of waiting for one, when this says the request
+   * would only queue behind slow work. A clone of the workspace repo in
+   * progress, for one (2026-11-16: waiters held their place 10 s and then
+   * failed anyway). With a free slot the request runs as before.
+   */
+  shedWhen?: (c: Context) => boolean;
+}
+
 /** Hono middleware running the request inside `pool`. */
-export function concurrencyLimit(pool: ConcurrencyPool) {
+export function concurrencyLimit(
+  pool: ConcurrencyPool,
+  options: ConcurrencyLimitOptions = {},
+) {
   return async (c: Context, next: Next) => {
+    if (pool.active >= pool.max && options.shedWhen?.(c)) {
+      logger.warn("Repo clone in progress; refusing request", {
+        pool: pool.name,
+        path: c.req.path,
+      });
+      return busy(c);
+    }
+    const waitStart = Date.now();
     const release = await pool.acquire();
     if (!release) {
       logger.warn("Concurrency pool full; refusing request", {
@@ -97,13 +147,7 @@ export function concurrencyLimit(pool: ConcurrencyPool) {
         active: pool.active,
         waiting: pool.waiting,
       });
-      return c.json(
-        {
-          success: false,
-          error: "This server is busy; retry in a moment.",
-        },
-        { status: 503, headers: { "Retry-After": "2" } },
-      );
+      return busy(c, Date.now() - waitStart);
     }
     try {
       await next();
@@ -124,3 +168,17 @@ export const repoWorkPool = createConcurrencyPool({
   max: 12,
   maxWaitMs: 10_000,
 });
+
+/**
+ * For the repo-work routes: when the pool is full and this instance is
+ * cloning the request's workspace repo, refuse at once. The clone takes 11
+ * to 14 s on a new instance; a waiter would hold its place for 10 s and
+ * fail anyway. With a free slot the request joins the clone and answers
+ * when it ends, as before.
+ */
+export const shedWhileCloning: ConcurrencyLimitOptions = {
+  shedWhen: c => {
+    const workspaceId = c.req.param("workspaceId");
+    return Boolean(workspaceId && repoCloneInProgress(workspaceId));
+  },
+};

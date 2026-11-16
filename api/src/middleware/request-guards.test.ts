@@ -7,7 +7,13 @@
  */
 import assert from "node:assert/strict";
 import { Hono } from "hono";
-import { concurrencyLimit, createConcurrencyPool } from "./concurrency-limit";
+import {
+  concurrencyLimit,
+  createConcurrencyPool,
+  POOL_WAITED_HEADER,
+  shedWhileCloning,
+} from "./concurrency-limit";
+import { cloneInFlight } from "../apps/cloud-repo/clone-state";
 import {
   apiRateLimitMiddleware,
   resetRateLimitForTests,
@@ -36,6 +42,8 @@ async function concurrencyPool() {
   const refused = await app.request("/slow");
   assert.equal(refused.status, 503);
   assert.equal(refused.headers.get("Retry-After"), "2");
+  // It waited for a slot: marked, so the app's client does not retry it.
+  assert.ok(Number(refused.headers.get(POOL_WAITED_HEADER)) >= 40);
 
   // A waiter gets the slot the moment one frees.
   const waiting = app.request("/slow");
@@ -148,14 +156,71 @@ async function edgeOrigin() {
     // never pass through Cloudflare.
     assert.equal((await app.request("/api/inngest")).status, 200);
     assert.equal((await app.request("/health")).status, 200);
+    assert.equal((await app.request("/health/ready")).status, 200);
   } finally {
     delete process.env.EDGE_ORIGIN_SECRET;
     delete process.env.EDGE_ORIGIN_CHECK;
   }
 }
 
+/**
+ * While this instance clones a workspace's repo and the pool is full, that
+ * workspace's repo-work requests are refused at once (503 + Retry-After)
+ * instead of waiting 10 s (2026-11-16). With a free slot they run and join
+ * the clone, as before. Other workspaces still wait for a slot.
+ */
+async function shedWhileCloningRepo() {
+  const pool = createConcurrencyPool({ name: "t3", max: 1, maxWaitMs: 5_000 });
+  let unblock!: () => void;
+  const blocker = new Promise<void>(r => (unblock = r));
+  const app = new Hono();
+  app.get(
+    "/api/workspaces/:workspaceId/apps/:id/files",
+    concurrencyLimit(pool, shedWhileCloning),
+    async c => {
+      if (c.req.query("hold")) await blocker;
+      return c.text("ok");
+    },
+  );
+  const OTHER = "6846e6a01b05af0948070583";
+  const url = (ws: string, hold = false) =>
+    `/api/workspaces/${ws}/apps/${APP}/files${hold ? "?hold=1" : ""}`;
+  let finish!: () => void;
+  cloneInFlight.set(WS, new Promise<void>(r => (finish = r)));
+  try {
+    // A free slot: the request runs, cloning or not.
+    assert.equal((await app.request(url(WS))).status, 200);
+
+    // The one slot is taken: a request for the cloning workspace is
+    // refused at once and takes nothing.
+    const holder = app.request(url(OTHER, true));
+    await new Promise(r => setTimeout(r, 5));
+    assert.equal(pool.active, 1);
+    const started = Date.now();
+    const shed = await app.request(url(WS));
+    assert.equal(shed.status, 503);
+    assert.equal(shed.headers.get("Retry-After"), "2");
+    assert.equal(shed.headers.get(POOL_WAITED_HEADER), null, "retryable");
+    assert.ok(Date.now() - started < 1_000, "refused without waiting");
+    assert.equal(pool.waiting, 0, "did not queue");
+
+    // Another workspace waits for the slot as before.
+    const other = app.request(url(OTHER));
+    await new Promise(r => setTimeout(r, 5));
+    assert.equal(pool.waiting, 1);
+    unblock();
+    assert.equal((await holder).status, 200);
+    assert.equal((await other).status, 200);
+  } finally {
+    unblock();
+    finish();
+    cloneInFlight.delete(WS);
+  }
+}
+
 async function main() {
   await concurrencyPool();
+  await shedWhileCloningRepo();
   await rateLimit();
   await edgeOrigin();
   console.info("request-guards: ok");

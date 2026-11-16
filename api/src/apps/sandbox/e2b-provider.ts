@@ -242,8 +242,10 @@ function connectSession(sessionKey: string): Promise<Sandbox> {
   noteBoxResume(sessionKey, connectCaller);
   const run = connectSessionNow(sessionKey).finally(() => {
     connecting.delete(sessionKey);
-    // A connect resumes a paused box: "not running" no longer holds.
+    // A connect resumes a paused box: "not running" no longer holds, nor
+    // does the answer of a lookup that went out before it.
     runningAnswer.delete(sessionKey);
+    runningLookups.delete(sessionKey);
   });
   connecting.set(sessionKey, run);
   return run;
@@ -279,6 +281,7 @@ export function resetE2bProviderStateForTests(): void {
   knownAbsent.clear();
   keepAliveUntil.clear();
   runningAnswer.clear();
+  runningLookups.clear();
 }
 
 async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
@@ -1453,12 +1456,74 @@ const boxLifecycleE2b: SandboxBoxLifecycle = {
  * map still names a box after E2B paused it, and the exec that followed a
  * stale yes is exactly what resumed it. Both answers are cached for a beat
  * so a poll burst is one list call.
+ *
+ * The list call is bounded (2026-11-16: a slow E2B list held repo-work pool
+ * slots on the apps files/status routes). It gives up after
+ * RUNNING_LOOKUP_TIMEOUT_MS, and concurrent lookups of one session on this
+ * instance share one call. A lookup that fails or times out answers
+ * "unknown" and logs why. Never a stale "running": five poll guards exec on
+ * "running", and an exec resumes a paused box.
  */
 const runningAnswer = new Map<string, { running: boolean; until: number }>();
 const RUNNING_ANSWER_TTL_MS = 10_000;
+/** How long an E2B list may take before the lookup gives up. */
+export const RUNNING_LOOKUP_TIMEOUT_MS = 3_000;
+/** One list call per session at a time on this instance. */
+const runningLookups = new Map<string, Promise<boolean>>();
 
 async function sessionRunning(sessionKey: string): Promise<boolean> {
   return (await sessionRunState(sessionKey)) === "running";
+}
+
+function lookUpRunning(sessionKey: string): Promise<boolean> {
+  const inFlight = runningLookups.get(sessionKey);
+  if (inFlight) return inFlight;
+  let timer: NodeJS.Timeout | undefined;
+  const lookup = (async () => {
+    const paginator = Sandbox.list({
+      apiKey: apiKey(),
+      query: {
+        metadata: { makoAppsSessionKey: sessionKey },
+        state: ["running"],
+      },
+      limit: 1,
+      requestTimeoutMs: RUNNING_LOOKUP_TIMEOUT_MS,
+    });
+    return paginator.hasNext && (await paginator.nextItems()).length > 0;
+  })();
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `E2B list did not answer within ${RUNNING_LOOKUP_TIMEOUT_MS} ms`,
+          ),
+        ),
+      RUNNING_LOOKUP_TIMEOUT_MS,
+    );
+    timer.unref?.();
+  });
+  const shared = Promise.race([lookup, timeout])
+    .then(running => {
+      // A pause noted while this call was out wins over its answer.
+      if (runningLookups.get(sessionKey) === shared) {
+        runningAnswer.set(sessionKey, {
+          running,
+          until: Date.now() + RUNNING_ANSWER_TTL_MS,
+        });
+      }
+      return running;
+    })
+    .finally(() => {
+      clearTimeout(timer);
+      if (runningLookups.get(sessionKey) === shared) {
+        runningLookups.delete(sessionKey);
+      }
+    });
+  // The losing side of the race must not surface as an unhandled rejection.
+  lookup.catch(() => undefined);
+  runningLookups.set(sessionKey, shared);
+  return shared;
 }
 
 async function sessionRunState(
@@ -1470,24 +1535,16 @@ async function sessionRunState(
     return cached.running ? "running" : "not-running";
   }
   try {
-    const paginator = Sandbox.list({
-      apiKey: apiKey(),
-      query: {
-        metadata: { makoAppsSessionKey: sessionKey },
-        state: ["running"],
-      },
-      limit: 1,
+    return (await lookUpRunning(sessionKey)) ? "running" : "not-running";
+  } catch (error) {
+    // Could not tell. Polls read "unknown" as "offline" (sessionRunning)
+    // and the next beat asks again; callers that must not guess fall back
+    // to their own answer.
+    logger.warn("E2B running lookup failed", {
+      sessionKey,
+      fresh,
+      error: error instanceof Error ? error.message : String(error),
     });
-    const running =
-      paginator.hasNext && (await paginator.nextItems()).length > 0;
-    runningAnswer.set(sessionKey, {
-      running,
-      until: Date.now() + RUNNING_ANSWER_TTL_MS,
-    });
-    return running ? "running" : "not-running";
-  } catch {
-    // Could not tell. Polls read this as "offline" (sessionRunning), and the
-    // next beat asks again; callers that must not guess see "unknown".
     return "unknown";
   }
 }
@@ -1512,6 +1569,7 @@ export function onSessionPaused(
  * the next real use reconnects (and resumes) from scratch.
  */
 export function noteSessionPaused(sessionKey: string): void {
+  runningLookups.delete(sessionKey);
   runningAnswer.set(sessionKey, {
     running: false,
     until: Date.now() + RUNNING_ANSWER_TTL_MS,

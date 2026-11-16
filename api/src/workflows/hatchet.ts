@@ -35,14 +35,26 @@ export function hasInstanceHatchet(): boolean {
 }
 
 export class HatchetError extends Error {
+  /**
+   * Hatchet could not be reached, or answered that it is not serving (a
+   * gateway status). Transient: a pod restarting or being evicted. Routes
+   * answer it with 503 + Retry-After so the caller retries.
+   */
+  readonly unavailable: boolean;
+
   constructor(
     message: string,
     readonly status: number,
+    options: { unavailable?: boolean; cause?: unknown } = {},
   ) {
-    super(message);
+    super(message, { cause: options.cause });
     this.name = "HatchetError";
+    this.unavailable = options.unavailable ?? false;
   }
 }
+
+/** Gateway statuses: whatever answered stands in front of a Hatchet that did not. */
+const UNAVAILABLE_STATUSES = new Set([502, 503, 504]);
 
 export interface WorkspaceTenant {
   tenantId: string;
@@ -103,6 +115,7 @@ async function send(
     throw new HatchetError(
       `Hatchet is unreachable: ${error instanceof Error ? error.message : String(error)}`,
       502,
+      { unavailable: true, cause: error },
     );
   }
 }
@@ -113,6 +126,7 @@ async function parse<T>(res: Response, what: string): Promise<T> {
     throw new HatchetError(
       `${what} failed (${res.status}): ${text.slice(0, 500)}`,
       res.status,
+      { unavailable: UNAVAILABLE_STATUSES.has(res.status) },
     );
   }
   return (await res.json()) as T;

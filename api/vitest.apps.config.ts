@@ -49,6 +49,8 @@ export default defineConfig({
       "src/apps/sandbox/e2b-fleet.test.ts",
       // The E2B workspace move: an old-account box id means a fresh box.
       "src/apps/sandbox/e2b-provider.migration.test.ts",
+      // The bounded, coalesced "running?" lookup (2026-11-16 5xx bursts).
+      "src/apps/sandbox/e2b-provider.running.test.ts",
       // The pre-save pass, its mocked decisions and its real-git ref rescues.
       "src/apps/box-presave.test.ts",
       "src/apps/box-presave.git.test.ts",

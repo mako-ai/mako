@@ -23,9 +23,16 @@ sharedConfig:
   env:
     SERVER_MSGQUEUE_KIND: "postgres"
 
-# One of each, always on. The chart's own size (250m CPU and 1Gi requested
-# each) is enough: at the worst of 2026-11-16 each used 0.1 CPU and 60 MB.
-# What they need is a database that answers (provision.sh, SQL_TIER).
+# Two of each, and a disruption budget that keeps one up. The chart's own
+# size (250m CPU and 1Gi requested each) is enough: at the worst of
+# 2026-11-16 each used 0.1 CPU and 60 MB. What they need is a database that
+# answers (provision.sh, SQL_TIER).
+#
+# With one pod each, any restart was an outage. On 2026-11-16 a manual
+# rollout at 19:41 and a cluster-autoscaler eviction at 19:57 left no pod
+# to answer, and the runs list returned 56 x 500. Two replicas keep one
+# serving through a rolling update (maxUnavailable rounds to 0). The budget
+# (minAvailable: 1) makes the autoscaler and node drains evict one at a time.
 #
 # The probes are the chart's with more patience. Both `/api/live` and the
 # engine's `/live` ask the database, and Kubernetes' defaults (1 s timeout,
@@ -35,7 +42,9 @@ sharedConfig:
 # A restart does not make a database faster; now only a pod that has not
 # answered for a minute is restarted.
 api:
-  replicaCount: 1
+  replicaCount: 2
+  podDisruptionBudget:
+    minAvailable: 1
   health:
     spec:
       livenessProbe:
@@ -45,7 +54,9 @@ api:
         timeoutSeconds: 5
 
 engine:
-  replicaCount: 1
+  replicaCount: 2
+  podDisruptionBudget:
+    minAvailable: 1
   health:
     spec:
       livenessProbe:
