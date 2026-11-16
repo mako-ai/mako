@@ -52,6 +52,7 @@ import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { createConnectionWriteTools } from "../agent-lib/tools/connection-write-tools";
 import { createFlowFileTools } from "../agent-lib/tools/flow-file-tools";
 import { createWorkflowTools } from "../agent-lib/tools/workflow-tools";
+import { createSandboxTools } from "../agent-lib/tools/sandbox-tools";
 import { createFlowSyncTools } from "../agent-lib/tools/flow-sync-tools";
 import { createMemberTools } from "../agent-lib/tools/member-tools";
 import { createWebTools } from "../agent-lib/tools/web-tools";
@@ -169,6 +170,11 @@ export interface MakoMcpContext {
   acpDesktop?: boolean;
   /** Approved task grants resolved server-side for this agent session. */
   capabilityGrants?: readonly CapabilityGrant[];
+  /**
+   * The API key was minted by Mako for automation (a workflow worker or a
+   * sandbox run), not by a person for themselves. It gets no sandbox shell.
+   */
+  automationKey?: boolean;
 }
 
 export type BridgeableTool = Pick<
@@ -260,6 +266,15 @@ export function buildMakoMcpCandidateTools(
   const memberTools = createMemberTools(workspaceId, userId);
   // Read-only reads of the whole workspace repo.
   const repoTools = createRepoTools({ workspaceId, userId });
+  // The caller's own sandbox at the repo root (member role; changes need
+  // the git-write and workflows-run grants). Commands stop at 100 s, under
+  // the 120 s an MCP exchange gets.
+  const sandboxTools = createSandboxTools({
+    workspaceId,
+    userId,
+    maxTimeoutSeconds: 100,
+    automationKey: context.automationKey,
+  });
   return {
     ...connectorTools,
     ...connectionWriteTools,
@@ -268,6 +283,7 @@ export function buildMakoMcpCandidateTools(
     ...workflowTools,
     ...appsTools,
     ...repoTools,
+    ...sandboxTools,
     ...memberTools,
     ...consoleTools,
     ...notebookTools,

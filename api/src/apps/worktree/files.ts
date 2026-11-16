@@ -63,10 +63,81 @@ const logger = loggers.api("apps");
 
 export type ExecOutcome = SandboxExecResult;
 
+/**
+ * One push at a time per box, in this process. A shell push after a command
+ * (execInWorktree) waits here, and the workspace shell (sandbox-tools.ts)
+ * holds it from its command to the end of its main-settling step, so a
+ * concurrent app_bash cannot push a commit that command left on main before
+ * it is moved to a branch. Another API instance is not covered.
+ */
+const pushLocks = new Map<string, Promise<void>>();
+
+/** How long a caller waits for the box push lock before giving up. */
+export const BOX_PUSH_LOCK_WAIT_MS = 30_000;
+
+/** The lock stayed held past the wait: the caller's work did not run. */
+export class BoxPushLockTimeoutError extends Error {
+  constructor(waitMs: number) {
+    super(
+      `The sandbox is busy with another command (waited ${Math.round(waitMs / 1000)} s).`,
+    );
+    this.name = "BoxPushLockTimeoutError";
+  }
+}
+
+export async function withBoxPushLock<T>(
+  sessionKey: string,
+  fn: () => Promise<T>,
+  { waitMs = BOX_PUSH_LOCK_WAIT_MS }: { waitMs?: number } = {},
+): Promise<T> {
+  const previous = pushLocks.get(sessionKey) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>(resolve => (release = resolve));
+  const tail = previous.then(() => mine);
+  pushLocks.set(sessionKey, tail);
+  // The entry goes only when the whole queue up to and including this slot
+  // has finished: `tail` settles after every earlier holder AND this slot
+  // released. Deleting it at release time instead would let a waiter that
+  // timed out, while the holder still runs, clear the lock for the next
+  // caller.
+  void tail.then(() => {
+    if (pushLocks.get(sessionKey) === tail) pushLocks.delete(sessionKey);
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = await Promise.race([
+    previous.then(() => false),
+    new Promise<boolean>(resolve => {
+      timer = setTimeout(() => resolve(true), waitMs);
+    }),
+  ]);
+  clearTimeout(timer);
+  if (timedOut) {
+    // Only our own slot is released: whoever queued behind it still waits
+    // for the holder (through `tail`), never for a caller that gave up.
+    release();
+    throw new BoxPushLockTimeoutError(waitMs);
+  }
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
 export async function execInWorktree(
   handle: WorktreeHandle,
   command: string,
-  options: SandboxExecOptions = {},
+  {
+    pushIfAhead = true,
+    ...options
+  }: SandboxExecOptions & {
+    /**
+     * Push commits the command left on the checkout's branch (default). The
+     * workspace shell (sandbox-tools.ts) turns it off: it decides itself
+     * where a commit made on main goes, which is never main.
+     */
+    pushIfAhead?: boolean;
+  } = {},
 ): Promise<ExecOutcome> {
   // §10: the session is the whole workspace repo; commands are app-scoped by
   // default (caller cwd is app-relative). posix.join keeps it session-rooted.
@@ -102,11 +173,17 @@ export async function execInWorktree(
   // against the very merge it was promoting. A build machine reports its
   // result; it does not publish it.
   await syncBranchFromBox(handle);
-  if (handle.doc.userId !== PUBLISH_ACTOR) {
-    await boxPushIfAhead(ctx).catch(error =>
-      logger.warn("Apps could not push commits made in the shell", {
-        error: error instanceof Error ? error.message : String(error),
-      }),
+  if (pushIfAhead && handle.doc.userId !== PUBLISH_ACTOR) {
+    // A push that cannot get the lock in time is skipped, not waited on for
+    // minutes: the commits stay in the box, and the next command pushes them.
+    await withBoxPushLock(ctx.sessionKey, () => boxPushIfAhead(ctx)).catch(
+      error =>
+        logger.warn(
+          error instanceof BoxPushLockTimeoutError
+            ? "Apps skipped the push after a command: the box push lock is held"
+            : "Apps could not push commits made in the shell",
+          { error: error instanceof Error ? error.message : String(error) },
+        ),
     );
   }
   return result;
@@ -443,8 +520,8 @@ export async function writeFile(
     throw new Error("File exceeds the maximum size for a direct write");
   }
   const ctx = await ensureBox(handle);
-  await boxWriteFile(ctx, safe, contents);
-
+  // Asked BEFORE the write: an ignored path (.env, node_modules/) refused
+  // after writing would already hold the bytes on disk.
   const ignored = await getSandboxProvider().exec(
     ctx,
     `git -C ${sh(boxRoot(ctx))} check-ignore -q ${sh(safe)}`,
@@ -455,6 +532,7 @@ export async function writeFile(
       `${relPath} is ignored by git (.gitignore or the sandbox's excludes), so it cannot be saved. Build output and installed dependencies live only in the sandbox by design — write somewhere tracked instead.`,
     );
   }
+  await boxWriteFile(ctx, safe, contents);
 }
 
 /** Read a file straight from the working copy (agents editing in place). */

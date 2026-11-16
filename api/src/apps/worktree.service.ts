@@ -82,6 +82,8 @@ export {
 } from "./worktree/worktrees";
 export {
   execInWorktree,
+  withBoxPushLock,
+  BoxPushLockTimeoutError,
   writeWorktreeScratchFile,
   listFiles,
   readFile,

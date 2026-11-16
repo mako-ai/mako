@@ -235,8 +235,10 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
                 : `tool-idx-${partIndex}`;
 
               // MCP tool approval flow (Claude-style allow once / always allow).
-              // Approval states only occur for tools with `needsApproval` —
-              // in Mako that is exclusively MCP tools.
+              // Approval states only occur for tools with `needsApproval`:
+              // MCP tools, and the workspace shell (sandbox_bash,
+              // sandbox_write_file), which shows the same card with
+              // "Allow once" only (no saved grant applies to it).
               if (
                 rawState === "approval-requested" ||
                 rawState === "approval-responded" ||

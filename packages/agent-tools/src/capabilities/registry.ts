@@ -12,6 +12,7 @@ import { DBT_CAPABILITIES } from "./dbt-capabilities";
 import { MEMBER_CAPABILITIES } from "./member-capabilities";
 import { NOTEBOOK_CAPABILITIES } from "./notebook-capabilities";
 import { QUERY_CAPABILITIES } from "./query-capabilities";
+import { SANDBOX_CAPABILITIES } from "./sandbox-capabilities";
 import { SYNC_CAPABILITIES } from "./sync-capabilities";
 import { WORKFLOW_CAPABILITIES } from "./workflow-capabilities";
 import type { AgentCapabilityDefinition, AgentSurface } from "./types";
@@ -26,6 +27,7 @@ export const AGENT_CAPABILITIES: readonly AgentCapabilityDefinition[] = [
   ...MEMBER_CAPABILITIES,
   ...WORKFLOW_CAPABILITIES,
   ...SYNC_CAPABILITIES,
+  ...SANDBOX_CAPABILITIES,
 ];
 
 export const AGENT_CAPABILITY_BY_NAME: ReadonlyMap<

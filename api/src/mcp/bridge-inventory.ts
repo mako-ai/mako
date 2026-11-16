@@ -30,6 +30,7 @@ import { createUniversalTools } from "../agent-lib/tools/universal-tools";
 import { createVersionHistoryTools } from "../agent-lib/tools/version-history-tools";
 import { createWebTools } from "../agent-lib/tools/web-tools";
 import { createRepoTools } from "../agent-lib/tools/repo-tools";
+import { createSandboxTools } from "../agent-lib/tools/sandbox-tools";
 import { CORE_ALWAYS_TOOL_NAMES, modeRegistry } from "../agents/modes/registry";
 
 /** Stable dummy workspace id for definition-only factory calls. */
@@ -98,6 +99,7 @@ export function collectLiveAgentToolNames(): string[] {
   add(keysOf(createMemberTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createWebTools()));
   add(keysOf(createRepoTools({ workspaceId: INVENTORY_WORKSPACE_ID })));
+  add(keysOf(createSandboxTools({ workspaceId: INVENTORY_WORKSPACE_ID })));
   add(keysOf(createDbtServerTools(INVENTORY_WORKSPACE_ID)));
   add(
     keysOf(
