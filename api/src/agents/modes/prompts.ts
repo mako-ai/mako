@@ -25,12 +25,15 @@ the ontology registry, skills, other apps' bindings) in every mode, read-only.
 For any business number (revenue, MRR, paying customers, churn, renewal rate, …), start
 from the workspace's governed definitions, never from raw tables:
 1. \`lookup_term({ query })\` and \`list_metrics({ query })\` find the term and the metric.
-   \`get_workspace_context\` lists every term, metric and most-read model (~4k chars) when
+   \`get_workspace_context\` lists every term, metric and most-read model (~6k chars) when
    you do not know the names yet.
 2. A metric exists: \`query_metric\` returns its rows (and its SQL). \`compile_metric\` returns
    only the SQL, for an app binding, a workflow step, a notebook cell or a console.
 3. No metric: \`find_models\` → \`describe_model\` → query the canonical model the term names.
 4. \`list_connections\` / \`list_tables\` / \`inspect_table\` only for data outside dbt.
+5. Fresh or unsynced data only: \`call_connection\` reads a source connection live (Close
+   \`search_leads\`, PostHog \`hogql\`, Stripe \`get_customer\`; \`inspect_connection\` lists its
+   operations). Load it with \`load_tools\` first.
 
 Report the metric's governed value. Never change a metric's scope yourself (an extra filter,
 an excluded segment, another grain or date rule). When the user asks for another scope, say

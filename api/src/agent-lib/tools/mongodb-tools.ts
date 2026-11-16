@@ -10,6 +10,16 @@ import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { queryExecutionService } from "../../services/query-execution.service";
 import type { AgentToolExecutionContext } from "../../agents/types";
+import type { QueryAccess } from "../../auth/api-key-scopes";
+import { mongoReadOnlyAccessError } from "../../services/read-only-query.service";
+import { effectiveSqlQueryAccess } from "./sql-tools";
+import {
+  actingPrincipal,
+  isWrite,
+  notAWriterRefusal,
+  recordWrite,
+} from "../../access/connection-writes";
+import { MCP_QUERY_SOFT_TIMEOUT_MS } from "../../config/long-running-queries";
 import type { ConsoleDataV2 } from "../types";
 import {
   inferBsonType,
@@ -283,8 +293,19 @@ async function executeQueryImpl(
   userId?: string,
   toolExecutionContext?: AgentToolExecutionContext,
   maxRows?: number,
+  /** The caller's query access; omitted in-product (writers list decides). */
+  queryAccess?: QueryAccess,
 ) {
   const startTime = Date.now();
+
+  if (queryAccess === "none") {
+    throw new Error("This API key does not have query access");
+  }
+  if (queryAccess === "read") {
+    // Refused before any lookup: a read-only key never writes.
+    const accessError = mongoReadOnlyAccessError(query);
+    if (accessError) throw new Error(accessError);
+  }
 
   if (
     !Types.ObjectId.isValid(connectionId) ||
@@ -300,6 +321,39 @@ async function executeQueryImpl(
     workspaceId: new Types.ObjectId(workspaceId),
   });
   if (!database) throw new Error("Connection not found or access denied");
+  if (database.type !== "mongodb") {
+    throw new Error(
+      `This tool only runs MongoDB queries; ${database.name} is ${database.type}. Use sql_execute_query.`,
+    );
+  }
+
+  // A key that may write (query:write) writes only where the connection
+  // allows it, as sql_execute_query; any other key runs the query read-only.
+  const effectiveAccess =
+    queryAccess === undefined
+      ? undefined
+      : effectiveSqlQueryAccess(queryAccess, database);
+  const readOnly = effectiveAccess !== undefined && effectiveAccess !== "write";
+  if (
+    queryAccess === "write-opt-in" &&
+    effectiveAccess === "read" &&
+    isWrite("mongodb", query)
+  ) {
+    // The key may write, the connection's writers list decides who: say
+    // who Mako saw, and record the refusal so the Access tab offers Allow.
+    const principal = actingPrincipal();
+    if (principal) recordWrite(database, principal, query, false);
+    throw new Error(notAWriterRefusal(principal, database.name));
+  }
+  if (readOnly) {
+    const accessError = mongoReadOnlyAccessError(query);
+    if (accessError) throw new Error(accessError);
+  }
+  // Over MCP (queryAccess set) answer before the client's 60s abort.
+  const timeoutMs =
+    queryAccess === undefined
+      ? AGENT_QUERY_TIMEOUT_MS
+      : Math.min(AGENT_QUERY_TIMEOUT_MS, MCP_QUERY_SOFT_TIMEOUT_MS);
 
   const { executionId, signal, release } = registerAgentExecution(
     toolExecutionContext,
@@ -318,9 +372,14 @@ async function executeQueryImpl(
             typeof databaseConnectionService.executeQuery
           >[0],
           query,
-          { databaseName, executionId: registeredExecutionId, signal },
+          {
+            databaseName,
+            executionId: registeredExecutionId,
+            signal,
+            ...(readOnly ? { readOnly: true } : {}),
+          },
         ),
-      { signal },
+      { signal, timeoutMs },
     );
   } catch (err: unknown) {
     if (isAgentToolAbortError(err)) {
@@ -349,7 +408,7 @@ async function executeQueryImpl(
       return {
         success: false,
         status: "timeout",
-        message: `Query timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s (this is a short timeout for quick exploration only). The query may be valid but slow. Either: (1) Add .limit() / narrow the date range to make it fast enough to test here, OR (2) for a genuinely long query, write the full query into a console (create_console / modify_console) and run it with run_console — that path is resumable: it keeps running server-side past the timeout and you poll check_query_status for the result.`,
+        message: `Query timed out after ${Math.round(timeoutMs / 1000)}s (this is a short timeout for quick exploration only). The query may be valid but slow. Either: (1) Add .limit() / narrow the date range to make it fast enough to test here, OR (2) for a genuinely long query, write the full query into a console (create_console / modify_console) and run it with run_console — that path is resumable: it keeps running server-side past the timeout and you poll check_query_status for the result.`,
       };
     }
     throw err;
@@ -461,6 +520,11 @@ export const createMongoToolsV2 = (
   _preferredConsoleId?: string,
   userId?: string,
   toolExecutionContext?: AgentToolExecutionContext,
+  /**
+   * The caller's query access (MCP). Omitted in-product, where the
+   * connection's writers list decides each write.
+   */
+  queryAccess?: QueryAccess,
 ) => {
   return {
     list_connections: tool({
@@ -574,6 +638,7 @@ export const createMongoToolsV2 = (
             userId,
             toolExecutionContext,
             maxRows,
+            queryAccess,
           );
         } catch (error) {
           return {

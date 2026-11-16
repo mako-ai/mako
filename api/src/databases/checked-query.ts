@@ -6,6 +6,10 @@
  * from the registry is held to the same rules as the service.
  */
 import { checkConnectionWrite } from "../access/connection-writes";
+import {
+  MONGO_READ_ONLY_REFUSAL,
+  isMongoReadOnlyRefused,
+} from "../services/read-only-query.service";
 import type { IDatabaseConnection } from "../database/workspace-schema";
 import { checkPreviewQuerySafety } from "../services/query-pagination.service";
 import { engineFor } from "./engines";
@@ -54,6 +58,16 @@ export async function checkQuery(
     options = { ...options, readOnlyTransaction: true };
   }
   if (options?.readOnly) {
+    // MongoDB reads run through the shell interpreter, which never
+    // evaluates code and refuses a write method on a query classified as a
+    // read (mongo-shell-interpreter.ts). The same classification decides
+    // here, before the engine is reached.
+    if (database.type === "mongodb") {
+      if (isMongoReadOnlyRefused(query)) {
+        return { refused: MONGO_READ_ONLY_REFUSAL };
+      }
+      return { options };
+    }
     if (typeof query !== "string") {
       return {
         refused:

@@ -172,6 +172,8 @@ export async function runMongoShellText(
   query: string,
   signal?: AbortSignal,
   maxRows?: number,
+  /** A read-only run: no database command, read ones included. */
+  readOnly?: boolean,
 ): Promise<{ data: unknown; truncated: boolean }> {
   logger.debug("Executing MongoDB query", { query: query.substring(0, 200) });
 
@@ -189,7 +191,8 @@ export async function runMongoShellText(
       db,
       query,
       {
-        allowWrites: isWrite("mongodb", query),
+        allowWrites: !readOnly && isWrite("mongodb", query),
+        readOnly,
         signal,
         maxRows,
       },

@@ -1,3 +1,4 @@
+import { isWrite } from "../access/connection-writes";
 import { checkPreviewQuerySafety } from "./query-pagination.service";
 
 export const QUERY_WRITE_SCOPE_REQUIRED =
@@ -5,10 +6,37 @@ export const QUERY_WRITE_SCOPE_REQUIRED =
   "single read-only SELECT/WITH statement. Database writes are not supported " +
   "over MCP — run them with your own database tooling.";
 
-export const MONGO_QUERY_WRITE_SCOPE_REQUIRED =
-  "Arbitrary MongoDB JavaScript execution is not available over MCP (access " +
-  "is read-only). You can still list databases and collections and inspect " +
-  "collection schemas with sample documents.";
+/** Why a MongoDB query that writes was refused on a read-only run. */
+export const MONGO_READ_ONLY_REFUSAL =
+  "Mako MCP access is read-only: the MongoDB query was rejected because it " +
+  "writes or runs a command (insert/update/delete/drop, runCommand, $out, " +
+  "$merge, ...). Reads run: find, findOne, aggregate, countDocuments, " +
+  "distinct, e.g. db.collection('users').find({}).limit(10).toArray().";
+
+/** Why a console that holds no SQL and no MongoDB query cannot run read-only. */
+export const NON_SQL_CONSOLE_READ_ONLY_REFUSAL =
+  "This console's language cannot run read-only over MCP. SQL and MongoDB " +
+  "consoles can.";
+
+/**
+ * Database commands, read ones included: usersInfo, getLog or serverStatus
+ * read credentials, logs and server state, not data. A read-only run takes
+ * none of them. This pattern is a fast first pass with a clear message; the
+ * shell interpreter enforces the rule on the parsed name (`readOnly`), so
+ * an escaped spelling such as `db["comm\u0061nd"]` is refused there.
+ */
+const MONGO_COMMAND = /\b(command|runCommand|adminCommand)\b/;
+
+/** Whether a MongoDB query may not run read-only: it writes or runs a command. */
+export function isMongoReadOnlyRefused(query: unknown): boolean {
+  if (isWrite("mongodb", query)) return true;
+  return typeof query === "string" && MONGO_COMMAND.test(query);
+}
+
+/** The read-only refusal for a MongoDB shell query, or null when it reads. */
+export function mongoReadOnlyAccessError(query: string): string | null {
+  return isMongoReadOnlyRefused(query) ? MONGO_READ_ONLY_REFUSAL : null;
+}
 
 export function sqlReadOnlyAccessError(
   query: string,

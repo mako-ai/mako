@@ -38,6 +38,7 @@ import {
   MAX_DEPTH,
   DB_METHODS,
   ADMIN_METHODS,
+  READ_ONLY_ADMIN_METHODS,
   COLLECTION_METHODS,
   CURSOR_METHODS,
 } from "./language";
@@ -486,6 +487,17 @@ export class Interpreter extends ShellCalls {
   }
 
   private checkWrite(method: MethodRef, args: unknown[]): void {
+    // The parsed name decides, whatever the spelling in the text.
+    if (
+      this.options.readOnly &&
+      (COMMAND_METHODS.has(method.name) ||
+        (method.target instanceof AdminHandle &&
+          !READ_ONLY_ADMIN_METHODS.has(method.name)))
+    ) {
+      throw new MongoShellError(
+        `${method.path} runs a database command, and a read-only run takes none. Read data with find, findOne, aggregate, countDocuments or distinct.`,
+      );
+    }
     let write: string | null = null;
     if (WRITE_METHODS.has(method.name)) {
       write = method.name;

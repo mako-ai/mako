@@ -197,7 +197,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   ),
   execute_query: exclude(
     "deferred",
-    "Unnamespaced mongo/flow execute alias; MCP uses sql_execute_query and never bridges mongo_execute_query.",
+    "Unnamespaced mongo/flow execute alias; MCP uses sql_execute_query and mongo_execute_query.",
   ),
   explain_template: exclude(
     "deferred",
@@ -445,6 +445,7 @@ export function mcpReadOnlyHint(
   if (
     queryAccess === "read" &&
     (name === "sql_execute_query" ||
+      name === "mongo_execute_query" ||
       name === "run_console" ||
       name === "cancel_query")
   ) {

@@ -522,8 +522,8 @@ async function main() {
     }
     assert.equal(
       names.has("mongo_execute_query"),
-      false,
-      "read-only keys must not expose arbitrary MongoDB JavaScript execution",
+      true,
+      "query:read keys run read-only MongoDB queries",
     );
     if (names.has("web_search")) {
       assert.equal(
@@ -1060,9 +1060,9 @@ async function main() {
         `tools/list exposed ${name} without a bridge/mcp-only policy entry`,
       );
     }
-    // Sanity: gaps summary is non-empty and includes the security exclusion.
+    // Sanity: the gaps summary is non-empty.
     const gaps = summarizeBridgeGaps();
-    assert.ok(gaps.some(g => g.why === "security"));
+    assert.ok(gaps.length > 0);
     assert.ok(mcpExposedToolNames().includes("create_console"));
   }
 
@@ -1461,18 +1461,62 @@ async function main() {
     assert.equal(acpNames.has("fetch"), false);
   }
 
-  // 4. Arbitrary MongoDB JavaScript execution is never bridged over MCP.
+  // 4. MongoDB queries run read-only over MCP: bridged for a query:read
+  // key, hidden without query access, and a write is refused before any
+  // database lookup.
   {
     const [res] = await exchange(
       [{ jsonrpc: "2.0", id: 3, method: "tools/list" }],
       ["mcp", "query:read"],
     );
-    const { tools } = res.result as { tools: { name: string }[] };
+    const { tools } = res.result as {
+      tools: { name: string; annotations?: { readOnlyHint?: boolean } }[];
+    };
+    const mongo = tools.find(tool => tool.name === "mongo_execute_query");
+    assert.ok(mongo, "mongo_execute_query is exposed to a query:read key");
     assert.equal(
-      tools.some(tool => tool.name === "mongo_execute_query"),
-      false,
-      "mongo_execute_query must not be exposed over MCP",
+      mongo.annotations?.readOnlyHint,
+      true,
+      "under query:read a MongoDB query is annotated read-only",
     );
+
+    const [noQuery] = await exchange(
+      [{ jsonrpc: "2.0", id: "mongo-no-query", method: "tools/list" }],
+      ["mcp"],
+    );
+    assert.equal(
+      (noQuery.result as { tools: { name: string }[] }).tools.some(
+        tool => tool.name === "mongo_execute_query",
+      ),
+      false,
+      "mongo_execute_query needs query access",
+    );
+
+    for (const query of [
+      "db.users.deleteMany({})",
+      "db.users.aggregate([{ $match: {} }, { $out: 'copy' }]).toArray()",
+      "db.runCommand({ drop: 'users' })",
+      "db.command({ usersInfo: 1, showCredentials: true })",
+    ]) {
+      const [write] = await exchange([
+        {
+          jsonrpc: "2.0",
+          id: `mongo-write-${query.length}`,
+          method: "tools/call",
+          params: {
+            name: "mongo_execute_query",
+            arguments: {
+              connectionId: new Types.ObjectId().toString(),
+              databaseName: "app",
+              query,
+            },
+          },
+        },
+      ]);
+      const text = (write.result as { content: { text: string }[] }).content[0]
+        .text;
+      assert.match(text, /read-only/, `${query} is refused as a write`);
+    }
   }
 
   // 5. Unsafe SQL is rejected before any database lookup/execution.

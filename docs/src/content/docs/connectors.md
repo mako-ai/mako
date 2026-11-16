@@ -65,11 +65,19 @@ A **Google service account** connection stores the service account's JSON key fi
 
 The connection's **Access** tab decides who may call it:
 
-- **Live reads**: off for every connection until a manager turns them on. Then anyone in the workspace (workflows and agents included) may read: GET and HEAD, a GraphQL query, a Close search or a Close POST read as GET.
+- **Live reads**: off for every connection until a manager turns them on. Then anyone in the workspace (workflows and agents included) may read: GET and HEAD, a GraphQL query, a Close search or a Close POST read as GET, and on PostHog, in the connection's own project only, a query (HogQL, events, trends, …) or a GET of persons, events, insights, cohorts, query results or feature flags (the list or one flag). The PostHog project root and every other PostHog path are refused. With live reads off, `call_connection` is refused for everyone, the owner included.
 - **Writers**: who may write (POST, PUT, PATCH, DELETE). Add people, single deployed workflows, or **All deployed workflows**. Each deployed workflow acts as itself (its step's pass), so one can be allowed without the others. Viewers and agents never write, and a person who left the workspace can no longer call it at all.
 - **Refused attempts**: every write, allowed or not, is logged; refused ones are listed with who tried, so a manager can allow that person or the deployed workflows (an agent's attempt cannot be allowed).
 
-From a workflow, see [Workflows](/workflows/#calling-a-service-through-a-connection); from an MCP client, `call_connection` reads only.
+From a workflow, see [Workflows](/workflows/#calling-a-service-through-a-connection); from an MCP client or the in-app agent, `call_connection` reads only. It takes a raw request (`method`, `path`) or a named operation (`operation`, `params`), which builds the same request and passes the same checks:
+
+| Connector | Operations                                                                                                           |
+| --------- | -------------------------------------------------------------------------------------------------------------------- |
+| Close     | `search_leads` { query }, `get_lead` { id }, `list_opportunities` { lead_id, status_type, updated_since }            |
+| PostHog   | `hogql` { query }, `search_persons` { search }                                                                       |
+| Stripe    | `search_customers` { query }, `get_customer` { id }, `list_subscriptions` { customer }, `list_invoices` { customer } |
+
+`inspect_connection` lists a connection's operations under `access.operations`. Answers over 40,000 characters come back cut, and every answer is fenced as untrusted data.
 
 ## Building Custom Connectors
 

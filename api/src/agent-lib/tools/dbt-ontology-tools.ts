@@ -457,7 +457,7 @@ export const createDbtOntologyTools = (
   return {
     get_workspace_context: tool({
       description:
-        "The workspace's business vocabulary in about 4k chars: every governed and draft registry term and entity with its canonical model.column (and its metric, when one exists), every metric with a one-line description, and the 30 dbt models the most apps read. Call it once at the start of a data question when you do not know the names yet; then lookup_term, list_metrics or describe_model for details.",
+        "The workspace's business vocabulary in about 6k chars: the name of every governed and draft registry term and entity, every metric (by type) and the 30 dbt models the most apps read, with no definitions. Call it once at the start of a data question when you do not know the names yet; then lookup_term, list_metrics or describe_model for the definitions.",
       inputSchema: z.object({}),
       execute: async () => {
         try {
