@@ -64,17 +64,20 @@ The agent uses sample data to understand real values — not just types. If your
 
 ### Ontology lookups
 
-In **React App** and **Transforms** mode the agent also asks what your workspace already defines before it writes a binding or a model. These are read-only metadata lookups, open to every workspace role, built from the last production dbt build and the term registry (`dbt/ontology/terms.yml` in the workspace repo):
+A business number (revenue, MRR, paying customers, churn) starts here in **every mode** — Query, React App, Workflow, Notebook, Sync Flow, Explore and Transforms. Before it writes SQL, a binding or a model, the agent asks what your workspace already defines. These tools are always active and read the last production dbt build and the term registry (`dbt/ontology/terms.yml` in the workspace repo); the lookups are open to every workspace role, and `query_metric` additionally needs query access on the connection:
 
 | Tool             | What It Does                                                                                                                         |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `lookup_term`    | Resolves a business term or entity ("MRR", "paying customers"): definition, owner, canonical model and column, grain, known variants |
 | `find_models`    | Searches models, sources and seeds by name, description, columns, tags and registry synonyms; canonical models rank first            |
 | `describe_model` | One model in full: columns, tests, lineage, exposures, the apps that read it, and a warning when it is a known variant of a term     |
+| `list_metrics`   | The MetricFlow metrics your dbt project declares, with the dimensions each can be grouped by                                         |
+| `query_metric`   | Runs a metric and returns its rows and SQL (read-only, same access checks and timeout as any agent query)                            |
+| `compile_metric` | Returns the SQL for a metric query without running it                                                                                |
 | `model_readers`  | Transforms mode: the apps and binding files that read a model or raw table, so the agent sees what a column change touches           |
 | `find_join_path` | The shortest declared join between two entities, models or raw tables: join columns, cardinality and a fan-out warning per hop       |
 
-When a canonical model exists the agent reads or extends it instead of deriving the metric again, and it joins two entities on the columns `find_join_path` returns. A path that relates two entities only through a shared third entity is marked `suspect`. A workspace without a registry file gets an empty registry and a message. The same tools are on the [MCP server](/mcp-server/).
+When a metric exists the agent reports its governed value instead of re-deriving it, and never changes a metric's scope silently: if you ask for another scope it shows both numbers. When only a canonical model exists the agent reads or extends it, and it joins two entities on the columns `find_join_path` returns. A path that relates two entities only through a shared third entity is marked `suspect`. A workspace without a registry file gets an empty registry and a message. The same tools are on the [MCP server](/mcp-server/).
 
 ## Persistent Memory (Self-Directive)
 
