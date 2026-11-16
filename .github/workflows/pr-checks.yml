@@ -55,6 +55,25 @@ jobs:
       - name: app
         run: pnpm --filter app exec tsc --noEmit -p .
 
+  connectors:
+    name: Connector folders (typecheck, format, conformance)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Each folder installs from its own lockfile; node_modules/ never enters
+      # the repo (RFC connector-runtime §2).
+      - run: pnpm run connectors:install
+      - run: pnpm run connectors:typecheck
+      - run: pnpm exec prettier --check "connectors/**/*.{ts,mjs,mts,json,yaml}"
+      # `mako connector test` against the recorded cassettes, no secret.
+      - run: pnpm run connectors:conformance
+
   audit:
     name: Dependency audit (prod, high+)
     runs-on: ubuntu-latest

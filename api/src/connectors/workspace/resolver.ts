@@ -27,6 +27,7 @@ import {
   installConnectorRuntime,
 } from "./sync-box";
 import { loggers } from "../../logging";
+import { findNodeModules } from "./bundle/manifest";
 
 const logger = loggers.connector();
 
@@ -173,12 +174,18 @@ export async function listConnectorFoldersAtMain(workspaceId: string): Promise<{
   filesBySlug: Map<string, Map<string, Uint8Array>>;
   /** Slugs left unread because they exceed the cap, with the refusal to show. */
   oversized: Map<string, string>;
+  /**
+   * Slugs whose tree holds a `node_modules/` path, with the first such path.
+   * Read from the tree listing only; the bundle path refuses these folders.
+   */
+  nodeModules: Map<string, string>;
 }> {
   const empty = {
     commit: null,
     slugs: [],
     filesBySlug: new Map<string, Map<string, Uint8Array>>(),
     oversized: new Map<string, string>(),
+    nodeModules: new Map<string, string>(),
   };
   const repoDir = repoDirFor(workspaceId);
   if (!(await repoExists(repoDir))) return empty;
@@ -205,8 +212,14 @@ export async function listConnectorFoldersAtMain(workspaceId: string): Promise<{
   // are reported rather than read, so the push still lands and the author
   // gets told which folder is too big.
   const oversized = new Map<string, string>();
+  const nodeModules = new Map<string, string>();
   const readable: string[] = [];
   for (const [slug, files] of bySlug) {
+    const prefix = `${CONNECTORS_DIR}/${slug}/`;
+    const committed = findNodeModules(
+      files.map(file => file.path.slice(prefix.length)),
+    );
+    if (committed) nodeModules.set(slug, `${prefix}${committed}`);
     const bytes = folderBytes(files);
     if (bytes > MAX_FOLDER_BYTES) {
       oversized.set(
@@ -239,6 +252,7 @@ export async function listConnectorFoldersAtMain(workspaceId: string): Promise<{
     slugs: [...bySlug.keys()].sort(),
     filesBySlug,
     oversized,
+    nodeModules,
   };
 }
 
@@ -269,6 +283,20 @@ export async function ensureConnectorRuntime(
  */
 export async function connectorRuntimeId(): Promise<string> {
   return sdkRuntimeId(await readSdkFiles());
+}
+
+/** The `@makoai/connector-sdk` version this API ships. Part of a bundle's hash. */
+export async function connectorSdkVersion(): Promise<string> {
+  const files = await readSdkFiles();
+  const raw = files.get("package.json");
+  const version = raw
+    ? (JSON.parse(new TextDecoder().decode(raw)) as { version?: unknown })
+        .version
+    : undefined;
+  if (typeof version !== "string" || !version) {
+    throw new Error("@makoai/connector-sdk has no version in its package.json");
+  }
+  return version;
 }
 
 let sdkFilesCache: Map<string, Uint8Array> | null = null;

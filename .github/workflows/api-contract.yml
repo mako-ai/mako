@@ -23,6 +23,8 @@ on:
       - "docs/src/openapi/**"
       - "packages/schemas/**"
       - "packages/agent-tools/**"
+      - "packages/connector-sdk/**"
+      - "connectors/**"
       - ".github/workflows/api-contract.yml"
 
 jobs:
@@ -108,6 +110,11 @@ jobs:
       # lib/mako.ts, which imports the runtime's packages, as the image does.
       - name: Install workflows runtime packages
         run: npm install --prefix deploy/workflows/runtime --no-audit --no-fund
+
+      # connectors/stripe/fixtures parity test runs the folder with its own
+      # dependencies, installed from its own lockfile, as a box would.
+      - name: Install connector folder packages
+        run: npm ci --prefix connectors/stripe --no-audit --no-fund --ignore-scripts
 
       - name: App SDK version is published to npm
         # Scaffolds depend on `@makoai/app-sdk@^<vendored version>` (from

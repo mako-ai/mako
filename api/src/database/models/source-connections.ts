@@ -239,9 +239,14 @@ export const SourceConnection = mongoose.model<ISourceConnection>(
  *              against and the connector is unproven.
  *   verified — a real `check` succeeded against a real data source. Only ever
  *              set from the data-source path, never from a push.
- *   blocked  — `spec` failed, or its shape is invalid. `blockedReason` is
- *              shown to whoever pushed it, and the connector cannot back a
- *              flow.
+ *   blocked  — `spec` failed, or its shape is invalid, or (with connector
+ *              bundles on) its dependencies failed to build. `blockedReason`
+ *              is shown to whoever pushed it, and the connector cannot back
+ *              a flow.
+ *
+ * `build` sits next to `status` for a folder that carries a `package.json`
+ * while CONNECTOR_BUNDLES_ENABLED is on: the source hash of the last build
+ * and whether it produced a bundle. Absent for every other connector.
  */
 export interface IConnectorDefinition extends Document {
   workspaceId: mongoose.Types.ObjectId;
@@ -269,9 +274,30 @@ export interface IConnectorDefinition extends Document {
    * them would grey out a connector in the picker that only needs a new key.
    */
   lastCheckError?: string;
+  /** The last bundle build for this folder (RFC connector-runtime §5). */
+  build?: {
+    status: "built" | "failed";
+    /** The source hash the bundle is stored under. */
+    hash: string;
+    /** npm's or esbuild's own words when the build failed. */
+    error?: string;
+    bytes?: number;
+    builtAt?: Date;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
+
+const ConnectorBuildSchema = new Schema(
+  {
+    status: { type: String, enum: ["built", "failed"], required: true },
+    hash: { type: String, required: true },
+    error: { type: String, maxlength: 4000 },
+    bytes: { type: Number },
+    builtAt: { type: Date },
+  },
+  { _id: false },
+);
 
 const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
   {
@@ -297,6 +323,7 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
     hasIcon: { type: Boolean, default: false },
     lastCheckedAt: { type: Date },
     lastCheckError: { type: String, maxlength: 4000 },
+    build: { type: ConnectorBuildSchema },
   },
   { collection: "connectordefinitions", timestamps: true },
 );

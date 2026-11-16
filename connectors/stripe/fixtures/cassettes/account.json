@@ -1,0 +1,3 @@
+[
+{"request":"GET /v1/account","stripeVersion":"2023-10-16","status":200,"body":{"id":"acct_fixture","object":"account","business_type":"company","charges_enabled":true,"country":"CH","default_currency":"chf","details_submitted":true,"email":null,"payouts_enabled":true,"type":"standard"}}
+]

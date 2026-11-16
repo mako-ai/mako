@@ -24,6 +24,7 @@ import {
   parseConnectorFile,
   validateSpec,
 } from "./connector-file";
+import type { SandboxExecContext } from "../../apps/sandbox/provider";
 import {
   connectorRuntimeId,
   listConnectorFoldersAtMain,
@@ -31,6 +32,13 @@ import {
 } from "./resolver";
 import { connectorBoxLeasesEnabled } from "./boxes/config";
 import { getBoxScheduler } from "./boxes/scheduler";
+import {
+  BundleBuildError,
+  prepareBundledConnector,
+  type BundleBuildStatus,
+} from "./bundle/bundle.service";
+import { connectorBundlesEnabled } from "./bundle/flag";
+import { dependencyPlan, nodeModulesRefusal } from "./bundle/manifest";
 import {
   failureMessage,
   firstOfType,
@@ -101,9 +109,13 @@ async function reconcile(
   workspaceId: string,
   _actorUserId?: string,
 ): Promise<ConnectorSyncResult> {
-  const { commit, slugs, filesBySlug, oversized } =
+  const { commit, slugs, filesBySlug, oversized, nodeModules } =
     await listConnectorFoldersAtMain(workspaceId);
   if (!commit) return { ...EMPTY };
+
+  // Connector bundles (RFC connector-runtime §5). Off: every line below that
+  // reads `bundling` is skipped, and a push behaves exactly as before.
+  const bundling = connectorBundlesEnabled();
 
   const rows = await ConnectorDefinition.find({ workspaceId });
   const rowBySlug = new Map(rows.map(row => [row.slug, row]));
@@ -113,6 +125,24 @@ async function reconcile(
 
   for (const slug of slugs) {
     const files = filesBySlug.get(slug) ?? new Map<string, Uint8Array>();
+
+    // A committed node_modules/ is refused before anything else, and before
+    // the size cap: it is usually also over the cap, and "too big" would hide
+    // the actual fix, which is to stop committing it.
+    const committedModules = bundling ? nodeModules?.get(slug) : undefined;
+    if (committedModules) {
+      seen.add(slug);
+      await block(
+        workspaceId,
+        slug,
+        commit,
+        commit,
+        nodeModulesRefusal(slug),
+        rowBySlug.get(slug),
+      );
+      result.blocked++;
+      continue;
+    }
 
     // Too big to read, so its contents were never loaded. Block it with the
     // size in the message: the folder plainly exists, and "not found" for
@@ -182,6 +212,24 @@ async function reconcile(
       continue;
     }
 
+    const plan =
+      bundling && parsed.value.runtime === "node"
+        ? dependencyPlan(files)
+        : ({ kind: "none" } as const);
+    if (plan.kind === "invalid") {
+      await block(
+        workspaceId,
+        slug,
+        commit,
+        sourceShaOf(files),
+        plan.reason,
+        row,
+      );
+      result.blocked++;
+      continue;
+    }
+    const bundled = plan.kind === "npm";
+
     const sourceSha = sourceShaOf(files);
     if (row && row.sourceSha === sourceSha && row.status !== "blocked") {
       // Unchanged content: keep the row, and with it a `verified` status that
@@ -205,15 +253,28 @@ async function reconcile(
         sourceSha,
         files,
         parsed.value.entry,
+        bundled,
       );
       if (!spec.ok) {
-        await block(workspaceId, slug, commit, sourceSha, spec.reason, row);
+        await block(
+          workspaceId,
+          slug,
+          commit,
+          sourceSha,
+          spec.reason,
+          row,
+          spec.build,
+        );
         result.blocked++;
         continue;
       }
       const entities = Object.keys((spec.spec?.mako as any)?.entities ?? {});
+      // With bundles on, the row says how this code was built; a folder that
+      // dropped its package.json loses a stale build record. Off, untouched.
+      const buildFields = bundling ? { build: spec.build } : {};
       if (row) {
         row.set({
+          ...buildFields,
           runtime: parsed.value.runtime,
           entry: parsed.value.entry,
           sha: commit,
@@ -240,6 +301,7 @@ async function reconcile(
           status: "indexed",
           entities,
           hasIcon: files.has("icon.svg"),
+          ...(spec.build ? { build: spec.build } : {}),
         });
         result.created++;
       }
@@ -259,6 +321,9 @@ async function reconcile(
         sourceSha,
         reason,
         rowBySlug.get(slug),
+        error instanceof BundleBuildError
+          ? { status: "failed", hash: error.hash, error: error.reason }
+          : undefined,
       );
       result.blocked++;
     }
@@ -299,17 +364,38 @@ async function runSpec(
   sourceSha: string,
   files: Map<string, Uint8Array>,
   entry: string,
+  bundled = false,
 ): Promise<
-  { ok: true; spec: Record<string, unknown> } | { ok: false; reason: string }
+  | { ok: true; spec: Record<string, unknown>; build?: BundleBuildStatus }
+  | { ok: false; reason: string; build?: BundleBuildStatus }
 > {
+  // A folder with dependencies runs its bundle, built first if storage has
+  // none for this hash. A build failure throws BundleBuildError, which the
+  // caller records as both `blocked` and a failed build.
+  let build: BundleBuildStatus | undefined;
+  const bundle = bundled
+    ? async (args: {
+        ctx: SandboxExecContext;
+        runtimeId: string;
+        files: Map<string, Uint8Array>;
+      }) => {
+        const prepared = await prepareBundledConnector({
+          ...args,
+          workspaceId,
+          slug,
+          entry,
+        });
+        build = prepared.build ?? { status: "built", hash: prepared.hash };
+        return prepared;
+      }
+    : undefined;
+
   const result = connectorBoxLeasesEnabled()
     ? await getBoxScheduler().withLease(
         {
           workspaceId,
-          // `spec` takes no credential. Its boxes are the workspace's own and
-          // never hold a connection's config.
-          // One key per connector: a push that touches N connectors must not
-          // make each one's spec drain the others' boxes.
+          // `spec` takes no credential. One key per connector: a push that
+          // touches N connectors must not make each spec drain the others.
           connectionId: `spec:${workspaceId}:${slug}`,
           bundleHash: sourceSha,
           command: "spec",
@@ -317,22 +403,24 @@ async function runSpec(
           timeoutMs: 60_000,
         },
         async lease => {
-          const { runtimeId, dir } = await ensureBundle({
+          const prepared = await ensureBundle({
             ctx: lease.ctx,
             hash: sourceSha,
             slug,
+            entry,
             files: async () => files,
             ensureRuntime: ensureConnectorRuntime,
+            bundle,
           });
-          lease.noteRuntime(runtimeId);
+          lease.noteRuntime(prepared.runtimeId);
           // Before any credentialed command: the template must hold none.
-          await lease.snapshotPristine(runtimeId);
+          await lease.snapshotPristine(prepared.runtimeId);
           const run = await runConnectorCommand({
             ctx: lease.ctx,
-            runtimeId,
-            connectorDir: dir,
+            runtimeId: prepared.runtimeId,
+            connectorDir: prepared.dir,
             command: "spec",
-            entry,
+            entry: prepared.entry,
             timeoutMs: 60_000,
             onCleanupFailure: reason => lease.markUnhealthy(reason),
           });
@@ -340,18 +428,25 @@ async function runSpec(
           return run;
         },
       )
-    : await runSpecInWorkspaceBox(workspaceId, slug, sourceSha, files, entry);
+    : await runSpecInWorkspaceBox(
+        workspaceId,
+        slug,
+        sourceSha,
+        files,
+        entry,
+        bundle,
+      );
 
   const failure = failureMessage(result);
-  if (failure) return { ok: false, reason: failure };
+  if (failure) return { ok: false, reason: failure, build };
 
   const message = firstOfType<{ spec?: Record<string, unknown> }>(
     result.messages,
     "SPEC",
   );
   const validation = validateSpec(message?.spec);
-  if (!validation.ok) return { ok: false, reason: validation.reason };
-  return { ok: true, spec: message!.spec! };
+  if (!validation.ok) return { ok: false, reason: validation.reason, build };
+  return { ok: true, spec: message!.spec!, build };
 }
 
 /** The flag-off path: the workspace's one sync box, as before leases. */
@@ -361,24 +456,21 @@ async function runSpecInWorkspaceBox(
   sourceSha: string,
   files: Map<string, Uint8Array>,
   entry: string,
+  bundle: Parameters<typeof ensureBundle>[0]["bundle"],
 ) {
   const ctx = syncBoxContext(workspaceId);
   await retireLegacySyncBox(workspaceId);
   const runtimeId = await ensureConnectorRuntime(ctx);
-  const dir = await materializeConnector({
-    ctx,
-    runtimeId,
-    slug,
-    sourceSha,
-    files,
-  });
-
+  const bundled = bundle ? await bundle({ ctx, runtimeId, files }) : null;
+  const dir =
+    bundled?.dir ??
+    (await materializeConnector({ ctx, runtimeId, slug, sourceSha, files }));
   return runConnectorCommand({
     ctx,
     runtimeId,
     connectorDir: dir,
     command: "spec",
-    entry,
+    entry: bundled?.entry ?? entry,
     timeoutMs: 60_000,
   });
 }
@@ -390,9 +482,16 @@ async function block(
   sourceSha: string,
   reason: string,
   row: IConnectorDefinition | undefined,
+  build?: BundleBuildStatus,
 ): Promise<void> {
   if (row) {
-    row.set({ sha, sourceSha, status: "blocked", blockedReason: reason });
+    row.set({
+      sha,
+      sourceSha,
+      status: "blocked",
+      blockedReason: reason,
+      ...(build ? { build } : {}),
+    });
     await row.save();
     return;
   }
@@ -405,6 +504,7 @@ async function block(
     status: "blocked",
     blockedReason: reason,
     entities: [],
+    ...(build ? { build } : {}),
   });
 }
 

@@ -40,6 +40,12 @@ import {
 } from "./sync-box";
 import { jsonSchemaToEntitySchema } from "./spec-translation";
 import {
+  BundleBuildError,
+  prepareBundledConnector,
+  recordRunBuild,
+  shouldBundle,
+} from "./bundle/bundle.service";
+import {
   connectorRuntimeId,
   ensureConnectorRuntime,
   loadConnectorDefinition,
@@ -84,6 +90,8 @@ export class SandboxedConnector extends BaseConnector {
   private loaded: LoadedConnector | null = null;
   private materializedDir: string | null = null;
   private runtimeId: string | null = null;
+  /** The bundle's entry when this connector runs from one; else the definition's. */
+  private runEntry: string | null = null;
   private catalogCache: ProtocolMessage | null = null;
 
   private get slug(): string {
@@ -132,21 +140,46 @@ export class SandboxedConnector extends BaseConnector {
         definition.slug,
         definition.sha,
       );
-      this.materializedDir = await materializeConnector({
-        ctx,
-        runtimeId,
-        slug: definition.slug,
-        sourceSha: definition.sourceSha,
-        files,
-      });
+      if (shouldBundle(definition.runtime, files)) {
+        // A folder with dependencies runs its bundle. A run that finds none
+        // for its hash builds it first (RFC connector-runtime §5.1).
+        const bundled = await this.prepareBundle({
+          ctx,
+          runtimeId,
+          definition,
+          files,
+        });
+        this.materializedDir = bundled.dir;
+        this.runEntry = bundled.entry;
+      } else {
+        this.materializedDir = await materializeConnector({
+          ctx,
+          runtimeId,
+          slug: definition.slug,
+          sourceSha: definition.sourceSha,
+          files,
+        });
+      }
       this.runtimeId = runtimeId;
     }
     return {
       dir: this.materializedDir,
       runtimeId: this.runtimeId,
-      entry: definition.entry,
+      entry: this.runEntry ?? definition.entry,
       ctx,
     };
+  }
+
+  private folderCache: Map<string, Uint8Array> | null = null;
+
+  /** The folder at the indexed sha, read once per instance. */
+  private async folder(definition: LoadedConnector) {
+    this.folderCache ??= await readConnectorFolder(
+      this.workspaceId,
+      definition.slug,
+      definition.sha,
+    );
+    return this.folderCache;
   }
 
   /** The saved data source's id, or null for a connection not saved yet. */
@@ -199,17 +232,17 @@ export class SandboxedConnector extends BaseConnector {
         oneOff: saved === null,
       },
       async lease => {
-        const { dir, runtimeId } = await ensureBundle({
+        const { dir, runtimeId, entry } = await ensureBundle({
           ctx: lease.ctx,
           hash: definition.sourceSha,
           slug: definition.slug,
-          files: () =>
-            readConnectorFolder(
-              this.workspaceId,
-              definition.slug,
-              definition.sha,
-            ),
+          entry: definition.entry,
+          files: () => this.folder(definition),
           ensureRuntime: ensureConnectorRuntime,
+          bundle: async ({ ctx, runtimeId, files }) =>
+            shouldBundle(definition.runtime, files)
+              ? this.prepareBundle({ ctx, runtimeId, definition, files })
+              : null,
         });
         lease.noteRuntime(runtimeId);
         // Before any credentialed command: the template must hold none.
@@ -219,7 +252,7 @@ export class SandboxedConnector extends BaseConnector {
           runtimeId,
           connectorDir: dir,
           command,
-          entry: definition.entry,
+          entry,
           ...options,
           // A run whose cleanup failed may have left its credential or a
           // process behind: the box is killed, never handed to the next run.
@@ -229,6 +262,44 @@ export class SandboxedConnector extends BaseConnector {
         return result;
       },
     );
+  }
+
+  private async prepareBundle(input: {
+    ctx: ReturnType<typeof syncBoxContext>;
+    runtimeId: string;
+    definition: LoadedConnector;
+    files: Map<string, Uint8Array>;
+  }): Promise<{ dir: string; entry: string }> {
+    const { ctx, runtimeId, definition, files } = input;
+    try {
+      const prepared = await prepareBundledConnector({
+        ctx,
+        runtimeId,
+        workspaceId: this.workspaceId,
+        slug: definition.slug,
+        entry: definition.entry,
+        files,
+      });
+      if (prepared.build) {
+        await recordRunBuild({
+          workspaceId: this.workspaceId,
+          slug: definition.slug,
+          sourceSha: definition.sourceSha,
+          build: prepared.build,
+        });
+      }
+      return prepared;
+    } catch (error) {
+      if (error instanceof BundleBuildError) {
+        await recordRunBuild({
+          workspaceId: this.workspaceId,
+          slug: definition.slug,
+          sourceSha: definition.sourceSha,
+          build: { status: "failed", hash: error.hash, error: error.reason },
+        });
+      }
+      throw error;
+    }
   }
 
   private config(): Record<string, unknown> {

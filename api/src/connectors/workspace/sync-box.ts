@@ -282,10 +282,35 @@ export async function ensureBundle(input: {
   ctx: SandboxExecContext;
   hash: string;
   slug: string;
+  /** The connector's own entry, used when it runs from its copied folder. */
+  entry: string;
   files: () => Promise<Map<string, Uint8Array>>;
   ensureRuntime: (ctx: SandboxExecContext) => Promise<string>;
-}): Promise<{ runtimeId: string; dir: string }> {
+  /**
+   * Iteration 1's bundle path: a folder with dependencies runs its built
+   * `.mjs` (installConnectorBundle). Returns null for a folder without
+   * dependencies, which is copied in as before.
+   */
+  bundle?: (args: {
+    ctx: SandboxExecContext;
+    runtimeId: string;
+    files: Map<string, Uint8Array>;
+  }) => Promise<{ dir: string; entry: string } | null>;
+}): Promise<{ runtimeId: string; dir: string; entry: string }> {
   const runtimeId = await input.ensureRuntime(input.ctx);
+  if (input.bundle) {
+    const files = await input.files();
+    const bundled = await input.bundle({ ctx: input.ctx, runtimeId, files });
+    if (bundled) return { runtimeId, ...bundled };
+    const dir = await materializeConnector({
+      ctx: input.ctx,
+      runtimeId,
+      slug: input.slug,
+      sourceSha: input.hash,
+      files,
+    });
+    return { runtimeId, dir, entry: input.entry };
+  }
   const dir = await materializeConnector({
     ctx: input.ctx,
     runtimeId,
@@ -293,7 +318,7 @@ export async function ensureBundle(input: {
     sourceSha: input.hash,
     files: input.files,
   });
-  return { runtimeId, dir };
+  return { runtimeId, dir, entry: input.entry };
 }
 
 /** Is this exact SDK present and completely materialized in the box? */
@@ -525,6 +550,69 @@ export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
       throw new RunCleanupError(`Connector run cleanup failed: ${detail}`);
     },
   };
+}
+
+/** The pinned Node binary of a runtime root, for boxes that build bundles. */
+export function connectorRuntimeNodePath(
+  ctx: SandboxExecContext,
+  runtimeId: string,
+): string {
+  return runtimeNode(ctx, runtimeId);
+}
+
+/** The file name a bundle has inside the box. */
+export const CONNECTOR_BUNDLE_ENTRY = "connector.mjs";
+
+/**
+ * Put a built bundle in the box's runtime root, once per hash.
+ *
+ * The bundle lives under the runtime root so its one external import,
+ * `@makoai/connector-sdk`, resolves through the root's node_modules exactly as
+ * a TypeScript entry's does. `load` is called only when the box does not
+ * already hold this hash, so a warm box never touches object storage.
+ */
+export async function installConnectorBundle(input: {
+  ctx: SandboxExecContext;
+  runtimeId: string;
+  slug: string;
+  hash: string;
+  load: () => Promise<Uint8Array>;
+}): Promise<{ dir: string; entry: string }> {
+  const { ctx, runtimeId, slug, hash } = input;
+  const provider = getSandboxProvider();
+  const dir = path.posix.join(
+    runtimeRoot(ctx, runtimeId),
+    "bundles",
+    `${slug}@${hash}`,
+  );
+  const marker = path.posix.join(dir, ".materialized");
+  const check = await provider.exec(
+    ctx,
+    `test -f ${shellQuote(marker)} && echo yes || echo no`,
+    execOptions({ timeoutMs: 30_000 }),
+  );
+  if (check.stdout.trim() !== "yes") {
+    const bytes = await input.load();
+    await writeBoxFile(
+      ctx,
+      path.posix.join(dir, CONNECTOR_BUNDLE_ENTRY),
+      bytes,
+    );
+    if (runsIsolated()) {
+      // Root wrote it; every run user reads it and none may change it.
+      await mustSucceed(
+        provider.exec(
+          ctx,
+          `chmod a+rX,go-w ${shellQuote(path.posix.dirname(dir))} && chmod -R a+rX,go-w ${shellQuote(dir)}`,
+          execOptions({ timeoutMs: 30_000 }),
+        ),
+        "open the connector bundle to run users",
+      );
+    }
+    // Written last, as for the runtime: a half-written bundle is rewritten.
+    await writeBoxFile(ctx, marker, new TextEncoder().encode(hash));
+  }
+  return { dir, entry: CONNECTOR_BUNDLE_ENTRY };
 }
 
 /**

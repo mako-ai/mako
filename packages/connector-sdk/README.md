@@ -68,6 +68,15 @@ by: a spec that omits it is refused at push time, because an absent field list
 cannot be told apart from one that failed to parse, and guessing would store a
 customer's API key in plaintext. Mark every secret `airbyte_secret: true`.
 
+## Dependencies
+
+A workspace connector may import npm packages. Commit `package.json` and
+`package-lock.json` in its folder, never `node_modules/`. Mako installs the
+lockfile and bundles the connector into one file per source hash on push, with
+this SDK left as an import the sandbox provides (behind
+`CONNECTOR_BUNDLES_ENABLED` while it rolls out). A connector without
+`package.json` needs no build.
+
 ## Node 22.6 or newer
 
 A connector is TypeScript and is imported with no build step, so the Node that

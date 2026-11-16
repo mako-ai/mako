@@ -42,7 +42,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 26;
+export const WORKSPACE_TEMPLATE_VERSION = 27;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -272,7 +272,10 @@ Uncommitted work exists only on this machine.
 
 ## Never
 
-- commit \`.env\`, \`node_modules/\`, \`dist/\`, or parquet files;
+- commit \`.env\`, \`node_modules/\`, \`dist/\`, or parquet files. A
+  connector in \`connectors/<slug>/\` declares npm dependencies in its own
+  \`package.json\` with a \`package-lock.json\`; Mako builds it on push and
+  refuses a connector folder that holds \`node_modules/\`;
 - put a query in a binding that you did not run with \`sql_execute_query\`;
 - load a large binding with \`useQuery\` and filter or aggregate it in JS;
 - vendor or copy \`@makoai/app-sdk\` (or a kit component) into the repo —

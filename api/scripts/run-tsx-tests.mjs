@@ -35,6 +35,8 @@ const API_ROOT = path.resolve(
 const SKIP = {
   "src/apps/sandbox/e2b-provider.integration.test.ts":
     "needs E2B credentials and a network; never part of an offline run",
+  "src/connectors/workspace/bundle/bundle-build.integration.test.ts":
+    "builds a real bundle with npm over the network; run by hand (see its header)",
 };
 
 const VITEST_CONFIGS = [

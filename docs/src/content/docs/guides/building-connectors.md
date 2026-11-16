@@ -174,6 +174,44 @@ Each connector folder needs:
   own sandbox satisfies this; test locally on anything older and the runner
   refuses with a message saying so.
 
+### Dependencies
+
+A connector may use npm packages. Put a `package.json` and a
+`package-lock.json` in its folder:
+
+```
+connectors/acme/
+├── connector.yaml
+├── connector.ts
+├── package.json        # "dependencies": { "date-fns": "4.1.0" }
+└── package-lock.json   # from `npm install` in this folder
+```
+
+- **Commit the lockfile, never `node_modules/`.** Mako refuses a connector
+  folder that contains `node_modules/` and says how to fix it: `git rm -r
+--cached connectors/<slug>/node_modules`, add `node_modules/` to
+  `.gitignore`, push. The workspace's root `.gitignore` already ignores it.
+- **npm only.** Mako installs with `npm ci`, so the lockfile must be
+  `package-lock.json`. A folder with `pnpm-lock.yaml` or `yarn.lock` and no
+  `package-lock.json` is refused with that message.
+- **Mako builds; you deploy nothing.** On push to main, Mako hashes the folder,
+  its lockfile and the `@makoai/connector-sdk` version, installs the lockfile
+  with `npm ci --ignore-scripts` in a build sandbox (network, no credentials),
+  and bundles the entry with esbuild into one file, dependencies inlined.
+  The bundle is stored under that hash and runs in place of the TypeScript
+  entry. The next push with the same hash reuses it.
+- **Build status.** A failed build blocks the connector, with npm's or
+  esbuild's message as the reason, next to `indexed` and `verified`.
+  `list_connectors` and `inspect_connector` return it as `build` (`built` or
+  `failed`, with `error`); `mako connector test <folder> --remote` prints it.
+- `@makoai/connector-sdk` is never bundled. The sandbox provides it, at the
+  version the hash was computed with.
+- A folder without `package.json` runs exactly as before: no build step.
+
+This is behind the `CONNECTOR_BUNDLES_ENABLED` flag while it is rolled out.
+With the flag off, a `package.json` in the folder is just a file and only the
+SDK can be imported.
+
 ### Test it before you push
 
 ```
@@ -184,8 +222,10 @@ This runs the same four commands (`spec`, `check`, `discover`, `read`) the
 engine runs, in the same order, against a local credential file — including
 that a bounded `read` reports a resumable position and resuming from it does
 not repeat or skip a row. Without `--config` only the offline checks run
-(`spec`, the config schema, the connector's shape), which is what CI can do
-without a secret.
+(`spec`, the config schema, the connector's shape, its dependency files),
+which is what CI can do without a secret. Run `npm install` in the folder
+first when it has dependencies. `--remote` also asks Mako for the connector's
+indexed status and last build.
 
 ### `indexed` vs. `verified`
 
@@ -193,8 +233,8 @@ A push carries no credential, so `check`, `discover` and `read` have nothing
 to run against — only `spec` runs. A connector whose spec succeeds is
 `indexed`: enough to appear in the picker so someone can enter a key. It only
 becomes `verified` once a real connection (a credential entered in the UI)
-passes a live check. A connector whose `spec` fails is `blocked`, with the
-reason, and cannot back a data source.
+passes a live check. A connector whose `spec` fails, or whose dependencies
+fail to build, is `blocked`, with the reason, and cannot back a data source.
 
 ### Where the code actually runs
 
