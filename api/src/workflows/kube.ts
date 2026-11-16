@@ -262,7 +262,7 @@ function deploymentBody(workspaceId: string, replicas = 1): V1Deployment {
  * Whether a worker Deployment is as this API would make it: its image, its
  * size and its limits. A setting changed on the API (WORKFLOWS_MAX_RUNS,
  * WORKFLOWS_STEPS_PER_PROGRAM, WORKFLOWS_RATE_LIMITS) then reaches the
- * workers like a new image does.
+ * workers when the API starts, as a new image does.
  */
 function isCurrent(deployment: V1Deployment): boolean {
   const container = deployment.spec?.template?.spec?.containers?.[0];
@@ -348,16 +348,16 @@ export async function ensureWorkerDeployment(
     logger.info("Created workflow worker", { workspaceId });
     return;
   }
-  if (!isCurrent(existing) || restart) {
+  // Only the image and a new credential here. A changed setting moves
+  // workers when the API starts (`rollWorkersToRuntimeImage`), and not on a
+  // push: while a new revision takes over, the old one still serves pushes,
+  // and would put the worker back to the settings it knows.
+  if (workerImage(existing) !== runtimeImage() || restart) {
     await replaceWorker(
       apps,
       workspaceId,
       existing,
-      restart
-        ? "new credential"
-        : workerImage(existing) === runtimeImage()
-          ? "new settings"
-          : "new runtime image",
+      restart ? "new credential" : "new runtime image",
     );
   }
 }
