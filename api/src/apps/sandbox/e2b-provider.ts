@@ -1026,8 +1026,9 @@ const boxLifecycleE2b: SandboxBoxLifecycle = {
  * The list call is bounded (2026-11-16: a slow E2B list held repo-work pool
  * slots on the apps files/status routes). It gives up after
  * RUNNING_LOOKUP_TIMEOUT_MS, and concurrent lookups of one session on this
- * instance share one call. A lookup that fails or times out answers the
- * last known answer while it is recent, else "unknown", and logs why.
+ * instance share one call. A poll whose lookup fails or times out answers
+ * the last known answer while it is recent, else "unknown"; a fresh lookup
+ * answers "unknown". Either way the failure is logged.
  */
 const runningAnswer = new Map<
   string,
@@ -1109,10 +1110,12 @@ async function sessionRunState(
   try {
     return (await lookUpRunning(sessionKey)) ? "running" : "not-running";
   } catch (error) {
-    // Could not tell. A recent answer stands in; without one, polls read
-    // "unknown" as "offline" (sessionRunning) and the next beat asks again,
-    // and callers that must not guess fall back to their own answer.
-    const known = runningAnswer.get(sessionKey);
+    // Could not tell. For a poll, a recent answer stands in; without one,
+    // polls read "unknown" as "offline" (sessionRunning) and the next beat
+    // asks again. A fresh caller always gets "unknown": it asked fresh
+    // because a cached answer can be stale, and it falls back to its own
+    // answer (a stale "not running" would turn a live run into PAUSED).
+    const known = fresh ? undefined : runningAnswer.get(sessionKey);
     const fallback =
       known && Date.now() - known.at <= RUNNING_ANSWER_FALLBACK_MS
         ? known.running

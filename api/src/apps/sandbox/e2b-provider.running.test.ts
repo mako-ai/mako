@@ -84,23 +84,31 @@ describe("E2B running lookup", () => {
     );
   });
 
-  it("falls back to the recent known answer when the lookup fails", async () => {
+  it("a poll falls back to the recent known answer; a fresh lookup says unknown", async () => {
     sdk.list.mockReturnValueOnce(page([{ sandboxId: "sbx-1" }]));
     expect(await runState(true)).toBe("running");
 
+    // Past the 10 s cache a poll asks E2B again, and the call fails.
+    await vi.advanceTimersByTimeAsync(11_000);
     sdk.list.mockImplementationOnce(() => {
       throw new Error("E2B 500");
     });
-    expect(await runState(true)).toBe("running");
+    expect(await runState(false)).toBe("running");
     expect(warn).toHaveBeenCalledWith(
       "E2B running lookup failed",
       expect.objectContaining({ fallback: "running", error: "E2B 500" }),
     );
 
-    // Past the fallback window, a failure is "unknown" again.
+    // A fresh caller must not guess: "unknown", so it uses its own answer.
+    sdk.list.mockImplementationOnce(() => {
+      throw new Error("E2B 500");
+    });
+    expect(await runState(true)).toBe("unknown");
+
+    // Past the fallback window, a poll's failure is "unknown" too.
     await vi.advanceTimersByTimeAsync(61_000);
     sdk.list.mockReturnValueOnce(never());
-    const late = runState(true);
+    const late = runState(false);
     await vi.advanceTimersByTimeAsync(RUNNING_LOOKUP_TIMEOUT_MS);
     expect(await late).toBe("unknown");
   });
