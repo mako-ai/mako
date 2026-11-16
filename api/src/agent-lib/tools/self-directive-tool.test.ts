@@ -15,7 +15,11 @@ import {
   MAX_SELF_DIRECTIVE_LENGTH,
   applySelfDirectiveOperation,
   buildSkillPointer,
+  dedupeAgainstDirective,
+  findMissingSkillPointers,
+  missingSkillPointersError,
   planArchiveSection,
+  skillPointers,
   selfDirectiveCompactionWarning,
   selfDirectiveUsage,
 } from "./self-directive-tool";
@@ -256,9 +260,149 @@ const CURRENT = [
   assert.match(long, /\.\.\.$/);
 }
 
-console.log("self-directive-tool.test.ts passed");
+// Async checks; awaited before the explicit exit at the bottom.
+const pending: Promise<void>[] = [];
+
+// --- skill pointers: paths, load_skill calls, archive pointers -------------
+{
+  assert.deepEqual(
+    skillPointers(
+      [
+        "- Read skills/dbt-ci/SKILL.md before a PR.",
+        "- load_skill(\"apps\") first; load_skill({ name: 'charts' }) too.",
+        "- → skill 'stripe_quirks': querying Stripe",
+        "- Claude Code reads .claude/skills/local-only/SKILL.md.",
+      ].join("\n"),
+    ).sort(),
+    ["apps", "charts", "dbt-ci", "stripe_quirks"],
+  );
+  assert.deepEqual(skillPointers("no pointers here"), []);
+}
+
+// --- a pointer to a skill that does not exist is refused -------------------
+{
+  const known = new Set(["apps", "dbt-ci", "stale"]);
+  const exists = async (name: string) => known.has(name);
+  pending.push(
+    (async () => {
+      // New text points to one real and two missing skills: both are named.
+      const missing = await findMissingSkillPointers(
+        CURRENT,
+        CURRENT +
+          "\n- Read skills/dbt-ci first.\n- load_skill('ghost') and skills/phantom.",
+        exists,
+      );
+      assert.deepEqual(missing.sort(), ["ghost", "phantom"]);
+      const error = missingSkillPointersError(missing);
+      assert.match(error, /'ghost'/);
+      assert.match(error, /'phantom'/);
+      assert.match(error, /Self-directive unchanged/);
+
+      // A pointer the directive already held is not re-checked: one stale
+      // pointer never blocks an unrelated edit.
+      const withStale = CURRENT + "\n- → skill 'gone': old note";
+      assert.deepEqual(
+        await findMissingSkillPointers(
+          withStale,
+          withStale + "\n- new rule",
+          exists,
+        ),
+        [],
+      );
+      assert.deepEqual(
+        await findMissingSkillPointers(
+          CURRENT,
+          CURRENT + '\n- load_skill("apps")',
+          exists,
+        ),
+        [],
+      );
+    })(),
+  );
+}
+
+// --- adding a line or pointer the directive already holds is skipped -------
+{
+  const directive = [
+    "# Rules",
+    "- Amounts are in cents",
+    "- → skill 'stripe_quirks': querying Stripe",
+  ].join("\n");
+
+  // Same line (bullet and spacing ignored) and same pointer, new wording:
+  // both skipped, the new rule kept.
+  const r = applySelfDirectiveOperation(directive, {
+    operation: "append",
+    content: [
+      "* Amounts  are in cents",
+      "- → skill 'stripe_quirks': Stripe tables",
+      "- Dates are UTC",
+    ].join("\n"),
+  });
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.equal(r.value, directive + "\n- Dates are UTC");
+    assert.deepEqual(r.skipped, [
+      "* Amounts  are in cents",
+      "- → skill 'stripe_quirks': Stripe tables",
+    ]);
+  }
+
+  // Everything already there: the directive is returned unchanged.
+  const same = applySelfDirectiveOperation(directive, {
+    operation: "prepend",
+    content: "- Amounts are in cents",
+  });
+  assert.deepEqual(same, {
+    ok: true,
+    value: directive,
+    skipped: ["- Amounts are in cents"],
+  });
+
+  // insert_after dedupes too.
+  const ins = applySelfDirectiveOperation(directive, {
+    operation: "insert_after",
+    after: "# Rules",
+    content: "- Amounts are in cents\n- New first rule",
+  });
+  assert.equal(ins.ok, true);
+  if (ins.ok) assert.match(ins.value, /^# Rules\n- New first rule\n/);
+
+  // A rule line that merely mentions a known skill is not a pointer line:
+  // it is kept.
+  const rule = dedupeAgainstDirective(
+    directive,
+    "- Before Stripe joins, load_skill('stripe_quirks')",
+  );
+  assert.deepEqual(rule.skipped, []);
+
+  // Repeats inside the new content collapse to one line.
+  const twice = dedupeAgainstDirective("", "- a\n- a\n- b");
+  assert.deepEqual(twice, { content: "- a\n- b", skipped: ["- a"] });
+
+  // The character cap still applies after dedupe.
+  const full = applySelfDirectiveOperation(
+    "x".repeat(MAX_SELF_DIRECTIVE_LENGTH),
+    {
+      operation: "append",
+      content: "- new",
+    },
+  );
+  assert.equal(full.ok, false);
+}
+
 // The tool module now imports skills.service, whose transitive imports hold
 // live handles (embedding client, model registration); explicit exit keeps
 // the tsx test chain moving.
-// eslint-disable-next-line no-process-exit
-process.exit(0);
+Promise.all(pending).then(
+  () => {
+    console.log("self-directive-tool.test.ts passed");
+    // eslint-disable-next-line no-process-exit
+    process.exit(0);
+  },
+  error => {
+    console.error(error);
+    // eslint-disable-next-line no-process-exit
+    process.exit(1);
+  },
+);
