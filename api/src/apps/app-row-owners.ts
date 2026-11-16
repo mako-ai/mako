@@ -13,6 +13,13 @@
  *   b. folder-author  apps/…: the author of the commit on main that created
  *                     the folder's mako.json (followed across moves), mapped
  *                     to a Mako user by email, who must still be a member.
+ *   d. scaffold-builder  apps/… created by Mako's own scaffold commit
+ *                     (author bot@mako.ai, "Create app …": app_create_app
+ *                     commits as Mako, not as the person): the person whose
+ *                     personal tree it was scaffolded into, else the one
+ *                     person who committed to the folder in the 24 hours
+ *                     after the scaffold. Any second or unknown author
+ *                     names no one.
  *   c. none           anything else stays ownerless and is reported.
  *
  * Only a person ever becomes an owner (isPersonActorId): publish, api-key,
@@ -43,7 +50,23 @@ import { isPersonActorId } from "./worktree/worktrees";
 /** A creating commit that adds more app manifests than this is a sweep. */
 export const CREATION_SWEEP_LIMIT = 3;
 
-export type OwnerRule = "personal-handle" | "folder-author" | "none";
+export type OwnerRule =
+  "personal-handle" | "folder-author" | "scaffold-builder" | "none";
+
+/** The author Mako's server-side scaffold commits carry (repository.service). */
+export const MAKO_SCAFFOLD_AUTHOR = "bot@mako.ai";
+/** How long after a scaffold the person building the app is looked for. */
+export const SCAFFOLD_BUILDER_WINDOW_SECONDS = 24 * 60 * 60;
+
+/** What git says about who built an app Mako scaffolded. */
+export type ScaffoldEvidence =
+  | { missing: string }
+  | {
+      /** users/<segment>/apps/… when the scaffold landed in a personal tree. */
+      personalSegment?: string;
+      /** Commit author emails on the folder in the window, scaffold excluded. */
+      builderEmails: string[];
+    };
 
 /** A row the backfill considers: ownerless by both owner_id and createdBy. */
 export interface OwnerlessRow {
@@ -74,6 +97,8 @@ export interface WorkspaceOwnerSources {
   userIdForEmail(email: string): Promise<string | undefined>;
   /** Whether the user is a member of this workspace today. */
   isMember(userId: string): boolean;
+  /** Who built an app whose creating commit is Mako's scaffold. */
+  scaffoldEvidence(appPath: string): Promise<ScaffoldEvidence>;
 }
 
 /** Mongo filter for "no owner at all", matching what resource-acl reads. */
@@ -112,11 +137,145 @@ export async function proposeOwner(
   if (row.access === "private") return none("private row in workspace tree");
   const creator = await sources.folderCreator(row.path);
   if ("missing" in creator) return none(creator.missing);
+  if (creator.email === MAKO_SCAFFOLD_AUTHOR) {
+    return proposeScaffoldBuilder(row, sources, none);
+  }
   const userId = await sources.userIdForEmail(creator.email);
   if (!userId) return none("creating author is not a Mako user");
   if (!isPersonActorId(userId)) return none("creating author is not a person");
   if (!sources.isMember(userId)) return none("creating author left workspace");
   return { ...row, rule: "folder-author", ownerId: userId };
+}
+
+/** Rule d: the person behind a folder Mako's scaffold commit created. */
+async function proposeScaffoldBuilder(
+  row: OwnerlessRow,
+  sources: WorkspaceOwnerSources,
+  none: (reason: string) => OwnerProposal,
+): Promise<OwnerProposal> {
+  const evidence = await sources.scaffoldEvidence(row.path);
+  if ("missing" in evidence) return none(evidence.missing);
+  const accept = (userId: string | null | undefined, why: string) => {
+    if (!userId || !isPersonActorId(userId)) return none(why);
+    if (!sources.isMember(userId)) {
+      return none("scaffold builder left workspace");
+    }
+    return { ...row, rule: "scaffold-builder" as const, ownerId: userId };
+  };
+  if (evidence.personalSegment !== undefined) {
+    // createProject files a personal app under its creator's tree. The
+    // segment is a handle, or (before handles) the creator's own user id.
+    const seg = evidence.personalSegment;
+    return accept(
+      sources.ownerOfHandle(seg) ?? (isPersonActorId(seg) ? seg : null),
+      "scaffolded into a personal tree nobody holds",
+    );
+  }
+  const people = new Set<string>();
+  for (const email of evidence.builderEmails) {
+    // Mako's own identities (bot, session, agent, publish) are no one.
+    if (email.endsWith("@mako.ai")) continue;
+    const userId = await sources.userIdForEmail(email);
+    if (!userId) return none("unknown author after scaffold");
+    people.add(userId);
+  }
+  if (people.size === 0) return none("nobody committed after scaffold");
+  if (people.size > 1) {
+    return none(`${people.size} people committed after scaffold`);
+  }
+  return accept([...people][0], "scaffold builder is not a person");
+}
+
+/**
+ * Who built an app whose creating commit is Mako's scaffold: the personal
+ * tree it was scaffolded into, or every commit author on the folder (under
+ * its scaffolded path or its current one) within
+ * SCAFFOLD_BUILDER_WINDOW_SECONDS after the scaffold, on main.
+ */
+export async function scaffoldEvidenceFromGit(
+  repoDir: string,
+  appPath: string,
+  ref = `refs/heads/${DEFAULT_BRANCH}`,
+): Promise<ScaffoldEvidence> {
+  let log: string;
+  try {
+    ({ stdout: log } = await runGit(
+      [
+        "-C",
+        repoDir,
+        "log",
+        ref,
+        "--follow",
+        "--diff-filter=A",
+        "--format=%H%x09%ct%x09%ae%x09%s",
+        "--",
+        `${appPath}/${APP_MANIFEST}`,
+      ],
+      { timeoutMs: 60_000 },
+    ));
+  } catch {
+    return { missing: "git log failed" };
+  }
+  const lines = log.split("\n").filter(Boolean);
+  if (lines.length !== 1) return { missing: "no single creating commit" };
+  const [sha, ct, email, subject] = (lines[0] ?? "").split("\t");
+  if (!sha || !ct || email?.toLowerCase() !== MAKO_SCAFFOLD_AUTHOR) {
+    return { missing: "creating commit is not a Mako scaffold" };
+  }
+  if (!subject?.startsWith('Create app "')) {
+    return { missing: "creating commit is not a Mako scaffold" };
+  }
+  const { stdout: added } = await runGit(
+    [
+      "-C",
+      repoDir,
+      "show",
+      "--format=",
+      "--name-only",
+      "--diff-filter=A",
+      "--no-renames",
+      sha,
+    ],
+    { timeoutMs: 60_000 },
+  );
+  const manifests = added
+    .split("\n")
+    .filter(f => f.endsWith(`/${APP_MANIFEST}`));
+  if (manifests.length !== 1) {
+    return { missing: "scaffold commit created several apps" };
+  }
+  const scaffoldPath = (manifests[0] ?? "").slice(
+    0,
+    -`/${APP_MANIFEST}`.length,
+  );
+  const segments = scaffoldPath.split("/");
+  if (segments[0] === USERS_DIR && segments[2] === APPS_DIR && segments[1]) {
+    return { personalSegment: segments[1], builderEmails: [] };
+  }
+  const since = Number(ct);
+  const { stdout: after } = await runGit(
+    [
+      "-C",
+      repoDir,
+      "log",
+      ref,
+      `--since=${new Date(since * 1000).toISOString()}`,
+      `--until=${new Date((since + SCAFFOLD_BUILDER_WINDOW_SECONDS) * 1000).toISOString()}`,
+      "--format=%H%x09%ae",
+      "--",
+      scaffoldPath,
+      ...(scaffoldPath === appPath ? [] : [appPath]),
+    ],
+    { timeoutMs: 60_000 },
+  );
+  const builderEmails = after
+    .split("\n")
+    .filter(Boolean)
+    .map(l => l.split("\t"))
+    .filter(([h]) => h !== sha)
+    .map(([, e]) => (e ?? "").trim().toLowerCase())
+    .filter(Boolean);
+  return { builderEmails };
 }
 
 /**
@@ -244,6 +403,10 @@ export async function workspaceOwnerSources(
       repoDir
         ? folderCreatorFromGit(repoDir, appPath)
         : { missing: "workspace has no bound repo" },
+    scaffoldEvidence: async appPath =>
+      repoDir
+        ? scaffoldEvidenceFromGit(repoDir, appPath)
+        : { missing: "workspace has no bound repo" },
     userIdForEmail: async email => {
       const user = await User.findOne({ email: email.toLowerCase() })
         .select("_id")
@@ -292,6 +455,7 @@ export function formatOwnerReport(proposals: OwnerProposal[]): string {
     `ownerless rows: ${proposals.length}`,
     `  a personal-handle: ${count("personal-handle")}`,
     `  b folder-author:   ${count("folder-author")}`,
+    `  d scaffold-builder: ${count("scaffold-builder")}`,
     `  c none:            ${count("none")}`,
     "",
     ["appId", "path", "owner", "rule", "reason"].join("\t"),
