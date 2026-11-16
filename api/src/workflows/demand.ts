@@ -1,13 +1,10 @@
 /**
- * How many steps a workspace's worker has to run now: what the autoscaler
- * sizes the worker by (kube.ts `autoscalerBodies`). Steps queued or running
- * in Hatchet, and one more while the worker has something to build or
- * register: a commit it has not reported on yet, which is also how a change
- * of triggers shows (webhook.ts `setTriggers` forgets the last report).
- * A worker at zero pods wakes for either.
+ * How many steps a workspace's worker has to run now: what its pods are
+ * sized by (scale.ts). Steps queued or running in Hatchet's own queue, and
+ * one more while the worker has a commit to build that it has not reported
+ * on yet, so a worker at zero pods wakes for a push.
  */
-import { Workspace } from "../database/workspace-schema";
-import { tenantJson, tenantOfToken, type WorkspaceTenant } from "./hatchet";
+import { tenantJson, type WorkspaceTenant } from "./hatchet";
 
 /** Hatchet's `task-stats`: the engine's own queue, by task name. */
 type TaskStats = Record<
@@ -16,21 +13,21 @@ type TaskStats = Record<
 >;
 
 export interface WorkerDemand {
-  /** What the autoscaler reads: `queued + running`, at least 1 while `building`. */
+  /** `queued + running`, at least 1 while `building`. */
   steps: number;
   queued: number;
   running: number;
   building: boolean;
 }
 
-// The autoscaler asks every few seconds, per workspace, on every instance.
+// Read at most this often per tenant, whoever asks.
 const FRESH_FOR_MS = 10_000;
 const stats = new Map<
   string,
   { at: number; queued: number; running: number }
 >();
 
-async function readQueue(tenant: WorkspaceTenant, now: number) {
+export async function readQueue(tenant: WorkspaceTenant, now: number) {
   const known = stats.get(tenant.tenantId);
   if (known && now - known.at < FRESH_FOR_MS) return known;
   const byTask = await tenantJson<TaskStats>(
@@ -77,22 +74,4 @@ export function demandOf(
     running: queue.running,
     building,
   };
-}
-
-/**
- * The workspace's demand. Throws when Hatchet does not answer: the caller
- * says so, and the autoscaler keeps the pods it has rather than read "none".
- */
-export async function workerDemand(
-  workspaceId: string,
-  now = Date.now(),
-): Promise<WorkerDemand> {
-  const workspace = await Workspace.findById(workspaceId)
-    .select("workflows.live workflows.hatchetToken")
-    .lean();
-  const tenant = tenantOfToken(workspace?.workflows?.hatchetToken);
-  const { queued, running } = tenant
-    ? await readQueue(tenant, now)
-    : { queued: 0, running: 0 };
-  return demandOf(workspace?.workflows?.live, { queued, running });
 }

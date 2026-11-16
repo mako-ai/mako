@@ -32,10 +32,9 @@ async function main() {
   const {
     WORKER_MAX_REPLICAS,
     WORKER_STEPS,
-    autoscalerBodies,
-    ensureAutoscaler,
     rollWorkersToRuntimeImage,
     workerSelector,
+    workerSteps,
   } = await import("./kube");
 
   // Production has no env label; a preview selects its own.
@@ -53,13 +52,16 @@ async function main() {
   const asked: { selector?: string; replaced: V1Deployment[] } = {
     replaced: [],
   };
+  let current: V1Deployment | undefined = undefined;
   const apps = {
     listNamespacedDeployment: async (req: { labelSelector?: string }) => {
       asked.selector = req.labelSelector;
+      // A worker as this API makes it: the body of the first move.
+      if (!current) return { items: [worker("seed", OLD)] };
       return {
         items: [
           worker("stale", OLD),
-          worker("current", NEW),
+          current,
           worker("raced", OLD),
           worker("broken", OLD),
         ],
@@ -77,6 +79,9 @@ async function main() {
       return req.body;
     },
   };
+  assert.deepEqual(await rollWorkersToRuntimeImage(apps as never), ["seed"]);
+  current = { ...worker("current", NEW), spec: asked.replaced[0].spec };
+  asked.replaced.length = 0;
   const moved = await rollWorkersToRuntimeImage(apps as never);
   assert.deepEqual(moved, ["stale"]);
   assert.equal(asked.selector, workerSelector());
@@ -126,62 +131,78 @@ async function main() {
   delete process.env.WORKFLOWS_RATE_LIMITS;
   delete process.env.WORKFLOWS_MAX_RUNS;
 
-  // The autoscaler: off unless asked for; with KEDA, an object that reads
-  // Mako's demand with the worker's own key and sleeps at zero pods.
-  const made: Array<{ plural: string; body: Record<string, unknown> }> = [];
-  const custom = {
-    getNamespacedCustomObject: async (req: { plural: string }) => {
-      if (req.plural === "scaledobjects") {
-        return { metadata: { resourceVersion: "3" } };
+  // A setting changed on the API reaches a worker on the same image: one
+  // step per program again is one setting, not a revert.
+  process.env.WORKFLOWS_STEPS_PER_PROGRAM = "1";
+  asked.replaced.length = 0;
+  apps.listNamespacedDeployment = async () => ({
+    items: [current as V1Deployment],
+  });
+  assert.deepEqual(await rollWorkersToRuntimeImage(apps as never), ["current"]);
+  const single = Object.fromEntries(
+    (asked.replaced[0].spec?.template.spec?.containers[0].env ?? []).map(e => [
+      e.name,
+      e.value,
+    ]),
+  );
+  assert.equal(single.WORKFLOWS_STEPS_PER_PROGRAM, "1");
+  assert.equal(single.WORKFLOWS_MAX_STEPS, "16");
+  assert.equal(workerSteps(), 16);
+  // Not a number of steps: the default.
+  process.env.WORKFLOWS_STEPS_PER_PROGRAM = "many";
+  assert.equal(workerSteps(), WORKER_STEPS);
+  delete process.env.WORKFLOWS_STEPS_PER_PROGRAM;
+
+  // The pod count: read with the list, and set from the count a worker has.
+  // The pod template is left alone, so the pods that stay are not restarted.
+  const { listWorkers, setWorkerReplicas } = await import("./kube");
+  const scaled: V1Deployment[] = [];
+  const three = worker("busy", NEW);
+  three.spec = { ...three.spec, replicas: 3 } as V1Deployment["spec"];
+  const scaling = {
+    listNamespacedDeployment: async () => ({
+      items: [three, worker("one", NEW)],
+    }),
+    readNamespacedDeployment: async (req: { name: string }) => {
+      if (req.name === "wf-gone") {
+        throw Object.assign(new Error(), { code: 404 });
       }
-      throw Object.assign(new Error(), { code: 404 });
+      return three;
     },
-    createNamespacedCustomObject: async (req: {
-      plural: string;
-      body: Record<string, unknown>;
-    }) => {
-      made.push({ plural: req.plural, body: req.body });
-    },
-    replaceNamespacedCustomObject: async (req: {
-      plural: string;
-      body: Record<string, unknown>;
-    }) => {
-      made.push({ plural: req.plural, body: req.body });
+    replaceNamespacedDeployment: async (req: { body: V1Deployment }) => {
+      scaled.push(req.body);
+      return req.body;
     },
   };
-  await ensureAutoscaler("ws1", custom as never);
-  assert.equal(
-    made.length,
-    0,
-    "no autoscaler unless WORKFLOWS_AUTOSCALER=keda",
-  );
-  process.env.WORKFLOWS_AUTOSCALER = "keda";
-  await ensureAutoscaler("ws1", custom as never);
+  assert.deepEqual(await listWorkers(scaling as never), [
+    { workspaceId: "busy", replicas: 3 },
+    { workspaceId: "one", replicas: 1 },
+  ]);
   assert.deepEqual(
-    made.map(m => m.plural),
-    ["triggerauthentications", "scaledobjects"],
+    await setWorkerReplicas("busy", current => current - 1, scaling as never),
+    { from: 3, to: 2 },
   );
-  const scaled = autoscalerBodies("ws1").ScaledObject;
-  assert.equal(scaled.spec.scaleTargetRef.name, "wf-ws1");
-  assert.equal(scaled.spec.minReplicaCount, 0);
-  assert.equal(scaled.spec.maxReplicaCount, WORKER_MAX_REPLICAS);
-  assert.deepEqual(scaled.spec.triggers[0].metadata, {
-    url: "https://mako.test/api/workflows/runtime/demand",
-    valueLocation: "steps",
-    targetValue: String(WORKER_STEPS),
-    activationTargetValue: "0",
-    authMode: "bearer",
+  assert.equal(scaled[0].spec?.replicas, 2);
+  assert.deepEqual(scaled[0].spec?.template, three.spec?.template);
+  // Already there: nothing is written. Never more than the most, never
+  // fewer than none, and a workspace without a worker has nothing to set.
+  assert.deepEqual(await setWorkerReplicas("busy", () => 3, scaling as never), {
+    from: 3,
+    to: 3,
   });
+  assert.equal(scaled.length, 1);
   assert.deepEqual(
-    autoscalerBodies("ws1").TriggerAuthentication.spec.secretTargetRef,
-    [{ parameter: "token", name: "wf-ws1", key: "MAKO_API_KEY" }],
+    await setWorkerReplicas("busy", () => 99, scaling as never),
+    { from: 3, to: WORKER_MAX_REPLICAS },
   );
-  // An existing object is replaced at its version.
+  assert.deepEqual(
+    await setWorkerReplicas("busy", () => -1, scaling as never),
+    { from: 3, to: 0 },
+  );
   assert.equal(
-    (made[1].body.metadata as { resourceVersion?: string }).resourceVersion,
-    "3",
+    await setWorkerReplicas("gone", () => 1, scaling as never),
+    null,
   );
-  delete process.env.WORKFLOWS_AUTOSCALER;
 
   // Without an image there is nothing to move to.
   delete process.env.WORKFLOWS_RUNTIME_IMAGE;

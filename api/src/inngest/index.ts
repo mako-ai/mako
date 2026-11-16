@@ -35,6 +35,7 @@ import {
   workflowsDeployReconcileFunction,
 } from "./functions/workflows-deploy";
 import { kernelPoolReaperFunction } from "./functions/kernel-pool-reaper";
+import { workflowsScaleFunction } from "./functions/workflows-scale";
 import { connectorBoxReaperFunction } from "./functions/connector-box-reaper";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
 import { cdcRepartitionFunction } from "./functions/cdc-repartition";
@@ -124,6 +125,7 @@ export function getFunctions() {
         appsBoxPausedReaperFunction,
         appsDeployReconcileFunction,
         workflowsDeployReconcileFunction,
+        workflowsScaleFunction,
         kernelPoolReaperFunction,
         connectorBoxReaperFunction,
         scheduledQuerySchedulerFunction,
