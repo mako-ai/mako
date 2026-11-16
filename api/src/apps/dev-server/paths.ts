@@ -29,9 +29,10 @@ export const PORTS_REGISTRY = "/tmp/mako-dev-ports.json";
  * minutes, which held every box open half an hour past the last look at a
  * preview. A pause keeps memory, so the dev server survives it and the next
  * look resumes the same vite; the idle sweep (box-idle.service.ts) decides
- * the real pause from real activity. Equal to the sweep's default window.
+ * the real pause from real activity. Equal to E2B's backstop timeout (15
+ * min), above the sweep's 10-minute window.
  */
-export const DEV_SESSION_KEEPALIVE_MS = 10 * 60 * 1000;
+export const DEV_SESSION_KEEPALIVE_MS = 15 * 60 * 1000;
 
 /**
  * At most this many dev servers run at once per box (apps.md §13.9).

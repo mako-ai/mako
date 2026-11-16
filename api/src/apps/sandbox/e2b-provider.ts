@@ -39,8 +39,13 @@ function templateId(): string {
 }
 const SANDBOX_USER = "user";
 const REMOTE_ROOT = "/home/user/app";
-/** Idle window before E2B auto-pauses the sandbox (resets on activity). */
-const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * E2B's own idle timeout: the BACKSTOP, not the policy. The idle sweep
+ * (box-idle.service.ts) pauses after 10 minutes of real use; this sits above
+ * it (15) so E2B pausing on its own never races the sweep, and a box that
+ * escaped the sweep (cron down) still sleeps.
+ */
+const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 
 function apiKey(): string {
   const key = process.env.E2B_API_KEY;

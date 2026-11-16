@@ -1,5 +1,5 @@
 /**
- * The app-box idle policy: pause after N idle minutes, delete after D paused
+ * The app-box idle policy: pause after N idle minutes, delete after D unused
  * days, and report what the fleet costs.
  *
  * Why this exists (16 Nov 2026): 19 of 20 E2B slots were taken, 15 of them
@@ -9,61 +9,69 @@
  * box and every exec refreshes the timeout (see box-activity.ts). Paused
  * boxes were never deleted by anyone.
  *
- * Two sweeps, both from Inngest crons (inngest/functions/apps-box-idle.ts):
+ * Two sweeps, both Inngest crons (inngest/functions/apps-box-idle.ts):
  *
- * - sweepIdleBoxes, every 2 minutes: pause (with memory) every running app
- *   box whose last REAL use is N minutes old, unless a workflow run is still
- *   going inside it; log running/paused counts and box-seconds per
- *   workspace.
- * - reapPausedBoxes, hourly: delete sessions whose boxes have all been
- *   paused and unused for D days. Uncommitted work is committed to the
- *   person's session branch and pushed first; a box whose work cannot be
- *   made durable is left alone and the reason is logged.
+ * - sweepIdleBoxes, every 2 minutes (APPS_BOX_IDLE_SWEEP, on by default):
+ *   pause (with memory) each running person's box whose last REAL use is N
+ *   minutes old, unless a workflow run or a terminal command is still going
+ *   in it. Logs running/paused counts and box-seconds per workspace.
+ * - The reaper, hourly (APPS_BOX_REAPER, OFF by default): delete a person's
+ *   session whose boxes are all paused and whose last real use is D days
+ *   old. Each box is settled by its own id first (box/rescue-commit.ts):
+ *   uncommitted work goes to a `mako-presave/...` branch, never to main or
+ *   the session branch. A box that cannot be settled safely is kept.
  *
- * Both act only on sessions this database knows (an AppWorktree row). The
- * E2B account is shared with dev machines and previews, whose boxes belong
- * to other databases.
+ * Neither ever touches: the publish actor's box or any non-person actor,
+ * connector boxes (key filter in e2b-fleet.ts), or a session this database
+ * does not know (dev machines and previews share the E2B account).
+ *
+ * "Use" is the activity record only. A box's E2B start time is NOT use: a
+ * resume restarts it, and counting it would let a poll-driven resume keep a
+ * box alive (the resume-and-pause loop). Sessions with no record count from
+ * the day activity tracking started (`trackingSince`).
  */
+import mongoose from "mongoose";
 import { loggers } from "../logging";
-import {
-  boxCommitAll,
-  boxExec,
-  boxRoot,
-  boxStatus,
-  configureBoxRemote,
-  sh,
-} from "./box";
 import {
   getBoxActivity,
   parseSessionKey,
   type BoxActivity,
 } from "./box-activity";
 import { markBoxOffline } from "./box-state.service";
-import { getSandboxProvider } from "./sandbox/provider";
+import { rescueCommit, type RescueResult } from "./box/rescue-commit";
+import { appsGitOriginUrl } from "./config";
+import { mintGitToken } from "./git-token.service";
 import {
+  killAppBox,
   listAppBoxes,
+  openAppBoxById,
   pauseAppBox,
   type AppBoxInfo,
 } from "./sandbox/e2b-fleet";
 import { noteSessionPaused } from "./sandbox/e2b-provider";
-import { forgetBoxCaches, resolveActorIdentity } from "./worktree/box-session";
-import { withBoxPushLock } from "./worktree/files";
-import { PUBLISH_ACTOR, isUserActor } from "./worktree/worktrees";
+import { getSandboxProvider } from "./sandbox/provider";
 import { forgetTerminalCaches } from "./terminal/sessions";
+import { forgetBoxCaches, resolveActorIdentity } from "./worktree/box-session";
+import { isUserActor } from "./worktree/worktrees";
 
 const logger = loggers.api("apps-box-idle");
 
 /** How often the pause sweep runs; also the box-seconds each tick bills. */
 export const IDLE_SWEEP_INTERVAL_SECONDS = 120;
 
+/** Where the working copy lives in an app box (e2b-provider REMOTE_ROOT). */
+const BOX_ROOT = "/home/user/app";
+
 export interface BoxIdleConfig {
-  /** Off switch: `APPS_BOX_IDLE_SWEEP=off`. */
+  /** Pause sweep. Off only with `APPS_BOX_IDLE_SWEEP=off`. */
   enabled: boolean;
+  /** Deletion. On only with `APPS_BOX_REAPER=on`. */
+  reaperEnabled: boolean;
   /** Pause a running box this long after its last real use. */
   idleMs: number;
-  /** Delete a paused session this long after its last use. */
+  /** Delete a paused session this long after its last real use. */
   pausedRetentionMs: number;
-  /** At most this many deletions per hourly run (each resumes a box). */
+  /** At most this many sessions deleted per hourly run. */
   reapBatch: number;
 }
 
@@ -77,13 +85,15 @@ function positive(raw: string | undefined, fallback: number): number {
  *   APPS_BOX_IDLE_MINUTES           default 10
  *   APPS_BOX_PAUSED_RETENTION_DAYS  default 14
  *   APPS_BOX_REAP_BATCH             default 10
- *   APPS_BOX_IDLE_SWEEP=off         disables both sweeps
+ *   APPS_BOX_IDLE_SWEEP=off         disables the pause sweep
+ *   APPS_BOX_REAPER=on              enables deletion (off by default)
  */
 export function boxIdleConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): BoxIdleConfig {
   return {
     enabled: env.APPS_BOX_IDLE_SWEEP !== "off",
+    reaperEnabled: env.APPS_BOX_REAPER === "on",
     idleMs: positive(env.APPS_BOX_IDLE_MINUTES, 10) * 60_000,
     pausedRetentionMs:
       positive(env.APPS_BOX_PAUSED_RETENTION_DAYS, 14) * 24 * 3_600_000,
@@ -91,29 +101,28 @@ export function boxIdleConfig(
   };
 }
 
-/**
- * The last time this session was used, by the best evidence there is: the
- * activity record, or the box's start when the record is older or missing
- * (boxes started before activity was recorded, or by another instance's
- * create that has not been used since).
- */
+/** A person's own session box: `<ws>:<24-hex userId>`. Not publish, not api-key. */
+export function isPersonSession(sessionKey: string): boolean {
+  const parts = parseSessionKey(sessionKey);
+  return !!parts && isUserActor(parts.userId);
+}
+
+/** Last real use: the activity record, else the day tracking started. */
 export function lastUseOf(
-  boxes: Array<Pick<AppBoxInfo, "startedAt">>,
   activity: BoxActivity | undefined,
+  trackingSince: Date,
 ): number {
-  let last = activity?.lastActivityAt?.getTime() ?? 0;
-  for (const box of boxes) last = Math.max(last, box.startedAt.getTime());
-  return last;
+  return activity?.lastActivityAt?.getTime() ?? trackingSince.getTime();
 }
 
 /** When a running session may be paused: N idle minutes, or after its hold. */
 export function idleDeadline(
-  boxes: Array<Pick<AppBoxInfo, "startedAt">>,
   activity: BoxActivity | undefined,
+  trackingSince: Date,
   idleMs: number,
 ): number {
   return Math.max(
-    lastUseOf(boxes, activity) + idleMs,
+    lastUseOf(activity, trackingSince) + idleMs,
     activity?.activeUntil?.getTime() ?? 0,
   );
 }
@@ -126,6 +135,10 @@ function groupBySession(boxes: AppBoxInfo[]): Map<string, AppBoxInfo[]> {
     out.set(box.sessionKey, list);
   }
   return out;
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 // --------------------------------------------------------------------------
@@ -184,8 +197,10 @@ export function usageByWorkspace(
 export interface SweepDeps {
   listBoxes(): Promise<AppBoxInfo[]>;
   getActivity(sessionKeys: string[]): Promise<Map<string, BoxActivity>>;
-  /** A workflow run (or other declared long work) is still going inside. */
-  hasRunningWork(sessionKey: string): Promise<boolean>;
+  /** When activity tracking started; the sweep records it on its first run. */
+  trackingSince(): Promise<Date>;
+  /** Work still going in this box: a workflow run or a terminal command. */
+  runningWork(box: AppBoxInfo): Promise<string | null>;
   /** Tell open tabs the box is asleep BEFORE pausing it (see below). */
   announceAsleep(sessionKey: string): Promise<void>;
   pause(sandboxId: string): Promise<boolean>;
@@ -210,6 +225,7 @@ export async function sweepIdleBoxes(
 ): Promise<SweepResult> {
   const now = deps.now();
   const boxes = await deps.listBoxes();
+  const since = await deps.trackingSince();
   const usage = usageByWorkspace(boxes, now);
   const running = boxes.filter(b => b.state === "running");
   const result: SweepResult = {
@@ -219,9 +235,11 @@ export async function sweepIdleBoxes(
     kept: [],
     usage,
   };
-  if (running.length === 0) return result;
+  const sessions = groupBySession(
+    running.filter(b => isPersonSession(b.sessionKey)),
+  );
+  if (sessions.size === 0) return result;
 
-  const sessions = groupBySession(running);
   const activity = await deps.getActivity([...sessions.keys()]);
   for (const [sessionKey, list] of sessions) {
     const act = activity.get(sessionKey);
@@ -232,28 +250,37 @@ export async function sweepIdleBoxes(
       });
       continue;
     }
-    const deadline = idleDeadline(list, act, config.idleMs);
-    if (now < deadline) continue;
+    if (now < idleDeadline(act, since, config.idleMs)) continue;
+
+    let busy: string | null = null;
     try {
-      if (await deps.hasRunningWork(sessionKey)) {
-        result.kept.push({ sessionKey, reason: "workflow run in progress" });
-        continue;
+      for (const box of list) {
+        busy = await deps.runningWork(box);
+        if (busy) break;
       }
     } catch (error) {
-      // Cannot tell: keep it running this tick rather than pause a run.
-      result.kept.push({
-        sessionKey,
-        reason: `work probe failed: ${error instanceof Error ? error.message : String(error)}`,
-      });
+      // Cannot tell: keep it running this tick rather than pause work.
+      busy = `work probe failed: ${message(error)}`;
+    }
+    if (busy) {
+      result.kept.push({ sessionKey, reason: busy });
       continue;
     }
+
+    // Re-read just this session: the probe took seconds, and someone may
+    // have typed or saved meanwhile.
+    const fresh = (await deps.getActivity([sessionKey])).get(sessionKey);
+    if (deps.now() < idleDeadline(fresh, since, config.idleMs)) {
+      result.kept.push({ sessionKey, reason: "used during the sweep" });
+      continue;
+    }
+
     // Offline first, pause second. Pausing drops every pty, and a terminal
     // that sees its socket close while the box still reads "online"
-    // reconnects within a second — through ensureBox, which resumes the box
-    // that was just paused. Announced first, the terminal shows "off" and
-    // waits for a click instead.
+    // reconnects within a second through ensureBox, which resumes the box
+    // that was just paused. Announced first, it shows "off" and waits.
     await deps.announceAsleep(sessionKey).catch(() => undefined);
-    const idleMinutes = Math.round((now - lastUseOf(list, act)) / 60_000);
+    const idleMinutes = Math.round((now - lastUseOf(fresh, since)) / 60_000);
     for (const box of list) {
       try {
         await deps.pause(box.sandboxId);
@@ -265,7 +292,7 @@ export async function sweepIdleBoxes(
       } catch (error) {
         result.kept.push({
           sessionKey,
-          reason: `pause failed: ${error instanceof Error ? error.message : String(error)}`,
+          reason: `pause failed: ${message(error)}`,
         });
       }
     }
@@ -277,128 +304,190 @@ export async function sweepIdleBoxes(
 // Paused-box reaper
 // --------------------------------------------------------------------------
 
-export type SettleOutcome =
-  | { ok: true; committed?: string; note?: string }
-  | { ok: false; reason: string };
+export interface ReapCandidate {
+  sessionKey: string;
+  sandboxIds: string[];
+  /** Last real use (ms) at planning time. */
+  lastUse: number;
+}
+
+export interface ReapPlan {
+  due: ReapCandidate[];
+  skipped: Array<{ sessionKey: string; reason: string }>;
+}
 
 export interface ReapDeps {
   listBoxes(): Promise<AppBoxInfo[]>;
   getActivity(sessionKeys: string[]): Promise<Map<string, BoxActivity>>;
-  /**
-   * Resume the box and make its work durable: commit uncommitted changes to
-   * the session branch and push. ok=false means it could not be sure, and
-   * the box must be kept.
-   */
-  settle(sessionKey: string): Promise<SettleOutcome>;
-  /** Put a box back to sleep after a settle that failed. */
+  /** When tracking started; null = never recorded, so no grace has run. */
+  trackingSince(): Promise<Date | null>;
+  /** Settle ONE box by its id: connect-only, never create, never kill. */
+  settle(sessionKey: string, sandboxId: string): Promise<RescueResult>;
+  /** Put a box back to sleep after a settle that kept it. */
   pause(sandboxId: string): Promise<boolean>;
-  /** Kill every box of the session and drop what the API believed about it. */
-  destroy(sessionKey: string): Promise<void>;
+  kill(sandboxId: string): Promise<unknown>;
+  /** Drop what the API believed about the session and tell open tabs. */
+  forget(sessionKey: string): Promise<void>;
   now(): number;
 }
 
-export interface ReapResult {
-  /** Sessions past retention, before the batch cap. */
-  due: number;
-  deleted: Array<{
-    sessionKey: string;
-    boxes: number;
-    committed?: string;
-    idleDays: number;
-  }>;
-  skipped: Array<{ sessionKey: string; reason: string }>;
-}
-
-export async function reapPausedBoxes(
-  deps: ReapDeps,
-  config: BoxIdleConfig = boxIdleConfig(),
-): Promise<ReapResult> {
+/**
+ * Which sessions are due. Grace rule: a session is due only when its
+ * recorded last use is D days old. With no record, only once tracking has
+ * run D days. E2B start times never count.
+ */
+export async function planReap(
+  deps: Pick<ReapDeps, "listBoxes" | "getActivity" | "trackingSince" | "now">,
+  config: BoxIdleConfig,
+): Promise<ReapPlan> {
   const now = deps.now();
-  const boxes = await deps.listBoxes();
-  const sessions = groupBySession(boxes);
-  const result: ReapResult = { due: 0, deleted: [], skipped: [] };
-
-  const candidates: Array<{
-    sessionKey: string;
-    boxes: AppBoxInfo[];
-    lastUse: number;
-  }> = [];
-  const activity = await deps.getActivity([...sessions.keys()]);
-  for (const [sessionKey, list] of sessions) {
-    // A session with any box running is in use (or about to be paused by
-    // the other sweep). Only all-paused sessions are candidates.
+  const since = await deps.trackingSince();
+  const sessions = groupBySession(await deps.listBoxes());
+  const plan: ReapPlan = { due: [], skipped: [] };
+  const people = [...sessions.keys()].filter(isPersonSession);
+  const activity = await deps.getActivity(people);
+  for (const sessionKey of people) {
+    const list = sessions.get(sessionKey) ?? [];
+    // Any running box means the session is in use (or about to be paused).
     if (list.some(b => b.state !== "paused")) continue;
     const act = activity.get(sessionKey);
-    const lastUse = lastUseOf(list, act);
-    if (now - lastUse < config.pausedRetentionMs) continue;
     if (!act?.known) {
-      result.skipped.push({
+      plan.skipped.push({
         sessionKey,
         reason: "not a session of this database",
       });
       continue;
     }
-    candidates.push({ sessionKey, boxes: list, lastUse });
-  }
-  result.due = candidates.length;
-  // Oldest first, so a backlog drains in age order across runs.
-  candidates.sort((a, b) => a.lastUse - b.lastUse);
-
-  for (const { sessionKey, boxes: list, lastUse } of candidates.slice(
-    0,
-    config.reapBatch,
-  )) {
-    let outcome: SettleOutcome;
-    try {
-      outcome = await deps.settle(sessionKey);
-    } catch (error) {
-      outcome = {
-        ok: false,
-        reason: `settle failed: ${error instanceof Error ? error.message : String(error)}`,
-      };
-    }
-    if (!outcome.ok) {
-      result.skipped.push({ sessionKey, reason: outcome.reason });
-      // The settle resumed the box to look inside; it goes back to sleep.
-      for (const box of list) {
-        await deps.pause(box.sandboxId).catch(() => false);
-      }
-      continue;
-    }
-    // Used while we were settling (a person came back): keep it.
-    const fresh = (await deps.getActivity([sessionKey])).get(sessionKey);
-    if ((fresh?.lastActivityAt?.getTime() ?? 0) > lastUse) {
-      result.skipped.push({ sessionKey, reason: "used during the sweep" });
-      continue;
-    }
-    await deps.destroy(sessionKey);
-    result.deleted.push({
+    const lastUse = act.lastActivityAt?.getTime() ?? since?.getTime() ?? null;
+    if (lastUse === null || now - lastUse < config.pausedRetentionMs) continue;
+    plan.due.push({
       sessionKey,
-      boxes: list.length,
-      committed: outcome.committed,
-      idleDays: Math.floor((now - lastUse) / 86_400_000),
+      sandboxIds: list.map(b => b.sandboxId),
+      lastUse,
     });
   }
-  return result;
+  // Oldest first, so a backlog drains in age order across runs.
+  plan.due.sort((a, b) => a.lastUse - b.lastUse);
+  plan.due = plan.due.slice(0, config.reapBatch);
+  return plan;
+}
+
+export interface ReapOutcome {
+  sessionKey: string;
+  action: "deleted" | "kept";
+  reason?: string;
+  rescues: Array<{ sandboxId: string; result: RescueResult }>;
+  killFailures: string[];
+}
+
+/** Settle every box of one session by id, then kill them. Never throws. */
+export async function reapSession(
+  deps: ReapDeps,
+  candidate: ReapCandidate,
+): Promise<ReapOutcome> {
+  const { sessionKey } = candidate;
+  const outcome: ReapOutcome = {
+    sessionKey,
+    action: "kept",
+    rescues: [],
+    killFailures: [],
+  };
+  const fresh = (await deps.getActivity([sessionKey])).get(sessionKey);
+  if ((fresh?.lastActivityAt?.getTime() ?? 0) > candidate.lastUse) {
+    outcome.reason = "used since planning";
+    return outcome;
+  }
+  const resumed: string[] = [];
+  for (const sandboxId of candidate.sandboxIds) {
+    let result: RescueResult;
+    try {
+      resumed.push(sandboxId);
+      result = await deps.settle(sessionKey, sandboxId);
+    } catch (error) {
+      result = {
+        status: "manual",
+        reason: `settle failed: ${message(error)}`,
+        excluded: [],
+        ignored: [],
+      };
+    }
+    outcome.rescues.push({ sandboxId, result });
+    if (result.status === "manual") {
+      outcome.reason = `${sandboxId}: ${result.reason}`;
+      // The settle resumed boxes to look inside; they go back to sleep.
+      for (const id of resumed) await deps.pause(id).catch(() => false);
+      return outcome;
+    }
+  }
+  // Someone came back while we were settling: keep everything awake as is.
+  const after = (await deps.getActivity([sessionKey])).get(sessionKey);
+  if ((after?.lastActivityAt?.getTime() ?? 0) > candidate.lastUse) {
+    outcome.reason = "used during the settle";
+    return outcome;
+  }
+  for (const sandboxId of candidate.sandboxIds) {
+    try {
+      await deps.kill(sandboxId);
+    } catch (error) {
+      outcome.killFailures.push(`${sandboxId}: ${message(error)}`);
+    }
+  }
+  try {
+    await deps.forget(sessionKey);
+  } catch (error) {
+    outcome.killFailures.push(`forget: ${message(error)}`);
+  }
+  outcome.action = "deleted";
+  return outcome;
+}
+
+/** Plan and reap in one go (the Inngest function splits these into steps). */
+export async function reapPausedBoxes(
+  deps: ReapDeps,
+  config: BoxIdleConfig = boxIdleConfig(),
+): Promise<{ plan: ReapPlan; outcomes: ReapOutcome[] }> {
+  const plan = await planReap(deps, config);
+  const outcomes: ReapOutcome[] = [];
+  for (const candidate of plan.due) {
+    outcomes.push(await reapSession(deps, candidate));
+  }
+  return { plan, outcomes };
 }
 
 // --------------------------------------------------------------------------
 // Real dependencies (E2B + the box's git)
 // --------------------------------------------------------------------------
 
-/** Unfinished `mako workflow run`s (workflows/sandbox.ts writes .pid / .exit). */
-const RUNNING_WORK_PROBE =
-  `for p in /tmp/mako-workflow-runs/*.pid; do [ -e "$p" ] || continue; ` +
-  `b="\${p%.pid}"; [ -e "$b.exit" ] && continue; ` +
-  `kill -0 "$(cat "$p")" 2>/dev/null && { echo busy; break; }; done; true`;
+/**
+ * Work that must not be paused under itself. Prints `busy <what>` or nothing.
+ *
+ * - An unfinished `mako workflow run` (workflows/sandbox.ts writes .pid and,
+ *   at the end, .exit).
+ * - A terminal whose foreground process group is something other than a
+ *   shell (ps `+` flag on a tty): a build, a test run, a REPL. Mako's own
+ *   dev-server ptys (`mako-dev-<slug>`) are not terminals someone is using
+ *   and are left out, or every box with a preview would never sleep.
+ */
+export const RUNNING_WORK_PROBE = [
+  `for p in /tmp/mako-workflow-runs/*.pid; do [ -e "$p" ] || continue; b="\${p%.pid}"; [ -e "$b.exit" ] && continue; kill -0 "$(cat "$p")" 2>/dev/null && { echo "busy workflow run"; exit 0; }; done`,
+  `ps -eo stat=,tty=,comm=,args= 2>/dev/null | awk '` +
+    `$2=="?" {next} ` +
+    `{ n++; st[n]=$1; tt[n]=$2; cm[n]=$3; if (index($0,"mako-dev-")>0) dev[$2]=1 } ` +
+    `END { for (i=1;i<=n;i++) { if (tt[i] in dev) continue; if (st[i] !~ /\\+/) continue; ` +
+    `if (cm[i] ~ /^-?(bash|sh|zsh|dash|fish)$|^tmux|^dtach$|^script$|^login$|^ps$|^awk$/) continue; ` +
+    `print "busy terminal command " cm[i]; exit } }'`,
+  "true",
+].join("\n");
 
-async function hasRunningWork(sessionKey: string): Promise<boolean> {
-  const result = await getSandboxProvider().exec(
-    { sessionKey },
-    RUNNING_WORK_PROBE,
-    { timeoutMs: 15_000 },
-  );
-  return result.stdout.includes("busy");
+export function parseRunningWork(stdout: string): string | null {
+  const line = stdout.split("\n").find(l => l.startsWith("busy "));
+  return line ? line.slice(5).trim() : null;
+}
+
+async function runningWork(box: AppBoxInfo): Promise<string | null> {
+  const run = await openAppBoxById(box.sandboxId);
+  const result = await run(RUNNING_WORK_PROBE, { timeoutMs: 15_000 });
+  return parseRunningWork(result.stdout);
 }
 
 async function announceAsleep(sessionKey: string): Promise<void> {
@@ -407,91 +496,86 @@ async function announceAsleep(sessionKey: string): Promise<void> {
   if (parts) await markBoxOffline(parts.workspaceId, parts.userId);
 }
 
-const AUTOSAVE_MESSAGE =
-  "Autosave: uncommitted work from an idle sandbox before it was deleted";
+const POLICY_COLLECTION = "apps_box_policy";
+const TRACKING_DOC = "activity-tracking";
 
-/**
- * Make a paused box's work durable, or say why not. Resumes the box (every
- * exec connects), which the caller undoes with a pause on failure.
- */
-export async function settleBoxForDelete(
-  sessionKey: string,
-): Promise<SettleOutcome> {
-  const parts = parseSessionKey(sessionKey);
-  if (!parts) return { ok: false, reason: "malformed session key" };
-  const ctx = { sessionKey };
-  const status = await boxStatus(ctx);
-  const dirty = status.changes.length > 0 || status.ahead > 0;
-  if (parts.userId === PUBLISH_ACTOR) {
-    // The publish actor's box holds a trial merge rebuilt from the branch on
-    // every publish (worktree/worktrees.ts PUBLISH_ACTOR): nothing in it is
-    // a person's work, and committing it would ship an unbuilt candidate.
-    // Every other actor, "api-key" included, holds real work and goes
-    // through the commit and the checks below.
-    return {
-      ok: true,
-      note: dirty ? "publish actor: derived working copy" : undefined,
-    };
-  }
-  let committed: string | undefined;
-  if (dirty) {
-    if (status.branch === "HEAD") {
-      return { ok: false, reason: "uncommitted work on a detached HEAD" };
-    }
-    // A non-user actor ("api-key") has no person to resolve; the box's own
-    // configured identity commits for it.
-    const author = isUserActor(parts.userId)
-      ? await resolveActorIdentity(parts.userId)
-      : undefined;
-    // The box's git token may have expired while it slept.
-    await configureBoxRemote({
-      ctx,
-      workspaceId: parts.workspaceId,
-      userId: parts.userId,
-      author,
-    });
-    const result = await withBoxPushLock(sessionKey, () =>
-      boxCommitAll({
-        ctx,
-        message: AUTOSAVE_MESSAGE,
-        author,
-        committer: { name: "Mako", email: "agent@mako.ai" },
-      }),
-    );
-    committed = result.commitOid;
-  }
-  // Trust, but verify: nothing left uncommitted, unpushed, stashed, or on a
-  // local branch the server has never seen.
-  const after = await boxStatus(ctx);
-  if (after.changes.length > 0 || after.ahead > 0) {
-    return {
-      ok: false,
-      reason: "work still not on the server after the autosave commit",
-    };
-  }
-  const extra = await boxExec(
-    ctx,
-    `cd ${sh(boxRoot(ctx))} && ` +
-      `echo "STASH=$(git stash list 2>/dev/null | head -1)"; ` +
-      `echo "UNPUSHED=$(git log HEAD --branches --not --remotes --format=%H -1 2>/dev/null)"`,
-    { timeoutMs: 30_000 },
+/** First call records "now" as the start of tracking; later calls read it. */
+async function ensureTrackingSince(): Promise<Date> {
+  const col = mongoose.connection.collection<{ _id: string; since: Date }>(
+    POLICY_COLLECTION,
   );
-  if (/STASH=\S/.test(extra.stdout)) {
-    return { ok: false, reason: "stash entries would be lost" };
-  }
-  if (/UNPUSHED=\S/.test(extra.stdout)) {
-    return {
-      ok: false,
-      reason:
-        "commits the server does not have (a local branch or a detached HEAD)",
-    };
-  }
-  return { ok: true, committed };
+  await col.updateOne(
+    { _id: TRACKING_DOC },
+    { $setOnInsert: { since: new Date() } },
+    { upsert: true },
+  );
+  const doc = await col.findOne({ _id: TRACKING_DOC });
+  return doc?.since ?? new Date();
 }
 
-async function destroySession(sessionKey: string): Promise<void> {
+async function readTrackingSince(): Promise<Date | null> {
+  const doc = await mongoose.connection
+    .collection<{ _id: string; since: Date }>(POLICY_COLLECTION)
+    .findOne({ _id: TRACKING_DOC });
+  return doc?.since ?? null;
+}
+
+/** Fresh git credential + origin, written in the box (configureBoxRemote's). */
+function remoteScript(input: { workspaceId: string; token: string }): string {
+  const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
+  const credential = `${BOX_ROOT}/.git/mako-git-token`;
+  const helper = `!f() { printf 'username=mako\\npassword=%s\\n' "$(cat ${credential})"; }; f`;
+  return [
+    `cd ${q(BOX_ROOT)}`,
+    `(umask 077 && printf '%s' ${q(input.token)} > ${q(credential)})`,
+    `git config --replace-all credential.helper ''`,
+    `git config --add credential.helper ${q(helper)}`,
+    `{ git remote set-url origin ${q(appsGitOriginUrl(input.workspaceId))} || git remote add origin ${q(appsGitOriginUrl(input.workspaceId))}; }`,
+  ].join(" && ");
+}
+
+async function settleBox(
+  sessionKey: string,
+  sandboxId: string,
+): Promise<RescueResult> {
   const parts = parseSessionKey(sessionKey);
-  await getSandboxProvider().destroySession?.(sessionKey);
+  if (!parts || !isUserActor(parts.userId)) {
+    return {
+      status: "manual",
+      reason: "not a person's session",
+      excluded: [],
+      ignored: [],
+    };
+  }
+  const run = await openAppBoxById(sandboxId);
+  const author = await resolveActorIdentity(parts.userId);
+  return rescueCommit({
+    run,
+    root: BOX_ROOT,
+    userId: parts.userId,
+    now: new Date(),
+    author,
+    prepareRemote: async () => {
+      const token = mintGitToken({
+        workspaceId: parts.workspaceId,
+        userId: parts.userId,
+        email: author?.email,
+      });
+      const result = await run(
+        remoteScript({ workspaceId: parts.workspaceId, token }),
+        {
+          timeoutMs: 60_000,
+        },
+      );
+      if (result.exitCode !== 0) {
+        throw new Error("could not refresh the box's git credential");
+      }
+    },
+  });
+}
+
+async function forgetSession(sessionKey: string): Promise<void> {
+  const parts = parseSessionKey(sessionKey);
   forgetBoxCaches(sessionKey);
   forgetTerminalCaches(sessionKey);
   if (parts) await markBoxOffline(parts.workspaceId, parts.userId);
@@ -501,7 +585,8 @@ export function realSweepDeps(): SweepDeps {
   return {
     listBoxes: () => listAppBoxes(["running", "paused"]),
     getActivity: getBoxActivity,
-    hasRunningWork,
+    trackingSince: ensureTrackingSince,
+    runningWork,
     announceAsleep,
     pause: pauseAppBox,
     now: Date.now,
@@ -512,14 +597,16 @@ export function realReapDeps(): ReapDeps {
   return {
     listBoxes: () => listAppBoxes(["running", "paused"]),
     getActivity: getBoxActivity,
-    settle: settleBoxForDelete,
+    trackingSince: readTrackingSince,
+    settle: settleBox,
     pause: pauseAppBox,
-    destroy: destroySession,
+    kill: killAppBox,
+    forget: forgetSession,
     now: Date.now,
   };
 }
 
-/** The sweep only means something against E2B with a key. */
+/** The sweeps only mean something against E2B with a key. */
 export function boxIdleSweepAvailable(): boolean {
   return getSandboxProvider().id === "e2b" && !!process.env.E2B_API_KEY;
 }

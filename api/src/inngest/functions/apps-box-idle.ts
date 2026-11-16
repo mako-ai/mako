@@ -4,10 +4,10 @@
  * - Every 2 minutes: pause running app boxes idle past APPS_BOX_IDLE_MINUTES
  *   (default 10) and log running/paused counts and box-seconds per
  *   workspace.
- * - Hourly: delete sessions paused and unused past
- *   APPS_BOX_PAUSED_RETENTION_DAYS (default 14), committing uncommitted
- *   work to the session branch first, at most APPS_BOX_REAP_BATCH (default
- *   10) per run.
+ * - Hourly, only with APPS_BOX_REAPER=on (off by default): delete sessions
+ *   paused and unused past APPS_BOX_PAUSED_RETENTION_DAYS (default 14),
+ *   rescuing uncommitted work to a mako-presave/ branch first, at most
+ *   APPS_BOX_REAP_BATCH (default 10) per run, one step per session.
  *
  * APPS_BOX_IDLE_SWEEP=off turns both off. Neither runs without E2B.
  */
@@ -18,8 +18,9 @@ import {
   boxIdleSweepAvailable,
   logBoxUsage,
   realReapDeps,
+  planReap,
   realSweepDeps,
-  reapPausedBoxes,
+  reapSession,
   sweepIdleBoxes,
 } from "../../apps/box-idle.service";
 
@@ -67,21 +68,68 @@ export const appsBoxPausedReaperFunction = inngest.createFunction(
   },
   async ({ step }) => {
     const config = boxIdleConfig();
-    if (!config.enabled) return { skipped: "APPS_BOX_IDLE_SWEEP=off" };
+    // Deletion is opt-in and separate from pausing: APPS_BOX_REAPER=on.
+    if (!config.enabled || !config.reaperEnabled) {
+      return { skipped: "APPS_BOX_REAPER is not on" };
+    }
     if (!boxIdleSweepAvailable()) return { skipped: "no e2b provider" };
-    return step.run("reap", async () => {
-      const result = await reapPausedBoxes(realReapDeps(), config);
-      for (const deleted of result.deleted) {
-        log.info("Apps paused box deleted", { ...deleted });
+    const plan = await step.run("plan", async () => {
+      const planned = await planReap(realReapDeps(), config);
+      for (const skipped of planned.skipped) {
+        log.info("Apps paused box not due", { ...skipped });
       }
-      for (const skipped of result.skipped) {
-        log.warn("Apps paused box kept", { ...skipped });
-      }
-      return {
-        due: result.due,
-        deleted: result.deleted.length,
-        skipped: result.skipped.length,
-      };
+      return planned.due;
     });
+    let deleted = 0;
+    let kept = 0;
+    // One step per session: a slow or failing box costs only its own step,
+    // and a retry of the function never repeats a finished deletion.
+    for (const candidate of plan) {
+      const outcome = await step.run(
+        `reap-${candidate.sessionKey}`,
+        async () => {
+          const result = await reapSession(realReapDeps(), candidate);
+          for (const { sandboxId, result: rescue } of result.rescues) {
+            // Everything deletion will lose is logged BEFORE the kill below
+            // ran: excluded paths (secrets, >10 MB, build output) and ignored
+            // files.
+            log.info("Apps paused box settled", {
+              sessionKey: candidate.sessionKey,
+              sandboxId,
+              status: rescue.status,
+              ...(rescue.status === "saved"
+                ? {
+                    branch: rescue.branch,
+                    commitOid: rescue.commitOid,
+                    files: rescue.files,
+                  }
+                : {}),
+              ...(rescue.status === "manual" ? { reason: rescue.reason } : {}),
+              excluded: rescue.excluded,
+              ignored: rescue.ignored,
+            });
+          }
+          if (result.action === "deleted") {
+            log.info("Apps paused box deleted", {
+              sessionKey: candidate.sessionKey,
+              boxes: candidate.sandboxIds.length,
+              idleDays: Math.floor(
+                (Date.now() - candidate.lastUse) / 86_400_000,
+              ),
+              killFailures: result.killFailures,
+            });
+          } else {
+            log.warn("Apps paused box kept", {
+              sessionKey: candidate.sessionKey,
+              reason: result.reason,
+            });
+          }
+          return { action: result.action };
+        },
+      );
+      if (outcome.action === "deleted") deleted += 1;
+      else kept += 1;
+    }
+    return { due: plan.length, deleted, kept };
   },
 );
