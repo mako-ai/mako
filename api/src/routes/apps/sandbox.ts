@@ -30,7 +30,7 @@ import {
   releaseDevServerSlot,
 } from "../../apps/dev-server.service";
 import { getBoxState } from "../../apps/box-state.service";
-import { getSandboxProvider } from "../../apps/sandbox/provider";
+import { boxIsRunning, getSandboxProvider } from "../../apps/sandbox/provider";
 import {
   AUTH_SECURITY,
   OPEN_RESPONSES,
@@ -208,7 +208,9 @@ appsSandboxRoutes.openapi(
       const handle = await ensureWorktree(loaded.project, actorOf(loaded));
       const ctx = boxCtx(handle);
       const info = (await getSandboxProvider().describe?.(ctx)) ?? null;
-      if (!info) {
+      // A paused box answers "not running" without an exec: reading its
+      // stats would resume it just to show them.
+      if (!info || !(await boxIsRunning(ctx))) {
         return c.json({ success: true as const, running: false }, 200);
       }
       const stats = await sandboxStats(ctx);

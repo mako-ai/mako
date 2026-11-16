@@ -43,6 +43,8 @@ export default defineConfig({
       // commit before delete; polls never record activity or wake a box.
       "src/apps/box-idle.service.test.ts",
       "src/apps/box-activity.test.ts",
+      // A paused box + 10 min of workbench polls: 0 resumes.
+      "src/apps/box-resume-loop.test.ts",
       "src/apps/box/rescue-commit.test.ts",
       "src/apps/sandbox/e2b-fleet.test.ts",
       // The E2B workspace move: an old-account box id means a fresh box.

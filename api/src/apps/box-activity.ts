@@ -151,6 +151,42 @@ async function claimSharedWindow(sessionKey: string): Promise<boolean> {
   }
 }
 
+/**
+ * Who last connected to a session's box. Every connect can resume a paused
+ * box, so when the sweep sees a box resumed with no activity recorded, this
+ * names the code path that did it. Memory always; Redis too when set, so the
+ * sweep in another instance can read it.
+ */
+const lastConnect = new BoundedMap<string, string>({
+  maxEntries: 5_000,
+  ttlMs: 2 * 3_600_000,
+});
+
+export function recordBoxConnect(sessionKey: string, caller: string): void {
+  const value = `${new Date().toISOString()} ${caller}`;
+  lastConnect.set(sessionKey, value);
+  const client = sharedRedis();
+  if (!client) return;
+  void client
+    .set(`apps:box-connect:${sessionKey}`, value, "PX", 2 * 3_600_000)
+    .catch(() => undefined);
+}
+
+export async function lastBoxConnect(
+  sessionKey: string,
+): Promise<string | null> {
+  const client = sharedRedis();
+  if (client) {
+    try {
+      const value = await client.get(`apps:box-connect:${sessionKey}`);
+      if (value) return value;
+    } catch {
+      // Fall back to this process's memory.
+    }
+  }
+  return lastConnect.get(sessionKey) ?? null;
+}
+
 /** Test seam: use this Redis-like client (null = none). */
 export function setBoxActivityRedisForTests(client: Redis | null): void {
   redis = client;

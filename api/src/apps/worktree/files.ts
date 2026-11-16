@@ -35,6 +35,7 @@ import { APP_MANIFEST, parseAppManifest } from "../app-paths";
 
 import { ensureCommitLocally } from "../cloud-repo.service";
 import {
+  boxIsRunning,
   getSandboxProvider,
   type SandboxExecContext,
   type SandboxExecOptions,
@@ -257,6 +258,14 @@ async function readSource(
   project: IAppProject,
   userId: string | undefined,
   at?: string,
+  /**
+   * "running": read the working copy only if the box is RUNNING; a paused
+   * box reads as the last commit. For listings, which the Workflows
+   * explorer polls every 8 s: an exec into a paused box resumes it, and that
+   * poll was waking boxes the idle sweep had just paused. Default "present"
+   * keeps opening a file showing uncommitted work (and resuming for it).
+   */
+  liveness: "present" | "running" = "present",
 ): Promise<
   | { kind: "box"; ctx: SandboxExecContext; handle: WorktreeHandle }
   | { kind: "repo"; repoDir: string; ref: string; appRoot?: string }
@@ -321,9 +330,11 @@ async function readSource(
     appRoot: appRootFor(project),
   };
   const ctx = boxCtx(handle);
-  const live = await getSandboxProvider()
-    .hasSession(ctx)
-    .catch(() => false);
+  const live = await (
+    liveness === "running"
+      ? boxIsRunning(ctx)
+      : getSandboxProvider().hasSession(ctx)
+  ).catch(() => false);
   if (live && (await boxHasRepo(ctx).catch(() => false))) {
     await syncBranchFromBox(handle);
     // The box's checkout may predate a move of this app (or its creation
@@ -407,7 +418,8 @@ export async function listFiles(
   project: IAppProject,
   userId?: string,
 ): Promise<FileListing> {
-  const source = await readSource(project, userId);
+  // A listing is looking, not using: never wake a paused box for it.
+  const source = await readSource(project, userId, undefined, "running");
   const root = appRootFor(project);
   if (source.kind === "box") {
     const listing = await boxListFiles(source.ctx, root, LIST_ENTRY_LIMIT);

@@ -15,7 +15,8 @@
  *   enters the sandbox.
  */
 import path from "node:path";
-import { Sandbox, SandboxNotFoundError } from "e2b";
+import { ConnectionConfig, Sandbox, SandboxNotFoundError } from "e2b";
+import { recordBoxConnect } from "../box-activity";
 import {
   APPS_EXEC_DEFAULT_TIMEOUT_MS,
   APPS_EXEC_MAX_OUTPUT_BYTES,
@@ -150,7 +151,36 @@ async function convergeToSingle(
  */
 const connecting = new Map<string, Promise<Sandbox>>();
 
+/**
+ * The first two frames outside this file and node_modules: which code path
+ * connected to (and so possibly resumed) a box. Recorded per session for the
+ * idle sweep's safety valve, which names it when a box keeps waking up
+ * without anyone using it.
+ */
+function connectCaller(): string {
+  const frames = (new Error().stack ?? "")
+    .split("\n")
+    .slice(1)
+    .map(line => line.trim())
+    .filter(
+      line =>
+        line.startsWith("at ") &&
+        !line.includes("e2b-provider") &&
+        !line.includes("node_modules") &&
+        !line.includes("node:internal"),
+    )
+    .slice(0, 2)
+    .map(line =>
+      line
+        .replace(/^at /, "")
+        .replace(/\(?\/.*\/api\/src\//, "(")
+        .replace(/^\/.*\/api\/src\//, ""),
+    );
+  return frames.join(" < ") || "unknown";
+}
+
 function connectSession(sessionKey: string): Promise<Sandbox> {
+  recordBoxConnect(sessionKey, connectCaller());
   const inflight = connecting.get(sessionKey);
   if (inflight) return inflight;
   const run = connectSessionNow(sessionKey).finally(() => {
@@ -490,29 +520,30 @@ async function peekPublicUrlForPortE2b(
   ctx: SandboxExecContext,
   port: number,
 ): Promise<string | null> {
-  const known = sessions.get(ctx.sessionKey);
-  if (known) {
-    try {
-      const sandbox = await Sandbox.connect(known, { apiKey: apiKey() });
-      return `https://${sandbox.getHost(port)}`;
-    } catch {
-      sessions.delete(ctx.sessionKey);
-    }
-  }
+  // Never connect here. Sandbox.connect RESUMES a paused box, and this runs
+  // from the 15 s dev-server status poll (dev-server/status.ts) and every box
+  // report: a hostname lookup was waking boxes the idle sweep had just
+  // paused. The host is `<port>-<sandboxId>.<domain>`, known from the list
+  // alone. A paused box has no reachable host, so it answers null.
   try {
     const paginator = Sandbox.list({
       apiKey: apiKey(),
-      query: { metadata: { makoAppsSessionKey: ctx.sessionKey } },
+      query: {
+        metadata: { makoAppsSessionKey: ctx.sessionKey },
+        state: ["running"],
+      },
       limit: 5,
     });
     if (!paginator.hasNext) return null;
     const info = pickWinner([...(await paginator.nextItems())]);
     if (!info) return null;
-    const sandbox = await Sandbox.connect(info.sandboxId, {
-      apiKey: apiKey(),
-    });
-    rememberSession(ctx.sessionKey, sandbox.sandboxId);
-    return `https://${sandbox.getHost(port)}`;
+    const host = new ConnectionConfig({ apiKey: apiKey() }).getHost(
+      info.sandboxId,
+      port,
+      // undefined falls back to the SDK's configured domain (E2B_DOMAIN).
+      info.sandboxDomain as string,
+    );
+    return `https://${host}`;
   } catch {
     return null;
   }

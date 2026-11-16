@@ -18,7 +18,7 @@ import { Types } from "mongoose";
 import type { RunWrites } from "./runs";
 
 import { appsGitOriginBase } from "../apps/config";
-import { getSandboxProvider } from "../apps/sandbox/provider";
+import { boxIsRunning, getSandboxProvider } from "../apps/sandbox/provider";
 import {
   boxCtx,
   ensureWorkspaceWorktree,
@@ -237,8 +237,22 @@ export async function readSandboxRun(
     );
     return answer;
   };
-  // Asking must not start a box: a box that is gone took the run with it.
-  if (!(await provider.hasSession(ctx))) {
+  // Asking must not start a box, nor wake a paused one: the run view polls
+  // this every 3 s, and every read below would resume the box. A paused box
+  // answers PAUSED (not an active status, so the polling stops); any real
+  // use of the box (opening the app, a command) resumes it, and the next
+  // read gives the result.
+  if (!(await boxIsRunning(ctx))) {
+    if (await provider.hasSession(ctx)) {
+      return {
+        runId,
+        sandbox: true as const,
+        status: "PAUSED",
+        error:
+          "The sandbox is asleep. Open the app or run any command in it to wake it, then read this run again.",
+        steps: [],
+      };
+    }
     return done(
       failed("The sandbox stopped before the run ended. Start it again."),
     );
