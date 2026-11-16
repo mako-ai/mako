@@ -267,3 +267,46 @@ test("--remote reports Mako's status and a failed build", async () => {
     globalThis.fetch = original;
   }
 });
+
+test("--remote on a connector file asks about the folder it lives in", async () => {
+  const dir = goodFolder({});
+  fs.mkdirSync(path.join(dir, "src"));
+  fs.renameSync(
+    path.join(dir, "connector.ts"),
+    path.join(dir, "src", "index.ts"),
+  );
+  fs.writeFileSync(
+    path.join(dir, "connector.yaml"),
+    "runtime: node\nentry: src/index.ts\n",
+  );
+  const slug = path.basename(dir);
+  const original = globalThis.fetch;
+  const asked = [];
+  globalThis.fetch = async (_url, init) => {
+    const rpc = JSON.parse(init.body);
+    asked.push(rpc.params.arguments.connector);
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: rpc.id,
+        result: {
+          content: [
+            { type: "text", text: JSON.stringify({ status: "indexed" }) },
+          ],
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  try {
+    await connector(
+      { apiUrl: "https://mako.test", apiKey: "revops_test" },
+      ["test", path.join(dir, "src", "index.ts")],
+      { remote: true },
+      { log: () => undefined },
+    );
+    assert.deepEqual(asked, [`ws:${slug}`]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

@@ -251,6 +251,20 @@ export function dependencyChecks(dir) {
   return checks;
 }
 
+/**
+ * The connector folder a file belongs to: the nearest ancestor holding
+ * connector.yaml (an entry may sit in src/), else the file's own directory.
+ */
+function connectorFolderOf(file) {
+  let dir = path.dirname(file);
+  for (;;) {
+    if (fs.existsSync(path.join(dir, "connector.yaml"))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return path.dirname(file);
+    dir = parent;
+  }
+}
+
 /** `inspect_connector` for ws:<slug>: the indexed status and the last build. */
 async function remoteStatus(ctx, dir) {
   const slug = path.basename(dir);
@@ -336,7 +350,10 @@ export async function connector(ctx, positional, flags, io) {
 
   // ---- what Mako says ----------------------------------------------------
   if (flags.remote) {
-    const [passed, text] = await remoteStatus(ctx, resolved);
+    const [passed, text] = await remoteStatus(
+      ctx,
+      isDir ? resolved : connectorFolderOf(resolved),
+    );
     if (passed === null) lines.push(skip(text));
     else record(passed, text);
   }
