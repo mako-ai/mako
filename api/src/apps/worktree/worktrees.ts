@@ -48,9 +48,10 @@ export const PUBLISH_ACTOR = "publish";
  * NOT "is this a person": real Mako user ids are 15 characters
  * (auth.service.ts generateId, hex today, base36 for older accounts), so this
  * answers false for nearly every real user. Kept with its old meaning for its
- * one remaining caller, ensureProjectRow's owner stamp (project-rows.ts),
- * where switching would hand every ownerless app row to whoever touches it
- * next; that is an access decision of its own. Use isPersonActorId for "is
+ * one remaining caller, ensureProjectRow (project-rows.ts): the claim of an
+ * existing ownerless row, always, and the owner of a new row while
+ * APPS_ROW_OWNER_PERSON_IDS is off. Widening the claim would hand every
+ * ownerless app row to whoever touches it next. Use isPersonActorId for "is
  * this a person".
  */
 export function isUserActor(actorId: string): boolean {
