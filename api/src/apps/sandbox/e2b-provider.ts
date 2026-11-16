@@ -182,25 +182,20 @@ async function connectPinned(
   expectSandboxId: string | undefined,
 ): Promise<Sandbox> {
   if (!expectSandboxId) return connectSession(sessionKey);
-  if (sessions.get(sessionKey) !== expectSandboxId) {
-    try {
-      const sandbox = await Sandbox.connect(expectSandboxId, {
-        apiKey: apiKey(),
-      });
-      return sandbox;
-    } catch {
-      throw new SandboxNotFoundError(
-        `Sandbox ${expectSandboxId} for ${sessionKey} was replaced or is gone.`,
-      );
-    }
-  }
-  const sandbox = await connectSession(sessionKey);
-  if (sandbox.sandboxId !== expectSandboxId) {
+  // Always straight to the pinned sandbox, never through connectSession:
+  // that path swallows connect errors, lists, and may create or converge to
+  // another box, so a 503 there could surface as "gone" and let a run's
+  // cleanup count a live box (and its credential) as cleaned.
+  try {
+    return await Sandbox.connect(expectSandboxId, { apiKey: apiKey() });
+  } catch (error) {
+    // Only a box E2B says is gone is gone. A timeout or a 5xx is not an
+    // answer: rethrown as-is, so the cleanup fails and the box is retired.
+    if (!isSandboxGone(error)) throw error;
     throw new SandboxNotFoundError(
-      `Sandbox ${expectSandboxId} for ${sessionKey} was replaced by ${sandbox.sandboxId}.`,
+      `Sandbox ${expectSandboxId} for ${sessionKey} was replaced or is gone.`,
     );
   }
-  return sandbox;
 }
 
 /** Keys boxLifecycle.create is creating right now: the only ones allowed to. */
@@ -505,15 +500,17 @@ async function heldSandbox(
   expectSandboxId?: string,
 ): Promise<{ entry: HeldSandbox; reused: boolean }> {
   const current = held.get(sessionKey);
-  if (current && heldUsable(current, Date.now())) {
-    // A pinned call never runs in a box other than the one it pinned.
-    if (expectSandboxId && current.sandbox.sandboxId !== expectSandboxId) {
-      throw new SandboxNotFoundError(
-        `Sandbox ${expectSandboxId} for ${sessionKey} was replaced by ${current.sandbox.sandboxId}.`,
-      );
-    }
+  if (
+    current &&
+    heldUsable(current, Date.now()) &&
+    (!expectSandboxId || current.sandbox.sandboxId === expectSandboxId)
+  ) {
     return { entry: current, reused: true };
   }
+  // A pinned call never runs in a box other than the one it pinned. When the
+  // held handle names another box, the pinned one is not thereby gone (the
+  // key may have moved while it still runs, holding a run's files): ask E2B
+  // for it below, which says "gone" only on a real not-found.
   const sandbox = await connectPinned(sessionKey, expectSandboxId);
   const now = Date.now();
   // A pinned box the session key no longer names is used, but not held:

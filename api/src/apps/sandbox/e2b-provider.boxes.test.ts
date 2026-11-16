@@ -154,3 +154,104 @@ describe("a run pinned to its sandbox", () => {
     expect(e2b.Sandbox.create).not.toHaveBeenCalled();
   });
 });
+
+describe("a pinned call whose connect fails", () => {
+  const ctx = { sessionKey: "connector-sync:v2:ws-transient" };
+
+  it("rethrows a transient error as-is, never as a gone box", async () => {
+    e2b.page.items = [{ sandboxId: "sbx_live" }];
+    e2b.Sandbox.connect.mockImplementation(async () => {
+      throw new Error("503 Service Unavailable");
+    });
+    const failure = await e2bSandboxProvider
+      .exec(ctx, "true", { expectSandboxId: "sbx_pinned" })
+      .catch((error: unknown) => error);
+    expect(String(failure)).toContain("503 Service Unavailable");
+    expect((failure as Error).name).not.toBe("SandboxNotFoundError");
+  });
+
+  it("rethrows a transient error when the pinned id is this process's cached session too", async () => {
+    // Create the session through the scheduler path so the id is cached.
+    e2b.Sandbox.create.mockResolvedValueOnce({
+      ...e2b.sandbox,
+      sandboxId: "sbx_cached",
+    });
+    e2b.page.items = [];
+    await e2bSandboxProvider.boxLifecycle?.create(
+      "connector-box:cbx_cached",
+      {},
+    );
+    e2b.page.items = [{ sandboxId: "sbx_cached" }];
+    e2b.Sandbox.connect.mockImplementation(async () => {
+      throw new Error("503 Service Unavailable");
+    });
+    const failure = await e2bSandboxProvider
+      .exec({ sessionKey: "connector-box:cbx_cached" }, "true", {
+        expectSandboxId: "sbx_cached",
+      })
+      .catch((error: unknown) => error);
+    expect(String(failure)).toContain("503 Service Unavailable");
+    expect((failure as Error).name).not.toBe("SandboxNotFoundError");
+  });
+
+  it("labels a not-found answer as gone", async () => {
+    e2b.Sandbox.connect.mockImplementation(async () => {
+      throw new e2b.SandboxNotFoundError(
+        "Sandbox is probably not running anymore",
+      );
+    });
+    await expect(
+      e2bSandboxProvider.exec(ctx, "true", { expectSandboxId: "sbx_pinned" }),
+    ).rejects.toThrow(/was replaced or is gone/);
+  });
+});
+
+describe("a pinned call when this process holds a handle to another box", () => {
+  it("runs in the pinned box if E2B still has it, and never calls it gone unasked", async () => {
+    const key = "connector-sync:v2:ws-moved";
+    const runIn = (id: string) => ({
+      ...e2b.sandbox,
+      sandboxId: id,
+      commands: {
+        run: vi.fn(async () => ({
+          pid: 1,
+          wait: async () => ({ exitCode: 0, stdout: id, stderr: "" }),
+        })),
+      },
+    });
+    // The key now names sbx_new, and this process holds a handle to it.
+    const fresh = runIn("sbx_new");
+    e2b.Sandbox.create.mockResolvedValueOnce(fresh);
+    await e2bSandboxProvider.exec({ sessionKey: key }, "true");
+
+    // A run pinned to sbx_old, which E2B says still runs.
+    const old = runIn("sbx_old");
+    e2b.Sandbox.connect.mockImplementation(async (id: string) => {
+      if (id === "sbx_old") return old;
+      throw new e2b.SandboxNotFoundError("not found");
+    });
+    const result = await e2bSandboxProvider.exec(
+      { sessionKey: key },
+      "cleanup",
+      {
+        expectSandboxId: "sbx_old",
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.sandboxId).toBe("sbx_old");
+    expect(old.commands.run).toHaveBeenCalledTimes(1);
+    // The held handle to the key's current box was not used for it: its 2
+    // calls are its own creation (mkdir) and the unpinned `true`.
+    expect(fresh.commands.run).toHaveBeenCalledTimes(2);
+
+    // The same call during an E2B incident fails as the incident, not "gone".
+    e2b.Sandbox.connect.mockImplementation(async () => {
+      throw new Error("503 Service Unavailable");
+    });
+    const failure = await e2bSandboxProvider
+      .exec({ sessionKey: key }, "cleanup", { expectSandboxId: "sbx_old" })
+      .catch((error: unknown) => error);
+    expect(String(failure)).toContain("503");
+    expect((failure as Error).name).not.toBe("SandboxNotFoundError");
+  });
+});

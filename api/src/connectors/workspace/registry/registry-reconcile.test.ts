@@ -51,11 +51,17 @@ const box = vi.hoisted(() => ({
   loads: 0,
   runs: [] as Array<{ command: string; dir: string; entry?: string }>,
   fail: null as string | null,
+  cleanupFail: null as string | null,
+  retired: [] as Array<{ workspaceId: string; reason: string }>,
 }));
 vi.mock("../sync-box", async importOriginal => {
   const actual = await importOriginal<typeof import("../sync-box")>();
   return {
     ...actual,
+    retireLegacySyncBox: vi.fn(async () => undefined),
+    retireSyncBox: vi.fn(async (workspaceId: string, reason: string) => {
+      box.retired.push({ workspaceId, reason });
+    }),
     materializeConnector: vi.fn(
       async ({ slug, sourceSha }: { slug: string; sourceSha: string }) =>
         `/box/connectors/${slug}@${sourceSha}`,
@@ -79,7 +85,9 @@ vi.mock("../sync-box", async importOriginal => {
         command: string;
         connectorDir: string;
         entry?: string;
+        onCleanupFailure?: (reason: string) => void;
       }) => {
+        if (box.cleanupFail) input.onCleanupFailure?.(box.cleanupFail);
         box.runs.push({
           command: input.command,
           dir: input.connectorDir,
@@ -272,6 +280,8 @@ beforeEach(async () => {
   box.loads = 0;
   box.runs.length = 0;
   box.fail = null;
+  box.cleanupFail = null;
+  box.retired.length = 0;
   process.env[CONNECTOR_REGISTRY_FLAG] = "true";
 });
 
@@ -305,6 +315,19 @@ describe("install by reference, flag on", () => {
     });
     expect(indexed?.registry?.upgradeAvailable).toBeUndefined();
     expect(indexed?.build).toBeUndefined();
+  });
+
+  it("kills the workspace box when the registry spec run's cleanup failed", async () => {
+    await publish("1.0.0");
+    repo.files.set("stripe", folder("source: mako/stripe@1\n"));
+    box.cleanupFail = "the run's processes would not die";
+
+    const result = await syncConnectorsFromRepo(WS);
+
+    expect(result).toMatchObject({ created: 1 });
+    expect(box.retired).toEqual([
+      { workspaceId: WS, reason: "the run's processes would not die" },
+    ]);
   });
 
   it("applies a minor release on the next reconcile, and only records a major", async () => {

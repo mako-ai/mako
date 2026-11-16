@@ -861,3 +861,52 @@ describe("box hardening", () => {
     ).toHaveLength(2);
   });
 });
+
+describe("cleanup that cannot reach the box", () => {
+  beforeEach(() => {
+    sandbox.supportsRunUsers = true;
+    sandbox.exec.mockReset();
+    sandbox.readFile.mockReset();
+    sandbox.writeFile.mockReset();
+  });
+  afterEach(() => {
+    sandbox.supportsRunUsers = undefined;
+  });
+
+  // The chunk command is cut off by a lost connection, so the run falls back
+  // to the separate cleanup (abandonScript), which then meets `cleanupError`.
+  const runWith = async (cleanupError: Error) => {
+    sandbox.exec.mockImplementation((_ctx, command: string) => {
+      if (command.includes("MAKO_CHUNK")) {
+        return Promise.reject(new Error("connection reset by peer"));
+      }
+      if (command.includes("kill -9 -1")) return Promise.reject(cleanupError);
+      return Promise.resolve(result());
+    });
+    const onCleanupFailure = vi.fn();
+    await runConnectorCommand({
+      ctx: { sessionKey: "connector-sync:v2:ws1" },
+      runtimeId: "runtime",
+      connectorDir: "/x",
+      command: "spec",
+      onCleanupFailure,
+    }).catch(() => undefined);
+    return onCleanupFailure;
+  };
+
+  it("fails the cleanup on a transient error: the box may still hold the credential", async () => {
+    const onCleanupFailure = await runWith(new Error("ETIMEDOUT"));
+    expect(onCleanupFailure).toHaveBeenCalledWith(
+      expect.stringContaining("ETIMEDOUT"),
+    );
+  });
+
+  it("counts a box that is really gone as cleaned", async () => {
+    const gone = Object.assign(
+      new Error("Sandbox is probably not running anymore"),
+      { name: "SandboxNotFoundError" },
+    );
+    const onCleanupFailure = await runWith(gone);
+    expect(onCleanupFailure).not.toHaveBeenCalled();
+  });
+});
