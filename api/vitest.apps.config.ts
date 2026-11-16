@@ -45,6 +45,13 @@ export default defineConfig({
       "src/apps/box-activity.test.ts",
       "src/apps/box/rescue-commit.test.ts",
       "src/apps/sandbox/e2b-fleet.test.ts",
+      // The E2B workspace move: an old-account box id means a fresh box.
+      "src/apps/sandbox/e2b-provider.migration.test.ts",
+      // The pre-save pass, its mocked decisions and its real-git ref rescues.
+      "src/apps/box-presave.test.ts",
+      "src/apps/box-presave.git.test.ts",
+      // The drain's key and swap-time guards.
+      "src/apps/box-drain.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",
       // Phase events on the request doing the work (NDJSON), no shared state.

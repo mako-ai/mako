@@ -207,6 +207,16 @@ export interface SandboxProvider {
       onExit?: (reason: string) => void;
     },
   ): Promise<SandboxTerminal>;
+  /**
+   * Every sandbox id the provider holds for this session, without creating or
+   * connecting to any. Throws when the provider cannot answer, so a caller
+   * can tell "none" apart from "unknown".
+   *
+   * Box processes report their own sandbox id. After an account move (a new
+   * E2B API key) a box left running in the OLD account keeps reporting for
+   * the same session key, and this is how the API recognises it as foreign.
+   */
+  sessionSandboxIds?(ctx: SandboxExecContext): Promise<string[]>;
   /** Tear down any remote session for the given affinity key (best effort). */
   destroySession?(sessionKey: string): Promise<void>;
   /**

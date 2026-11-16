@@ -101,6 +101,12 @@ export type RescueResult =
       files: number;
       excluded: string[];
       ignored: string[];
+      /**
+       * The server already held this exact rescue (same tree on the same
+       * parent) under `branch`; nothing was pushed. Makes a re-run idempotent
+       * instead of minting a `-<sha>` branch per run.
+       */
+      unchanged?: boolean;
     }
   | { status: "manual"; reason: string; excluded: string[]; ignored: string[] };
 
@@ -338,6 +344,31 @@ export function commitScript(input: {
   ].join("\n");
 }
 
+/**
+ * An existing rescue on the server (`base` or `base-<sha8>`, read from
+ * SERVER_REFS) holding the same content as `commit`: the same commit, or the
+ * same tree on the same first parent. Prints `SAME=<sha> <branch>`.
+ */
+export function sameRescueScript(
+  root: string,
+  base: string,
+  commit: string,
+): string {
+  const hex8 = "[0-9a-f]".repeat(8);
+  return [
+    `cd ${sh(root)} || exit 1`,
+    `c=${sh(commit)}; base=${sh(base)}`,
+    't=$(git rev-parse "$c^{tree}") || exit 1',
+    'p=$(git rev-parse -q --verify "$c^1" 2>/dev/null || true)',
+    `git for-each-ref --format="%(objectname) %(refname)" "${SERVER_REFS}/" | while read -r x r; do`,
+    `  b="\${r#${SERVER_REFS}/}"`,
+    `  case "$b" in "$base"|"$base"-${hex8}) ;; *) continue;; esac`,
+    '  if [ "$x" = "$c" ] || { [ "$(git rev-parse "$x^{tree}")" = "$t" ] && [ "$(git rev-parse -q --verify "$x^1" 2>/dev/null || true)" = "$p" ]; }; then echo "SAME=$x $b"; break; fi',
+    "done",
+    "true",
+  ].join("\n");
+}
+
 /** Push one commit to a NEW branch name. No force; refuses to overwrite. */
 export function pushScript(
   root: string,
@@ -365,6 +396,13 @@ export async function rescueCommit(input: {
   expectedOrigin: string;
   /** Refresh the box's git credential; runs before the server's refs are read. */
   prepareRemote?: () => Promise<void>;
+  /**
+   * The caller already pushed every stash to its own rescue ref (the E2B
+   * move's pre-save, box-presave.ts), so stashes no longer make this manual.
+   */
+  stashesHandled?: boolean;
+  /** Commit message; defaults to the idle-sandbox wording. */
+  message?: string;
 }): Promise<RescueResult> {
   const { run, root } = input;
   const excluded: string[] = [];
@@ -423,7 +461,9 @@ export async function rescueCommit(input: {
     );
   }
   if (seen.unmerged > 0) return manual("unmerged paths (conflict) in the box");
-  if (seen.stashes > 0) return manual(`${seen.stashes} stash entries`);
+  if (seen.stashes > 0 && !input.stashesHandled) {
+    return manual(`${seen.stashes} stash entries`);
+  }
   if (seen.otherUnpushed.length > 0) {
     return manual(
       `local branches with commits the server lacks: ${seen.otherUnpushed.join(", ")}`,
@@ -476,7 +516,9 @@ export async function rescueCommit(input: {
       commitScript({
         root,
         paths: include,
-        message: `Rescue: uncommitted work from an idle sandbox (${input.now.toISOString().slice(0, 10)})`,
+        message:
+          input.message ??
+          `Rescue: uncommitted work from an idle sandbox (${input.now.toISOString().slice(0, 10)})`,
         author: input.author,
       }),
       { timeoutMs: 180_000 },
@@ -496,12 +538,23 @@ export async function rescueCommit(input: {
     return manual(`unpushed history holds a blocked file: ${scan.path}`);
   }
 
-  const pushed = await pushRescueBranch(
-    run,
-    root,
-    commit,
-    rescueBranchName(input.userId, input.now),
-  );
+  const base = rescueBranchName(input.userId, input.now);
+  const same = await run(sameRescueScript(root, base, commit), {
+    timeoutMs: 60_000,
+  });
+  const existing = /^SAME=([0-9a-f]{40}) (.+)$/m.exec(same.stdout);
+  if (same.exitCode === 0 && existing?.[1] && existing[2]) {
+    return {
+      status: "saved",
+      branch: existing[2],
+      commitOid: existing[1],
+      files: include.length,
+      excluded,
+      ignored,
+      unchanged: true,
+    };
+  }
+  const pushed = await pushRescueBranch(run, root, commit, base);
   if (pushed.status !== "pushed") return manual(pushed.reason);
   return {
     status: "saved",
