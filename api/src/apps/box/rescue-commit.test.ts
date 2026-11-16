@@ -104,12 +104,9 @@ describe("rescueCommit", () => {
     expect(await git(root, "status", "--porcelain")).toContain("App.tsx");
   });
 
-  it("leaves secrets, build output and big files out, and reports them", async () => {
-    await write(".env.local", "SECRET=1\n");
-    await write("certs/server.pem", "x\n");
+  it("leaves build output out, reports it, and still saves", async () => {
     await write("apps/sales/dist/bundle.js", "x\n");
     await write("apps/sales/node_modules/x/index.js", "x\n");
-    await write("big.bin", Buffer.alloc(11 * 1024 * 1024));
     await write("apps/sales/keep.ts", "keep\n");
 
     const result = await rescue();
@@ -117,17 +114,25 @@ describe("rescueCommit", () => {
     expect(result.status).toBe("saved");
     const tree = await git(origin, "ls-tree", "-r", "--name-only", BRANCH);
     expect(tree).toContain("apps/sales/keep.ts");
-    for (const left of [
-      ".env.local",
-      "certs/server.pem",
-      "dist/",
-      "node_modules/",
-      "big.bin",
-    ]) {
-      expect(tree).not.toContain(left);
+    expect(tree).not.toContain("dist/");
+    expect(tree).not.toContain("node_modules/");
+    expect(result.excluded.join("\n")).toMatch(/dist\/bundle\.js/);
+  });
+
+  it("keeps the box when a secret or a big file is uncommitted, pushing nothing", async () => {
+    for (const [file, content] of [
+      [".env.local", "SECRET=1\n"],
+      ["certs/server.PEM", "x\n"],
+      ["big.bin", Buffer.alloc(11 * 1024 * 1024)],
+    ] as const) {
+      await write(file, content);
+      await write("apps/sales/keep.ts", `${file}\n`);
+      const result = await rescue();
+      expect(result.status).toBe("manual");
+      expect((result as { reason: string }).reason).toContain(file);
+      await fs.rm(path.join(root, file));
     }
-    expect(result.excluded.join("\n")).toMatch(/\.env\.local/);
-    expect(result.excluded.join("\n")).toMatch(/big\.bin \(over 10 MB\)/);
+    expect(await git(origin, "branch", "--list", "mako-presave/*")).toBe("");
   });
 
   it("reports ignored files", async () => {
@@ -193,6 +198,70 @@ describe("rescueCommit", () => {
     expect(await git(origin, "rev-parse", BRANCH)).toBe(head);
   });
 
+  async function blobOnServer(sha: string): Promise<boolean> {
+    return exec("git", ["-C", origin, "cat-file", "-e", sha]).then(
+      () => true,
+      () => false,
+    );
+  }
+
+  it("leak 1: an unpushed commit on main holding .env blocks the push", async () => {
+    await write(".env", "SECRET=1\n");
+    await git(root, "add", "-f", ".env");
+    await git(root, "commit", "-qm", "oops");
+    const blob = await git(root, "rev-parse", "HEAD:.env");
+    await write("apps/sales/App.tsx", "export default 3;\n");
+
+    const result = await rescue();
+
+    expect(result).toMatchObject({ status: "manual" });
+    expect((result as { reason: string }).reason).toMatch(/\.env/);
+    expect(await git(origin, "branch", "--list", "mako-presave/*")).toBe("");
+    expect(await blobOnServer(blob)).toBe(false);
+  });
+
+  it("leak 2: a detached HEAD commit holding an 11 MB blob blocks the push", async () => {
+    await git(root, "checkout", "-q", "--detach");
+    await write("assets/huge.bin", Buffer.alloc(11 * 1024 * 1024, 1));
+    await git(root, "add", "-A");
+    await git(root, "commit", "-qm", "big");
+    const blob = await git(root, "rev-parse", "HEAD:assets/huge.bin");
+
+    const result = await rescue();
+
+    expect(result).toMatchObject({ status: "manual" });
+    expect((result as { reason: string }).reason).toMatch(/over 10 MB/);
+    expect(await git(origin, "branch", "--list", "mako-presave/*")).toBe("");
+    expect(await blobOnServer(blob)).toBe(false);
+  });
+
+  it("leak 3: a stash holding .env pushes nothing", async () => {
+    await write(".env", "SECRET=1\n");
+    await git(root, "add", "-f", ".env");
+    await git(root, "stash", "-q");
+    const blob = await git(root, "rev-parse", "stash@{0}:.env");
+
+    const result = await rescue();
+
+    expect(result).toMatchObject({ status: "manual" });
+    expect(await git(origin, "branch", "--list", "mako-presave/*")).toBe("");
+    expect(await blobOnServer(blob)).toBe(false);
+  });
+
+  it("never builds a rescue on a HEAD tree that already holds a secret", async () => {
+    await write("config/prod.env", "SECRET=1\n");
+    await git(root, "add", "-f", "config/prod.env");
+    await git(root, "commit", "-qm", "pushed earlier");
+    await git(root, "push", "-q", "origin", "main");
+    await write("apps/sales/App.tsx", "export default 4;\n");
+
+    const result = await rescue();
+
+    expect(result).toMatchObject({ status: "manual" });
+    expect((result as { reason: string }).reason).toMatch(/HEAD tree/);
+    expect(await git(origin, "branch", "--list", "mako-presave/*")).toBe("");
+  });
+
   it("never overwrites an existing rescue branch: a second run gets a suffix", async () => {
     await write("apps/sales/a.ts", "a\n");
     const first = await rescue();
@@ -221,6 +290,23 @@ describe("helpers", () => {
     expect(excludedBecause("svc/target/x.class", 1)).toBeTruthy();
     expect(excludedBecause("a.p12", 1)).toBeTruthy();
     expect(excludedBecause("api.key", 1)).toBeTruthy();
+    for (const name of [
+      ".ENV",
+      "config/prod.env",
+      "a.P8",
+      "store.pfx",
+      "keys.jks",
+      "id_ed25519",
+      ".npmrc",
+      ".netrc",
+      ".pgpass",
+      "home/.aws/credentials",
+      "gcp-service-account-prod.json",
+      "stripe-key.json",
+      "api_key.json",
+    ]) {
+      expect(excludedBecause(name, 1)).toBe("secret-shaped name");
+    }
     expect(excludedBecause("apps/sales/App.tsx", 1)).toBeNull();
     expect(excludedBecause("apps/sales/App.tsx", 11 * 1024 * 1024)).toBe(
       "over 10 MB",

@@ -40,17 +40,38 @@ export type BoxRun = (
   options?: { timeoutMs?: number },
 ) => Promise<BoxRunResult>;
 
-/** Never committed by a rescue, whatever .gitignore says. */
-export const RESCUE_EXCLUDES = [
+/**
+ * Never committed or pushed by a rescue, whatever .gitignore says. Base-name
+ * globs, matched case-insensitively. AWS credential files (`.aws/credentials`)
+ * match by path.
+ */
+export const RESCUE_SECRET_NAMES = [
   ".env*",
+  "*.env",
   "*.pem",
   "*.key",
   "*.p12",
-  "id_rsa*",
+  "*.p8",
+  "*.pfx",
+  "*.jks",
+  "id_*",
+  ".npmrc",
+  ".netrc",
+  ".pgpass",
   "credentials*.json",
-  "node_modules/",
-  "target/",
-  "dist/",
+  "*service-account*.json",
+  "*-key.json",
+  "*_key.json",
+] as const;
+
+/** Build output: left out of a rescue, and losing it is fine. */
+export const RESCUE_EXCLUDED_DIRS = ["node_modules", "target", "dist"] as const;
+
+/** Everything a rescue leaves out, for logs and docs. */
+export const RESCUE_EXCLUDES = [
+  ...RESCUE_SECRET_NAMES,
+  "*/.aws/credentials",
+  ...RESCUE_EXCLUDED_DIRS.map(d => `${d}/`),
 ] as const;
 
 export const RESCUE_MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -83,15 +104,11 @@ function globToRegExp(glob: string): RegExp {
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
     .replace(/\*/g, ".*")
     .replace(/\?/g, ".");
-  return new RegExp(`^${body}$`);
+  return new RegExp(`^${body}$`, "i");
 }
 
-const NAME_RULES = RESCUE_EXCLUDES.filter(p => !p.endsWith("/")).map(
-  globToRegExp,
-);
-const DIR_RULES = RESCUE_EXCLUDES.filter(p => p.endsWith("/")).map(p =>
-  p.slice(0, -1),
-);
+const NAME_RULES = RESCUE_SECRET_NAMES.map(globToRegExp);
+const DIR_RULES: readonly string[] = RESCUE_EXCLUDED_DIRS;
 
 /** Why a path is left out of a rescue, or null to include it. */
 export function excludedBecause(path: string, size: number): string | null {
@@ -101,7 +118,54 @@ export function excludedBecause(path: string, size: number): string | null {
     return "excluded directory";
   }
   if (NAME_RULES.some(rule => rule.test(base))) return "secret-shaped name";
+  if (/(^|\/)\.aws\/credentials$/i.test(path)) return "secret-shaped name";
   if (size > RESCUE_MAX_FILE_BYTES) return "over 10 MB";
+  return null;
+}
+
+/**
+ * A path that must never reach the server: a secret-shaped name or a blob
+ * over 10 MB, anywhere (build directories included, since a committed blob
+ * there would travel all the same).
+ */
+export function blockedBecause(path: string, size: number): string | null {
+  const parts = path.split("/");
+  const base = parts[parts.length - 1] ?? path;
+  if (NAME_RULES.some(rule => rule.test(base))) return "secret-shaped name";
+  if (/(^|\/)\.aws\/credentials$/i.test(path)) return "secret-shaped name";
+  if (size > RESCUE_MAX_FILE_BYTES) return "over 10 MB";
+  return null;
+}
+
+/** Every blob in a tree: `<size>\t<path>\0` (ls-tree -l). */
+export function treeScript(root: string, rev: string): string {
+  return (
+    `cd ${sh(root)} && git ls-tree -r -l -z ${sh(rev)} | ` +
+    `while IFS= read -r -d '' rec; do meta="\${rec%%$'\t'*}"; p="\${rec#*$'\t'}"; ` +
+    `set -- $meta; printf '%s\\t%s\\0' "$4" "$p"; done`
+  );
+}
+
+/**
+ * Every blob ADDED or CHANGED by a commit no remote has, ancestors of `rev`
+ * included: `<size>\t<path>\0`. Pushing `rev` uploads exactly these, so
+ * this is what must be clean before any push.
+ */
+export function unpushedBlobsScript(root: string, rev: string): string {
+  return (
+    `cd ${sh(root)} && for c in $(git rev-list ${sh(rev)} --not --remotes); do ` +
+    `git diff-tree -r -z --root --no-commit-id -m --diff-filter=d "$c"; done | ` +
+    `while IFS= read -r -d '' meta && IFS= read -r -d '' p; do set -- $meta; ` +
+    `sz=$(git cat-file -s "$4" 2>/dev/null || echo 0); printf '%s\\t%s\\0' "$sz" "$p"; done`
+  );
+}
+
+/** The first blocked blob in a `<size>\t<path>\0` listing, or null. */
+export function firstBlocked(stdout: string): string | null {
+  for (const { path, size } of parseChanges(stdout)) {
+    const why = blockedBecause(path, size);
+    if (why) return `${path} (${why})`;
+  }
   return null;
 }
 
@@ -285,13 +349,22 @@ export async function rescueCommit(input: {
   }
   if (listed.truncated) return manual("too many changed paths to list");
   const include: string[] = [];
+  const kept: string[] = [];
   for (const { path, size } of parseChanges(listed.stdout)) {
     const why = excludedBecause(path, size);
     if (why) {
       if (excluded.length < REPORT_CAP) excluded.push(`${path} (${why})`);
+      // Build output is regenerable; a secret or a big file is not, and
+      // deleting the box would lose the only copy.
+      if (why !== "excluded directory") kept.push(path);
     } else {
       include.push(path);
     }
+  }
+  if (kept.length > 0) {
+    return manual(
+      `uncommitted files that a rescue must not push: ${kept.slice(0, 5).join(", ")}`,
+    );
   }
 
   if (include.length === 0 && seen.headUnpushed === 0) {
@@ -303,6 +376,13 @@ export async function rescueCommit(input: {
 
   let commit = seen.head;
   if (include.length > 0) {
+    // Never build a rescue on a tree that already carries a blocked file.
+    const tree = await run(treeScript(root, seen.head), { timeoutMs: 120_000 });
+    if (tree.exitCode !== 0 || tree.truncated) {
+      return manual("could not scan the HEAD tree");
+    }
+    const inHead = firstBlocked(tree.stdout);
+    if (inHead) return manual(`HEAD tree holds a blocked file: ${inHead}`);
     const made = await run(
       commitScript({
         root,
@@ -318,6 +398,17 @@ export async function rescueCommit(input: {
     }
     commit = oid;
   }
+
+  // Pushing `commit` uploads every ancestor no remote has. Scan all of them
+  // (not just the working tree) before anything leaves the box.
+  const history = await run(unpushedBlobsScript(root, commit), {
+    timeoutMs: 180_000,
+  });
+  if (history.exitCode !== 0 || history.truncated) {
+    return manual("could not scan the unpushed history");
+  }
+  const leak = firstBlocked(history.stdout);
+  if (leak) return manual(`unpushed history holds a blocked file: ${leak}`);
 
   await input.prepareRemote?.();
   const base = rescueBranchName(input.userId, input.now);
