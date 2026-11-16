@@ -23,11 +23,36 @@ sharedConfig:
   env:
     SERVER_MSGQUEUE_KIND: "postgres"
 
+# One of each, always on. The chart's own size (250m CPU and 1Gi requested
+# each) is enough: at the worst of 2026-11-16 each used 0.1 CPU and 60 MB.
+# What they need is a database that answers (provision.sh, SQL_TIER).
+#
+# The probes are the chart's with more patience. Both `/api/live` and the
+# engine's `/live` ask the database, and Kubernetes' defaults (1 s timeout,
+# 3 failures) restart the pod after 15 s of a slow database. On 2026-11-16
+# that turned a busy database into an unreachable Hatchet: 38 restarts of
+# the API and 19 of the engine, each dropping every worker's connection.
+# A restart does not make a database faster; now only a pod that has not
+# answered for a minute is restarted.
 api:
   replicaCount: 1
+  health:
+    spec:
+      livenessProbe:
+        timeoutSeconds: 5
+        failureThreshold: 12
+      readinessProbe:
+        timeoutSeconds: 5
 
 engine:
   replicaCount: 1
+  health:
+    spec:
+      livenessProbe:
+        timeoutSeconds: 5
+        failureThreshold: 12
+      readinessProbe:
+        timeoutSeconds: 5
 
 postgres:
   enabled: false

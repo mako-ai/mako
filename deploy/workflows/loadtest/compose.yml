@@ -1,0 +1,86 @@
+# A Hatchet of its own for load tests: nothing here touches a shared engine.
+# Postgres and the worker are sized by variables, so one stack reproduces the
+# production sizes (README.md, "Load test").
+name: mako-wf-loadtest
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    command:
+      - postgres
+      - -c
+      - max_connections=${PG_MAX_CONNECTIONS:-200}
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-560MB}
+    environment:
+      POSTGRES_USER: hatchet
+      POSTGRES_PASSWORD: hatchet
+      POSTGRES_DB: hatchet
+    cpus: ${PG_CPUS:-0.5}
+    mem_limit: ${PG_MEMORY:-1700m}
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  hatchet:
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.107.0
+    depends_on:
+      - postgres
+    ports:
+      - "127.0.0.1:${HATCHET_PORT:-18086}:8888"
+    cpus: ${HATCHET_CPUS:-1}
+    mem_limit: ${HATCHET_MEMORY:-2g}
+    environment:
+      DATABASE_URL: postgresql://hatchet:hatchet@postgres:5432/hatchet?sslmode=disable
+      SERVER_MSGQUEUE_KIND: postgres
+      SERVER_URL: http://hatchet:8888
+      SERVER_AUTH_COOKIE_DOMAIN: localhost
+      SERVER_AUTH_COOKIE_INSECURE: "t"
+      SERVER_AUTH_SET_EMAIL_VERIFIED: "t"
+      SERVER_GRPC_PORT: "7077"
+      SERVER_GRPC_BIND_ADDRESS: 0.0.0.0
+      SERVER_GRPC_INSECURE: "t"
+      SERVER_GRPC_BROADCAST_ADDRESS: hatchet:7077
+      SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS: localhost:7077
+      SERVER_DEFAULT_ENGINE_VERSION: V1
+
+  # Stands in for the Mako API: gives a pass per step after reading the run
+  # from Hatchet (as api/src/workflows/runs.ts does), and answers the HTTP
+  # call a step makes.
+  mako:
+    image: node:24.22.1-slim
+    command: ["node", "/loadtest/stub-mako.mjs"]
+    environment:
+      HATCHET_API_URL: http://hatchet:8888
+    env_file:
+      - path: ./.token.env
+        required: false
+    volumes:
+      - .:/loadtest:ro
+
+  worker:
+    build:
+      context: ../../..
+      dockerfile: deploy/workflows/runtime/Dockerfile
+    image: mako-workflows-runtime:loadtest
+    entrypoint: ["node", "/loadtest/start-worker.mjs"]
+    cpus: ${WORKER_CPUS:-1}
+    mem_limit: ${WORKER_MEMORY:-2g}
+    environment:
+      MAKO_URL: http://mako:8080
+      MAKO_API_KEY: loadtest
+      HATCHET_CLIENT_HOST_PORT: hatchet:7077
+      HATCHET_CLIENT_API_URL: http://hatchet:8888
+      HATCHET_CLIENT_TLS_STRATEGY: none
+      WORKFLOWS_ACTIVE: burst
+      WORKFLOWS_MAX_STEPS: ${WORKFLOWS_MAX_STEPS:-}
+      WORKFLOWS_MAX_RUNS: ${WORKFLOWS_MAX_RUNS:-}
+      WORKFLOWS_RATE_LIMITS: ${WORKFLOWS_RATE_LIMITS:-}
+    env_file:
+      - path: ./.token.env
+        required: false
+    volumes:
+      - .:/loadtest:ro
+      - ${RUNTIME_SRC:-../runtime}/worker.mjs:/runtime/worker.mjs:ro
+      - ${RUNTIME_SRC:-../runtime}/step.mjs:/runtime/step.mjs:ro
+    tmpfs:
+      - /tmp:exec

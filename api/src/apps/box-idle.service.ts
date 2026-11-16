@@ -32,8 +32,10 @@
  */
 import mongoose from "mongoose";
 import { loggers } from "../logging";
+import { AppWorktree } from "../database/workspace-schema";
 import {
   getBoxActivity,
+  lastBoxResume,
   parseSessionKey,
   type BoxActivity,
 } from "./box-activity";
@@ -52,7 +54,7 @@ import { noteSessionPaused } from "./sandbox/e2b-provider";
 import { getSandboxProvider } from "./sandbox/provider";
 import { forgetTerminalCaches } from "./terminal/sessions";
 import { forgetBoxCaches, resolveActorIdentity } from "./worktree/box-session";
-import { isUserActor } from "./worktree/worktrees";
+import { isPersonActorId } from "./worktree/worktrees";
 
 const logger = loggers.api("apps-box-idle");
 
@@ -116,10 +118,13 @@ export function boxIdleConfig(
   };
 }
 
-/** A person's own session box: `<ws>:<24-hex userId>`. Not publish, not api-key. */
+/**
+ * A person's own session box: `<ws>:<userId>` where userId is a real user id
+ * (15-char, or legacy 24-hex). Not publish, not api-key.
+ */
 export function isPersonSession(sessionKey: string): boolean {
   const parts = parseSessionKey(sessionKey);
-  return !!parts && isUserActor(parts.userId);
+  return !!parts && isPersonActorId(parts.userId);
 }
 
 /** Last real use: the activity record, else the day tracking started. */
@@ -219,8 +224,30 @@ export interface SweepDeps {
   /** Tell open tabs the box is asleep BEFORE pausing it (see below). */
   announceAsleep(sessionKey: string): Promise<void>;
   pause(sandboxId: string): Promise<boolean>;
+  /** Idle pauses so far and any safety-valve hold (see SAFETY_VALVE_*). */
+  pauseHistory(sessionKey: string): Promise<PauseHistory>;
+  recordPause(sessionKey: string, at: Date): Promise<void>;
+  holdPausing(sessionKey: string, until: Date): Promise<void>;
+  /** Who last connected to (and so maybe resumed) this session's box. */
+  lastResumeCaller(sessionKey: string): Promise<string | null>;
   now(): number;
 }
+
+export interface PauseHistory {
+  pausedAt: Date[];
+  holdUntil: Date | null;
+  /** When the hold was set; real use after this lifts it. */
+  holdSetAt?: Date | null;
+}
+
+/**
+ * Safety valve: more than this many idle pauses of one session within the
+ * window, with no real activity in between, means something resumes the
+ * box without being use. The sweep then stops pausing that session for the
+ * hold and warns with the last resume caller, instead of churning the box.
+ */
+export const SAFETY_VALVE_PAUSES = 3;
+export const SAFETY_VALVE_WINDOW_MS = 30 * 60_000;
 
 export interface SweepResult {
   running: number;
@@ -232,6 +259,8 @@ export interface SweepResult {
     note?: string;
   }>;
   kept: Array<{ sessionKey: string; reason: string }>;
+  /** Running sessions the sweep did not act on, and why (logged one each). */
+  skipped: Array<{ sessionKey: string; reason: string }>;
   usage: WorkspaceBoxUsage[];
 }
 
@@ -249,8 +278,18 @@ export async function sweepIdleBoxes(
     paused: boxes.length - running.length,
     pausedNow: [],
     kept: [],
+    skipped: [],
     usage,
   };
+  for (const key of new Set(running.map(b => b.sessionKey))) {
+    if (!isPersonSession(key)) {
+      const actor = parseSessionKey(key)?.userId ?? "unparsed";
+      result.skipped.push({
+        sessionKey: key,
+        reason: `not a person session (actor ${actor})`,
+      });
+    }
+  }
   const sessions = groupBySession(
     running.filter(b => isPersonSession(b.sessionKey)),
   );
@@ -266,7 +305,14 @@ export async function sweepIdleBoxes(
       });
       continue;
     }
-    if (now < idleDeadline(act, since, config.idleMs)) continue;
+    const deadline = idleDeadline(act, since, config.idleMs);
+    if (now < deadline) {
+      result.skipped.push({
+        sessionKey,
+        reason: `not idle yet: due in ${Math.ceil((deadline - now) / 60_000)} min`,
+      });
+      continue;
+    }
 
     let busy: string | null = null;
     try {
@@ -297,15 +343,74 @@ export async function sweepIdleBoxes(
       continue;
     }
 
+    // Safety valve: a session paused again and again with no real use in
+    // between is being resumed by something that is not use. Stop feeding
+    // the loop, and name the last resume caller so it can be fixed.
+    let history: PauseHistory;
+    try {
+      history = await deps.pauseHistory(sessionKey);
+    } catch (error) {
+      // One session's lookup failing must not end the whole tick.
+      result.kept.push({
+        sessionKey,
+        reason: `pause history unavailable: ${message(error)}`,
+      });
+      continue;
+    }
+    const lastUse = fresh?.lastActivityAt?.getTime() ?? 0;
+    // A hold lasts until it expires, or until real use after it was set:
+    // someone came back, so the box is judged afresh by the idle clock.
+    const holdLive =
+      !!history.holdUntil &&
+      history.holdUntil.getTime() > now &&
+      !(history.holdSetAt && lastUse > history.holdSetAt.getTime());
+    if (holdLive && history.holdUntil) {
+      result.kept.push({
+        sessionKey,
+        reason: `safety valve: pausing held until ${history.holdUntil.toISOString()}`,
+      });
+      continue;
+    }
+    const recent = history.pausedAt
+      .map(d => d.getTime())
+      .filter(t => now - t < SAFETY_VALVE_WINDOW_MS && t > lastUse);
+    if (recent.length >= SAFETY_VALVE_PAUSES) {
+      const caller = await deps.lastResumeCaller(sessionKey).catch(() => null);
+      logger.warn("Apps box resumed without use; holding idle pauses", {
+        sessionKey,
+        pausesInWindow: recent.length,
+        windowMinutes: SAFETY_VALVE_WINDOW_MS / 60_000,
+        lastResumeCaller: caller ?? "unknown",
+      });
+      await deps
+        .holdPausing(sessionKey, new Date(now + SAFETY_VALVE_WINDOW_MS))
+        .catch(error =>
+          logger.warn("Could not store the safety-valve hold", {
+            sessionKey,
+            error: message(error),
+          }),
+        );
+      result.kept.push({
+        sessionKey,
+        reason: `safety valve: ${recent.length} pauses in 30 min without use; last resume by ${caller ?? "unknown"}`,
+      });
+      continue;
+    }
+
     // Offline first, pause second. Pausing drops every pty, and a terminal
     // that sees its socket close while the box still reads "online"
     // reconnects within a second through ensureBox, which resumes the box
     // that was just paused. Announced first, it shows "off" and waits.
     await deps.announceAsleep(sessionKey).catch(() => undefined);
     const idleMinutes = Math.round((now - lastUseOf(fresh, since)) / 60_000);
+    let pausedAny = false;
     for (const box of list) {
       try {
-        await deps.pause(box.sandboxId);
+        if (!(await deps.pause(box.sandboxId))) {
+          // E2B said it was not running (already paused): nothing happened.
+          continue;
+        }
+        pausedAny = true;
         result.pausedNow.push({
           sessionKey,
           sandboxId: box.sandboxId,
@@ -318,6 +423,11 @@ export async function sweepIdleBoxes(
           reason: `pause failed: ${message(error)}`,
         });
       }
+    }
+    // Only a pause that happened counts toward the safety valve: failed
+    // pauses must not read as "resumed without use".
+    if (pausedAny) {
+      await deps.recordPause(sessionKey, new Date(now)).catch(() => undefined);
     }
   }
   return result;
@@ -369,6 +479,14 @@ export async function planReap(
   const sessions = groupBySession(await deps.listBoxes());
   const plan: ReapPlan = { due: [], skipped: [] };
   const people = [...sessions.keys()].filter(isPersonSession);
+  for (const key of sessions.keys()) {
+    if (!isPersonSession(key)) {
+      plan.skipped.push({
+        sessionKey: key,
+        reason: `not a person session (actor ${parseSessionKey(key)?.userId ?? "unparsed"})`,
+      });
+    }
+  }
   const activity = await deps.getActivity(people);
   for (const sessionKey of people) {
     const list = sessions.get(sessionKey) ?? [];
@@ -575,7 +693,7 @@ async function settleBox(
   sandboxId: string,
 ): Promise<RescueResult> {
   const parts = parseSessionKey(sessionKey);
-  if (!parts || !isUserActor(parts.userId)) {
+  if (!parts || !isPersonActorId(parts.userId)) {
     return {
       status: "manual",
       reason: "not a person's session",
@@ -615,6 +733,51 @@ async function forgetSession(sessionKey: string): Promise<void> {
   if (parts) await markBoxOffline(parts.workspaceId, parts.userId);
 }
 
+function worktreeFilter(sessionKey: string) {
+  const parts = parseSessionKey(sessionKey);
+  return parts
+    ? {
+        workspaceId: new mongoose.Types.ObjectId(parts.workspaceId),
+        userId: parts.userId,
+      }
+    : null;
+}
+
+async function pauseHistory(sessionKey: string): Promise<PauseHistory> {
+  const filter = worktreeFilter(sessionKey);
+  if (!filter) return { pausedAt: [], holdUntil: null };
+  const doc = await AppWorktree.findOne(filter, {
+    idlePausedAt: 1,
+    idlePauseHoldUntil: 1,
+    idlePauseHoldSetAt: 1,
+  }).lean();
+  return {
+    pausedAt: doc?.idlePausedAt ?? [],
+    holdUntil: doc?.idlePauseHoldUntil ?? null,
+    holdSetAt: doc?.idlePauseHoldSetAt ?? null,
+  };
+}
+
+async function recordPause(sessionKey: string, at: Date): Promise<void> {
+  const filter = worktreeFilter(sessionKey);
+  if (!filter) return;
+  await AppWorktree.updateOne(
+    filter,
+    { $push: { idlePausedAt: { $each: [at], $slice: -5 } } },
+    { timestamps: false },
+  );
+}
+
+async function holdPausing(sessionKey: string, until: Date): Promise<void> {
+  const filter = worktreeFilter(sessionKey);
+  if (!filter) return;
+  await AppWorktree.updateOne(
+    filter,
+    { $set: { idlePauseHoldUntil: until, idlePauseHoldSetAt: new Date() } },
+    { timestamps: false },
+  );
+}
+
 export function realSweepDeps(): SweepDeps {
   return {
     listBoxes: () => listAppBoxes(["running", "paused"]),
@@ -623,6 +786,10 @@ export function realSweepDeps(): SweepDeps {
     runningWork,
     announceAsleep,
     pause: pauseAppBox,
+    pauseHistory,
+    recordPause,
+    holdPausing,
+    lastResumeCaller: lastBoxResume,
     now: Date.now,
   };
 }

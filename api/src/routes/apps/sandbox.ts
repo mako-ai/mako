@@ -6,7 +6,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import {
   buildPreview,
   recycleSandbox,
-  sandboxStats,
+  sandboxStatsIfRunning,
   startDevPreview,
   tailBoxLog,
 } from "../../apps/sandbox-ops.service";
@@ -30,7 +30,6 @@ import {
   releaseDevServerSlot,
 } from "../../apps/dev-server.service";
 import { getBoxState } from "../../apps/box-state.service";
-import { getSandboxProvider } from "../../apps/sandbox/provider";
 import {
   AUTH_SECURITY,
   OPEN_RESPONSES,
@@ -207,11 +206,11 @@ appsSandboxRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const handle = await ensureWorktree(loaded.project, actorOf(loaded));
       const ctx = boxCtx(handle);
-      const info = (await getSandboxProvider().describe?.(ctx)) ?? null;
-      if (!info) {
+      const found = await sandboxStatsIfRunning(ctx);
+      if (!found) {
         return c.json({ success: true as const, running: false }, 200);
       }
-      const stats = await sandboxStats(ctx);
+      const { info, stats } = found;
       return c.json(
         {
           success: true as const,

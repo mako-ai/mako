@@ -191,6 +191,42 @@ A worker run this way serves one workspace and has **no sandbox**: workflow code
 
 With none of these set, Mako runs without workflows.
 
+## Bursts and limits
+
+A workflow runs at most 80 of its runs at once; more wait their turn in the order they came, so a thousand webhook calls in a minute become a queue. To choose your own number, declare it, and yours is kept:
+
+```ts
+import { ConcurrencyLimitStrategy } from "@hatchet-dev/typescript-sdk/v1";
+
+const digest = hatchet.workflow({
+  name: "daily-digest",
+  concurrency: {
+    expression: "'all'", // one group; "input.customerId" limits per customer
+    maxRuns: 10,
+    limitStrategy: ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN, // wait, do not cancel
+  },
+});
+```
+
+Always name the `limitStrategy`: Hatchet's default cancels the run in progress. A step waits up to a day for its turn before Hatchet cancels it (`scheduleTimeout` on the step sets another time).
+
+For a provider with a quota, an operator names a rate limit for the installation (`WORKFLOWS_RATE_LIMITS`, for example `model=300/minute`), and a step takes from it:
+
+```ts
+digest.task({
+  name: "summarize",
+  retries: 2,
+  rateLimits: [{ staticKey: "model", units: 1 }],
+  fn: async () => {
+    /* one model call */
+  },
+});
+```
+
+A step over the limit waits; it does not fail. A commit whose step names a limit the installation does not have does not build, and says which.
+
+Give every step `retries: 1` or more. A step is interrupted when its worker is replaced or Hatchet restarts, and with `retries: 0` that ends the run.
+
 ## Runs, retries and cost
 
 A workflow opens on its **Runs** tab: a table of its runs, newest start first, with status, start, duration, trigger, error and AI cost. Its **Flow** tab draws the workflow's steps as the code defines them (each step, the steps it waits for, its retries and timeout), so it shows before any run. The triggers sit above the table: each schedule in plain words with its next run (the cron on hover; it is set in `workflow.ts`), the webhook, and one On/Off switch.

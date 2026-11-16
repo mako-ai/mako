@@ -42,9 +42,34 @@ const logger = loggers.api("apps");
  */
 export const PUBLISH_ACTOR = "publish";
 
-/** A real user id, as opposed to PUBLISH_ACTOR / "" / other system sentinels. */
+/**
+ * A 24-hex (Mongo ObjectId-shaped) actor id.
+ *
+ * NOT "is this a person": real Mako user ids are 15 characters
+ * (auth.service.ts generateId, hex today, base36 for older accounts), so this
+ * answers false for nearly every real user. Kept with its old meaning for its
+ * one remaining caller, ensureProjectRow's owner stamp (project-rows.ts),
+ * where switching would hand every ownerless app row to whoever touches it
+ * next; that is an access decision of its own. Use isPersonActorId for "is
+ * this a person".
+ */
 export function isUserActor(actorId: string): boolean {
   return /^[0-9a-f]{24}$/i.test(actorId);
+}
+
+/**
+ * A real person's user id: 15 characters of [0-9a-z] (auth.service.ts
+ * generateId: hex from a UUID today, base36 from Lucia for older accounts),
+ * or a legacy 24-hex id. Every system actor fails: PUBLISH_ACTOR, "api-key",
+ * "", connector session prefixes.
+ */
+export function isPersonActorId(actorId: string): boolean {
+  return /^[0-9a-z]{15}$/.test(actorId) || /^[0-9a-f]{24}$/i.test(actorId);
+}
+
+/** The opposite of isPersonActorId: publish, api-key and other sentinels. */
+export function isSystemActor(actorId: string): boolean {
+  return !isPersonActorId(actorId);
 }
 
 /**

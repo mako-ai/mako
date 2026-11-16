@@ -26,6 +26,7 @@ import { createRouter } from "../../openapi/core";
 import { trackUsage } from "../../services/llm-usage.service";
 import { workspaceService } from "../../services/workspace.service";
 import { runStepAgent } from "../../workflows/agent";
+import { workerDemand } from "../../workflows/demand";
 import {
   HatchetError,
   isHatchetId,
@@ -37,7 +38,7 @@ import {
   WorkflowQueryError,
   runWorkflowQuery,
 } from "../../workflows/query";
-import { runStartedBy } from "../../workflows/runs";
+import { executingRun, runStartedBy } from "../../workflows/runs";
 import { sandboxRunOfKey } from "../../workflows/sandbox";
 import { keyIdOf, mintPass } from "../../workflows/pass";
 import { isWorkerKey } from "../../workflows/worker-key";
@@ -235,6 +236,21 @@ workflowRuntimeRoutes.post(
   }),
 );
 
+// What the autoscaler sizes the worker by (workflows/demand.ts), asked with
+// the worker's own key. No answer from Hatchet is a 503, never "no work":
+// the autoscaler then keeps the pods it has.
+workflowRuntimeRoutes.get(
+  "/demand",
+  asSupervisor(async (c, { workspaceId }) => {
+    try {
+      return c.json(await workerDemand(workspaceId));
+    } catch (error) {
+      if (error instanceof HatchetError) return fail(c, 503, error.message);
+      throw error;
+    }
+  }),
+);
+
 // A pass for one step of one deployed run (workflows/pass.ts). The
 // dispatcher (worker.mjs) asks before it starts the step program, which then
 // calls Mako with the pass and never sees the worker key. Only the deployed
@@ -269,7 +285,16 @@ workflowRuntimeRoutes.post(
     if (!workspace?.workflows?.live?.names?.includes(workflow)) {
       return fail(c, 403, `${workflow} is not deployed`);
     }
-    if (!(await runStartedBy(workspaceId, runId, workflow))) {
+    const run = await executingRun(workspaceId, runId, workflow);
+    if (!run.origin && run.unreadable) {
+      // Not a refusal: the worker asks again (worker.mjs `passFor`).
+      return fail(
+        c,
+        503,
+        "Hatchet did not answer; the run could not be checked",
+      );
+    }
+    if (!run.origin) {
       logger.warn("Refused a pass for a run that is not executing", {
         workspaceId,
         workflow,

@@ -171,6 +171,17 @@ export interface SandboxProvider {
    * without pausing answers through hasSession (see boxIsRunning).
    */
   isRunning?(ctx: SandboxExecContext): Promise<boolean>;
+  /**
+   * Like isRunning, but says when it could not tell: "unknown" on a failed
+   * lookup, never a guess. `fresh` skips the short per-process cache, whose
+   * "not running" can be up to 10 s stale on an instance that did not do
+   * the resume. For callers where a wrong "paused" is costly (a run view
+   * that stops polling, a listing an agent trusts).
+   */
+  runState?(
+    ctx: SandboxExecContext,
+    options?: { fresh?: boolean },
+  ): Promise<"running" | "not-running" | "unknown">;
   /** Absolute path for scratch files that must NOT enter the working copy. */
   scratch(ctx: SandboxExecContext): string;
   /**
@@ -319,4 +330,18 @@ export async function boxIsRunning(ctx: SandboxExecContext): Promise<boolean> {
   return provider.isRunning
     ? provider.isRunning(ctx)
     : provider.hasSession(ctx);
+}
+
+/** Tri-state running answer (SandboxProvider.runState). */
+export async function boxRunState(
+  ctx: SandboxExecContext,
+  options: { fresh?: boolean } = {},
+): Promise<"running" | "not-running" | "unknown"> {
+  const provider = getSandboxProvider();
+  if (provider.runState) return provider.runState(ctx, options);
+  try {
+    return (await boxIsRunning(ctx)) ? "running" : "not-running";
+  } catch {
+    return "unknown";
+  }
 }
