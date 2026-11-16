@@ -118,7 +118,7 @@ void test("same entities, labels and credential form", () => {
   assert.ok(form.ok, JSON.stringify(form, null, 2));
 });
 
-void test("same schema for every entity, system fields aside", async () => {
+void test("same vendor schema for every entity; the 8 system columns are a known gap", async () => {
   const system = new Set(Object.keys(MAKO_SYSTEM_FIELDS));
   const connector = makeInProcess({
     api_key: "sk_test_list",
@@ -134,7 +134,21 @@ void test("same schema for every entity, system fields aside", async () => {
       system,
     );
     assert.ok(result.ok, `${entity}: ${JSON.stringify(result)}`);
+    // The gap: the in-process schema declares every system column, the folder
+    // none, and nothing on the box path merges them yet. When the adapter
+    // learns to, this assertion is the one to flip.
     assert.equal(result.systemFields, system.size, entity);
+    const folderFields = Object.keys(
+      jsonSchemaToEntitySchema(
+        entity,
+        streams.find(s => s.name === entity),
+      ).fields,
+    );
+    assert.deepEqual(
+      folderFields.filter(field => system.has(field)),
+      [],
+      entity,
+    );
   }
 });
 
@@ -156,7 +170,7 @@ void test("every entity reads the same rows, chunks and requests", async () => {
     server,
   });
   const report = formatReport(results);
-  assert.equal(results.length, ENTITIES.length * 3);
+  assert.equal(results.length, ENTITIES.length * 4);
   assert.deepEqual(
     results.filter(r => !r.ok).map(r => `${r.scenario}/${r.entity}`),
     [],
@@ -170,6 +184,27 @@ void test("every entity reads the same rows, chunks and requests", async () => {
   assert.equal(chunked("payout_balance_transactions")?.rows[0], 212);
   assert.equal(chunked("customer_balance_transactions")?.rows[0], 126);
   assert.equal(chunked("setup_intents")?.rows[0], 0);
+  // Two rows a page: every entity with 3 rows or more resumes from a cursor.
+  for (const r of results.filter(r => r.scenario === "small-pages")) {
+    if (r.rows[0] >= 3) {
+      assert.ok(r.chunks[0] >= 2, `${r.entity} never resumed`);
+    }
+  }
+});
+
+void test("replay refuses a request made with another Stripe-Version", async () => {
+  const response = await fetch(`${server.url}/v1/account`, {
+    headers: {
+      authorization: "Bearer sk_test_version_probe",
+      "stripe-version": "2020-08-27",
+    },
+  });
+  assert.equal(response.status, 404);
+  assert.ok(
+    server.misses.some(miss => miss.includes("recorded with 2023-10-16")),
+    server.misses.join("\n"),
+  );
+  server.misses.length = 0;
 });
 
 void test("the comparison catches a changed field, a lost row and another request", () => {

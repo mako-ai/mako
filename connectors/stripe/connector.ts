@@ -10,8 +10,10 @@
  * - `cursor` is Stripe's `starting_after`, the in-process `FetchState.cursor`.
  *   Nested entities carry the last parent id (payout or customer).
  * - `since` (ISO 8601) is the incremental anchor, sent as `created[gte]`. The
- *   connector never moves it; the caller sets it, as the engine passes
- *   `since` to the in-process connector.
+ *   connector never moves it. The engine passes `since` to the in-process
+ *   connector as `options.since`; `SandboxedConnector` does not put it into
+ *   the stream state yet, so in a box every read is a full read until it
+ *   does. The parity harness seeds `state.since` itself.
  *
  * Webhooks are not here. RFC connectors-as-code §4 defines `webhook` and
  * `subscribe` commands that the SDK does not implement yet.
@@ -32,11 +34,26 @@ const STRIPE_DEFAULT_HOST = "api.stripe.com";
 
 /** The in-process defaults for `sync_batch_size` and `rate_limit_delay_ms`. */
 const PAGE_SIZE = 100;
+const MAX_PAGE_SIZE = 100;
 const RATE_LIMIT_DELAY_MS = 200;
 
 interface StripeConfig {
   api_key: string;
   api_base_url?: string;
+  /**
+   * Rows per page. Not in the credential form: it stands in for the
+   * in-process `settings.sync_batch_size`, which has no wire field yet. Like
+   * the SDK's own `__http`, a `__` key is set by the caller, never by a user.
+   * The parity harness sets it to make every entity span several pages.
+   */
+  __page_size?: number;
+}
+
+function pageSize(config: StripeConfig): number {
+  const value = Number(config.__page_size);
+  return Number.isInteger(value) && value >= 1 && value <= MAX_PAGE_SIZE
+    ? value
+    : PAGE_SIZE;
 }
 
 interface StripeReadState {
@@ -139,7 +156,7 @@ function entity(
         first = false;
 
         const page = await listStripePage(stripe, name, {
-          limit: PAGE_SIZE,
+          limit: pageSize(ctx.config),
           startingAfter: cursor,
           since,
         });

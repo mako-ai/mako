@@ -96,7 +96,7 @@
       "eslint --fix --report-unused-disable-directives",
       "prettier --write"
     ],
-    "connectors/**/*.{ts,mjs,mts}": [
+    "connectors/**/*.{ts,mjs,mts,json,yaml}": [
       "prettier --write"
     ],
     "api/src/**/*.test.ts": [

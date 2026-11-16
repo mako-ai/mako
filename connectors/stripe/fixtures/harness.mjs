@@ -38,8 +38,12 @@ export const CASSETTE_DIR = path.join(here, "cassettes");
 export const SINCE = "2026-01-01T00:00:00.000Z";
 
 export const SCENARIOS = [
-  // One page per chunk: every chunk boundary and every resume is exercised.
+  // One page per chunk, at the default page size of 100: the boundaries of
+  // the lists longer than one page (customers, payouts, the nested two).
   { name: "chunked", maxIterations: 1 },
+  // Two rows per page, one page per chunk: every entity with 3 rows or more
+  // resumes from a cursor at least once.
+  { name: "small-pages", maxIterations: 1, pageSize: 2 },
   // The engine's default chunk of 10 pages.
   { name: "default", maxIterations: 10 },
   // Incremental: `created[gte]` from `since`.
@@ -105,6 +109,7 @@ export function loadCassettes(dir = CASSETTE_DIR) {
     for (const entry of entries) {
       interactions.set(entry.request, {
         status: entry.status,
+        stripeVersion: entry.stripeVersion,
         body: entry.body,
       });
     }
@@ -120,7 +125,12 @@ export function saveCassettes(byFile, dir = CASSETTE_DIR) {
   }
   for (const [name, interactions] of byFile) {
     const lines = [...interactions].map(([request, response]) =>
-      JSON.stringify({ request, status: response.status, body: response.body }),
+      JSON.stringify({
+        request,
+        stripeVersion: response.stripeVersion,
+        status: response.status,
+        body: response.body,
+      }),
     );
     fs.writeFileSync(
       path.join(dir, `${name}.json`),
@@ -130,19 +140,23 @@ export function saveCassettes(byFile, dir = CASSETTE_DIR) {
 }
 
 /**
- * A local Stripe. `answer(key, req)` returns `{ status, body }`.
+ * A local Stripe. `answer(key, req, version)` returns `{ status, body }`.
  *
  * Every request is logged under the API key that sent it, which is how
- * concurrent runs keep separate logs. A live key is refused before anything
- * else happens: this server must never see one.
+ * concurrent runs keep separate logs, together with the `Stripe-Version`
+ * header it carried: the version decides the shape of every record, so two
+ * connectors asking for different versions are sending different requests.
+ * A live key is refused before anything else happens: this server must never
+ * see one.
  */
 async function startServer(answer) {
   const log = new Map();
   const server = http.createServer((req, res) => {
     const key = requestKey(req.method ?? "GET", req.url ?? "/");
+    const version = String(req.headers["stripe-version"] ?? "none");
     const apiKey = bearer(req);
     if (!log.has(apiKey)) log.set(apiKey, []);
-    log.get(apiKey).push(key);
+    log.get(apiKey).push({ key, version });
 
     let response;
     if (/^(sk|rk)_live_/.test(apiKey)) {
@@ -164,7 +178,7 @@ async function startServer(answer) {
         "Expired API Key provided: sk_test_***revoked",
       );
     } else {
-      response = answer(key, req);
+      response = answer(key, req, version);
     }
     res.writeHead(response.status, {
       "content-type": "application/json",
@@ -176,19 +190,31 @@ async function startServer(answer) {
   const { port } = server.address();
   return {
     url: `http://127.0.0.1:${port}`,
-    requests: apiKey => [...(log.get(apiKey) ?? [])],
+    /** `GET /v1/x?limit=100 (Stripe-Version 2023-10-16)`, in order. */
+    requests: apiKey =>
+      (log.get(apiKey) ?? []).map(
+        ({ key, version }) => `${key} (Stripe-Version ${version})`,
+      ),
+    /** The bare request keys, as cassettes store them. */
+    requestKeys: apiKey => (log.get(apiKey) ?? []).map(({ key }) => key),
     close: () => new Promise(resolve => server.close(resolve)),
   };
 }
 
-/** Replay: answer from cassettes only. A miss is a 404 the connector sees. */
+/**
+ * Replay: answer from cassettes only. A miss is a 404 the connector sees, and
+ * so is a request whose `Stripe-Version` differs from the recorded one.
+ */
 export async function startReplayServer(interactions = loadCassettes()) {
   const misses = [];
-  const server = await startServer(key => {
+  const server = await startServer((key, _req, version) => {
     const hit = interactions.get(key);
-    if (hit) return hit;
-    misses.push(key);
-    return stripeError(404, "invalid_request_error", `No cassette for ${key}`);
+    if (hit && hit.stripeVersion === version) return hit;
+    const miss = hit
+      ? `${key} with Stripe-Version ${version}, recorded with ${hit.stripeVersion}`
+      : key;
+    misses.push(miss);
+    return stripeError(404, "invalid_request_error", `No cassette for ${miss}`);
   });
   return { ...server, misses };
 }
@@ -201,9 +227,9 @@ export async function startReplayServer(interactions = loadCassettes()) {
  */
 export async function startRecordingServer(dataset) {
   const recorded = new Map();
-  const server = await startServer((key, req) => {
+  const server = await startServer((key, req, version) => {
     const response = emulate(dataset, req.url ?? "/");
-    recorded.set(key, response);
+    recorded.set(key, { ...response, stripeVersion: version });
     return response;
   });
   return { ...server, recorded };
@@ -388,7 +414,7 @@ export async function readFolder({ entity, config, since, maxIterations }) {
 /** Drive the in-process connector chunk by chunk, as the engine does. */
 export async function readInProcess(
   connector,
-  { entity, since, maxIterations },
+  { entity, since, maxIterations, pageSize },
 ) {
   const rows = [];
   const chunks = [];
@@ -398,6 +424,7 @@ export async function readInProcess(
       entity,
       since: since ? new Date(since) : undefined,
       maxIterations,
+      ...(pageSize ? { batchSize: pageSize } : {}),
       // Truthy, so the connector's 200 ms default does not slow the replay.
       rateLimitDelay: 1,
       state,
@@ -501,6 +528,7 @@ export async function runParity({
       entity,
       since: scenario.since,
       maxIterations: scenario.maxIterations,
+      pageSize: scenario.pageSize,
     };
     const inKey = `sk_test_inprocess_${scenario.name}_${entity}`;
     const folderKey = `sk_test_folder_${scenario.name}_${entity}`;
@@ -525,7 +553,11 @@ export async function runParity({
     const folder = await run("folder", () =>
       readFolder({
         ...options,
-        config: { api_key: folderKey, api_base_url: server.url },
+        config: {
+          api_key: folderKey,
+          api_base_url: server.url,
+          ...(scenario.pageSize ? { __page_size: scenario.pageSize } : {}),
+        },
       }),
     );
     folder.requests = server.requests(folderKey);

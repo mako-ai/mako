@@ -59,7 +59,7 @@ async function record() {
   const byFile = new Map();
   const keep = (file, apiKey) => {
     if (!byFile.has(file)) byFile.set(file, new Map());
-    for (const key of server.requests(apiKey)) {
+    for (const key of server.requestKeys(apiKey)) {
       byFile.get(file).set(key, server.recorded.get(key));
     }
   };
@@ -77,6 +77,7 @@ async function record() {
             entity,
             since: scenario.since ? new Date(scenario.since) : undefined,
             maxIterations: scenario.maxIterations,
+            ...(scenario.pageSize ? { batchSize: scenario.pageSize } : {}),
             rateLimitDelay: 1,
             state,
             onBatch: async () => {},

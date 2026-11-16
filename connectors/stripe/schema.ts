@@ -5,7 +5,10 @@
  *
  * Two things differ in form, not in meaning:
  * - Mako's system columns (`_mako_*`, `_syncedAt`, `is_deleted`, ...) are not
- *   declared here. They belong to the engine, not to the vendor.
+ *   declared here, and nothing on the box path adds them yet: the in-process
+ *   schema declares all 8. `jsonSchemaToEntitySchema` has to merge them
+ *   before this folder replaces the in-process connector. The parity test
+ *   asserts the gap, so closing it shows up there.
  * - A timestamp is a Unix-seconds integer on the wire, exactly as Stripe
  *   returns it. Its JSON Schema says so (`string | integer`, `date-time`), so
  *   the engine still reads it as a timestamp and `mako connector test` does

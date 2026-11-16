@@ -11,12 +11,15 @@ export interface Scenario {
   name: string;
   maxIterations: number;
   since?: string;
+  /** Rows per page; the default is 100 on both sides. */
+  pageSize?: number;
 }
 export const SCENARIOS: Scenario[];
 
 export interface StripeTestConfig {
   api_key: string;
   api_base_url: string;
+  __page_size?: number;
 }
 
 export interface ChunkState {
@@ -39,7 +42,10 @@ export interface InProcessConnector {
 
 export interface FixtureServer {
   url: string;
+  /** Each request with the `Stripe-Version` it carried, in order. */
   requests(apiKey: string): string[];
+  /** The bare request keys, as the cassettes store them. */
+  requestKeys(apiKey: string): string[];
   close(): Promise<void>;
 }
 
@@ -112,10 +118,16 @@ export function readFolder(options: {
   config: StripeTestConfig;
   since?: string;
   maxIterations: number;
+  pageSize?: number;
 }): Promise<Run>;
 export function readInProcess(
   connector: InProcessConnector,
-  options: { entity: string; since?: string; maxIterations: number },
+  options: {
+    entity: string;
+    since?: string;
+    maxIterations: number;
+    pageSize?: number;
+  },
 ): Promise<Run>;
 export function canonicalJson(value: unknown): string;
 export function rowChecksum(row: unknown): string;
