@@ -10,6 +10,7 @@ import { Hono } from "hono";
 import {
   concurrencyLimit,
   createConcurrencyPool,
+  POOL_WAITED_HEADER,
   shedWhileCloning,
 } from "./concurrency-limit";
 import { cloneInFlight } from "../apps/cloud-repo/clone-state";
@@ -41,6 +42,8 @@ async function concurrencyPool() {
   const refused = await app.request("/slow");
   assert.equal(refused.status, 503);
   assert.equal(refused.headers.get("Retry-After"), "2");
+  // It waited for a slot: marked, so the app's client does not retry it.
+  assert.ok(Number(refused.headers.get(POOL_WAITED_HEADER)) >= 40);
 
   // A waiter gets the slot the moment one frees.
   const waiting = app.request("/slow");
@@ -197,6 +200,7 @@ async function shedWhileCloningRepo() {
     const shed = await app.request(url(WS));
     assert.equal(shed.status, 503);
     assert.equal(shed.headers.get("Retry-After"), "2");
+    assert.equal(shed.headers.get(POOL_WAITED_HEADER), null, "retryable");
     assert.ok(Date.now() - started < 1_000, "refused without waiting");
     assert.equal(pool.waiting, 0, "did not queue");
 

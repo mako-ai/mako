@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createApiClient,
+  POOL_WAITED_HEADER,
   retryUnavailableReads,
   UNAVAILABLE_READ_RETRIES,
 } from "./client";
@@ -173,11 +174,51 @@ describe("retryUnavailableReads", () => {
     const fetcher = retryUnavailableReads(
       fetchMock as unknown as typeof fetch,
       sleep,
+      () => 0.5,
     );
     const res = await fetcher("https://test.local/api/x");
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(sleep).toHaveBeenCalledWith(2000);
+    // Retry-After plus jitter (half of the 1 s range here).
+    expect(sleep).toHaveBeenCalledWith(2500, expect.any(AbortSignal));
+  });
+
+  it("does not retry a pool-full refusal that already waited for a slot", async () => {
+    const waited = new Response("{}", {
+      status: 503,
+      headers: { "Retry-After": "2", [POOL_WAITED_HEADER]: "10000" },
+    });
+    const fetchMock = vi.fn(async () => waited);
+    const fetcher = retryUnavailableReads(
+      fetchMock as unknown as typeof fetch,
+      async () => undefined,
+    );
+    expect((await fetcher("https://test.local/api/x")).status).toBe(503);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops waiting when the request is aborted", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async () => unavailable("2"));
+      const fetcher = retryUnavailableReads(
+        fetchMock as unknown as typeof fetch,
+      );
+      const controller = new AbortController();
+      const pending = fetcher("https://test.local/api/x", {
+        signal: controller.signal,
+      });
+      const outcome = pending.then(
+        () => "resolved",
+        (e: unknown) => (e as Error).name,
+      );
+      await vi.advanceTimersByTimeAsync(100);
+      controller.abort();
+      expect(await outcome).toBe("AbortError");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("gives up after the retries and returns the 503", async () => {
@@ -228,7 +269,7 @@ describe("retryUnavailableReads", () => {
         "/api/workspaces/{workspaceId}/workflows/{name}/runs",
         { params: { path: { workspaceId: "ws", name: "wf" } } },
       );
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(2000);
       const { response } = await pending;
       expect(response.status).toBe(200);
       expect(fetchMock).toHaveBeenCalledTimes(2);

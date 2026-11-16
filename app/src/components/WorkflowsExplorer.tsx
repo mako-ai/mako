@@ -33,6 +33,7 @@ import { EXPLORER_ICONS } from "../lib/entity-icons";
 import { openSettingsSection } from "../lib/command-palette/commands";
 import { useConsoleStore } from "../store/consoleStore";
 import { useWorkflowsStore } from "../store/workflowsStore";
+import { createKeyedSingleFlight } from "../lib/single-flight";
 import ExplorerShell from "./ExplorerShell";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import { SMALL_CHIP_SX } from "./workflow-chip-sx";
@@ -140,11 +141,15 @@ export function WorkflowsExplorer() {
     [],
   );
 
+  // One refresh per workspace at a time: a slow API (a 503 retried after
+  // Retry-After) must not stack a new pair of reads every 8 s.
+  const refreshOnce = useMemo(() => createKeyedSingleFlight(), []);
   const refresh = useCallback(() => {
     if (!workspaceId) return;
-    void fetchOverview(workspaceId);
-    void fetchFiles(workspaceId);
-  }, [workspaceId, fetchOverview, fetchFiles]);
+    refreshOnce(workspaceId, () =>
+      Promise.allSettled([fetchOverview(workspaceId), fetchFiles(workspaceId)]),
+    );
+  }, [workspaceId, fetchOverview, fetchFiles, refreshOnce]);
 
   useEffect(() => {
     refresh();

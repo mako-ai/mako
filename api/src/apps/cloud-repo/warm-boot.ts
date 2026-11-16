@@ -6,31 +6,50 @@
  * from GitHub (11 to 13.7 s). On 2026-11-16 at 20:26 that clone held all 12
  * repo-work pool slots and 18 more requests got a 503 after 10 s.
  *
- * At boot, this clones the repos of the workspaces active in the last 24 h
- * (an apps sandbox used, or an app opened), and `/health/ready` answers 503
- * until it finishes. The Cloud Run startup probe reads `/health/ready`, so
- * the instance takes no traffic while it clones. The wait is capped
- * (REPO_WARM_MAX_WAIT_MS): past it the instance reports ready and the
- * remaining clones go on in the background, as every clone did before.
+ * At boot, this picks the workspaces active in the last 24 h (an apps
+ * sandbox used, or an app opened), most recent first. It clones the 5 most
+ * recent while `/health/ready` answers 503, and the rest in the background
+ * once the instance is ready. The Cloud Run startup probe reads
+ * `/health/ready`. The wait is capped at REPO_WARM_MAX_WAIT_MS from process
+ * start: past it the instance reports ready and the clones go on in the
+ * background, as every clone did before. New capacity in a spike must not
+ * arrive a minute late.
+ *
+ * Memory: the repos live on tmpfs (the instance's 4 GiB). A repo GitHub
+ * sizes over REPO_WARM_MAX_REPO_BYTES is never warmed, and the warm stops
+ * adding repos at REPO_WARM_MAX_TOTAL_BYTES. Those clone on first use.
  *
  * Opt-in with APPS_REPO_WARM_ON_BOOT=true (the production deploy sets it).
  * Previews share a prod copy of the database, so they would clone every
  * customer repo the copy names.
  */
 import { AppUsageDaily, AppWorktree } from "../../database/workspace-schema";
+import { getRepoInfo } from "../../integrations/github/github-api";
 import { loggers } from "../../logging";
-import { ensureLocalRepo } from "./target";
+import {
+  ensureLocalRepo,
+  resolveReadableMirrorTarget,
+  tokenFor,
+} from "./target";
 
 const logger = loggers.api("apps");
 
-/** Longest the startup check waits for the clones. */
-export const REPO_WARM_MAX_WAIT_MS = 60_000;
+const MB = 1024 * 1024;
+
+/** Longest the startup check waits, counted from process start. */
+export const REPO_WARM_MAX_WAIT_MS = 25_000;
+/** Workspaces the startup check waits for; the rest warm after it. */
+export const REPO_WARM_GATE_WORKSPACES = 5;
 /** A workspace counts as hot when used within this window. */
 export const REPO_WARM_WINDOW_MS = 24 * 60 * 60 * 1000;
-/** Most workspaces warmed at boot; the busiest instance needs a handful. */
+/** Most workspaces warmed at boot (gated and background together). */
 export const REPO_WARM_MAX_WORKSPACES = 25;
 /** Clones run at once: each is a git subprocess on a small instance. */
 export const REPO_WARM_CONCURRENCY = 3;
+/** A repo GitHub sizes above this is left to clone on first use. */
+export const REPO_WARM_MAX_REPO_BYTES = 300 * MB;
+/** Total repo bytes the warm may put on this instance's tmpfs. */
+export const REPO_WARM_MAX_TOTAL_BYTES = 1536 * MB;
 
 export function repoWarmEnabled(): boolean {
   return process.env.APPS_REPO_WARM_ON_BOOT === "true";
@@ -105,39 +124,124 @@ export async function warmWorkspaceRepos(
   return { warmed, failed };
 }
 
+// --- Size budget -------------------------------------------------------------
+
+/** Bytes GitHub reports for the workspace's repo; null when it has none. */
+export type RepoSizeOf = (workspaceId: string) => Promise<number | null>;
+
+export const githubRepoSize: RepoSizeOf = async workspaceId => {
+  const target = await resolveReadableMirrorTarget(workspaceId);
+  if (!target) return null;
+  const info = await getRepoInfo(
+    target.owner,
+    target.repo,
+    await tokenFor(target),
+  );
+  return info.sizeKb * 1024;
+};
+
+/**
+ * The workspaces to warm, in the order given: those with a repo, each at
+ * most `maxRepoBytes`, until `maxTotalBytes`. A size that cannot be read
+ * skips the workspace (it clones on first use, as before).
+ */
+export async function planRepoWarm(
+  workspaceIds: string[],
+  {
+    sizeOf = githubRepoSize,
+    maxRepoBytes = REPO_WARM_MAX_REPO_BYTES,
+    maxTotalBytes = REPO_WARM_MAX_TOTAL_BYTES,
+  }: {
+    sizeOf?: RepoSizeOf;
+    maxRepoBytes?: number;
+    maxTotalBytes?: number;
+  } = {},
+): Promise<{ ids: string[]; bytes: number; skipped: number }> {
+  const sizes = await Promise.all(
+    workspaceIds.map(id =>
+      sizeOf(id).catch(error => {
+        logger.warn("Boot repo warm could not size a repo; skipping it", {
+          workspaceId: id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }),
+    ),
+  );
+  const ids: string[] = [];
+  let bytes = 0;
+  let skipped = 0;
+  workspaceIds.forEach((id, i) => {
+    const size = sizes[i];
+    if (size === null) return;
+    if (size > maxRepoBytes || bytes + size > maxTotalBytes) {
+      skipped++;
+      logger.info("Boot repo warm skips a repo over its size budget", {
+        workspaceId: id,
+        sizeMb: Math.round(size / MB),
+        warmedMb: Math.round(bytes / MB),
+      });
+      return;
+    }
+    ids.push(id);
+    bytes += size;
+  });
+  return { ids, bytes, skipped };
+}
+
 // --- Readiness ---------------------------------------------------------------
 
 let warm: { done: boolean; deadline: number } | null = null;
 
 /**
- * Whether the instance may take traffic: no warm started, the warm
- * finished, or its wait cap passed.
+ * Whether the instance may take traffic: no warm started, the gated part
+ * of the warm finished, or its wait cap passed.
  */
 export function repoWarmReady(now = Date.now()): boolean {
   return !warm || warm.done || now >= warm.deadline;
 }
 
-/** Start the boot warm, when enabled. Never throws; never blocks the boot. */
+/** When this process started, in epoch ms. */
+function processStartMs(): number {
+  return Date.now() - process.uptime() * 1000;
+}
+
+/**
+ * Start the boot warm, when enabled. Never throws; never blocks the boot.
+ * Resolves when every clone, gated or background, has ended.
+ */
 export function startRepoWarmOnBoot({
   maxWaitMs = REPO_WARM_MAX_WAIT_MS,
+  gate = REPO_WARM_GATE_WORKSPACES,
+  startedAt = processStartMs(),
   listHot = hotWorkspaceIds,
+  sizeOf = githubRepoSize,
   ensure = ensureLocalRepo,
 }: {
   maxWaitMs?: number;
+  gate?: number;
+  /** Epoch ms the wait is counted from (process start). */
+  startedAt?: number;
   listHot?: () => Promise<string[]>;
+  sizeOf?: RepoSizeOf;
   ensure?: (workspaceId: string) => Promise<void>;
 } = {}): Promise<void> {
-  const started = Date.now();
-  const state = { done: false, deadline: started + maxWaitMs };
+  const state = { done: false, deadline: startedAt + maxWaitMs };
   warm = state;
   return (async () => {
+    let rest: string[] = [];
     try {
-      const ids = await listHot();
-      const result = await warmWorkspaceRepos(ids, { ensure });
-      logger.info("Boot repo warm finished", {
-        workspaces: ids.length,
+      const plan = await planRepoWarm(await listHot(), { sizeOf });
+      const gated = plan.ids.slice(0, gate);
+      rest = plan.ids.slice(gate);
+      const result = await warmWorkspaceRepos(gated, { ensure });
+      logger.info("Boot repo warm: gated part finished", {
+        workspaces: gated.length,
         ...result,
-        ms: Date.now() - started,
+        background: rest.length,
+        skippedOverBudget: plan.skipped,
+        plannedMb: Math.round(plan.bytes / MB),
+        msSinceStart: Date.now() - startedAt,
         pastCap: Date.now() > state.deadline,
       });
     } catch (error) {
@@ -146,6 +250,13 @@ export function startRepoWarmOnBoot({
       });
     } finally {
       state.done = true;
+    }
+    if (rest.length > 0) {
+      const result = await warmWorkspaceRepos(rest, { ensure });
+      logger.info("Boot repo warm: background part finished", {
+        workspaces: rest.length,
+        ...result,
+      });
     }
   })();
 }

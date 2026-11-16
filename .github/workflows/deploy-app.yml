@@ -1070,9 +1070,13 @@ jobs:
           INNGEST_SERVE_ORIGIN: ${{ steps.cloud-run-before.outputs.url || env.BASE_URL }}
         run: |
           # The startup probe reads /health/ready, which answers 503 while a
-          # new instance clones its hot workspace repos (APPS_REPO_WARM_ON_BOOT,
-          # api/src/apps/cloud-repo/warm-boot.ts). The API caps that wait at
-          # 60 s; the probe allows 90 s (30 x 3 s) before it fails the instance.
+          # new instance clones its 5 hottest workspace repos
+          # (APPS_REPO_WARM_ON_BOOT, api/src/apps/cloud-repo/warm-boot.ts).
+          # The API caps that wait at 25 s from process start. The probe keeps
+          # Cloud Run's 240 s budget (80 x 3 s), the same as the TCP default:
+          # a slow boot (p99 79 s, max 111 s over 7 days) must not fail, or
+          # the second revision fails after the first serves and the
+          # migrations below never run.
           gcloud run deploy ${SERVICE_NAME} \
             --project ${GCP_PROJECT_ID} \
             --image ${{ steps.image.outputs.sha_tag }} \
@@ -1083,7 +1087,7 @@ jobs:
             --concurrency=80 \
             --min-instances=3 \
             --max-instances=30 \
-            --startup-probe=httpGet.path=/health/ready,initialDelaySeconds=0,periodSeconds=3,timeoutSeconds=2,failureThreshold=30 \
+            --startup-probe=httpGet.path=/health/ready,initialDelaySeconds=0,periodSeconds=3,timeoutSeconds=2,failureThreshold=80 \
             --allow-unauthenticated \
             --network=mako-vpc \
             --subnet=mako-subnet \

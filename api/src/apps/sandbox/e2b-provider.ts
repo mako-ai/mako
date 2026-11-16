@@ -1463,19 +1463,14 @@ const boxLifecycleE2b: SandboxBoxLifecycle = {
  * The list call is bounded (2026-11-16: a slow E2B list held repo-work pool
  * slots on the apps files/status routes). It gives up after
  * RUNNING_LOOKUP_TIMEOUT_MS, and concurrent lookups of one session on this
- * instance share one call. A poll whose lookup fails or times out answers
- * the last known answer while it is recent, else "unknown"; a fresh lookup
- * answers "unknown". Either way the failure is logged.
+ * instance share one call. A lookup that fails or times out answers
+ * "unknown" and logs why. Never a stale "running": five poll guards exec on
+ * "running", and an exec resumes a paused box.
  */
-const runningAnswer = new Map<
-  string,
-  { running: boolean; until: number; at: number }
->();
+const runningAnswer = new Map<string, { running: boolean; until: number }>();
 const RUNNING_ANSWER_TTL_MS = 10_000;
 /** How long an E2B list may take before the lookup gives up. */
 export const RUNNING_LOOKUP_TIMEOUT_MS = 3_000;
-/** How old a known answer may be and still stand in for a failed lookup. */
-const RUNNING_ANSWER_FALLBACK_MS = 60_000;
 /** One list call per session at a time on this instance. */
 const runningLookups = new Map<string, Promise<boolean>>();
 
@@ -1515,11 +1510,9 @@ function lookUpRunning(sessionKey: string): Promise<boolean> {
     .then(running => {
       // A pause noted while this call was out wins over its answer.
       if (runningLookups.get(sessionKey) === shared) {
-        const now = Date.now();
         runningAnswer.set(sessionKey, {
           running,
-          until: now + RUNNING_ANSWER_TTL_MS,
-          at: now,
+          until: Date.now() + RUNNING_ANSWER_TTL_MS,
         });
       }
       return running;
@@ -1547,25 +1540,15 @@ async function sessionRunState(
   try {
     return (await lookUpRunning(sessionKey)) ? "running" : "not-running";
   } catch (error) {
-    // Could not tell. For a poll, a recent answer stands in; without one,
-    // polls read "unknown" as "offline" (sessionRunning) and the next beat
-    // asks again. A fresh caller always gets "unknown": it asked fresh
-    // because a cached answer can be stale, and it falls back to its own
-    // answer (a stale "not running" would turn a live run into PAUSED).
-    const known = fresh ? undefined : runningAnswer.get(sessionKey);
-    const fallback =
-      known && Date.now() - known.at <= RUNNING_ANSWER_FALLBACK_MS
-        ? known.running
-          ? "running"
-          : "not-running"
-        : "unknown";
+    // Could not tell. Polls read "unknown" as "offline" (sessionRunning)
+    // and the next beat asks again; callers that must not guess fall back
+    // to their own answer.
     logger.warn("E2B running lookup failed", {
       sessionKey,
       fresh,
-      fallback,
       error: error instanceof Error ? error.message : String(error),
     });
-    return fallback;
+    return "unknown";
   }
 }
 
@@ -1593,7 +1576,6 @@ export function noteSessionPaused(sessionKey: string): void {
   runningAnswer.set(sessionKey, {
     running: false,
     until: Date.now() + RUNNING_ANSWER_TTL_MS,
-    at: Date.now(),
   });
   keepAliveUntil.delete(sessionKey);
   sessions.delete(sessionKey);

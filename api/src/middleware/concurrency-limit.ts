@@ -89,13 +89,28 @@ export function createConcurrencyPool(
   };
 }
 
-function busy(c: Context): Response {
+/**
+ * Set on a refusal that already waited `maxWaitMs` for a slot. The app's
+ * client does not retry it: the request has spent its time, and a retry
+ * would add load to a full instance.
+ */
+export const POOL_WAITED_HEADER = "X-Mako-Pool-Waited-Ms";
+
+function busy(c: Context, waitedMs?: number): Response {
   return c.json(
     {
       success: false,
       error: "This server is busy; retry in a moment.",
     },
-    { status: 503, headers: { "Retry-After": "2" } },
+    {
+      status: 503,
+      headers: {
+        "Retry-After": "2",
+        ...(waitedMs === undefined
+          ? {}
+          : { [POOL_WAITED_HEADER]: String(waitedMs) }),
+      },
+    },
   );
 }
 
@@ -123,6 +138,7 @@ export function concurrencyLimit(
       });
       return busy(c);
     }
+    const waitStart = Date.now();
     const release = await pool.acquire();
     if (!release) {
       logger.warn("Concurrency pool full; refusing request", {
@@ -131,7 +147,7 @@ export function concurrencyLimit(
         active: pool.active,
         waiting: pool.waiting,
       });
-      return busy(c);
+      return busy(c, Date.now() - waitStart);
     }
     try {
       await next();

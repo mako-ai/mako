@@ -3,7 +3,8 @@
  * after 2026-11-16 (a slow list held repo-work pool slots):
  *
  * - a list that does not answer in 3 s gives up;
- * - it then answers the last known answer while recent, else "unknown";
+ * - it then answers "unknown" (polls read that as "not running"), never a
+ *   stale answer;
  * - concurrent lookups of one session share one list call;
  * - a failure is logged, not swallowed.
  *
@@ -61,7 +62,7 @@ const runState = (fresh: boolean) =>
 
 beforeEach(() => {
   vi.useFakeTimers();
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   resetE2bProviderStateForTests();
   process.env.E2B_API_KEY = "test-key";
 });
@@ -76,7 +77,7 @@ describe("E2B running lookup", () => {
     expect(RUNNING_LOOKUP_TIMEOUT_MS).toBe(3_000);
     expect(warn).toHaveBeenCalledWith(
       "E2B running lookup failed",
-      expect.objectContaining({ sessionKey: KEY, fallback: "unknown" }),
+      expect.objectContaining({ sessionKey: KEY }),
     );
     // The SDK's own request timeout is set too.
     expect(sdk.list).toHaveBeenCalledWith(
@@ -84,33 +85,33 @@ describe("E2B running lookup", () => {
     );
   });
 
-  it("a poll falls back to the recent known answer; a fresh lookup says unknown", async () => {
+  it("a failed lookup is unknown for polls and fresh callers alike, never a stale answer", async () => {
     sdk.list.mockReturnValueOnce(page([{ sandboxId: "sbx-1" }]));
     expect(await runState(true)).toBe("running");
 
-    // Past the 10 s cache a poll asks E2B again, and the call fails.
+    // Past the 10 s cache a poll asks E2B again, and the call fails. A
+    // stale "running" would let a poll guard exec and resume a paused box.
     await vi.advanceTimersByTimeAsync(11_000);
     sdk.list.mockImplementationOnce(() => {
       throw new Error("E2B 500");
     });
-    expect(await runState(false)).toBe("running");
+    expect(await runState(false)).toBe("unknown");
+    // What a poll guard sees: not running, so it does not exec.
+    sdk.list.mockImplementationOnce(() => {
+      throw new Error("E2B 500");
+    });
+    expect(await e2bSandboxProvider.isRunning!({ sessionKey: KEY })).toBe(
+      false,
+    );
     expect(warn).toHaveBeenCalledWith(
       "E2B running lookup failed",
-      expect.objectContaining({ fallback: "running", error: "E2B 500" }),
+      expect.objectContaining({ sessionKey: KEY, error: "E2B 500" }),
     );
 
-    // A fresh caller must not guess: "unknown", so it uses its own answer.
     sdk.list.mockImplementationOnce(() => {
       throw new Error("E2B 500");
     });
     expect(await runState(true)).toBe("unknown");
-
-    // Past the fallback window, a poll's failure is "unknown" too.
-    await vi.advanceTimersByTimeAsync(61_000);
-    sdk.list.mockReturnValueOnce(never());
-    const late = runState(false);
-    await vi.advanceTimersByTimeAsync(RUNNING_LOOKUP_TIMEOUT_MS);
-    expect(await late).toBe("unknown");
   });
 
   it("coalesces concurrent lookups of one session into one list call", async () => {

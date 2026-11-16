@@ -21,6 +21,8 @@ export interface GitHubRepoInfo {
   name: string;
   defaultBranch: string;
   private: boolean;
+  /** GitHub's size of the repository, in KB (roughly its packed size). */
+  sizeKb: number;
 }
 
 export interface GitTreeEntry {
@@ -94,6 +96,7 @@ export async function getRepoInfo(
     owner: { login: string };
     default_branch: string;
     private: boolean;
+    size?: number;
   };
   return {
     fullName: json.full_name,
@@ -101,6 +104,7 @@ export async function getRepoInfo(
     name: json.name,
     defaultBranch: json.default_branch,
     private: json.private,
+    sizeKb: json.size ?? 0,
   };
 }
 
