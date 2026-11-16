@@ -5,6 +5,7 @@
 folder, wire protocol (Airbyte's, verbatim), tiers and security model stand. This RFC
 changes four things it decided or left open, listed in §2.
 **Sources:**
+
 - the code at `master` 5906b5588: `api/src/connectors/*`, `api/src/connectors/workspace/sync-box.ts`, `api/src/sync/sync-orchestrator.ts`, `api/package.json`;
 - RealAdvisor's production flow status on 2026-11-16;
 - Netlify's write-up of moving Edge Functions from V8 isolates to Firecracker microVMs;
@@ -29,12 +30,12 @@ This is not microservices. There is one deployable, one database and one owner o
 
 ## 2. What changes from RFC #947
 
-| RFC #947 said | This RFC says | Why |
-|---|---|---|
-| Stripe and Close stay in-process "indefinitely"; they are the reference, not a migration target (§10) | **They move out**, after the box passes a benchmark on Close's largest sync (§10, gate G2). They stay the quality bar: the move must be invisible in their output. | Vendor code in the API, release coupling, blast radius. Decided by Joan, 2026-11-16. |
-| A connector may depend on the SDK only; dependencies later via a generated `package.json` installed per sha (§6.3) | **A folder may carry `package.json` and a lockfile. Mako bundles it into one `.mjs` per source hash.** `node_modules/` is refused in the repo. | Repos stay light; the box gets one file; the build is cached by hash. |
-| One sync box per workspace; several flows may run in it at once (§6.3) | **A scheduler leases boxes per run, keyed by connection and bundle hash**, restored from a snapshot, paused within a minute of going idle, killed on a TTL. | Contention, credential separation, elasticity, cost (§6). |
-| Cost per chunk measured in iteration 1; fallback "a box per run" (§13) | Measured as gate G1 of this RFC, on RealAdvisor's ES Close backfill. | The number decides how many runs a box serves. |
+| RFC #947 said                                                                                                      | This RFC says                                                                                                                                                      | Why                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| Stripe and Close stay in-process "indefinitely"; they are the reference, not a migration target (§10)              | **They move out**, after the box passes a benchmark on Close's largest sync (§10, gate G2). They stay the quality bar: the move must be invisible in their output. | Vendor code in the API, release coupling, blast radius. Decided by Joan, 2026-11-16. |
+| A connector may depend on the SDK only; dependencies later via a generated `package.json` installed per sha (§6.3) | **A folder may carry `package.json` and a lockfile. Mako bundles it into one `.mjs` per source hash.** `node_modules/` is refused in the repo.                     | Repos stay light; the box gets one file; the build is cached by hash.                |
+| One sync box per workspace; several flows may run in it at once (§6.3)                                             | **A scheduler leases boxes per run, keyed by connection and bundle hash**, restored from a snapshot, paused within a minute of going idle, killed on a TTL.        | Contention, credential separation, elasticity, cost (§6).                            |
+| Cost per chunk measured in iteration 1; fallback "a box per run" (§13)                                             | Measured as gate G1 of this RFC, on RealAdvisor's ES Close backfill.                                                                                               | The number decides how many runs a box serves.                                       |
 
 Untouched: the folder, `connector.yaml`, the Airbyte wire protocol, `BaseConnector`, `SandboxedConnector`, the push reconciler with its `indexed` and `verified` states, the rule that a box never clones the repo and holds no Mako token, the engine owning destination writes, and the five runtimes.
 
@@ -42,23 +43,23 @@ Untouched: the folder, `connector.yaml`, the Airbyte wire protocol, `BaseConnect
 
 Taken by Joan on 2026-11-16 in the design discussion this RFC records.
 
-| Question | Decision |
-|---|---|
-| Sandbox provider | **E2B**, kept. Firecracker microVMs give hardware isolation for code that holds credentials. Mako already runs on them. |
-| Cloudflare Workers for Platforms | **Not now.** It is fast and cheap for HTTP connectors. But the isolate model forces paged reads under CPU limits and a second runtime for anything native or TCP-based. Netlify moved the other way for isolation. Revisit only if G1 fails on latency or cost. |
-| Moving all of Mako to Cloudflare | **No.** dbt and MetricFlow (Python subprocesses), MongoDB through Mongoose and DuckDB's native binding cannot run in isolates. Lifting the Docker image into Cloudflare Containers changes the host, not the design. |
-| Mako's own connectors | Out of the API process, onto the same runtime as workspace connectors (§4). |
-| Database drivers (pg, BigQuery, Mongo, ClickHouse, MSSQL, MySQL) | **Stay in the API.** They are query engines and destinations, not connectors. |
-| Who builds and deploys | **Mako, automatically.** A user saves or pushes. The next run uses the new code. |
-| Architecture style | Control plane plus sandboxed jobs, not microservices (§9). |
+| Question                                                         | Decision                                                                                                                                                                                                                                                        |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sandbox provider                                                 | **E2B**, kept. Firecracker microVMs give hardware isolation for code that holds credentials. Mako already runs on them.                                                                                                                                         |
+| Cloudflare Workers for Platforms                                 | **Not now.** It is fast and cheap for HTTP connectors. But the isolate model forces paged reads under CPU limits and a second runtime for anything native or TCP-based. Netlify moved the other way for isolation. Revisit only if G1 fails on latency or cost. |
+| Moving all of Mako to Cloudflare                                 | **No.** dbt and MetricFlow (Python subprocesses), MongoDB through Mongoose and DuckDB's native binding cannot run in isolates. Lifting the Docker image into Cloudflare Containers changes the host, not the design.                                            |
+| Mako's own connectors                                            | Out of the API process, onto the same runtime as workspace connectors (§4).                                                                                                                                                                                     |
+| Database drivers (pg, BigQuery, Mongo, ClickHouse, MSSQL, MySQL) | **Stay in the API.** They are query engines and destinations, not connectors.                                                                                                                                                                                   |
+| Who builds and deploys                                           | **Mako, automatically.** A user saves or pushes. The next run uses the new code.                                                                                                                                                                                |
+| Architecture style                                               | Control plane plus sandboxed jobs, not microservices (§9).                                                                                                                                                                                                      |
 
 ## 4. Where connectors live
 
-| Tier | Source lives in | Built by | Installed as | Runs in |
-|---|---|---|---|---|
-| **Mako** (Stripe, Close, PostHog, Wise, Calendly, PandaDoc, Claap, the REST, GraphQL and custom API connectors) | Mako repo, top-level `connectors/<slug>/` (moved from `api/src/connectors/<slug>/`) | Mako CI on release, semver per connector | `source: mako/<slug>@<range>` in the workspace's `connectors/<slug>/connector.yaml` | Leased box |
-| **Vendored** (Airbyte, Estuary; RFC #947 iterations 3–4) | Mako repo, `connectors/<slug>/`, with `origin:` | Mako CI, bot PR per upstream release | Same reference | Leased box |
-| **Workspace** | Workspace repo, `connectors/<slug>/` with `entry:` | Mako, on push to main or on first run from a branch, per source hash | Itself | Leased box |
+| Tier                                                                                                            | Source lives in                                                                     | Built by                                                             | Installed as                                                                        | Runs in    |
+| --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------- |
+| **Mako** (Stripe, Close, PostHog, Wise, Calendly, PandaDoc, Claap, the REST, GraphQL and custom API connectors) | Mako repo, top-level `connectors/<slug>/` (moved from `api/src/connectors/<slug>/`) | Mako CI on release, semver per connector                             | `source: mako/<slug>@<range>` in the workspace's `connectors/<slug>/connector.yaml` | Leased box |
+| **Vendored** (Airbyte, Estuary; RFC #947 iterations 3–4)                                                        | Mako repo, `connectors/<slug>/`, with `origin:`                                     | Mako CI, bot PR per upstream release                                 | Same reference                                                                      | Leased box |
+| **Workspace**                                                                                                   | Workspace repo, `connectors/<slug>/` with `entry:`                                  | Mako, on push to main or on first run from a branch, per source hash | Itself                                                                              | Leased box |
 
 The folder shape is identical across tiers, as RFC #947 required. Promotion and ejection move a folder:
 
@@ -71,15 +72,16 @@ What leaves `api/src`: the 10 vendor-facing connector directories (`calendly`, `
 
 ### 5.1 The pipeline
 
-| Step | Who | When |
-|---|---|---|
-| Compute the **source hash**: the folder, its lockfile and the SDK version | Mako (the push reconciler, or the run that finds no bundle) | On push to main; on first run from a branch |
-| Resolve dependencies from the lockfile, then esbuild into one `.mjs` with dependencies inlined | Mako, in a **build box**, an E2B box with network and no credentials | Once per hash |
-| Store the bundle under its hash | Mako, in object storage | After the build |
-| Make the box **template**: a snapshot of a box with Node, the SDK and the bundle loaded | Mako | After the build, or lazily on the first lease |
-| Clean up | Mako | Bundles and templates unused for 7 days |
+| Step                                                                                           | Who                                                                  | When                                          |
+| ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------- |
+| Compute the **source hash**: the folder, its lockfile and the SDK version                      | Mako (the push reconciler, or the run that finds no bundle)          | On push to main; on first run from a branch   |
+| Resolve dependencies from the lockfile, then esbuild into one `.mjs` with dependencies inlined | Mako, in a **build box**, an E2B box with network and no credentials | Once per hash                                 |
+| Store the bundle under its hash                                                                | Mako, in object storage                                              | After the build                               |
+| Make the box **template**: a snapshot of a box with Node, the SDK and the bundle loaded        | Mako                                                                 | After the build, or lazily on the first lease |
+| Clean up                                                                                       | Mako                                                                 | Bundles and templates unused for 7 days       |
 
 Rules:
+
 - A bundle is immutable and named by its hash. Two flows on the same hash share it; a new hash never touches an old one.
 - A build failure is a connector status, shown where `indexed` is shown today, and returned by `mako connector test`.
 - **Build is not trust.** A bundle runs with the rights of its connection, nothing more. RFC #947 §6.4 holds unchanged.
@@ -88,7 +90,7 @@ Rules:
 ### 5.2 What the user sees
 
 - **Save, then it runs.** The first run after an edit waits for the build, a few seconds. Later runs start from the template.
-- **Branches work.** A session branch has its own hash, so it gets its own bundle. Main never changes until merged. This loosens one RFC #947 §6.4 row: a branch can *run* a connector for testing, under the same connection rights; only main can *index* one into the picker.
+- **Branches work.** A session branch has its own hash, so it gets its own bundle. Main never changes until merged. This loosens one RFC #947 §6.4 row: a branch can _run_ a connector for testing, under the same connection rights; only main can _index_ one into the picker.
 - **No deploy step, no Cloudflare or E2B account, no artifact to manage.**
 
 ## 6. Box lifecycle
@@ -96,6 +98,7 @@ Rules:
 ### 6.1 The unit is a run
 
 Every `spec`, `check`, `discover` and `read` chunk, every webhook batch and every live-read operation (`call_connection`, #1269) is a **run**. A run carries:
+
 - the connection;
 - the bundle hash;
 - a priority;
@@ -106,15 +109,16 @@ The engine already works in chunks: `fetchEntityChunk` stops after `maxIteration
 
 ### 6.2 States
 
-| State | Cost | Moves to |
-|---|---|---|
-| **Template**: a snapshot per bundle hash | Storage | A box, on lease |
-| **Paused**: a box with disk and memory kept | Storage | Running, on lease; killed after its TTL |
-| **Running, leased**: executing one run | Per second | Running, idle, when the run ends |
-| **Running, idle** | Per second | Paused after 30–60 s; killed if the pool is over target |
-| **Killed** | None | — |
+| State                                       | Cost       | Moves to                                                |
+| ------------------------------------------- | ---------- | ------------------------------------------------------- |
+| **Template**: a snapshot per bundle hash    | Storage    | A box, on lease                                         |
+| **Paused**: a box with disk and memory kept | Storage    | Running, on lease; killed after its TTL                 |
+| **Running, leased**: executing one run      | Per second | Running, idle, when the run ends                        |
+| **Running, idle**                           | Per second | Paused after 30–60 s; killed if the pool is over target |
+| **Killed**                                  | None       | —                                                       |
 
 Rules:
+
 - **A box is keyed by connection plus bundle hash.** Connections never share a box, so one connector never sees another's credential, even concurrently. That closes the open question in RFC #947 §6.3, where several flows shared one workspace box.
 - **No box runs without a lease.** Each lease has a heartbeat and a deadline. A **reaper** kills a box whose lease expired or whose heartbeat stopped, which covers API crashes and lost orchestration steps.
 - **A new bundle hash gets fresh boxes.** Old boxes drain and die.
@@ -138,11 +142,11 @@ Rules:
 
 ### 6.5 Priorities
 
-| Priority | Runs | Rule |
-|---|---|---|
-| **P0, interactive** | Live reads from agents (`call_connection`), connection tests, `discover` in the picker | May take a box from P2 at the next chunk boundary. Target lease wait under 2 s at p95. |
-| **P1, steady** | Webhook batches, polls, the daily resync | Normal |
-| **P2, bulk** | Backfills, full resyncs | Pre-emptible after any chunk; the cursor makes that safe. At most 50% of a workspace's concurrent boxes. |
+| Priority            | Runs                                                                                   | Rule                                                                                                     |
+| ------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **P0, interactive** | Live reads from agents (`call_connection`), connection tests, `discover` in the picker | May take a box from P2 at the next chunk boundary. Target lease wait under 2 s at p95.                   |
+| **P1, steady**      | Webhook batches, polls, the daily resync                                               | Normal                                                                                                   |
+| **P2, bulk**        | Backfills, full resyncs                                                                | Pre-emptible after any chunk; the cursor makes that safe. At most 50% of a workspace's concurrent boxes. |
 
 The existing chunk caps give natural pre-emption points: 32 MB or 50,000 protocol messages per command (`MAX_CONNECTOR_PROTOCOL_BYTES`, `MAX_CONNECTOR_PROTOCOL_MESSAGES`) and a 10-minute timeout.
 
@@ -177,6 +181,7 @@ The existing chunk caps give natural pre-emption points: 32 MB or 50,000 protoco
 - Pre-emptions, reaped boxes and failed pings.
 
 Alerts:
+
 - P0 lease wait over 5 s;
 - a workspace at 80% of budget;
 - global boxes at 80% of the ceiling;
@@ -184,14 +189,14 @@ Alerts:
 
 ## 7. Marketplace and install
 
-| Action | How it works |
-|---|---|
-| **Browse** | The registry lists bundles: entities, live operations, auth type, version, changelog, and a Mako or verified badge. Agents read it through `list_connectors` and `inspect_connector`. |
-| **Install** | Mako commits `connectors/<slug>/connector.yaml` with `source: mako/<slug>@<range>` to the workspace repo. No code. The repo stays the truth; the push reconciler resolves the reference to a bundle. |
-| **Connect** | Unchanged: enter a credential, `check` runs, the connection becomes `verified`. |
-| **Upgrade** | Patch and minor releases within the range apply on the next run. A major release opens a commit or PR bumping the range, with the changelog and a `discover` diff (RFC #947 §13, schema drift). |
-| **Eject** | Copy the source into the folder and drop `source:`; it becomes `ws:<slug>` (§4). |
-| **Publish (later)** | Review, then registry entry. Out of scope until the registry carries Mako's own connectors. |
+| Action              | How it works                                                                                                                                                                                         |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Browse**          | The registry lists bundles: entities, live operations, auth type, version, changelog, and a Mako or verified badge. Agents read it through `list_connectors` and `inspect_connector`.                |
+| **Install**         | Mako commits `connectors/<slug>/connector.yaml` with `source: mako/<slug>@<range>` to the workspace repo. No code. The repo stays the truth; the push reconciler resolves the reference to a bundle. |
+| **Connect**         | Unchanged: enter a credential, `check` runs, the connection becomes `verified`.                                                                                                                      |
+| **Upgrade**         | Patch and minor releases within the range apply on the next run. A major release opens a commit or PR bumping the range, with the changelog and a `discover` diff (RFC #947 §13, schema drift).      |
+| **Eject**           | Copy the source into the folder and drop `source:`; it becomes `ws:<slug>` (§4).                                                                                                                     |
+| **Publish (later)** | Review, then registry entry. Out of scope until the registry carries Mako's own connectors.                                                                                                          |
 
 The `connector.yaml` schema gains one field, `source`, mutually exclusive with `entry`.
 
@@ -199,27 +204,28 @@ The `connector.yaml` schema gains one field, `source`, mutually exclusive with `
 
 RealAdvisor runs the largest syncs today, all in-process.
 
-| Flow | Rows applied, lifetime | Steady state | Daily resync | Last full backfill |
-|---|---|---|---|---|
-| `fr_close` | about 110M (31.2M `Call`, 24.1M `Email`, 18.0M `EmailThread`) | webhooks, backlog 0 | 24–47 s | October, entity by entity |
-| `es_close` | about 75M (21.4M `Email`, 17.9M `Call`) | webhooks, backlog 0 | 6.5–8 min | 15 Nov 2026: 3 h 54 min |
+| Flow       | Rows applied, lifetime                                        | Steady state        | Daily resync | Last full backfill        |
+| ---------- | ------------------------------------------------------------- | ------------------- | ------------ | ------------------------- |
+| `fr_close` | about 110M (31.2M `Call`, 24.1M `Email`, 18.0M `EmailThread`) | webhooks, backlog 0 | 24–47 s      | October, entity by entity |
+| `es_close` | about 75M (21.4M `Email`, 17.9M `Call`)                       | webhooks, backlog 0 | 6.5–8 min    | 15 Nov 2026: 3 h 54 min   |
 
 Same workspace: 4 more Close tenants, 6 Stripe accounts and about 20 workspace connectors.
 
 In a box:
+
 - **Memory is bounded:** one page in flight per chunk, a few MB, at any total volume.
 - **CPU is not the limit:** JSON parsing and paging; Close's rate limit dominates wherever the code runs.
 - **The risks are contention and per-chunk overhead.** The ES backfill becomes about 1,500 chunk round trips. Contention is solved by per-connection boxes and priorities (§6). Overhead is what gate G1 measures.
 
 ## 9. This is not microservices
 
-| | Microservices | This design |
-|---|---|---|
-| Deployables | Many services, each with an API, a database and a release | One API, plus connector bundles that are artifacts |
-| Runs in Firecracker | Everything | Connector code only |
-| Communication | HTTP between services | The API runs a command in a box. The connector answers in Airbyte JSON lines on stdout. No HTTP between parts. |
-| State | Every service | The API owns cursors, leases, budgets, credentials and destination writes. Boxes are stateless except their snapshot. |
-| Coordination | Events between services | The API's scheduler; Inngest makes long runs durable |
+|                     | Microservices                                             | This design                                                                                                           |
+| ------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Deployables         | Many services, each with an API, a database and a release | One API, plus connector bundles that are artifacts                                                                    |
+| Runs in Firecracker | Everything                                                | Connector code only                                                                                                   |
+| Communication       | HTTP between services                                     | The API runs a command in a box. The connector answers in Airbyte JSON lines on stdout. No HTTP between parts.        |
+| State               | Every service                                             | The API owns cursors, leases, budgets, credentials and destination writes. Boxes are stateless except their snapshot. |
+| Coordination        | Events between services                                   | The API's scheduler; Inngest makes long runs durable                                                                  |
 
 The closest analogies are GitHub Actions runners and Airbyte workers: a control plane hands bounded jobs to throwaway sandboxes. The scheduler and the build step may become separate internal processes if load demands it. Nothing tenant-facing changes if they do.
 
@@ -227,26 +233,26 @@ The closest analogies are GitHub Actions runners and Airbyte workers: a control 
 
 Each iteration ships behind a flag and has a gate that is watched, not inferred.
 
-| # | Iteration | Ships | Gate |
-|---|---|---|---|
-| **G1** | **Benchmark** | A test workspace replays RealAdvisor's ES Close backfill shape through `SandboxedConnector` in a box | E2B snapshot restore under 1 s at p95. Per-chunk overhead under 300 ms. Total backfill time within 1.5× the in-process 3 h 54 min. Cost per backfill recorded. A failure here reopens the Workers for Platforms option for HTTP connectors. |
-| 1 | **Bundles for workspace connectors** | `package.json` and lockfile in a folder; the build box; bundles by hash; the `node_modules/` guard; build status on the connector | An existing workspace connector gains an npm dependency, builds, runs, and the repo holds no `node_modules/`. Repo size per connector recorded before and after. |
-| 2 | **Leases and lifecycle** | Scheduler, leases, heartbeats, reaper, box per connection plus hash, snapshot templates, pause on idle, TTL kill, metrics | All of RealAdvisor's workspace connectors run through leases for 7 days with zero leaked boxes (running with no lease), and the box-seconds per day reported. |
-| 3 | **Priorities and budgets** | P0–P2, chunk pre-emption, per-connection caps, per-workspace budgets, the global ceiling, the cost panel | During a forced backfill, an agent live read gets a box in under 2 s at p95. A test workspace hits its budget, P2 pauses, P0 keeps working, and an alert fires. |
-| 4 | **Registry and install by reference** | `source:` in `connector.yaml`, the registry, release CI for `connectors/`, upgrade within range, eject | Stripe, moved to `connectors/stripe/` and built by CI, installed by reference in a test workspace, matches the in-process Stripe output on the same account, entity for entity. |
-| 5 | **Mako connectors out of the API** | Stripe, Wise, Calendly, PandaDoc, Claap and PostHog switch per connection behind a flag; then Close, gated on G1 numbers holding in production | For each connector, 7 days of parity on row counts and key checksums between in-process and boxed runs on RealAdvisor's connections. Then the old directory and its dependency (the `stripe` SDK) are removed from `api/`. |
-| 6 | **Marketplace** | Catalog UI, changelogs, the major-version PR, publish flow for workspace connectors | A workspace installs, upgrades and ejects a connector without touching code. |
+| #      | Iteration                             | Ships                                                                                                                                          | Gate                                                                                                                                                                                                                                        |
+| ------ | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **G1** | **Benchmark**                         | A test workspace replays RealAdvisor's ES Close backfill shape through `SandboxedConnector` in a box                                           | E2B snapshot restore under 1 s at p95. Per-chunk overhead under 300 ms. Total backfill time within 1.5× the in-process 3 h 54 min. Cost per backfill recorded. A failure here reopens the Workers for Platforms option for HTTP connectors. |
+| 1      | **Bundles for workspace connectors**  | `package.json` and lockfile in a folder; the build box; bundles by hash; the `node_modules/` guard; build status on the connector              | An existing workspace connector gains an npm dependency, builds, runs, and the repo holds no `node_modules/`. Repo size per connector recorded before and after.                                                                            |
+| 2      | **Leases and lifecycle**              | Scheduler, leases, heartbeats, reaper, box per connection plus hash, snapshot templates, pause on idle, TTL kill, metrics                      | All of RealAdvisor's workspace connectors run through leases for 7 days with zero leaked boxes (running with no lease), and the box-seconds per day reported.                                                                               |
+| 3      | **Priorities and budgets**            | P0–P2, chunk pre-emption, per-connection caps, per-workspace budgets, the global ceiling, the cost panel                                       | During a forced backfill, an agent live read gets a box in under 2 s at p95. A test workspace hits its budget, P2 pauses, P0 keeps working, and an alert fires.                                                                             |
+| 4      | **Registry and install by reference** | `source:` in `connector.yaml`, the registry, release CI for `connectors/`, upgrade within range, eject                                         | Stripe, moved to `connectors/stripe/` and built by CI, installed by reference in a test workspace, matches the in-process Stripe output on the same account, entity for entity.                                                             |
+| 5      | **Mako connectors out of the API**    | Stripe, Wise, Calendly, PandaDoc, Claap and PostHog switch per connection behind a flag; then Close, gated on G1 numbers holding in production | For each connector, 7 days of parity on row counts and key checksums between in-process and boxed runs on RealAdvisor's connections. Then the old directory and its dependency (the `stripe` SDK) are removed from `api/`.                  |
+| 6      | **Marketplace**                       | Catalog UI, changelogs, the major-version PR, publish flow for workspace connectors                                                            | A workspace installs, upgrades and ejects a connector without touching code.                                                                                                                                                                |
 
 ## 11. Alternatives rejected
 
-| Alternative | Why not |
-|---|---|
-| Workers for Platforms as the default runtime | Isolates bound CPU and memory, break native and TCP drivers, and need a second runtime for the rest. A microVM runs today's connectors unchanged. Kept as a fallback if G1 fails. |
-| One box per workspace with a better queue | Still one VM: a backfill delays live reads, and connections share a box with each other's credentials. |
-| A Firecracker fleet of our own (Netlify's approach) | A platform team's work: VM lifecycle, snapshots, sticky routing. E2B sells it. |
-| Publishing connectors to npm | Versioning without immutability by content, a public surface, and still a build step. A hash-addressed bundle store is simpler. |
-| Docker images for every connector | Hundreds of MB and seconds of start for code that is a few hundred KB of JavaScript. Images stay one of the five runtimes, for connectors that need them. |
-| Keeping Mako's connectors in-process | Vendor code in the API, release coupling, shared blast radius. |
+| Alternative                                         | Why not                                                                                                                                                                           |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workers for Platforms as the default runtime        | Isolates bound CPU and memory, break native and TCP drivers, and need a second runtime for the rest. A microVM runs today's connectors unchanged. Kept as a fallback if G1 fails. |
+| One box per workspace with a better queue           | Still one VM: a backfill delays live reads, and connections share a box with each other's credentials.                                                                            |
+| A Firecracker fleet of our own (Netlify's approach) | A platform team's work: VM lifecycle, snapshots, sticky routing. E2B sells it.                                                                                                    |
+| Publishing connectors to npm                        | Versioning without immutability by content, a public surface, and still a build step. A hash-addressed bundle store is simpler.                                                   |
+| Docker images for every connector                   | Hundreds of MB and seconds of start for code that is a few hundred KB of JavaScript. Images stay one of the five runtimes, for connectors that need them.                         |
+| Keeping Mako's connectors in-process                | Vendor code in the API, release coupling, shared blast radius.                                                                                                                    |
 
 ## 12. Open questions
 
