@@ -13,10 +13,45 @@ Results: [`RESULTS.md`](./RESULTS.md). Raw numbers: `results/*.json`.
 | Path | What it is |
 | --- | --- |
 | `connector/` | A connector folder on `@makoai/connector-sdk`. Three entities (`email`, `call`, `fixed-1k`) page through a synthetic Close-shaped activity feed generated inside the box. 100-row pages. Record sizes follow RealAdvisor's ES Close tables (email mean 32.4 KB, call mean 9.5 KB). No network. |
-| `run.mts` | The benchmark. Phases: `create`, `pause`, `snapshot`, `exec`, `chunk`, `parallel`, `metrics`. |
+| `run-v2.mts` | The benchmark for the current chunk path (master 3608123c1 and later): flag off and flag on (`CONNECTOR_BOX_LEASES`), warm and cold chunks, in-box boot timing, parallel throughput. |
+| `run.mts` | The first benchmark, for the chunk path before 3608123c1 (8 provider calls per chunk). It imports `sync-box.ts` internals that 3608123c1 changed, so run it from a checkout of 21a1d5172. Its raw-SDK phases (`create`, `pause`, `snapshot`, `exec`) do not depend on Mako code. |
 | `results/` | One JSON file per run. |
 
-## Re-run
+## Re-run the current path (`run-v2.mts`)
+
+Use the `mako-dev` E2B project: Pro plan, 100 boxes, no users. Its key is
+`E2B_API_KEY` version 2 in Secret Manager project `mako-ai-dev`. Load it into
+the process environment only:
+
+```bash
+cd api
+E2B_API_KEY="$(gcloud secrets versions access 2 --secret E2B_API_KEY --project mako-ai-dev)" \
+APPS_E2B_TEMPLATE=mako-apps pnpm exec tsx ../bench/g1/run-v2.mts
+```
+
+Options: `--phases` (default `off-warm,boot,off-cold,on-warm,on-cold,parallel`),
+`--chunks` per entity and per box (30), `--n` samples per cold path (10),
+`--account-cap` running boxes allowed on the account (10), `--out`.
+
+A full run takes about 17 minutes. It holds at most 9 boxes at once (8 in
+`parallel`, plus the warm sync box), creates about 27 boxes and 13 snapshots,
+and kills or deletes all of them in a `finally`, on Ctrl-C and on SIGTERM. It
+touches only boxes it made. The results file's `cleanup` records what it
+killed and what was left (0 so far).
+
+Flag on runs the real `BoxScheduler` with its Mongo store replaced by
+`MemoryBoxStore`, so no database is needed. The scheduler's account ceiling is
+set to `--account-cap`.
+
+To measure from europe-west1, where the API runs, copy the checkout to a GCE VM
+there and pass the key over ssh stdin, never as an argument or a file:
+
+```bash
+gcloud secrets versions access 2 --secret E2B_API_KEY --project mako-ai-dev | \
+  gcloud compute ssh <vm> --command 'IFS= read -r E2B_API_KEY; export E2B_API_KEY; cd ~/mako/api && APPS_E2B_TEMPLATE=mako-apps ./node_modules/.bin/tsx ../bench/g1/run-v2.mts'
+```
+
+## Re-run the first benchmark (`run.mts`)
 
 **Use an E2B team that serves no app sessions.** The local-development key
 reaches the team that runs live app sessions. On 16 Nov 2026 that team capped

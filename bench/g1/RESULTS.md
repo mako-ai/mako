@@ -1,8 +1,127 @@
 # G1 results: E2B box overhead for connector chunks
 
+## Second run, 16 Nov 2026 evening: after PR 1278 and PR 1284 (master 3608123c1)
+
+A warm chunk is 4.3–4.6× faster than on the old path, and the ES backfill target now passes. Per-chunk overhead and snapshot restore still fail.
+
+Runs, all on the `mako-dev` project (Pro plan, 100-box limit, no users), template `mako-apps` (2 vCPU, 2,048 MB), `e2b` 2.55.0:
+
+| Run | Client | When (UTC) | Raw numbers |
+| --- | --- | --- | --- |
+| Old path (`run.mts` on code before 3608123c1) | MacBook in Europe | 20:58–21:07 | [`results/2026-11-16-old-path-mako-dev.json`](./results/2026-11-16-old-path-mako-dev.json) |
+| New path (`run-v2.mts`), flag off and on | MacBook in Europe | 21:07–21:24 | [`results/2026-11-16-v2-laptop.json`](./results/2026-11-16-v2-laptop.json) |
+| New path (`run-v2.mts`), flag off and on | GCE e2-standard-4, `europe-west1-b` | 21:25–21:42 | [`results/2026-11-16-v2-europe-west1.json`](./results/2026-11-16-v2-europe-west1.json) |
+
+At most 10 boxes ran at once. The three runs created 107 boxes and 27 snapshots, and a smoke run 2 boxes and 1 snapshot. All were killed or deleted, and the project held 0 boxes and 0 snapshots afterwards.
+
+### Verdict per target
+
+Numbers are from europe-west1, where the API runs, unless marked.
+
+| Target | Measured | Verdict |
+| --- | --- | --- |
+| Snapshot restore under 1 s at p95 | `Sandbox.create(snapshotId)`: p95 1,727 ms (old run, laptop). Lease restore from template: `lifecycle.create` p95 2,926 ms. Raw resume of a paused box: p95 452 ms. Lease resume (the ping that resumes): p95 1,165 ms | **Fail.** Raw resume passes |
+| Per-chunk overhead under 300 ms | Warm chunk, flag off: 917–978 ms p50, 1,065–1,068 ms p95. Flag on: 1,392–1,494 ms p50, 1,481–1,881 ms p95 | **Fail**, 3.1× over flag off |
+| ES backfill within 1.5× of 3 h 54 min | Flag off: 4 h 47 min at p50 (1.23×), 4 h 54 min at p95 (1.26×). Flag on: 5 h 16 min (1.35×), 5 h 29 min (1.41×) | **Pass** both ways |
+| Cost per backfill | $0.64 flag off, $0.70 flag on, on 2 vCPU/2 GiB. Half that on 1 vCPU/1 GiB | Recorded |
+
+### Warm chunk, old vs new
+
+1,000 rows (email: up to the 16 MiB byte budget), 30 chunks per row of the table.
+
+| Path | Client | `fixed-1k` p50 / p95 | `call` p50 / p95 | `email` p50 / p95 | Email rows per chunk |
+| --- | --- | --- | --- | --- | --- |
+| Old (8 calls, 20 round trips) | laptop | 3,538 / 4,854 | 3,607 / 4,639 | 3,790 / 4,404 | 1,000; 4 of 30 over the 32 MiB cap |
+| New, flag off | laptop | 773 / 1,282 | 822 / 995 | 881 / 1,068 | 573 mean, 500 min; 0 over the cap |
+| New, flag off | europe-west1 | 782 / 1,073 | 917 / 1,065 | 978 / 1,068 | 573 mean, 500 min; 0 over the cap |
+| New, flag on | laptop | 1,263 / 1,418 | 1,343 / 1,492 | 1,403 / 1,490 | 563 mean; 0 over the cap |
+| New, flag on | europe-west1 | 1,268 / 1,307 | 1,392 / 1,481 | 1,494 / 1,881 | 563 mean; 0 over the cap |
+
+The in-process chunk takes about 1 ms, so the box time is the overhead.
+
+### Where a warm chunk's time goes (europe-west1, `call`, flag off, 917 ms p50)
+
+| Part | ms | Share | Source |
+| --- | --- | --- | --- |
+| Write the inputs (`writeFiles`, 1 round trip) | 164 | 18% | provider trace |
+| Exec round trip (a no-op `exec` costs 165 ms) | 165 | 18% | `providerExecNoopMs` |
+| Read the bounded output back (`readFile`, 9.6 MB) | 271 | 30% | provider trace |
+| **Transport** | **600** | **65%** | |
+| Connector boot: Node start 27 ms, SDK and connector import 73 ms | 100 | 11% | `boot` phase, in the box |
+| Connector work: generate and serialise 10 pages | 53 | 6% | `boot` read 153 ms minus boot |
+| Per-run isolation: user, run directory, kill loop, bound, cleanup | 131 | 14% | exec 449 ms minus 165 ms round trip minus 153 ms process |
+| Client: parse 1,000 records and `onBatch` | 33 | 4% | remainder |
+
+Flag on adds 3 round trips before the chunk: a `ping` (174 ms) and 2 marker checks from `ensureBundle` (runtime and folder, 172 ms each). That is 519 ms, all transport, and it puts transport at 80% of the flag-on chunk.
+
+A long-lived connector process can save at most the 100 ms of boot, 11% of the flag-off chunk and 7% of the flag-on chunk. It would save part of the 131 ms of isolation only if a run user outlived one chunk.
+
+### Region
+
+europe-west1 does not shorten the round trip. A no-op exec costs 165 ms p50 from the GCE VM and 174 ms from the laptop. TCP connect to `api.e2b.app` takes 2–3 ms from the VM, so the load balancer is near and the sandboxes are not. The RTT is set by where E2B runs the boxes.
+
+### Cold paths
+
+| Start | europe-west1 p50 | p95 | Laptop p50 |
+| --- | --- | --- | --- |
+| Flag off, new workspace sync box: create, Node download, SDK, folder, first chunk | 12,884 ms (3 runs: 10,975–12,897) | – | 9,622 ms |
+| Flag off, chunk on a paused sync box (resume inside) | 1,816 | 2,003 | 1,867 |
+| Flag on, new connection: create 1,074, Node download 3,636, 19 SDK file writes, snapshot 1,473, chunk | 12,378 | 13,325 | 11,973 |
+| Flag on, chunk after the idle box paused (resume via ping 820 ms) | 2,276 | 3,101 | 2,336 |
+| Flag on, chunk after the box died (restore from template, `lifecycle.create` 1,637 ms) | 4,868 | 6,241 | 4,531 |
+
+Raw SDK numbers on `mako-dev` (laptop, old run): cold create 586 ms p50 and 714 ms p95; to the first command 798 ms and 1,234 ms. Pause 380 ms p50. Resume 301 ms p50 and 452 ms p95. Snapshot restore 875 ms p50 and 1,727 ms p95. Fork 1,085 ms p50 and 1,386 ms p95.
+
+### Parallel throughput (europe-west1, warm boxes, 30 chunks per box)
+
+| Boxes | `call` rows/s | `email` rows/s | Chunk p50 |
+| --- | --- | --- | --- |
+| 1 connection, flag on | 750 | 411 | 1,295 ms |
+| 2 connections | 1,494 | 799 | 1,315 ms |
+| 4 connections | 2,830 | 1,518 | 1,353 ms |
+| 8 connections | 5,597 | 2,817 | 1,356 ms |
+| 1 sync box, 1 chunk at a time, flag off | 598 | – | 1,598 ms |
+| 1 sync box, 2 chunks at once | 1,323 | – | 1,500 ms |
+| 1 sync box, 4 chunks at once | 2,446 | – | 1,587 ms |
+
+Throughput scales 7.5× from 1 to 8 boxes for calls and 6.9× for emails. Chunk latency barely moves. One 2 vCPU sync box runs 4 chunks at once at 4.1× the rate of one.
+
+The flag-off rows ran on a box that had just been paused and resumed 10 times. Its chunks took 1,598 ms p50 against 917 ms on the same box before the pauses. The cause is not isolated. A resumed memory snapshot that pages back in lazily would explain it.
+
+### ES backfill, extrapolated
+
+Same method as the first run: 14,046 s of vendor time for 2.81M rows, plus chunks times the measured chunk time. With the 16 MiB byte budget an email chunk holds 573 rows on average, so the 826,143 emails need 1,441 chunks. The other 1,986,042 rows need 1,986. That is 3,427 chunks, and the 1.5× target allows 2.04 s each.
+
+| Path (europe-west1) | Added | Total | vs 3 h 54 min | Cost, 2 vCPU/2 GiB |
+| --- | --- | --- | --- | --- |
+| Flag off, p50 | 54 min | 4 h 47 min | 1.23× | $0.64 |
+| Flag off, p95 | 1 h 1 min | 4 h 54 min | 1.26× | $0.65 |
+| Flag on, p50 | 1 h 23 min | 5 h 16 min | 1.35× | $0.70 |
+| Flag on, p95 | 1 h 35 min | 5 h 29 min | 1.41× | $0.73 |
+
+These run entities one after another. Splitting entities across boxes divides the added time by up to the box count (§6.3).
+
+### What would cut the rest
+
+1. **Drop the 3 lease round trips on a warm box.** The `ping` and the two `ensureBundle` marker checks cost 519 ms per flag-on chunk. A box this process leased and released seconds ago needs neither. Doing the marker check inside the chunk command would keep it safe.
+2. **Return the bounded output on stdout.** That makes a chunk 2 round trips, not 3, and saves about 165 ms plus the separate download.
+3. **Make the cold start a snapshot.** A new connection pays 3.6 s to download Node and 19 one-file writes for the SDK. Both belong in the template.
+4. **The connector process is 11% of a warm chunk.** A long-lived process saves at most 100 ms of boot. Transport is 65–80%.
+5. **300 ms per chunk needs boxes near the API.** One round trip is 165 ms from europe-west1, and a chunk needs at least 2.
+
+### How the second run was made
+
+- `run-v2.mts` drives `SandboxedConnector.fetchEntityChunk` on master. It replaces only the Mongo/git lookups of the connector's definition and folder.
+- Flag on runs the real `BoxScheduler`. Its Mongo store is swapped for `MemoryBoxStore`, which the scheduler's tests use and which has the same compare-and-set semantics. Production adds a Mongo round trip per store call; this run does not measure that.
+- The scheduler's account ceiling was set to the 10-box budget (`CONNECTOR_BOX_ACCOUNT_CEILING=10`, `CONNECTOR_BOX_APP_RESERVE=0`). The script also checks running boxes before every box it starts.
+- The key came from Secret Manager into the process environment only. On the VM it arrived over ssh stdin.
+- The VM was created for the run and deleted after it.
+
+## First run, 16 Nov 2026 afternoon (code before PR 1278)
+
 Run `g1-mwjd1w9b`, 16 Nov 2026, 14:30–14:41 UTC. Raw numbers: [`results/2026-11-16.json`](./results/2026-11-16.json).
 
-## Top finding: connector boxes share a 20-sandbox cap with live app sessions
+### Top finding: connector boxes share a 20-sandbox cap with live app sessions
 
 - The E2B team behind the local-development key caps concurrent sandboxes at 20. E2B's API said so when the benchmark asked for a third box: "you have reached the maximum number of concurrent E2B sandboxes (20)".
 - That team runs real users' app sessions. At 14:32 UTC it held 17 running sandboxes besides this benchmark: 14 app sessions on `mako-apps`, 2 on `aura-sandbox` and 1 connector sync box. Minutes after the run stopped it held 19.
@@ -10,7 +129,7 @@ Run `g1-mwjd1w9b`, 16 Nov 2026, 14:30–14:41 UTC. Raw numbers: [`results/2026-1
 - The benchmark stopped at that point. It started no more boxes. Parallel throughput is **not measured: shared 20-sandbox cap**. The `lean` and `metrics` phases did not run either.
 - The documented tiers are 10 concurrent sandboxes on Hobby and 100–1,100 on Pro (docs.e2b.dev/billing, read 16 Nov 2026). 20 matches neither, so the team has a custom limit. Creation is rate-limited to 5 per second on Pro.
 
-## Verdict per target
+### Verdict per target
 
 | Target | Measured | Verdict |
 | --- | --- | --- |
@@ -21,7 +140,7 @@ Run `g1-mwjd1w9b`, 16 Nov 2026, 14:30–14:41 UTC. Raw numbers: [`results/2026-1
 
 The overhead is round trips, not compute. Fixing it is a change to `sync-box.ts` and the provider, not to E2B (see "What would change the RFC").
 
-## Environment
+### Environment
 
 | Item | Value |
 | --- | --- |
@@ -35,11 +154,11 @@ The overhead is round trips, not compute. Fixing it is a change to `sync-box.ts`
 
 Mako's production API runs in GCP `europe-west1`. A raw E2B command takes 176 ms from this laptop. The API sees a similar transatlantic round trip, but this was not measured from `europe-west1`.
 
-## Numbers
+### Numbers
 
 All times in milliseconds. n is the sample count.
 
-### Box lifecycle
+#### Box lifecycle
 
 | Measure | n | p50 | p95 | p99 |
 | --- | --- | --- | --- | --- |
@@ -57,7 +176,7 @@ All times in milliseconds. n is the sample count.
 
 A restored box held the Node runtime, the SDK and the connector. Its first read needed no install.
 
-### One round trip
+#### One round trip
 
 | Measure | n | p50 | p95 | p99 |
 | --- | --- | --- | --- | --- |
@@ -68,7 +187,7 @@ A restored box held the Node runtime, the SDK and the connector. Its first read 
 
 `provider.exec` costs 3 round trips: `Sandbox.connect`, `setTimeout`, then the command. `provider.writeFile` and `readFile` cost 2: `connect`, then the transfer.
 
-### One chunk, end to end
+#### One chunk, end to end
 
 `SandboxedConnector.fetchEntityChunk` on a warm box, 1,000 rows: write config, catalog and state, exec `read`, bounded read-back, parse, `onBatch`. 30 chunks per entity.
 
@@ -92,19 +211,19 @@ Where a boxed chunk's time goes (p50, `call`):
 
 The connector process itself runs for about 120–265 ms of the 667–786 ms `read` exec. The rest is round trips.
 
-### Byte cap
+#### Byte cap
 
 4 of 30 `email` chunks (13%) exceeded `MAX_CONNECTOR_PROTOCOL_BYTES` (32 MiB) and failed. They fail the same way on retry, because the data is the same. The in-process Close connector has no such cap. Close's search API uses 200-row pages (`SEARCH_PAGE_SIZE` in `close/search.ts`), so 10 pages of Close emails average about 65 MB and would fail every time.
 
-### Memory and CPU
+#### Memory and CPU
 
 Not measured in the box: the `metrics` phase was stopped with the run. On the laptop, one `email` chunk's process peaked at 95 MB RSS and used 90 ms of CPU. A `call` chunk peaked at 90 MB. A 1 vCPU, 1 GiB box has room for this.
 
-### Parallel throughput
+#### Parallel throughput
 
 Not measured: shared 20-sandbox cap. One box ran 246–269 rows per second with no vendor latency at all.
 
-## ES Close backfill, extrapolated
+### ES Close backfill, extrapolated
 
 **Vendor-bound time.** The in-process backfill on 15 Nov 2026 ran 14,046 s (10:31:55 to 14:26:00 UTC, `flow_status` of `es-close-bigquery-write`).
 
@@ -124,7 +243,7 @@ All scenarios run entities one after another. Splitting entities across boxes (R
 
 The 3-round-trip estimate assumes one multi-file write, one command and one read on a held handle, at 176 ms each, plus 130–270 ms of process time. The `lean` phase in `run.mts` measures it. It did not run because of the cap.
 
-## Cost
+### Cost
 
 E2B prices, read from e2b.dev/pricing on 16 Nov 2026: $0.000014 per vCPU-second and $0.0000045 per GiB-second. Paused boxes cost nothing. Disk is free. Pro costs $150 per month plus usage.
 
@@ -146,7 +265,7 @@ The 50-flow line assumes each flow's daily resync takes as long as ES Close's (3
 
 The benchmark itself created 54 boxes for a few seconds each and one warm box for 10 minutes. It cost under $0.05.
 
-## App boxes, for comparison
+### App boxes, for comparison
 
 | | App box | Connector box (G1) |
 | --- | --- | --- |
@@ -160,7 +279,7 @@ The benchmark itself created 54 boxes for a few seconds each and one warm box fo
 
 Why apps do not struggle: a person waits for one action at a time, so 500 ms per exec is invisible. A backfill pays a round trip 20 times per chunk and 2,813 times per backfill. The same box and provider serve both; only the call pattern differs.
 
-## What would change the RFC
+### What would change the RFC
 
 1. **Give connector boxes their own E2B team, or raise the cap first.** §6.6's "global ceiling below the E2B plan's sandbox limit" must count app sessions too. Today 17–19 of 20 slots are taken by apps. Without a separate team, any connector box can block an app preview.
 2. **Build the lease around a held handle.** `e2b-provider.ts` calls `Sandbox.connect` and `setTimeout` on every exec. `runConnectorCommand` makes 8 provider calls. That is 20 round trips and 3.6–3.9 s per chunk. One write, one command and one read on a held handle is 3 round trips, about 0.75 s. Streaming the bounded output on stdout makes it 2. The `BoxProvider` in §6.8 should expose a lease object, not stateless calls by session key.
@@ -169,11 +288,11 @@ Why apps do not struggle: a person waits for one action at a time, so 500 ms per
 5. **Snapshot restore misses 1 s by 90 ms at p95, with a 4.6 s p99.** Resuming a paused box hits 355 ms at p95. Prefer paused boxes over snapshot restores, as §6.3 already orders them. Keep the snapshot path off the P0 lease path.
 6. **Use real backfill sizes, not lifetime rows.** ES Close holds 2.81M rows. Lifetime rows applied (71.9M) count every replay.
 
-## Optional live Close check
+### Optional live Close check
 
 Not run. No Close sandbox or test key exists in the local environment, and the production key is out of bounds.
 
-## Boxes created and killed
+### Boxes created and killed
 
 | Run | Created | Killed |
 | --- | --- | --- |
