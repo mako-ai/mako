@@ -65,7 +65,20 @@ export function publicBaseUrl(c: Context): string {
   // stays on the host the client actually reached — e.g. connecting claude.ai
   // to a PR preview via its *.run.app URL when Cloudflare blocks Anthropic's
   // user agents on the canonical host. run.app is always https.
-  if (isOwnRunAppHost(host)) return `https://${host}`;
+  //
+  // Only for a DIRECT hit, though. The edge Workers (cloudflare/app-router,
+  // cloudflare/worker.js) rewrite Host to the run.app origin on every request
+  // they proxy and carry the public host in X-Forwarded-Host. Treating those
+  // as direct hits advertised the run.app host to every client that came
+  // through app.mako.ai: the browser then signed in on a host with no Mako
+  // session cookie, and Google sign-in (whose callback is app.mako.ai) left
+  // the user in the app with the authorize request lost. The header's
+  // VALUE is never used, only its presence, and a proxied request falls
+  // back to the configured URL — so forging it can only produce the
+  // canonical origin, never an attacker's.
+  if (isOwnRunAppHost(host) && !c.req.header("x-forwarded-host")) {
+    return `https://${host}`;
+  }
   const configured =
     process.env.PUBLIC_URL || process.env.CLIENT_URL || process.env.BASE_URL;
   if (configured) return configured.replace(/\/$/, "");
@@ -119,7 +132,17 @@ function authorizationServerMetadata(c: Context) {
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
     scopes_supported: MCP_OAUTH_SCOPES,
+    // RFC 9207: every authorize redirect (code, error, denial) carries
+    // `iss` equal to `issuer` above — see withIssuer().
+    authorization_response_iss_parameter_supported: true,
   });
+}
+
+/** RFC 9207: name the issuer on an authorization response redirect. */
+function withIssuer(c: Context, redirect: URL | string): string {
+  const url = new URL(redirect);
+  url.searchParams.set("iss", publicBaseUrl(c));
+  return url.toString();
 }
 
 /**
@@ -311,7 +334,9 @@ mcpOAuthRoutes.get("/authorize", async c => {
   const query = c.req.query();
   const parsed = await parseAuthorizeParams(query);
   if (!parsed.ok) {
-    if ("redirect" in parsed) return c.redirect(parsed.redirect, 302);
+    if ("redirect" in parsed) {
+      return c.redirect(withIssuer(c, parsed.redirect), 302);
+    }
     return c.html(cannotConnectPage(parsed.message), parsed.status);
   }
 
@@ -371,7 +396,9 @@ mcpOAuthRoutes.post("/authorize", async c => {
   };
   const parsed = await parseAuthorizeParams(params);
   if (!parsed.ok) {
-    if ("redirect" in parsed) return c.redirect(parsed.redirect, 302);
+    if ("redirect" in parsed) {
+      return c.redirect(withIssuer(c, parsed.redirect), 302);
+    }
     return c.html(cannotConnectPage(parsed.message), parsed.status);
   }
 
@@ -387,7 +414,7 @@ mcpOAuthRoutes.post("/authorize", async c => {
 
   if (form.decision !== "allow") {
     redirect.searchParams.set("error", "access_denied");
-    return c.redirect(redirect.toString(), 302);
+    return c.redirect(withIssuer(c, redirect), 302);
   }
 
   const workspaceId =
@@ -417,7 +444,7 @@ mcpOAuthRoutes.post("/authorize", async c => {
     scopes,
   });
   redirect.searchParams.set("code", code);
-  return c.redirect(redirect.toString(), 302);
+  return c.redirect(withIssuer(c, redirect), 302);
 });
 
 mcpOAuthRoutes.post("/token", async c => {
