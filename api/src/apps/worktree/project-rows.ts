@@ -53,11 +53,11 @@ export async function listAppFolderPaths(
 }
 
 /**
- * Env flag that switches the row owner stamp from isUserActor (24-hex ids
- * only) to isPersonActorId (real 15-character ids too). Off by default: an
- * ownerless row is claimed by the next person who acts on it, so switching
- * before scripts/backfill-app-row-owners.ts has given every row its real
- * owner would hand those rows to whoever touches them first.
+ * Env flag that lets real 15-character user ids (isPersonActorId) own the
+ * rows they CREATE. Off by default, so merging changes nothing; turned on
+ * after scripts/backfill-app-row-owners.ts. It never widens the claim of an
+ * EXISTING ownerless row: that stays isUserActor (24-hex), as before, so a
+ * row the backfill left ownerless is not handed to whoever touches it next.
  */
 export const ROW_OWNER_PERSON_IDS_FLAG = "APPS_ROW_OWNER_PERSON_IDS";
 
@@ -107,17 +107,25 @@ export async function ensureProjectRow(
   // the row stays ownerless.
   const personal = await personalTreeOwner(project);
   const owner = personal ? personal.ownerId : actor;
+  // Claiming an existing ownerless row keeps the legacy 24-hex rule whatever
+  // the flag says: those rows are the backfill's to settle, not the next
+  // person's to take.
+  const claimant = personal
+    ? personal.ownerId
+    : isUserActor(actorId)
+      ? actorId
+      : undefined;
   const existing = await AppProject.findOne({
     _id: project._id,
     workspaceId: project.workspaceId,
   });
   if (existing) {
-    // An ownerless row gets its owner on the first act by a person (resource-acl
-    // reads owner_id, then createdBy). A personal row's owner is the mapping's
+    // An ownerless row gets its owner on the first act by a 24-hex actor
+    // (resource-acl reads owner_id, then createdBy; see claimant above). A personal row's owner is the mapping's
     // answer. Outside a personal tree, a private row stays as it is: only a
     // workspace-visible app takes the acting person as its owner.
     if (
-      owner &&
+      claimant &&
       !existing.owner_id &&
       !existing.createdBy &&
       (personal || existing.access !== "private")
@@ -128,7 +136,7 @@ export async function ensureProjectRow(
           workspaceId: project.workspaceId,
           owner_id: { $in: [null, ""] },
         },
-        { $set: { owner_id: owner, createdBy: owner } },
+        { $set: { owner_id: claimant, createdBy: claimant } },
       );
       return (
         (await AppProject.findOne({

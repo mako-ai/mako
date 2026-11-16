@@ -154,6 +154,13 @@ export async function folderCreatorFromGit(
   // Newest first: the last add is the original creation.
   const oldest = lines[lines.length - 1];
   if (!oldest) return { missing: "no creating commit on main" };
+  // Added more than once (deleted and recreated, or restored): the oldest
+  // add may belong to a different app at the same path, so name no one.
+  if (lines.length > 1) {
+    return {
+      missing: `folder created more than once on main (${lines.length} adds)`,
+    };
+  }
   const [sha, email] = oldest.split("\t");
   if (!sha || !email) return { missing: "creating commit has no author" };
   const { stdout: added } = await runGit(

@@ -65,6 +65,7 @@ async function makeRepo(): Promise<{
   dir: string;
   commit: (email: string, files: Record<string, string>, msg?: string) => void;
   move: (email: string, from: string, to: string) => void;
+  remove: (email: string, folder: string) => void;
 }> {
   const dir = await fs.mkdtemp(path.join(tmpRoot, "repo-"));
   const git = (args: string[], env: Record<string, string> = {}) =>
@@ -94,6 +95,10 @@ async function makeRepo(): Promise<{
       mkdirSync(path.dirname(path.join(dir, to)), { recursive: true });
       git(["mv", from, to]);
       git(["commit", "-q", "-m", `move ${from}`], as(email));
+    },
+    remove(email, folder) {
+      git(["rm", "-q", "-r", folder]);
+      git(["commit", "-q", "-m", `remove ${folder}`], as(email));
     },
   };
 }
@@ -184,6 +189,20 @@ describe("rule b: folder author on real git", () => {
     repo.commit("alice@example.com", files, "import");
     expect(await folderCreatorFromGit(repo.dir, "apps/a")).toEqual({
       missing: "created in a sweep commit (4 apps)",
+    });
+  });
+
+  it("names nobody for a path deleted and recreated", async () => {
+    const repo = await makeRepo();
+    repo.commit("alice@example.com", {
+      "apps/dashboard/mako.json": manifest("A"),
+    });
+    repo.remove("alice@example.com", "apps/dashboard");
+    repo.commit("bob@example.com", {
+      "apps/dashboard/mako.json": manifest("B"),
+    });
+    expect(await folderCreatorFromGit(repo.dir, "apps/dashboard")).toEqual({
+      missing: "folder created more than once on main (2 adds)",
     });
   });
 
@@ -388,6 +407,24 @@ describe("ensureProjectRow owner stamp", () => {
     const created = await ensureProjectRow(folderOnly("on"), ALICE);
     expect(created.owner_id).toBe(ALICE);
     expect(created.createdBy).toBe(ALICE);
+  });
+
+  it("flag on: an existing ownerless row is not claimed by a real user", async () => {
+    process.env[ROW_OWNER_PERSON_IDS_FLAG] = "1";
+    const project = folderOnly("leftover");
+    // The push-deploy worker made the row before any person acted.
+    expect((await ensureProjectRow(project, "publish")).owner_id).toBeFalsy();
+    const touched = await ensureProjectRow(project, ALICE);
+    expect(touched.owner_id ?? undefined).toBeUndefined();
+    expect(touched.createdBy).toBe("");
+  });
+
+  it("an existing ownerless row is still claimed by a 24-hex id, as before", async () => {
+    process.env[ROW_OWNER_PERSON_IDS_FLAG] = "1";
+    const project = folderOnly("legacy");
+    await ensureProjectRow(project, "publish");
+    const legacy = new Types.ObjectId().toString();
+    expect((await ensureProjectRow(project, legacy)).owner_id).toBe(legacy);
   });
 
   it("flag on: an existing owner is kept against the next person", async () => {
