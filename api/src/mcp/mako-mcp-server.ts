@@ -93,7 +93,7 @@ const SERVER_VERSION = "0.1.0";
 const SERVER_INSTRUCTIONS = `Mako is one workspace's data platform: governed dbt metrics and terms, warehouse connections, and data apps (git-backed React + data bindings).
 
 Business numbers first (revenue, MRR, paying customers, churn, renewal rate, …):
-1. lookup_term({ query }) and list_metrics({ query }) → the governed term (canonical model.column, grain, variants) and the metric with its group-bys. get_workspace_context (or resource mako://context) lists every term, metric and most-read model in ~4k chars.
+1. lookup_term({ query }) and list_metrics({ query }) → the governed term (canonical model.column, grain, variants) and the metric with its group-bys. get_workspace_context (or resource mako://context) lists every term, metric and most-read model in ~6k chars.
 2. A metric exists: query_metric({ metrics, groupBy, where, startTime, endTime }) → the rows (read-only, needs query access). compile_metric(same input) → its SQL only, for a binding, a console or a dbt model. groupBy names look like "metric_time__month" or "customer__region".
 3. No metric: find_models({ query }) → describe_model({ name }) → query the canonical model with sql_execute_query.
 4. list_connections / list_tables / inspect_table only for data outside dbt.
@@ -765,7 +765,7 @@ export function buildMakoMcpServer(
         uri: WORKSPACE_CONTEXT_URI,
         name: "workspace-context",
         description:
-          "The workspace's governed and draft terms with their canonical model.column, its metrics and its most-read dbt models, in about 4k chars. Read it before a business question.",
+          "The names of the workspace's governed and draft terms and entities, its metrics and its most-read dbt models, in about 6k chars. Read it before a business question.",
         mimeType: "text/markdown",
       },
       ...getSystemSkillIndex().map(skill => ({

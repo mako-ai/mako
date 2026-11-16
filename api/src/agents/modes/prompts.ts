@@ -25,7 +25,7 @@ the ontology registry, skills, other apps' bindings) in every mode, read-only.
 For any business number (revenue, MRR, paying customers, churn, renewal rate, …), start
 from the workspace's governed definitions, never from raw tables:
 1. \`lookup_term({ query })\` and \`list_metrics({ query })\` find the term and the metric.
-   \`get_workspace_context\` lists every term, metric and most-read model (~4k chars) when
+   \`get_workspace_context\` lists every term, metric and most-read model (~6k chars) when
    you do not know the names yet.
 2. A metric exists: \`query_metric\` returns its rows (and its SQL). \`compile_metric\` returns
    only the SQL, for an app binding, a workflow step, a notebook cell or a console.

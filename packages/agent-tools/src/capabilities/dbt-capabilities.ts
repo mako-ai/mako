@@ -63,7 +63,7 @@ export const DBT_CAPABILITIES = [
     resultKind: "data",
   }),
   // The context pack: the registry's terms, the metric names and the
-  // most-read models in ~4k chars (dbt/ontology/workspace-context.ts).
+  // most-read models in ~6k chars (dbt/ontology/workspace-context.ts).
   // Metadata only, same gate as lookup_term.
   define({
     name: "get_workspace_context",
