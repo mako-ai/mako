@@ -159,13 +159,28 @@ afterAll(async () => {
 const WS = new Types.ObjectId().toString();
 const enc = (text: string) => new TextEncoder().encode(text);
 const CONNECTOR_TS = 'import { format } from "date-fns";\nexport default {};\n';
+const lockfile = (resolved: string) =>
+  JSON.stringify({
+    lockfileVersion: 3,
+    packages: {
+      "": { dependencies: { "date-fns": "4.1.0" } },
+      "node_modules/date-fns": {
+        version: "4.1.0",
+        resolved,
+        integrity: "sha512-abc",
+      },
+    },
+  });
+const LOCK = lockfile(
+  "https://registry.npmjs.org/date-fns/-/date-fns-4.1.0.tgz",
+);
 
 function folder(extra: Record<string, string | null> = {}) {
   const files: Record<string, string | null> = {
     "connector.yaml": "runtime: node\n",
     "connector.ts": CONNECTOR_TS,
     "package.json": '{"dependencies":{"date-fns":"4.1.0"}}',
-    "package-lock.json": '{"lockfileVersion":3}',
+    "package-lock.json": LOCK,
     ...extra,
   };
   return new Map(
@@ -237,6 +252,35 @@ describe("the push reconciler with bundles on", () => {
     expect(result.blocked).toBe(1);
     expect(build.calls).toBe(0);
     expect((await row())?.blockedReason).toContain("package-lock.json");
+  });
+
+  it("blocks a lockfile that installs from outside the npm registry, without building", async () => {
+    repo.files.set(
+      "acme",
+      folder({
+        "package-lock.json": lockfile(
+          "git+ssh://git@github.com/evil/date-fns.git#0123456",
+        ),
+      }),
+    );
+
+    const result = await syncConnectorsFromRepo(WS);
+    expect(result.blocked).toBe(1);
+    expect(build.calls).toBe(0);
+    expect(box.runs).toHaveLength(0);
+    expect((await row())?.blockedReason).toContain("git+ssh://");
+  });
+
+  it("blocks a folder with a .npmrc, without building", async () => {
+    repo.files.set(
+      "acme",
+      folder({ ".npmrc": "registry=https://evil.example/\n" }),
+    );
+
+    const result = await syncConnectorsFromRepo(WS);
+    expect(result.blocked).toBe(1);
+    expect(build.calls).toBe(0);
+    expect((await row())?.blockedReason).toContain(".npmrc");
   });
 
   it("blocks a failed build and reports it next to the status", async () => {
@@ -334,9 +378,57 @@ describe("the push reconciler with bundles off", () => {
     expect(indexed?.build).toBeUndefined();
   });
 
-  it("does not run the node_modules guard", async () => {
+  it("still refuses a committed node_modules/: the guard is not behind the flag", async () => {
     repo.files.set("acme", folder());
     repo.nodeModules.set("acme", "connectors/acme/node_modules/x/index.js");
+
+    const result = await syncConnectorsFromRepo(WS);
+    expect(result.blocked).toBe(1);
+    expect(box.runs).toHaveLength(0);
+    const blocked = await row();
+    expect(blocked?.status).toBe("blocked");
+    expect(blocked?.blockedReason).toContain("contains node_modules/");
+  });
+
+  it("refuses node_modules/ in a folder without package.json too", async () => {
+    repo.files.set(
+      "acme",
+      folder({ "package.json": null, "package-lock.json": null }),
+    );
+    repo.nodeModules.set("acme", "connectors/acme/node_modules/x/index.js");
+
+    const result = await syncConnectorsFromRepo(WS);
+    expect(result.blocked).toBe(1);
+    expect((await row())?.status).toBe("blocked");
+  });
+
+  it("leaves a folder that is not a connector skipped, node_modules/ or not", async () => {
+    // A helper folder (no connector.yaml) and an invalid slug were skipped
+    // before the guard existed, and still are.
+    repo.files.set(
+      "shared",
+      new Map([["index.ts", new TextEncoder().encode("export {};\n")]]),
+    );
+    repo.nodeModules.set("shared", "connectors/shared/node_modules/x/index.js");
+    repo.files.set("My_Lib", folder());
+    repo.nodeModules.set("My_Lib", "connectors/My_Lib/node_modules/x/index.js");
+
+    const result = await syncConnectorsFromRepo(WS);
+    expect(result.blocked).toBe(0);
+    expect(result.skipped?.map(skip => skip.slug).sort()).toEqual([
+      "My_Lib",
+      "shared",
+    ]);
+    expect(await ConnectorDefinition.countDocuments({ workspaceId: WS })).toBe(
+      0,
+    );
+  });
+
+  it("does not check the lockfile: package.json is an ordinary file", async () => {
+    repo.files.set(
+      "acme",
+      folder({ "package-lock.json": lockfile("https://evil.example/x.tgz") }),
+    );
 
     const result = await syncConnectorsFromRepo(WS);
     expect(result.created).toBe(1);

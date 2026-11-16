@@ -19,7 +19,7 @@ export const BUNDLE_ESBUILD_VERSION = "0.25.12";
  * (flags, banner, target). Part of the hash, so old bundles are never reused
  * for a new recipe.
  */
-export const BUNDLE_RECIPE_VERSION = 1;
+export const BUNDLE_RECIPE_VERSION = 2;
 
 const sha256 = (bytes: Uint8Array | string): string =>
   createHash("sha256").update(bytes).digest("hex");
