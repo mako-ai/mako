@@ -5,6 +5,7 @@
  * Every command writes JSON Lines to stdout and exits 0, or writes a TRACE
  * error and exits 1. Nothing else may reach stdout — see `guardStdout`.
  */
+import { once } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -94,13 +95,48 @@ function stateFor(state, stream) {
   return {};
 }
 
+/**
+ * The first line of a `read --session`, printed once the inputs are read.
+ *
+ * Mako's box supervisor deletes the input files (the credential among them)
+ * when it sees this line, and refuses a session whose runner never prints it:
+ * a runner from before sessions ignores `--session` and would read the whole
+ * stream in one go.
+ */
+export const SESSION_HELLO = "MAKO_SESSION";
+export const SESSION_PROTOCOL_VERSION = 1;
+
+/** The `mako.since` key Mako keeps in a stream state; see `nextChunkState`. */
+function withMakoSince(streamState, since) {
+  const own = streamState && typeof streamState === "object" ? streamState : {};
+  const mako = own.mako;
+  if (mako !== undefined && (mako === null || typeof mako !== "object")) {
+    throw new Error(
+      "The connector's state uses the reserved key `mako`; Mako keeps " +
+        "`state.mako.since` there. Rename the connector's own key.",
+    );
+  }
+  return { ...own, mako: { ...(mako ?? {}), since } };
+}
+
+/**
+ * The state the next chunk of a session starts from: exactly what a chunk
+ * process would get from Mako after this one. The STATE crosses JSON, and
+ * Mako's `since` anchor goes back into `mako.since` (SandboxedConnector's
+ * `readState`), so a session reads the same pages as chunk-per-process does.
+ */
+export function nextChunkState(latest, since) {
+  const plain = JSON.parse(JSON.stringify(latest ?? {}));
+  return since ? withMakoSince(plain, since) : plain;
+}
+
 export async function run(argv = process.argv.slice(2)) {
   const { command, options } = parseArgs(argv);
   // LOG lines share the chunk's stdout with the records, so they count
   // toward `--max-bytes` too.
-  let logBytes = 0;
+  const budget = { logBytes: 0 };
   const log = (level, message) => {
-    logBytes += emitLog(level, message);
+    budget.logBytes += emitLog(level, message);
   };
 
   const connector = await loadConnector(options.connector ?? "./connector.ts");
@@ -145,63 +181,113 @@ export async function run(argv = process.argv.slice(2)) {
     // bytes, at a page boundary like `--max-iterations`, so it resumes
     // exactly there. One page is never split.
     const maxBytes = Number(options["max-bytes"] ?? 0) || Infinity;
+    // `--session`: one process for the whole read. It reads chunk after
+    // chunk, each ending in its STATE exactly as a chunk process would, and
+    // Mako's box supervisor cuts the stream into batches at each STATE.
+    const session = options.session === true;
+    // Mako's incremental anchor, which it would put back into `mako.since`
+    // before every chunk. Only a session needs it: it plays Mako's part.
+    const since = typeof options.since === "string" ? options.since : undefined;
+    if (session) {
+      process.stdout.write(
+        `${JSON.stringify({ type: SESSION_HELLO, session: { version: SESSION_PROTOCOL_VERSION } })}\n`,
+      );
+    }
 
     for (const name of selectedStreams(catalog, connector)) {
-      const entity = connector.entity(name);
-      const ctx = createContext({ config, state: stateFor(state, name), log, entity: name });
-      let iterations = 0;
-      let bytes = 0;
-      logBytes = 0;
-      let latest = ctx.state;
-      let exhausted = true;
-
-      for await (const batch of entity.read(ctx, ctx.state)) {
-        for (const record of batch.records ?? []) bytes += emitRecord(name, record);
-        if (batch.state !== undefined) latest = batch.state;
-        iterations++;
-        if (batch.hasMore === false) {
-          exhausted = true;
-          break;
-        }
-        const overBytes = bytes + logBytes >= maxBytes;
-        if (overBytes && iterations < maxIterations && batch.hasMore !== true) {
-          // A connector that does not say hasMore is not failed by the byte
-          // budget, which it never asked for. It stops at this page with
-          // "more may follow" when its state moved, so the next chunk resumes
-          // there; with no state to resume from it reads on, as it always did.
-          if (latest === ctx.state) continue;
-          // A state that came back unchanged would make the next chunk read
-          // these same pages, and the one after it too, forever.
-          if (JSON.stringify(latest) === JSON.stringify(ctx.state)) {
-            throw new Error(
-              `Entity "${name}" hit the chunk byte budget with its state unchanged, so the next chunk would re-read the same pages. ` +
-                "Advance the state with every read batch, or yield hasMore.",
-            );
-          }
-          exhausted = false;
-          break;
-        }
-        if (iterations >= maxIterations || overBytes) {
-          if (batch.hasMore !== true) {
-            throw new Error(
-              `Entity "${name}" reached a chunk boundary without saying whether another page exists. ` +
-                "Yield hasMore: true or false with every read batch (ctx.paginate provides it).",
-            );
-          }
-          // Stop mid-stream but leave the position exactly where the last
-          // completed page ended: the next chunk resumes there, and no row
-          // is read twice or skipped.
-          exhausted = false;
-          break;
-        }
+      let streamState = stateFor(state, name);
+      for (;;) {
+        const { latest, exhausted } = await readChunk({
+          connector,
+          name,
+          config,
+          streamState,
+          log,
+          budget,
+          maxIterations,
+          maxBytes,
+        });
+        emitState(name, latest, { hasMore: !exhausted });
+        if (!session || exhausted) break;
+        streamState = nextChunkState(latest, since);
       }
-
-      emitState(name, latest, { hasMore: !exhausted });
     }
     return 0;
   }
 
   throw new Error(`Unknown command "${command}". Expected spec, check, discover or read.`);
+}
+
+/**
+ * One chunk of one stream: pages until the page or byte budget, as one
+ * chunk process reads it. Returns the last state and whether the stream
+ * ended. A session calls this once per batch, with a fresh context from the
+ * previous chunk's state, so its pages and requests match chunk-per-process.
+ */
+async function readChunk({
+  connector,
+  name,
+  config,
+  streamState,
+  log,
+  budget,
+  maxIterations,
+  maxBytes,
+}) {
+  const entity = connector.entity(name);
+  const ctx = createContext({ config, state: streamState, log, entity: name });
+  let iterations = 0;
+  let bytes = 0;
+  budget.logBytes = 0;
+  let latest = ctx.state;
+  let exhausted = true;
+
+  for await (const batch of entity.read(ctx, ctx.state)) {
+    for (const record of batch.records ?? []) bytes += emitRecord(name, record);
+    // A session's stdout is a pipe whose reader holds the connector back
+    // while the API is behind. Node buffers pipe writes it cannot hand over,
+    // so without this wait a fast source would fill memory instead of
+    // blocking. A chunk's stdout is a file, where this never waits.
+    if (process.stdout.writableNeedDrain) await once(process.stdout, "drain");
+    if (batch.state !== undefined) latest = batch.state;
+    iterations++;
+    if (batch.hasMore === false) {
+      exhausted = true;
+      break;
+    }
+    const overBytes = bytes + budget.logBytes >= maxBytes;
+    if (overBytes && iterations < maxIterations && batch.hasMore !== true) {
+      // A connector that does not say hasMore is not failed by the byte
+      // budget, which it never asked for. It stops at this page with
+      // "more may follow" when its state moved, so the next chunk resumes
+      // there; with no state to resume from it reads on, as it always did.
+      if (latest === ctx.state) continue;
+      // A state that came back unchanged would make the next chunk read
+      // these same pages, and the one after it too, forever.
+      if (JSON.stringify(latest) === JSON.stringify(ctx.state)) {
+        throw new Error(
+          `Entity "${name}" hit the chunk byte budget with its state unchanged, so the next chunk would re-read the same pages. ` +
+            "Advance the state with every read batch, or yield hasMore.",
+        );
+      }
+      exhausted = false;
+      break;
+    }
+    if (iterations >= maxIterations || overBytes) {
+      if (batch.hasMore !== true) {
+        throw new Error(
+          `Entity "${name}" reached a chunk boundary without saying whether another page exists. ` +
+            "Yield hasMore: true or false with every read batch (ctx.paginate provides it).",
+        );
+      }
+      // Stop mid-stream but leave the position exactly where the last
+      // completed page ended: the next chunk resumes there, and no row
+      // is read twice or skipped.
+      exhausted = false;
+      break;
+    }
+  }
+  return { latest, exhausted };
 }
 
 export async function main(argv) {

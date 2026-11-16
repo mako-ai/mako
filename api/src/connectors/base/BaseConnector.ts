@@ -53,6 +53,12 @@ export interface FetchOptions {
 export interface ResumableFetchOptions extends FetchOptions {
   maxIterations?: number; // Max API calls in this chunk (default: 10)
   state?: FetchState; // Resume from previous state
+  /**
+   * The caller reads this one chunk and drops its state (a probe). A boxed
+   * connector then reads it as one process, never as a read session that
+   * would stay open waiting for a next chunk nobody asks for.
+   */
+  singleChunk?: boolean;
 }
 
 // Webhook verification result

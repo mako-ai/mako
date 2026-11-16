@@ -32,9 +32,11 @@ import {
   connectionSpecificationToForm,
   jsonSchemaToEntitySchema,
 } from "../workspace/spec-translation";
+import { LocalSessionTransport } from "../workspace/test-support/local-session";
 import {
   CASSETTE_DIR,
   FOLDER,
+  RUNNER,
   checkParity,
   compareEntitySchema,
   compareForm,
@@ -95,6 +97,47 @@ class BoxlessStripe extends SandboxedConnector {
 
 const makeBoxed = (config: StripeTestConfig) =>
   new BoxlessStripe({
+    id: "ds_parity",
+    name: "Stripe parity",
+    type: "ws:stripe",
+    workspaceId: "ws_parity",
+    config,
+  } as any);
+
+/**
+ * The same folder through a read session (CONNECTOR_SESSION_READS): one
+ * runner process per entity read, cut into batches by the real session
+ * supervisor. Any `read` that reaches a chunk process is counted: there
+ * must be none.
+ */
+class SessionStripe extends BoxlessStripe {
+  static transports: LocalSessionTransport[] = [];
+  static chunkReads = 0;
+  private transport: LocalSessionTransport | null = null;
+
+  protected async sessionTransport() {
+    if (!this.transport) {
+      this.transport = new LocalSessionTransport({
+        runner: RUNNER,
+        connector: path.join(FOLDER, "connector.ts"),
+        cwd: FOLDER,
+      });
+      SessionStripe.transports.push(this.transport);
+    }
+    return this.transport;
+  }
+
+  protected async run(
+    command: ConnectorCommand,
+    options: Parameters<SandboxedConnector["run"]>[1],
+  ): Promise<RunResult> {
+    if (command === "read") SessionStripe.chunkReads++;
+    return super.run(command, options);
+  }
+}
+
+const makeSession = (config: StripeTestConfig) =>
+  new SessionStripe({
     id: "ds_parity",
     name: "Stripe parity",
     type: "ws:stripe",
@@ -280,6 +323,55 @@ void test("every entity reads the same rows, chunks and requests", async () => {
     if (r.rows[0] >= 3) {
       assert.ok(r.chunks[0] >= 2, `${r.entity} never resumed`);
     }
+  }
+});
+
+void test("a read session reads the same rows, chunks, requests and timestamps", async () => {
+  // A server of its own: request logs are per key, and the keys repeat.
+  const own = await startReplayServer();
+  try {
+    const results = await runParity({
+      entities: ENTITIES,
+      makeInProcess,
+      makeBoxed: makeSession,
+      server: own,
+    });
+    const report = formatReport(results);
+    assert.equal(results.length, ENTITIES.length * 4);
+    assert.deepEqual(
+      results.filter(r => !r.ok).map(r => `${r.scenario}/${r.entity}`),
+      [],
+      report,
+    );
+    assert.deepEqual(own.misses, []);
+    const checked = results.reduce((n, r) => n + r.timestampsChecked, 0);
+    const rowsRead = results.reduce((n, r) => n + r.rows[0], 0);
+    assert.equal(checked, rowsRead);
+    for (const r of results) {
+      assert.deepEqual(
+        r.timestampsFellBackToNow,
+        [0, 0],
+        `${r.scenario}/${r.entity}`,
+      );
+    }
+    // Every read went through a session, one per entity read, and every
+    // session was closed at the end of its read.
+    assert.equal(SessionStripe.chunkReads, 0);
+    const calls = SessionStripe.transports.flatMap(t => t.calls);
+    assert.equal(calls.filter(c => c === "start").length, ENTITIES.length * 4);
+    assert.equal(calls.filter(c => c === "close").length, ENTITIES.length * 4);
+    assert.ok(calls.filter(c => c.startsWith("pull")).length > 0);
+    assert.deepEqual(
+      SessionStripe.transports.map(t => t.open()),
+      SessionStripe.transports.map(() => 0),
+    );
+    // Chunk boundaries are the same as chunk processes': small-pages resumes.
+    const chunked = (entity: string) =>
+      results.find(r => r.scenario === "chunked" && r.entity === entity);
+    assert.equal(chunked("customers")?.chunks[1], 2);
+    assert.equal(chunked("payout_balance_transactions")?.rows[1], 212);
+  } finally {
+    await own.close();
   }
 });
 

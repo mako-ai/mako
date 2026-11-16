@@ -472,7 +472,7 @@ const prepared = new Map<string, string | undefined>();
  * the root-only inbox and results directories. A template without the tools
  * cannot isolate a run; this says which tool is missing.
  */
-async function prepareBox(
+export async function prepareBox(
   ctx: SandboxExecContext,
 ): Promise<string | undefined> {
   if (prepared.has(ctx.sessionKey)) return prepared.get(ctx.sessionKey);
@@ -496,6 +496,11 @@ async function prepareBox(
   }
   prepared.set(ctx.sessionKey, result.sandboxId);
   return result.sandboxId;
+}
+
+/** Forget a prepared box, so the next call prepares (and pins) it again. */
+export function forgetPreparedBox(sessionKey: string): void {
+  prepared.delete(sessionKey);
 }
 
 /**
@@ -636,6 +641,43 @@ export async function runConnectorCommand(input: {
       bytes: encoder.encode(JSON.stringify(value)),
     });
   }
+  /** The connector's argv, given where its inputs will be. */
+  const argv = (inputDir: string): string =>
+    connectorCommandLine({
+      ctx,
+      runtimeId: input.runtimeId,
+      connectorDir: input.connectorDir,
+      entry: input.entry,
+      command: input.command,
+      inputs: inputs.map(file => path.posix.join(inputDir, file.name)),
+      maxIterations: input.maxIterations,
+      maxBytes: input.maxBytes,
+    });
+  return runsIsolated()
+    ? runIsolated(input, inputs, argv)
+    : runShared(input, inputs, argv);
+}
+
+/**
+ * The shell-quoted command line of one connector command: the runtime's
+ * pinned Node, the SDK runner, the connector entry, and one `--<name>` per
+ * input file (`config.json` -> `--config`). Shared by chunk runs and read
+ * sessions (session-read.ts), so both run the same runner the same way.
+ */
+export function connectorCommandLine(input: {
+  ctx: SandboxExecContext;
+  runtimeId: string;
+  connectorDir: string;
+  entry?: string;
+  command: ConnectorCommand;
+  /** Input file paths, named `<input>.json`. */
+  inputs: string[];
+  maxIterations?: number;
+  maxBytes?: number;
+  /** Flags after the rest, e.g. `--session`. */
+  extra?: string[];
+}): string {
+  const { ctx } = input;
   const bin = path.posix.join(
     runtimeRoot(ctx, input.runtimeId),
     "node_modules",
@@ -644,37 +686,37 @@ export async function runConnectorCommand(input: {
     "bin",
     "mako-connector.js",
   );
-  /** The connector's argv, given where its inputs will be. */
-  const argv = (inputDir: string): string => {
-    const args = [
-      input.command,
-      "--connector",
-      path.posix.join(input.connectorDir, input.entry ?? "connector.ts"),
-    ];
-    for (const file of inputs) {
-      args.push(
-        `--${file.name.replace(/\.json$/, "")}`,
-        path.posix.join(inputDir, file.name),
-      );
-    }
-    if (input.maxIterations !== undefined) {
-      args.push("--max-iterations", String(input.maxIterations));
-    }
-    if (input.maxBytes !== undefined) {
-      args.push("--max-bytes", String(input.maxBytes));
-    }
-    return `${shellQuote(runtimeNode(ctx, input.runtimeId))} ${shellQuote(bin)} ${args.map(shellQuote).join(" ")}`;
-  };
-  return runsIsolated()
-    ? runIsolated(input, inputs, argv)
-    : runShared(input, inputs, argv);
+  const args = [
+    input.command,
+    "--connector",
+    path.posix.join(input.connectorDir, input.entry ?? "connector.ts"),
+  ];
+  for (const file of input.inputs) {
+    args.push(`--${path.posix.basename(file).replace(/\.json$/, "")}`, file);
+  }
+  if (input.maxIterations !== undefined) {
+    args.push("--max-iterations", String(input.maxIterations));
+  }
+  if (input.maxBytes !== undefined) {
+    args.push("--max-bytes", String(input.maxBytes));
+  }
+  args.push(...(input.extra ?? []));
+  return `${shellQuote(runtimeNode(ctx, input.runtimeId))} ${shellQuote(bin)} ${args.map(shellQuote).join(" ")}`;
+}
+
+/** The runtime's pinned Node binary, for a session's root supervisor. */
+export function connectorRuntimeNode(
+  ctx: SandboxExecContext,
+  runtimeId: string,
+): string {
+  return runtimeNode(ctx, runtimeId);
 }
 
 type RunInput = Parameters<typeof runConnectorCommand>[0];
 type RunFiles = Array<{ name: string; bytes: Uint8Array }>;
 
 /** Write files in one request where the provider can, as `options` says. */
-async function writeAll(
+export async function writeAll(
   ctx: SandboxExecContext,
   files: Array<{ path: string; bytes: Uint8Array }>,
   options?: SandboxFileOptions,
@@ -1002,7 +1044,7 @@ function boundedSize(sizeText: string): number {
 }
 
 /** JSON lines -> messages, capped, with non-protocol lines kept aside. */
-function parseProtocol(
+export function parseProtocol(
   raw: string,
   command: ConnectorCommand,
   result: SandboxExecResult,
