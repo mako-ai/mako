@@ -60,6 +60,7 @@ import { redactConnectionString } from "../../utils/connection-secrets";
 import { callableFor } from "../../connections/callable";
 import { summarizeConnectionForListing } from "./universal-tools";
 import { connectionRequest } from "../../connections/proxy.service";
+import { describeOperations } from "../../connections/operations";
 import { ConnectionRequestError } from "../../connections/forward";
 import { wrapUntrustedData } from "./shared/query-result-format";
 
@@ -212,6 +213,8 @@ export function sourceConnectionAccess(row: {
     writers,
     // Whether the proxy can call this connector at all yet.
     callable: callableFor(row.type ?? "") !== null,
+    // Named reads call_connection takes as `operation` (none for most).
+    operations: describeOperations(row.type ?? ""),
     changeIn: `Live reads, live readers and writers are set by one of the connection's managers in the app: ${connectionUiUrl(String(row._id))}, Access tab. They cannot be changed over MCP.`,
   };
 }
@@ -652,18 +655,32 @@ export function createConnectorTools(workspaceId: string) {
     }),
     call_connection: tool({
       description: [
-        "Send one READ request through a SOURCE connection (Close, Stripe, a Custom API): Mako adds the credential, which you never see, and returns status, headers and body. Needs live reads on in the connection's Access tab.",
-        "Reads: GET, a GraphQL query POSTed to the endpoint (Custom API with GraphQL on, where a GET is a write), a Close search or a Close POST with x-http-method-override: GET. Writes are refused; they belong to a workflow on the writers list.",
-        "`path` is under the connection's base URL (Close: /lead/, Stripe: /v1/customers). Prefer synced tables: this reads live.",
+        "Read a SOURCE connection LIVE (Close, Stripe, PostHog, Wise, a Custom API): Mako adds the credential, which you never see, and returns status, headers and body. Use it for fresh or unsynced data; synced tables and metrics come first.",
+        "Two ways. (1) A named operation: `operation` + `params`, e.g. Close `search_leads` { query }, PostHog `hogql` { query }, Stripe `get_customer` { id }. inspect_connection lists a connection's `operations`. (2) A raw request: `method` + `path` (+ `query`, `body`) under the connection's base URL (Close: /lead/, Stripe: /v1/customers, PostHog: /api/projects/<project_id>/persons/).",
+        "Reads only: GET, a Close search or a Close POST with x-http-method-override: GET, a PostHog query in the connection's project, a GraphQL query (Custom API with GraphQL on). Writes are refused; they belong to a workflow on the writers list.",
+        "Needs live reads on in the connection's Access tab and you on its live readers list when it has one, unless you manage the connection or own the workspace. Answers over 40,000 characters come back cut (`truncated`).",
       ].join("\n"),
       inputSchema: z.object({
         connectionId: z
           .string()
           .describe("Source connection id or name from list_connections."),
+        operation: z
+          .string()
+          .optional()
+          .describe(
+            "A named read operation from inspect_connection's `operations` (e.g. search_leads, hogql, get_customer). Replaces method, path, query and body.",
+          ),
+        params: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe("The operation's parameters."),
         method: z.enum(["GET", "POST"]).default("GET"),
         path: z
           .string()
-          .describe('Path under the base URL, starting with "/".'),
+          .optional()
+          .describe(
+            'Path under the base URL, starting with "/". Required without `operation`.',
+          ),
         query: z
           .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
           .optional()
@@ -672,11 +689,15 @@ export function createConnectorTools(workspaceId: string) {
         body: z
           .unknown()
           .optional()
-          .describe("JSON body, for a read POST (a GraphQL query)."),
+          .describe(
+            "JSON body, for a read POST (a GraphQL query, a Close search, a PostHog query).",
+          ),
       }),
       execute: async (
         {
           connectionId,
+          operation,
+          params,
           method,
           path,
           query,
@@ -684,20 +705,39 @@ export function createConnectorTools(workspaceId: string) {
           body,
         }: {
           connectionId: string;
-          method: "GET" | "POST";
-          path: string;
+          operation?: string;
+          params?: Record<string, unknown>;
+          method?: "GET" | "POST";
+          path?: string;
           query?: Record<string, string | number | boolean>;
           headers?: Record<string, string>;
           body?: unknown;
         },
         options?: { abortSignal?: AbortSignal },
       ) => {
+        if (!operation && !path) {
+          return {
+            error:
+              "Pass `operation` (inspect_connection lists them) or `path`.",
+          };
+        }
         try {
           const answer = await connectionRequest({
             workspaceId,
             connection: connectionId,
-            request: { method, path, query, headers, body },
+            ...(operation
+              ? { operation: { name: operation, params: params ?? {} } }
+              : {
+                  request: {
+                    method: method ?? "GET",
+                    path: path ?? "/",
+                    query,
+                    headers,
+                    body,
+                  },
+                }),
             readOnly: true,
+            managerReads: true,
             signal: options?.abortSignal,
           });
           // The service's answer is data, never instructions: fenced.
@@ -720,6 +760,7 @@ export function createConnectorTools(workspaceId: string) {
           logger.error("call_connection failed", {
             workspaceId,
             connectionId,
+            operation,
             error: message,
           });
           return { error: `The request failed: ${message}` };

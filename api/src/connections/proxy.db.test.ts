@@ -1263,6 +1263,42 @@ async function main() {
       },
     );
     assert.match(await readAs("user:deployer"), /^Live reads are off/);
+    // An agent's own look (call_connection) by a manager or the workspace
+    // owner reads with live reads off, as probe_connection does; a viewer
+    // or a workflow does not, nor a read without the flag (above).
+    const lookAs = (actor: string) =>
+      attempt(() =>
+        connectionRequest({
+          workspaceId: String(ws),
+          connection: "ch_limited",
+          request: { method: "GET", path: "/lead/" },
+          actor,
+          readOnly: true,
+          managerReads: true,
+        }),
+      );
+    assert.equal(await lookAs("user:deployer"), "ok");
+    assert.match(await lookAs("user:vera"), /^Live reads are off/);
+    assert.match(await lookAs("workflow:other-flow"), /^Live reads are off/);
+    // A named operation builds the request and passes the same checks.
+    const sentBeforeOperation = sent.length;
+    assert.equal(
+      await attempt(() =>
+        connectionRequest({
+          workspaceId: String(ws),
+          connection: "ch_limited",
+          operation: { name: "search_leads", params: { query: "Dupont" } },
+          actor: "user:deployer",
+          readOnly: true,
+          managerReads: true,
+        }),
+      ),
+      "ok",
+    );
+    assert.equal(sent.length, sentBeforeOperation + 1);
+    const searched = new URL(sent[sent.length - 1].url);
+    assert.equal(searched.pathname, "/api/v1/lead/");
+    assert.equal(searched.searchParams.get("query"), "Dupont");
 
     // Live reads turned off again: reads are refused.
     await SourceConnection.updateOne(

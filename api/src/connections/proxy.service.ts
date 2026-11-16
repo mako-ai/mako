@@ -7,7 +7,9 @@
  * with no `liveReads` stored, is off), and then for everyone in the
  * workspace, or, when the connection has a live readers list, only for the
  * principals on it and its writers (same identity rule as writers; a request
- * that identifies no one reads nothing there). GET, HEAD, OPTIONS, a connection's `reads` (a Close search POST)
+ * that identifies no one reads nothing there). An agent's own look (call_connection,
+ * `managerReads`) is read, as probe_connection is, also by the connection's
+ * managers and the workspace owner while live reads are off. GET, HEAD, OPTIONS, a connection's `reads` (a Close search POST)
  * and a GraphQL query are reads; everything else is a write, for the
  * principals on the connection's writers list only (the same list and the
  * same identity rule as database connections, access/connection-writes.ts):
@@ -46,6 +48,11 @@ import {
   principalsOutsideWorkspace,
   viewerPrincipals,
 } from "../access/connection-writes";
+import {
+  mayChangeSourceConnection,
+  peopleOf,
+} from "../access/source-connection-access";
+import { operationRequest } from "./operations";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers } from "../logging";
 import { getRequestContext } from "../logging/context";
@@ -76,9 +83,21 @@ export interface ConnectionRequestParams {
   workspaceId: string;
   /** The connection's id or its name. */
   connection: string;
-  request: ForwardInput;
+  /** The request to send; ignored when `operation` is given. */
+  request?: ForwardInput;
+  /**
+   * A named read operation of the connection's type (connections/operations.ts)
+   * instead of `request`: it builds the request, which is checked as any other.
+   */
+  operation?: { name: string; params?: Record<string, unknown> };
   /** An agent: reads only, whoever it acts for. */
   readOnly?: boolean;
+  /**
+   * A person's own live look, as probe_connection takes one: its managers and
+   * the workspace owner read even with live reads off (they could turn them
+   * on). Only the agent's call_connection passes it; a workflow never does.
+   */
+  managerReads?: boolean;
   /** Who is acting, when not the request's own person or workflow. */
   actor?: string;
   /**
@@ -133,6 +152,22 @@ export function mayReadLive(
   return (
     mayWrite(row.liveReaders, principal) || mayWrite(row.writers, principal)
   );
+}
+
+/**
+ * Whether `principal` is a person who manages `row` or owns the workspace:
+ * who may probe its records with live reads off (connectors/probe.service.ts).
+ */
+async function managesConnection(
+  params: Pick<ConnectionRequestParams, "workspaceId">,
+  row: Pick<ISourceConnection, "managers" | "createdBy">,
+  principal: string | undefined,
+): Promise<boolean> {
+  if (!principal?.startsWith("user:")) return false;
+  const userId = principal.slice("user:".length);
+  const people = peopleOf(params.workspaceId);
+  const role = await people.roleOf(userId);
+  return mayChangeSourceConnection({ ...people, role, userId }, row);
 }
 
 /**
@@ -294,8 +329,19 @@ export async function connectionRequest(
     );
   }
   const config = loaded.connection ?? {};
+  const input = params.operation
+    ? operationRequest(
+        row.type,
+        config,
+        params.operation.name,
+        params.operation.params,
+      )
+    : params.request;
+  if (!input) {
+    throw new ConnectionRequestError("Pass a request or an operation.");
+  }
   // Refuses a method or a path outside the base URL before anything else.
-  const request = resolveRequest(callable, config, params.request);
+  const request = resolveRequest(callable, config, input);
   const { path } = request;
   const read = isReadRequest(callable, request, config);
   const principal = actingPrincipal(params.actor);
@@ -325,7 +371,13 @@ export async function connectionRequest(
     );
   }
 
-  if (read) {
+  if (
+    read &&
+    params.managerReads &&
+    (await managesConnection(params, row, principal))
+  ) {
+    logger.info("Connection read by a manager", where);
+  } else if (read) {
     // Off unless a manager turned it on: a missing field on a connection
     // made before live reads existed means off.
     if (row.liveReads !== true) {

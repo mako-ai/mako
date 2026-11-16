@@ -466,6 +466,106 @@ const wise: CallableConnection = {
 };
 
 // ---------------------------------------------------------------------------
+// PostHog: reads in the connection's own project, a query included
+// ---------------------------------------------------------------------------
+
+/** The PostHog default the built-in connector uses (connectors/posthog). */
+const POSTHOG_BASE_URL = "https://app.posthog.com";
+
+/**
+ * Query kinds the query API runs that only read. HogQL itself has no write
+ * statement; a kind not listed (a new one) is a write until it is added.
+ */
+const POSTHOG_READ_QUERY_KINDS = new Set([
+  "HogQLQuery",
+  "HogQLMetadata",
+  "EventsQuery",
+  "ActorsQuery",
+  "TrendsQuery",
+  "FunnelsQuery",
+  "RetentionQuery",
+  "PathsQuery",
+  "StickinessQuery",
+  "LifecycleQuery",
+]);
+
+/** The only fields a query request may carry. */
+const POSTHOG_QUERY_BODY_KEYS = new Set([
+  "query",
+  "refresh",
+  "client_query_id",
+  "name",
+]);
+
+/**
+ * Whether `path` is in the project the connection is configured for
+ * (`/api/projects/<id>/…` or `/api/environments/<id>/…`). A personal API key
+ * may reach other projects and organizations; the connection reads one.
+ */
+function inPosthogProject(path: string, config: Config): boolean {
+  const project = text(config.project_id);
+  if (!project) return false;
+  const match = /^\/api\/(?:projects|environments)\/([^/]+)(?:\/|$)/.exec(path);
+  return match?.[1] === project;
+}
+
+/**
+ * A query API body that only reads: the standard fields only, and a `query`
+ * of a kind that reads (POSTHOG_READ_QUERY_KINDS). A string body counts only
+ * as compact JSON, as for GraphQL (isGraphqlReadBody).
+ */
+export function isPosthogQueryBody(body: unknown): boolean {
+  const parsed = typeof body === "string" ? safeJson(body) : body;
+  if (typeof body === "string" && JSON.stringify(parsed) !== body.trim()) {
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return false;
+  }
+  if (!Object.keys(parsed).every(key => POSTHOG_QUERY_BODY_KEYS.has(key))) {
+    return false;
+  }
+  const query = (parsed as { query?: unknown }).query;
+  if (!query || typeof query !== "object" || Array.isArray(query)) {
+    return false;
+  }
+  const kind = (query as { kind?: unknown }).kind;
+  return typeof kind === "string" && POSTHOG_READ_QUERY_KINDS.has(kind);
+}
+
+/**
+ * PostHog: the API key the sync uses, sent as the connector sends it. Only
+ * requests in the connection's project read: a GET there, or a POST of a
+ * query that reads to its query API. Everything else, a GET elsewhere
+ * included, is a write, so an agent never reaches it.
+ */
+const posthog: CallableConnection = {
+  type: "posthog",
+  baseUrl: config => trimSlash(text(config.api_base_url) || POSTHOG_BASE_URL),
+  baseUrlFields: ["api_base_url"],
+  credential: config =>
+    text(config.auth_type) === "project_api_key"
+      ? {
+          type: "api_key_header",
+          token: text(config.api_key),
+          header: "POSTHOG-API-TOKEN",
+        }
+      : { type: "bearer", token: text(config.api_key) },
+  reads(request, config) {
+    if (!inPosthogProject(request.path, config)) return false;
+    if (SAFE_METHODS.has(request.method)) return true;
+    return (
+      request.method === "POST" &&
+      /^\/api\/(?:projects|environments)\/[^/]+\/query\/?$/.test(
+        request.path,
+      ) &&
+      isPosthogQueryBody(request.body)
+    );
+  },
+  onlyReads: () => true,
+};
+
+// ---------------------------------------------------------------------------
 // Custom API: an address and a credential type the person picks
 // ---------------------------------------------------------------------------
 
@@ -701,7 +801,7 @@ export const customApi: CallableConnection = {
 };
 
 const CALLABLE = new Map<string, CallableConnection>(
-  [close, stripe, wise, customApi].map(c => [c.type, c]),
+  [close, stripe, wise, posthog, customApi].map(c => [c.type, c]),
 );
 
 /** How Mako calls a connection of `type`, or null when it cannot yet. */
