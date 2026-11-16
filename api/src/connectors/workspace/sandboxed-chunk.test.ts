@@ -5,7 +5,7 @@
  * The box itself is replaced (`run` is the one seam), so these check the
  * adapter alone: the engine's `since` reaches the stream state, the batch
  * size and rate limit reach the config, a chunk over the protocol cap is
- * retried with half the budget instead of failing the same way forever, and
+ * retried once with a single page instead of failing the same way forever, and
  * a record's own time is its source timestamp.
  *
  * Run: node --import tsx src/connectors/workspace/sandboxed-chunk.test.ts
@@ -132,6 +132,38 @@ void test("since reaches the stream state on the first chunk and every later one
   assert.equal(b[0].stream.stream_state.since, "2026-01-01T00:00:00.000Z");
 });
 
+void test("since given on chunk 1 only still reaches chunk 2, as on a scheduled incremental sync", async () => {
+  const box = make();
+  // The connector keeps only its cursor; `since` is not in its own state.
+  box.answers.push(
+    ok([state({ cursor: "c1" }, true)]),
+    ok([state({ cursor: "c2" }, true)]),
+    ok([state({ cursor: "c3" }, false)]),
+  );
+  const since = new Date("2026-01-01T00:00:00Z");
+  const first = await box.fetchEntityChunk({
+    entity: "rows",
+    since,
+    onBatch: noop,
+  });
+  // The orchestrator adds its own keys to the metadata between chunks.
+  first.metadata = { ...first.metadata, rowsWrittenTotal: 1 };
+  const second = await box.fetchEntityChunk({
+    entity: "rows",
+    state: first,
+    onBatch: noop,
+  });
+  await box.fetchEntityChunk({ entity: "rows", state: second, onBatch: noop });
+  for (const call of box.calls) {
+    const [entry] = call.options.state as any[];
+    assert.equal(entry.stream.stream_state.since, "2026-01-01T00:00:00.000Z");
+  }
+  assert.equal(
+    (box.calls[2].options.state as any[])[0].stream.stream_state.cursor,
+    "c2",
+  );
+});
+
 void test("no since leaves the state exactly as the connector wrote it", () => {
   const previous = { type: "STREAM", stream: { stream_state: { cursor: 1 } } };
   assert.deepEqual(readState("rows", previous, undefined), [previous]);
@@ -179,12 +211,11 @@ void test("a chunk asks for at most half the protocol cap", async () => {
   assert.equal(box.calls[0].options.maxIterations, 10);
 });
 
-void test("a chunk over the cap is retried with half the pages and bytes, not the same budget", async () => {
+void test("a chunk over the cap is retried once with one page, not the same budget", async () => {
   const box = make();
   const logs: string[] = [];
   const rows: unknown[] = [];
   box.answers.push(
-    tooLarge(),
     tooLarge(),
     ok([
       { type: "RECORD", record: { stream: "rows", data: { id: 1 } } },
@@ -203,8 +234,7 @@ void test("a chunk over the cap is retried with half the pages and bytes, not th
     box.calls.map(c => [c.options.maxIterations, c.options.maxBytes]),
     [
       [10, CHUNK_BYTE_BUDGET],
-      [5, Math.floor(CHUNK_BYTE_BUDGET / 2)],
-      [2, Math.floor(CHUNK_BYTE_BUDGET / 4)],
+      [1, CHUNK_BYTE_BUDGET],
     ],
   );
   // Every attempt resumes from the same state: nothing was skipped.
@@ -214,16 +244,19 @@ void test("a chunk over the cap is retried with half the pages and bytes, not th
   );
   assert.deepEqual(rows, [{ id: 1 }]);
   assert.equal(result.hasMore, true);
-  assert.equal(result.iterationsInChunk, 2);
-  assert.equal(logs.length, 2);
+  assert.equal(result.iterationsInChunk, 1);
+  assert.equal(logs.length, 1);
 });
 
 void test("one page over the cap fails with a message that says so", async () => {
   const box = make();
   box.answers.push(tooLarge(), tooLarge());
   await assert.rejects(
-    box.fetchEntityChunk({ entity: "rows", maxIterations: 2, onBatch: noop }),
-    /one page of it is over the .*chunk cap/,
+    box.fetchEntityChunk({ entity: "rows", maxIterations: 10, onBatch: noop }),
+    (error: Error) =>
+      // Inngest must not replay a read that can only fail the same way.
+      error.name === "NonRetriableError" &&
+      /one page of it is over the .*chunk cap/.test(error.message),
   );
   assert.equal(box.calls.length, 2);
 });

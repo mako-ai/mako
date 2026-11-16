@@ -25,6 +25,7 @@ import {
   type IncrementalCapabilities,
   type ResumableFetchOptions,
 } from "../base/BaseConnector";
+import { NonRetriableError } from "inngest";
 import { loggers } from "../../logging";
 import {
   ConnectorOutputTooLargeError,
@@ -150,11 +151,35 @@ function mapLogLevel(
  * The `--state` of one chunk: the last STATE the connector emitted, with the
  * engine's `since` in its stream state.
  *
- * The engine passes `since` as `options.since` on an incremental sync, on
- * every chunk; the in-process connectors read it there. A boxed connector can
- * only read what is in its files, so it goes into the stream state as ISO
- * 8601 (`state.since`). Without this every boxed read was a full read.
+ * The engine passes `since` as `options.since`, the in-process connectors read
+ * it there, and a boxed connector can only read its files, so it goes into
+ * the stream state as ISO 8601 (`state.since`). Without this every boxed read
+ * was a full read.
+ *
+ * A backfill passes `options.since` on every chunk, but a scheduled
+ * incremental sync passes it on the first chunk only. So the anchor is also
+ * kept in the chunk's own metadata (`MAKO_SINCE_KEY`) and re-injected from
+ * there: a connector that does not copy `since` into its state must still see
+ * it on chunk 2, or it walks the whole history from its cursor.
  */
+export const MAKO_SINCE_KEY = "makoSince";
+
+export function chunkSince(
+  since: Date | undefined,
+  previous: unknown,
+): string | undefined {
+  if (since instanceof Date && !Number.isNaN(since.getTime())) {
+    return since.toISOString();
+  }
+  const kept =
+    previous && typeof previous === "object"
+      ? (previous as Record<string, unknown>)[MAKO_SINCE_KEY]
+      : undefined;
+  return typeof kept === "string" && !Number.isNaN(new Date(kept).getTime())
+    ? kept
+    : undefined;
+}
+
 export function readState(
   entity: string,
   previous: unknown,
@@ -164,10 +189,7 @@ export function readState(
     previous && typeof previous === "object"
       ? (previous as Record<string, any>)
       : undefined;
-  const anchor =
-    since instanceof Date && !Number.isNaN(since.getTime())
-      ? since.toISOString()
-      : undefined;
+  const anchor = chunkSince(since, previous);
   if (!anchor) return base ? [base] : undefined;
   const stream = (base?.stream ?? {}) as Record<string, any>;
   return [
@@ -180,6 +202,16 @@ export function readState(
       },
     },
   ];
+}
+
+/** Chunk metadata that remembers the run's `since` for the next chunk. */
+function withSince(metadata: unknown, since: string | undefined): unknown {
+  if (!since) return metadata;
+  const base =
+    metadata && typeof metadata === "object"
+      ? (metadata as Record<string, unknown>)
+      : {};
+  return { ...base, [MAKO_SINCE_KEY]: since };
 }
 
 export class SandboxedConnector extends BaseConnector {
@@ -516,7 +548,7 @@ export class SandboxedConnector extends BaseConnector {
 
     const previous = options.state;
     let maxIterations = options.maxIterations ?? 10;
-    let maxBytes = CHUNK_BYTE_BUDGET;
+    const maxBytes = CHUNK_BYTE_BUDGET;
     const read = () =>
       this.run("read", {
         config: this.readConfig(options),
@@ -531,9 +563,11 @@ export class SandboxedConnector extends BaseConnector {
       });
 
     // A chunk over the protocol cap fails the same way every time it is
-    // retried as it was: same state, same pages, same bytes. Ask for half as
-    // much instead, down to one page. Only a single page over the cap is left
-    // to fail, and it says so.
+    // retried as it was: same state, same pages, same bytes. The byte budget
+    // already ends a chunk after the page that crosses half the cap, so an
+    // over-cap chunk means its last page was large. Retry once with a single
+    // page. If one page alone is over the cap, no budget can help: fail at
+    // once, and tell Inngest not to replay the same read.
     let result: RunResult;
     for (;;) {
       try {
@@ -542,18 +576,17 @@ export class SandboxedConnector extends BaseConnector {
       } catch (error) {
         if (!(error instanceof ConnectorOutputTooLargeError)) throw error;
         if (maxIterations <= 1) {
-          throw new Error(
+          throw new NonRetriableError(
             `read failed for "${options.entity}": one page of it is over the ` +
               `${MAX_CONNECTOR_PROTOCOL_BYTES}-byte chunk cap. Lower the ` +
               `connection's batch size. (${error.message})`,
             { cause: error },
           );
         }
-        maxIterations = Math.max(1, Math.floor(maxIterations / 2));
-        maxBytes = Math.max(1, Math.floor(maxBytes / 2));
+        maxIterations = 1;
         options.onLog?.(
           "warn",
-          `A chunk of "${options.entity}" was over the protocol cap; retrying it with ${maxIterations} page(s) and a ${maxBytes}-byte budget.`,
+          `A chunk of "${options.entity}" was over the protocol cap; retrying it with one page.`,
         );
       }
     }
@@ -600,7 +633,10 @@ export class SandboxedConnector extends BaseConnector {
       totalProcessed: (previous?.totalProcessed ?? 0) + records.length,
       hasMore,
       iterationsInChunk: maxIterations,
-      metadata: stateMessage?.state ?? previous?.metadata,
+      metadata: withSince(
+        stateMessage?.state ?? previous?.metadata,
+        chunkSince(options.since, previous?.metadata),
+      ),
     };
   }
 

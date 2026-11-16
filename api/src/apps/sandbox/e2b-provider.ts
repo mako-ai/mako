@@ -276,6 +276,8 @@ async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
 interface HeldSandbox {
   sandbox: Sandbox;
   deadline: number | null;
+  /** When this process last called `setTimeout` on it. */
+  lifetimeSetAt: number;
   connectedAt: number;
 }
 
@@ -314,14 +316,22 @@ function dropHandle(sessionKey: string, sandbox?: Sandbox): void {
  * done, and keepAlive holds are already folded into `lifetime`.
  */
 async function ensureLifetime(
+  sessionKey: string,
   entry: HeldSandbox,
   lifetime: number,
   floor = 0,
 ): Promise<void> {
   const now = Date.now();
-  if (entry.deadline !== null) {
+  // The cached deadline is only what THIS process set. Another API instance
+  // can shorten the real timeout behind it (its routine exec knows nothing
+  // of our keepAlive hold). So it is trusted for one slack window after it
+  // was written, and never while this process holds a keepAlive: then every
+  // call re-applies the hold, as every exec did before.
+  const holding = (keepAliveUntil.get(sessionKey) ?? 0) > now;
+  if (entry.deadline !== null && !holding) {
     const remaining = entry.deadline - now;
     if (
+      now - entry.lifetimeSetAt < LIFETIME_SLACK_MS &&
       remaining >= floor &&
       Math.abs(remaining - lifetime) <= LIFETIME_SLACK_MS
     ) {
@@ -330,6 +340,7 @@ async function ensureLifetime(
   }
   await entry.sandbox.setTimeout(lifetime);
   entry.deadline = now + lifetime;
+  entry.lifetimeSetAt = now;
 }
 
 /**
@@ -352,7 +363,7 @@ async function heldSandbox(
     for (const [key, other] of held) {
       if (!heldUsable(other, now)) held.delete(key);
     }
-    entry = { sandbox, deadline: null, connectedAt: now };
+    entry = { sandbox, deadline: null, lifetimeSetAt: 0, connectedAt: now };
     held.set(sessionKey, entry);
   }
   return { entry, reused: false };
@@ -375,14 +386,16 @@ async function withSandbox<T>(
 ): Promise<T> {
   const { entry, reused } = await heldSandbox(sessionKey);
   try {
-    if (lifetime !== undefined) await ensureLifetime(entry, lifetime, floor);
+    if (lifetime !== undefined) {
+      await ensureLifetime(sessionKey, entry, lifetime, floor);
+    }
     return await fn(entry.sandbox);
   } catch (error) {
     if (!reused || !isSandboxGone(error)) throw error;
     dropHandle(sessionKey, entry.sandbox);
     const fresh = await heldSandbox(sessionKey);
     if (lifetime !== undefined) {
-      await ensureLifetime(fresh.entry, lifetime, floor);
+      await ensureLifetime(sessionKey, fresh.entry, lifetime, floor);
     }
     return fn(fresh.entry.sandbox);
   }
@@ -677,7 +690,10 @@ async function keepAliveE2b(
     const now = Date.now();
     await sandbox.setTimeout(lifetime);
     const entry = held.get(ctx.sessionKey);
-    if (entry?.sandbox === sandbox) entry.deadline = now + lifetime;
+    if (entry?.sandbox === sandbox) {
+      entry.deadline = now + lifetime;
+      entry.lifetimeSetAt = now;
+    }
   });
 }
 

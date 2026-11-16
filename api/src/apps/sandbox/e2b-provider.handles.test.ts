@@ -171,12 +171,25 @@ describe("held E2B handles", () => {
     const box = oneBox();
     await provider.keepAlive(ctx, 30 * MINUTE);
     expect(box.setTimeout).toHaveBeenLastCalledWith(30 * MINUTE);
+    vi.setSystemTime(Date.now() + 5 * MINUTE);
     await provider.exec(ctx, "true", { timeoutMs: 30_000 });
-    // Within a minute of the hold: no call at all, and certainly no 10 min.
-    expect(box.setTimeout).toHaveBeenCalledTimes(1);
+    // While the hold lasts, every exec re-applies it, as before: another API
+    // instance may have shortened the box's timeout behind our cache.
+    expect(box.setTimeout).toHaveBeenCalledTimes(2);
+    expect(box.setTimeout).toHaveBeenLastCalledWith(25 * MINUTE);
     vi.setSystemTime(Date.now() + 25 * MINUTE);
     await provider.exec(ctx, "true", { timeoutMs: 30_000 });
     expect(box.setTimeout).toHaveBeenLastCalledWith(10 * MINUTE);
+  });
+
+  it("trusts its own cached deadline for one minute at most", async () => {
+    const box = oneBox();
+    await provider.exec(ctx, "true", { timeoutMs: 30_000 });
+    // Another instance may have changed the timeout since: after a minute
+    // the lifetime is set again even though the cache still looks right.
+    vi.setSystemTime(Date.now() + 61_000);
+    await provider.exec(ctx, "true", { timeoutMs: 30_000 });
+    expect(box.setTimeout).toHaveBeenCalledTimes(2);
   });
 
   it("reconnects once the box may have paused, as the old per-call connect did", async () => {
