@@ -169,8 +169,7 @@ export function treeScript(root: string, rev: string): string {
  */
 export function unpushedBlobsScript(root: string, rev: string): string {
   return (
-    `cd ${sh(root)} && { ${DROP_RESCUE_TRACKING_REFS}; } && ` +
-    `for c in $(git rev-list ${sh(rev)} --not --remotes); do ` +
+    `cd ${sh(root)} && for c in $(git rev-list ${sh(rev)} ${NOT_ON_SERVER}); do ` +
     `git diff-tree -r -z --root --no-commit-id -m --diff-filter=d "$c"; done | ` +
     `while IFS= read -r -d '' meta && IFS= read -r -d '' p; do set -- $meta; ` +
     `sz=$(git cat-file -s "$4" 2>/dev/null || echo 0); printf '%s\\t%s\\0' "$sz" "$p"; done`
@@ -204,20 +203,33 @@ export interface RescueInspection {
 
 /** One read-only script answering everything the rescue needs to decide. */
 /**
- * Delete local remote-tracking refs for rescue branches. A rescue push
- * leaves `refs/remotes/origin/mako-presave/...` behind, and `--not --remotes`
- * would then treat those commits as already on the server even after the
- * server branch is gone. Only real server branches may hide a commit.
+ * The ONLY refs that may count a commit as "already on the server": a fresh
+ * copy of the origin's branches, fetched right before the scan. Local
+ * remote-tracking refs are never trusted: a stale rescue record, a fetch
+ * from a foreign origin, or a second remote (`github`) can each name a
+ * commit this server has never received.
  */
-export const DROP_RESCUE_TRACKING_REFS =
-  `git for-each-ref --format='%(refname)' refs/remotes/ | while IFS= read -r r; do ` +
-  `case "$r" in refs/remotes/*/mako-presave/*) git update-ref -d "$r";; esac; done`;
+export const SERVER_REFS = "refs/mako-server";
+export const NOT_ON_SERVER = `--not --glob=${SERVER_REFS}/*`;
+
+/** Fetch the origin's branches into SERVER_REFS, pruning ones it dropped. */
+export function serverRefsScript(root: string): string {
+  return `cd ${sh(root)} && GIT_TERMINAL_PROMPT=0 git fetch -q --prune --no-tags origin '+refs/heads/*:${SERVER_REFS}/*'`;
+}
+
+/** Whether there is a repository, and where its origin points. */
+export function originScript(root: string): string {
+  return [
+    `cd ${sh(root)} 2>/dev/null && test -d .git || { echo repo=no; exit 0; }`,
+    "echo repo=yes",
+    'echo "origin=$(git remote get-url origin 2>/dev/null)"',
+  ].join("\n");
+}
 
 export function inspectScript(root: string): string {
   return [
     `cd ${sh(root)} 2>/dev/null && test -d .git || { echo repo=no; exit 0; }`,
     "echo repo=yes",
-    DROP_RESCUE_TRACKING_REFS,
     'echo "origin=$(git remote get-url origin 2>/dev/null)"',
     'echo "head=$(git rev-parse --verify -q HEAD)"',
     'echo "branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null)"',
@@ -226,9 +238,9 @@ export function inspectScript(root: string): string {
     '{ [ -d "$gd/rebase-merge" ] || [ -d "$gd/rebase-apply" ]; } && echo inprogress=REBASE',
     'echo "unmerged=$(git ls-files -u 2>/dev/null | wc -l | tr -d " ")"',
     'echo "stashes=$(git stash list 2>/dev/null | wc -l | tr -d " ")"',
-    'echo "headunpushed=$(git rev-list --count HEAD --not --remotes 2>/dev/null || echo 0)"',
+    `echo "headunpushed=$(git rev-list --count HEAD ${NOT_ON_SERVER} 2>/dev/null || echo 0)"`,
     "cur=$(git symbolic-ref --quiet --short HEAD 2>/dev/null)",
-    'git for-each-ref --format="%(refname:short)" refs/heads | while IFS= read -r b; do [ "$b" = "$cur" ] && continue; n=$(git rev-list --count "refs/heads/$b" --not --remotes 2>/dev/null || echo 0); [ "$n" -gt 0 ] && echo "otherunpushed=$b"; done',
+    `git for-each-ref --format="%(refname:short)" refs/heads | while IFS= read -r b; do [ "$b" = "$cur" ] && continue; n=$(git rev-list --count "refs/heads/$b" ${NOT_ON_SERVER} 2>/dev/null || echo 0); [ "$n" -gt 0 ] && echo "otherunpushed=$b"; done`,
     "true",
   ].join("\n");
 }
@@ -349,7 +361,7 @@ export async function rescueCommit(input: {
    * apps-git endpoint (config.ts appsGitOriginUrl). Anything else is manual.
    */
   expectedOrigin?: string;
-  /** Refresh the box's git credential; runs only when something must be pushed. */
+  /** Refresh the box's git credential; runs before the server's refs are read. */
   prepareRemote?: () => Promise<void>;
 }): Promise<RescueResult> {
   const { run, root } = input;
@@ -362,22 +374,35 @@ export async function rescueCommit(input: {
     ignored,
   });
 
+  const where = parseInspection(
+    (await run(originScript(root), { timeoutMs: 30_000 })).stdout,
+  );
+  if (!where.hasRepo) return { status: "clean", excluded, ignored };
+  // A box pointing anywhere but this workspace's apps-git endpoint is not
+  // one we can save to: push nothing, and never delete it.
+  if (
+    input.expectedOrigin !== undefined &&
+    where.origin !== input.expectedOrigin
+  ) {
+    return manual(
+      `origin is not this workspace's apps-git endpoint (${where.origin || "none"})`,
+    );
+  }
+  // Credential first, then a fresh read of what the server really holds.
+  // Every "unpushed" answer below is measured against that read only.
+  await input.prepareRemote?.();
+  const fetched = await run(serverRefsScript(root), { timeoutMs: 120_000 });
+  if (fetched.exitCode !== 0) {
+    return manual(
+      `could not read the server's branches: ${fetched.stderr.slice(-200)}`,
+    );
+  }
+
   const inspected = await run(inspectScript(root), { timeoutMs: 60_000 });
   if (inspected.exitCode !== 0) {
     return manual(`inspect failed: ${inspected.stderr.slice(-200)}`);
   }
   const seen = parseInspection(inspected.stdout);
-  if (!seen.hasRepo) return { status: "clean", excluded, ignored };
-  // A box pointing anywhere but this workspace's apps-git endpoint is not
-  // one we can save to: push nothing, and never delete it.
-  if (
-    input.expectedOrigin !== undefined &&
-    seen.origin !== input.expectedOrigin
-  ) {
-    return manual(
-      `origin is not this workspace's apps-git endpoint (${seen.origin || "none"})`,
-    );
-  }
 
   const ign = await run(ignoredScript(root), { timeoutMs: 60_000 });
   for (const path of ign.stdout.split("\0").filter(Boolean)) {
@@ -463,7 +488,6 @@ export async function rescueCommit(input: {
     return manual(`unpushed history holds a blocked file: ${scan.path}`);
   }
 
-  await input.prepareRemote?.();
   const pushed = await pushRescueBranch(
     run,
     root,
@@ -482,9 +506,10 @@ export async function rescueCommit(input: {
 }
 
 /**
- * Is `rev` safe to push? Scans every blob added by a commit no real server
- * branch has (stale rescue tracking refs dropped first). Named export for
- * every rescue path: a branch, a detached HEAD, a stash commit.
+ * Is `rev` safe to push? Scans every blob added by a commit the server does
+ * not hold. Run `serverRefsScript` first: only SERVER_REFS count as "on the
+ * server". Named export for every rescue path: a branch, a detached HEAD, a
+ * stash commit.
  */
 export async function scanUnpushed(
   run: BoxRun,

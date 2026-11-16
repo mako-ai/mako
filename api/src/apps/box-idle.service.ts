@@ -93,7 +93,8 @@ function positive(raw: string | undefined, fallback: number): number {
  *   APPS_BOX_REAP_BATCH             default 10
  *   APPS_BOX_IDLE_SWEEP=off         disables the pause sweep
  *   APPS_BOX_MAX_HOLD_MINUTES       default 120 (cap on probe-found work)
- *   APPS_BOX_REAPER=dryrun          plans and settles, logs "would kill"
+ *   APPS_BOX_REAPER=dryrun          plans every due session and logs it;
+ *                                   resumes, settles and pushes nothing
  *   APPS_BOX_REAPER=on              enables deletion (off by default)
  */
 export function boxIdleConfig(
@@ -361,6 +362,7 @@ export interface ReapDeps {
 export async function planReap(
   deps: Pick<ReapDeps, "listBoxes" | "getActivity" | "trackingSince" | "now">,
   config: BoxIdleConfig,
+  options: { all?: boolean } = {},
 ): Promise<ReapPlan> {
   const now = deps.now();
   const since = await deps.trackingSince();
@@ -390,14 +392,13 @@ export async function planReap(
   }
   // Oldest first, so a backlog drains in age order across runs.
   plan.due.sort((a, b) => a.lastUse - b.lastUse);
-  plan.due = plan.due.slice(0, config.reapBatch);
+  if (!options.all) plan.due = plan.due.slice(0, config.reapBatch);
   return plan;
 }
 
 export interface ReapOutcome {
   sessionKey: string;
-  /** would-delete: dry run, settled and re-paused, nothing killed. */
-  action: "deleted" | "would-delete" | "kept";
+  action: "deleted" | "kept";
   reason?: string;
   rescues: Array<{ sandboxId: string; result: RescueResult }>;
   killFailures: string[];
@@ -407,7 +408,6 @@ export interface ReapOutcome {
 export async function reapSession(
   deps: ReapDeps,
   candidate: ReapCandidate,
-  options: { dryRun?: boolean } = {},
 ): Promise<ReapOutcome> {
   const { sessionKey } = candidate;
   const outcome: ReapOutcome = {
@@ -449,14 +449,6 @@ export async function reapSession(
     outcome.reason = "used during the settle";
     return outcome;
   }
-  if (options.dryRun) {
-    // Settled (rescues pushed) but nothing is killed: back to sleep.
-    for (const id of candidate.sandboxIds) {
-      await deps.pause(id).catch(() => false);
-    }
-    outcome.action = "would-delete";
-    return outcome;
-  }
   for (const sandboxId of candidate.sandboxIds) {
     try {
       await deps.kill(sandboxId);
@@ -473,19 +465,24 @@ export async function reapSession(
   return outcome;
 }
 
-/** Plan and reap in one go (the Inngest function splits these into steps). */
+/**
+ * Plan and reap in one go (the Inngest function splits these into steps).
+ *
+ * Dry run plans EVERY due session and touches none: no resume, no settle,
+ * no push. A settling dry run would wake the same oldest sessions every
+ * hour and push a new rescue branch each time.
+ */
 export async function reapPausedBoxes(
   deps: ReapDeps,
   config: BoxIdleConfig = boxIdleConfig(),
 ): Promise<{ plan: ReapPlan; outcomes: ReapOutcome[] }> {
+  if (config.reaperMode === "dryrun") {
+    return { plan: await planReap(deps, config, { all: true }), outcomes: [] };
+  }
   const plan = await planReap(deps, config);
   const outcomes: ReapOutcome[] = [];
   for (const candidate of plan.due) {
-    outcomes.push(
-      await reapSession(deps, candidate, {
-        dryRun: config.reaperMode === "dryrun",
-      }),
-    );
+    outcomes.push(await reapSession(deps, candidate));
   }
   return { plan, outcomes };
 }

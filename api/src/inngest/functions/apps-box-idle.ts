@@ -4,7 +4,8 @@
  * - Every 2 minutes: pause running app boxes idle past APPS_BOX_IDLE_MINUTES
  *   (default 10) and log running/paused counts and box-seconds per
  *   workspace.
- * - Hourly, with APPS_BOX_REAPER=dryrun (settle, log "would kill") or on
+ * - Hourly, with APPS_BOX_REAPER=dryrun (plan and log every due session,
+ *   touch none) or on
  *   (off by default): delete sessions
  *   paused and unused past APPS_BOX_PAUSED_RETENTION_DAYS (default 14),
  *   rescuing uncommitted work to a mako-presave/ branch first, at most
@@ -70,11 +71,30 @@ export const appsBoxPausedReaperFunction = inngest.createFunction(
   async ({ step }) => {
     const config = boxIdleConfig();
     // Deletion is opt-in and separate from pausing. Roll out:
-    // off -> dryrun (settle, log "would kill") -> read the logs -> on.
+    // off -> dryrun (plan and log, touch nothing) -> read the logs -> on.
     if (!config.enabled || config.reaperMode === "off") {
       return { skipped: "APPS_BOX_REAPER is off" };
     }
     if (!boxIdleSweepAvailable()) return { skipped: "no e2b provider" };
+    if (config.reaperMode === "dryrun") {
+      // Plan only: every due session, none resumed, settled or pushed. A
+      // settling dry run would wake the same oldest sessions every hour and
+      // push a new rescue branch each time.
+      return step.run("dry-run-plan", async () => {
+        const planned = await planReap(realReapDeps(), config, { all: true });
+        for (const due of planned.due) {
+          log.info("Apps paused box would be settled and deleted (dry run)", {
+            sessionKey: due.sessionKey,
+            boxes: due.sandboxIds,
+            idleDays: Math.floor((Date.now() - due.lastUse) / 86_400_000),
+          });
+        }
+        for (const skipped of planned.skipped) {
+          log.info("Apps paused box not due", { ...skipped });
+        }
+        return { mode: "dryrun", due: planned.due.length };
+      });
+    }
     const plan = await step.run("plan", async () => {
       const planned = await planReap(realReapDeps(), config);
       for (const skipped of planned.skipped) {
@@ -83,7 +103,6 @@ export const appsBoxPausedReaperFunction = inngest.createFunction(
       return planned.due;
     });
     let deleted = 0;
-    let wouldDelete = 0;
     let kept = 0;
     // One step per session: a slow or failing box costs only its own step,
     // and a retry of the function never repeats a finished deletion.
@@ -91,9 +110,7 @@ export const appsBoxPausedReaperFunction = inngest.createFunction(
       const outcome = await step.run(
         `reap-${candidate.sessionKey}`,
         async () => {
-          const result = await reapSession(realReapDeps(), candidate, {
-            dryRun: config.reaperMode === "dryrun",
-          });
+          const result = await reapSession(realReapDeps(), candidate);
           for (const { sandboxId, result: rescue } of result.rescues) {
             // Everything deletion will lose is logged BEFORE the kill below
             // ran: excluded paths (secrets, >10 MB, build output) and ignored
@@ -114,18 +131,7 @@ export const appsBoxPausedReaperFunction = inngest.createFunction(
               ignored: rescue.ignored,
             });
           }
-          if (result.action === "would-delete") {
-            log.info(
-              "Apps paused box would be deleted (dry run, nothing killed)",
-              {
-                sessionKey: candidate.sessionKey,
-                boxes: candidate.sandboxIds,
-                idleDays: Math.floor(
-                  (Date.now() - candidate.lastUse) / 86_400_000,
-                ),
-              },
-            );
-          } else if (result.action === "deleted") {
+          if (result.action === "deleted") {
             log.info("Apps paused box deleted", {
               sessionKey: candidate.sessionKey,
               boxes: candidate.sandboxIds.length,
@@ -144,15 +150,8 @@ export const appsBoxPausedReaperFunction = inngest.createFunction(
         },
       );
       if (outcome.action === "deleted") deleted += 1;
-      else if (outcome.action === "would-delete") wouldDelete += 1;
       else kept += 1;
     }
-    return {
-      mode: config.reaperMode,
-      due: plan.length,
-      deleted,
-      wouldDelete,
-      kept,
-    };
+    return { mode: config.reaperMode, due: plan.length, deleted, kept };
   },
 );

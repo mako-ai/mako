@@ -319,9 +319,77 @@ describe("rescueCommit", () => {
     );
     expect(await git(origin, "branch", "--list", "mako-presave/*")).toBe("");
     expect(await blobOnServer(blob)).toBe(false);
+  });
+
+  /** X adds .env, Y removes it: HEAD's tree is clean, the history is not. */
+  async function envInHistoryOnly(): Promise<{ x: string; blob: string }> {
+    await write(".env", "SECRET=1\n");
+    await git(root, "add", "-f", ".env");
+    await git(root, "commit", "-qm", "oops");
+    const x = await git(root, "rev-parse", "HEAD");
+    const blob = await git(root, "rev-parse", "HEAD:.env");
+    await git(root, "rm", "-q", "--cached", ".env");
+    await fs.rm(path.join(root, ".env"));
+    await git(root, "commit", "-qm", "remove it");
+    await write("apps/sales/App.tsx", "export default 5;\n");
+    return { x, blob };
+  }
+
+  it("a foreign origin's tracking refs cannot hide an unpushed .env commit", async () => {
+    const { x, blob } = await envInHistoryOnly();
+    // The box once tracked another server that already had X.
+    const foreign = path.join(tmp, "foreign.git");
+    await exec("git", ["init", "-q", "--bare", foreign]);
+    await git(root, "push", "-q", foreign, `${x}:refs/heads/main`);
+    // Tracked under a name the real server does not have, so no fetch
+    // from the real origin ever overwrites it.
+    await git(
+      root,
+      "fetch",
+      "-q",
+      foreign,
+      "+refs/heads/main:refs/remotes/origin/feature",
+    );
+
+    const result = await rescue();
+
+    expect(result).toMatchObject({ status: "manual" });
+    expect((result as { reason: string }).reason).toMatch(
+      /unpushed history.*\.env/,
+    );
+    expect(await blobOnServer(blob)).toBe(false);
+  });
+
+  it("a second remote holding the commit cannot hide it either", async () => {
+    const { x, blob } = await envInHistoryOnly();
+    const github = path.join(tmp, "github.git");
+    await exec("git", ["init", "-q", "--bare", github]);
+    await git(root, "remote", "add", "github", github);
+    await git(root, "push", "-q", "github", `${x}:refs/heads/main`);
+
+    const result = await rescue();
+
+    expect(result).toMatchObject({ status: "manual" });
+    expect(await blobOnServer(blob)).toBe(false);
+  });
+
+  it("work that exists only on another remote is not clean", async () => {
+    // A commit pushed to `github` but never to this server must be rescued,
+    // not deleted as "clean".
+    await write("apps/sales/only-on-github.ts", "x\n");
+    await git(root, "add", "-A");
+    await git(root, "commit", "-qm", "github only");
+    const github = path.join(tmp, "github.git");
+    await exec("git", ["init", "-q", "--bare", github]);
+    await git(root, "remote", "add", "github", github);
+    await git(root, "push", "-q", "github", "HEAD:refs/heads/main");
+
+    const result = await rescue();
+
+    expect(result).toMatchObject({ status: "saved", files: 0 });
     expect(
-      await git(root, "for-each-ref", "refs/remotes/origin/mako-presave/"),
-    ).toBe("");
+      await git(origin, "show", `${BRANCH}:apps/sales/only-on-github.ts`),
+    ).toBe("x");
   });
 
   it("refuses a box whose origin is not this workspace's endpoint, even when clean", async () => {

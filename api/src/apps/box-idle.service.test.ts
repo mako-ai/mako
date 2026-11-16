@@ -740,40 +740,27 @@ describe("reapSession", () => {
     expect(outcome.reason).toBe("used during the settle");
   });
 
-  it("dry run settles every box, re-pauses them and kills nothing", async () => {
-    const { deps, calls } = reapDeps(
-      [],
-      { [KEY]: activity(20 * 24 * 60) },
-      {
-        settle: vi.fn(async (_k: string, id: string) => {
-          calls.push(`settle:${id}`);
-          return saved(id);
-        }),
-      },
+  it("APPS_BOX_REAPER=dryrun plans every due session and touches none", async () => {
+    const keys = Array.from(
+      { length: 12 },
+      (_, i) => `${WS}:${USER.slice(0, 22)}${String(i).padStart(2, "0")}`,
     );
-    const outcome = await reapSession(deps, candidate(["sbx-1", "sbx-2"]), {
-      dryRun: true,
-    });
-    expect(calls).toEqual([
-      "settle:sbx-1",
-      "settle:sbx-2",
-      "pause:sbx-1",
-      "pause:sbx-2",
-    ]);
-    expect(deps.kill).not.toHaveBeenCalled();
-    expect(deps.forget).not.toHaveBeenCalled();
-    expect(outcome.action).toBe("would-delete");
-    expect(outcome.rescues).toHaveLength(2);
-  });
-
-  it("APPS_BOX_REAPER=dryrun end to end kills nothing", async () => {
-    const { deps } = reapDeps([paused()], { [KEY]: activity(20 * 24 * 60) });
-    const { outcomes } = await reapPausedBoxes(
+    const { deps } = reapDeps(
+      keys.map((key, i) => paused({ sandboxId: `sbx-${i}`, sessionKey: key })),
+      Object.fromEntries(keys.map(key => [key, activity(20 * 24 * 60)])),
+    );
+    const { plan, outcomes } = await reapPausedBoxes(
       deps,
       boxIdleConfig({ APPS_BOX_REAPER: "dryrun" }),
     );
-    expect(outcomes[0].action).toBe("would-delete");
+    // All 12, past the batch of 10: the logs show the whole backlog.
+    expect(plan.due).toHaveLength(12);
+    expect(outcomes).toEqual([]);
+    // No resume, no rescue push, no pause, no kill.
+    expect(deps.settle).not.toHaveBeenCalled();
+    expect(deps.pause).not.toHaveBeenCalled();
     expect(deps.kill).not.toHaveBeenCalled();
+    expect(deps.forget).not.toHaveBeenCalled();
   });
 
   it("plan + reap end to end", async () => {
