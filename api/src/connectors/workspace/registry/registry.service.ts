@@ -85,8 +85,11 @@ export function resolveReference(
   reference: RegistryReference,
   catalog: RegistryCatalog,
 ): ResolveResult {
-  const entry = catalog.connectors[reference.slug];
-  if (!entry || entry.versions.length === 0) {
+  // Own keys only: `mako/constructor@1` must not find Object.prototype's.
+  const entry = Object.hasOwn(catalog.connectors, reference.slug)
+    ? catalog.connectors[reference.slug]
+    : undefined;
+  if (!entry || !Array.isArray(entry.versions) || entry.versions.length === 0) {
     const known = Object.keys(catalog.connectors).sort();
     return {
       ok: false,

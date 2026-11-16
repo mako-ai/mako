@@ -269,10 +269,40 @@ Each top-level `connectors/<slug>/` folder of the Mako repository is a
 registry connector. To release one, set the version in `defineConnector` and
 `package.json`, add a `## <version>` section to its `CHANGELOG.md`, merge, and
 push a tag `connector-<slug>-v<version>` on a master commit.
-`.github/workflows/connector-release.yml` then builds the folder with the same
-bundler workspace connectors use, runs `spec` and `discover` on the bundle,
-and publishes it to the dev and production buckets. Every pull request that
-touches `connectors/` runs the same steps as a dry run.
+`.github/workflows/connector-release.yml` then runs two jobs:
+
+- **build** checks the tag points at master, builds the folder once with the
+  same bundler workspace connectors use, and runs `spec` and `discover` on the
+  bundle. It holds no credential, because this is the connector's own code
+  running. It uploads the bundle, the source and a manifest with their
+  sha256s as a workflow artifact.
+- **publish** downloads that artifact, re-verifies both sha256s and
+  recomputes the source hash from the files, and writes the same bytes to the
+  dev registry and then the production one. It runs no connector code. It
+  authenticates with `CONNECTOR_REGISTRY_WRITER_SA` in the environments
+  `connector-registry-dev` and `connector-registry-prod`, never `production`.
+
+Every pull request that touches `connectors/` runs the build as a dry run.
+
+Infrastructure the publish job needs, per environment:
+
+- `CONNECTOR_REGISTRY_BUCKET` (variable): a dedicated registry bucket. The API
+  reads the registry from the same variable, so set it on the API too, and
+  give the API's runtime service account `roles/storage.objectViewer` on it.
+- `CONNECTOR_REGISTRY_WRITER_SA` (secret): a service account key whose only
+  grant is on that bucket, as 2 custom roles:
+  - `storage.objects.create`, `storage.objects.get` and `storage.objects.list`
+    on the bucket, with the IAM condition
+    `resource.name.startsWith("projects/_/buckets/<bucket>/objects/connector-registry/")`;
+  - `storage.objects.delete`, which GCS requires to overwrite an object, only
+    on the catalog:
+    `resource.name == "projects/_/buckets/<bucket>/objects/connector-registry/catalog.json"`.
+
+  The writer then cannot delete or replace a bundle or a source. The code
+  also creates them with `ifGenerationMatch: 0`. The same 2 bindings work on
+  the shared artifact bucket if a dedicated one is not created.
+- Required reviewers on both environments, and a tag ruleset that limits
+  who may push `connector-*` tags.
 
 Storage layout, under `connector-registry/` in the artifact bucket:
 
@@ -283,8 +313,12 @@ connector-registry/<slug>/sources/<hash>.json   its source files, for eject
 ```
 
 `<hash>` is the bundle's source hash. A published version never changes.
-Re-tagging identical content is a no-op, and different content under a
-published version fails the release.
+Bundles and sources are created with `ifGenerationMatch: 0`; an existing
+object is accepted only when its stored bytes hash to the new build.
+`catalog.json` is written with `ifGenerationMatch` on the generation it was
+read at, and a release that loses that race merges again. Re-tagging
+identical content is a no-op, and different content under a published version
+fails the release.
 
 ### Test it before you push
 

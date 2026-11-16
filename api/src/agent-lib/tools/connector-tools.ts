@@ -489,7 +489,9 @@ async function inspectRegistryConnector(input: {
   includeSource?: boolean;
 }): Promise<Record<string, unknown>> {
   const catalog = await getRegistryCatalog();
-  const entry = catalog.connectors[input.slug];
+  const entry = Object.hasOwn(catalog.connectors, input.slug)
+    ? catalog.connectors[input.slug]
+    : undefined;
   if (!entry) {
     return {
       error: `The registry has no connector mako/${input.slug}. Call list_connectors for the catalog.`,
@@ -529,12 +531,10 @@ async function inspectRegistryConnector(input: {
   result.release = {
     version: version.version,
     entry: source.entry,
-    files: Object.fromEntries(
-      Object.entries(source.files).map(([name, base64]) => [
-        name,
-        Buffer.from(base64, "base64").toString("utf8"),
-      ]),
-    ),
+    // Base64, as stored: a connector folder may hold binary files (an icon,
+    // a fixture), and a UTF-8 round trip would corrupt them.
+    encoding: "base64",
+    files: source.files,
   };
   return result;
 }
@@ -592,7 +592,7 @@ export function createConnectorTools(workspaceId: string) {
           .boolean()
           .optional()
           .describe(
-            "Registry connectors only: also return that version's source files, as `release.files`. Used by `mako connector eject`; large.",
+            "Registry connectors only: also return that version's source files, base64-encoded, as `release.files`. Used by `mako connector eject`; large.",
           ),
       }),
       execute: async ({

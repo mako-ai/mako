@@ -8,11 +8,12 @@ name: Connector release
 #  - Pull requests: a dry run of every folder. Each is built with the
 #    iteration-1 bundler, its bundle runs `spec` and `discover`, and the
 #    catalog entry is printed. Nothing is written.
-#  - A tag `connector-<slug>-v<MAJOR.MINOR.PATCH>` on a master commit: the
-#    same, then the bundle, its source and the catalog entry go to the
-#    registry prefix (`connector-registry/`) of the dev bucket, then of the
-#    production bucket. A version is immutable: re-tagging the same content is
-#    a no-op, different content under a published version fails.
+#  - A tag `connector-<slug>-v<MAJOR.MINOR.PATCH>` on a master commit: job
+#    `build` builds once, with no credential, and uploads the bytes as an
+#    artifact. Job `publish` verifies them and writes the same bytes to the
+#    dev registry, then the production one, with CONNECTOR_REGISTRY_WRITER_SA.
+#    A version is immutable: re-tagging the same content is a no-op,
+#    different content under a published version fails.
 #  - workflow_dispatch: either of the above for one tag, dry run by default.
 #
 # Reading the registry is behind CONNECTOR_REGISTRY_ENABLED in the API; with
@@ -84,28 +85,26 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --tag "$TAG" --dry-run
 
-  publish:
-    name: Publish to ${{ matrix.target }}
+  # Job A: builds and describes with the connector's own code (npm ci, spec,
+  # discover) and holds NO credential. Its only output is an artifact: the
+  # bundle, the source and a manifest with their sha256s.
+  build:
+    name: Build release
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
     runs-on: ubuntu-latest
-    strategy:
-      # Dev first: a release that fails there never reaches production.
-      max-parallel: 1
-      fail-fast: true
-      matrix:
-        target: [dev, production]
-    environment:
-      name: ${{ matrix.target == 'production' && 'production' || 'connector-registry-dev' }}
+    permissions:
+      contents: read
     env:
       TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
-      DASHBOARD_ARTIFACT_STORE: gcs
-      GCS_DASHBOARD_BUCKET: ${{ matrix.target == 'production' && fromJSON(vars.GCP_PROD_DEPLOY_CONFIG).dashboard_bucket || vars.GCS_DEV_DASHBOARD_BUCKET }}
-      CONNECTOR_REGISTRY_PREFIX: connector-registry
+    outputs:
+      commit: ${{ steps.commit.outputs.commit }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: The tag must point at a master commit
+        id: commit
         run: |
           set -euo pipefail
           commit="$(git rev-list -n 1 "$TAG")"
@@ -113,7 +112,7 @@ jobs:
             echo "::error::$TAG points at $commit, which is not on master. Tag a merged commit."
             exit 1
           fi
-          echo "RELEASE_COMMIT=$commit" >> "$GITHUB_ENV"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
           git checkout --quiet "$commit"
       - uses: pnpm/action-setup@v5
       - uses: actions/setup-node@v5
@@ -125,9 +124,72 @@ jobs:
         run: |
           pnpm --filter @mako/schemas run build
           pnpm --filter @mako/agent-tools run build
+      - name: Build and describe (no credentials)
+        env:
+          COMMIT: ${{ steps.commit.outputs.commit }}
+        run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --tag "$TAG" --commit "$COMMIT" --out "$RUNNER_TEMP/release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: connector-release
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          retention-days: 7
+
+  # Job B: publishes the SAME bytes, dev first, then production. It
+  # re-verifies the sha256s and the source hash and runs no connector code.
+  # Its credential, CONNECTOR_REGISTRY_WRITER_SA, may only create objects in
+  # the registry (see docs/src/content/docs/guides/building-connectors.md,
+  # "Publishing Mako's connectors"). It never uses the `production`
+  # environment or the deploy service account.
+  publish:
+    name: Publish to ${{ matrix.target }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      # Dev first: a release that fails there never reaches production.
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        target: [dev, prod]
+    environment:
+      name: connector-registry-${{ matrix.target }}
+    env:
+      # Set per environment. CONNECTOR_REGISTRY_BUCKET is the dedicated
+      # registry bucket the API reads (CONNECTOR_REGISTRY_BUCKET there too).
+      CONNECTOR_REGISTRY_BUCKET: ${{ vars.CONNECTOR_REGISTRY_BUCKET }}
+      CONNECTOR_REGISTRY_PREFIX: connector-registry
+    steps:
+      - name: Require the registry bucket
+        run: |
+          if [ -z "$CONNECTOR_REGISTRY_BUCKET" ]; then
+            echo "::error::Set CONNECTOR_REGISTRY_BUCKET on the connector-registry-${{ matrix.target }} environment."
+            exit 1
+          fi
+      # Mako's publish script at the released commit; not the connector.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      # Install and build before the credential exists on disk.
+      - run: pnpm install --frozen-lockfile
+      - name: Build workspace packages the api imports
+        run: |
+          pnpm --filter @mako/schemas run build
+          pnpm --filter @mako/agent-tools run build
+      - uses: actions/download-artifact@v4
+        with:
+          name: connector-release
+          path: ${{ runner.temp }}/release
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
-          credentials_json: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
-      - name: Publish
-        run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --tag "$TAG" --commit "$RELEASE_COMMIT"
+          credentials_json: ${{ secrets.CONNECTOR_REGISTRY_WRITER_SA }}
+      - name: Verify and publish
+        run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --upload "$RUNNER_TEMP/release"

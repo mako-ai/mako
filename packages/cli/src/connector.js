@@ -311,6 +311,31 @@ export function sourceFromManifest(text) {
   return null;
 }
 
+function lstatOrNull(target) {
+  try {
+    return fs.lstatSync(target);
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+    throw error;
+  }
+}
+
+/**
+ * The first symlink on the path from `root` (exclusive) to `target`
+ * (inclusive), or null. `lstat`, never `stat`: a dangling link must count.
+ */
+export function symlinkOnPath(root, target) {
+  const parts = path.relative(root, target).split(path.sep);
+  let current = root;
+  for (const part of parts) {
+    current = path.join(current, part);
+    const stats = lstatOrNull(current);
+    if (!stats) return null;
+    if (stats.isSymbolicLink()) return current;
+  }
+  return null;
+}
+
 /**
  * `mako connector eject <slug>`: the source of the pinned registry version
  * into `connectors/<slug>/`, and `source:` gone.
@@ -336,6 +361,13 @@ export async function eject(ctx, positional, flags, io) {
   }
   const folder = path.join(root, "connectors", slug);
   const manifest = path.join(folder, "connector.yaml");
+  const linked = symlinkOnPath(root, manifest);
+  if (linked) {
+    io.log(
+      `Refusing to eject: ${path.relative(root, linked)} is a symlink. Remove it and run eject again.`,
+    );
+    return 1;
+  }
   if (!fs.existsSync(manifest)) {
     io.log(`No connectors/${slug}/connector.yaml here.`);
     return 1;
@@ -396,15 +428,40 @@ export async function eject(ctx, positional, flags, io) {
     return 1;
   }
 
-  const names = Object.keys(files).sort();
+  // Mako sends every file base64-encoded: a folder may hold binary files.
+  if (published.release.encoding !== "base64") {
+    io.log(
+      `Mako sent mako/${registrySlug}@${version} in an encoding this CLI does not read; update @makoai/cli.`,
+    );
+    return 1;
+  }
+  const decoded = {};
+  for (const [name, base64] of Object.entries(files)) {
+    if (typeof base64 !== "string") {
+      io.log(`Mako sent ${name} without content; refusing to eject.`);
+      return 1;
+    }
+    decoded[name] = Buffer.from(base64, "base64");
+  }
+
+  const names = Object.keys(decoded).sort();
   for (const name of names) {
     const target = path.resolve(folder, name);
     if (!target.startsWith(`${folder}${path.sep}`)) {
       io.log(`Refusing ${name}: it escapes connectors/${slug}/.`);
       return 1;
     }
+    // A symlink anywhere on the way, dangling or not, would send the write
+    // outside the folder: refuse it, even with --force.
+    const link = symlinkOnPath(root, target);
+    if (link) {
+      io.log(
+        `Refusing to eject: ${path.relative(root, link)} is a symlink. Remove it and run eject again.`,
+      );
+      return 1;
+    }
   }
-  const yaml = files["connector.yaml"];
+  const yaml = decoded["connector.yaml"]?.toString("utf8");
   if (typeof yaml !== "string" || sourceFromManifest(yaml)) {
     io.log(
       `mako/${registrySlug}@${version} has no runnable connector.yaml; refusing to eject it.`,
@@ -412,7 +469,7 @@ export async function eject(ctx, positional, flags, io) {
     return 1;
   }
   const clashes = names.filter(
-    name => name !== "connector.yaml" && fs.existsSync(path.join(folder, name)),
+    name => name !== "connector.yaml" && lstatOrNull(path.join(folder, name)),
   );
   if (clashes.length > 0 && !flags.force) {
     io.log(
@@ -424,7 +481,7 @@ export async function eject(ctx, positional, flags, io) {
   for (const name of names) {
     const target = path.join(folder, name);
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, files[name]);
+    fs.writeFileSync(target, decoded[name]);
   }
   io.log(
     [

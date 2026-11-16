@@ -11,7 +11,15 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { parseConnectorFile } from "../connector-file";
 import { maxSatisfying, parseRange, parseRegistryReference } from "./semver";
 import { resolveReference } from "./registry.service";
-import { authTypeOf, changelogFor, withVersion } from "./publish";
+import {
+  authTypeOf,
+  changelogFor,
+  readReleaseDir,
+  uploadRelease,
+  withVersion,
+  writeReleaseDir,
+} from "./publish";
+import { bundleSourceHash } from "../bundle/source-hash";
 import {
   CatalogConflictError,
   catalogGeneration,
@@ -188,6 +196,34 @@ describe("resolution", () => {
 });
 
 describe("publishing helpers", () => {
+  it("never replaces a version with a different build", () => {
+    const catalog = catalogWith("1.0.0");
+    expect(() =>
+      withVersion(catalog, {
+        slug: "stripe",
+        name: "stripe",
+        versions: [version("1.0.0", "d".repeat(64))],
+      }),
+    ).toThrow(/immutable/);
+    // The same build again is a no-op merge.
+    expect(
+      withVersion(catalog, {
+        slug: "stripe",
+        name: "stripe",
+        versions: [version("1.0.0")],
+      }).connectors.stripe.versions,
+    ).toHaveLength(1);
+  });
+
+  it("resolves no Object.prototype name", () => {
+    const parsed = parseRegistryReference("mako/constructor@1");
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const resolved = resolveReference(parsed.value, catalogWith("1.0.0"));
+    expect(!resolved.ok && resolved.reason).toContain(
+      "no connector mako/constructor",
+    );
+  });
+
   it("merges a version into the catalog, newest first, replacing its own", () => {
     let catalog = catalogWith("1.0.0");
     catalog = withVersion(catalog, {
@@ -314,52 +350,200 @@ describe("the store", () => {
   });
 });
 
+/** An in-memory GCS bucket honouring ifGenerationMatch, as GCS does. */
 const gcs = vi.hoisted(() => ({
-  saves: [] as Array<{ ifGenerationMatch?: number }>,
-  conflict: false,
+  objects: new Map<string, { bytes: Buffer; generation: number }>(),
+  saves: [] as Array<{ key: string; ifGenerationMatch?: number }>,
+  next: 1,
 }));
-vi.mock("@google-cloud/storage", () => ({
-  Storage: class {
-    bucket() {
-      return {
-        file: () => ({
-          exists: async () => [true],
-          getMetadata: async () => [{ generation: "17" }],
-          save: async (
-            _bytes: Buffer,
-            options: { preconditionOpts?: { ifGenerationMatch?: number } },
-          ) => {
-            gcs.saves.push({
-              ifGenerationMatch: options.preconditionOpts?.ifGenerationMatch,
-            });
-            if (gcs.conflict) {
-              throw Object.assign(new Error("precondition"), { code: 412 });
-            }
-          },
-        }),
-      };
-    }
-  },
-}));
+vi.mock("@google-cloud/storage", async () => {
+  const { Readable } = await import("node:stream");
+  return {
+    Storage: class {
+      bucket() {
+        return {
+          file: (key: string) => ({
+            getMetadata: async () => {
+              const object = gcs.objects.get(key);
+              if (!object) throw Object.assign(new Error("nf"), { code: 404 });
+              return [
+                {
+                  generation: String(object.generation),
+                  size: String(object.bytes.byteLength),
+                },
+              ];
+            },
+            createReadStream: () => {
+              return Readable.from([
+                gcs.objects.get(key)?.bytes ?? Buffer.alloc(0),
+              ]);
+            },
+            save: async (
+              bytes: Buffer,
+              options: { preconditionOpts?: { ifGenerationMatch?: number } },
+            ) => {
+              const match = options.preconditionOpts?.ifGenerationMatch;
+              gcs.saves.push({ key, ifGenerationMatch: match });
+              const current = gcs.objects.get(key)?.generation ?? 0;
+              if (match !== undefined && match !== current) {
+                throw Object.assign(new Error("precondition"), { code: 412 });
+              }
+              gcs.objects.set(key, { bytes, generation: gcs.next++ });
+            },
+          }),
+        };
+      }
+    },
+  };
+});
 
-describe("the catalog write on GCS", () => {
+describe("the registry on GCS", () => {
   beforeAll(() => {
-    process.env.DASHBOARD_ARTIFACT_STORE = "gcs";
-    process.env.GCS_DASHBOARD_BUCKET = "bucket";
+    process.env.CONNECTOR_REGISTRY_BUCKET = "registry-bucket";
   });
   afterAll(() => {
-    delete process.env.DASHBOARD_ARTIFACT_STORE;
-    delete process.env.GCS_DASHBOARD_BUCKET;
+    delete process.env.CONNECTOR_REGISTRY_BUCKET;
   });
 
-  it("writes only at the generation it read, and reports a lost race", async () => {
-    expect(await catalogGeneration()).toBe(17);
-    await writeCatalogIfUnchanged(emptyCatalog(), 17);
-    expect(gcs.saves).toEqual([{ ifGenerationMatch: 17 }]);
+  it("writes the catalog only at the generation it read, and reports a lost race", async () => {
+    expect(await catalogGeneration()).toBe(0);
+    await writeCatalogIfUnchanged(emptyCatalog(), 0);
+    const generation = await catalogGeneration();
+    expect(gcs.saves.at(-1)).toMatchObject({ ifGenerationMatch: 0 });
+    // Someone else writes in between.
+    await writeCatalogIfUnchanged(emptyCatalog(), generation);
+    await expect(
+      writeCatalogIfUnchanged(emptyCatalog(), generation),
+    ).rejects.toThrow(CatalogConflictError);
+  });
 
-    gcs.conflict = true;
-    await expect(writeCatalogIfUnchanged(emptyCatalog(), 17)).rejects.toThrow(
-      CatalogConflictError,
+  it("creates a bundle once, accepts the same bytes, and refuses different ones", async () => {
+    const hash = "c".repeat(64);
+    const source = {
+      slug: "stripe",
+      version: "1.0.0",
+      hash,
+      entry: "connector.ts",
+      files: {},
+    };
+    const bytes = new TextEncoder().encode("export default 1;\n");
+    expect(
+      await writeRegistryArtifacts({
+        slug: "stripe",
+        hash,
+        bundle: bytes,
+        source,
+      }),
+    ).toEqual({ bundle: "created", source: "created" });
+    const bundleSave = gcs.saves.find(save => save.key.endsWith(`${hash}.mjs`));
+    expect(bundleSave?.ifGenerationMatch).toBe(0);
+
+    expect(
+      await writeRegistryArtifacts({
+        slug: "stripe",
+        hash,
+        bundle: bytes,
+        source,
+      }),
+    ).toEqual({ bundle: "matched", source: "matched" });
+
+    await expect(
+      writeRegistryArtifacts({
+        slug: "stripe",
+        hash,
+        bundle: new TextEncoder().encode("export default 2;\n"),
+        source,
+      }),
+    ).rejects.toThrow("Published objects are immutable");
+    // The stored bundle is untouched.
+    expect(
+      gcs.objects
+        .get(`connector-registry/stripe/bundles/${hash}.mjs`)
+        ?.bytes.toString(),
+    ).toBe("export default 1;\n");
+  });
+
+  it("uploads a release, and refuses another build under the same version inside the loop", async () => {
+    const files = new Map([["connector.ts", new TextEncoder().encode("x")]]);
+    const hash = bundleSourceHash({ files, sdkVersion: "0.1.0" });
+    const release = (code: string) => {
+      const bytes = new TextEncoder().encode(code);
+      const record = {
+        ...version("3.0.0", hash),
+        sha256: sha256Hex(bytes),
+        bytes: bytes.byteLength,
+      };
+      return {
+        record,
+        bundle: bytes,
+        entry: { slug: "uploaded", name: "uploaded", versions: [record] },
+        source: {
+          slug: "uploaded",
+          version: "3.0.0",
+          hash,
+          entry: "connector.ts",
+          files: { "connector.ts": Buffer.from("x").toString("base64") },
+        },
+      };
+    };
+    const first = await uploadRelease(release("export default 1;"));
+    expect(first.published).toBe(true);
+    const again = await uploadRelease(release("export default 1;"));
+    expect(again.alreadyPublished).toBe(true);
+    await expect(uploadRelease(release("export default 2;"))).rejects.toThrow(
+      /immutable/,
     );
+    const catalog = await readCatalog();
+    expect(catalog.connectors.uploaded.versions).toHaveLength(1);
+  });
+});
+
+describe("the release directory between the two jobs", () => {
+  it("round-trips, and refuses a tampered bundle, source or manifest", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "release-dir-"));
+    try {
+      const files = new Map([["connector.ts", new TextEncoder().encode("x")]]);
+      const hash = bundleSourceHash({ files, sdkVersion: "0.1.0" });
+      const bytes = new TextEncoder().encode("export default 1;");
+      const record = {
+        ...version("1.0.0", hash),
+        sha256: sha256Hex(bytes),
+        bytes: bytes.byteLength,
+      };
+      const written = await writeReleaseDir(dir, {
+        record,
+        bundle: bytes,
+        entry: { slug: "stripe", name: "stripe", versions: [record] },
+        source: {
+          slug: "stripe",
+          version: "1.0.0",
+          hash,
+          entry: "connector.ts",
+          files: { "connector.ts": Buffer.from("x").toString("base64") },
+        },
+      });
+      expect((await readReleaseDir(written)).record.hash).toBe(hash);
+
+      await fs.appendFile(path.join(written, "bundle.mjs"), "\n// extra");
+      await expect(readReleaseDir(written)).rejects.toThrow("bundle sha256");
+      await fs.writeFile(path.join(written, "bundle.mjs"), bytes);
+
+      // A manifest edited to match a changed source still fails: the source
+      // hash is recomputed from the files.
+      const sourcePath = path.join(written, "source.json");
+      const source = JSON.parse(await fs.readFile(sourcePath, "utf8"));
+      source.files["connector.ts"] = Buffer.from("y").toString("base64");
+      const changed = Buffer.from(JSON.stringify(source));
+      await fs.writeFile(sourcePath, changed);
+      const manifestPath = path.join(written, "manifest.json");
+      const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+      manifest.sourceSha256 = sha256Hex(changed);
+      await fs.writeFile(manifestPath, JSON.stringify(manifest));
+      await expect(readReleaseDir(written)).rejects.toThrow(
+        "source hash recomputed",
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 });

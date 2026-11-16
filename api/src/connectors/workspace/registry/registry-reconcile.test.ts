@@ -370,6 +370,18 @@ describe("install by reference, flag on", () => {
     );
   });
 
+  it("blocks a reference to an Object.prototype name, and only that connector", async () => {
+    await publish("1.0.0");
+    repo.files.set("weird", folder("source: mako/constructor@1\n"));
+    repo.files.set("stripe", folder("source: mako/stripe@1\n"));
+    const result = await syncConnectorsFromRepo(WS);
+    expect(result).toMatchObject({ created: 1, blocked: 1 });
+    expect((await row("weird"))?.blockedReason).toContain(
+      "The registry has no connector mako/constructor",
+    );
+    expect((await row("stripe"))?.status).toBe("indexed");
+  });
+
   it("blocks source together with entry, and a spec that fails", async () => {
     await publish("1.0.0");
     repo.files.set(
@@ -507,12 +519,14 @@ describe("the agent tools", () => {
       version: "1.0.0",
       includeSource: true,
     });
+    const b64 = (text: string) => Buffer.from(text).toString("base64");
     expect(withSource.release).toEqual({
       version: "1.0.0",
       entry: "connector.ts",
+      encoding: "base64",
       files: {
-        "connector.yaml": "runtime: node\nentry: connector.ts\n",
-        "connector.ts": "// 1.0.0\n",
+        "connector.yaml": b64("runtime: node\nentry: connector.ts\n"),
+        "connector.ts": b64("// 1.0.0\n"),
       },
     });
 

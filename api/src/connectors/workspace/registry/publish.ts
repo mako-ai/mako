@@ -22,7 +22,7 @@ import path from "node:path";
 import { getSandboxProvider } from "../../../apps/sandbox/provider";
 import { loggers } from "../../../logging";
 import { parseConnectorFile, validateSpec } from "../connector-file";
-import { buildBundleInBox, buildBoxContext } from "../bundle/build-box";
+import { buildBundleInBox } from "../bundle/build-box";
 import { dependencyPlan } from "../bundle/manifest";
 import { bundleSourceHash } from "../bundle/source-hash";
 import { connectorSdkVersion, ensureConnectorRuntime } from "../resolver";
@@ -40,8 +40,10 @@ import {
   catalogGeneration,
   readCatalog,
   sha256Hex,
+  sourceDocumentBytes,
   writeCatalogIfUnchanged,
   writeRegistryArtifacts,
+  type RegistrySource,
   type RegistryAuthType,
   type RegistryCatalog,
   type RegistryEntry,
@@ -142,15 +144,28 @@ export interface PublishResult {
   entry: RegistryVersion;
 }
 
-export async function publishConnector(input: {
+/** One built release: everything the registry stores, before it is stored. */
+export interface Release {
+  /** The catalog entry, with this one version. */
+  entry: RegistryEntry;
+  record: RegistryVersion;
+  bundle: Uint8Array;
+  source: RegistrySource;
+}
+
+/**
+ * Build and describe one connector folder. Runs the connector's own code
+ * (`npm ci`, `spec`, `discover`) and touches no storage, so the release
+ * workflow runs it in a job that holds no credential.
+ */
+export async function buildRelease(input: {
   /** Absolute path of `connectors/<slug>/`. */
   folder: string;
   slug: string;
   version: string;
-  dryRun?: boolean;
   commit?: string;
-}): Promise<PublishResult> {
-  const { folder, slug, version, dryRun = false, commit } = input;
+}): Promise<Release> {
+  const { folder, slug, version, commit } = input;
   if (!parseVersion(version)) {
     throw new Error(
       `"${version}" is not a release version; use MAJOR.MINOR.PATCH, e.g. 1.0.0.`,
@@ -182,28 +197,6 @@ export async function publishConnector(input: {
 
   const sdkVersion = await connectorSdkVersion();
   const hash = bundleSourceHash({ files, sdkVersion });
-
-  const catalog = await readCatalog();
-  const existing = catalog.connectors[slug]?.versions.find(
-    candidate => candidate.version === version,
-  );
-  if (existing && existing.hash !== hash) {
-    throw new Error(
-      `mako/${slug}@${version} is already published with hash ${existing.hash.slice(0, 12)}, and this folder hashes to ${hash.slice(0, 12)}. ` +
-        `A version is immutable: bump the version and tag again.`,
-    );
-  }
-  if (existing && !dryRun) {
-    logger.info("Connector version already published", { slug, version });
-    return {
-      slug,
-      version,
-      hash,
-      published: false,
-      alreadyPublished: true,
-      entry: existing,
-    };
-  }
 
   const built = await buildBundleInBox({
     workspaceId: REGISTRY_BOX_KEY,
@@ -240,21 +233,8 @@ export async function publishConnector(input: {
     publishedAt: new Date().toISOString(),
     ...(commit ? { commit } : {}),
   };
-
-  if (dryRun) {
-    return {
-      slug,
-      version,
-      hash,
-      published: false,
-      alreadyPublished: Boolean(existing),
-      entry: record,
-    };
-  }
-
-  await writeRegistryArtifacts({
-    slug,
-    hash,
+  return {
+    record,
     bundle: built.bytes,
     source: {
       slug,
@@ -268,49 +248,224 @@ export async function publishConnector(input: {
         ]),
       ),
     },
-  });
-  // Read, merge, and write only if nobody wrote in between; on a conflict,
-  // merge again onto what the other release wrote.
-  const published: RegistryEntry = {
-    slug,
-    name: described.name ?? slug,
-    ...(described.title ? { title: described.title } : {}),
-    ...(parsed.value.page?.vendor ? { vendor: parsed.value.page.vendor } : {}),
-    ...(parsed.value.page?.category
-      ? { category: parsed.value.page.category }
-      : {}),
-    ...(parsed.value.page?.docs ? { docs: parsed.value.page.docs } : {}),
-    versions: [record],
+    entry: {
+      slug,
+      name: described.name ?? slug,
+      ...(described.title ? { title: described.title } : {}),
+      ...(parsed.value.page?.vendor
+        ? { vendor: parsed.value.page.vendor }
+        : {}),
+      ...(parsed.value.page?.category
+        ? { category: parsed.value.page.category }
+        : {}),
+      ...(parsed.value.page?.docs ? { docs: parsed.value.page.docs } : {}),
+      versions: [record],
+    },
   };
+}
+
+/** What crosses from the build job to the publish job, next to the bytes. */
+interface ReleaseManifest {
+  slug: string;
+  version: string;
+  hash: string;
+  bundleSha256: string;
+  sourceSha256: string;
+  entry: RegistryEntry;
+}
+
+/** Write a built release to a directory, for the publish job. */
+export async function writeReleaseDir(
+  dir: string,
+  release: Release,
+): Promise<string> {
+  const target = path.join(
+    dir,
+    `${release.entry.slug}-${release.record.version}`,
+  );
+  await fs.mkdir(target, { recursive: true });
+  const source = sourceDocumentBytes(release.source);
+  const manifest: ReleaseManifest = {
+    slug: release.entry.slug,
+    version: release.record.version,
+    hash: release.record.hash,
+    bundleSha256: sha256Hex(release.bundle),
+    sourceSha256: sha256Hex(source),
+    entry: release.entry,
+  };
+  await fs.writeFile(path.join(target, "bundle.mjs"), release.bundle);
+  await fs.writeFile(path.join(target, "source.json"), source);
+  await fs.writeFile(
+    path.join(target, "manifest.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+  return target;
+}
+
+/**
+ * Read a release directory back, and re-verify it: the bundle's and the
+ * source's sha256 against the manifest, the catalog record against the
+ * manifest, and the source hash recomputed from the source files. Runs no
+ * connector code.
+ */
+export async function readReleaseDir(dir: string): Promise<Release> {
+  const manifest = JSON.parse(
+    await fs.readFile(path.join(dir, "manifest.json"), "utf8"),
+  ) as ReleaseManifest;
+  const bundle = new Uint8Array(
+    await fs.readFile(path.join(dir, "bundle.mjs")),
+  );
+  const sourceBytes = new Uint8Array(
+    await fs.readFile(path.join(dir, "source.json")),
+  );
+  const fail = (what: string): never => {
+    throw new Error(`Release ${dir} failed verification: ${what}.`);
+  };
+  if (sha256Hex(bundle) !== manifest.bundleSha256) fail("bundle sha256");
+  if (sha256Hex(sourceBytes) !== manifest.sourceSha256) fail("source sha256");
+  const versions = manifest.entry?.versions ?? [];
+  const record = versions[0];
+  if (versions.length !== 1 || !record) fail("the entry must hold one version");
+  if (record.version !== manifest.version) fail("version");
+  if (record.hash !== manifest.hash) fail("hash");
+  if (record.sha256 !== manifest.bundleSha256) fail("record sha256");
+  if (record.bytes !== bundle.byteLength) fail("byte count");
+  if (manifest.entry.slug !== manifest.slug) fail("slug");
+  const source = JSON.parse(
+    Buffer.from(sourceBytes).toString("utf8"),
+  ) as RegistrySource;
+  if (
+    source.slug !== manifest.slug ||
+    source.version !== manifest.version ||
+    source.hash !== manifest.hash
+  ) {
+    fail("source identity");
+  }
+  const files = new Map(
+    Object.entries(source.files).map(([name, base64]) => [
+      name,
+      new Uint8Array(Buffer.from(base64, "base64")),
+    ]),
+  );
+  const recomputed = bundleSourceHash({
+    files,
+    sdkVersion: record.sdkVersion,
+  });
+  if (recomputed !== manifest.hash) fail("source hash recomputed from files");
+  return { entry: manifest.entry, record, bundle, source };
+}
+
+/**
+ * Store a verified release: the bundle and source created once, then the
+ * version added to the catalog. Runs no connector code; this is all the
+ * publish job's credential is used for.
+ *
+ * Immutability is checked on every attempt of the catalog loop, against the
+ * catalog as it is at that moment: a version already present with another
+ * hash or sha256 fails, and one present with the same is a no-op.
+ */
+export async function uploadRelease(release: Release): Promise<PublishResult> {
+  const { record } = release;
+  const slug = release.entry.slug;
+  await writeRegistryArtifacts({
+    slug,
+    hash: record.hash,
+    bundle: release.bundle,
+    source: release.source,
+  });
   for (let attempt = 1; ; attempt++) {
     const generation = await catalogGeneration();
     const latest = await readCatalog();
+    const existing = publishedVersion(latest, slug, record.version);
+    if (existing) {
+      assertSameRelease(slug, existing, record);
+      logger.info("Connector version already published", {
+        slug,
+        version: record.version,
+      });
+      return {
+        slug,
+        version: record.version,
+        hash: record.hash,
+        published: false,
+        alreadyPublished: true,
+        entry: existing,
+      };
+    }
     try {
-      await writeCatalogIfUnchanged(withVersion(latest, published), generation);
+      await writeCatalogIfUnchanged(
+        withVersion(latest, release.entry),
+        generation,
+      );
       break;
     } catch (error) {
       if (!(error instanceof CatalogConflictError) || attempt >= 5) throw error;
       logger.warn("Registry catalog changed during a release; merging again", {
         slug,
-        version,
+        version: record.version,
         attempt,
       });
     }
   }
   logger.info("Published a connector to the registry", {
     slug,
-    version,
-    hash,
+    version: record.version,
+    hash: record.hash,
     bytes: record.bytes,
   });
   return {
     slug,
-    version,
-    hash,
+    version: record.version,
+    hash: record.hash,
     published: true,
     alreadyPublished: false,
     entry: record,
   };
+}
+
+/** Build, then upload unless it is a dry run. For development and the gate. */
+export async function publishConnector(input: {
+  folder: string;
+  slug: string;
+  version: string;
+  dryRun?: boolean;
+  commit?: string;
+}): Promise<PublishResult> {
+  const release = await buildRelease(input);
+  if (input.dryRun) {
+    return {
+      slug: input.slug,
+      version: input.version,
+      hash: release.record.hash,
+      published: false,
+      alreadyPublished: false,
+      entry: release.record,
+    };
+  }
+  return uploadRelease(release);
+}
+
+function publishedVersion(
+  catalog: RegistryCatalog,
+  slug: string,
+  version: string,
+): RegistryVersion | undefined {
+  if (!Object.hasOwn(catalog.connectors, slug)) return undefined;
+  return catalog.connectors[slug].versions.find(v => v.version === version);
+}
+
+function assertSameRelease(
+  slug: string,
+  existing: RegistryVersion,
+  record: RegistryVersion,
+): void {
+  if (existing.hash !== record.hash || existing.sha256 !== record.sha256) {
+    throw new Error(
+      `mako/${slug}@${record.version} is already published with hash ${existing.hash.slice(0, 12)} ` +
+        `(sha256 ${existing.sha256.slice(0, 12)}), and this release is ${record.hash.slice(0, 12)} ` +
+        `(sha256 ${record.sha256.slice(0, 12)}). A version is immutable: bump the version and tag again.`,
+    );
+  }
 }
 
 /** Add one version to the catalog, newest first; the entry's metadata follows the newest. */
@@ -318,7 +473,15 @@ export function withVersion(
   catalog: RegistryCatalog,
   published: RegistryEntry,
 ): RegistryCatalog {
-  const current = catalog.connectors[published.slug];
+  const current = Object.hasOwn(catalog.connectors, published.slug)
+    ? catalog.connectors[published.slug]
+    : undefined;
+  // Never replace a version silently: the same one may be merged again, a
+  // different one under the same number fails.
+  for (const version of published.versions) {
+    const existing = current?.versions.find(v => v.version === version.version);
+    if (existing) assertSameRelease(published.slug, existing, version);
+  }
   const versions = [
     ...(current?.versions ?? []).filter(
       v => !published.versions.some(p => p.version === v.version),
@@ -429,10 +592,7 @@ async function describeBundle(input: {
 /** Tear down the release's boxes (the local provider's directories in CI). */
 export async function cleanupPublishBoxes(): Promise<void> {
   const provider = getSandboxProvider();
-  for (const ctx of [
-    buildBoxContext(REGISTRY_BOX_KEY),
-    syncBoxContext(REGISTRY_BOX_KEY),
-  ]) {
-    await provider.destroySession?.(ctx.sessionKey).catch(() => undefined);
-  }
+  // Each build box is torn down by the build itself; the sync box is not.
+  const ctx = syncBoxContext(REGISTRY_BOX_KEY);
+  await provider.destroySession?.(ctx.sessionKey).catch(() => undefined);
 }

@@ -4,13 +4,25 @@
  *
  * Run by .github/workflows/connector-release.yml; by hand from api/:
  *
- *   pnpm exec tsx src/scripts/publish-connector.ts --tag connector-stripe-v1.0.0
- *   pnpm exec tsx src/scripts/publish-connector.ts --slug stripe --version 1.0.0 --dry-run
- *   pnpm exec tsx src/scripts/publish-connector.ts --all --dry-run
+ *   tsx src/scripts/publish-connector.ts --all --dry-run
+ *   tsx src/scripts/publish-connector.ts --tag connector-stripe-v1.0.0 --out <dir>
+ *   tsx src/scripts/publish-connector.ts --upload <dir>
+ *   tsx src/scripts/publish-connector.ts --tag connector-stripe-v1.0.0    (both, locally)
+ *
+ * Two stages, so connector code and the storage credential never share a
+ * machine:
+ *
+ * - `--out <dir>` BUILDS: npm ci, esbuild, `spec` and `discover` on the bundle
+ *   (the connector's own code), then writes bundle.mjs, source.json and
+ *   manifest.json (with sha256s) under <dir>/<slug>-<version>/. It reads and
+ *   writes no storage. The workflow runs it with no credential.
+ * - `--upload <dir>` PUBLISHES every release directory under <dir>: it
+ *   re-verifies the sha256s and the source hash, creates the bundle and the
+ *   source once, and adds the version to the catalog. It runs no connector
+ *   code. The workflow runs it with CONNECTOR_REGISTRY_WRITER_SA.
  *
  * `--all` takes every top-level `connectors/<slug>/` at the version its
- * package.json declares. `--dry-run` builds, runs `spec` and `discover` on the
- * bundle and prints the catalog entry, and writes nothing.
+ * package.json declares. `--dry-run` builds and prints, and writes nothing.
  *
  * Storage is the artifact store the API uses (DASHBOARD_ARTIFACT_STORE=gcs
  * with GCS_DASHBOARD_BUCKET in the workflow), under CONNECTOR_REGISTRY_PREFIX
@@ -108,8 +120,28 @@ async function main(): Promise<number> {
     path.join(os.tmpdir(), "mako-connector-release-"),
   );
 
-  const { publishConnector, cleanupPublishBoxes } =
-    await import("../connectors/workspace/registry/publish");
+  const registry = await import("../connectors/workspace/registry/publish");
+  const { buildRelease, cleanupPublishBoxes, readReleaseDir, uploadRelease } =
+    registry;
+
+  if (typeof flags.upload === "string") {
+    const uploadRoot = path.resolve(flags.upload);
+    const dirs = fs
+      .readdirSync(uploadRoot, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => path.join(uploadRoot, entry.name));
+    if (dirs.length === 0) throw new Error(`No release under ${uploadRoot}.`);
+    for (const dir of dirs) {
+      const release = await readReleaseDir(dir);
+      const result = await uploadRelease(release);
+      console.log(
+        `mako/${result.slug}@${result.version}: ${result.alreadyPublished ? "already published" : "published"} ` +
+          `(hash ${result.hash.slice(0, 12)}, sha256 ${release.record.sha256.slice(0, 12)})`,
+      );
+    }
+    return 0;
+  }
+  const out = typeof flags.out === "string" ? path.resolve(flags.out) : null;
   const commit =
     typeof flags.commit === "string" ? flags.commit : process.env.GITHUB_SHA;
 
@@ -124,19 +156,29 @@ async function main(): Promise<number> {
         continue;
       }
       try {
-        const result = await publishConnector({
+        const release = await buildRelease({
           folder,
           slug: target.slug,
           version: target.version,
-          dryRun,
           commit,
         });
+        let result = {
+          slug: target.slug,
+          version: target.version,
+          hash: release.record.hash,
+          published: false,
+          alreadyPublished: false,
+          entry: release.record,
+        };
+        let verb = "would publish";
+        if (out) {
+          const dir = await registry.writeReleaseDir(out, release);
+          verb = `built into ${dir}`;
+        } else if (!dryRun) {
+          result = await uploadRelease(release);
+          verb = result.alreadyPublished ? "already published" : "published";
+        }
         results.push(result);
-        const verb = dryRun
-          ? "would publish"
-          : result.alreadyPublished
-            ? "already published"
-            : "published";
         console.log(
           `mako/${result.slug}@${result.version}: ${verb} (hash ${result.hash.slice(0, 12)}, ` +
             `${result.entry.bytes} bytes, ${result.entry.entities.length} entities, auth ${result.entry.authType})`,
@@ -157,7 +199,7 @@ async function main(): Promise<number> {
   if (summary) {
     const rows = results.map(
       r =>
-        `| mako/${r.slug} | ${r.version} | \`${r.hash.slice(0, 12)}\` | ${r.entry.bytes} | ${r.entry.entities.length} | ${r.entry.authType} | ${dryRun ? "dry run" : r.alreadyPublished ? "already published" : "published"} |`,
+        `| mako/${r.slug} | ${r.version} | \`${r.hash.slice(0, 12)}\` | ${r.entry.bytes} | ${r.entry.entities.length} | ${r.entry.authType} | ${dryRun ? "dry run" : out ? "built" : r.alreadyPublished ? "already published" : "published"} |`,
     );
     fs.appendFileSync(
       summary,

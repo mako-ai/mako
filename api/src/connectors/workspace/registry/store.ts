@@ -1,10 +1,13 @@
 /**
  * The connector registry in object storage (RFC connector-runtime §7).
  *
- * The same artifact store connector bundles use (GCS in deployed environments,
- * a directory in development), under a Mako-owned prefix that is NOT the
- * per-environment artifact prefix: one registry serves every environment
- * reading the bucket, the way one npm registry serves every install.
+ * GCS in deployed environments: CONNECTOR_REGISTRY_BUCKET when set (the
+ * recommended dedicated bucket), else the artifact bucket bundles use
+ * (GCS_DASHBOARD_BUCKET with DASHBOARD_ARTIFACT_STORE=gcs). A directory, through
+ * the artifact store, in development and tests. Always under a Mako-owned
+ * prefix that is NOT the per-environment artifact prefix: one registry serves
+ * every environment reading the bucket, the way one npm registry serves every
+ * install.
  *
  *   <prefix>/catalog.json                    the catalog: every connector, every version
  *   <prefix>/<slug>/bundles/<hash>.mjs       one built bundle per source hash
@@ -13,9 +16,10 @@
  * `<prefix>` is CONNECTOR_REGISTRY_PREFIX, default `connector-registry`.
  * `<hash>` is the iteration-1 source hash (bundle/source-hash.ts) of the
  * published files, so a bundle is named exactly as a workspace bundle of the
- * same folder would be. Bundles and sources are immutable: written once, never
- * replaced. Only `catalog.json` is rewritten, by the release workflow, which
- * runs one publish at a time.
+ * same folder would be. Bundles and sources are immutable: created with
+ * `ifGenerationMatch: 0`, and an existing object is accepted only when its
+ * stored bytes hash to what this release built. Only `catalog.json` is
+ * rewritten, with `ifGenerationMatch` on the generation it was read at.
  *
  * Why a JSON manifest rather than a Mongo collection: the release workflow is
  * the only writer and it already holds storage credentials, not database
@@ -112,7 +116,60 @@ export const registrySourceKey = (slug: string, hash: string): string =>
 export const sha256Hex = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex");
 
+/** The bucket the registry lives in on GCS, or null for the artifact store. */
+function registryBucket(): string | null {
+  const dedicated = process.env.CONNECTOR_REGISTRY_BUCKET?.trim();
+  if (dedicated) return dedicated;
+  // The variable the artifact store itself is built from.
+  if (process.env.DASHBOARD_ARTIFACT_STORE !== "gcs") return null;
+  return process.env.GCS_DASHBOARD_BUCKET?.trim() || null;
+}
+
+let storage: Storage | null = null;
+function gcsFile(bucket: string, key: string) {
+  storage ??= new Storage();
+  return storage.bucket(bucket).file(key);
+}
+
+const isPreconditionFailure = (error: unknown): boolean =>
+  (error as { code?: unknown }).code === 412;
+
+async function streamToBuffer(
+  stream: NodeJS.ReadableStream,
+  key: string,
+  limit: number,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of stream as AsyncIterable<Buffer | string>) {
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    total += buffer.byteLength;
+    if (total > limit) {
+      (stream as { destroy?: () => void }).destroy?.();
+      throw new Error(`${key} exceeds ${limit} bytes.`);
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
 async function readBytes(key: string, limit: number): Promise<Buffer | null> {
+  const bucket = registryBucket();
+  if (bucket) {
+    const file = gcsFile(bucket, key);
+    let size: number;
+    try {
+      const [metadata] = await file.getMetadata();
+      size = Number(metadata.size);
+    } catch (error) {
+      if ((error as { code?: unknown }).code === 404) return null;
+      throw error;
+    }
+    if (size > limit) {
+      throw new Error(`${key} is ${size} bytes, over ${limit}.`);
+    }
+    return streamToBuffer(file.createReadStream(), key, limit);
+  }
   const store = getArtifactStore();
   const opened = store.openRead
     ? await store.openRead(key)
@@ -124,18 +181,54 @@ async function readBytes(key: string, limit: number): Promise<Buffer | null> {
     (opened.stream as { destroy?: () => void }).destroy?.();
     throw new Error(`${key} is ${opened.size} bytes, over ${limit}.`);
   }
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of opened.stream as AsyncIterable<Buffer | string>) {
-    const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-    total += buffer.byteLength;
-    if (total > limit) {
-      (opened.stream as { destroy?: () => void }).destroy?.();
-      throw new Error(`${key} exceeds ${limit} bytes.`);
+  return streamToBuffer(opened.stream, key, limit);
+}
+
+/**
+ * Create `key` only if it does not exist (`ifGenerationMatch: 0` on GCS).
+ * When it exists, the STORED bytes must hash to `bytes`' sha256, or this
+ * throws: a published object is never replaced, and a release never records
+ * a hash the stored object does not have.
+ */
+async function createImmutable(
+  key: string,
+  bytes: Uint8Array,
+  contentType: string,
+  limit: number,
+): Promise<"created" | "matched"> {
+  const wanted = sha256Hex(bytes);
+  const bucket = registryBucket();
+  let created = false;
+  if (bucket) {
+    try {
+      await gcsFile(bucket, key).save(Buffer.from(bytes), {
+        contentType,
+        resumable: false,
+        preconditionOpts: { ifGenerationMatch: 0 },
+      });
+      created = true;
+    } catch (error) {
+      if (!isPreconditionFailure(error)) throw error;
     }
-    chunks.push(buffer);
+  } else {
+    // Development and tests: no generations; exists-then-write is enough
+    // for a single local writer.
+    const store = getArtifactStore();
+    if (!(await store.exists(key))) {
+      await store.putBuffer(bytes, key, contentType);
+      created = true;
+    }
   }
-  return Buffer.concat(chunks);
+  if (created) return "created";
+  const stored = await readBytes(key, limit);
+  const storedSha = stored ? sha256Hex(stored) : "missing";
+  if (storedSha !== wanted) {
+    throw new Error(
+      `${key} already exists with sha256 ${storedSha.slice(0, 12)}, and this release built ${wanted.slice(0, 12)}. ` +
+        "Published objects are immutable; refusing to record a hash the stored object does not have.",
+    );
+  }
+  return "matched";
 }
 
 export function emptyCatalog(): RegistryCatalog {
@@ -159,23 +252,18 @@ export async function readCatalog(): Promise<RegistryCatalog> {
   return parsed;
 }
 
-/** The catalog's GCS object, or null on any other store. */
-function gcsCatalogFile() {
-  // The variable the artifact store itself is built from.
-  if (process.env.DASHBOARD_ARTIFACT_STORE !== "gcs") return null;
-  const bucket = process.env.GCS_DASHBOARD_BUCKET;
-  if (!bucket) return null;
-  return new Storage().bucket(bucket).file(catalogKey());
-}
-
 /** The live catalog's generation: 0 when absent, null when the store has none. */
 export async function catalogGeneration(): Promise<number | null> {
-  const file = gcsCatalogFile();
-  if (!file) return null;
-  const [exists] = await file.exists();
-  if (!exists) return 0;
-  const [metadata] = await file.getMetadata();
-  return Number(metadata.generation);
+  const bucket = registryBucket();
+  if (!bucket) return null;
+  const file = gcsFile(bucket, catalogKey());
+  try {
+    const [metadata] = await file.getMetadata();
+    return Number(metadata.generation);
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 404) return 0;
+    throw error;
+  }
 }
 
 /** Another writer replaced the catalog between our read and our write. */
@@ -185,6 +273,9 @@ export class CatalogConflictError extends Error {
     this.name = "CatalogConflictError";
   }
 }
+
+const catalogBytes = (catalog: RegistryCatalog): Buffer =>
+  Buffer.from(`${JSON.stringify(catalog, null, 2)}\n`);
 
 /**
  * Write the catalog only if it is still at `generation` (GCS
@@ -197,25 +288,32 @@ export async function writeCatalogIfUnchanged(
   catalog: RegistryCatalog,
   generation: number | null,
 ): Promise<void> {
-  const file = gcsCatalogFile();
-  if (!file || generation === null) return writeCatalog(catalog);
+  const bucket = registryBucket();
+  if (!bucket || generation === null) return writeCatalog(catalog);
   try {
-    await file.save(Buffer.from(`${JSON.stringify(catalog, null, 2)}\n`), {
+    await gcsFile(bucket, catalogKey()).save(catalogBytes(catalog), {
       contentType: "application/json",
       resumable: false,
       preconditionOpts: { ifGenerationMatch: generation },
     });
   } catch (error) {
-    if ((error as { code?: unknown }).code === 412) {
-      throw new CatalogConflictError();
-    }
+    if (isPreconditionFailure(error)) throw new CatalogConflictError();
     throw error;
   }
 }
 
+/** Unconditional write: development, tests, and stores without generations. */
 export async function writeCatalog(catalog: RegistryCatalog): Promise<void> {
+  const bucket = registryBucket();
+  if (bucket) {
+    await gcsFile(bucket, catalogKey()).save(catalogBytes(catalog), {
+      contentType: "application/json",
+      resumable: false,
+    });
+    return;
+  }
   await getArtifactStore().putBuffer(
-    Buffer.from(`${JSON.stringify(catalog, null, 2)}\n`),
+    catalogBytes(catalog),
     catalogKey(),
     "application/json",
   );
@@ -258,28 +356,32 @@ export async function readRegistrySource(
   return bytes ? (JSON.parse(bytes.toString("utf8")) as RegistrySource) : null;
 }
 
-/** Write a bundle and its source once; an existing key is left alone. */
+/** The bytes a source document is stored as: what its sha256 covers. */
+export function sourceDocumentBytes(source: RegistrySource): Uint8Array {
+  return Buffer.from(JSON.stringify(source));
+}
+
+/**
+ * Store a bundle and its source, each created once. An object that already
+ * exists must hold exactly these bytes, or this throws.
+ */
 export async function writeRegistryArtifacts(input: {
   slug: string;
   hash: string;
   bundle: Uint8Array;
   source: RegistrySource;
-}): Promise<void> {
-  const store = getArtifactStore();
-  const bundleKey = registryBundleKey(input.slug, input.hash);
-  if (!(await store.exists(bundleKey))) {
-    await store.putBuffer(input.bundle, bundleKey, "text/javascript", {
-      slug: input.slug,
-      version: input.source.version,
-    });
-  }
-  const sourceKey = registrySourceKey(input.slug, input.hash);
-  if (!(await store.exists(sourceKey))) {
-    await store.putBuffer(
-      Buffer.from(JSON.stringify(input.source)),
-      sourceKey,
-      "application/json",
-      { slug: input.slug, version: input.source.version },
-    );
-  }
+}): Promise<{ bundle: "created" | "matched"; source: "created" | "matched" }> {
+  const bundle = await createImmutable(
+    registryBundleKey(input.slug, input.hash),
+    input.bundle,
+    "text/javascript",
+    MAX_BUNDLE_BYTES,
+  );
+  const source = await createImmutable(
+    registrySourceKey(input.slug, input.hash),
+    sourceDocumentBytes(input.source),
+    "application/json",
+    MAX_DOCUMENT_BYTES,
+  );
+  return { bundle, source };
 }

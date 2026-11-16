@@ -348,6 +348,23 @@ const PUBLISHED = {
   "package.json": '{"name":"stripe","version":"1.2.0"}\n',
   "src/lists.ts": "export const x = 1;\n",
 };
+const ICON = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0xfe, 0x80]);
+/** What inspect_connector sends: every file base64-encoded. */
+const encode = files =>
+  Object.fromEntries(
+    Object.entries(files).map(([name, content]) => [
+      name,
+      Buffer.from(content).toString("base64"),
+    ]),
+  );
+const release = (version, files = PUBLISHED) => ({
+  release: {
+    version,
+    entry: "connector.ts",
+    encoding: "base64",
+    files: encode(files),
+  },
+});
 
 test("eject copies the pinned version's source and drops source:", async () => {
   const root = workspaceWithReference();
@@ -357,13 +374,7 @@ test("eject copies the pinned version's source and drops source:", async () => {
           status: "verified",
           registry: { ref: "mako/stripe@1", version: "1.2.0" },
         }
-      : {
-          release: {
-            version: "1.2.0",
-            entry: "connector.ts",
-            files: PUBLISHED,
-          },
-        },
+      : release("1.2.0", { ...PUBLISHED, "icon.png": ICON }),
   );
   const lines = [];
   try {
@@ -391,6 +402,8 @@ test("eject copies the pinned version's source and drops source:", async () => {
     PUBLISHED["src/lists.ts"],
   );
   assert.match(lines.join("\n"), /no longer upgrades/);
+  // A binary file arrives byte for byte.
+  assert.deepEqual(fs.readFileSync(path.join(folder, "icon.png")), ICON);
 });
 
 test("eject refuses a folder that already holds its own code", async () => {
@@ -415,13 +428,7 @@ test("eject will not overwrite files without --force", async () => {
   const answers = args =>
     args.connector === "ws:stripe"
       ? { registry: { version: "1.2.0" } }
-      : {
-          release: {
-            version: "1.2.0",
-            entry: "connector.ts",
-            files: PUBLISHED,
-          },
-        };
+      : release("1.2.0");
   let mako = fakeMako(answers);
   const lines = [];
   try {
@@ -461,13 +468,9 @@ test("eject will not overwrite files without --force", async () => {
 
 test("eject with --version skips the lookup, and refuses a path that escapes", async () => {
   const root = workspaceWithReference();
-  const mako = fakeMako(() => ({
-    release: {
-      version: "1.0.0",
-      entry: "connector.ts",
-      files: { ...PUBLISHED, "../evil.ts": "x" },
-    },
-  }));
+  const mako = fakeMako(() =>
+    release("1.0.0", { ...PUBLISHED, "../evil.ts": "x" }),
+  );
   const lines = [];
   try {
     const code = await connector(
@@ -483,4 +486,53 @@ test("eject with --version skips the lookup, and refuses a path that escapes", a
   assert.equal(mako.asked.length, 1);
   assert.match(lines.join("\n"), /escapes/);
   assert.equal(fs.existsSync(path.join(root, "connectors", "evil.ts")), false);
+});
+
+test("eject refuses a dangling symlink in the folder, even with --force", async () => {
+  const root = workspaceWithReference();
+  const folder = path.join(root, "connectors", "stripe");
+  const outside = path.join(
+    os.tmpdir(),
+    `mako-eject-outside-${process.pid}-${Date.now()}.ts`,
+  );
+  // Dangling: the target does not exist, so existsSync would say "free".
+  fs.symlinkSync(outside, path.join(folder, "connector.ts"));
+  const mako = fakeMako(args =>
+    args.connector === "ws:stripe"
+      ? { registry: { version: "1.2.0" } }
+      : release("1.2.0"),
+  );
+  const lines = [];
+  try {
+    const code = await connector(
+      { apiUrl: "https://mako.test", apiKey: "k", repoRoot: root },
+      ["eject", "stripe"],
+      { force: true },
+      { log: line => lines.push(line) },
+    );
+    assert.equal(code, 1);
+  } finally {
+    mako.restore();
+  }
+  assert.match(
+    lines.join("\n"),
+    /connectors\/stripe\/connector\.ts is a symlink/,
+  );
+  assert.equal(fs.existsSync(outside), false);
+});
+
+test("eject refuses a symlinked connector folder", async () => {
+  const root = workspaceWithReference();
+  const real = path.join(root, "elsewhere");
+  fs.renameSync(path.join(root, "connectors", "stripe"), real);
+  fs.symlinkSync(real, path.join(root, "connectors", "stripe"));
+  const lines = [];
+  const code = await connector(
+    { apiUrl: "https://mako.test", apiKey: "k", repoRoot: root },
+    ["eject", "stripe"],
+    {},
+    { log: line => lines.push(line) },
+  );
+  assert.equal(code, 1);
+  assert.match(lines.join("\n"), /connectors\/stripe is a symlink/);
 });

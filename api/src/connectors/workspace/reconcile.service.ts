@@ -515,7 +515,16 @@ async function indexReference(input: {
     return "blocked";
   }
 
-  const resolved = resolveReference(reference, catalog);
+  let resolved: ReturnType<typeof resolveReference>;
+  try {
+    resolved = resolveReference(reference, catalog);
+  } catch (error) {
+    // A malformed catalog entry blocks this connector, never the whole push.
+    resolved = {
+      ok: false,
+      reason: `Could not resolve ${reference.text}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   if (!resolved.ok) {
     await block(workspaceId, slug, commit, folderSha, resolved.reason, row);
     return "blocked";
