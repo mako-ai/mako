@@ -376,6 +376,37 @@ const pending: Promise<void>[] = [];
   );
   assert.deepEqual(rule.skipped, []);
 
+  // Structure is never deduped: a repeated heading keeps the new rule in
+  // its section, and fences stay paired, also inside the new content.
+  const structured = [
+    "## Stripe",
+    "- Amounts in cents",
+    "---",
+    "```sql",
+    "SELECT 1",
+    "```",
+  ].join("\n");
+  const heading = dedupeAgainstDirective(
+    structured,
+    "## Stripe\n- Refunds are negative",
+  );
+  assert.deepEqual(heading, {
+    content: "## Stripe\n- Refunds are negative",
+    skipped: [],
+  });
+  const fences = dedupeAgainstDirective(
+    structured,
+    "```sql\nSELECT 1\n```\n---\n```\nx\n```\n```\ny\n```\n| a |\n| a |",
+  );
+  assert.deepEqual(fences.skipped, []);
+  assert.equal((fences.content.match(/```/g) ?? []).length, 6);
+  // A rule line after the block is still deduped.
+  assert.deepEqual(
+    dedupeAgainstDirective(structured, "```\nz\n```\n- Amounts in cents")
+      .skipped,
+    ["- Amounts in cents"],
+  );
+
   // Repeats inside the new content collapse to one line.
   const twice = dedupeAgainstDirective("", "- a\n- a\n- b");
   assert.deepEqual(twice, { content: "- a\n- b", skipped: ["- a"] });

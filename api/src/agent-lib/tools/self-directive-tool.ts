@@ -172,30 +172,54 @@ function isPointerLine(line: string): boolean {
   );
 }
 
+const FENCE_RE = /^\s*(?:```|~~~)/;
+/** Markdown structure: headings, rules, table rows and separators. */
+const STRUCTURE_RE = /^\s*(?:#{1,6}\s|[-*_](?:\s*[-*_]){2,}\s*$|\|)/;
+
 /**
- * Drop from `content` every line the directive already holds (bullets and
- * spacing ignored), and every pointer line whose skills it already points
- * to. Returns the kept text and the skipped lines.
+ * Each line with whether it is a rule that may be deduped. Structure lines
+ * (headings, fences, rules, tables) and lines inside a fenced block never
+ * are: dropping one would move a rule to another section or leave a fence
+ * open.
+ */
+function dedupableLines(
+  text: string,
+): Array<{ line: string; dedupable: boolean }> {
+  let inFence = false;
+  return text.split("\n").map(line => {
+    if (FENCE_RE.test(line)) {
+      inFence = !inFence;
+      return { line, dedupable: false };
+    }
+    const dedupable =
+      !inFence && !STRUCTURE_RE.test(line) && lineKey(line).length > 0;
+    return { line, dedupable };
+  });
+}
+
+/**
+ * Drop from `content` every rule line the directive already holds (bullets
+ * and spacing ignored), and every pointer line whose skills it already
+ * points to. Returns the kept text and the skipped lines.
  */
 export function dedupeAgainstDirective(
   current: string,
   content: string,
 ): { content: string; skipped: string[] } {
   const seen = new Set(
-    current
-      .split("\n")
-      .map(lineKey)
-      .filter(key => key.length > 0),
+    dedupableLines(current)
+      .filter(l => l.dedupable)
+      .map(l => lineKey(l.line)),
   );
   const pointed = new Set(skillPointers(current));
   const kept: string[] = [];
   const skipped: string[] = [];
-  for (const line of content.split("\n")) {
-    const key = lineKey(line);
-    if (key.length === 0) {
+  for (const { line, dedupable } of dedupableLines(content)) {
+    if (!dedupable) {
       kept.push(line);
       continue;
     }
+    const key = lineKey(line);
     const names = isPointerLine(line) ? skillPointers(line) : [];
     const pointerDup =
       names.length > 0 && names.every(name => pointed.has(name));
@@ -207,6 +231,7 @@ export function dedupeAgainstDirective(
     for (const name of names) pointed.add(name);
     kept.push(line);
   }
+  if (skipped.length === 0) return { content, skipped };
   return {
     content: kept
       .join("\n")
