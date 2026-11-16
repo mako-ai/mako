@@ -533,3 +533,65 @@ test("MultiSelect trigger: All for an empty or full value, the one label, N sele
   assert.match(box("mixed"), /class="mk-ms-box on"[^>]*><svg[^>]*><line/);
   assert.match(box(false), /class="mk-ms-box"[^>]*><\/span>/);
 });
+
+test("MultiSelect inside a <label>: two option clicks tick both and the menu stays open", async t => {
+  let React, client, JSDOM;
+  try {
+    React = await import("react");
+    client = await import("react-dom/client");
+    ({ JSDOM } = await import("jsdom"));
+  } catch (e) {
+    t.skip("react or jsdom not installed here: " + e.message);
+    return;
+  }
+  const dom = new JSDOM("<!doctype html><body><div id=root></div></body>");
+  const win = dom.window;
+  win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  const keys = ["window", "document", "Node", "Element", "HTMLElement", "MouseEvent", "Event"];
+  const saved = keys.map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]);
+  for (const k of keys) Object.defineProperty(globalThis, k, { value: k === "window" ? win : win[k], configurable: true, writable: true });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  t.after(() => {
+    for (const [k, d] of saved) d ? Object.defineProperty(globalThis, k, d) : delete globalThis[k];
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  });
+
+  const ui = await import("./ui.js");
+  const h = React.createElement;
+  let value = [];
+  function App() {
+    const [v, setV] = React.useState([]);
+    value = v;
+    return h("label", null, h("span", null, "Country"), h(ui.MultiSelect, { options: ["CH", "ES", "IT"], value: v, onChange: setV }));
+  }
+  const root = client.createRoot(win.document.getElementById("root"));
+  await React.act(() => root.render(h(App)));
+  const menu = () => win.document.querySelector(".mk-ms-menu");
+  await React.act(() => win.document.querySelector(".mk-ms-trigger").click());
+  assert.ok(menu(), "the trigger opens the menu");
+
+  // Chrome does not count a tabindex as interactive content, so a click on an
+  // option row runs the label's activation behaviour there. jsdom does count
+  // it; drop the tabindex so jsdom behaves like Chrome.
+  const prevented = [];
+  win.document.addEventListener("click", e => prevented.push(e.defaultPrevented));
+  for (const label of ["ES", "IT"]) {
+    const row = [...win.document.querySelectorAll('[role="option"]')].find(r => r.textContent === label);
+    row.removeAttribute("tabindex");
+    await React.act(() => row.querySelector(".mk-ms-label").dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })));
+    assert.ok(menu(), `the menu stays open after the ${label} click`);
+  }
+  assert.deepEqual(value, ["ES", "IT"]);
+  assert.deepEqual(prevented, [true, true], "an option click is cancelled, so the label never re-clicks the trigger");
+  await React.act(() => root.unmount());
+});
+
+test("ui.css: ticks in --brand (fallback --primary); a pointer on buttons, Radix menu items and options", () => {
+  const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
+  assert.match(css, /\.mk-ms-box\.on \{ background: var\(--brand, var\(--primary\)\); border-color: var\(--brand, var\(--primary\)\);/);
+  const pointer = css.slice(0, css.indexOf("cursor: pointer;", css.indexOf("A hand on everything clickable")));
+  for (const sel of ["button", "summary", '[role="menuitem"]', '[role="menuitemradio"]', '[role="menuitemcheckbox"]', '[role="option"]', '[role="tab"]']) {
+    assert.ok(pointer.slice(pointer.lastIndexOf(":is(")).includes(sel), `${sel} gets a pointer`);
+  }
+  assert.match(pointer, /:not\(:disabled, \[aria-disabled="true"\], \[data-disabled\]\) \{\s*$/);
+});

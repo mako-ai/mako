@@ -180,6 +180,20 @@ function usePopover(open, setOpen, wrapRef, align) {
   }, [open, wrapRef, align]);
 }
 
+/**
+ * onClick for a popover panel. An app may wrap a kit control in a <label>
+ * (a natural form-field wrapper). A click on plain content inside the label,
+ * like a MultiSelect option row, runs the label's activation behaviour: the
+ * browser clicks the labelled control, the popover's trigger, which closed
+ * the menu. Cancelling the click stops that. Clicks on links, buttons and
+ * form fields keep their default, and the label ignores those anyway.
+ */
+const LABEL_SAFE = "a[href],button,input,select,textarea,summary";
+function cancelLabelActivation(e) {
+  const t = e.target;
+  if (!(t instanceof Element) || !t.closest(LABEL_SAFE)) e.preventDefault();
+}
+
 // ---------------------------------------------------------------------------
 // Page blocks
 // ---------------------------------------------------------------------------
@@ -654,8 +668,8 @@ function toOption(o) {
 /**
  * The kit's one checkbox, drawn only (the row around it takes the click).
  * `checked`: true, false or "mixed". Colours come from the theme tokens
- * (--primary when ticked, --input border when not), so every menu on a page,
- * the kit's or the app's own Radix menus, ticks the same way.
+ * (--brand with a white tick when ticked, --input border when not), so every
+ * menu on a page, the kit's or the app's own Radix menus, ticks the same way.
  */
 export function Checkbox({ checked = false, className }) {
   const on = checked === true || checked === "mixed";
@@ -727,7 +741,12 @@ export function MultiSelect({
     open &&
       h(
         "div",
-        { className: "mk-pop mk-ms-menu", role: "listbox", "aria-multiselectable": true },
+        {
+          className: "mk-pop mk-ms-menu",
+          role: "listbox",
+          "aria-multiselectable": true,
+          onClick: cancelLabelActivation,
+        },
         h(
           "button",
           { type: "button", className: cx("mk-ms-opt", allOn && "active"), "aria-pressed": allOn, onClick: all },
@@ -827,7 +846,12 @@ export function FreshnessBadge({
       hasPanel &&
       h(
         "div",
-        { className: "mk-pop mk-fresh-pop", role: "dialog", "aria-label": "Data freshness" },
+        {
+          className: "mk-pop mk-fresh-pop",
+          role: "dialog",
+          "aria-label": "Data freshness",
+          onClick: cancelLabelActivation,
+        },
         (title != null || meta != null) &&
           h(
             "div",

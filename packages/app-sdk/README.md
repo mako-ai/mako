@@ -434,8 +434,9 @@ option's value when `false`.
 lists the selected labels. Chips and `maxChips` are gone.
 
 **Checkbox.** `Checkbox` (`checked`: `true` / `false` / `"mixed"`) is the
-kit's one checkbox, coloured from `--primary` and `--input`. Draw the rows of
-an app's own Radix menu with it, so every menu on the page ticks alike.
+kit's one checkbox. From 2.18 it ticks white on `--brand` (`--primary` when a
+theme has no `--brand`), unticked boxes use `--input`. Draw the rows of an
+app's own Radix menu with it, so every menu on the page ticks alike.
 
 **One open at a time.** Opening a kit popover (`MultiSelect`,
 `FreshnessBadge`) closes any other. Escape, a pointerdown outside and focus
@@ -446,6 +447,17 @@ app's own menu opens, call `closePopovers()`:
 ```tsx
 <DropdownMenu modal={false} onOpenChange={o => o && closePopovers()}>
 ```
+
+**Inside a `<label>` (2.18+).** A label clicks its control when you click
+plain content inside it. In 2.17 a click on an option row reached the label,
+the label clicked the trigger, and the menu closed. Kit popovers now cancel
+that click, so a `MultiSelect` or `FreshnessBadge` can sit in a label.
+
+**Cursor (2.18+).** `ui.css` gives a pointer to every enabled button, summary,
+select, checkbox, radio, tab, option and Radix menu item (`menuitem`,
+`menuitemradio`, `menuitemcheckbox`). The rule is unlayered, so it beats
+shadcn's `cursor-default` on menu items. Disabled ones (`:disabled`,
+`aria-disabled="true"`, `data-disabled`) show `not-allowed`.
 
 Pure helpers for app-side menus: `multiSelectState(value, optionValues)`,
 `multiSelectToggle(value, optionValues, v, emptyMeansAll)`,
