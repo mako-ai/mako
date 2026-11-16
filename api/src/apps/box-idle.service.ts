@@ -556,8 +556,12 @@ async function readTrackingSince(): Promise<Date | null> {
   return doc?.since ?? null;
 }
 
-/** Fresh git credential + origin, written in the box (configureBoxRemote's). */
-function remoteScript(input: { workspaceId: string; token: string }): string {
+/**
+ * A fresh git credential, written in the box (configureBoxRemote's helper).
+ * The origin URL is NOT touched: rescueCommit has already checked it is this
+ * workspace's endpoint, and rewriting it would defeat that check.
+ */
+function remoteScript(input: { token: string }): string {
   const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
   const credential = `${BOX_ROOT}/.git/mako-git-token`;
   const helper = `!f() { printf 'username=mako\\npassword=%s\\n' "$(cat ${credential})"; }; f`;
@@ -566,7 +570,6 @@ function remoteScript(input: { workspaceId: string; token: string }): string {
     `(umask 077 && printf '%s' ${q(input.token)} > ${q(credential)})`,
     `git config --replace-all credential.helper ''`,
     `git config --add credential.helper ${q(helper)}`,
-    `{ git remote set-url origin ${q(appsGitOriginUrl(input.workspaceId))} || git remote add origin ${q(appsGitOriginUrl(input.workspaceId))}; }`,
   ].join(" && ");
 }
 
@@ -591,18 +594,16 @@ async function settleBox(
     userId: parts.userId,
     now: new Date(),
     author,
+    expectedOrigin: appsGitOriginUrl(parts.workspaceId),
     prepareRemote: async () => {
       const token = mintGitToken({
         workspaceId: parts.workspaceId,
         userId: parts.userId,
         email: author?.email,
       });
-      const result = await run(
-        remoteScript({ workspaceId: parts.workspaceId, token }),
-        {
-          timeoutMs: 60_000,
-        },
-      );
+      const result = await run(remoteScript({ token }), {
+        timeoutMs: 60_000,
+      });
       if (result.exitCode !== 0) {
         throw new Error("could not refresh the box's git credential");
       }

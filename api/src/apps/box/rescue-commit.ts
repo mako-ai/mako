@@ -86,6 +86,9 @@ export const RESCUE_EXCLUDES = [
 
 export const RESCUE_MAX_FILE_BYTES = 10 * 1024 * 1024;
 
+/** Listing size for a path staged and then deleted, never in HEAD. */
+export const INDEX_ONLY = -2;
+
 /** At most this many paths are reported per list (excluded, ignored). */
 const REPORT_CAP = 200;
 
@@ -122,9 +125,10 @@ const DIR_RULES: readonly string[] = RESCUE_EXCLUDED_DIRS;
 
 /** Why a path is left out of a rescue, or null to include it. */
 export function excludedBecause(path: string, size: number): string | null {
+  if (size === INDEX_ONLY) return "index-only";
   const parts = path.split("/");
   const base = parts[parts.length - 1] ?? path;
-  if (parts.slice(0, -1).some(dir => DIR_RULES.includes(dir))) {
+  if (parts.slice(0, -1).some(dir => DIR_RULES.includes(dir.toLowerCase()))) {
     return "excluded directory";
   }
   if (NAME_RULES.some(rule => rule.test(base))) return "secret-shaped name";
@@ -165,7 +169,8 @@ export function treeScript(root: string, rev: string): string {
  */
 export function unpushedBlobsScript(root: string, rev: string): string {
   return (
-    `cd ${sh(root)} && for c in $(git rev-list ${sh(rev)} --not --remotes); do ` +
+    `cd ${sh(root)} && { ${DROP_RESCUE_TRACKING_REFS}; } && ` +
+    `for c in $(git rev-list ${sh(rev)} --not --remotes); do ` +
     `git diff-tree -r -z --root --no-commit-id -m --diff-filter=d "$c"; done | ` +
     `while IFS= read -r -d '' meta && IFS= read -r -d '' p; do set -- $meta; ` +
     `sz=$(git cat-file -s "$4" 2>/dev/null || echo 0); printf '%s\\t%s\\0' "$sz" "$p"; done`
@@ -183,6 +188,8 @@ export function firstBlocked(stdout: string): string | null {
 
 export interface RescueInspection {
   hasRepo: boolean;
+  /** `git remote get-url origin`; empty when there is none. */
+  origin: string;
   head: string | null;
   /** null = detached HEAD. */
   branch: string | null;
@@ -196,10 +203,22 @@ export interface RescueInspection {
 }
 
 /** One read-only script answering everything the rescue needs to decide. */
+/**
+ * Delete local remote-tracking refs for rescue branches. A rescue push
+ * leaves `refs/remotes/origin/mako-presave/...` behind, and `--not --remotes`
+ * would then treat those commits as already on the server even after the
+ * server branch is gone. Only real server branches may hide a commit.
+ */
+export const DROP_RESCUE_TRACKING_REFS =
+  `git for-each-ref --format='%(refname)' refs/remotes/ | while IFS= read -r r; do ` +
+  `case "$r" in refs/remotes/*/mako-presave/*) git update-ref -d "$r";; esac; done`;
+
 export function inspectScript(root: string): string {
   return [
     `cd ${sh(root)} 2>/dev/null && test -d .git || { echo repo=no; exit 0; }`,
     "echo repo=yes",
+    DROP_RESCUE_TRACKING_REFS,
+    'echo "origin=$(git remote get-url origin 2>/dev/null)"',
     'echo "head=$(git rev-parse --verify -q HEAD)"',
     'echo "branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null)"',
     "gd=$(git rev-parse --git-dir)",
@@ -217,6 +236,7 @@ export function inspectScript(root: string): string {
 export function parseInspection(stdout: string): RescueInspection {
   const out: RescueInspection = {
     hasRepo: false,
+    origin: "",
     head: null,
     branch: null,
     inProgress: [],
@@ -231,6 +251,7 @@ export function parseInspection(stdout: string): RescueInspection {
     const key = line.slice(0, eq);
     const value = line.slice(eq + 1).trim();
     if (key === "repo") out.hasRepo = value === "yes";
+    else if (key === "origin") out.origin = value;
     else if (key === "head") out.head = value || null;
     else if (key === "branch") out.branch = value || null;
     else if (key === "inprogress" && value) out.inProgress.push(value);
@@ -249,7 +270,10 @@ export function changesScript(root: string): string {
     // and untouched since is not "modified" to ls-files, but it is work.
     `cd ${sh(root)} && { git ls-files -z --modified --deleted --others --exclude-standard; ` +
     `git diff --cached --name-only -z HEAD 2>/dev/null; } | sort -zu | ` +
-    `while IFS= read -r -d '' f; do if [ -e "$f" ]; then s=$(stat -c %s -- "$f" 2>/dev/null || stat -f %z -- "$f" 2>/dev/null || echo 0); else s=-1; fi; printf '%s\\t%s\\0' "$s" "$f"; done`
+    `while IFS= read -r -d '' f; do if [ -e "$f" ] || [ -L "$f" ]; then s=$(stat -c %s -- "$f" 2>/dev/null || stat -f %z -- "$f" 2>/dev/null || echo 0); ` +
+    // Gone from disk: a delete of a HEAD file (-1), or a file that only ever
+    // existed in the index, staged and then removed (-2, "index-only").
+    `elif git cat-file -e "HEAD:$f" 2>/dev/null; then s=-1; else s=-2; fi; printf '%s\\t%s\\0' "$s" "$f"; done`
   );
 }
 
@@ -320,6 +344,11 @@ export async function rescueCommit(input: {
   userId: string;
   now: Date;
   author?: { name?: string; email?: string };
+  /**
+   * The only origin a rescue may push to: this workspace's production
+   * apps-git endpoint (config.ts appsGitOriginUrl). Anything else is manual.
+   */
+  expectedOrigin?: string;
   /** Refresh the box's git credential; runs only when something must be pushed. */
   prepareRemote?: () => Promise<void>;
 }): Promise<RescueResult> {
@@ -339,6 +368,16 @@ export async function rescueCommit(input: {
   }
   const seen = parseInspection(inspected.stdout);
   if (!seen.hasRepo) return { status: "clean", excluded, ignored };
+  // A box pointing anywhere but this workspace's apps-git endpoint is not
+  // one we can save to: push nothing, and never delete it.
+  if (
+    input.expectedOrigin !== undefined &&
+    seen.origin !== input.expectedOrigin
+  ) {
+    return manual(
+      `origin is not this workspace's apps-git endpoint (${seen.origin || "none"})`,
+    );
+  }
 
   const ign = await run(ignoredScript(root), { timeoutMs: 60_000 });
   for (const path of ign.stdout.split("\0").filter(Boolean)) {
@@ -371,7 +410,9 @@ export async function rescueCommit(input: {
       if (excluded.length < REPORT_CAP) excluded.push(`${path} (${why})`);
       // Build output is regenerable; a secret or a big file is not, and
       // deleting the box would lose the only copy.
-      if (why !== "excluded directory") kept.push(path);
+      // An index-only path (staged, then deleted) has no file to commit: it
+      // is reported and the rescue continues.
+      if (why !== "excluded directory" && why !== "index-only") kept.push(path);
     } else {
       include.push(path);
     }
@@ -416,30 +457,72 @@ export async function rescueCommit(input: {
 
   // Pushing `commit` uploads every ancestor no remote has. Scan all of them
   // (not just the working tree) before anything leaves the box.
-  const history = await run(unpushedBlobsScript(root, commit), {
+  const scan = await scanUnpushed(run, root, commit);
+  if (scan.status === "error") return manual(scan.reason);
+  if (scan.status === "blocked") {
+    return manual(`unpushed history holds a blocked file: ${scan.path}`);
+  }
+
+  await input.prepareRemote?.();
+  const pushed = await pushRescueBranch(
+    run,
+    root,
+    commit,
+    rescueBranchName(input.userId, input.now),
+  );
+  if (pushed.status !== "pushed") return manual(pushed.reason);
+  return {
+    status: "saved",
+    branch: pushed.branch,
+    commitOid: commit,
+    files: include.length,
+    excluded,
+    ignored,
+  };
+}
+
+/**
+ * Is `rev` safe to push? Scans every blob added by a commit no real server
+ * branch has (stale rescue tracking refs dropped first). Named export for
+ * every rescue path: a branch, a detached HEAD, a stash commit.
+ */
+export async function scanUnpushed(
+  run: BoxRun,
+  root: string,
+  rev: string,
+): Promise<
+  | { status: "clean" }
+  | { status: "blocked"; path: string }
+  | { status: "error"; reason: string }
+> {
+  const history = await run(unpushedBlobsScript(root, rev), {
     timeoutMs: 180_000,
   });
   if (history.exitCode !== 0 || history.truncated) {
-    return manual("could not scan the unpushed history");
+    return { status: "error", reason: "could not scan the unpushed history" };
   }
   const leak = firstBlocked(history.stdout);
-  if (leak) return manual(`unpushed history holds a blocked file: ${leak}`);
+  return leak ? { status: "blocked", path: leak } : { status: "clean" };
+}
 
-  await input.prepareRemote?.();
-  const base = rescueBranchName(input.userId, input.now);
+/**
+ * Push `commit` to `base`, or to `base-<sha8>` when `base` is taken. Never
+ * forces; verifies the server holds the commit. Call scanUnpushed first.
+ */
+export async function pushRescueBranch(
+  run: BoxRun,
+  root: string,
+  commit: string,
+  base: string,
+): Promise<
+  { status: "pushed"; branch: string } | { status: "failed"; reason: string }
+> {
   for (const branch of [base, `${base}-${commit.slice(0, 8)}`]) {
     const pushed = await run(pushScript(root, commit, branch), {
       timeoutMs: 180_000,
     });
     if (pushed.exitCode === 0 && pushed.stdout.includes(commit)) {
-      return {
-        status: "saved",
-        branch,
-        commitOid: commit,
-        files: include.length,
-        excluded,
-        ignored,
-      };
+      return { status: "pushed", branch };
     }
     // Only a taken name is worth a second try; anything else is final.
     if (
@@ -447,8 +530,14 @@ export async function rescueCommit(input: {
         pushed.stderr,
       )
     ) {
-      return manual(`push failed: ${pushed.stderr.slice(-200)}`);
+      return {
+        status: "failed",
+        reason: `push failed: ${pushed.stderr.slice(-200)}`,
+      };
     }
   }
-  return manual("rescue branch names already taken on the server");
+  return {
+    status: "failed",
+    reason: "rescue branch names already taken on the server",
+  };
 }

@@ -291,6 +291,92 @@ describe("rescueCommit", () => {
     expect(await git(origin, "branch", "--list", "mako-presave/*")).toBe("");
   });
 
+  it("a stale rescue tracking ref cannot hide an unpushed .env commit", async () => {
+    // X adds .env, Y removes it: HEAD's tree is clean, the history is not.
+    await write(".env", "SECRET=1\n");
+    await git(root, "add", "-f", ".env");
+    await git(root, "commit", "-qm", "oops");
+    const x = await git(root, "rev-parse", "HEAD");
+    const blob = await git(root, "rev-parse", "HEAD:.env");
+    await git(root, "rm", "-q", "--cached", ".env");
+    await fs.rm(path.join(root, ".env"));
+    await git(root, "commit", "-qm", "remove it");
+    // What an earlier rescue push leaves behind, for a branch the server no
+    // longer has. Without the cleanup, --not --remotes skips X entirely.
+    await git(
+      root,
+      "update-ref",
+      `refs/remotes/origin/mako-presave/${USER}/2026-11-01`,
+      x,
+    );
+    await write("apps/sales/App.tsx", "export default 5;\n");
+
+    const result = await rescue();
+
+    expect(result).toMatchObject({ status: "manual" });
+    expect((result as { reason: string }).reason).toMatch(
+      /unpushed history.*\.env/,
+    );
+    expect(await git(origin, "branch", "--list", "mako-presave/*")).toBe("");
+    expect(await blobOnServer(blob)).toBe(false);
+    expect(
+      await git(root, "for-each-ref", "refs/remotes/origin/mako-presave/"),
+    ).toBe("");
+  });
+
+  it("refuses a box whose origin is not this workspace's endpoint, even when clean", async () => {
+    for (const dirty of [false, true]) {
+      if (dirty) await write("apps/sales/App.tsx", "export default 6;\n");
+      const result = await rescueCommit({
+        run,
+        root,
+        userId: USER,
+        now: NOW,
+        expectedOrigin: "https://mako.example/api/apps-git/other.git",
+      });
+      expect(result).toMatchObject({ status: "manual" });
+      expect((result as { reason: string }).reason).toMatch(/origin/);
+    }
+    expect(await git(origin, "branch", "--list", "mako-presave/*")).toBe("");
+  });
+
+  it("saves when the origin is exactly the expected endpoint", async () => {
+    await write("apps/sales/App.tsx", "export default 7;\n");
+    const result = await rescueCommit({
+      run,
+      root,
+      userId: USER,
+      now: NOW,
+      expectedOrigin: origin,
+    });
+    expect(result).toMatchObject({ status: "saved", branch: BRANCH });
+  });
+
+  it("a file staged and then deleted is reported index-only, and the rest is saved", async () => {
+    await write("apps/sales/gone.ts", "x\n");
+    await git(root, "add", "apps/sales/gone.ts");
+    await fs.rm(path.join(root, "apps/sales/gone.ts"));
+    await write("apps/sales/App.tsx", "export default 8;\n");
+
+    const result = await rescue();
+
+    expect(result).toMatchObject({ status: "saved", files: 1 });
+    expect(result.excluded).toContain("apps/sales/gone.ts (index-only)");
+  });
+
+  it("build folders match regardless of case", async () => {
+    await write("apps/sales/Node_Modules/x/index.js", "x\n");
+    await write("apps/sales/DIST/bundle.js", "x\n");
+    await write("apps/sales/Target/out.class", "x\n");
+    await write("apps/sales/keep.ts", "keep\n");
+
+    const result = await rescue();
+
+    expect(result).toMatchObject({ status: "saved", files: 1 });
+    const tree = await git(origin, "ls-tree", "-r", "--name-only", BRANCH);
+    expect(tree).not.toMatch(/node_modules|dist|target/i);
+  });
+
   it("never overwrites an existing rescue branch: a second run gets a suffix", async () => {
     await write("apps/sales/a.ts", "a\n");
     const first = await rescue();
