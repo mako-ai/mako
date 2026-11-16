@@ -11,18 +11,39 @@
  *    the dbt models and every other connector. Cloning would silently turn
  *    "runs tenant connector code" into "can rewrite the workspace". The folder
  *    is copied in instead, so the box holds no Mako token at all.
- * 2. A CREDENTIAL LIVES ONLY AS LONG AS THE COMMAND. It is written to a
- *    per-run directory and deleted in a `finally`, because an E2B box that
- *    pauses snapshots its disk.
+ * 2. A CREDENTIAL LIVES ONLY AS LONG AS THE COMMAND, AND ONLY ITS RUN CAN READ
+ *    IT. It is written to a per-run directory and deleted in a `finally`,
+ *    because an E2B box that pauses snapshots its disk. On E2B every run also
+ *    gets its own Unix user and a 0700 directory owned by that user, so two
+ *    runs sharing a box cannot read each other's credential files, and the
+ *    runtime they execute is owned by root, so no run can plant code for the
+ *    next one. See `openRun`.
  * 3. NOTHING BUT A BOUNDED PROTOCOL COMES BACK. stdout is redirected to a file
  *    because `exec`'s output cap would truncate legitimate records. A bounded
  *    snapshot is made before that file crosses into the API process, so tenant
  *    code still cannot turn a large batch into an API heap exhaustion.
  */
+import { randomBytes, randomInt } from "node:crypto";
+import {
+  CLEANUP_SURVIVORS_EXIT,
+  cleanupScript,
+  ISOLATED_ROOT,
+  ISOLATED_RUNTIME,
+  launchScript,
+  preflightScript,
+  runLayout,
+  stagedPath,
+  setupScript,
+  shellQuote,
+  snapshotScript,
+  type RunLayout,
+} from "./run-isolation";
 import path from "node:path";
 import {
   getSandboxProvider,
+  isSandboxGone,
   type SandboxExecContext,
+  type SandboxExecOptions,
 } from "../../apps/sandbox/provider";
 import { loggers } from "../../logging";
 
@@ -70,7 +91,44 @@ const CONNECTOR_NODE_SHA256 = {
  * in, where the repo — and its token — are checked out.
  */
 export function syncBoxContext(workspaceId: string): SandboxExecContext {
-  return { sessionKey: `connector-sync:${workspaceId}` };
+  // v2: boxes made before per-run users ran connectors as `user`, who has
+  // passwordless sudo in the template, and they pause with memory. A process
+  // a connector left in one could become root, so those boxes are never
+  // reused: the key moved, and `retireLegacySyncBox` kills the old box.
+  return { sessionKey: `connector-sync:v2:${workspaceId}` };
+}
+
+/** The pre-isolation key. Only ever used to kill that box. */
+export function legacySyncBoxKey(workspaceId: string): string {
+  return `connector-sync:${workspaceId}`;
+}
+
+const legacyRetired = new Map<string, Promise<void>>();
+
+/**
+ * Kill the workspace's pre-isolation sync box, once per process.
+ *
+ * Runs before the first command in the new box. A failure is retried on the
+ * next command rather than ignored, because a surviving legacy box is a
+ * standing root shell for whatever a pre-fix connector left running in it.
+ */
+export async function retireLegacySyncBox(workspaceId: string): Promise<void> {
+  const provider = getSandboxProvider();
+  if (!provider.supportsRunUsers || !provider.destroySession) return;
+  let pending = legacyRetired.get(workspaceId);
+  if (!pending) {
+    pending = provider
+      .destroySession(legacySyncBoxKey(workspaceId))
+      .catch(error => {
+        legacyRetired.delete(workspaceId);
+        logger.warn("Could not retire a pre-isolation sync box", {
+          workspaceId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    legacyRetired.set(workspaceId, pending);
+  }
+  await pending;
 }
 
 /** Where a connector's copied folder lives, keyed so a new sha is a new dir. */
@@ -96,6 +154,12 @@ export function connectorDir(
  * through the root's node_modules directory.
  */
 function runtimeRoot(ctx: SandboxExecContext, runtimeId: string): string {
+  // Isolated boxes keep the runtime under /var/lib, a root-only parent. Under
+  // /tmp a connector or a stray process could pre-create or symlink a parent
+  // directory before root writes into it.
+  if (runsIsolated()) {
+    return path.posix.join(ISOLATED_RUNTIME, "versions", runtimeId);
+  }
   return path.posix.join(
     getSandboxProvider().scratch(ctx),
     "connector-runtime",
@@ -104,12 +168,47 @@ function runtimeRoot(ctx: SandboxExecContext, runtimeId: string): string {
   );
 }
 
+/**
+ * Does this box give each run its own Unix user?
+ *
+ * True on E2B. Then every file the API writes into the box is written as
+ * root (so connector code, which never runs as root or as the template user,
+ * cannot modify the runtime or another connector's folder), and every run
+ * drops to a fresh Unix user that owns a 0700 run directory. The local
+ * provider is one user on a developer machine, never production, and keeps
+ * the original behaviour.
+ */
+function runsIsolated(): boolean {
+  return getSandboxProvider().supportsRunUsers === true;
+}
+
+/** File options for the API's own writes into the sync box. */
+function boxOwner(): { asRoot: true } | undefined {
+  return runsIsolated() ? { asRoot: true } : undefined;
+}
+
+/** Write a file the way the box expects: as root when runs are isolated. */
+function writeBoxFile(
+  ctx: SandboxExecContext,
+  remotePath: string,
+  bytes: Uint8Array,
+  owner: { asRoot: true } | undefined = boxOwner(),
+): Promise<void> {
+  const provider = getSandboxProvider();
+  return owner
+    ? provider.writeFile(ctx, remotePath, bytes, owner)
+    : provider.writeFile(ctx, remotePath, bytes);
+}
+
+function execOptions(
+  options: Omit<SandboxExecOptions, "asRoot">,
+): SandboxExecOptions {
+  return { ...options, ...boxOwner() };
+}
+
 function runtimeNode(ctx: SandboxExecContext, runtimeId: string): string {
   return path.posix.join(runtimeRoot(ctx, runtimeId), "node", "bin", "node");
 }
-
-const shellQuote = (value: string): string =>
-  `'${value.replace(/'/g, `'\\''`)}'`;
 
 /**
  * Put the connector's files in the box.
@@ -123,9 +222,10 @@ export async function materializeConnector(input: {
   runtimeId: string;
   slug: string;
   sourceSha: string;
-  files: Map<string, Uint8Array>;
+  /** The folder's files, or a loader called only when the box lacks them. */
+  files: Map<string, Uint8Array> | (() => Promise<Map<string, Uint8Array>>);
 }): Promise<string> {
-  const { ctx, runtimeId, slug, sourceSha, files } = input;
+  const { ctx, runtimeId, slug, sourceSha } = input;
   const provider = getSandboxProvider();
   const dir = connectorDir(ctx, runtimeId, slug, sourceSha);
 
@@ -133,12 +233,12 @@ export async function materializeConnector(input: {
   const check = await provider.exec(
     ctx,
     `test -f ${shellQuote(marker)} && echo yes || echo no`,
-    {
-      timeoutMs: 30_000,
-    },
+    execOptions({ timeoutMs: 30_000 }),
   );
   if (check.stdout.trim() === "yes") return dir;
 
+  const files =
+    typeof input.files === "function" ? await input.files() : input.files;
   for (const [relative, bytes] of files) {
     // A path from the repo tree must not escape the directory it is being
     // written into. Nothing in a normal connector folder ever contains "..",
@@ -149,10 +249,79 @@ export async function materializeConnector(input: {
         `Refusing to write ${relative}: it escapes the connector directory`,
       );
     }
-    await provider.writeFile(ctx, target, bytes);
+    await writeBoxFile(ctx, target, bytes);
   }
-  await provider.writeFile(ctx, marker, new TextEncoder().encode(sourceSha));
+  if (runsIsolated()) {
+    // Root wrote these; every run user must read them and none may change
+    // them. The parents are opened for traversal only.
+    await mustSucceed(
+      provider.exec(
+        ctx,
+        `chmod a+rX,go-w ${shellQuote(path.posix.dirname(dir))} ${shellQuote(path.posix.dirname(path.posix.dirname(dir)))} && chmod -R a+rX,go-w ${shellQuote(dir)}`,
+        execOptions({ timeoutMs: 30_000 }),
+      ),
+      "open the connector folder to run users",
+    );
+  }
+  await writeBoxFile(ctx, marker, new TextEncoder().encode(sourceSha));
   return dir;
+}
+
+/**
+ * THE BUNDLE HOOK: given a box and a bundle hash, make the box's runtime root
+ * hold that bundle, and say where it is.
+ *
+ * Every leased run calls this right after it gets its box, and the reconcile
+ * `spec` does too. Today a "bundle" is the SDK runtime plus the connector
+ * folder copied in, keyed by the folder's source sha. Iteration 1 (bundles,
+ * RFC connector-runtime §5) replaces the body with "fetch the `.mjs` for this
+ * hash and put it under the runtime root"; the callers do not change.
+ *
+ * Idempotent per box and hash: a box that already holds the bundle (a
+ * resumed box, or one restored from its key's snapshot) costs one marker
+ * check and never loads the files.
+ */
+export async function ensureBundle(input: {
+  ctx: SandboxExecContext;
+  hash: string;
+  slug: string;
+  /** The connector's own entry, used when it runs from its copied folder. */
+  entry: string;
+  files: () => Promise<Map<string, Uint8Array>>;
+  ensureRuntime: (ctx: SandboxExecContext) => Promise<string>;
+  /**
+   * Iteration 1's bundle path: a folder with dependencies runs its built
+   * `.mjs` (installConnectorBundle). Returns null for a folder without
+   * dependencies, which is copied in as before.
+   */
+  bundle?: (args: {
+    ctx: SandboxExecContext;
+    runtimeId: string;
+    files: Map<string, Uint8Array>;
+  }) => Promise<{ dir: string; entry: string } | null>;
+}): Promise<{ runtimeId: string; dir: string; entry: string }> {
+  const runtimeId = await input.ensureRuntime(input.ctx);
+  if (input.bundle) {
+    const files = await input.files();
+    const bundled = await input.bundle({ ctx: input.ctx, runtimeId, files });
+    if (bundled) return { runtimeId, ...bundled };
+    const dir = await materializeConnector({
+      ctx: input.ctx,
+      runtimeId,
+      slug: input.slug,
+      sourceSha: input.hash,
+      files,
+    });
+    return { runtimeId, dir, entry: input.entry };
+  }
+  const dir = await materializeConnector({
+    ctx: input.ctx,
+    runtimeId,
+    slug: input.slug,
+    sourceSha: input.hash,
+    files: input.files,
+  });
+  return { runtimeId, dir, entry: input.entry };
 }
 
 /** Is this exact SDK present and completely materialized in the box? */
@@ -167,7 +336,7 @@ export async function hasConnectorRuntime(
   const result = await provider.exec(
     ctx,
     `test -f ${shellQuote(marker)} && grep -Fqx ${shellQuote(runtimeId)} ${shellQuote(marker)} && echo yes || echo no`,
-    { timeoutMs: 30_000 },
+    execOptions({ timeoutMs: 30_000 }),
   );
   return result.stdout.trim() === "yes";
 }
@@ -187,7 +356,7 @@ export async function installConnectorRuntime(
     "connector-sdk",
   );
   for (const [relative, bytes] of files) {
-    await provider.writeFile(ctx, path.posix.join(base, relative), bytes);
+    await writeBoxFile(ctx, path.posix.join(base, relative), bytes);
   }
 
   // E2B templates are independently versioned and cannot be assumed to carry
@@ -223,8 +392,15 @@ else
   mkdir -p "$(dirname "$runtime_node")"
   ln -sf "$system_node" "$runtime_node"
 fi
-"$runtime_node" -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 6)) process.exit(1)'`,
-    { timeoutMs: 120_000 },
+"$runtime_node" -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 6)) process.exit(1)'${
+      runsIsolated()
+        ? `
+# Run users read and execute this tree; none of them may change it.
+chmod -R a+rX,go-w "$runtime_root"
+chmod a+rX,go-w "$(dirname "$runtime_root")" "$(dirname "$(dirname "$runtime_root")")" ${shellQuote(ISOLATED_ROOT)}`
+        : ""
+    }`,
+    execOptions({ timeoutMs: 120_000 }),
   );
   if (installNode.timedOut) {
     throw new Error("Timed out while installing the connector Node runtime.");
@@ -237,11 +413,226 @@ fi
   }
   // Written last: a killed or failed upload is retried rather than mistaken for
   // a complete runtime on the next invocation.
-  await provider.writeFile(
+  await writeBoxFile(
     ctx,
     path.posix.join(root, ".materialized"),
     new TextEncoder().encode(runtimeId),
   );
+}
+
+async function mustSucceed(
+  pending: Promise<{ exitCode: number; stderr: string; stdout: string }>,
+  what: string,
+): Promise<void> {
+  const result = await pending;
+  if (result.exitCode !== 0) {
+    const detail = (result.stderr || result.stdout).trim().slice(0, 2000);
+    throw new Error(`Could not ${what}${detail ? `: ${detail}` : "."}`);
+  }
+}
+
+/**
+ * One run's private corner of the box.
+ *
+ * `dir` holds the run's inputs. `launch` turns a connector command line into
+ * one that runs it with stdout on `outputFile`; `snapshot` makes the bounded
+ * copy at `boundedFile`. `close` deletes everything the run left behind.
+ */
+export interface OpenRun {
+  dir: string;
+  /** The run's Unix user, or null where the provider has no real users. */
+  user: string | null;
+  /**
+   * Options for the API's own file and exec calls for this run: as root,
+   * and pinned to the sandbox the run was set up in.
+   */
+  owner: { asRoot: true; expectSandboxId?: string } | undefined;
+  outputFile: string;
+  boundedFile: string;
+  /** Where to write the input whose final path is `input` (isolated: the root-only stage). */
+  stagePath(input: string): string;
+  launch(inputs: string[], command: string): string;
+  snapshot(maxBytes: number): string;
+  /** Throws when cleanup could not prove the run is gone (isolated only). */
+  close(): Promise<void>;
+}
+
+/** The run's cleanup failed: the box may still hold its credential or code. */
+export class RunCleanupError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunCleanupError";
+  }
+}
+
+/** Boxes whose template passed the tool preflight, per process. */
+const preflighted = new Set<string>();
+
+/**
+ * Check, once per box, that the template has every tool run isolation needs.
+ * A template without them cannot isolate a run, and every run would fail at
+ * setup; this says which tool is missing, in the log and in the error.
+ */
+async function preflight(ctx: SandboxExecContext): Promise<void> {
+  if (preflighted.has(ctx.sessionKey)) return;
+  const result = await getSandboxProvider().exec(ctx, preflightScript(), {
+    timeoutMs: 30_000,
+    asRoot: true,
+  });
+  const missing = result.stdout
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean);
+  if (result.exitCode !== 0 || missing.length > 0) {
+    logger.error("Connector box template lacks the tools run isolation needs", {
+      sessionKey: ctx.sessionKey,
+      missing,
+      stderr: result.stderr.slice(0, 500),
+    });
+    throw new Error(
+      `This box cannot isolate connector runs: missing ${missing.join(", ") || "tools (preflight failed)"}.`,
+    );
+  }
+
+  preflighted.add(ctx.sessionKey);
+}
+
+/**
+ * Kill the workspace's v2 sync box after a run's cleanup failed in it.
+ *
+ * The flag-off path has no lease to mark unhealthy, so this is its hook: a
+ * box where a run's thread or file may have survived is never handed to the
+ * next run. The next command creates a fresh box under the same key.
+ */
+export async function retireSyncBox(
+  workspaceId: string,
+  reason: string,
+): Promise<void> {
+  const key = syncBoxContext(workspaceId).sessionKey;
+  logger.error("Killing a connector sync box after a failed run cleanup", {
+    workspaceId,
+    reason,
+  });
+  preflighted.delete(key);
+  await getSandboxProvider().destroySession?.(key);
+}
+
+/**
+ * Open a run: on E2B a fresh Unix user, its directories and nothing else
+ * (see run-isolation.ts for the layout and why root never opens a path the
+ * run user controls); elsewhere a plain directory, as before.
+ */
+export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
+  const provider = getSandboxProvider();
+  const runId = randomBytes(8).toString("hex");
+
+  if (!runsIsolated()) {
+    const dir = path.posix.join(provider.scratch(ctx), "connector-runs", runId);
+    const outputFile = path.posix.join(dir, "out.jsonl");
+    const boundedFile = path.posix.join(dir, "out.bounded.jsonl");
+    await provider.exec(ctx, `mkdir -p ${shellQuote(dir)}`, {
+      timeoutMs: 30_000,
+    });
+    return {
+      dir,
+      user: null,
+      owner: undefined,
+      outputFile,
+      boundedFile,
+      stagePath: input => input,
+      launch: (_inputs, command) => `${command} > ${shellQuote(outputFile)}`,
+      snapshot: maxBytes =>
+        `if test -f ${shellQuote(outputFile)}; then head -c ${maxBytes + 1} ${shellQuote(outputFile)} > ${shellQuote(boundedFile)} && wc -c < ${shellQuote(boundedFile)}; else echo missing; fi`,
+      close: async () => {
+        await provider
+          .exec(ctx, `rm -rf ${shellQuote(dir)}`, { timeoutMs: 30_000 })
+          .catch(error =>
+            logger.error("Failed to clean a connector run directory", {
+              error,
+              runDir: dir,
+            }),
+          );
+      },
+    };
+  }
+
+  await preflight(ctx);
+  let layout: RunLayout | null = null;
+  let pinned: string | undefined;
+  let lastError = "";
+  // A random UID can collide with one in use; a fresh name and UID fixes it.
+  for (let attempt = 0; attempt < 3 && !layout; attempt++) {
+    const candidate = runLayout(
+      runId,
+      `mkc${randomBytes(6).toString("hex")}`,
+      randomInt(200_000, 2_000_000_000),
+      randomInt(200_000, 2_000_000_000),
+    );
+    const setup = await provider.exec(ctx, setupScript(candidate), {
+      timeoutMs: 30_000,
+      asRoot: true,
+    });
+    if (setup.exitCode === 0) {
+      layout = candidate;
+      pinned = setup.sandboxId;
+    } else {
+      lastError = (setup.stderr || setup.stdout).trim().slice(0, 2000);
+      if (/empty passwords left|could not lock/.test(lastError)) {
+        logger.error(
+          "Could not lock passwordless accounts in a connector box",
+          {
+            sessionKey: ctx.sessionKey,
+            detail: lastError.slice(0, 500),
+          },
+        );
+        break;
+      }
+    }
+  }
+  if (!layout) {
+    throw new Error(
+      `Could not create an isolated user for the connector run${lastError ? `: ${lastError}` : "."}`,
+    );
+  }
+
+  const l = layout;
+  return {
+    dir: l.dir,
+    user: l.user,
+    owner: { asRoot: true, expectSandboxId: pinned },
+    outputFile: l.outputFile,
+    boundedFile: l.boundedFile,
+    stagePath: input => stagedPath(l, input),
+    launch: (inputs, command) => launchScript(l, inputs, command),
+    snapshot: maxBytes => snapshotScript(l, maxBytes),
+    close: async () => {
+      let detail: string;
+      try {
+        const result = await provider.exec(ctx, cleanupScript(l), {
+          timeoutMs: 60_000,
+          asRoot: true,
+          expectSandboxId: pinned,
+        });
+        if (result.exitCode === 0 && !result.timedOut) return;
+        detail = result.timedOut
+          ? "cleanup timed out"
+          : result.exitCode === CLEANUP_SURVIVORS_EXIT
+            ? "the run's processes would not die"
+            : (result.stderr || `exit ${result.exitCode}`).slice(0, 500);
+      } catch (error) {
+        // The box itself is gone (killed under the run, e.g. by another
+        // run's failed cleanup): so is everything the run left in it.
+        if (isSandboxGone(error)) return;
+        detail = error instanceof Error ? error.message : String(error);
+      }
+      logger.error("Failed to remove a connector run", {
+        runDir: l.dir,
+        user: l.user,
+        detail,
+      });
+      throw new RunCleanupError(`Connector run cleanup failed: ${detail}`);
+    },
+  };
 }
 
 /** The pinned Node binary of a runtime root, for boxes that build bundles. */
@@ -281,17 +672,28 @@ export async function installConnectorBundle(input: {
   const check = await provider.exec(
     ctx,
     `test -f ${shellQuote(marker)} && echo yes || echo no`,
-    { timeoutMs: 30_000 },
+    execOptions({ timeoutMs: 30_000 }),
   );
   if (check.stdout.trim() !== "yes") {
     const bytes = await input.load();
-    await provider.writeFile(
+    await writeBoxFile(
       ctx,
       path.posix.join(dir, CONNECTOR_BUNDLE_ENTRY),
       bytes,
     );
+    if (runsIsolated()) {
+      // Root wrote it; every run user reads it and none may change it.
+      await mustSucceed(
+        provider.exec(
+          ctx,
+          `chmod a+rX,go-w ${shellQuote(path.posix.dirname(dir))} && chmod -R a+rX,go-w ${shellQuote(dir)}`,
+          execOptions({ timeoutMs: 30_000 }),
+        ),
+        "open the connector bundle to run users",
+      );
+    }
     // Written last, as for the runtime: a half-written bundle is rewritten.
-    await provider.writeFile(ctx, marker, new TextEncoder().encode(hash));
+    await writeBoxFile(ctx, marker, new TextEncoder().encode(hash));
   }
   return { dir, entry: CONNECTOR_BUNDLE_ENTRY };
 }
@@ -314,17 +716,17 @@ export async function runConnectorCommand(input: {
   maxIterations?: number;
   timeoutMs?: number;
   entry?: string;
+  /**
+   * Called when the run's cleanup failed. The result still returns; the
+   * caller decides what the box is worth now (a lease kills it).
+   */
+  onCleanupFailure?: (reason: string) => void;
 }): Promise<RunResult> {
   const provider = getSandboxProvider();
   const { ctx, command } = input;
-  const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const runDir = path.posix.join(
-    getSandboxProvider().scratch(ctx),
-    "connector-runs",
-    runId,
-  );
-  const outputPath = path.posix.join(runDir, "out.jsonl");
-  const boundedOutputPath = path.posix.join(runDir, "out.bounded.jsonl");
+  const run = await openRun(ctx);
+  const runDir = run.dir;
+  const boundedOutputPath = run.boundedFile;
   const encoder = new TextEncoder();
 
   const args = [
@@ -334,10 +736,7 @@ export async function runConnectorCommand(input: {
   ];
 
   try {
-    await provider.exec(ctx, `mkdir -p ${shellQuote(runDir)}`, {
-      timeoutMs: 30_000,
-    });
-
+    const inputs: string[] = [];
     for (const [name, value] of [
       ["config", input.config],
       ["catalog", input.catalog],
@@ -345,11 +744,16 @@ export async function runConnectorCommand(input: {
     ] as const) {
       if (value === undefined) continue;
       const file = path.posix.join(runDir, `${name}.json`);
-      await provider.writeFile(
+      // Isolated runs: written into the root-only stage, handed to the run
+      // user and moved to `file` only at launch, so no other run can open
+      // it while it still has the mode the write gave it.
+      await writeBoxFile(
         ctx,
-        file,
+        run.stagePath(file),
         encoder.encode(JSON.stringify(value)),
+        run.owner,
       );
+      inputs.push(file);
       args.push(`--${name}`, file);
     }
     if (input.maxIterations !== undefined) {
@@ -364,9 +768,15 @@ export async function runConnectorCommand(input: {
       "bin",
       "mako-connector.js",
     );
-    const command_ = `${shellQuote(runtimeNode(ctx, input.runtimeId))} ${shellQuote(bin)} ${args.map(shellQuote).join(" ")} > ${shellQuote(outputPath)}`;
+    // stdout is opened by the API's own shell (root on E2B) on a file the
+    // connector cannot reach by path; the connector only holds the descriptor.
+    const command_ = run.launch(
+      inputs,
+      `${shellQuote(runtimeNode(ctx, input.runtimeId))} ${shellQuote(bin)} ${args.map(shellQuote).join(" ")}`,
+    );
 
     const result = await provider.exec(ctx, command_, {
+      ...run.owner,
       timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       // Nothing is ADDED to the environment on purpose: a connector has no
       // business reading even what an app may read. What it does see is the
@@ -381,10 +791,18 @@ export async function runConnectorCommand(input: {
     // connector code left a child process appending to stdout after it exited.
     const snapshot = await provider.exec(
       ctx,
-      `if test -f ${shellQuote(outputPath)}; then head -c ${MAX_CONNECTOR_PROTOCOL_BYTES + 1} ${shellQuote(outputPath)} > ${shellQuote(boundedOutputPath)} && wc -c < ${shellQuote(boundedOutputPath)}; else echo missing; fi`,
-      { timeoutMs: 30_000 },
+      run.snapshot(MAX_CONNECTOR_PROTOCOL_BYTES),
+      { ...run.owner, timeoutMs: 30_000 },
     );
     const sizeText = snapshot.stdout.trim();
+    // Root opens the output file before an isolated connector starts, so it
+    // exists whatever the connector did. Missing means the box under the run
+    // was replaced: fail the chunk rather than report a short, empty success.
+    if (sizeText === "missing" && run.user) {
+      throw new Error(
+        "The connector's output is missing: its box was replaced during the run.",
+      );
+    }
     if (sizeText !== "missing") {
       const outputBytes = Number(sizeText);
       if (!Number.isSafeInteger(outputBytes) || outputBytes < 0) {
@@ -403,7 +821,9 @@ export async function runConnectorCommand(input: {
       sizeText === "missing"
         ? ""
         : new TextDecoder().decode(
-            await provider.readFile(ctx, boundedOutputPath),
+            await (run.owner
+              ? provider.readFile(ctx, boundedOutputPath, run.owner)
+              : provider.readFile(ctx, boundedOutputPath)),
           );
 
     const messages: ProtocolMessage[] = [];
@@ -456,14 +876,13 @@ export async function runConnectorCommand(input: {
   } finally {
     // The credential was in this directory. A paused box snapshots its disk,
     // so leaving it would mean the key outlives the run inside a suspended VM.
-    await provider
-      .exec(ctx, `rm -rf ${shellQuote(runDir)}`, { timeoutMs: 30_000 })
-      .catch(error =>
-        logger.error("Failed to clean a connector run directory", {
-          error,
-          runDir,
-        }),
+    try {
+      await run.close();
+    } catch (error) {
+      input.onCleanupFailure?.(
+        error instanceof Error ? error.message : String(error),
       );
+    }
   }
 }
 

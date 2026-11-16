@@ -24,6 +24,7 @@ import {
   createSourceConnection,
 } from "../connectors/source-connection-create.service";
 import { loggers } from "../logging";
+import { forgetConnectionBoxes } from "../connectors/workspace/boxes/scheduler";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
   VIEWER_REFUSAL,
@@ -468,6 +469,9 @@ sourceConnectionRoutes.openapi(
           }
           sourceConnection.config = applySchemaEncryption(newConfig, schema);
           hasChanges = true;
+          // A new credential: the connection's leased boxes and templates
+          // were made under the old one.
+          forgetConnectionBoxes(String(sourceConnection._id));
           // The key a link waited for, set in the form instead (an expired
           // link's way out): the connection stops waiting and turns on.
           const awaited = sourceConnection.keyRequest?.fields ?? [];
@@ -594,6 +598,7 @@ sourceConnectionRoutes.openapi(
       if (result.deletedCount === 0) {
         return fail(c, 404, "Source connection not found");
       }
+      forgetConnectionBoxes(id);
 
       return c.json({
         success: true,

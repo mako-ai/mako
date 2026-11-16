@@ -24,14 +24,20 @@ import {
   type IncrementalCapabilities,
   type ResumableFetchOptions,
 } from "../base/BaseConnector";
+import { randomBytes } from "node:crypto";
 import { loggers } from "../../logging";
 import {
+  ensureBundle,
   failureMessage,
   firstOfType,
   materializeConnector,
+  retireLegacySyncBox,
+  retireSyncBox,
   runConnectorCommand,
   syncBoxContext,
+  type ConnectorCommand,
   type ProtocolMessage,
+  type RunResult,
 } from "./sync-box";
 import { jsonSchemaToEntitySchema } from "./spec-translation";
 import {
@@ -43,11 +49,14 @@ import {
 import { connectorRegistryEnabled } from "./registry/flag";
 import { prepareRegistryConnector } from "./registry/registry.service";
 import {
+  connectorRuntimeId,
   ensureConnectorRuntime,
   loadConnectorDefinition,
   readConnectorFolder,
   type LoadedConnector,
 } from "./resolver";
+import { connectorBoxLeasesEnabled } from "./boxes/config";
+import { getBoxScheduler } from "./boxes/scheduler";
 
 const logger = loggers.connector();
 
@@ -126,6 +135,7 @@ export class SandboxedConnector extends BaseConnector {
   }> {
     const definition = await this.definition();
     const ctx = syncBoxContext(this.workspaceId);
+    await retireLegacySyncBox(this.workspaceId);
     if (!this.materializedDir || !this.runtimeId) {
       const runtimeId = await ensureConnectorRuntime(ctx);
       if (definition.registry) {
@@ -182,6 +192,123 @@ export class SandboxedConnector extends BaseConnector {
     };
   }
 
+  private folderCache: Map<string, Uint8Array> | null = null;
+
+  /** The folder at the indexed sha, read once per instance. */
+  private async folder(definition: LoadedConnector) {
+    this.folderCache ??= await readConnectorFolder(
+      this.workspaceId,
+      definition.slug,
+      definition.sha,
+    );
+    return this.folderCache;
+  }
+
+  /** The saved data source's id, or null for a connection not saved yet. */
+  private connectionId(): string | null {
+    const id = (this.sourceConnection as { _id?: unknown })._id;
+    return id ? String(id) : null;
+  }
+
+  /**
+   * Run one protocol command.
+   *
+   * Flag off (CONNECTOR_BOX_LEASES unset): exactly the old path, the
+   * workspace's one sync box. Flag on: a lease on a box keyed by this
+   * connection and the connector's hash, released when the command ends.
+   */
+  private async run(
+    command: ConnectorCommand,
+    options: {
+      config?: Record<string, unknown>;
+      catalog?: Record<string, unknown>;
+      state?: Record<string, unknown> | unknown[];
+      maxIterations?: number;
+      timeoutMs?: number;
+    },
+  ): Promise<RunResult> {
+    if (!connectorBoxLeasesEnabled()) {
+      const { dir, runtimeId, entry, ctx } = await this.ready();
+      let cleanupFailure: string | null = null;
+      let result: RunResult;
+      try {
+        result = await runConnectorCommand({
+          ctx,
+          runtimeId,
+          connectorDir: dir,
+          command,
+          entry,
+          ...options,
+          onCleanupFailure: reason => {
+            cleanupFailure = reason;
+          },
+        });
+      } catch (error) {
+        // The box may have been killed under this run (another run's failed
+        // cleanup retires the whole sync box). Forget what this instance put
+        // in it, so the chunk's retry rebuilds a fresh box instead of failing
+        // on a connector directory that no longer exists.
+        this.materializedDir = null;
+        this.runtimeId = null;
+        throw error;
+      }
+      if (cleanupFailure) {
+        // The box may hold this run's credential or a live thread of it:
+        // kill it, and make the next command rebuild a fresh one.
+        this.materializedDir = null;
+        this.runtimeId = null;
+        await retireSyncBox(this.workspaceId, cleanupFailure);
+      }
+      return result;
+    }
+
+    const definition = await this.definition();
+    const saved = this.connectionId();
+    return getBoxScheduler().withLease(
+      {
+        workspaceId: this.workspaceId,
+        // A connection being tested before it is saved has no id. It gets a
+        // one-off key, so its credential never enters a box another run uses.
+        connectionId: saved ?? `unsaved:${randomBytes(8).toString("hex")}`,
+        bundleHash: definition.sourceSha,
+        command,
+        runtimeId: await connectorRuntimeId(),
+        timeoutMs: options.timeoutMs,
+        oneOff: saved === null,
+      },
+      async lease => {
+        const { dir, runtimeId, entry } = await ensureBundle({
+          ctx: lease.ctx,
+          hash: definition.sourceSha,
+          slug: definition.slug,
+          entry: definition.entry,
+          files: () => this.folder(definition),
+          ensureRuntime: ensureConnectorRuntime,
+          bundle: async ({ ctx, runtimeId, files }) =>
+            shouldBundle(definition.runtime, files)
+              ? this.prepareBundle({ ctx, runtimeId, definition, files })
+              : null,
+        });
+        lease.noteRuntime(runtimeId);
+        // Before any credentialed command: the template must hold none.
+        await lease.snapshotPristine(runtimeId);
+        const result = await runConnectorCommand({
+          ctx: lease.ctx,
+          runtimeId,
+          connectorDir: dir,
+          command,
+          entry,
+          ...options,
+          // A run whose cleanup failed may have left its credential or a
+          // process behind: the box is killed, never handed to the next run.
+          onCleanupFailure: reason => lease.markUnhealthy(reason),
+        });
+        if (result.timedOut) lease.markFailed("timed out");
+        return result;
+      },
+    );
+  }
+
   private async prepareBundle(input: {
     ctx: ReturnType<typeof syncBoxContext>;
     runtimeId: string;
@@ -226,15 +353,7 @@ export class SandboxedConnector extends BaseConnector {
 
   async testConnection(): Promise<ConnectionTestResult> {
     try {
-      const { dir, runtimeId, entry, ctx } = await this.ready();
-      const result = await runConnectorCommand({
-        ctx,
-        runtimeId,
-        connectorDir: dir,
-        command: "check",
-        entry,
-        config: this.config(),
-      });
+      const result = await this.run("check", { config: this.config() });
       const failure = failureMessage(result);
       if (failure) return { success: false, message: failure };
 
@@ -301,15 +420,7 @@ export class SandboxedConnector extends BaseConnector {
 
   private async catalog(): Promise<ProtocolMessage | null> {
     if (this.catalogCache) return this.catalogCache;
-    const { dir, runtimeId, entry, ctx } = await this.ready();
-    const result = await runConnectorCommand({
-      ctx,
-      runtimeId,
-      connectorDir: dir,
-      command: "discover",
-      entry,
-      config: this.config(),
-    });
+    const result = await this.run("discover", { config: this.config() });
     const failure = failureMessage(result);
     if (failure) throw new Error(`discover failed: ${failure}`);
     this.catalogCache = firstOfType(result.messages, "CATALOG") ?? null;
@@ -335,7 +446,10 @@ export class SandboxedConnector extends BaseConnector {
    * stop need a different adapter, and they are not this iteration.
    */
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
-    const { dir, runtimeId, entry, ctx } = await this.ready();
+    // Flag off keeps the old order: the box is readied before the entity
+    // check. With leases the box is taken only for the command itself.
+    if (connectorBoxLeasesEnabled()) await this.definition();
+    else await this.ready();
 
     // An entity the connector does not declare is a failure, not an empty
     // sync. The runner's stream selection silently drops an unknown name, so
@@ -352,12 +466,7 @@ export class SandboxedConnector extends BaseConnector {
     const maxIterations = options.maxIterations ?? 10;
     const previous = options.state;
 
-    const result = await runConnectorCommand({
-      ctx,
-      runtimeId,
-      connectorDir: dir,
-      command: "read",
-      entry,
+    const result = await this.run("read", {
       config: this.config(),
       catalog: {
         streams: [

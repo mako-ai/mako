@@ -25,7 +25,14 @@ import {
   validateSpec,
   type ConnectorFile,
 } from "./connector-file";
-import { listConnectorFoldersAtMain, ensureConnectorRuntime } from "./resolver";
+import type { SandboxExecContext } from "../../apps/sandbox/provider";
+import {
+  connectorRuntimeId,
+  listConnectorFoldersAtMain,
+  ensureConnectorRuntime,
+} from "./resolver";
+import { connectorBoxLeasesEnabled } from "./boxes/config";
+import { getBoxScheduler } from "./boxes/scheduler";
 import {
   BundleBuildError,
   prepareBundledConnector,
@@ -37,11 +44,14 @@ import {
   CONNECTOR_BUNDLE_ENTRY,
   failureMessage,
   firstOfType,
+  ensureBundle,
   materializeConnector,
+  retireLegacySyncBox,
+  retireSyncBox,
   runConnectorCommand,
   syncBoxContext,
+  type RunResult,
 } from "./sync-box";
-import type { SandboxExecContext } from "../../apps/sandbox/provider";
 import { connectorRegistryEnabled } from "./registry/flag";
 import {
   getRegistryCatalog,
@@ -401,39 +411,76 @@ async function runSpec(
   | { ok: true; spec: Record<string, unknown>; build?: BundleBuildStatus }
   | { ok: false; reason: string; build?: BundleBuildStatus }
 > {
-  const ctx = syncBoxContext(workspaceId);
-  const runtimeId = await ensureConnectorRuntime(ctx);
-
   // A folder with dependencies runs its bundle, built first if storage has
   // none for this hash. A build failure throws BundleBuildError, which the
   // caller records as both `blocked` and a failed build.
-  let dir: string;
-  let runEntry = entry;
   let build: BundleBuildStatus | undefined;
-  if (bundled) {
-    const prepared = await prepareBundledConnector({
-      ctx,
-      runtimeId,
-      workspaceId,
-      slug,
-      entry,
-      files,
-    });
-    dir = prepared.dir;
-    runEntry = prepared.entry;
-    build = prepared.build ?? { status: "built", hash: prepared.hash };
-  } else {
-    dir = await materializeConnector({
-      ctx,
-      runtimeId,
-      slug,
-      sourceSha,
-      files,
-    });
-  }
+  const bundle = bundled
+    ? async (args: {
+        ctx: SandboxExecContext;
+        runtimeId: string;
+        files: Map<string, Uint8Array>;
+      }) => {
+        const prepared = await prepareBundledConnector({
+          ...args,
+          workspaceId,
+          slug,
+          entry,
+        });
+        build = prepared.build ?? { status: "built", hash: prepared.hash };
+        return prepared;
+      }
+    : undefined;
 
-  const spec = await specAt(ctx, runtimeId, dir, runEntry);
-  return { ...spec, build };
+  const result = connectorBoxLeasesEnabled()
+    ? await getBoxScheduler().withLease(
+        {
+          workspaceId,
+          // `spec` takes no credential. One key per connector: a push that
+          // touches N connectors must not make each spec drain the others.
+          connectionId: `spec:${workspaceId}:${slug}`,
+          bundleHash: sourceSha,
+          command: "spec",
+          runtimeId: await connectorRuntimeId(),
+          timeoutMs: 60_000,
+          // A push's spec is a one-time check: no template, killed after.
+          oneOff: true,
+        },
+        async lease => {
+          const prepared = await ensureBundle({
+            ctx: lease.ctx,
+            hash: sourceSha,
+            slug,
+            entry,
+            files: async () => files,
+            ensureRuntime: ensureConnectorRuntime,
+            bundle,
+          });
+          lease.noteRuntime(prepared.runtimeId);
+          // Before any credentialed command: the template must hold none.
+          await lease.snapshotPristine(prepared.runtimeId);
+          const run = await runConnectorCommand({
+            ctx: lease.ctx,
+            runtimeId: prepared.runtimeId,
+            connectorDir: prepared.dir,
+            command: "spec",
+            entry: prepared.entry,
+            timeoutMs: 60_000,
+            onCleanupFailure: reason => lease.markUnhealthy(reason),
+          });
+          if (run.timedOut) lease.markFailed("timed out");
+          return run;
+        },
+      )
+    : await runSpecInWorkspaceBox(
+        workspaceId,
+        slug,
+        sourceSha,
+        files,
+        entry,
+        bundle,
+      );
+  return { ...specFrom(result), build };
 }
 
 /** Run `spec` on code already in the box and validate what it says. */
@@ -453,7 +500,13 @@ async function specAt(
     entry,
     timeoutMs: 60_000,
   });
+  return specFrom(result);
+}
 
+/** What a `spec` run said, validated. */
+function specFrom(
+  result: RunResult,
+): { ok: true; spec: Record<string, unknown> } | { ok: false; reason: string } {
   const failure = failureMessage(result);
   if (failure) return { ok: false, reason: failure };
 
@@ -614,6 +667,38 @@ async function runRegistrySpec(
     registry: resolution,
   });
   return specAt(ctx, runtimeId, dir, entry);
+}
+
+/** The flag-off path: the workspace's one sync box, as before leases. */
+async function runSpecInWorkspaceBox(
+  workspaceId: string,
+  slug: string,
+  sourceSha: string,
+  files: Map<string, Uint8Array>,
+  entry: string,
+  bundle: Parameters<typeof ensureBundle>[0]["bundle"],
+) {
+  const ctx = syncBoxContext(workspaceId);
+  await retireLegacySyncBox(workspaceId);
+  const runtimeId = await ensureConnectorRuntime(ctx);
+  const bundled = bundle ? await bundle({ ctx, runtimeId, files }) : null;
+  const dir =
+    bundled?.dir ??
+    (await materializeConnector({ ctx, runtimeId, slug, sourceSha, files }));
+  let cleanupFailure: string | null = null;
+  const result = await runConnectorCommand({
+    ctx,
+    runtimeId,
+    connectorDir: dir,
+    command: "spec",
+    entry: bundled?.entry ?? entry,
+    timeoutMs: 60_000,
+    onCleanupFailure: reason => {
+      cleanupFailure = reason;
+    },
+  });
+  if (cleanupFailure) await retireSyncBox(workspaceId, cleanupFailure);
+  return result;
 }
 
 async function block(

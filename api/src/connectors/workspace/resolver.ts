@@ -302,6 +302,14 @@ export async function ensureConnectorRuntime(
   return runtimeId;
 }
 
+/**
+ * The id of the SDK runtime this API ships, without touching a box. Leases
+ * use it to pick the snapshot template that already holds this runtime.
+ */
+export async function connectorRuntimeId(): Promise<string> {
+  return sdkRuntimeId(await readSdkFiles());
+}
+
 /** The `@makoai/connector-sdk` version this API ships. Part of a bundle's hash. */
 export async function connectorSdkVersion(): Promise<string> {
   const files = await readSdkFiles();

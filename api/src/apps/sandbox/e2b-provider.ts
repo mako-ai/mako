@@ -25,9 +25,11 @@ import {
 } from "../config";
 import { loggers } from "../../logging";
 import type {
+  SandboxBoxLifecycle,
   SandboxTerminal,
   SandboxExecContext,
   SandboxExecOptions,
+  SandboxFileOptions,
   SandboxExecResult,
   SandboxProvider,
 } from "./provider";
@@ -39,6 +41,13 @@ function templateId(): string {
   return appsE2BTemplateEnv()?.trim() || "base";
 }
 const SANDBOX_USER = "user";
+/**
+ * Root, for the connector sync box's own setup commands only (per-run Unix
+ * users and their run directories). See SandboxExecOptions.asRoot.
+ */
+const ROOT_USER = "root";
+const userFor = (options?: { asRoot?: boolean }): string =>
+  options?.asRoot ? ROOT_USER : SANDBOX_USER;
 const REMOTE_ROOT = "/home/user/app";
 /**
  * E2B's own idle timeout: the BACKSTOP, not the policy. The idle sweep
@@ -150,6 +159,50 @@ async function convergeToSingle(
  * this map cannot see.
  */
 const connecting = new Map<string, Promise<Sandbox>>();
+
+/**
+ * The template a session's FIRST create should use instead of the configured
+ * one: a connector box restored from its snapshot (boxLifecycle.create).
+ */
+const templateOverrides = new Map<string, string>();
+
+/**
+ * Connect, and refuse a sandbox other than the one the caller pinned.
+ * Never creates a box for a pinned call: a pinned box that is gone is gone.
+ */
+async function connectPinned(
+  sessionKey: string,
+  expectSandboxId: string | undefined,
+): Promise<Sandbox> {
+  if (!expectSandboxId) return connectSession(sessionKey);
+  if (sessions.get(sessionKey) !== expectSandboxId) {
+    try {
+      const sandbox = await Sandbox.connect(expectSandboxId, {
+        apiKey: apiKey(),
+      });
+      return sandbox;
+    } catch {
+      throw new SandboxNotFoundError(
+        `Sandbox ${expectSandboxId} for ${sessionKey} was replaced or is gone.`,
+      );
+    }
+  }
+  const sandbox = await connectSession(sessionKey);
+  if (sandbox.sandboxId !== expectSandboxId) {
+    throw new SandboxNotFoundError(
+      `Sandbox ${expectSandboxId} for ${sessionKey} was replaced by ${sandbox.sandboxId}.`,
+    );
+  }
+  return sandbox;
+}
+
+/** Keys boxLifecycle.create is creating right now: the only ones allowed to. */
+const creatingBoxes = new Set<string>();
+
+/** Leased connector boxes (connectors/workspace/boxes/box-provider.ts). */
+export function isConnectorBoxKey(sessionKey: string): boolean {
+  return sessionKey.startsWith("connector-box:");
+}
 
 /**
  * The first two frames outside this file and node_modules: which code path
@@ -298,22 +351,34 @@ async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
     }
   }
 
-  const sandbox = await Sandbox.create(templateId(), {
-    apiKey: apiKey(),
-    timeoutMs: IDLE_TIMEOUT_MS,
-    metadata: { makoAppsSessionKey: sessionKey },
-    // Pause WITH MEMORY on idle: the sandbox is a stateful computer now —
-    // tmux sessions, per-app dev servers, a user's running processes — so
-    // idling must be sleep, not death. A full memory snapshot means resume
-    // restores every process exactly where it was: reopening the page after
-    // a night away reattaches to the same dev server and the same shells
-    // instead of cold-booting (fs-only snapshots reboot the VM on resume,
-    // which is how "why did my dev server restart overnight" happened).
-    // Resume is explicit via Sandbox.connect() in connectSession; a sandbox
-    // that is fully dead still falls through to a fresh create + hydrate.
-    // One-shot boxes (connector builds) are killed instead: see below.
-    lifecycle: { onTimeout: onTimeoutFor(sessionKey) },
-  });
+  // A leased connector box is created only by its scheduler
+  // (boxLifecycle.create). Anything else reaching here means the box was
+  // killed under a run; recreating it would make a box no record tracks
+  // and no reaper ever kills.
+  if (isConnectorBoxKey(sessionKey) && !creatingBoxes.has(sessionKey)) {
+    throw new SandboxNotFoundError(
+      `Connector box ${sessionKey} is gone; only its scheduler may create it.`,
+    );
+  }
+  const sandbox = await Sandbox.create(
+    templateOverrides.get(sessionKey) ?? templateId(),
+    {
+      apiKey: apiKey(),
+      timeoutMs: IDLE_TIMEOUT_MS,
+      metadata: { makoAppsSessionKey: sessionKey },
+      // Pause WITH MEMORY on idle: the sandbox is a stateful computer now —
+      // tmux sessions, per-app dev servers, a user's running processes — so
+      // idling must be sleep, not death. A full memory snapshot means resume
+      // restores every process exactly where it was: reopening the page after
+      // a night away reattaches to the same dev server and the same shells
+      // instead of cold-booting (fs-only snapshots reboot the VM on resume,
+      // which is how "why did my dev server restart overnight" happened).
+      // Resume is explicit via Sandbox.connect() in connectSession; a sandbox
+      // that is fully dead still falls through to a fresh create + hydrate.
+      // One-shot boxes (connector builds) are killed instead: see below.
+      lifecycle: { onTimeout: onTimeoutFor(sessionKey) },
+    },
+  );
   await sandbox.commands.run(`mkdir -p ${REMOTE_ROOT}`, {
     user: SANDBOX_USER,
   });
@@ -346,7 +411,7 @@ async function execE2b(
     APPS_EXEC_MAX_TIMEOUT_MS,
   );
   const startedAt = Date.now();
-  const sandbox = await connectSession(ctx.sessionKey);
+  const sandbox = await connectPinned(ctx.sessionKey, options.expectSandboxId);
   // Keep the sandbox alive long enough for this command + sync overhead —
   // without clobbering a longer hold someone asked keepAlive() for.
   await sandbox.setTimeout(
@@ -380,7 +445,7 @@ async function execE2b(
 
   try {
     const result = await sandbox.commands.run(command, {
-      user: SANDBOX_USER,
+      user: userFor(options),
       cwd,
       timeoutMs,
       envs: {
@@ -434,6 +499,7 @@ async function execE2b(
     timedOut,
     durationMs: Date.now() - startedAt,
     truncated,
+    sandboxId: sandbox.sandboxId,
   };
 }
 
@@ -482,11 +548,12 @@ async function execDetachedE2b(
 async function readFileE2b(
   ctx: SandboxExecContext,
   remotePath: string,
+  options?: SandboxFileOptions,
 ): Promise<Uint8Array> {
-  const sandbox = await connectSession(ctx.sessionKey);
+  const sandbox = await connectPinned(ctx.sessionKey, options?.expectSandboxId);
   const data = await sandbox.files.read(remotePath, {
     format: "bytes",
-    user: SANDBOX_USER,
+    user: userFor(options),
   });
   return new Uint8Array(data as Uint8Array);
 }
@@ -495,10 +562,11 @@ async function writeFileE2b(
   ctx: SandboxExecContext,
   remotePath: string,
   bytes: Uint8Array,
+  options?: SandboxFileOptions,
 ): Promise<void> {
-  const sandbox = await connectSession(ctx.sessionKey);
+  const sandbox = await connectPinned(ctx.sessionKey, options?.expectSandboxId);
   await sandbox.files.write(remotePath, bytes.buffer as ArrayBuffer, {
-    user: SANDBOX_USER,
+    user: userFor(options),
   });
 }
 
@@ -894,6 +962,56 @@ async function sessionExists(sessionKey: string): Promise<boolean> {
   }
 }
 
+/** The sandbox id behind a session, without creating one. */
+async function sandboxIdFor(sessionKey: string): Promise<string | null> {
+  const known = sessions.get(sessionKey);
+  if (known) return known;
+  const paginator = Sandbox.list({
+    apiKey: apiKey(),
+    query: { metadata: { makoAppsSessionKey: sessionKey } },
+    limit: 5,
+  });
+  if (!paginator.hasNext) return null;
+  return pickWinner([...(await paginator.nextItems())])?.sandboxId ?? null;
+}
+
+const boxLifecycleE2b: SandboxBoxLifecycle = {
+  async create(sessionKey, { template }) {
+    if (template) templateOverrides.set(sessionKey, template);
+    creatingBoxes.add(sessionKey);
+    try {
+      await connectSession(sessionKey);
+    } finally {
+      templateOverrides.delete(sessionKey);
+      creatingBoxes.delete(sessionKey);
+    }
+  },
+  async pause(sessionKey) {
+    const id = await sandboxIdFor(sessionKey);
+    if (!id) return;
+    await Sandbox.pause(id, { apiKey: apiKey() });
+    noteSessionPaused(sessionKey);
+  },
+  async snapshot(sessionKey, name) {
+    const sandbox = await connectSession(sessionKey);
+    const info = await sandbox.createSnapshot({ name });
+    return info.snapshotId;
+  },
+  async deleteSnapshot(snapshotId) {
+    await Sandbox.deleteSnapshot(snapshotId, { apiKey: apiKey() });
+  },
+  async countRunning() {
+    const paginator = Sandbox.list({
+      apiKey: apiKey(),
+      query: { state: ["running"] },
+      limit: 100,
+    });
+    let count = 0;
+    while (paginator.hasNext) count += (await paginator.nextItems()).length;
+    return count;
+  },
+};
+
 /**
  * "Running?" answers, briefly, for background polls (provider.ts isRunning).
  *
@@ -982,6 +1100,8 @@ export function noteSessionPaused(sessionKey: string): void {
 
 export const e2bSandboxProvider: SandboxProvider = {
   id: "e2b",
+  supportsRunUsers: true,
+  boxLifecycle: boxLifecycleE2b,
   exec: execE2b,
   execDetached: execDetachedE2b,
   root: () => REMOTE_ROOT,
@@ -1040,6 +1160,7 @@ export const e2bSandboxProvider: SandboxProvider = {
     // tab believes — the next touch rediscovers the same, un-killed box. The
     // metadata index is the durable truth; kill everything it names.
     const ids = new Set<string>(sandboxId ? [sandboxId] : []);
+    let listed = false;
     try {
       const paginator = Sandbox.list({
         apiKey: apiKey(),
@@ -1049,6 +1170,7 @@ export const e2bSandboxProvider: SandboxProvider = {
       if (paginator.hasNext) {
         for (const box of await paginator.nextItems()) ids.add(box.sandboxId);
       }
+      listed = true;
     } catch (error) {
       logger.warn(
         "Recycle could not list sandboxes by metadata; killing known id only",
@@ -1058,16 +1180,39 @@ export const e2bSandboxProvider: SandboxProvider = {
         },
       );
     }
-    await Promise.all(
-      [...ids].map(id =>
-        Sandbox.kill(id, { apiKey: apiKey() }).catch(error =>
-          logger.warn("Could not kill a sandbox on destroy", {
-            sessionKey,
-            sandboxId: id,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        ),
-      ),
+    // Knowing nothing is not the same as there being nothing. A kill that
+    // could neither list nor remember a box must fail, so its caller (the
+    // connector box reaper, a legacy sync box retirement) retries instead of
+    // recording a box as dead while it runs on.
+    if (!listed && ids.size === 0) {
+      throw new Error(
+        `Could not find the sandbox for ${sessionKey} to kill it; the list call failed.`,
+      );
+    }
+    const results = await Promise.allSettled(
+      [...ids].map(id => Sandbox.kill(id, { apiKey: apiKey() })),
     );
+    const failed = results.filter(r => r.status === "rejected");
+    for (const result of failed) {
+      logger.warn("Could not kill a sandbox on destroy", {
+        sessionKey,
+        error:
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason),
+      });
+    }
+    // Connector boxes and sync boxes: a kill that failed must surface, so
+    // the reaper (or the legacy sync box retirement) tries again rather than
+    // believing a box with tenant code in it is gone.
+    if (
+      failed.length > 0 &&
+      (isConnectorBoxKey(sessionKey) ||
+        sessionKey.startsWith("connector-sync:"))
+    ) {
+      throw new Error(
+        `Could not kill ${failed.length} of ${ids.size} sandboxes for ${sessionKey}.`,
+      );
+    }
   },
 };

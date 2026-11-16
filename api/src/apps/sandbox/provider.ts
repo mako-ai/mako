@@ -45,6 +45,31 @@ export interface SandboxExecOptions {
    * token file, and per-app env vars from env.service).
    */
   env?: Record<string, string>;
+  /**
+   * Run as the box's root instead of the unprivileged template user.
+   *
+   * Only the connector sync box uses this, and only for commands Mako writes
+   * itself: creating a per-run Unix user, handing it a 0700 run directory,
+   * and dropping to that user with `runuser` before any connector code runs
+   * (connectors/workspace/sync-box.ts). Tenant code never runs as root.
+   * Ignored by providers without real users (see `supportsRunUsers`).
+   */
+  asRoot?: boolean;
+  /**
+   * Fail with a "sandbox gone" error unless the session is still this exact
+   * sandbox. A connector run pins the box it started in: if that box was
+   * killed and the key now names a new one, the run must fail, never carry
+   * on in a box that holds none of its state.
+   */
+  expectSandboxId?: string;
+}
+
+/** Options for a single file transfer. */
+export interface SandboxFileOptions {
+  /** Read or write as root; see {@link SandboxExecOptions.asRoot}. */
+  asRoot?: boolean;
+  /** See {@link SandboxExecOptions.expectSandboxId}. */
+  expectSandboxId?: string;
 }
 
 /** Identity of the sandbox a command runs against. */
@@ -61,6 +86,27 @@ export interface SandboxExecResult {
   durationMs: number;
   /** True when stdout/stderr were truncated to the output cap. */
   truncated: boolean;
+  /** The sandbox that ran it, where the provider has such ids (E2B). */
+  sandboxId?: string;
+}
+
+/** Lifecycle calls the connector box scheduler makes on a session. */
+export interface SandboxBoxLifecycle {
+  /**
+   * Create the session's box now, from `template` when given (a snapshot id),
+   * else from the configured template. Resumes it if it already exists.
+   */
+  create(sessionKey: string, options: { template?: string }): Promise<void>;
+  /** Pause with memory. The next command on the session resumes it. */
+  pause(sessionKey: string): Promise<void>;
+  /** Snapshot the box; returns an id `create` accepts as a template. */
+  snapshot(sessionKey: string, name: string): Promise<string>;
+  deleteSnapshot(snapshotId: string): Promise<void>;
+  /**
+   * Running sandboxes on the whole account: app sessions, sync boxes and
+   * connector boxes alike. The account's concurrency limit counts all of them.
+   */
+  countRunning(): Promise<number>;
 }
 
 /** A live pseudo-terminal in a sandbox. */
@@ -86,6 +132,15 @@ export interface SandboxTerminal {
 
 export interface SandboxProvider {
   readonly id: AppsSandboxProviderId;
+  /**
+   * The box has real Unix users, and `asRoot` really runs as root.
+   *
+   * True for E2B. The connector sync box then gives every run its own Unix
+   * user, so two runs in one box cannot read each other's credential files.
+   * A local sandbox is a directory on this machine with one user, so it
+   * cannot offer that, and it never runs in production.
+   */
+  readonly supportsRunUsers?: boolean;
   /**
    * Absolute path of the working copy inside this sandbox.
    *
@@ -176,6 +231,7 @@ export interface SandboxProvider {
     ctx: SandboxExecContext,
     remotePath: string,
     bytes: Uint8Array,
+    options?: SandboxFileOptions,
   ): Promise<void>;
   /**
    * Read raw bytes back out of the sandbox.
@@ -183,7 +239,11 @@ export interface SandboxProvider {
    * The counterpart to writeFile: raw bytes out of the sandbox, used for
    * reading a file the working copy holds.
    */
-  readFile(ctx: SandboxExecContext, remotePath: string): Promise<Uint8Array>;
+  readFile(
+    ctx: SandboxExecContext,
+    remotePath: string,
+    options?: SandboxFileOptions,
+  ): Promise<Uint8Array>;
   /**
    * Keep the session alive for at least this long. Dev servers outlive the
    * command that started them, so the idle timeout has to be pushed out
@@ -218,6 +278,11 @@ export interface SandboxProvider {
       onExit?: (reason: string) => void;
     },
   ): Promise<SandboxTerminal>;
+  /**
+   * Explicit lifecycle for leased connector boxes (connectors/workspace/boxes).
+   * Absent where there is no VM to pause or snapshot (local).
+   */
+  boxLifecycle?: SandboxBoxLifecycle;
   /**
    * Every sandbox id the provider holds for this session, without creating or
    * connecting to any. Throws when the provider cannot answer, so a caller

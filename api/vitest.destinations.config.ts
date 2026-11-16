@@ -36,6 +36,8 @@ export default defineConfig({
       "src/sync/legacy-flow-migration.test.ts",
       "src/sync/sync-orchestrator.test.ts",
       "src/utils/bigquery-emulator.test.ts",
+      // Per-run Unix users in e2bdev/base under Docker; RUN_DB_INTEGRATION=1.
+      "src/connectors/workspace/run-isolation.docker.test.ts",
     ],
     exclude: [
       "**/node_modules/**",
