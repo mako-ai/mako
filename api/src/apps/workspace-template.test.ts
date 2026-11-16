@@ -13,7 +13,7 @@ import {
 
 // When this fails you changed a managed file: bump WORKSPACE_TEMPLATE_VERSION
 // and paste the new fingerprint. The bump is what moves existing repos.
-const PINNED = { version: 25, fingerprint: "802a8a40cc7a8ce2" };
+const PINNED = { version: 26, fingerprint: "2ac8e9a8c9f81d65" };
 assert.equal(WORKSPACE_TEMPLATE_VERSION, PINNED.version);
 assert.equal(
   templateFingerprint(),
@@ -33,7 +33,20 @@ assert.equal(
   undefined,
   "OAuth-first: no header, clients sign in",
 );
-assert.equal(files["CLAUDE.md"].trim(), "@AGENTS.md");
+// Claude Code silently skips a missing @import, so @PROMPT.md is safe in a
+// workspace that has none yet.
+assert.equal(files["CLAUDE.md"], "@AGENTS.md\n@PROMPT.md\n");
+// Codex and Cursor read only AGENTS.md: it must send them to the workspace's
+// own rule files, and stop sending agent rules to README.md.
+assert.match(files["AGENTS.md"], /## Workspace rules/);
+assert.match(files["AGENTS.md"], /`PROMPT\.md`: rules for every task/);
+assert.match(files["AGENTS.md"], /`CONTRIBUTING\.md`: how changes get made/);
+assert.doesNotMatch(files["AGENTS.md"], /guidance\s+in README\.md/);
+// The template never owns the workspace's rule files.
+for (const owned of ["PROMPT.md", "CONTRIBUTING.md"]) {
+  assert.equal(files[owned], undefined, `${owned} must not be managed`);
+  assert.equal(initialWorkspaceFiles("ws")[owned], undefined);
+}
 assert.match(files["AGENTS.md"], /managed by Mako/);
 assert.match(files["AGENTS.md"], /app_write_file[\s\S]*not on this checkout/);
 assert.match(files["AGENTS.md"], /update_self_directive/);
@@ -119,6 +132,25 @@ void (async () => {
     stillUsed?.writes["AGENTS.md"],
     "the rest of the refresh still applies",
   );
+
+  // A refresh rewrites managed files only: the workspace's README.md,
+  // PROMPT.md and CONTRIBUTING.md stay exactly as they are.
+  const owned = await planTemplateRefresh(
+    repoWith({
+      "README.md": "# Ours\n",
+      "PROMPT.md": "Our rules.\n",
+      "CONTRIBUTING.md": "Our process.\n",
+    }),
+    "ws",
+  );
+  assert.ok(owned?.writes["AGENTS.md"] && owned.writes["CLAUDE.md"]);
+  for (const rel of ["README.md", "PROMPT.md", "CONTRIBUTING.md"]) {
+    assert.equal(
+      owned?.writes[rel],
+      undefined,
+      `refresh must not touch ${rel}`,
+    );
+  }
 
   console.log("workspace-template: ok");
 })().catch(error => {

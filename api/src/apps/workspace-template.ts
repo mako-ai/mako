@@ -11,6 +11,10 @@
  *   (`.mako/workspace.json`).
  * - SEEDED: written once when missing, never touched again (`README.md`,
  *   `.gitignore`) — they are the user's after that.
+ * - WORKSPACE-OWNED, never written: `PROMPT.md` (agent rules every task needs)
+ *   and `CONTRIBUTING.md` (how changes get made). `AGENTS.md` points to both
+ *   and `CLAUDE.md` imports `PROMPT.md`, so Claude Code, Codex and Cursor see
+ *   the workspace's rules, not only Mako's.
  *
  * Instructions here are POINTERS, not knowledge: the system skills (SDK API,
  * charts, dialects) stay behind the MCP server's `get_relevant_skills`, and
@@ -38,7 +42,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 25;
+export const WORKSPACE_TEMPLATE_VERSION = 26;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -52,11 +56,22 @@ export interface WorkspaceStamp {
 
 const AGENTS_MD = `# Mako workspace
 
-<!-- managed by Mako: overwritten on template refresh. Put your own guidance
-     in README.md, not here. -->
+<!-- managed by Mako: overwritten on template refresh. Put agent rules every
+     task needs in PROMPT.md, how changes get made in CONTRIBUTING.md, and
+     the human introduction in README.md. Never here. -->
 
 This repository is a Mako workspace: one git monorepo holding every data app
 of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
+
+## Workspace rules
+
+This file is Mako's generic guide. The workspace's own rules live in files
+it owns. Read them when they exist:
+
+- \`PROMPT.md\`: rules for every task. Read it before you start.
+- \`CONTRIBUTING.md\`: how changes get made. Read it before any change.
+
+They win over this file where the two disagree.
 
 ## Layout
 
@@ -114,7 +129,8 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
   Edits through Mako are commits; jobs and deploys build \`main\`.
 - \`PROMPT.md\` — the workspace's custom agent prompt (business context,
   conventions). Every agent turn reads it from \`main\`; edit and commit it
-  like any file.
+  like any file. \`CONTRIBUTING.md\` (how changes get made) and
+  \`README.md\` (for people on GitHub) are the workspace's too.
 - \`archive/…\` — archived apps: an app nobody opened or edited for 60 days
   is moved here (\`archive/apps/…\`, \`archive/users/<handle>/apps/…\`) after
   its owner was told. Outside the app trees, so nothing here is listed,
@@ -261,11 +277,15 @@ Uncommitted work exists only on this machine.
 - load a large binding with \`useQuery\` and filter or aggregate it in JS;
 - vendor or copy \`@makoai/app-sdk\` (or a kit component) into the repo —
   depend on it from npm;
-- edit \`.mako/\`, \`.mcp.json\` or this file — they are overwritten on
-  refresh.
+- edit \`.mako/\`, \`.mcp.json\`, \`CLAUDE.md\` or this file — they are
+  overwritten on refresh. Workspace rules go in \`PROMPT.md\` or
+  \`CONTRIBUTING.md\`.
 `;
 
+// Claude Code skips an @import whose file is missing, without a warning, so
+// importing the workspace-owned PROMPT.md is safe before anyone writes it.
 const CLAUDE_MD = `@AGENTS.md
+@PROMPT.md
 `;
 
 const MCP_JSON = `${JSON.stringify(
@@ -293,6 +313,9 @@ content will join as sibling folders.
 
 Working from a clone? Read \`AGENTS.md\` — it is written for your coding
 agent, and it tells you where the credentials go.
+
+This file is for people. Agent rules every task needs go in \`PROMPT.md\`;
+how changes get made goes in \`CONTRIBUTING.md\`.
 `;
 
 function stamp(workspaceId: string): string {

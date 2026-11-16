@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { saveSkill, skillExists } from "../../services/skills.service";
+import { getSystemSkill } from "../skills/system-skills";
 import { SKILL_NAME_RE, SKILL_NAME_RULE } from "../../apps/skill-files";
 import {
   commitWorkspaceSelfDirective,
@@ -107,6 +108,139 @@ export function planArchiveSection(
   return { ok: true, section: section.trim(), newValue };
 }
 
+/**
+ * Skill names a text points to: a path (`skills/<name>`), a call
+ * (`load_skill("<name>")`) or an archive pointer (`→ skill '<name>'`).
+ * `.claude/skills/<name>` is a Claude Code path, not a Mako skill: skipped.
+ */
+export function skillPointers(text: string): string[] {
+  const NAME = "([a-z0-9][a-z0-9_-]*)";
+  const patterns = [
+    new RegExp(`(?<![\\w./-])skills/${NAME}`, "g"),
+    new RegExp(
+      `load_skill\\(\\s*(?:\\{\\s*name\\s*:\\s*)?["'\`]${NAME}["'\`]`,
+      "g",
+    ),
+    new RegExp(`→ skill '${NAME}'`, "g"),
+  ];
+  const names = new Set<string>();
+  for (const re of patterns) {
+    for (const match of text.matchAll(re)) names.add(match[1]);
+  }
+  return [...names];
+}
+
+/**
+ * Skills that `next` points to, that `current` did not, and that do not
+ * exist. Pointers already in the directive are not re-checked, so one stale
+ * pointer never blocks an unrelated edit.
+ */
+export async function findMissingSkillPointers(
+  current: string,
+  next: string,
+  exists: (name: string) => Promise<boolean>,
+): Promise<string[]> {
+  const before = new Set(skillPointers(current));
+  const missing: string[] = [];
+  for (const name of skillPointers(next)) {
+    if (before.has(name)) continue;
+    if (!(await exists(name))) missing.push(name);
+  }
+  return missing;
+}
+
+export function missingSkillPointersError(missing: string[]): string {
+  const list = missing.map(name => `'${name}'`).join(", ");
+  return (
+    `Update rejected: the text points to ${missing.length === 1 ? "a skill" : "skills"} ` +
+    `that do not exist in this workspace: ${list}. Self-directive unchanged. ` +
+    `Create the skill first (save_skill), fix the name, or drop the pointer.`
+  );
+}
+
+function lineKey(line: string): string {
+  return line
+    .trim()
+    .replace(/^(?:[-*+]|\d+\.)\s+/, "")
+    .replace(/\s+/g, " ");
+}
+
+/** A line whose job is to point at a skill: it starts with the pointer. */
+function isPointerLine(line: string): boolean {
+  return /^\s*(?:[-*+]\s+)?(?:→\s*)?(?:skill\s+'|`?skills\/|`?load_skill\()/.test(
+    line,
+  );
+}
+
+const FENCE_RE = /^\s*(?:```|~~~)/;
+/** Markdown structure: headings, rules, table rows and separators. */
+const STRUCTURE_RE = /^\s*(?:#{1,6}\s|[-*_](?:\s*[-*_]){2,}\s*$|\|)/;
+
+/**
+ * Each line with whether it is a rule that may be deduped. Structure lines
+ * (headings, fences, rules, tables) and lines inside a fenced block never
+ * are: dropping one would move a rule to another section or leave a fence
+ * open.
+ */
+function dedupableLines(
+  text: string,
+): Array<{ line: string; dedupable: boolean }> {
+  let inFence = false;
+  return text.split("\n").map(line => {
+    if (FENCE_RE.test(line)) {
+      inFence = !inFence;
+      return { line, dedupable: false };
+    }
+    const dedupable =
+      !inFence && !STRUCTURE_RE.test(line) && lineKey(line).length > 0;
+    return { line, dedupable };
+  });
+}
+
+/**
+ * Drop from `content` every rule line the directive already holds (bullets
+ * and spacing ignored), and every pointer line whose skills it already
+ * points to. Returns the kept text and the skipped lines.
+ */
+export function dedupeAgainstDirective(
+  current: string,
+  content: string,
+): { content: string; skipped: string[] } {
+  const seen = new Set(
+    dedupableLines(current)
+      .filter(l => l.dedupable)
+      .map(l => lineKey(l.line)),
+  );
+  const pointed = new Set(skillPointers(current));
+  const kept: string[] = [];
+  const skipped: string[] = [];
+  for (const { line, dedupable } of dedupableLines(content)) {
+    if (!dedupable) {
+      kept.push(line);
+      continue;
+    }
+    const key = lineKey(line);
+    const names = isPointerLine(line) ? skillPointers(line) : [];
+    const pointerDup =
+      names.length > 0 && names.every(name => pointed.has(name));
+    if (seen.has(key) || pointerDup) {
+      skipped.push(line.trim());
+      continue;
+    }
+    seen.add(key);
+    for (const name of names) pointed.add(name);
+    kept.push(line);
+  }
+  if (skipped.length === 0) return { content, skipped };
+  return {
+    content: kept
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/^\n+|\n+$/g, ""),
+    skipped,
+  };
+}
+
 export interface SelfDirectiveOperationInput {
   operation:
     | "set"
@@ -122,7 +256,13 @@ export interface SelfDirectiveOperationInput {
 }
 
 export type SelfDirectiveOperationResult =
-  { ok: true; value: string } | { ok: false; error: string };
+  | {
+      ok: true;
+      value: string;
+      /** Lines of `content` dropped because the directive already holds them. */
+      skipped?: string[];
+    }
+  | { ok: false; error: string };
 
 /**
  * Pure application of an update operation to the current directive text.
@@ -141,6 +281,16 @@ export function applySelfDirectiveOperation(
   });
 
   let newValue: string;
+  let skipped: string[] = [];
+
+  // Adding text the directive already holds (a line, or a pointer to a skill
+  // it already points to) would only duplicate it: keep the new lines only.
+  const fresh = (): string | null => {
+    if (content === undefined) return null;
+    const deduped = dedupeAgainstDirective(current, content);
+    skipped = deduped.skipped;
+    return deduped.content;
+  };
 
   switch (operation) {
     case "set": {
@@ -150,14 +300,18 @@ export function applySelfDirectiveOperation(
     }
 
     case "append": {
-      if (content === undefined) return missing("content");
-      newValue = current ? current + "\n" + content : content;
+      const added = fresh();
+      if (added === null) return missing("content");
+      if (!added) return { ok: true, value: current, skipped };
+      newValue = current ? current + "\n" + added : added;
       break;
     }
 
     case "prepend": {
-      if (content === undefined) return missing("content");
-      newValue = current ? content + "\n" + current : content;
+      const added = fresh();
+      if (added === null) return missing("content");
+      if (!added) return { ok: true, value: current, skipped };
+      newValue = current ? added + "\n" + current : added;
       break;
     }
 
@@ -183,7 +337,9 @@ export function applySelfDirectiveOperation(
           error: `Anchor text not found in self-directive: "${after.slice(0, 80)}"`,
         };
       }
-      newValue = literalReplace(current, after, after + "\n" + content);
+      const added = fresh() ?? "";
+      if (!added) return { ok: true, value: current, skipped };
+      newValue = literalReplace(current, after, after + "\n" + added);
       break;
     }
 
@@ -221,7 +377,9 @@ export function applySelfDirectiveOperation(
     };
   }
 
-  return { ok: true, value: newValue };
+  return skipped.length > 0
+    ? { ok: true, value: newValue, skipped }
+    : { ok: true, value: newValue };
 }
 
 const updateSelfDirectiveSchema = z
@@ -362,6 +520,9 @@ const readSelfDirectiveSchema = z.object({});
 
 export function createSelfDirectiveTools(workspaceId: string, userId?: string) {
   const authorId = userId && userId.length > 0 ? userId : "agent";
+  // A pointer resolves the way load_skill does: workspace skill, else system.
+  const skillIsAvailable = async (name: string) =>
+    getSystemSkill(name) !== null || (await skillExists(workspaceId, name));
 
   return {
     read_self_directive: tool({
@@ -491,6 +652,38 @@ export function createSelfDirectiveTools(workspaceId: string, userId?: string) {
             after,
           });
           if (!result.ok) return { success: false, error: result.error };
+          const skipped = result.skipped ?? [];
+          const skippedNote =
+            skipped.length > 0
+              ? {
+                  skippedDuplicates: skipped,
+                  note: `Skipped ${skipped.length} line(s) the self-directive already holds.`,
+                }
+              : {};
+          if (result.value === current) {
+            return {
+              success: true,
+              unchanged: true,
+              ...skippedNote,
+              ...selfDirectiveUsage(current.length),
+            };
+          }
+
+          // Refuse rather than strip: a stripped pointer silently changes
+          // the rule the agent meant to save, a refusal keeps the file intact
+          // and names exactly what to fix.
+          const missingSkills = await findMissingSkillPointers(
+            current,
+            result.value,
+            skillIsAvailable,
+          );
+          if (missingSkills.length > 0) {
+            return {
+              success: false,
+              error: missingSkillPointersError(missingSkills),
+              missingSkills,
+            };
+          }
 
           await commitWorkspaceSelfDirective(
             workspaceId,
@@ -501,6 +694,7 @@ export function createSelfDirectiveTools(workspaceId: string, userId?: string) {
           const warning = selfDirectiveCompactionWarning(result.value.length);
           return {
             success: true,
+            ...skippedNote,
             ...selfDirectiveUsage(result.value.length),
             ...(warning ? { warning } : {}),
           };
