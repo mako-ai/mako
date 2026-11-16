@@ -82,6 +82,7 @@ export {
 } from "./worktree/worktrees";
 export {
   execInWorktree,
+  withBoxPushLock,
   writeWorktreeScratchFile,
   listFiles,
   readFile,

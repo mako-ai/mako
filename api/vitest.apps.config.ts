@@ -81,6 +81,8 @@ export default defineConfig({
       "src/agent-lib/tools/apps-tools-output-caps.test.ts",
       // The workspace shell: role and grant, repo root, never main, redaction.
       "src/agent-lib/tools/sandbox-tools.test.ts",
+      // writeFile refuses an ignored path before writing; the box push lock.
+      "src/apps/worktree/files-write-order.test.ts",
       "src/agent-lib/tools/shared/output-cap.test.ts",
       "src/agent-lib/tools/shared/query-result-format.test.ts",
       "src/agent-lib/capabilities/runtime.test.ts",

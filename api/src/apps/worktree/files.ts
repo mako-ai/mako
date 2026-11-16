@@ -63,6 +63,32 @@ const logger = loggers.api("apps");
 
 export type ExecOutcome = SandboxExecResult;
 
+/**
+ * One push at a time per box, in this process. A shell push after a command
+ * (execInWorktree) waits here, and the workspace shell (sandbox-tools.ts)
+ * holds it from its command to the end of its main-settling step, so a
+ * concurrent app_bash cannot push a commit that command left on main before
+ * it is moved to a branch. Another API instance is not covered.
+ */
+const pushLocks = new Map<string, Promise<void>>();
+export async function withBoxPushLock<T>(
+  sessionKey: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = pushLocks.get(sessionKey) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>(resolve => (release = resolve));
+  const tail = previous.then(() => mine);
+  pushLocks.set(sessionKey, tail);
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (pushLocks.get(sessionKey) === tail) pushLocks.delete(sessionKey);
+  }
+}
+
 export async function execInWorktree(
   handle: WorktreeHandle,
   command: string,
@@ -113,10 +139,11 @@ export async function execInWorktree(
   // result; it does not publish it.
   await syncBranchFromBox(handle);
   if (pushIfAhead && handle.doc.userId !== PUBLISH_ACTOR) {
-    await boxPushIfAhead(ctx).catch(error =>
-      logger.warn("Apps could not push commits made in the shell", {
-        error: error instanceof Error ? error.message : String(error),
-      }),
+    await withBoxPushLock(ctx.sessionKey, () => boxPushIfAhead(ctx)).catch(
+      error =>
+        logger.warn("Apps could not push commits made in the shell", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
     );
   }
   return result;
@@ -453,8 +480,8 @@ export async function writeFile(
     throw new Error("File exceeds the maximum size for a direct write");
   }
   const ctx = await ensureBox(handle);
-  await boxWriteFile(ctx, safe, contents);
-
+  // Asked BEFORE the write: an ignored path (.env, node_modules/) refused
+  // after writing would already hold the bytes on disk.
   const ignored = await getSandboxProvider().exec(
     ctx,
     `git -C ${sh(boxRoot(ctx))} check-ignore -q ${sh(safe)}`,
@@ -465,6 +492,7 @@ export async function writeFile(
       `${relPath} is ignored by git (.gitignore or the sandbox's excludes), so it cannot be saved. Build output and installed dependencies live only in the sandbox by design — write somewhere tracked instead.`,
     );
   }
+  await boxWriteFile(ctx, safe, contents);
 }
 
 /** Read a file straight from the working copy (agents editing in place). */

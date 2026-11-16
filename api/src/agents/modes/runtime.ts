@@ -89,7 +89,10 @@ const HEADLESS_DENIED_TOOLS = new Set([
   "workflow_commit",
   "workflow_merge_to_main",
   "workflows_triggers",
+  // The person's sandbox, looking included: its clone holds the whole repo.
+  "sandbox_status",
   "sandbox_bash",
+  "sandbox_read_file",
   "sandbox_write_file",
 ]);
 

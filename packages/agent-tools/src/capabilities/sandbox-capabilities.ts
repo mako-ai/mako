@@ -2,10 +2,13 @@
  * The workspace shell (api sandbox-tools.ts): the caller's own sandbox at
  * the root of the workspace repo. Every tool needs the member role, as a
  * write to an app or a workflow does. Changing the box (a command, a file
- * write) runs code with the caller's rights in the same box a sandbox
- * workflow run uses, so it needs the grant that run needs: `workflows-run`
- * (the `workflows:run` scope, carried by every OAuth sign-in; a plain API
- * key has it only when minted with it).
+ * write) needs BOTH grants:
+ * - `git-write` (the `git:write` scope): the box holds a git token, so a
+ *   command can commit and push. Listing hides the tools without it.
+ * - `workflows-run` (the `workflows:run` scope): a command runs code with
+ *   the caller's rights in the box a sandbox workflow run uses.
+ * In the in-app chat both also ask the user before each call (the tools'
+ * `needsApproval`); over MCP the client's own tool approval does.
  */
 import { ALL_AGENT_SURFACES, type AgentCapabilityDefinition } from "./types";
 
@@ -21,6 +24,13 @@ const define = (
   pack: "sandbox",
   ...definition,
 });
+
+/** The second grant the shell needs, on every call. */
+const ALWAYS_WORKFLOWS_RUN = {
+  grant: "workflows-run",
+  behavior: "running code in your sandbox",
+  appliesTo: () => true,
+} as const;
 
 export const SANDBOX_CAPABILITIES: readonly SandboxCapabilityDefinition[] = [
   define({
@@ -43,7 +53,8 @@ export const SANDBOX_CAPABILITIES: readonly SandboxCapabilityDefinition[] = [
     name: "sandbox_bash",
     risk: "destructive",
     minimumWorkspaceRole: "member",
-    requiredGrant: "workflows-run",
+    requiredGrant: "git-write",
+    inputConditionalGrants: [ALWAYS_WORKFLOWS_RUN],
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "data",
   }),
@@ -51,7 +62,8 @@ export const SANDBOX_CAPABILITIES: readonly SandboxCapabilityDefinition[] = [
     name: "sandbox_write_file",
     risk: "write",
     minimumWorkspaceRole: "member",
-    requiredGrant: "workflows-run",
+    requiredGrant: "git-write",
+    inputConditionalGrants: [ALWAYS_WORKFLOWS_RUN],
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
