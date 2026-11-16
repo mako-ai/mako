@@ -778,3 +778,86 @@ describe("a box replaced under a run", () => {
     expect(prepares).toHaveLength(2);
   });
 });
+
+describe("box hardening", () => {
+  let n = 0;
+  beforeEach(() => {
+    sandbox.supportsRunUsers = true;
+    sandbox.exec.mockReset();
+    sandbox.readFile.mockReset();
+    sandbox.writeFile.mockReset();
+    sandbox.writeFiles.mockReset();
+  });
+  afterEach(() => {
+    sandbox.supportsRunUsers = undefined;
+  });
+  const prepared = (command: string) =>
+    command.includes("/var/lib/mako-connectors/incoming'");
+
+  it("locks passwordless accounts in every run's command, and refuses the run if it cannot", async () => {
+    sandbox.exec.mockImplementation((_ctx, command: string) =>
+      Promise.resolve(
+        prepared(command)
+          ? { ...result(), sandboxId: "sbx_1" }
+          : command.includes("mako-connector.js")
+            ? {
+                ...result("MAKO_CHUNK setup-failed\n"),
+                exitCode: 97,
+                stderr: "empty passwords left: root",
+              }
+            : result(),
+      ),
+    );
+    n++;
+    await expect(
+      runConnectorCommand({
+        ctx: { sessionKey: `connector-box:soft-root-${n}` },
+        runtimeId: "runtime",
+        connectorDir: "/x",
+        command: "spec",
+      }),
+    ).rejects.toThrow(/isolated user.*empty passwords left: root/);
+    const chunks = sandbox.exec.mock.calls.filter(([, c]) =>
+      String(c).includes("mako-connector.js"),
+    );
+    // No retry with a fresh uid can help a box whose accounts cannot be
+    // locked. The lock runs as root, inside setup, before useradd.
+    expect(chunks).toHaveLength(1);
+    const chunk = String(chunks[0]?.[1]);
+    expect(chunks[0]?.[2]).toMatchObject({ asRoot: true });
+    expect(chunk.indexOf("usermod -p")).toBeGreaterThan(-1);
+    expect(chunk.indexOf("usermod -p")).toBeLessThan(
+      chunk.indexOf("useradd -l"),
+    );
+    expect(chunk.indexOf("useradd -l")).toBeLessThan(
+      chunk.indexOf("runuser -u '"),
+    );
+  });
+
+  it("runs the lock on every run, not once per box key", async () => {
+    sandbox.exec.mockImplementation((_ctx, command: string) =>
+      Promise.resolve(
+        prepared(command)
+          ? { ...result(), sandboxId: "sbx_1" }
+          : command.includes("mako-connector.js")
+            ? result("MAKO_CHUNK 0 0\n")
+            : result(),
+      ),
+    );
+    n++;
+    const ctx = { sessionKey: `connector-sync:v2:replaced-${n}` };
+    for (let i = 0; i < 2; i++) {
+      await runConnectorCommand({
+        ctx,
+        runtimeId: "runtime",
+        connectorDir: "/x",
+        command: "spec",
+      });
+    }
+    expect(
+      sandbox.exec.mock.calls.filter(([, c]) =>
+        String(c).includes("usermod -p"),
+      ),
+    ).toHaveLength(2);
+  });
+});

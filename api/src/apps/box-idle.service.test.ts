@@ -22,15 +22,14 @@ vi.mock("./worktree/box-session", () => ({
   resolveActorIdentity: vi.fn(),
   forgetBoxCaches: vi.fn(),
 }));
-vi.mock("./worktree/worktrees", () => ({
-  isUserActor: (id: string) => /^[0-9a-f]{24}$/i.test(id),
-}));
 
 import type { BoxActivity } from "./box-activity";
+import { isPersonActorId, isSystemActor } from "./worktree/worktrees";
 import {
   RUNNING_WORK_PROBE,
   boxIdleConfig,
   idleDeadline,
+  isPersonSession,
   lastUseOf,
   parseRunningWork,
   planReap,
@@ -45,7 +44,11 @@ import type { RescueResult } from "./box/rescue-commit";
 import type { AppBoxInfo } from "./sandbox/e2b-fleet";
 
 const WS = "6846e6a01b05af0948070582";
-const USER = "6846e6a01b05af0948070999";
+// Real Mako user ids: 15 characters (auth.service.ts generateId). Hex today,
+// base36 for older accounts. The old 24-hex fixture hid a production bug
+// where no real user counted as a person.
+const USER = "6846e6a01b05af0";
+const BASE36_USER = "2ej8m72pihz87dy";
 const KEY = `${WS}:${USER}`;
 const MIN = 60_000;
 const DAY = 86_400_000;
@@ -110,6 +113,10 @@ function sweepDeps(
       calls.push(`pause:${id}`);
       return true;
     }),
+    pauseHistory: vi.fn(async () => ({ pausedAt: [], holdUntil: null })),
+    recordPause: vi.fn(async () => undefined),
+    holdPausing: vi.fn(async () => undefined),
+    lastResumeCaller: vi.fn(async () => "routes/workflows/workspace.ts:271"),
     now: () => NOW,
     ...overrides,
   };
@@ -224,6 +231,209 @@ describe("sweepIdleBoxes: pause after idle", () => {
       boxIdleConfig({ APPS_BOX_IDLE_MINUTES: "5" }),
     );
     expect(result.pausedNow).toHaveLength(1);
+  });
+});
+
+describe("real user ids", () => {
+  it("15-char hex, 15-char base36 and legacy 24-hex users are persons", () => {
+    for (const user of [USER, BASE36_USER, "6846e6a01b05af0948070999"]) {
+      expect(isPersonActorId(user)).toBe(true);
+      expect(isPersonSession(`${WS}:${user}`)).toBe(true);
+    }
+  });
+
+  it("system actors are not", () => {
+    for (const actor of [
+      "publish",
+      "api-key",
+      "",
+      "API-KEY-X",
+      "2EJ8M72PIHZ87DY",
+    ]) {
+      expect(isPersonActorId(actor)).toBe(false);
+      expect(isSystemActor(actor)).toBe(true);
+    }
+  });
+
+  it("the sweep pauses an idle base36 user's box", async () => {
+    const key = `${WS}:${BASE36_USER}`;
+    const { deps } = sweepDeps([appBox({ sessionKey: key })], {
+      [key]: activity(30),
+    });
+    expect((await sweepIdleBoxes(deps, config)).pausedNow).toHaveLength(1);
+  });
+
+  it("12 boxes of real users, all idle: 12 paused (the production miss)", async () => {
+    const keys = Array.from(
+      { length: 12 },
+      (_, i) =>
+        `${WS}:${BASE36_USER.slice(0, 13)}${String(i).padStart(2, "0")}`,
+    );
+    const { deps } = sweepDeps(
+      keys.map((sessionKey, i) =>
+        appBox({ sessionKey, sandboxId: `sbx-${i}` }),
+      ),
+      Object.fromEntries(keys.map(k => [k, activity(30)])),
+    );
+    expect((await sweepIdleBoxes(deps, config)).pausedNow).toHaveLength(12);
+  });
+});
+
+describe("sweepIdleBoxes: every skip has a reason", () => {
+  it("names a system actor and a session not due yet", async () => {
+    const publish = `${WS}:publish`;
+    const { deps } = sweepDeps(
+      [appBox({ sessionKey: publish, sandboxId: "pub" }), appBox()],
+      { [KEY]: activity(4) },
+    );
+    const result = await sweepIdleBoxes(deps, config);
+    expect(result.skipped).toEqual([
+      { sessionKey: publish, reason: "not a person session (actor publish)" },
+      { sessionKey: KEY, reason: "not idle yet: due in 6 min" },
+    ]);
+  });
+});
+
+describe("sweepIdleBoxes: safety valve", () => {
+  const pausesAgo = (...minutes: number[]) =>
+    minutes.map(m => new Date(NOW - m * MIN));
+
+  it("3 pauses in 30 min with no use between: hold 30 min, warn with the caller, do not pause", async () => {
+    const { deps } = sweepDeps(
+      [appBox()],
+      { [KEY]: activity(60) },
+      {
+        pauseHistory: vi.fn(async () => ({
+          pausedAt: pausesAgo(25, 14, 3),
+          holdUntil: null,
+        })),
+      },
+    );
+    const result = await sweepIdleBoxes(deps, config);
+    expect(deps.pause).not.toHaveBeenCalled();
+    expect(deps.holdPausing).toHaveBeenCalledWith(
+      KEY,
+      new Date(NOW + 30 * MIN),
+    );
+    expect(result.kept[0].reason).toBe(
+      "safety valve: 3 pauses in 30 min without use; last resume by routes/workflows/workspace.ts:271",
+    );
+  });
+
+  it("real use between the pauses resets the count", async () => {
+    const { deps } = sweepDeps(
+      [appBox()],
+      { [KEY]: activity(12) },
+      {
+        pauseHistory: vi.fn(async () => ({
+          pausedAt: pausesAgo(25, 20, 15),
+          holdUntil: null,
+        })),
+      },
+    );
+    const result = await sweepIdleBoxes(deps, config);
+    expect(result.pausedNow).toHaveLength(1);
+    expect(deps.recordPause).toHaveBeenCalledWith(KEY, new Date(NOW));
+  });
+
+  it("pauses older than 30 min do not count", async () => {
+    const { deps } = sweepDeps(
+      [appBox()],
+      { [KEY]: activity(120) },
+      {
+        pauseHistory: vi.fn(async () => ({
+          pausedAt: pausesAgo(50, 40, 35),
+          holdUntil: null,
+        })),
+      },
+    );
+    expect((await sweepIdleBoxes(deps, config)).pausedNow).toHaveLength(1);
+  });
+
+  it("a failed or no-op pause is not recorded, so it cannot trip the valve", async () => {
+    for (const pause of [
+      vi.fn(async () => {
+        throw new Error("E2B 500");
+      }),
+      vi.fn(async () => false),
+    ]) {
+      const { deps } = sweepDeps(
+        [appBox()],
+        { [KEY]: activity(30) },
+        { pause },
+      );
+      await sweepIdleBoxes(deps, config);
+      expect(deps.recordPause).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a pause-history error keeps that session and the tick goes on", async () => {
+    const other = `${WS}:${BASE36_USER}`;
+    const { deps } = sweepDeps(
+      [appBox(), appBox({ sessionKey: other, sandboxId: "sbx-2" })],
+      { [KEY]: activity(30), [other]: activity(30) },
+      {
+        pauseHistory: vi.fn(async (key: string) => {
+          if (key === KEY) throw new Error("mongo timeout");
+          return { pausedAt: [], holdUntil: null };
+        }),
+      },
+    );
+    const result = await sweepIdleBoxes(deps, config);
+    expect(result.kept).toEqual([
+      { sessionKey: KEY, reason: "pause history unavailable: mongo timeout" },
+    ]);
+    expect(result.pausedNow.map(p => p.sessionKey)).toEqual([other]);
+  });
+
+  it("a failed hold write does not throw out of the tick", async () => {
+    const { deps } = sweepDeps(
+      [appBox()],
+      { [KEY]: activity(60) },
+      {
+        pauseHistory: vi.fn(async () => ({
+          pausedAt: pausesAgo(25, 14, 3),
+          holdUntil: null,
+        })),
+        holdPausing: vi.fn(async () => {
+          throw new Error("mongo down");
+        }),
+      },
+    );
+    const result = await sweepIdleBoxes(deps, config);
+    expect(result.kept[0].reason).toMatch(/^safety valve: 3 pauses/);
+  });
+
+  it("real use after the hold was set lifts it", async () => {
+    // Hold set 20 min ago until 10 min from now; used 15 min ago; idle since.
+    const { deps } = sweepDeps(
+      [appBox()],
+      { [KEY]: activity(15) },
+      {
+        pauseHistory: vi.fn(async () => ({
+          pausedAt: [],
+          holdUntil: new Date(NOW + 10 * MIN),
+          holdSetAt: new Date(NOW - 20 * MIN),
+        })),
+      },
+    );
+    expect((await sweepIdleBoxes(deps, config)).pausedNow).toHaveLength(1);
+  });
+
+  it("while held, the session is kept", async () => {
+    const { deps } = sweepDeps(
+      [appBox()],
+      { [KEY]: activity(60) },
+      {
+        pauseHistory: vi.fn(async () => ({
+          pausedAt: [],
+          holdUntil: new Date(NOW + 5 * MIN),
+        })),
+      },
+    );
+    const result = await sweepIdleBoxes(deps, config);
+    expect(deps.pause).not.toHaveBeenCalled();
+    expect(result.kept[0].reason).toMatch(/^safety valve: pausing held until/);
   });
 });
 
@@ -577,7 +787,17 @@ describe("planReap: grace rule", () => {
       { [pub]: activity(40 * 24 * 60) },
     );
     const plan = await planReap(deps, reaperOn);
-    expect(plan).toEqual({ due: [], skipped: [] });
+    // Never due, and each one logged with its reason.
+    expect(plan).toEqual({
+      due: [],
+      skipped: [
+        { sessionKey: pub, reason: "not a person session (actor publish)" },
+        {
+          sessionKey: `${WS}:api-key`,
+          reason: "not a person session (actor api-key)",
+        },
+      ],
+    });
   });
 
   it("skips another environment's session", async () => {
@@ -589,7 +809,7 @@ describe("planReap: grace rule", () => {
 
   it("drains a backlog oldest first, a batch per run", async () => {
     const keys = [20, 40, 30].map((days, i) => ({
-      key: `${WS}:${USER.slice(0, 23)}${i}`,
+      key: `${WS}:${USER.slice(0, 14)}${i}`,
       days,
     }));
     const { deps } = reapDeps(
@@ -743,7 +963,7 @@ describe("reapSession", () => {
   it("APPS_BOX_REAPER=dryrun plans every due session and touches none", async () => {
     const keys = Array.from(
       { length: 12 },
-      (_, i) => `${WS}:${USER.slice(0, 22)}${String(i).padStart(2, "0")}`,
+      (_, i) => `${WS}:${USER.slice(0, 13)}${String(i).padStart(2, "0")}`,
     );
     const { deps } = reapDeps(
       keys.map((key, i) => paused({ sandboxId: `sbx-${i}`, sessionKey: key })),

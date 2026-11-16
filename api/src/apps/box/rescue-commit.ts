@@ -101,6 +101,12 @@ export type RescueResult =
       files: number;
       excluded: string[];
       ignored: string[];
+      /**
+       * The server already held this exact rescue (same tree on the same
+       * parent) under `branch`; nothing was pushed. Makes a re-run idempotent
+       * instead of minting a `-<sha>` branch per run.
+       */
+      unchanged?: boolean;
     }
   | { status: "manual"; reason: string; excluded: string[]; ignored: string[] };
 
@@ -153,6 +159,23 @@ export function blockedBecause(path: string, size: number): string | null {
   return null;
 }
 
+/**
+ * blockedBecause, plus build output (node_modules/, target/, dist/, any
+ * letter case) for commits the server lacks. Those folders are in
+ * NEVER_COMMIT, so a commit carrying them was forced in by hand, and a
+ * rescue push must not be the thing that uploads a dependency tree or a
+ * build. Not applied to HEAD's whole tree: content already on the server
+ * does not travel, and one committed `dist/` there would block every rescue.
+ */
+export function blockedInHistory(path: string, size: number): string | null {
+  const blocked = blockedBecause(path, size);
+  if (blocked) return blocked;
+  const dirs = path.split("/").slice(0, -1);
+  return dirs.some(dir => DIR_RULES.includes(dir.toLowerCase()))
+    ? "excluded directory"
+    : null;
+}
+
 /** Every blob in a tree: `<size>\t<path>\0` (ls-tree -l). */
 export function treeScript(root: string, rev: string): string {
   return (
@@ -177,9 +200,12 @@ export function unpushedBlobsScript(root: string, rev: string): string {
 }
 
 /** The first blocked blob in a `<size>\t<path>\0` listing, or null. */
-export function firstBlocked(stdout: string): string | null {
+export function firstBlocked(
+  stdout: string,
+  rule: (path: string, size: number) => string | null = blockedBecause,
+): string | null {
   for (const { path, size } of parseChanges(stdout)) {
-    const why = blockedBecause(path, size);
+    const why = rule(path, size);
     if (why) return `${path} (${why})`;
   }
   return null;
@@ -320,11 +346,14 @@ export function commitScript(input: {
   author?: { name?: string; email?: string };
 }): string {
   const list = Buffer.from(input.paths.join("\0")).toString("base64");
+  // Authored by the person whose work it is (the git endpoint checks the
+  // author against the token), COMMITTED by "Mako Agent", as agent turns
+  // are: `git log --format='%an / %cn'` shows Mako made the rescue.
   const who =
-    input.author?.name && input.author?.email
-      ? `GIT_AUTHOR_NAME=${sh(input.author.name)} GIT_AUTHOR_EMAIL=${sh(input.author.email)} ` +
-        `GIT_COMMITTER_NAME=${sh(input.author.name)} GIT_COMMITTER_EMAIL=${sh(input.author.email)} `
-      : "";
+    (input.author?.name && input.author?.email
+      ? `GIT_AUTHOR_NAME=${sh(input.author.name)} GIT_AUTHOR_EMAIL=${sh(input.author.email)} `
+      : "") +
+    "GIT_COMMITTER_NAME='Mako Agent' GIT_COMMITTER_EMAIL='agent@mako.ai' ";
   return [
     `cd ${sh(input.root)} || exit 1`,
     "idx=$(mktemp) && lst=$(mktemp) || exit 1",
@@ -335,6 +364,31 @@ export function commitScript(input: {
     'tree=$(GIT_INDEX_FILE="$idx" git write-tree) || exit 1',
     `commit=$(${who}git commit-tree "$tree" -p HEAD -m ${sh(input.message)}) || exit 1`,
     'echo "COMMIT=$commit"',
+  ].join("\n");
+}
+
+/**
+ * An existing rescue on the server (`base` or `base-<sha8>`, read from
+ * SERVER_REFS) holding the same content as `commit`: the same commit, or the
+ * same tree on the same first parent. Prints `SAME=<sha> <branch>`.
+ */
+export function sameRescueScript(
+  root: string,
+  base: string,
+  commit: string,
+): string {
+  const hex8 = "[0-9a-f]".repeat(8);
+  return [
+    `cd ${sh(root)} || exit 1`,
+    `c=${sh(commit)}; base=${sh(base)}`,
+    't=$(git rev-parse "$c^{tree}") || exit 1',
+    'p=$(git rev-parse -q --verify "$c^1" 2>/dev/null || true)',
+    `git for-each-ref --format="%(objectname) %(refname)" "${SERVER_REFS}/" | while read -r x r; do`,
+    `  b="\${r#${SERVER_REFS}/}"`,
+    `  case "$b" in "$base"|"$base"-${hex8}) ;; *) continue;; esac`,
+    '  if [ "$x" = "$c" ] || { [ "$(git rev-parse "$x^{tree}")" = "$t" ] && [ "$(git rev-parse -q --verify "$x^1" 2>/dev/null || true)" = "$p" ]; }; then echo "SAME=$x $b"; break; fi',
+    "done",
+    "true",
   ].join("\n");
 }
 
@@ -365,6 +419,13 @@ export async function rescueCommit(input: {
   expectedOrigin: string;
   /** Refresh the box's git credential; runs before the server's refs are read. */
   prepareRemote?: () => Promise<void>;
+  /**
+   * The caller already pushed every stash to its own rescue ref (the E2B
+   * move's pre-save, box-presave.ts), so stashes no longer make this manual.
+   */
+  stashesHandled?: boolean;
+  /** Commit message; defaults to the idle-sandbox wording. */
+  message?: string;
 }): Promise<RescueResult> {
   const { run, root } = input;
   const excluded: string[] = [];
@@ -423,7 +484,9 @@ export async function rescueCommit(input: {
     );
   }
   if (seen.unmerged > 0) return manual("unmerged paths (conflict) in the box");
-  if (seen.stashes > 0) return manual(`${seen.stashes} stash entries`);
+  if (seen.stashes > 0 && !input.stashesHandled) {
+    return manual(`${seen.stashes} stash entries`);
+  }
   if (seen.otherUnpushed.length > 0) {
     return manual(
       `local branches with commits the server lacks: ${seen.otherUnpushed.join(", ")}`,
@@ -476,7 +539,9 @@ export async function rescueCommit(input: {
       commitScript({
         root,
         paths: include,
-        message: `Rescue: uncommitted work from an idle sandbox (${input.now.toISOString().slice(0, 10)})`,
+        message:
+          input.message ??
+          `Rescue: uncommitted work from an idle sandbox (${input.now.toISOString().slice(0, 10)})`,
         author: input.author,
       }),
       { timeoutMs: 180_000 },
@@ -496,12 +561,23 @@ export async function rescueCommit(input: {
     return manual(`unpushed history holds a blocked file: ${scan.path}`);
   }
 
-  const pushed = await pushRescueBranch(
-    run,
-    root,
-    commit,
-    rescueBranchName(input.userId, input.now),
-  );
+  const base = rescueBranchName(input.userId, input.now);
+  const same = await run(sameRescueScript(root, base, commit), {
+    timeoutMs: 60_000,
+  });
+  const existing = /^SAME=([0-9a-f]{40}) (.+)$/m.exec(same.stdout);
+  if (same.exitCode === 0 && existing?.[1] && existing[2]) {
+    return {
+      status: "saved",
+      branch: existing[2],
+      commitOid: existing[1],
+      files: include.length,
+      excluded,
+      ignored,
+      unchanged: true,
+    };
+  }
+  const pushed = await pushRescueBranch(run, root, commit, base);
   if (pushed.status !== "pushed") return manual(pushed.reason);
   return {
     status: "saved",
@@ -534,7 +610,7 @@ export async function scanUnpushed(
   if (history.exitCode !== 0 || history.truncated) {
     return { status: "error", reason: "could not scan the unpushed history" };
   }
-  const leak = firstBlocked(history.stdout);
+  const leak = firstBlocked(history.stdout, blockedInHistory);
   return leak ? { status: "blocked", path: leak } : { status: "clean" };
 }
 

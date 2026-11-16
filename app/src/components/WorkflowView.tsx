@@ -83,6 +83,12 @@ const Dim = ({ children }: { children: ReactNode }) => (
 
 const ACTIVE_POLL_INTERVAL_MS = 3_000;
 const IDLE_POLL_INTERVAL_MS = 8_000;
+/**
+ * A sandbox run whose box is asleep answers PAUSED. It is not over: the box
+ * wakes on the next real use and the run carries on. Keep checking, slowly,
+ * so the view picks it up, without the 3 s rate that would hammer E2B.
+ */
+const PAUSED_POLL_INTERVAL_MS = 15_000;
 
 const STATUS: Record<string, { label: string; color: string }> = {
   COMPLETED: { label: "Success", color: "success.main" },
@@ -371,6 +377,22 @@ function RunsView({
     );
     return () => clearInterval(timer);
   }, [workspaceId, sandboxRunId, sandboxStatus, fetchRun]);
+
+  // A run in a sleeping box (PAUSED) is checked every 15 s until it moves.
+  const pausedRunId =
+    sandboxRunId && sandboxStatus === "PAUSED"
+      ? sandboxRunId
+      : selectedRunId && selectedStatus === "PAUSED"
+        ? selectedRunId
+        : null;
+  useEffect(() => {
+    if (!pausedRunId) return;
+    const timer = setInterval(
+      () => void fetchRun(workspaceId, pausedRunId),
+      PAUSED_POLL_INTERVAL_MS,
+    );
+    return () => clearInterval(timer);
+  }, [workspaceId, pausedRunId, fetchRun]);
 
   const select = (runId: string) => {
     setSandboxRunId(null);

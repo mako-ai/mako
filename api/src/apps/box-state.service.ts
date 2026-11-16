@@ -183,6 +183,22 @@ function keyFor(sessionKey: string): string {
   return `apps:box-state:${sessionKey}`;
 }
 
+/** Box reports are ignored this long after an offline broadcast. */
+export const OFFLINE_QUIET_SECONDS = 10;
+
+function quietKeyFor(sessionKey: string): string {
+  return `apps:box-state-quiet:${sessionKey}`;
+}
+
+/** Inside the window after markBoxOffline? */
+export async function boxReportsQuieted(sessionKey: string): Promise<boolean> {
+  try {
+    return (await getStore().get(quietKeyFor(sessionKey))) !== null;
+  } catch {
+    return false;
+  }
+}
+
 // --------------------------------------------------------------------------
 // Reads
 // --------------------------------------------------------------------------
@@ -248,6 +264,14 @@ export async function markBoxOffline(
   const sessionKey = sessionKeyFor(workspaceId, userId);
   await getStore()
     .del(keyFor(sessionKey))
+    .catch(() => undefined);
+  // The box agent may still be mid-heartbeat (it reports every 30 s, and the
+  // pause that follows this takes a few seconds). Without this, that last
+  // report flipped every tab back to "online" right after the offline
+  // broadcast, and the terminal reconnected and resumed the box: 2–7% of
+  // idle pauses were undone this way.
+  await getStore()
+    .set(quietKeyFor(sessionKey), "1", OFFLINE_QUIET_SECONDS)
     .catch(() => undefined);
   publishRealtimeEvent(workspaceId, {
     type: "app.box-state",
@@ -380,6 +404,34 @@ function applyPatch(prev: BoxState | null, patch: BoxStatePatch): BoxState {
 }
 
 /**
+ * Is `sandboxId` a box the provider does NOT hold for this session, while it
+ * does hold another one?
+ *
+ * Only a positive answer rejects. A provider that cannot list (local), a
+ * failed lookup, or an empty list all accept: a brand-new box can report
+ * before the provider's list shows it, and rejecting that first report would
+ * hide a healthy box. The old-account box loses as soon as the new account
+ * holds a box for the key, which is the case that matters.
+ */
+async function isForeignSandbox(
+  sessionKey: string,
+  sandboxId: string,
+): Promise<boolean> {
+  const provider = getSandboxProvider();
+  if (!provider.sessionSandboxIds) return false;
+  try {
+    const held = await provider.sessionSandboxIds({ sessionKey });
+    return held.length > 0 && !held.includes(sandboxId);
+  } catch (error) {
+    logger.warn("Apps box-state could not verify a sandbox id; accepting", {
+      sessionKey,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
+/**
  * Merge what a box process reported, persist with expiry, and tell every
  * open tab. Returns the merged snapshot.
  */
@@ -391,7 +443,45 @@ export async function patchBoxState(input: {
 }): Promise<BoxState> {
   const { workspaceId, userId, patch, source } = input;
   const sessionKey = sessionKeyFor(workspaceId, userId);
+  // Just announced offline (an idle pause or a recycle): a straggling
+  // report from the box must not bring every tab back online.
+  if (await boxReportsQuieted(sessionKey)) {
+    logger.debug("Apps box-state report ignored right after offline", {
+      sessionKey,
+      source,
+    });
+    return {
+      branch: null,
+      head: null,
+      ahead: null,
+      changes: null,
+      devServers: null,
+      sandboxId: null,
+      status: "offline",
+      terminals: null,
+      updatedAt: Date.now(),
+    };
+  }
   let prev = await getBoxState(sessionKey);
+
+  // A report from a box the provider does not hold for this session is
+  // dropped. It happens after an E2B account move: a box left running in the
+  // OLD account keeps its box agent and a valid git token, so it keeps
+  // reporting for the same session key while the API already serves a fresh
+  // box from the new account. Merging both made the sandbox id (and every
+  // preview URL built from it) flap between two machines.
+  if (
+    typeof patch.sandboxId === "string" &&
+    patch.sandboxId !== prev?.sandboxId &&
+    (await isForeignSandbox(sessionKey, patch.sandboxId))
+  ) {
+    logger.warn("Apps box-state ignored a report from a foreign sandbox", {
+      sessionKey,
+      source,
+      sandboxId: patch.sandboxId,
+    });
+    return prev ?? applyPatch(null, {});
+  }
 
   // A delta on a COLD snapshot must not pose as the full list: with nothing
   // known yet, "hello-world is serving" would read as "only hello-world is

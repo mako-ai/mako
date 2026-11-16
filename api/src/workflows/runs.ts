@@ -217,7 +217,10 @@ export async function readWorkflowsOverview(
     })),
     recentRuns: await withRunCosts(
       workspaceId,
-      (runs.rows ?? []).map(run => runSummary(run)),
+      await settleOpenRuns(
+        tenant,
+        (runs.rows ?? []).map(run => runSummary(run)),
+      ),
     ),
   };
 }
@@ -250,7 +253,10 @@ export async function listWorkflowRuns(
       }),
     },
   );
-  return (runs.rows ?? []).map(run => runSummary(run, name));
+  return settleOpenRuns(
+    tenant,
+    (runs.rows ?? []).map(run => runSummary(run, name)),
+  );
 }
 
 /** `listWorkflowRuns`, each run with its AI cost. */
@@ -364,6 +370,117 @@ export function shapeRun(
       ...waiting,
     ],
   };
+}
+
+// --- Runs Hatchet left open ---------------------------------------------------
+//
+// Hatchet keeps a run's status apart from its steps', and can lose the last
+// update: when it restarts mid-run, and under a burst (seen on 2026-11-16,
+// and in every stage of deploy/workflows/loadtest). Such a run shows RUNNING
+// or QUEUED for good while every step of it has ended, and Hatchet's own
+// cancel does nothing to it, having no step left to cancel. Mako reads how
+// it ended from its steps.
+
+/** A run whose steps all ended this long ago is no longer between two steps. */
+const SETTLED_AFTER_MS = 10 * 60_000;
+/** Open runs looked at per list: the rest keep Hatchet's status until the next one. */
+const MAX_SETTLE_READS = 50;
+const MAX_SETTLED = 5000;
+const settled = new Map<string, string>();
+
+const timeOf = (value: unknown): number => {
+  const at = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(at) ? at : 0;
+};
+
+/**
+ * How a run ended, when Hatchet still shows it open and it is not: none of
+ * its steps is queued or running, and the last one ended more than
+ * SETTLED_AFTER_MS ago. FAILED when a step failed, else CANCELLED when one
+ * was cancelled or never started, else COMPLETED. Null for a run that is
+ * open (or closed) as Hatchet says.
+ */
+export function endedStatusOf(
+  detail: RunDetail,
+  now = Date.now(),
+): "FAILED" | "CANCELLED" | "COMPLETED" | null {
+  if (!ACTIVE_STATUSES.has(String(detail.run?.status ?? ""))) return null;
+  const tasks = detail.tasks ?? [];
+  // No step yet: the run waits its turn (a concurrency limit, a worker).
+  if (tasks.length === 0) return null;
+  const statuses = tasks.map(task => String(task.status ?? ""));
+  if (statuses.some(status => ACTIVE_STATUSES.has(status))) return null;
+  const lastChange = Math.max(
+    ...tasks.map(task =>
+      Math.max(
+        timeOf(task.finishedAt),
+        timeOf(task.startedAt),
+        timeOf(task.taskInsertedAt),
+        timeOf(task.createdAt),
+      ),
+    ),
+  );
+  // Without a time to go by, nothing is concluded.
+  if (!lastChange || now - lastChange < SETTLED_AFTER_MS) return null;
+  if (statuses.includes("FAILED")) return "FAILED";
+  if (statuses.includes("CANCELLED")) return "CANCELLED";
+  const started = new Set(tasks.map(task => String(task.stepId)));
+  const allRan = (detail.shape ?? []).every(
+    node => !node.stepId || started.has(String(node.stepId)),
+  );
+  return allRan ? "COMPLETED" : "CANCELLED";
+}
+
+/** `detail` with the status its steps give it, when Hatchet left it open. */
+function settledDetail(detail: RunDetail): RunDetail {
+  const status = endedStatusOf(detail);
+  return status && detail.run
+    ? { ...detail, run: { ...detail.run, status } }
+    : detail;
+}
+
+/**
+ * The runs of a list, with those Hatchet left open shown as they ended.
+ * Only a run open for longer than SETTLED_AFTER_MS is read, once it has
+ * ended never again; a run that cannot be read keeps Hatchet's status.
+ */
+async function settleOpenRuns<
+  T extends { runId?: string; status: unknown; startedAt?: unknown },
+>(tenant: WorkspaceTenant, runs: T[]): Promise<T[]> {
+  const now = Date.now();
+  const open = runs
+    .filter(
+      run =>
+        run.runId &&
+        isHatchetId(run.runId) &&
+        !settled.has(run.runId) &&
+        ACTIVE_STATUSES.has(String(run.status)) &&
+        now - timeOf(run.startedAt) > SETTLED_AFTER_MS,
+    )
+    .slice(0, MAX_SETTLE_READS);
+  await Promise.all(
+    open.map(async run => {
+      const id = run.runId as string;
+      const detail = await readDetail(tenant, id).catch(() => null);
+      const status = detail && endedStatusOf(detail, now);
+      if (!status) return;
+      if (settled.size >= MAX_SETTLED) {
+        settled.delete(settled.keys().next().value as string);
+      }
+      settled.set(id, status);
+    }),
+  );
+  return runs.map(run => {
+    const status = run.runId ? settled.get(run.runId) : undefined;
+    return status && ACTIVE_STATUSES.has(String(run.status))
+      ? { ...run, status }
+      : run;
+  });
+}
+
+/** Forget the runs found ended (tests). */
+export function forgetSettledRunsForTests() {
+  settled.clear();
 }
 
 const readDetail = (tenant: WorkspaceTenant, runId: string) => {
@@ -488,9 +605,10 @@ export function setFirstReadRetryForTests(waits: number[]) {
 async function readNewRunDetail(
   tenant: WorkspaceTenant,
   runId: string,
+  read: () => Promise<RunDetail | null>,
 ): Promise<RunDetail | null> {
   for (let attempt = 0; ; attempt++) {
-    const detail = await readDetail(tenant, runId).catch(() => null);
+    const detail = await read();
     // A run's tasks, which name its workflow, can show up after the run
     // itself: a run without them yet is not known yet either.
     if (
@@ -531,30 +649,52 @@ export async function runStartedBy(
   runId: string | undefined,
   workflow: string | undefined,
 ): Promise<RunOrigin | null> {
-  if (!runId || !isHatchetId(runId) || !workflow) return null;
+  return (await executingRun(workspaceId, runId, workflow)).origin;
+}
+
+/**
+ * `runStartedBy`, and whether a null is Hatchet not answering (`unreadable`)
+ * rather than a run that is not executing. The one who asks for a pass is
+ * told which: a step waits out a Hatchet that restarts, and ends for good
+ * only when its run is known to be over.
+ */
+export async function executingRun(
+  workspaceId: string,
+  runId: string | undefined,
+  workflow: string | undefined,
+): Promise<{ origin: RunOrigin | null; unreadable: boolean }> {
+  const no = { origin: null, unreadable: false };
+  if (!runId || !isHatchetId(runId) || !workflow) return no;
   const tenant = await readWorkspaceTenant(workspaceId).catch(() => null);
-  if (!tenant) return null;
+  if (!tenant) return no;
   const key = `${tenant.tenantId}:${runId}`;
   const wanted = workflow.toLowerCase();
   const known = knownRuns.get(key);
-  if (known && known.workflow !== wanted) return null;
+  if (known && known.workflow !== wanted) return no;
   const now = Date.now();
   if (known?.activeAt !== undefined && now - known.activeAt < ACTIVE_FOR_MS) {
-    return known.origin;
+    return { origin: known.origin, unreadable: false };
   }
+  let unreadable = false;
+  const read = () =>
+    readDetail(tenant, runId).catch(error => {
+      // No answer, or a 5xx: Hatchet is down or too slow. A 404 is an answer.
+      unreadable = !(error instanceof HatchetError) || error.status >= 500;
+      return null;
+    });
   const detail = known
-    ? await readDetail(tenant, runId).catch(() => null)
-    : await readNewRunDetail(tenant, runId);
+    ? await read()
+    : await readNewRunDetail(tenant, runId, read);
   if (!detail?.run || idOf(detail.run) !== runId) {
     // Hatchet did not answer: a run seen executing a short while ago is
     // taken as still executing.
     return known?.activeAt !== undefined &&
       now - known.activeAt < ACTIVE_WHEN_UNREADABLE_MS
-      ? known.origin
-      : null;
+      ? { origin: known.origin, unreadable: false }
+      : { origin: null, unreadable };
   }
   // Never kept without its workflow: that would refuse the run for good.
-  if (!known && workflowOfRunDetail(detail) === "") return null;
+  if (!known && workflowOfRunDetail(detail) === "") return no;
   const run: KnownRun = known ?? {
     origin: originOf(detail.run),
     workflow: workflowOfRunDetail(detail),
@@ -563,8 +703,8 @@ export async function runStartedBy(
   else delete run.activeAt;
   remember(key, run);
   return run.workflow === wanted && run.activeAt !== undefined
-    ? run.origin
-    : null;
+    ? { origin: run.origin, unreadable: false }
+    : no;
 }
 
 /** One run of the workspace's Hatchet; `full` keeps every log line. */
@@ -598,7 +738,7 @@ export async function readRun(
         .catch(() => []);
     }),
   );
-  return shapeRun(detail, logs, { full });
+  return shapeRun(settledDetail(detail), logs, { full });
 }
 
 /**

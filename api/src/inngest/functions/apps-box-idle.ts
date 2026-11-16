@@ -50,11 +50,17 @@ export const appsBoxIdleSweepFunction = inngest.createFunction(
       for (const kept of result.kept) {
         log.info("Apps box kept running past idle", { ...kept });
       }
+      // One line per session the sweep left alone, so "paused 0 of 12" is
+      // never silent again.
+      for (const skipped of result.skipped) {
+        log.info("Apps box not paused", { ...skipped });
+      }
       return {
         running: result.running,
         paused: result.paused,
         pausedNow: result.pausedNow.length,
         kept: result.kept.length,
+        skipped: result.skipped.length,
       };
     });
   },

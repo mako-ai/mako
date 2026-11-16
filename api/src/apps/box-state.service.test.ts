@@ -6,6 +6,11 @@ vi.mock("../services/realtime.service", () => ({
 vi.mock("./dev-server.service", () => ({
   discoverDevServers: vi.fn(async () => [{ slug: "other", port: 5174 }]),
 }));
+// What the provider says it holds for a session. undefined = a provider with
+// no listing (local); a function lets a test answer or throw.
+const held = vi.hoisted(() => ({
+  ids: undefined as undefined | (() => Promise<string[]>),
+}));
 vi.mock("./sandbox/provider", () => ({
   getSandboxProvider: () => ({
     publicUrlForPort: async (_ctx: unknown, port: number) =>
@@ -13,6 +18,7 @@ vi.mock("./sandbox/provider", () => ({
     // The service resolves snapshot urls through the never-create peek.
     peekPublicUrlForPort: async (_ctx: unknown, port: number) =>
       `https://${port}-box.example`,
+    ...(held.ids ? { sessionSandboxIds: held.ids } : {}),
   }),
 }));
 
@@ -21,6 +27,7 @@ import { discoverDevServers } from "./dev-server.service";
 import {
   forgetBoxState,
   getBoxState,
+  markBoxOffline,
   patchBoxState,
   resetBoxStateStoreForTests,
 } from "./box-state.service";
@@ -159,5 +166,129 @@ describe("box-state (memory store)", () => {
       ws,
       expect.objectContaining({ type: "app.box-state", userId: user }),
     );
+  });
+});
+
+describe("box-state after an E2B account move", () => {
+  beforeEach(() => {
+    delete process.env.REDIS_URL;
+    resetBoxStateStoreForTests();
+    vi.clearAllMocks();
+    held.ids = undefined;
+  });
+  afterEach(async () => {
+    held.ids = undefined;
+    await forgetBoxState(key);
+  });
+
+  it("drops a report from an old-account box once the new account holds one", async () => {
+    held.ids = async () => ["new-box"];
+    await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { sandboxId: "new-box", branch: "main" },
+      source: "agent",
+    });
+    const state = await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { sandboxId: "old-box", branch: "feature" },
+      source: "agent",
+    });
+    expect(state.sandboxId).toBe("new-box");
+    const stored = await getBoxState(key);
+    expect(stored?.sandboxId).toBe("new-box");
+    expect(stored?.branch).toBe("main");
+    expect(publishRealtimeEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a new box the provider does not list yet", async () => {
+    held.ids = async () => [];
+    const state = await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { sandboxId: "fresh-box", branch: "main" },
+      source: "agent",
+    });
+    expect(state.sandboxId).toBe("fresh-box");
+  });
+
+  it("accepts when the provider cannot answer", async () => {
+    held.ids = async () => {
+      throw new Error("list API blipped");
+    };
+    const state = await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { sandboxId: "some-box" },
+      source: "agent",
+    });
+    expect(state.sandboxId).toBe("some-box");
+  });
+
+  it("does not ask the provider again for the box it already believes", async () => {
+    const ids = vi.fn(async () => ["box-1"]);
+    held.ids = ids;
+    await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { sandboxId: "box-1" },
+      source: "agent",
+    });
+    await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { sandboxId: "box-1", ahead: 2 },
+      source: "agent",
+    });
+    expect(ids).toHaveBeenCalledTimes(1);
+    expect((await getBoxState(key))?.ahead).toBe(2);
+  });
+});
+
+describe("box reports right after an offline broadcast", () => {
+  beforeEach(() => {
+    delete process.env.REDIS_URL;
+    resetBoxStateStoreForTests();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a heartbeat inside 10 s is ignored: no online flip, nothing stored", async () => {
+    vi.useFakeTimers({
+      now: Date.parse("2026-11-16T18:00:00Z"),
+      toFake: ["Date"],
+    });
+    await markBoxOffline(ws, user);
+    vi.mocked(publishRealtimeEvent).mockClear();
+    vi.setSystemTime(Date.now() + 4_000);
+    const state = await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { branch: "main", sandboxId: "sbx-1" },
+      source: "agent",
+    });
+    expect(state.status).toBe("offline");
+    expect(publishRealtimeEvent).not.toHaveBeenCalled();
+    expect(await getBoxState(key)).toBeNull();
+  });
+
+  it("after 10 s, reports count again", async () => {
+    vi.useFakeTimers({
+      now: Date.parse("2026-11-16T18:00:00Z"),
+      toFake: ["Date"],
+    });
+    await markBoxOffline(ws, user);
+    vi.setSystemTime(Date.now() + 11_000);
+    const state = await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { branch: "main" },
+      source: "agent",
+    });
+    expect(state.status).toBe("online");
+    expect((await getBoxState(key))?.branch).toBe("main");
   });
 });

@@ -33,6 +33,9 @@ import {
   getBoxActivity,
   parseSessionKey,
   recordBoxActivity,
+  clearBoxResume,
+  lastBoxResume,
+  noteBoxResume,
   resetBoxActivityThrottleForTests,
   setBoxActivityRedisForTests,
 } from "./box-activity";
@@ -165,6 +168,35 @@ describe("shared throttle (Redis)", () => {
     } as never);
     await recordBoxActivity(KEY, "read", { now: 0 });
     expect(db.updateOne).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("resume caller", () => {
+  it("keeps the FIRST connect after a pause, not the latest exec", async () => {
+    const key = `${WS}:resume-a`;
+    clearBoxResume(key); // the sweep paused it
+    noteBoxResume(key, () => "routes/workflows/workspace.ts listFiles");
+    noteBoxResume(key, () => "agent exec");
+    noteBoxResume(key, () => "dev-server status");
+    expect(await lastBoxResume(key)).toMatch(/workspace\.ts listFiles$/);
+  });
+
+  it("a new pause clears it, so the next resume is recorded", async () => {
+    const key = `${WS}:resume-b`;
+    noteBoxResume(key, () => "first");
+    clearBoxResume(key);
+    noteBoxResume(key, () => "second");
+    expect(await lastBoxResume(key)).toMatch(/second$/);
+  });
+
+  it("captures the stack lazily: never for connects after the first", () => {
+    const key = `${WS}:resume-c`;
+    clearBoxResume(key);
+    const caller = vi.fn(() => "x");
+    noteBoxResume(key, caller);
+    noteBoxResume(key, caller);
+    noteBoxResume(key, caller);
+    expect(caller).toHaveBeenCalledTimes(1);
   });
 });
 

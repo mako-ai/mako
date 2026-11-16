@@ -151,6 +151,62 @@ async function claimSharedWindow(sessionKey: string): Promise<boolean> {
   }
 }
 
+/**
+ * Who RESUMED a session's box: the first connect after the sweep paused it.
+ *
+ * Every connect can resume a paused box, so when the sweep sees a box it
+ * paused running again with no activity recorded, this names the code path
+ * that woke it. Only the first connect after a pause is kept (Redis SET NX;
+ * the pause deletes the key), so later execs into the running box cannot
+ * overwrite it. A per-process memo skips the Redis call (and the stack
+ * capture) for a minute after this process has recorded or seen one.
+ */
+const RESUME_TTL_MS = 2 * 3_600_000;
+const resumeMemo = new BoundedMap<string, string>({
+  maxEntries: 5_000,
+  ttlMs: 60_000,
+});
+const resumeLocal = new BoundedMap<string, string>({
+  maxEntries: 5_000,
+  ttlMs: RESUME_TTL_MS,
+});
+
+export function noteBoxResume(sessionKey: string, caller: () => string): void {
+  if (resumeMemo.get(sessionKey)) return;
+  const value = `${new Date().toISOString()} ${caller()}`;
+  resumeMemo.set(sessionKey, value);
+  if (!resumeLocal.get(sessionKey)) resumeLocal.set(sessionKey, value);
+  const client = sharedRedis();
+  if (!client) return;
+  void client
+    .set(`apps:box-resume:${sessionKey}`, value, "PX", RESUME_TTL_MS, "NX")
+    .catch(() => undefined);
+}
+
+/** The box was just paused: the next connect is the one to record. */
+export function clearBoxResume(sessionKey: string): void {
+  resumeMemo.delete(sessionKey);
+  resumeLocal.delete(sessionKey);
+  const client = sharedRedis();
+  if (!client) return;
+  void client.del(`apps:box-resume:${sessionKey}`).catch(() => undefined);
+}
+
+export async function lastBoxResume(
+  sessionKey: string,
+): Promise<string | null> {
+  const client = sharedRedis();
+  if (client) {
+    try {
+      const value = await client.get(`apps:box-resume:${sessionKey}`);
+      if (value) return value;
+    } catch {
+      // Fall back to this process's memory.
+    }
+  }
+  return resumeLocal.get(sessionKey) ?? null;
+}
+
 /** Test seam: use this Redis-like client (null = none). */
 export function setBoxActivityRedisForTests(client: Redis | null): void {
   redis = client;

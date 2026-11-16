@@ -171,6 +171,17 @@ export interface SandboxProvider {
    * without pausing answers through hasSession (see boxIsRunning).
    */
   isRunning?(ctx: SandboxExecContext): Promise<boolean>;
+  /**
+   * Like isRunning, but says when it could not tell: "unknown" on a failed
+   * lookup, never a guess. `fresh` skips the short per-process cache, whose
+   * "not running" can be up to 10 s stale on an instance that did not do
+   * the resume. For callers where a wrong "paused" is costly (a run view
+   * that stops polling, a listing an agent trusts).
+   */
+  runState?(
+    ctx: SandboxExecContext,
+    options?: { fresh?: boolean },
+  ): Promise<"running" | "not-running" | "unknown">;
   /** Absolute path for scratch files that must NOT enter the working copy. */
   scratch(ctx: SandboxExecContext): string;
   /**
@@ -285,6 +296,16 @@ export interface SandboxProvider {
    * Absent where there is no VM to pause or snapshot (local).
    */
   boxLifecycle?: SandboxBoxLifecycle;
+  /**
+   * Every sandbox id the provider holds for this session, without creating or
+   * connecting to any. Throws when the provider cannot answer, so a caller
+   * can tell "none" apart from "unknown".
+   *
+   * Box processes report their own sandbox id. After an account move (a new
+   * E2B API key) a box left running in the OLD account keeps reporting for
+   * the same session key, and this is how the API recognises it as foreign.
+   */
+  sessionSandboxIds?(ctx: SandboxExecContext): Promise<string[]>;
   /** Tear down any remote session for the given affinity key (best effort). */
   destroySession?(sessionKey: string): Promise<void>;
   /**
@@ -322,4 +343,18 @@ export async function boxIsRunning(ctx: SandboxExecContext): Promise<boolean> {
   return provider.isRunning
     ? provider.isRunning(ctx)
     : provider.hasSession(ctx);
+}
+
+/** Tri-state running answer (SandboxProvider.runState). */
+export async function boxRunState(
+  ctx: SandboxExecContext,
+  options: { fresh?: boolean } = {},
+): Promise<"running" | "not-running" | "unknown"> {
+  const provider = getSandboxProvider();
+  if (provider.runState) return provider.runState(ctx, options);
+  try {
+    return (await boxIsRunning(ctx)) ? "running" : "not-running";
+  } catch {
+    return "unknown";
+  }
 }

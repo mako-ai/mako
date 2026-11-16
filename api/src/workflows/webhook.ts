@@ -13,6 +13,7 @@ import { Types } from "mongoose";
 import { Workspace } from "../database/workspace-schema";
 import { decryptString, encryptString } from "../services/crypto.service";
 import { HatchetError } from "./hatchet";
+import { isAutoscaled } from "./kube";
 
 type Webhooks = Record<string, string> | undefined;
 
@@ -46,11 +47,21 @@ export async function setTriggers(
   checkName(name);
   const path = `workflows.webhooks.${name}`;
   const secret = randomBytes(24).toString("hex");
+  // An autoscaled worker may be at zero pods, and a schedule exists in
+  // Hatchet only once a worker has registered it. Forgetting what the
+  // worker last reported makes the change work to do (demand.ts): a pod
+  // starts, registers the new triggers and reports again.
+  const wake = change.active !== undefined && isAutoscaled();
   const update = {
     ...(change.active === true && { $addToSet: { "workflows.active": name } }),
     ...(change.active === false && { $pull: { "workflows.active": name } }),
     ...(change.webhook === true && { $set: { [path]: encryptString(secret) } }),
-    ...(change.webhook === false && { $unset: { [path]: "" } }),
+    ...((change.webhook === false || wake) && {
+      $unset: {
+        ...(change.webhook === false && { [path]: "" }),
+        ...(wake && { "workflows.live.running": "" }),
+      },
+    }),
   };
   if (Object.keys(update).length > 0) {
     await Workspace.updateOne({ _id: new Types.ObjectId(workspaceId) }, update);

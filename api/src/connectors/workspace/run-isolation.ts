@@ -55,6 +55,8 @@ export const REQUIRED_TOOLS = [
   "cat",
   "xargs",
   "mv",
+  "usermod",
+  "groupmod",
 ] as const;
 
 export interface RunLayout {
@@ -115,6 +117,38 @@ done
 true`;
 }
 
+/**
+ * Root: lock every account and group whose password is empty, then prove
+ * none is left. Fails closed. Part of every run's setup, not a per-box
+ * cache: a box replaced under the same key comes fresh from the template.
+ *
+ * E2B's templates ship `root` and `user` with empty passwords, and Debian's
+ * PAM stack allows them (`pam_unix.so nullok`). Without this, any run user
+ * runs `su root` (or `su user`, then `sudo`) and owns the box. No sync box
+ * workload logs in with a password: envd starts processes directly, and
+ * `user`'s sudo rule is NOPASSWD, so locking changes nothing else. Costs one
+ * awk per file when there is nothing to lock; usermod and groupmod take the
+ * shadow lock, so concurrent runs retry them like useradd.
+ */
+export function hardenScript(): string {
+  return `for account in $(awk -F: '$2 == "" { print $1 }' /etc/shadow); do
+  n=0
+  until usermod -p '!' "$account" 2>/dev/null; do
+    n=$((n + 1)); if [ "$n" -ge 20 ]; then echo "could not lock $account" >&2; exit 1; fi; sleep 0.2
+  done
+done
+if [ -r /etc/gshadow ]; then
+  for group in $(awk -F: '$2 == "" { print $1 }' /etc/gshadow); do
+    n=0
+    until groupmod -p '!' "$group" 2>/dev/null; do
+      n=$((n + 1)); if [ "$n" -ge 20 ]; then echo "could not lock group $group" >&2; exit 1; fi; sleep 0.2
+    done
+  done
+fi
+left=$(awk -F: '$2 == "" { print $1 }' /etc/shadow; if [ -r /etc/gshadow ]; then awk -F: '$2 == "" { print "group:" $1 }' /etc/gshadow; fi)
+if [ -n "$left" ]; then echo "empty passwords left: $left" >&2; exit 1; fi`;
+}
+
 /** Root: create the run user and its directories. Fails closed. */
 export function setupScript(l: RunLayout): string {
   return `set -eu
@@ -124,6 +158,8 @@ for tool in ${REQUIRED_TOOLS.join(" ")}; do
   command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 if [ -n "$missing" ]; then echo "missing tools:$missing" >&2; exit 1; fi
+# No account a run user could su to: locked on every run, see hardenScript.
+${hardenScript()}
 install -d -o root -g root -m 0755 ${shellQuote(ISOLATED_ROOT)}
 install -d -o root -g root -m 0711 ${shellQuote(ISOLATED_RUNS)}
 # useradd and groupadd lock /etc/passwd and /etc/group; concurrent runs

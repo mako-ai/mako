@@ -779,6 +779,18 @@ async function runIsolated(
     const [sizeText, cleanupText] = marker.split(/\s+/);
     if (sizeText === "setup-failed") {
       lastError = (result.stderr || result.stdout).trim().slice(0, 2000);
+      // A fresh UID fixes a collision, never an account that cannot be
+      // locked: refuse the run at once (hardenScript, in every setup).
+      if (/empty passwords left|could not lock/.test(lastError)) {
+        logger.error(
+          "Could not lock passwordless accounts in a connector box",
+          {
+            sessionKey: ctx.sessionKey,
+            detail: lastError.slice(0, 500),
+          },
+        );
+        break;
+      }
       continue;
     }
     const cleanupCode = Number(cleanupText);

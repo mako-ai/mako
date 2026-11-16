@@ -16,12 +16,14 @@
  */
 import path from "node:path";
 import {
+  ConnectionConfig,
   FileNotFoundError,
   Sandbox,
   SandboxNotFoundError,
   SandboxNotRunningError,
   SandboxUnreachableError,
 } from "e2b";
+import { clearBoxResume, noteBoxResume } from "../box-activity";
 import {
   APPS_EXEC_DEFAULT_TIMEOUT_MS,
   APPS_EXEC_MAX_OUTPUT_BYTES,
@@ -209,9 +211,40 @@ export function isConnectorBoxKey(sessionKey: string): boolean {
   return sessionKey.startsWith("connector-box:");
 }
 
+/**
+ * The first two frames outside this file and node_modules: which code path
+ * connected to (and so possibly resumed) a box. Recorded per session for the
+ * idle sweep's safety valve, which names it when a box keeps waking up
+ * without anyone using it.
+ */
+function connectCaller(): string {
+  const frames = (new Error().stack ?? "")
+    .split("\n")
+    .slice(1)
+    .map(line => line.trim())
+    .filter(
+      line =>
+        line.startsWith("at ") &&
+        !line.includes("e2b-provider") &&
+        !line.includes("node_modules") &&
+        !line.includes("node:internal"),
+    )
+    .slice(0, 2)
+    .map(line =>
+      line
+        .replace(/^at /, "")
+        .replace(/\(?\/.*\/api\/src\//, "(")
+        .replace(/^\/.*\/api\/src\//, ""),
+    );
+  return frames.join(" < ") || "unknown";
+}
+
 function connectSession(sessionKey: string): Promise<Sandbox> {
   const inflight = connecting.get(sessionKey);
   if (inflight) return inflight;
+  // After the in-flight check, so a burst records once; and only the first
+  // connect after a pause sticks (box-activity.ts noteBoxResume).
+  noteBoxResume(sessionKey, connectCaller);
   const run = connectSessionNow(sessionKey).finally(() => {
     connecting.delete(sessionKey);
     // A connect resumes a paused box: "not running" no longer holds.
@@ -221,8 +254,48 @@ function connectSession(sessionKey: string): Promise<Sandbox> {
   return run;
 }
 
+/**
+ * Pinned-only mode, for maintenance scripts that walk existing boxes (the
+ * E2B workspace move's pre-save pass, api/src/scripts/e2b-presave-sessions.ts).
+ *
+ * Normal connectSession repairs what it finds: it lists by metadata, kills
+ * duplicate boxes and creates a fresh one when nothing answers. A script that
+ * visits someone's paused box must do none of that. In this mode a session
+ * only ever reaches the exact box pinned for it; anything else throws.
+ */
+let pinnedOnly = false;
+
+export function useE2bPinnedSessionsOnly(): void {
+  pinnedOnly = true;
+}
+
+/** Address `sessionKey` to this exact box (used with pinned-only mode). */
+export function pinE2bSession(sessionKey: string, sandboxId: string): void {
+  rememberSession(sessionKey, sandboxId);
+}
+
+/** Test seam: forget every in-process session and leave pinned-only mode. */
+export function resetE2bProviderStateForTests(): void {
+  pinnedOnly = false;
+  held.clear();
+  sessions.clear();
+  connecting.clear();
+  knownAlive.clear();
+  knownAbsent.clear();
+  keepAliveUntil.clear();
+  runningAnswer.clear();
+}
+
 async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
   const known = sessions.get(sessionKey);
+  if (pinnedOnly) {
+    if (!known) {
+      throw new Error(
+        `Pinned-only mode: no sandbox is pinned for session ${sessionKey}`,
+      );
+    }
+    return Sandbox.connect(known, { apiKey: apiKey() });
+  }
   if (known) {
     try {
       return await Sandbox.connect(known, { apiKey: apiKey() });
@@ -919,33 +992,30 @@ async function peekPublicUrlForPortE2b(
   ctx: SandboxExecContext,
   port: number,
 ): Promise<string | null> {
-  const current = held.get(ctx.sessionKey);
-  if (current && heldUsable(current, Date.now())) {
-    return `https://${current.sandbox.getHost(port)}`;
-  }
-  const known = sessions.get(ctx.sessionKey);
-  if (known) {
-    try {
-      const sandbox = await Sandbox.connect(known, { apiKey: apiKey() });
-      return `https://${sandbox.getHost(port)}`;
-    } catch {
-      sessions.delete(ctx.sessionKey);
-    }
-  }
+  // Never connect here. Sandbox.connect RESUMES a paused box, and this runs
+  // from the 15 s dev-server status poll (dev-server/status.ts) and every box
+  // report: a hostname lookup was waking boxes the idle sweep had just
+  // paused. The host is `<port>-<sandboxId>.<domain>`, known from the list
+  // alone. A paused box has no reachable host, so it answers null.
   try {
     const paginator = Sandbox.list({
       apiKey: apiKey(),
-      query: { metadata: { makoAppsSessionKey: ctx.sessionKey } },
+      query: {
+        metadata: { makoAppsSessionKey: ctx.sessionKey },
+        state: ["running"],
+      },
       limit: 5,
     });
     if (!paginator.hasNext) return null;
     const info = pickWinner([...(await paginator.nextItems())]);
     if (!info) return null;
-    const sandbox = await Sandbox.connect(info.sandboxId, {
-      apiKey: apiKey(),
-    });
-    rememberSession(ctx.sessionKey, sandbox.sandboxId);
-    return `https://${sandbox.getHost(port)}`;
+    const host = new ConnectionConfig({ apiKey: apiKey() }).getHost(
+      info.sandboxId,
+      port,
+      // undefined falls back to the SDK's configured domain (E2B_DOMAIN).
+      info.sandboxDomain as string,
+    );
+    return `https://${host}`;
   } catch {
     return null;
   }
@@ -1391,8 +1461,17 @@ const runningAnswer = new Map<string, { running: boolean; until: number }>();
 const RUNNING_ANSWER_TTL_MS = 10_000;
 
 async function sessionRunning(sessionKey: string): Promise<boolean> {
+  return (await sessionRunState(sessionKey)) === "running";
+}
+
+async function sessionRunState(
+  sessionKey: string,
+  { fresh = false }: { fresh?: boolean } = {},
+): Promise<"running" | "not-running" | "unknown"> {
   const cached = runningAnswer.get(sessionKey);
-  if (cached && cached.until > Date.now()) return cached.running;
+  if (!fresh && cached && cached.until > Date.now()) {
+    return cached.running ? "running" : "not-running";
+  }
   try {
     const paginator = Sandbox.list({
       apiKey: apiKey(),
@@ -1408,10 +1487,11 @@ async function sessionRunning(sessionKey: string): Promise<boolean> {
       running,
       until: Date.now() + RUNNING_ANSWER_TTL_MS,
     });
-    return running;
+    return running ? "running" : "not-running";
   } catch {
-    // A poll that cannot tell answers "offline"; the next beat asks again.
-    return false;
+    // Could not tell. Polls read this as "offline" (sessionRunning), and the
+    // next beat asks again; callers that must not guess see "unknown".
+    return "unknown";
   }
 }
 
@@ -1442,6 +1522,7 @@ export function noteSessionPaused(sessionKey: string): void {
   keepAliveUntil.delete(sessionKey);
   sessions.delete(sessionKey);
   knownAlive.delete(sessionKey);
+  clearBoxResume(sessionKey);
   for (const listener of pausedListeners) {
     try {
       listener(sessionKey);
@@ -1471,6 +1552,18 @@ export const e2bSandboxProvider: SandboxProvider = {
   scratch: () => "/tmp",
   hasSession: ctx => sessionExists(ctx.sessionKey),
   isRunning: ctx => sessionRunning(ctx.sessionKey),
+  runState: (ctx, options) => sessionRunState(ctx.sessionKey, options),
+  sessionSandboxIds: async ctx => {
+    // Throws on a lookup failure on purpose: callers must tell "E2B said
+    // none" apart from "E2B did not answer".
+    const paginator = Sandbox.list({
+      apiKey: apiKey(),
+      query: { metadata: { makoAppsSessionKey: ctx.sessionKey } },
+      limit: 10,
+    });
+    if (!paginator.hasNext) return [];
+    return (await paginator.nextItems()).map(box => box.sandboxId);
+  },
   describe: async ctx => {
     try {
       const paginator = Sandbox.list({

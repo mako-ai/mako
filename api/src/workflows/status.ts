@@ -17,7 +17,12 @@ import { waitFor, waitSeconds } from "./wait";
 
 const logger = loggers.api("workflows-status");
 
-const ACTIVE = ["QUEUED", "RUNNING", "PENDING"];
+/**
+ * Not final. PAUSED is a sandbox run whose box is asleep (sandbox.ts): it
+ * carries on when the box wakes, so a wait keeps waiting rather than
+ * answering as if the run had ended.
+ */
+const ACTIVE = ["QUEUED", "RUNNING", "PENDING", "PAUSED"];
 
 export async function waitForRun(
   workspaceId: string,
