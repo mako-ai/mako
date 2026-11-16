@@ -11,6 +11,13 @@
 
 export const PACKAGE_JSON = "package.json";
 export const LOCKFILE = "package-lock.json";
+/** npm reads this file from the folder it installs in. It is refused. */
+export const NPMRC = ".npmrc";
+/**
+ * The one registry a build installs from. The build passes it to npm, and
+ * every `resolved` URL in the lockfile has to start with it.
+ */
+export const NPM_REGISTRY = "https://registry.npmjs.org/";
 const OTHER_LOCKFILES = [
   "pnpm-lock.yaml",
   "yarn.lock",
@@ -75,21 +82,86 @@ export function dependencyPlan(
         `Run npm install in the folder and commit ${LOCKFILE}.`,
     };
   }
-  try {
-    const parsed = JSON.parse(
-      new TextDecoder().decode(files.get(PACKAGE_JSON)),
-    ) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {
-        kind: "invalid",
-        reason: `${PACKAGE_JSON} must be a JSON object.`,
-      };
-    }
-  } catch (error) {
+  if (files.has(NPMRC)) {
+    // npm ci reads the folder's .npmrc: it can move the registry, set a
+    // proxy or turn off TLS checks. The build pins all of that itself.
     return {
       kind: "invalid",
-      reason: `${PACKAGE_JSON} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      reason:
+        `Mako installs connector dependencies from ${NPM_REGISTRY} with its own npm settings, ` +
+        `so ${NPMRC} is not allowed in the folder. Remove ${NPMRC} and push.`,
     };
   }
+  const manifest = parseJsonObject(files.get(PACKAGE_JSON), PACKAGE_JSON);
+  if (typeof manifest === "string") {
+    return { kind: "invalid", reason: manifest };
+  }
+  const lock = parseJsonObject(files.get(LOCKFILE), LOCKFILE);
+  if (typeof lock === "string") return { kind: "invalid", reason: lock };
+  const lockProblem = lockfileProblem(lock);
+  if (lockProblem) return { kind: "invalid", reason: lockProblem };
   return { kind: "npm" };
+}
+
+function parseJsonObject(
+  bytes: Uint8Array | undefined,
+  name: string,
+): Record<string, unknown> | string {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return `${name} must be a JSON object.`;
+    }
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    return `${name} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+/**
+ * Every package in the lockfile must come from the npm registry.
+ *
+ * `npm ci` fetches each entry from its `resolved` URL. Without this check a
+ * lockfile could pull a git repository, a tarball from any host, or a
+ * `file:`/`link:` path outside the folder. Packages shipped inside another
+ * package (`inBundle`) have no URL of their own and come with their parent.
+ * The returned string is the refusal, or null when the lockfile is fine.
+ */
+export function lockfileProblem(lock: Record<string, unknown>): string | null {
+  const version = lock.lockfileVersion;
+  const packages = lock.packages;
+  if (
+    (version !== 2 && version !== 3) ||
+    !packages ||
+    typeof packages !== "object" ||
+    Array.isArray(packages)
+  ) {
+    return (
+      `${LOCKFILE} must be lockfileVersion 2 or 3. ` +
+      `Run npm install with npm 7 or later in the folder and commit ${LOCKFILE}.`
+    );
+  }
+  for (const [key, raw] of Object.entries(packages)) {
+    if (key === "") continue;
+    const entry = (raw ?? {}) as Record<string, unknown>;
+    const fix = `Depend on a version published to ${NPM_REGISTRY}, run npm install and commit ${LOCKFILE}.`;
+    if (
+      !key.startsWith("node_modules/") ||
+      key.split("/").includes("..") ||
+      entry.link === true
+    ) {
+      return `${LOCKFILE} links "${key}" from a local path. ${fix}`;
+    }
+    if (entry.inBundle === true) continue;
+    const resolved = entry.resolved;
+    if (resolved !== undefined) {
+      if (typeof resolved !== "string" || !resolved.startsWith(NPM_REGISTRY)) {
+        return `${LOCKFILE} installs "${key.slice("node_modules/".length)}" from ${String(resolved)}. ${fix}`;
+      }
+    }
+    if (typeof entry.integrity !== "string" || !entry.integrity) {
+      return `${LOCKFILE} has no integrity hash for "${key.slice("node_modules/".length)}". ${fix}`;
+    }
+  }
+  return null;
 }

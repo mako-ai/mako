@@ -194,10 +194,14 @@ connectors/acme/
 - **npm only.** Mako installs with `npm ci`, so the lockfile must be
   `package-lock.json`. A folder with `pnpm-lock.yaml` or `yarn.lock` and no
   `package-lock.json` is refused with that message.
+- **Registry packages only.** Every package in `package-lock.json` must come
+  from `https://registry.npmjs.org/`. A git dependency, a tarball from another
+  host, or a `file:` or `link:` path is refused, and so is a `.npmrc` in the
+  folder.
 - **Mako builds; you deploy nothing.** On push to main, Mako hashes the folder,
   its lockfile and the `@makoai/connector-sdk` version, installs the lockfile
-  with `npm ci --ignore-scripts` in a build sandbox (network, no credentials),
-  and bundles the entry with esbuild into one file, dependencies inlined.
+  with `npm ci --ignore-scripts` in a build sandbox (network, no credentials,
+  a fresh sandbox for every build, destroyed after it), and bundles the entry with esbuild into one file, dependencies inlined.
   The bundle is stored under that hash and runs in place of the TypeScript
   entry. The next push with the same hash reuses it.
 - **Build status.** A failed build blocks the connector, with npm's or
@@ -210,7 +214,7 @@ connectors/acme/
 
 This is behind the `CONNECTOR_BUNDLES_ENABLED` flag while it is rolled out.
 With the flag off, a `package.json` in the folder is just a file and only the
-SDK can be imported.
+SDK can be imported. The `node_modules/` refusal applies with the flag off too.
 
 ### Test it before you push
 

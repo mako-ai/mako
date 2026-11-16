@@ -14,6 +14,7 @@ const sandbox = vi.hoisted(() => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
   scratch: vi.fn(() => "/scratch"),
+  destroySession: vi.fn(async (_key: string) => {}),
 }));
 vi.mock("../../../apps/sandbox/provider", () => ({
   getSandboxProvider: () => sandbox,
@@ -51,19 +52,37 @@ vi.mock("../../../database/workspace-schema", () => ({
   ConnectorDefinition: { updateOne: vi.fn() },
 }));
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import {
   dependencyPlan,
   findNodeModules,
+  lockfileProblem,
   nodeModulesRefusal,
 } from "./manifest";
 import { bundleSourceHash } from "./source-hash";
 import { bundleKey, MAX_BUNDLE_BYTES } from "./store";
-import { buildBundleInBox, buildBoxContext } from "./build-box";
+import { buildBundleInBox, esbuildEntryArg } from "./build-box";
 import { BundleBuildError, ensureBundle, shouldBundle } from "./bundle.service";
 import { CONNECTOR_BUNDLES_FLAG, connectorBundlesEnabled } from "./flag";
 
 const enc = (text: string) => new TextEncoder().encode(text);
 const WS = "0123456789abcdef01234567";
+
+const LOCK = JSON.stringify({
+  name: "acme",
+  lockfileVersion: 3,
+  requires: true,
+  packages: {
+    "": { dependencies: { "date-fns": "4.1.0" } },
+    "node_modules/date-fns": {
+      version: "4.1.0",
+      resolved: "https://registry.npmjs.org/date-fns/-/date-fns-4.1.0.tgz",
+      integrity:
+        "sha512-Ukq0owbQXxa/U3EGtsdVBkR1w7KOQ5gIBqdH2hkvknzZPYvBxb/aa6E8L7tmjFtkwZBu3UXBbjIgPo/Ez4xaNg==",
+    },
+  },
+});
 
 const folder = (extra: Record<string, string> = {}) =>
   new Map(
@@ -71,7 +90,7 @@ const folder = (extra: Record<string, string> = {}) =>
       "connector.yaml": "runtime: node\n",
       "connector.ts": "export default {};\n",
       "package.json": '{"dependencies":{"date-fns":"4.1.0"}}',
-      "package-lock.json": '{"lockfileVersion":3}',
+      "package-lock.json": LOCK,
       ...extra,
     }).map(([name, text]) => [name, enc(text)]),
   );
@@ -192,6 +211,136 @@ describe("the dependency plan", () => {
     const plan = dependencyPlan(folder({ "package.json": "{nope" }));
     expect(plan.kind).toBe("invalid");
   });
+
+  it("refuses a .npmrc in the folder, which npm ci would read", () => {
+    const plan = dependencyPlan(
+      folder({ ".npmrc": "registry=https://evil.example/\n" }),
+    );
+    expect(plan.kind).toBe("invalid");
+    if (plan.kind === "invalid") expect(plan.reason).toContain(".npmrc");
+  });
+});
+
+describe("the lockfile check", () => {
+  const lock = (packages: Record<string, unknown>, lockfileVersion = 3) => ({
+    lockfileVersion,
+    packages: { "": {}, ...packages },
+  });
+  const registry = (name: string) => ({
+    version: "1.0.0",
+    resolved: `https://registry.npmjs.org/${name}/-/${name}-1.0.0.tgz`,
+    integrity: "sha512-abc",
+  });
+
+  it("accepts packages from the npm registry, and packages bundled inside them", () => {
+    expect(
+      lockfileProblem(
+        lock({
+          "node_modules/a": registry("a"),
+          "node_modules/a/node_modules/b": { version: "1.0.0", inBundle: true },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("accepts the lockfile of the stripe connector in this repo", () => {
+    const file = path.resolve(
+      __dirname,
+      "../../../../../connectors/stripe/package-lock.json",
+    );
+    expect(lockfileProblem(JSON.parse(readFileSync(file, "utf8")))).toBeNull();
+  });
+
+  it("refuses a git dependency", () => {
+    expect(
+      lockfileProblem(
+        lock({
+          "node_modules/evil": {
+            version: "1.0.0",
+            resolved: "git+ssh://git@github.com/evil/evil.git#0123456",
+            integrity: "sha512-abc",
+          },
+        }),
+      ),
+    ).toContain("git+ssh://git@github.com/evil/evil.git");
+  });
+
+  it("refuses a tarball from another host", () => {
+    expect(
+      lockfileProblem(
+        lock({
+          "node_modules/evil": {
+            ...registry("evil"),
+            resolved: "https://registry.npmjs.org.evil.example/evil.tgz",
+          },
+        }),
+      ),
+    ).toContain("evil.example");
+    expect(
+      lockfileProblem(
+        lock({
+          "node_modules/evil": {
+            ...registry("evil"),
+            resolved: "http://registry.npmjs.org/evil/-/evil-1.0.0.tgz",
+          },
+        }),
+      ),
+    ).not.toBeNull();
+  });
+
+  it("refuses file: and link: paths, inside the folder or out of it", () => {
+    expect(
+      lockfileProblem(
+        lock({
+          "node_modules/shared": { resolved: "../shared", link: true },
+          "../shared": { version: "1.0.0" },
+        }),
+      ),
+    ).toContain("local path");
+    expect(
+      lockfileProblem(lock({ "../../etc": { version: "1.0.0" } })),
+    ).toContain("local path");
+    expect(
+      lockfileProblem(
+        lock({
+          "node_modules/x": {
+            ...registry("x"),
+            resolved: "file:../../x.tgz",
+          },
+        }),
+      ),
+    ).toContain("file:../../x.tgz");
+  });
+
+  it("refuses a package with no integrity hash", () => {
+    expect(
+      lockfileProblem(
+        lock({ "node_modules/a": { ...registry("a"), integrity: undefined } }),
+      ),
+    ).toContain("integrity");
+  });
+
+  it("refuses a version 1 lockfile, which has no package list to check", () => {
+    expect(lockfileProblem({ lockfileVersion: 1, dependencies: {} })).toContain(
+      "lockfileVersion 2 or 3",
+    );
+  });
+
+  it("is applied by the dependency plan", () => {
+    const plan = dependencyPlan(
+      folder({
+        "package-lock.json": JSON.stringify(
+          lock({
+            "node_modules/evil": {
+              resolved: "https://evil.example/evil.tgz",
+              integrity: "sha512-abc",
+            },
+          }),
+        ),
+      }),
+    );
+    expect(plan.kind).toBe("invalid");
+  });
 });
 
 describe("the flag", () => {
@@ -232,6 +381,7 @@ describe("the build box", () => {
     sandbox.exec.mockReset();
     sandbox.readFile.mockReset();
     sandbox.writeFile.mockReset();
+    sandbox.destroySession.mockClear();
   });
 
   it("copies the folder in, installs from the lockfile and bundles the entry", async () => {
@@ -249,11 +399,15 @@ describe("the build box", () => {
     });
     expect(result.ok).toBe(true);
 
-    // Its own box: never the sync box, never a session box.
-    for (const [ctx] of sandbox.exec.mock.calls) {
-      expect(ctx).toEqual(buildBoxContext(WS));
-    }
-    expect(buildBoxContext(WS).sessionKey).toBe(`connector-build:${WS}`);
+    // A box of its own: never the sync box, never a session box, and
+    // destroyed once the build is over.
+    const keys = new Set(
+      sandbox.exec.mock.calls.map(([ctx]) => ctx.sessionKey as string),
+    );
+    expect(keys.size).toBe(1);
+    const [key] = [...keys];
+    expect(key).toMatch(new RegExp(`^connector-build:${WS}:bbbbbbbbbbbbbbbb-`));
+    expect(sandbox.destroySession.mock.calls).toEqual([[key]]);
 
     // Every file of the folder, copied in; no clone, no token.
     const written = sandbox.writeFile.mock.calls.map(([, file]) =>
@@ -276,12 +430,78 @@ describe("the build box", () => {
 
     const install = commands.find(command => command.includes("npm ci"));
     expect(install).toContain("--ignore-scripts");
+    expect(install).toContain("--registry='https://registry.npmjs.org/'");
+    expect(install).toContain("npm_config_userconfig=/dev/null");
+    // The bundler is installed without running its scripts too.
+    const tools = commands.find(command => command.includes("esbuild@"));
+    expect(tools).toContain("--ignore-scripts");
+    expect(tools).toContain("--registry='https://registry.npmjs.org/'");
     const bundle = commands.find(command => command.includes("--bundle"));
     expect(bundle).toContain("--external:@makoai/connector-sdk");
     expect(bundle).toContain("--format=esm");
-    expect(bundle).toContain("'connector.ts'");
-    // The build directory is removed whatever happened.
-    expect(commands.at(-1)).toMatch(/^rm -rf /);
+    expect(bundle).toContain("'./connector.ts'");
+  });
+
+  it("gives every build its own box, even two builds of one workspace", async () => {
+    sandbox.exec.mockImplementation(async (_ctx, command: string) =>
+      command.includes("--bundle") ? ok("42\n") : ok(),
+    );
+    sandbox.readFile.mockResolvedValue(enc("export default 1;\n"));
+    await Promise.all(
+      ["1", "2"].map(n =>
+        buildBundleInBox({
+          workspaceId: WS,
+          slug: "acme",
+          hash: n.repeat(64),
+          entry: "connector.ts",
+          files: folder(),
+        }),
+      ),
+    );
+    const keys = new Set(
+      sandbox.exec.mock.calls.map(([ctx]) => ctx.sessionKey as string),
+    );
+    expect(keys.size).toBe(2);
+    expect(new Set(sandbox.destroySession.mock.calls.map(([k]) => k))).toEqual(
+      keys,
+    );
+  });
+
+  it("destroys the box when the build fails or throws", async () => {
+    sandbox.exec.mockImplementation(async (_ctx, command: string) => {
+      if (command.includes("npm ci")) throw new Error("box went away");
+      return ok();
+    });
+    await expect(
+      buildBundleInBox({
+        workspaceId: WS,
+        slug: "acme",
+        hash: "f".repeat(64),
+        entry: "connector.ts",
+        files: folder(),
+      }),
+    ).rejects.toThrow("box went away");
+    expect(sandbox.destroySession).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a .npmrc before it reaches a box", async () => {
+    const result = await buildBundleInBox({
+      workspaceId: WS,
+      slug: "acme",
+      hash: "a".repeat(64),
+      entry: "connector.ts",
+      files: folder({ ".npmrc": "registry=https://evil.example/\n" }),
+    });
+    expect(result.ok).toBe(false);
+    expect(sandbox.exec).not.toHaveBeenCalled();
+    expect(sandbox.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("passes the entry to esbuild as a path, never as a flag", () => {
+    expect(esbuildEntryArg("connector.ts")).toBe("./connector.ts");
+    expect(esbuildEntryArg("--watch")).toBe("./--watch");
+    expect(esbuildEntryArg("src/main.ts")).toBe("./src/main.ts");
+    expect(esbuildEntryArg("./main.ts")).toBe("./main.ts");
   });
 
   it("reports npm's own words when the install fails, and stops there", async () => {

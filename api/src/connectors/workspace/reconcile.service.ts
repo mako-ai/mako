@@ -105,7 +105,7 @@ async function reconcile(
   if (!commit) return { ...EMPTY };
 
   // Connector bundles (RFC connector-runtime §5). Off: every line below that
-  // reads `bundling` is skipped, and a push behaves exactly as before.
+  // reads `bundling` is skipped. The node_modules/ guard runs either way.
   const bundling = connectorBundlesEnabled();
 
   const rows = await ConnectorDefinition.find({ workspaceId });
@@ -119,8 +119,9 @@ async function reconcile(
 
     // A committed node_modules/ is refused before anything else, and before
     // the size cap: it is usually also over the cap, and "too big" would hide
-    // the actual fix, which is to stop committing it.
-    const committedModules = bundling ? nodeModules?.get(slug) : undefined;
+    // the actual fix, which is to stop committing it. Always on, flag or not:
+    // Mako never runs dependencies a folder brought along itself.
+    const committedModules = nodeModules?.get(slug);
     if (committedModules) {
       seen.add(slug);
       await block(

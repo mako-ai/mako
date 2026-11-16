@@ -3,9 +3,12 @@
  *
  * Off by default. Off means exactly the behaviour before bundles existed: a
  * connector folder is copied into the sync box and its TypeScript entry runs
- * as it stands, a `package.json` in the folder is just another file, and the
- * `node_modules/` guard does not run. On, a folder carrying `package.json`
- * plus `package-lock.json` is built into one `.mjs` per source hash.
+ * as it stands, and a `package.json` in the folder is just another file. On, a
+ * folder carrying `package.json` plus `package-lock.json` is built into one
+ * `.mjs` per source hash.
+ *
+ * The `node_modules/` guard is not behind this flag: the push reconciler
+ * refuses a folder that commits `node_modules/` either way.
  */
 export const CONNECTOR_BUNDLES_FLAG = "CONNECTOR_BUNDLES_ENABLED";
 
