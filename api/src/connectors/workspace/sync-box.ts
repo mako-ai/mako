@@ -29,7 +29,6 @@ import {
   cleanupScript,
   ISOLATED_ROOT,
   ISOLATED_RUNTIME,
-  hardenScript,
   launchScript,
   preflightScript,
   runLayout,
@@ -494,20 +493,7 @@ async function preflight(ctx: SandboxExecContext): Promise<void> {
       `This box cannot isolate connector runs: missing ${missing.join(", ") || "tools (preflight failed)"}.`,
     );
   }
-  // Passwordless accounts would let any run user `su` to root.
-  const harden = await getSandboxProvider().exec(ctx, hardenScript(), {
-    timeoutMs: 30_000,
-    asRoot: true,
-  });
-  if (harden.exitCode !== 0) {
-    logger.error("Could not lock passwordless accounts in a connector box", {
-      sessionKey: ctx.sessionKey,
-      stderr: harden.stderr.slice(0, 500),
-    });
-    throw new Error(
-      `This box cannot isolate connector runs: passwordless accounts remain (${harden.stderr.trim().slice(0, 200)}).`,
-    );
-  }
+
   preflighted.add(ctx.sessionKey);
 }
 
@@ -589,7 +575,19 @@ export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
     if (setup.exitCode === 0) {
       layout = candidate;
       pinned = setup.sandboxId;
-    } else lastError = (setup.stderr || setup.stdout).trim().slice(0, 2000);
+    } else {
+      lastError = (setup.stderr || setup.stdout).trim().slice(0, 2000);
+      if (/empty passwords left|could not lock/.test(lastError)) {
+        logger.error(
+          "Could not lock passwordless accounts in a connector box",
+          {
+            sessionKey: ctx.sessionKey,
+            detail: lastError.slice(0, 500),
+          },
+        );
+        break;
+      }
+    }
   }
   if (!layout) {
     throw new Error(

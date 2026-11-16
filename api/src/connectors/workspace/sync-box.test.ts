@@ -567,10 +567,10 @@ describe("box hardening", () => {
     sandbox.supportsRunUsers = undefined;
   });
 
-  it("locks passwordless accounts before the first run, and refuses the box if it cannot", async () => {
+  it("locks passwordless accounts in every run's setup, and refuses the run if it cannot", async () => {
     sandbox.exec.mockImplementation((_ctx, command: string) =>
       Promise.resolve(
-        command.includes("usermod -p")
+        command.includes("useradd -l")
           ? { ...result(), exitCode: 1, stderr: "empty passwords left: root" }
           : result(),
       ),
@@ -583,13 +583,39 @@ describe("box hardening", () => {
         connectorDir: "/x",
         command: "spec",
       }),
-    ).rejects.toThrow("passwordless accounts remain");
-    const harden = sandbox.exec.mock.calls.find(([, c]) =>
-      String(c).includes("usermod -p"),
+    ).rejects.toThrow(/isolated user.*empty passwords left: root/);
+    const setups = sandbox.exec.mock.calls.filter(([, c]) =>
+      String(c).includes("useradd -l"),
     );
-    expect(harden?.[2]).toMatchObject({ asRoot: true });
+    // The lock runs inside setup, before useradd, as root; no retry with a
+    // fresh uid can help a box whose accounts cannot be locked.
+    expect(setups).toHaveLength(1);
+    const setup = String(setups[0]?.[1]);
+    expect(setups[0]?.[2]).toMatchObject({ asRoot: true });
+    expect(setup.indexOf("usermod -p")).toBeGreaterThan(-1);
+    expect(setup.indexOf("usermod -p")).toBeLessThan(
+      setup.indexOf("useradd -l"),
+    );
+  });
+
+  it("runs the lock on every run, not once per box key", async () => {
+    sandbox.exec.mockImplementation((_ctx, command: string) =>
+      Promise.resolve(command.includes("head -c") ? result("0\n") : result()),
+    );
+    sandbox.readFile.mockResolvedValue(new Uint8Array());
+    const ctx = { sessionKey: "connector-sync:v2:replaced" };
+    for (let i = 0; i < 2; i++) {
+      await runConnectorCommand({
+        ctx,
+        runtimeId: "runtime",
+        connectorDir: "/x",
+        command: "spec",
+      });
+    }
     expect(
-      sandbox.exec.mock.calls.some(([, c]) => String(c).includes("useradd -l")),
-    ).toBe(false);
+      sandbox.exec.mock.calls.filter(([, c]) =>
+        String(c).includes("usermod -p"),
+      ),
+    ).toHaveLength(2);
   });
 });

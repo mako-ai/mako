@@ -445,17 +445,14 @@ suite("connector run isolation in e2bdev/base (Docker)", () => {
     expect(
       (await root("grep -c nullok /etc/pam.d/common-auth")).stdout.trim(),
     ).not.toBe("0");
-    const before = await open();
-    await connector(
-      before,
-      [],
-      "su -c id root </dev/null 2>&1; su -c id user </dev/null 2>&1",
-    );
-    expect(await bounded(before)).toContain("uid=0(root)");
-    await root(cleanupScript(before));
+    // Without the lock, a plain unprivileged user reaches root with su.
+    await root("id plainuser >/dev/null 2>&1 || useradd -M plainuser");
+    expect(
+      (await root("runuser -u plainuser -- su -c id root </dev/null 2>&1"))
+        .stdout,
+    ).toContain("uid=0(root)");
 
-    const harden = await root(hardenScript());
-    expect(harden, harden.stderr).toMatchObject({ code: 0 });
+    // Every run's setup locks them; there is no separate hardening step.
     const after = await open();
     await connector(
       after,
@@ -467,8 +464,15 @@ suite("connector run isolation in e2bdev/base (Docker)", () => {
     expect(out).not.toContain("uid=1000(user)");
     expect(out).toMatch(/Authentication failure/);
     expect((await root(cleanupScript(after))).code).toBe(0);
-    // Idempotent: a second pass finds nothing to lock.
-    expect((await root(hardenScript())).code).toBe(0);
+    // A box replaced under the same key comes back from the template with
+    // empty passwords; the next run's setup locks them again.
+    await root("passwd -d root >/dev/null && passwd -d user >/dev/null");
+    const again = await open();
+    await connector(again, [], "su -c id root </dev/null 2>&1");
+    expect(await bounded(again)).not.toContain("uid=0(root)");
+    expect((await root(cleanupScript(again))).code).toBe(0);
+    // Idempotent: a pass with nothing to lock succeeds.
+    expect((await root(`set -eu\n${hardenScript()}`)).code).toBe(0);
   }, 60_000);
 
   it("refuses to start a run without useradd", async () => {
