@@ -145,6 +145,9 @@ export const DB_METHODS = new Set([
   "indexInformation",
 ]);
 
+/** The db.admin() methods a read-only run may call. */
+export const READ_ONLY_ADMIN_METHODS = new Set(["listDatabases"]);
+
 export const ADMIN_METHODS = new Set([
   "listDatabases",
   "serverStatus",

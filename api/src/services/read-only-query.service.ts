@@ -21,7 +21,9 @@ export const NON_SQL_CONSOLE_READ_ONLY_REFUSAL =
 /**
  * Database commands, read ones included: usersInfo, getLog or serverStatus
  * read credentials, logs and server state, not data. A read-only run takes
- * none of them, whatever the spelling (`db["command"]`, a string, a comment).
+ * none of them. This pattern is a fast first pass with a clear message; the
+ * shell interpreter enforces the rule on the parsed name (`readOnly`), so
+ * an escaped spelling such as `db["comm\u0061nd"]` is refused there.
  */
 const MONGO_COMMAND = /\b(command|runCommand|adminCommand)\b/;
 

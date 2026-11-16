@@ -436,6 +436,41 @@ db.orders.aggregate([
       assert.equal(isWrite("mongodb", query), false, `isWrite: ${query}`);
     }
 
+    // A read-only run (MCP key, viewer) takes no database command at all,
+    // read ones included, however the call is spelled in the text: the
+    // parsed name decides.
+    const readOnly = (query: string) =>
+      runMongoShellQuery(db, query, { allowWrites: false, readOnly: true });
+    for (const query of [
+      "db.command({ usersInfo: 1, showCredentials: true })",
+      'db["command"]({ usersInfo: 1, showCredentials: true })',
+      'db["comm\\u0061nd"]({ usersInfo: 1, showCredentials: true })',
+      "db.comm\\u0061nd({ usersInfo: 1 })",
+      "db.runCommand({ serverStatus: 1 })",
+      "db.adminCommand({ getLog: 'global' })",
+      'db.getSiblingDB("admin").runCommand({ usersInfo: 1 })',
+      "db.admin().command({ ping: 1 })",
+      "db.admin().serverStatus()",
+      "db.admin().buildInfo()",
+    ]) {
+      await assert.rejects(
+        readOnly(query),
+        (error: unknown) =>
+          error instanceof MongoShellError &&
+          /read-only run takes none/.test(error.message),
+        query,
+      );
+    }
+    // Data reads and listDatabases still run read-only.
+    assert.equal(
+      ((await readOnly("db.users.find({}).toArray()")).value as unknown[])
+        .length,
+      before,
+    );
+    assert.ok((await readOnly("db.admin().listDatabases()")).value);
+    // Without readOnly a read command keeps running (in-product reads).
+    assert.ok((await read(db, "db.command({ ping: 1 })")).value);
+
     // Allowed, they run.
     const inserted = (await write(
       db,
