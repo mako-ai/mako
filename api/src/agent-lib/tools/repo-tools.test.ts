@@ -230,6 +230,27 @@ async function againstARealRepo() {
         error: notFound(spec),
       });
     }
+    // A glob pathspec keeps working, filtered per path; one inside a hidden
+    // app is refused.
+    const globSpec = (await grepRepo(view, {
+      pattern: ".",
+      pathspec: "apps/*/bindings/*.sql",
+    })) as { success: boolean; matches: Array<{ path: string }> };
+    assert.equal(globSpec.success, true, text(globSpec));
+    assert.deepEqual(
+      globSpec.matches.map(m => m.path),
+      ["apps/sales/bindings/mrr.sql"],
+    );
+    const dbtGlob = (await grepRepo(view, {
+      pattern: "mrr",
+      pathspec: "dbt/models/*.sql",
+    })) as { success: boolean; count: number };
+    assert.equal(dbtGlob.success, true);
+    assert.equal(dbtGlob.count, 1);
+    assert.deepEqual(
+      await grepRepo(view, { pattern: ".", pathspec: "apps/payroll/*" }),
+      { success: false, error: notFound("apps/payroll/*") },
+    );
     // A visible file works as a pathspec.
     const oneFile = (await grepRepo(view, {
       pattern: "mrr",

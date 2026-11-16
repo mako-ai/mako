@@ -127,8 +127,18 @@ interface NameGroup {
   priority: number;
 }
 
+/**
+ * A name as one list item: whitespace (a YAML block's newline included)
+ * collapses to one space, and a name holding a comma or a quote is quoted,
+ * so the comma-separated list never splits it or starts a new line.
+ */
+export function listItem(name: string): string {
+  const clean = name.replace(/\s+/g, " ").trim();
+  return /[,"]/.test(clean) ? JSON.stringify(clean) : clean;
+}
+
 function groupLine(group: NameGroup, shown: number): string {
-  const names = group.names.slice(0, shown).join(", ");
+  const names = group.names.slice(0, shown).map(listItem).join(", ");
   const left = group.names.length - shown;
   if (left === 0) return `${group.label} (${group.names.length}): ${names}`;
   const listed = shown > 0 ? `${names} … ` : "";
@@ -137,6 +147,11 @@ function groupLine(group: NameGroup, shown: number): string {
 
 /** How many of the group's names fit in `budget` chars, line included. */
 function namesThatFit(group: NameGroup, budget: number): number {
+  // The full line drops the "… N more: tool" suffix, so it can be shorter
+  // than a partial one: try it first.
+  if (groupLine(group, group.names.length).length + 1 <= budget) {
+    return group.names.length;
+  }
   let shown = 0;
   while (
     shown < group.names.length &&

@@ -249,6 +249,47 @@ describe("renderWorkspaceContext", () => {
     expect(pack.text).toMatch(/more: lookup_term/);
   });
 
+  it("keeps a group whole when its full line fits but a partial one would not", () => {
+    const registry = parseOntologyRegistry(ONTOLOGY_REGISTRY_YAML);
+    registry.terms = ["aaaaaaaaaa", "bbbbbbbbbb", "c"].map(name => ({
+      ...registry.terms[0],
+      name,
+      status: "governed",
+    }));
+    registry.entities = [];
+    const input = {
+      registry,
+      semanticProjects: [],
+      manifests: [],
+      apps: null,
+    };
+    const full = renderWorkspaceContext(input, { maxChars: 99_999 }).text;
+    // A cut starts (the notice line), yet the one group still fits whole.
+    const pack = renderWorkspaceContext(input, { maxChars: full.length });
+    expect(pack.text).toContain(
+      "Governed terms (3): aaaaaaaaaa, bbbbbbbbbb, c",
+    );
+    expect(pack.counts.leftOut).toBe(0);
+  });
+
+  it("never splits a name holding a comma or a newline", () => {
+    const registry = parseOntologyRegistry(ONTOLOGY_REGISTRY_YAML);
+    registry.terms = [
+      { ...registry.terms[0], name: "Revenue, net of refunds" },
+      { ...registry.terms[0], name: "net\n## revenue" },
+    ];
+    const { text } = renderWorkspaceContext({
+      registry,
+      semanticProjects,
+      manifests,
+      apps,
+    });
+    expect(text).toContain(
+      'Governed terms (2): net ## revenue, "Revenue, net of refunds"',
+    );
+    expect(text).not.toMatch(/^## revenue/m);
+  });
+
   it("reads an entry without a status as a draft", () => {
     // The fixture's `account` entity has no status.
     const { text } = renderWorkspaceContext({

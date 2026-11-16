@@ -304,16 +304,23 @@ export async function grepRepo(
       error: error instanceof Error ? error.message : "Invalid pathspec",
     };
   }
-  // A pathspec runs when it is a visible file or a folder holding at least
-  // one visible path (`users/bob` with the one app Bob shared). A hidden
-  // app, a folder holding only hidden paths and a missing path are refused
-  // before git greps them, all with the same message. Matches are filtered
-  // per path below, so the hidden apps of an allowed folder stay hidden.
-  if (pathspec && (await pathKind(view, pathspec)) === "missing") {
-    return {
-      success: false,
-      error: `${pathspec} not found on ${view.branch}.`,
-    };
+  // A literal pathspec runs when it is a visible file or a folder holding
+  // at least one visible path (`users/bob` with the one app Bob shared). A
+  // hidden app, a folder holding only hidden paths and a missing path are
+  // refused before git greps them, all with the same message. A glob
+  // (`dbt/models/*.sql`) names no single path, so it keeps the name rule:
+  // refused when its text falls inside a hidden root. Matches are filtered
+  // per path below either way, so hidden apps stay hidden.
+  if (pathspec) {
+    const allowed = /[*?[]/.test(pathspec)
+      ? view.isVisible(pathspec)
+      : (await pathKind(view, pathspec)) !== "missing";
+    if (!allowed) {
+      return {
+        success: false,
+        error: `${pathspec} not found on ${view.branch}.`,
+      };
+    }
   }
   const fetched = GREP_MAX_MATCHES * 4;
   let found;
