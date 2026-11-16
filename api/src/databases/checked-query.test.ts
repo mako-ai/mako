@@ -71,6 +71,11 @@ describe("executeCheckedQuery", () => {
       "db.users.aggregate([{ $merge: { into: 'copy' } }]).toArray()",
       "db.runCommand({ drop: 'users' })",
       'db.users["deleteMany"]({})',
+      // Read commands too: credentials, logs, server state.
+      "db.command({ usersInfo: 1, showCredentials: true })",
+      "db.admin().command({ getLog: 'global' })",
+      "db.runCommand({ serverStatus: 1 })",
+      'db["command"]({ usersInfo: 1 })',
       { collection: "users", operation: "deleteMany", filter: {} },
       {
         collection: "users",

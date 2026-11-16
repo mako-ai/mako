@@ -18,9 +18,22 @@ export const NON_SQL_CONSOLE_READ_ONLY_REFUSAL =
   "This console's language cannot run read-only over MCP. SQL and MongoDB " +
   "consoles can.";
 
+/**
+ * Database commands, read ones included: usersInfo, getLog or serverStatus
+ * read credentials, logs and server state, not data. A read-only run takes
+ * none of them, whatever the spelling (`db["command"]`, a string, a comment).
+ */
+const MONGO_COMMAND = /\b(command|runCommand|adminCommand)\b/;
+
+/** Whether a MongoDB query may not run read-only: it writes or runs a command. */
+export function isMongoReadOnlyRefused(query: unknown): boolean {
+  if (isWrite("mongodb", query)) return true;
+  return typeof query === "string" && MONGO_COMMAND.test(query);
+}
+
 /** The read-only refusal for a MongoDB shell query, or null when it reads. */
 export function mongoReadOnlyAccessError(query: string): string | null {
-  return isWrite("mongodb", query) ? MONGO_READ_ONLY_REFUSAL : null;
+  return isMongoReadOnlyRefused(query) ? MONGO_READ_ONLY_REFUSAL : null;
 }
 
 export function sqlReadOnlyAccessError(

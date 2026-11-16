@@ -1496,6 +1496,7 @@ async function main() {
       "db.users.deleteMany({})",
       "db.users.aggregate([{ $match: {} }, { $out: 'copy' }]).toArray()",
       "db.runCommand({ drop: 'users' })",
+      "db.command({ usersInfo: 1, showCredentials: true })",
     ]) {
       const [write] = await exchange([
         {

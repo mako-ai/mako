@@ -90,7 +90,8 @@ const needsDefaultLimit = (sql: string): boolean => {
 export const AGENT_DEFAULT_ROW_LIMIT = 500;
 
 /** ClickHouse clauses that end a query: a LIMIT must come before them. */
-const CLICKHOUSE_TRAILING_CLAUSE = /^(SETTINGS\s+\w+\s*=|FORMAT\s+\w+\s*$)/i;
+const CLICKHOUSE_TRAILING_CLAUSE =
+  /^(SETTINGS\s+\w+\s*=|FORMAT\s+(?!(?:ASC|DESC)\b)\w+\s*$)/i;
 
 /**
  * The query as an agent tool runs it: with a default LIMIT when it has none.
@@ -103,7 +104,8 @@ export const appendLimitIfMissing = (sql: string, dialect?: string): string => {
   const trimmed = sql.trim().replace(/;\s*$/i, "");
   if (dialect === "clickhouse") {
     const tail = findTopLevelKeyword(trimmed, CLICKHOUSE_TRAILING_CLAUSE);
-    if (tail > 0) {
+    // `t.format DESC` is a column, not the clause.
+    if (tail > 0 && trimmed[tail - 1] !== ".") {
       const head = trimmed.slice(0, tail).trimEnd();
       return `${head}\nLIMIT ${AGENT_DEFAULT_ROW_LIMIT}\n${trimmed.slice(tail)};`;
     }
@@ -1343,6 +1345,8 @@ export const createSqlToolsV2 = (
   userId?: string,
   toolExecutionContext?: AgentToolExecutionContext,
   queryAccess: QueryAccess = "write",
+  /** sql_execute_query's timeout when shorter than the agent default (MCP). */
+  executeTimeoutMs?: number,
 ) => {
   return {
     sql_list_connections: tool({
@@ -1458,6 +1462,7 @@ export const createSqlToolsV2 = (
             toolExecutionContext,
             queryAccess,
             maxRows,
+            executeTimeoutMs ? { timeoutMs: executeTimeoutMs } : {},
           );
         } catch (error) {
           return {

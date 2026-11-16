@@ -38,6 +38,25 @@ assert.equal(
   appendLimitIfMissing("select settings, format from t", "clickhouse"),
   "select settings, format from t\nLIMIT 500;",
 );
+// A column named format at the end of an ORDER BY is no clause.
+assert.equal(
+  appendLimitIfMissing(
+    "SELECT format, count() AS n FROM files GROUP BY format ORDER BY n DESC, format ASC",
+    "clickhouse",
+  ),
+  "SELECT format, count() AS n FROM files GROUP BY format ORDER BY n DESC, format ASC\nLIMIT 500;",
+);
+assert.equal(
+  appendLimitIfMissing(
+    "SELECT * FROM files f ORDER BY f.format DESC",
+    "clickhouse",
+  ),
+  "SELECT * FROM files f ORDER BY f.format DESC\nLIMIT 500;",
+);
+assert.equal(
+  appendLimitIfMissing("SELECT * FROM files f ORDER BY f.format", "clickhouse"),
+  "SELECT * FROM files f ORDER BY f.format\nLIMIT 500;",
+);
 // Inside a subquery or a string it is not the query's own clause.
 assert.equal(
   appendLimitIfMissing(

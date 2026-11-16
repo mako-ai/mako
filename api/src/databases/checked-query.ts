@@ -5,8 +5,11 @@
  * drivers' own `executeQuery` both come through here, so a driver reached
  * from the registry is held to the same rules as the service.
  */
-import { checkConnectionWrite, isWrite } from "../access/connection-writes";
-import { MONGO_READ_ONLY_REFUSAL } from "../services/read-only-query.service";
+import { checkConnectionWrite } from "../access/connection-writes";
+import {
+  MONGO_READ_ONLY_REFUSAL,
+  isMongoReadOnlyRefused,
+} from "../services/read-only-query.service";
 import type { IDatabaseConnection } from "../database/workspace-schema";
 import { checkPreviewQuerySafety } from "../services/query-pagination.service";
 import { engineFor } from "./engines";
@@ -60,7 +63,7 @@ export async function checkQuery(
     // read (mongo-shell-interpreter.ts). The same classification decides
     // here, before the engine is reached.
     if (database.type === "mongodb") {
-      if (isWrite("mongodb", query)) {
+      if (isMongoReadOnlyRefused(query)) {
         return { refused: MONGO_READ_ONLY_REFUSAL };
       }
       return { options };

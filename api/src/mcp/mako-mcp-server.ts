@@ -15,6 +15,7 @@
  * JSON response mode) — see stateless-transport.ts and mcp-server.routes.ts.
  */
 import { withQueryLabels } from "../services/bigquery-labels";
+import { MCP_QUERY_SOFT_TIMEOUT_MS } from "../config/long-running-queries";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
@@ -212,6 +213,8 @@ export function buildMakoMcpCandidateTools(
     userId,
     undefined,
     queryAccess,
+    // Answer before the MCP client's 60s abort.
+    MCP_QUERY_SOFT_TIMEOUT_MS,
   );
   // Read-only for a query:read key: a write is refused before it runs and
   // the shell interpreter refuses any write method on a read.
