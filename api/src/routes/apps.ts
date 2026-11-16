@@ -25,6 +25,7 @@ import { enrichContextWithWorkspace } from "../logging";
 import {
   concurrencyLimit,
   repoWorkPool,
+  shedWhileCloning,
 } from "../middleware/concurrency-limit";
 import { serverTiming, timed } from "../middleware/server-timing";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
@@ -153,7 +154,7 @@ appsRoutes.use("*", async (c: AuthenticatedContext, next) => {
 // slow endpoint here starved the whole service). GET only, so a busy pool
 // never refuses a save.
 for (const route of ["/:id/branches", "/:id/files", "/:id/status"]) {
-  appsRoutes.on("GET", route, concurrencyLimit(repoWorkPool));
+  appsRoutes.on("GET", route, concurrencyLimit(repoWorkPool, shedWhileCloning));
 }
 
 // The sub-routers, in the order their routes were always registered: Hono

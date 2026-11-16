@@ -10,6 +10,8 @@
  *   - sends the session cookie (`credentials: "include"`)
  *   - injects the active workspace id as `x-workspace-id`
  *   - redirects to `/login` on `401` (outside auth pages)
+ *   - for a read, retries a `503` that carries `Retry-After` (see
+ *     {@link retryUnavailableReads})
  *
  * This is the one way the app calls its JSON API (stores only — see
  * .cursor/rules/18-frontend-state.mdc). Paths are the full spec paths (e.g.
@@ -53,6 +55,46 @@ const authMiddleware: Middleware = {
   },
 };
 
+/** Retries of one read answered 503 + Retry-After. */
+export const UNAVAILABLE_READ_RETRIES = 2;
+/** Longest Retry-After honoured; a longer one is left to the caller. */
+const MAX_RETRY_AFTER_SECONDS = 5;
+
+/**
+ * Wraps `fetch` so a GET answered `503` with `Retry-After` is asked again
+ * after that many seconds, up to {@link UNAVAILABLE_READ_RETRIES} times.
+ * The API sends that answer for brief, known states: Hatchet restarting,
+ * a new instance cloning a workspace repo, a full per-instance pool. A view
+ * then shows its data a few seconds late instead of an error. Writes are
+ * never retried here.
+ */
+export function retryUnavailableReads(
+  fetchImpl: typeof fetch,
+  sleep: (ms: number) => Promise<void> = ms =>
+    new Promise(resolve => setTimeout(resolve, ms)),
+): typeof fetch {
+  return async (input, init) => {
+    const request = new Request(input, init);
+    if (request.method !== "GET") return fetchImpl(request);
+    for (let attempt = 0; ; attempt++) {
+      const response = await fetchImpl(request.clone());
+      const retryAfter = Number(response.headers.get("Retry-After"));
+      if (
+        response.status !== 503 ||
+        attempt >= UNAVAILABLE_READ_RETRIES ||
+        !Number.isFinite(retryAfter) ||
+        retryAfter <= 0 ||
+        retryAfter > MAX_RETRY_AFTER_SECONDS ||
+        request.signal.aborted
+      ) {
+        return response;
+      }
+      await response.body?.cancel().catch(() => undefined);
+      await sleep(retryAfter * 1000);
+    }
+  };
+}
+
 /**
  * Creates a typed client. Exported mainly so tests can supply their own
  * `baseUrl`/`fetch`; application code should import the {@link api} singleton.
@@ -64,7 +106,10 @@ export function createApiClient(
   const client = createClient<paths>({
     baseUrl,
     credentials: "include",
-    ...(fetchImpl ? { fetch: fetchImpl } : {}),
+    // Late-bound: tests stub globalThis.fetch after the singleton exists.
+    fetch: retryUnavailableReads(
+      fetchImpl ?? ((input, init) => globalThis.fetch(input, init)),
+    ),
   });
   client.use(authMiddleware);
   return client;

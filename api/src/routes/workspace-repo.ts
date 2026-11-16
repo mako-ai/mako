@@ -22,6 +22,7 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
   concurrencyLimit,
   repoWorkPool,
+  shedWhileCloning,
 } from "../middleware/concurrency-limit";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
@@ -72,7 +73,11 @@ workspaceRepoRoutes.use("*", requireWorkspaceAccess());
 
 // Same per-instance cap as the apps routes: these read git and sandboxes.
 for (const route of ["/status", "/branches"]) {
-  workspaceRepoRoutes.on("GET", route, concurrencyLimit(repoWorkPool));
+  workspaceRepoRoutes.on(
+    "GET",
+    route,
+    concurrencyLimit(repoWorkPool, shedWhileCloning),
+  );
 }
 
 function actingUserId(c: AuthenticatedContext): string {

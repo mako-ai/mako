@@ -16,6 +16,7 @@ import {
 } from "../repository.service";
 import { loggers } from "../../logging";
 import { freshenForServe } from "./fetch";
+import { cloneInFlight } from "./clone-state";
 
 const logger = loggers.api("apps");
 
@@ -139,7 +140,6 @@ export async function cloneMirrorInto(
  *
  * Serialized per workspace so concurrent requests don't race the clone.
  */
-const cloneInFlight = new Map<string, Promise<void>>();
 
 export async function ensureLocalRepo(workspaceId: string): Promise<void> {
   const repoDir = repoDirFor(workspaceId);

@@ -1,4 +1,5 @@
 import type { Context, Next } from "hono";
+import { repoCloneInProgress } from "../apps/cloud-repo/clone-state";
 import { loggers } from "../logging";
 
 const logger = loggers.api("concurrency-limit");
@@ -86,9 +87,39 @@ export function createConcurrencyPool(
   };
 }
 
+function busy(c: Context): Response {
+  return c.json(
+    {
+      success: false,
+      error: "This server is busy; retry in a moment.",
+    },
+    { status: 503, headers: { "Retry-After": "2" } },
+  );
+}
+
+export interface ConcurrencyLimitOptions {
+  /**
+   * Refuse at once (503 + Retry-After), without waiting for a slot, when
+   * this says the request would only queue behind slow work: a clone of
+   * the workspace repo in progress (2026-11-16: waiters held the pool for
+   * 10 s and then failed anyway).
+   */
+  shedWhen?: (c: Context) => boolean;
+}
+
 /** Hono middleware running the request inside `pool`. */
-export function concurrencyLimit(pool: ConcurrencyPool) {
+export function concurrencyLimit(
+  pool: ConcurrencyPool,
+  options: ConcurrencyLimitOptions = {},
+) {
   return async (c: Context, next: Next) => {
+    if (options.shedWhen?.(c)) {
+      logger.warn("Repo clone in progress; refusing request", {
+        pool: pool.name,
+        path: c.req.path,
+      });
+      return busy(c);
+    }
     const release = await pool.acquire();
     if (!release) {
       logger.warn("Concurrency pool full; refusing request", {
@@ -97,13 +128,7 @@ export function concurrencyLimit(pool: ConcurrencyPool) {
         active: pool.active,
         waiting: pool.waiting,
       });
-      return c.json(
-        {
-          success: false,
-          error: "This server is busy; retry in a moment.",
-        },
-        { status: 503, headers: { "Retry-After": "2" } },
-      );
+      return busy(c);
     }
     try {
       await next();
@@ -124,3 +149,15 @@ export const repoWorkPool = createConcurrencyPool({
   max: 12,
   maxWaitMs: 10_000,
 });
+
+/**
+ * For the repo-work routes: refuse at once while this instance clones the
+ * request's workspace repo. The clone takes 11 to 14 s on a new instance;
+ * a waiter would hold its place for 10 s and fail anyway.
+ */
+export const shedWhileCloning: ConcurrencyLimitOptions = {
+  shedWhen: c => {
+    const workspaceId = c.req.param("workspaceId");
+    return Boolean(workspaceId && repoCloneInProgress(workspaceId));
+  },
+};

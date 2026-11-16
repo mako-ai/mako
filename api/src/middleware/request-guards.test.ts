@@ -7,7 +7,12 @@
  */
 import assert from "node:assert/strict";
 import { Hono } from "hono";
-import { concurrencyLimit, createConcurrencyPool } from "./concurrency-limit";
+import {
+  concurrencyLimit,
+  createConcurrencyPool,
+  shedWhileCloning,
+} from "./concurrency-limit";
+import { cloneInFlight } from "../apps/cloud-repo/clone-state";
 import {
   apiRateLimitMiddleware,
   resetRateLimitForTests,
@@ -148,14 +153,52 @@ async function edgeOrigin() {
     // never pass through Cloudflare.
     assert.equal((await app.request("/api/inngest")).status, 200);
     assert.equal((await app.request("/health")).status, 200);
+    assert.equal((await app.request("/health/ready")).status, 200);
   } finally {
     delete process.env.EDGE_ORIGIN_SECRET;
     delete process.env.EDGE_ORIGIN_CHECK;
   }
 }
 
+/**
+ * While this instance clones a workspace's repo, that workspace's repo-work
+ * requests are refused at once (503 + Retry-After), take no slot and do not
+ * wait (2026-11-16: waiters held the pool 10 s, then failed anyway). Other
+ * workspaces are unaffected.
+ */
+async function shedWhileCloningRepo() {
+  const pool = createConcurrencyPool({ name: "t3", max: 1, maxWaitMs: 5_000 });
+  const app = new Hono();
+  app.get(
+    "/api/workspaces/:workspaceId/apps/:id/files",
+    concurrencyLimit(pool, shedWhileCloning),
+    c => c.text("ok"),
+  );
+  const OTHER = "6846e6a01b05af0948070583";
+  let finish!: () => void;
+  cloneInFlight.set(WS, new Promise<void>(r => (finish = r)));
+  try {
+    const started = Date.now();
+    const shed = await app.request(`/api/workspaces/${WS}/apps/${APP}/files`);
+    assert.equal(shed.status, 503);
+    assert.equal(shed.headers.get("Retry-After"), "2");
+    assert.ok(Date.now() - started < 1_000, "refused without waiting");
+    assert.equal(pool.active, 0, "took no slot");
+    const other = await app.request(
+      `/api/workspaces/${OTHER}/apps/${APP}/files`,
+    );
+    assert.equal(other.status, 200);
+  } finally {
+    finish();
+    cloneInFlight.delete(WS);
+  }
+  const after = await app.request(`/api/workspaces/${WS}/apps/${APP}/files`);
+  assert.equal(after.status, 200, "served once the clone ended");
+}
+
 async function main() {
   await concurrencyPool();
+  await shedWhileCloningRepo();
   await rateLimit();
   await edgeOrigin();
   console.info("request-guards: ok");

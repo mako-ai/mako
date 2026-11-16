@@ -44,6 +44,11 @@ import { asSystem } from "./access/connection-writes";
 import { checkPubSubBackendHealth } from "./services/pubsub.service";
 import { warmPricingCache } from "./services/gateway-pricing.service";
 import { scheduleThumbnailBackfillOnBoot } from "./apps/thumbnail-warm-boot";
+import {
+  repoWarmEnabled,
+  repoWarmReady,
+  startRepoWarmOnBoot,
+} from "./apps/cloud-repo/warm-boot";
 import { warmCatalog } from "./services/model-catalog.service";
 import { discoverSystemSkills } from "./agent-lib/skills/system-skills";
 
@@ -186,6 +191,16 @@ app.get("/health", c => {
   return c.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+// Startup check (Cloud Run startup probe): 503 while the boot repo warm
+// runs, capped at 60 s (apps/cloud-repo/warm-boot.ts). `/health` stays the
+// plain liveness answer.
+app.get("/health/ready", c => {
+  if (!repoWarmReady()) {
+    return c.json({ status: "warming" }, 503);
+  }
+  return c.json({ status: "ready" });
+});
+
 // OAuth discovery for the Mako MCP endpoint (RFC 9728 + RFC 8414). Root-level
 // well-known documents, so registered here rather than in register-routes.ts.
 app.route("/", mcpOAuthWellKnownRoutes);
@@ -285,7 +300,8 @@ app.use("*", async (c, next) => {
   if (
     requestPath.startsWith("/api/") ||
     requestPath.startsWith("/.well-known/") ||
-    requestPath === "/health"
+    requestPath === "/health" ||
+    requestPath === "/health/ready"
   ) {
     await next();
     return;
@@ -437,6 +453,10 @@ async function main(): Promise<void> {
         });
       });
   }
+
+  // Clone the hot workspaces' repos before the startup probe passes, so a
+  // new instance's first apps request is not a 12 s clone (2026-11-16).
+  if (repoWarmEnabled()) void startRepoWarmOnBoot();
 
   // Log Inngest configuration status (after logging is initialized)
   logInngestStatus();
