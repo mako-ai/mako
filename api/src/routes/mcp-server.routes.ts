@@ -22,7 +22,7 @@ import {
   isApiKeyAuth,
   isMcpOAuthAuth,
 } from "../auth/unified-auth.middleware";
-import { mcpResourceMetadataUrl } from "./mcp-oauth.routes";
+import { mcpResourceMetadataUrl, publicBaseUrl } from "./mcp-oauth.routes";
 import { requireWorkspace } from "../middleware/workspace.middleware";
 import {
   hasWorkspaceApiKeyScope,
@@ -158,6 +158,7 @@ mcpProtocolRoutes.post(
     const server = buildMakoMcpServer(
       mcpContext,
       acpDesktop ? undefined : createChatGptConnectorTools(mcpContext),
+      { publicBaseUrl: publicBaseUrl(c) },
     );
     const transport = new StatelessMcpTransport();
 

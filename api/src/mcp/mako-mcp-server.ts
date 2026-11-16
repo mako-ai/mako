@@ -611,6 +611,35 @@ function serializeToolResult(result: unknown): string {
 }
 
 /**
+ * MCP `serverInfo` (Implementation). With the public origin known, it also
+ * carries the display title, website and Mako's app icons (MCP 2025-06-18+
+ * `icons`), which clients such as ChatGPT show next to the connector. The
+ * icons are the PNGs app/public already serves at the domain root.
+ */
+export function makoServerInfo(publicBaseUrl?: string) {
+  if (!publicBaseUrl) return { name: SERVER_NAME, version: SERVER_VERSION };
+  const base = publicBaseUrl.replace(/\/$/, "");
+  return {
+    name: SERVER_NAME,
+    version: SERVER_VERSION,
+    title: "Mako",
+    websiteUrl: base,
+    icons: [
+      {
+        src: `${base}/android-chrome-512x512.png`,
+        mimeType: "image/png",
+        sizes: ["512x512"],
+      },
+      {
+        src: `${base}/android-chrome-192x192.png`,
+        mimeType: "image/png",
+        sizes: ["192x192"],
+      },
+    ],
+  };
+}
+
+/**
  * Build a stateless MCP Server bound to one workspace + acting user.
  * `extraTools` lets the route layer add endpoint-specific tools (e.g. the
  * ChatGPT connector contract) without widening this module.
@@ -618,6 +647,7 @@ function serializeToolResult(result: unknown): string {
 export function buildMakoMcpServer(
   context: MakoMcpContext,
   extraTools?: Record<string, BridgeableTool>,
+  options: { publicBaseUrl?: string } = {},
 ): Server {
   const tools: Record<string, BridgeableTool> = {
     ...buildMakoMcpToolset(context),
@@ -627,15 +657,12 @@ export function buildMakoMcpServer(
     resolveWorkspaceApiKeyScopes(context.scopes),
   );
 
-  const server = new Server(
-    { name: SERVER_NAME, version: SERVER_VERSION },
-    {
-      capabilities: { tools: {}, resources: {} },
-      instructions: context.acpDesktop
-        ? ACP_DESKTOP_SERVER_INSTRUCTIONS
-        : SERVER_INSTRUCTIONS,
-    },
-  );
+  const server = new Server(makoServerInfo(options.publicBaseUrl), {
+    capabilities: { tools: {}, resources: {} },
+    instructions: context.acpDesktop
+      ? ACP_DESKTOP_SERVER_INSTRUCTIONS
+      : SERVER_INSTRUCTIONS,
+  });
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({
     tools: Object.entries(tools).map(([name, tool]) => ({

@@ -62,3 +62,25 @@ it("keeps self-referential metadata on this service's own run.app host", async (
   expect(isOwnRunAppHost("mako-pr-12-abc.a.run.app:443")).toBe(true);
   expect(isOwnRunAppHost("app.mako.ai")).toBe(false);
 });
+
+it("uses the configured URL when the edge proxied the request to run.app", async () => {
+  // The app-router Worker rewrites Host to the run.app origin and sets
+  // X-Forwarded-Host; the public host must still win.
+  process.env.BASE_URL = "https://app.mako.ai";
+  process.env.K_SERVICE = "mako";
+  expect(
+    await issuer("https://mako-4vn6jszboq-ew.a.run.app", {
+      "x-forwarded-host": "app.mako.ai",
+    }),
+  ).toBe("https://app.mako.ai");
+  // A forged forwarded host on a direct hit yields the canonical origin too.
+  expect(
+    await issuer("https://mako-4vn6jszboq-ew.a.run.app", {
+      "x-forwarded-host": "attacker.example",
+    }),
+  ).toBe("https://app.mako.ai");
+  // A direct hit still gets self-referential metadata.
+  expect(await issuer("https://mako-4vn6jszboq-ew.a.run.app")).toBe(
+    "https://mako-4vn6jszboq-ew.a.run.app",
+  );
+});
