@@ -27261,6 +27261,84 @@
         "operationId": "delete_api_workspaces_workspaceId_apps_id_terminal_sessions_termId"
       }
     },
+    "/api/workspaces/{workspaceId}/apps/{id}/activity": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Record real use of the caller's sandbox (a preview interaction)",
+        "description": "The workbench calls this when the person interacts with the live preview (focuses or points into it). It keeps the sandbox from the idle pause; an open tab that only polls never does. Never starts, resumes or touches a sandbox.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_id_activity"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps/{id}/dev-preview/status": {
       "get": {
         "tags": [

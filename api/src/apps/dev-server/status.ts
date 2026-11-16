@@ -5,6 +5,7 @@
 import {
   getSandboxProvider,
   isSandboxGone,
+  boxIsRunning,
   type SandboxExecContext,
   type SandboxExecResult,
 } from "../sandbox/provider";
@@ -100,7 +101,9 @@ export async function discoverDevServers(
   ctx: SandboxExecContext,
 ): Promise<Array<{ slug: string; port: number }>> {
   const provider = getSandboxProvider();
-  if (!(await provider.hasSession(ctx))) return [];
+  // Polled (30 s dots, 15 s status): a paused box counts as nothing running.
+  // An exec here would resume it, which undid every idle pause.
+  if (!(await boxIsRunning(ctx))) return [];
   // Any touch of a box is a chance to refresh its agent: a resumed box can
   // sit for hours with a stale (or silently dead) agent otherwise, because
   // nothing but the ensureBox flows ever reinstalled it. Throttled inside.
@@ -165,7 +168,7 @@ export async function devServerStatus(
     if (!url) return { serving: false };
     return { serving: true, url, reachable: entry.reachable };
   }
-  if (!(await provider.hasSession(ctx))) return { serving: false };
+  if (!(await boxIsRunning(ctx))) return { serving: false };
   const port = await devPort(handle, provider, ctx, { allocate: false });
   if (!port) return { serving: false };
   if ((await servingState(provider, ctx, handle, port)) !== "serving") {

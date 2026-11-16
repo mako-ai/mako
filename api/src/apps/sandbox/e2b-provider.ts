@@ -39,8 +39,13 @@ function templateId(): string {
 }
 const SANDBOX_USER = "user";
 const REMOTE_ROOT = "/home/user/app";
-/** Idle window before E2B auto-pauses the sandbox (resets on activity). */
-const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * E2B's own idle timeout: the BACKSTOP, not the policy. The idle sweep
+ * (box-idle.service.ts) pauses after 10 minutes of real use; this sits above
+ * it (15) so E2B pausing on its own never races the sweep, and a box that
+ * escaped the sweep (cron down) still sleeps.
+ */
+const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 
 function apiKey(): string {
   const key = process.env.E2B_API_KEY;
@@ -148,9 +153,11 @@ const connecting = new Map<string, Promise<Sandbox>>();
 function connectSession(sessionKey: string): Promise<Sandbox> {
   const inflight = connecting.get(sessionKey);
   if (inflight) return inflight;
-  const run = connectSessionNow(sessionKey).finally(() =>
-    connecting.delete(sessionKey),
-  );
+  const run = connectSessionNow(sessionKey).finally(() => {
+    connecting.delete(sessionKey);
+    // A connect resumes a paused box: "not running" no longer holds.
+    runningAnswer.delete(sessionKey);
+  });
   connecting.set(sessionKey, run);
   return run;
 }
@@ -815,6 +822,81 @@ async function sessionExists(sessionKey: string): Promise<boolean> {
   }
 }
 
+/**
+ * "Running?" answers, briefly, for background polls (provider.ts isRunning).
+ *
+ * Unlike sessionExists this never trusts the in-process `sessions` map: that
+ * map still names a box after E2B paused it, and the exec that followed a
+ * stale yes is exactly what resumed it. Both answers are cached for a beat
+ * so a poll burst is one list call.
+ */
+const runningAnswer = new Map<string, { running: boolean; until: number }>();
+const RUNNING_ANSWER_TTL_MS = 10_000;
+
+async function sessionRunning(sessionKey: string): Promise<boolean> {
+  const cached = runningAnswer.get(sessionKey);
+  if (cached && cached.until > Date.now()) return cached.running;
+  try {
+    const paginator = Sandbox.list({
+      apiKey: apiKey(),
+      query: {
+        metadata: { makoAppsSessionKey: sessionKey },
+        state: ["running"],
+      },
+      limit: 1,
+    });
+    const running =
+      paginator.hasNext && (await paginator.nextItems()).length > 0;
+    runningAnswer.set(sessionKey, {
+      running,
+      until: Date.now() + RUNNING_ANSWER_TTL_MS,
+    });
+    return running;
+  } catch {
+    // A poll that cannot tell answers "offline"; the next beat asks again.
+    return false;
+  }
+}
+
+const pausedListeners = new Set<(sessionKey: string) => void>();
+
+/**
+ * Run `listener` whenever this process learns a session's box was paused.
+ * For per-session state held outside this module (a cached Sandbox handle,
+ * PR 1284), which must not outlive the pause. Returns an unsubscribe.
+ */
+export function onSessionPaused(
+  listener: (sessionKey: string) => void,
+): () => void {
+  pausedListeners.add(listener);
+  return () => pausedListeners.delete(listener);
+}
+
+/**
+ * The idle sweep paused this session's box: drop everything this process
+ * cached about it, so its polls stop answering "running" from memory and
+ * the next real use reconnects (and resumes) from scratch.
+ */
+export function noteSessionPaused(sessionKey: string): void {
+  runningAnswer.set(sessionKey, {
+    running: false,
+    until: Date.now() + RUNNING_ANSWER_TTL_MS,
+  });
+  keepAliveUntil.delete(sessionKey);
+  sessions.delete(sessionKey);
+  knownAlive.delete(sessionKey);
+  for (const listener of pausedListeners) {
+    try {
+      listener(sessionKey);
+    } catch (error) {
+      logger.warn("A session-paused listener threw", {
+        sessionKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
 export const e2bSandboxProvider: SandboxProvider = {
   id: "e2b",
   exec: execE2b,
@@ -822,6 +904,7 @@ export const e2bSandboxProvider: SandboxProvider = {
   root: () => REMOTE_ROOT,
   scratch: () => "/tmp",
   hasSession: ctx => sessionExists(ctx.sessionKey),
+  isRunning: ctx => sessionRunning(ctx.sessionKey),
   describe: async ctx => {
     try {
       const paginator = Sandbox.list({

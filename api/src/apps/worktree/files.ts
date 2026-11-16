@@ -17,7 +17,8 @@ import {
   boxWriteFile,
   sh,
 } from "../box";
-import { APPS_MAX_FILE_BYTES } from "../config";
+import { APPS_EXEC_DEFAULT_TIMEOUT_MS, APPS_MAX_FILE_BYTES } from "../config";
+import { noteBoxActivity } from "../box-activity";
 import { assertSafeRelPath, runGit } from "../git";
 import {
   DEFAULT_BRANCH,
@@ -143,6 +144,11 @@ export async function execInWorktree(
   // default (caller cwd is app-relative). posix.join keeps it session-rooted.
   const cwd = path.posix.join(handle.appRoot, options.cwd ?? "");
   const ctx = await ensureBox(handle);
+  // An agent command, a build, a workflow run: real use. Held for the
+  // command's own deadline so a long build is never paused under itself.
+  noteBoxActivity(ctx.sessionKey, "agent-exec", {
+    holdMs: options.timeoutMs ?? APPS_EXEC_DEFAULT_TIMEOUT_MS,
+  });
   let result: ExecOutcome;
   try {
     result = await getSandboxProvider().exec(ctx, command, {
@@ -161,6 +167,8 @@ export async function execInWorktree(
       cwd,
     });
   }
+  // Idle is measured from when the command ENDED, not when it started.
+  noteBoxActivity(ctx.sessionKey, "agent-exec");
   // A command can `git checkout`, and it can commit. Nothing needs
   // snapshotting — but the cached branch should follow, and a commit made in
   // the shell should not be left sitting only on a disposable machine.
@@ -441,6 +449,8 @@ export async function readFile(
   const safe = assertSafeRelPath(relPath);
   const source = await readSource(project, userId, at);
   if (source.kind === "box") {
+    // Someone opened a file: real use, even if they never edit.
+    noteBoxActivity(source.ctx.sessionKey, "read");
     const blob = await boxReadFile(source.ctx, appPath(project, safe));
     return { path: safe, ...blob };
   }
@@ -533,6 +543,7 @@ export async function writeFile(
     );
   }
   await boxWriteFile(ctx, safe, contents);
+  noteBoxActivity(ctx.sessionKey, "edit");
 }
 
 /** Read a file straight from the working copy (agents editing in place). */

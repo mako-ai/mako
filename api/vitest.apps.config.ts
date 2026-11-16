@@ -39,6 +39,12 @@ export default defineConfig({
       // A hidden skill file as a failed `mako/skills` status on the commit.
       "src/apps/skill-commit-status.test.ts",
       "src/apps/box-state.service.test.ts",
+      // App-box idle policy: pause after idle, delete after retention,
+      // commit before delete; polls never record activity or wake a box.
+      "src/apps/box-idle.service.test.ts",
+      "src/apps/box-activity.test.ts",
+      "src/apps/box/rescue-commit.test.ts",
+      "src/apps/sandbox/e2b-fleet.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",
       // Phase events on the request doing the work (NDJSON), no shared state.

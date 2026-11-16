@@ -15,6 +15,7 @@ import {
 import { forgetBoxState } from "../box-state.service";
 import { ensureBoxAgent, forgetBoxAgent } from "../box-agent";
 import { appsGitOriginBase } from "../config";
+import { noteBoxActivity } from "../box-activity";
 
 import { type SandboxExecContext } from "../sandbox/provider";
 import { WorktreeHandle } from "./repo";
@@ -229,6 +230,10 @@ export function ensureBox(
   options: { lazyPull?: boolean } = {},
 ): Promise<SandboxExecContext> {
   const key = boxCtx(handle).sessionKey;
+  // Every ensureBox is someone (or an agent turn) asking for the machine:
+  // a read-only session must not be paused right after its resume.
+  // Throttled to one write per session per 30 s (box-activity.ts).
+  noteBoxActivity(key, "read");
   const existing = ensureInFlight.get(key);
   if (existing) return existing;
   const run = ensureBoxNow(handle, options).finally(() =>

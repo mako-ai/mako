@@ -17,6 +17,7 @@ import {
 import { installCommand } from "./package-manager";
 import { mintPreviewGrant, type ViewerIdentity } from "./preview.service";
 import {
+  boxIsRunning,
   getSandboxProvider,
   type SandboxExecContext,
 } from "./sandbox/provider";
@@ -193,7 +194,9 @@ export async function tailBoxLog(
   logPath: string,
   offset: number,
 ): Promise<{ size: number; chunk: string }> {
-  if (!(await getSandboxProvider().hasSession(ctx))) {
+  // Running, not present: this is a 1.5 s poll, and an exec into a paused
+  // box resumes it.
+  if (!(await boxIsRunning(ctx))) {
     return { size: 0, chunk: "" };
   }
   const result = await getSandboxProvider().exec(
