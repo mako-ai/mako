@@ -188,12 +188,10 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      # Install and build before the credential exists on disk.
-      - run: pnpm install --frozen-lockfile
-      - name: Build workspace packages the api imports
-        run: |
-          pnpm --filter @mako/schemas run build
-          pnpm --filter @mako/agent-tools run build
+      # Only the api and its workspace dependencies, with no install scripts
+      # (no esbuild, electron or ssh2 postinstall), before the key exists.
+      # The upload path needs no workspace package build.
+      - run: pnpm install --frozen-lockfile --ignore-scripts --filter "api..."
       - uses: actions/download-artifact@v4
         with:
           name: connector-release

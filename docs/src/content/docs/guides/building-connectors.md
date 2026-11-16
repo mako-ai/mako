@@ -287,8 +287,10 @@ Every pull request that touches `connectors/` runs the build as a dry run.
 Infrastructure the publish job needs, per environment:
 
 - `CONNECTOR_REGISTRY_BUCKET` (variable): a dedicated registry bucket. The API
-  reads the registry from the same variable, so set it on the API too, and
-  give the API's runtime service account `roles/storage.objectViewer` on it.
+  reads the registry from the same variable. `deploy-app.yml` passes it from
+  the repo variables `CONNECTOR_REGISTRY_DEV_BUCKET` (previews) and
+  `CONNECTOR_REGISTRY_PROD_BUCKET` (production), only when they are set. Give
+  each runtime service account `roles/storage.objectViewer` on its bucket.
 - `CONNECTOR_REGISTRY_WRITER_SA` (secret): a service account key whose only
   grant is on that bucket, as 2 custom roles:
   - `storage.objects.create`, `storage.objects.get` and `storage.objects.list`
