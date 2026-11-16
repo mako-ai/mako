@@ -244,6 +244,58 @@ fi
   );
 }
 
+/** The pinned Node binary of a runtime root, for boxes that build bundles. */
+export function connectorRuntimeNodePath(
+  ctx: SandboxExecContext,
+  runtimeId: string,
+): string {
+  return runtimeNode(ctx, runtimeId);
+}
+
+/** The file name a bundle has inside the box. */
+export const CONNECTOR_BUNDLE_ENTRY = "connector.mjs";
+
+/**
+ * Put a built bundle in the box's runtime root, once per hash.
+ *
+ * The bundle lives under the runtime root so its one external import,
+ * `@makoai/connector-sdk`, resolves through the root's node_modules exactly as
+ * a TypeScript entry's does. `load` is called only when the box does not
+ * already hold this hash, so a warm box never touches object storage.
+ */
+export async function installConnectorBundle(input: {
+  ctx: SandboxExecContext;
+  runtimeId: string;
+  slug: string;
+  hash: string;
+  load: () => Promise<Uint8Array>;
+}): Promise<{ dir: string; entry: string }> {
+  const { ctx, runtimeId, slug, hash } = input;
+  const provider = getSandboxProvider();
+  const dir = path.posix.join(
+    runtimeRoot(ctx, runtimeId),
+    "bundles",
+    `${slug}@${hash}`,
+  );
+  const marker = path.posix.join(dir, ".materialized");
+  const check = await provider.exec(
+    ctx,
+    `test -f ${shellQuote(marker)} && echo yes || echo no`,
+    { timeoutMs: 30_000 },
+  );
+  if (check.stdout.trim() !== "yes") {
+    const bytes = await input.load();
+    await provider.writeFile(
+      ctx,
+      path.posix.join(dir, CONNECTOR_BUNDLE_ENTRY),
+      bytes,
+    );
+    // Written last, as for the runtime: a half-written bundle is rewritten.
+    await provider.writeFile(ctx, marker, new TextEncoder().encode(hash));
+  }
+  return { dir, entry: CONNECTOR_BUNDLE_ENTRY };
+}
+
 /**
  * Run one protocol command against a materialized connector.
  *

@@ -21,21 +21,27 @@
  * A connector whose state does not advance passes every other check and then
  * re-reads its first page forever in production.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { callMcpTool } from "./status.js";
 
-const HELP = `mako connector test <path> [--config <file>] [--entity <name>]
+const HELP = `mako connector test <path> [--config <file>] [--entity <name>] [--remote]
 
   <path>            a connector folder (containing connector.yaml), or a connector file
   --config <file>   JSON credentials to run check, discover and read against
   --entity <name>   test only this entity (default: all of them)
+  --remote          also ask Mako for ws:<slug>'s status and last build
   --json            machine-readable result
 
-Without --config only the offline checks run: spec, its config schema, and the
-connector's shape. That is what CI can do without a secret.
+Without --config only the offline checks run: spec, its config schema, the
+connector's shape and its dependency files. That is what CI can do without a
+secret.
+
+Dependencies: commit package.json with package-lock.json in the folder, never
+node_modules/. Mako builds one bundle per source hash on push.
 
 To run a connection Mako has configured, live against its platform:
   mako connection probe <id|name> [--entity <name>]`;
@@ -158,6 +164,119 @@ function declaredTypes(property) {
   return list.filter(entry => entry !== "null");
 }
 
+const LOCKFILE = "package-lock.json";
+const OTHER_LOCKFILES = [
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lockb",
+  "bun.lock",
+];
+
+/** Is anything under `node_modules/` in this folder tracked by git? */
+function nodeModulesTracked(dir) {
+  const result = spawnSync("git", ["ls-files", "--", "node_modules"], {
+    cwd: dir,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) return null; // not a git checkout: cannot tell
+  return result.stdout.trim().length > 0;
+}
+
+/**
+ * The dependency rules the push reconciler applies, as [passed, text] pairs
+ * (`passed` null for an informational line).
+ */
+export function dependencyChecks(dir) {
+  const checks = [];
+  const has = name => fs.existsSync(path.join(dir, name));
+  const slug = path.basename(dir);
+
+  if (has("node_modules")) {
+    const tracked = nodeModulesTracked(dir);
+    if (tracked) {
+      checks.push([
+        false,
+        `dependencies: node_modules/ is committed, and Mako refuses the folder. Run git rm -r --cached connectors/${slug}/node_modules and add node_modules/ to .gitignore`,
+      ]);
+    } else if (tracked === null) {
+      checks.push([
+        null,
+        "dependencies: node_modules/ is here; make sure it is gitignored, because Mako refuses a folder that commits it",
+      ]);
+    }
+  }
+
+  if (!has("package.json")) {
+    const stray = [LOCKFILE, ...OTHER_LOCKFILES].find(has);
+    if (stray) {
+      checks.push([false, `dependencies: ${stray} without package.json`]);
+    }
+    return checks;
+  }
+
+  const other = OTHER_LOCKFILES.find(has);
+  if (!has(LOCKFILE)) {
+    checks.push([
+      false,
+      other
+        ? `dependencies: Mako installs with npm and needs ${LOCKFILE}, not ${other}. Run npm install here and commit ${LOCKFILE}`
+        : `dependencies: package.json needs ${LOCKFILE} next to it. Run npm install here and commit it`,
+    ]);
+    return checks;
+  }
+
+  let count = 0;
+  try {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(dir, "package.json"), "utf8"),
+    );
+    count = Object.keys(manifest.dependencies ?? {}).length;
+  } catch (error) {
+    checks.push([
+      false,
+      `dependencies: package.json is not valid JSON: ${error.message}`,
+    ]);
+    return checks;
+  }
+  checks.push([
+    true,
+    `dependencies: package.json + ${LOCKFILE} (${count} dependenc${count === 1 ? "y" : "ies"}); Mako bundles them into one file on push`,
+  ]);
+  if (count > 0 && !has("node_modules")) {
+    checks.push([
+      null,
+      "dependencies: not installed here; run npm install in this folder before testing locally",
+    ]);
+  }
+  return checks;
+}
+
+/** `inspect_connector` for ws:<slug>: the indexed status and the last build. */
+async function remoteStatus(ctx, dir) {
+  const slug = path.basename(dir);
+  let out;
+  try {
+    out = await callMcpTool(ctx, "inspect_connector", {
+      connector: `ws:${slug}`,
+    });
+  } catch (error) {
+    return [
+      null,
+      `mako: could not ask Mako about ws:${slug}: ${error.message}`,
+    ];
+  }
+  if (out?.error) return [null, `mako: ${out.error}`];
+  const build = out?.build;
+  const buildText = build
+    ? `, build ${build.status} (${String(build.hash ?? "").slice(0, 12)})${build.error ? `: ${build.error}` : ""}`
+    : "";
+  const blocked = out?.status === "blocked" || build?.status === "failed";
+  return [
+    !blocked,
+    `mako: ws:${slug} is ${out?.status ?? "unknown"}${out?.blockedReason && !build?.error ? `: ${out.blockedReason}` : ""}${buildText}`,
+  ];
+}
+
 export async function connector(ctx, positional, flags, io) {
   const sub = positional[0];
   if (sub !== "test") {
@@ -204,6 +323,23 @@ export async function connector(ctx, positional, flags, io) {
   };
 
   io.log(`Testing ${isDir ? resolved : connectorFile}\n`);
+
+  // ---- dependencies ----------------------------------------------------
+  // What the push reconciler refuses, checked here first so the refusal is
+  // not the first time an author hears of it.
+  if (isDir) {
+    for (const [passed, text] of dependencyChecks(resolved)) {
+      if (passed === null) lines.push(skip(text));
+      else record(passed, text);
+    }
+  }
+
+  // ---- what Mako says ----------------------------------------------------
+  if (flags.remote) {
+    const [passed, text] = await remoteStatus(ctx, resolved);
+    if (passed === null) lines.push(skip(text));
+    else record(passed, text);
+  }
 
   // ---- spec ------------------------------------------------------------
   const specRun = await runCommand(runner, connectorFile, "spec");

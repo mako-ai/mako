@@ -3,6 +3,7 @@
  * A test that only proves a good connector passes would not have caught any of
  * the three problems below, each of which is invisible until production.
  */
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -155,4 +156,114 @@ test("a spec without declared config properties fails, as the push would", async
   const { code, output } = await runTest(dir);
   assert.equal(code, 1);
   assert.match(output, /config: \{ properties \}/);
+});
+
+/** A good connector folder, written next to the dependency files a test adds. */
+function goodFolder(files) {
+  const dir = scratch({
+    "connector.yaml": "runtime: node\n",
+    ...files,
+  });
+  fs.writeFileSync(
+    path.join(dir, "connector.ts"),
+    fs.readFileSync(GOOD, "utf8").replace('"../index.js"', JSON.stringify(SDK)),
+  );
+  return dir;
+}
+
+test("package.json without package-lock.json fails, as the push would refuse it", async () => {
+  const dir = goodFolder({ "package.json": '{"dependencies":{}}' });
+  const { code, output } = await runTest(dir);
+  assert.equal(code, 1);
+  assert.match(output, /package\.json needs package-lock\.json/);
+});
+
+test("a pnpm lockfile fails and names the lockfile Mako needs", async () => {
+  const dir = goodFolder({
+    "package.json": '{"dependencies":{}}',
+    "pnpm-lock.yaml": "lockfileVersion: 9\n",
+  });
+  const { code, output } = await runTest(dir);
+  assert.equal(code, 1);
+  assert.match(output, /needs package-lock\.json, not pnpm-lock\.yaml/);
+});
+
+test("package.json with package-lock.json passes and says Mako bundles it", async () => {
+  const dir = goodFolder({
+    "package.json": '{"dependencies":{}}',
+    "package-lock.json": '{"lockfileVersion":3}',
+  });
+  const { code, output } = await runTest(dir);
+  assert.equal(code, 0, output);
+  assert.match(
+    output,
+    /ok {4}dependencies: package\.json \+ package-lock\.json/,
+  );
+});
+
+test("a committed node_modules/ fails with the command that fixes it", async () => {
+  const dir = goodFolder({
+    "package.json": '{"dependencies":{}}',
+    "package-lock.json": '{"lockfileVersion":3}',
+  });
+  fs.mkdirSync(path.join(dir, "node_modules", "x"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "node_modules", "x", "index.js"), "");
+  const git = (...args) =>
+    spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  git("init", "-q");
+  git("add", "-f", "node_modules/x/index.js");
+
+  const { code, output } = await runTest(dir);
+  assert.equal(code, 1);
+  assert.match(output, /node_modules\/ is committed/);
+  assert.match(output, /git rm -r --cached/);
+});
+
+test("--remote reports Mako's status and a failed build", async () => {
+  const dir = goodFolder({});
+  const slug = path.basename(dir);
+  const original = globalThis.fetch;
+  const asked = [];
+  globalThis.fetch = async (_url, init) => {
+    const rpc = JSON.parse(init.body);
+    asked.push(rpc.params);
+    const payload = {
+      connector: `ws:${slug}`,
+      status: "blocked",
+      blockedReason: "Build failed: npm ci failed: 404",
+      build: {
+        status: "failed",
+        hash: "a".repeat(64),
+        error: "npm ci failed: 404",
+      },
+    };
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: rpc.id,
+        result: { content: [{ type: "text", text: JSON.stringify(payload) }] },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  try {
+    const lines = [];
+    const code = await connector(
+      { apiUrl: "https://mako.test", apiKey: "revops_test" },
+      ["test", dir],
+      { remote: true },
+      { log: line => lines.push(line) },
+    );
+    const output = lines.join("\n");
+    assert.equal(code, 1);
+    assert.deepEqual(asked, [
+      { name: "inspect_connector", arguments: { connector: `ws:${slug}` } },
+    ]);
+    assert.match(
+      output,
+      /FAIL {2}mako: ws:.* is blocked, build failed \(a{12}\): npm ci failed: 404/,
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
 });

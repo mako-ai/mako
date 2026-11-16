@@ -30,6 +30,18 @@ export interface WorkspaceConnectorSummary {
   blockedReason?: string;
   /** Why the last connection test failed. A bad key, not a broken connector. */
   lastCheckError?: string;
+  /**
+   * The last bundle build, next to `status`, for a folder with dependencies
+   * (CONNECTOR_BUNDLES_ENABLED). A failed build at push also blocks the
+   * connector; a failed build at run time is reported here and retried.
+   */
+  build?: {
+    status: "built" | "failed";
+    hash: string;
+    error?: string;
+    bytes?: number;
+    builtAt?: string;
+  };
   hasIcon: boolean;
   source: "workspace";
 }
@@ -56,6 +68,21 @@ export async function listWorkspaceConnectors(
       status: row.status,
       blockedReason: row.blockedReason,
       lastCheckError: row.lastCheckError,
+      ...(row.build
+        ? {
+            build: {
+              status: row.build.status,
+              hash: row.build.hash,
+              ...(row.build.error ? { error: row.build.error } : {}),
+              ...(row.build.bytes !== undefined
+                ? { bytes: row.build.bytes }
+                : {}),
+              ...(row.build.builtAt
+                ? { builtAt: new Date(row.build.builtAt).toISOString() }
+                : {}),
+            },
+          }
+        : {}),
       hasIcon: row.hasIcon === true,
       source: "workspace" as const,
     };
