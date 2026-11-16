@@ -1,0 +1,155 @@
+{
+  "date": "2026-11-16T23:15:01.891Z",
+  "template": "3f2t2qgqsu5m8e42xd5i",
+  "pauseMs": 20000,
+  "box": "isdsd23hewkpcsuroknta",
+  "full": {
+    "pauseCallMs": 897,
+    "resumeMs": 1231,
+    "boxClockJumpS": 23,
+    "bootIdKept": true,
+    "bEnd": "gone",
+    "bEndedAfterResumeMs": 179
+  },
+  "filesystem": {
+    "pauseCallMs": 399,
+    "resumeMs": 9588,
+    "bootIdChanged": true,
+    "hidepidAfterBootBeforeNextStart": false,
+    "wrapperPidInUseAfterBoot": false
+  },
+  "checks": [
+    {
+      "check": "box prepared",
+      "ok": true
+    },
+    {
+      "check": "A started",
+      "ok": true,
+      "detail": "ready 1 256"
+    },
+    {
+      "check": "B started",
+      "ok": true,
+      "detail": "ready 1 256"
+    },
+    {
+      "check": "/proc mounted with hidepid",
+      "ok": true,
+      "detail": "proc /proc proc rw,nosuid,nodev,noexec,relatime,hidepid=invisible 0 0"
+    },
+    {
+      "check": "A batch 1 read",
+      "ok": true
+    },
+    {
+      "check": "A batch 2 before pause",
+      "ok": true
+    },
+    {
+      "check": "B batch 2 before pause",
+      "ok": true
+    },
+    {
+      "check": "recorded boot id is the box's",
+      "ok": true
+    },
+    {
+      "check": "full resume keeps the boot",
+      "ok": true
+    },
+    {
+      "check": "A's wrapper is the same process after resume",
+      "ok": true
+    },
+    {
+      "check": "A serves batches 3 to 6 after resume",
+      "ok": true,
+      "detail": "ready 3 256 | ready 4 256 | ready 5 256 | ready 6 257"
+    },
+    {
+      "check": "A's batch 6 is the last",
+      "ok": true
+    },
+    {
+      "check": "A ended done",
+      "ok": true,
+      "detail": "ended done 0 0 none"
+    },
+    {
+      "check": "A closed",
+      "ok": true
+    },
+    {
+      "check": "A left nothing",
+      "ok": true
+    },
+    {
+      "check": "B ended itself after the pause",
+      "ok": true,
+      "detail": "gone after 179 ms"
+    },
+    {
+      "check": "B reports gone or abandoned",
+      "ok": true,
+      "detail": "gone"
+    },
+    {
+      "check": "B closed",
+      "ok": true
+    },
+    {
+      "check": "B left nothing",
+      "ok": true
+    },
+    {
+      "check": "bystander 1 alive after full pause",
+      "ok": true
+    },
+    {
+      "check": "C started",
+      "ok": true,
+      "detail": "ready 1 256"
+    },
+    {
+      "check": "filesystem resume boots again",
+      "ok": true
+    },
+    {
+      "check": "C's run user and run directory survived the reboot on disk",
+      "ok": true
+    },
+    {
+      "check": "D started",
+      "ok": true,
+      "detail": "ready 1 194"
+    },
+    {
+      "check": "C reaped: user and run directory gone",
+      "ok": true
+    },
+    {
+      "check": "bystander 2 alive after the reap",
+      "ok": true
+    },
+    {
+      "check": "D closed",
+      "ok": true
+    },
+    {
+      "check": "D left nothing",
+      "ok": true
+    },
+    {
+      "check": "hidepid back on after the next start",
+      "ok": true
+    },
+    {
+      "check": "no run user left in the box",
+      "ok": true,
+      "detail": "0"
+    }
+  ],
+  "passed": 30,
+  "failed": 0
+}

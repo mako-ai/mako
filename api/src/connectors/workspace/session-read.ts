@@ -38,6 +38,7 @@ import {
   ackScript,
   batchPath,
   closeScript,
+  connectorInput,
   sessionLayout,
   SESSION_MARKER,
   startScript,
@@ -229,6 +230,12 @@ export function boxSessionTransport(input: {
     asRoot: true as const,
     expectSandboxId: box,
   });
+  // Every session command names the session's id and run directory: it
+  // travels in the environment, never in argv (session-isolation.ts).
+  const command = (box: string | undefined) => ({
+    ...owner(box),
+    hideCommand: true as const,
+  });
 
   const gone = (error: unknown, what: string): never => {
     forgetPreparedBox(ctx.sessionKey);
@@ -325,7 +332,7 @@ export function boxSessionTransport(input: {
         result = await provider().exec(
           ctx,
           waitScript(handle.id, seq, seq - 1, waitSliceMs),
-          { ...owner(handle.box), timeoutMs: waitSliceMs + 60_000 },
+          { ...command(handle.box), timeoutMs: waitSliceMs + 60_000 },
         );
       } catch (error) {
         if (isSandboxGone(error)) gone(error, `waiting for batch ${seq}`);
@@ -352,7 +359,7 @@ export function boxSessionTransport(input: {
     let detail: string;
     try {
       const result = await provider().exec(ctx, closeScript(handle.id), {
-        ...owner(handle.box),
+        ...command(handle.box),
         timeoutMs: 60_000,
       });
       const marker = lastMarker(result.stdout);
@@ -410,13 +417,15 @@ export function boxSessionTransport(input: {
         const finalInputs = inputs.map(file =>
           path.posix.join(layout.run.dir, file.name),
         );
-        const command = connectorCommandLine({
+        const connector = connectorCommandLine({
           ctx,
           runtimeId: input.runtimeId,
           connectorDir: input.connectorDir,
           entry: input.entry,
           command: "read",
-          inputs: finalInputs,
+          // Relative to the connector's home: its argv never names the run
+          // directory.
+          inputs: finalInputs.map(connectorInput),
           maxIterations: start.maxIterations,
           maxBytes: start.maxBytes,
           extra: [
@@ -441,12 +450,12 @@ export function boxSessionTransport(input: {
             startScript({
               layout,
               inputs: finalInputs,
-              command,
+              command: connector,
               node: connectorRuntimeNode(ctx, input.runtimeId),
               limits,
               waitMs: waitSliceMs,
             }),
-            { ...owner(pinned), timeoutMs: waitSliceMs + 120_000 },
+            { ...command(pinned), timeoutMs: waitSliceMs + 120_000 },
           );
         } catch (error) {
           if (isSandboxGone(error)) gone(error, "starting");
@@ -517,7 +526,7 @@ export function boxSessionTransport(input: {
         // Batch seq - 1 is applied: free its slot. Off the critical path.
         void provider()
           .exec(ctx, ackScript(handle.id, seq - 1), {
-            ...owner(handle.box),
+            ...command(handle.box),
             timeoutMs: 30_000,
           })
           .catch(error =>

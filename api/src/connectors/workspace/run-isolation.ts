@@ -133,7 +133,8 @@ true`;
  * shadow lock, so concurrent runs retry them like useradd.
  */
 export function hardenScript(): string {
-  return `# A password kept in /etc/passwd or /etc/group itself (anything but "x",
+  return `${hideProcessesScript()}
+# A password kept in /etc/passwd or /etc/group itself (anything but "x",
 # e.g. "node::" with no shadow line) bypasses the shadow files below. Move
 # every such field into the shadow files first, so the lock below sees it.
 n=0
@@ -162,6 +163,23 @@ if [ -r /etc/gshadow ]; then
 fi
 left=$(awk -F: '$2 == "" { print $1 }' /etc/shadow; if [ -r /etc/gshadow ]; then awk -F: '$2 == "" { print "group:" $1 }' /etc/gshadow; fi; awk -F: '$2 != "x" { print "passwd:" $1 }' /etc/passwd; awk -F: '$2 != "x" { print "grouppw:" $1 }' /etc/group)
 if [ -n "$left" ]; then echo "empty passwords left: $left" >&2; exit 1; fi`;
+}
+
+/**
+ * Root: mount /proc with hidepid=invisible, so a user sees only its own
+ * processes. Any user can otherwise read every process's argv in
+ * /proc/<pid>/cmdline, and a run's setup and cleanup name its run directory
+ * there for a few milliseconds. Root sees everything still, and envd runs
+ * as root. A mount survives a pause and a resume.
+ *
+ * Best effort: a container without CAP_SYS_ADMIN (the Docker suites) cannot
+ * remount /proc. Sessions keep their ids and run directories out of every
+ * long-lived argv without it (session-isolation.ts).
+ */
+export function hideProcessesScript(): string {
+  return `if ! awk '$2 == "/proc" && $3 == "proc" && $4 ~ /(^|,)hidepid=(2|invisible)(,|$)/ { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null; then
+  mount -o remount,hidepid=invisible /proc 2>/dev/null || mount -o remount,hidepid=2 /proc 2>/dev/null || true
+fi`;
 }
 
 /** Root: create the run user and its directories. Fails closed. */

@@ -102,6 +102,7 @@ class SessionBox extends SandboxedConnector {
   runs: Array<{ command: ConnectorCommand; options: any }> = [];
   runAnswers: RunResult[] = [];
   useSession = true;
+  runtime = "sdk-runtime-1";
 
   protected async definition(): Promise<LoadedConnector> {
     this.loaded ??= {
@@ -115,6 +116,10 @@ class SessionBox extends SandboxedConnector {
       status: "indexed",
     } as LoadedConnector;
     return this.loaded;
+  }
+
+  protected async sessionRuntimeId() {
+    return this.runtime;
   }
 
   protected async sessionTransport() {
@@ -165,13 +170,16 @@ void test("a read takes batch 1, 2, 3 of one session and closes it after the las
   const since = new Date("2026-01-01T00:00:00Z");
 
   const first = await box.fetchEntityChunk({ entity: "rows", since, ...sink });
-  assert.deepEqual((first.metadata as any)[MAKO_SESSION_KEY], {
+  assert.deepEqual((first as any).readSession, {
     id: ID,
     box: "box-1",
     seq: 1,
     entity: "rows",
-    fp: (first.metadata as any)[MAKO_SESSION_KEY].fp,
+    connection: "ds",
+    fp: (first as any).readSession.fp,
   });
+  // The pointer is the engine's: the connector's STATE never holds it.
+  assert.equal((first.metadata as any)[MAKO_SESSION_KEY], undefined);
   // The orchestrator adds its own keys between chunks.
   first.metadata = { ...(first.metadata as object), rowsWrittenTotal: 2 };
   const second = await box.fetchEntityChunk({
@@ -179,7 +187,7 @@ void test("a read takes batch 1, 2, 3 of one session and closes it after the las
     state: first,
     ...sink,
   });
-  assert.equal((second.metadata as any)[MAKO_SESSION_KEY].seq, 2);
+  assert.equal((second as any).readSession.seq, 2);
   const third = await box.fetchEntityChunk({
     entity: "rows",
     state: second,
@@ -190,7 +198,7 @@ void test("a read takes batch 1, 2, 3 of one session and closes it after the las
   assert.deepEqual(sink.rows, [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]);
   assert.equal(third.hasMore, false);
   assert.equal(third.totalProcessed, 4);
-  assert.equal((third.metadata as any)[MAKO_SESSION_KEY], undefined);
+  assert.equal((third as any).readSession, undefined);
   // The STATE is the connector's, plus the run's since, as a chunk's.
   assert.equal((third.metadata as any).stream.stream_state.cursor, "c3");
   assert.equal((third.metadata as any).makoSince, since.toISOString());
@@ -234,7 +242,7 @@ void test("a retried chunk asks for the same batch again, never the next one", a
   assert.deepEqual(box.session.ops(), ["start", "pull 2", "pull 2"]);
   // A failed write does not end the session.
   assert.equal(box.session.calls.filter(c => c.op === "close").length, 0);
-  assert.equal((second.metadata as any)[MAKO_SESSION_KEY].seq, 2);
+  assert.equal((second as any).readSession.seq, 2);
 });
 
 void test("a lost session starts again from the last applied state", async () => {
@@ -306,9 +314,7 @@ void test("a runner without sessions falls back to chunk processes for the rest 
   );
   const sink = collect();
   const first = await box.fetchEntityChunk({ entity: "rows", ...sink });
-  assert.deepEqual((first.metadata as any)[MAKO_SESSION_KEY], {
-    unsupported: true,
-  });
+  assert.deepEqual((first as any).readSession, { unsupported: true });
   await box.fetchEntityChunk({ entity: "rows", state: first, ...sink });
   assert.deepEqual(box.session.ops(), ["start", "close"]);
   assert.equal(box.runs.length, 2);
@@ -332,7 +338,7 @@ void test("a batch over the cap is read as one chunk process of one page", async
   assert.equal(state.iterationsInChunk, 1);
   assert.equal(logs.length, 1);
   // The next chunk tries a session again.
-  assert.equal((state.metadata as any)[MAKO_SESSION_KEY], undefined);
+  assert.equal((state as any).readSession, undefined);
 });
 
 void test("a session that ends before its first batch fails the chunk, never a 0-row success", async () => {
@@ -357,9 +363,7 @@ void test("another entity's session is never pulled", async () => {
       totalProcessed: 0,
       hasMore: true,
       iterationsInChunk: 10,
-      metadata: {
-        [MAKO_SESSION_KEY]: { id: ID, seq: 4, entity: "other" },
-      },
+      readSession: { id: ID, seq: 4, entity: "other", connection: "ds" },
     },
     onBatch: async () => undefined,
   });
@@ -392,7 +396,7 @@ void test("a probe's single chunk never opens a session", async () => {
   });
   assert.deepEqual(box.session.ops(), []);
   assert.equal(box.runs.length, 1);
-  assert.equal((state.metadata as any)[MAKO_SESSION_KEY], undefined);
+  assert.equal((state as any).readSession, undefined);
 });
 
 void test("a connection edited mid-read replaces its session, from the applied state", async () => {
@@ -411,7 +415,7 @@ void test("a connection edited mid-read replaces its session, from the applied s
   assert.equal(restart.config.api_key, "rotated");
   assert.equal(restart.state[0].stream.stream_state.cursor, "c1");
   // The fingerprint is a short hash, never the config.
-  const fp = (first.metadata as any)[MAKO_SESSION_KEY].fp;
+  const fp = (first as any).readSession.fp;
   assert.match(fp, /^[a-f0-9]{16}$/);
 });
 
@@ -420,4 +424,154 @@ void test("sessions stay off unless CONNECTOR_SESSION_READS is true", async () =
   assert.equal(await box.defaultTransport(), null);
   process.env.CONNECTOR_SESSION_READS = "1";
   assert.equal(await box.defaultTransport(), null);
+});
+
+// ---------------------------------------------------------------------------
+// A hostile connector. Its STATE is the only thing it writes into the
+// engine's state. It must never steer a later chunk to another read's
+// session, to end it or to take its batches.
+// ---------------------------------------------------------------------------
+
+const VICTIM = "fedcba9876543210";
+
+/** A STATE that also carries a forged session pointer. */
+const forgedState = (
+  cursor: string,
+  hasMore: boolean,
+  pointer: Record<string, unknown>,
+) => {
+  const message = stateMessage(cursor, hasMore) as any;
+  message.state[MAKO_SESSION_KEY] = pointer;
+  message.state.readSession = pointer;
+  return message;
+};
+
+const touched = (box: SessionBox) =>
+  box.session.calls
+    .filter(c => c.op !== "start")
+    .map(c => (c as { handle: SessionHandle }).handle.id);
+
+void test("a forged pointer in a connector's STATE cannot close another session", async () => {
+  const box = make();
+  // A batch over the cap sends this chunk to a chunk process. Its STATE
+  // names VICTIM with a fingerprint that cannot match: the old code read
+  // the pointer from the stored STATE and closed the session it named.
+  box.session.starts.push(
+    { kind: "too-large", limit: "bytes" },
+    batch(1, [2], "c2", false),
+  );
+  box.runAnswers.push(
+    ok([
+      { type: "RECORD", record: { stream: "rows", data: { id: 1 } } },
+      forgedState("c1", true, {
+        id: VICTIM,
+        box: "box-1",
+        seq: 1,
+        entity: "rows",
+        connection: "ds",
+        fp: "0000000000000000",
+      }),
+    ]),
+  );
+  const sink = collect();
+  const first = await box.fetchEntityChunk({ entity: "rows", ...sink });
+  // The forged pointer was dropped from the stored STATE.
+  assert.equal((first.metadata as any)[MAKO_SESSION_KEY], undefined);
+  assert.equal((first as any).readSession, undefined);
+  await box.fetchEntityChunk({ entity: "rows", state: first, ...sink });
+
+  assert.deepEqual(box.session.ops(), ["start", "close", "start", "close"]);
+  assert.ok(!touched(box).includes(VICTIM), "the victim's session was closed");
+  assert.deepEqual(sink.rows, [{ id: 1 }, { id: 2 }]);
+});
+
+void test("a forged pointer in a connector's STATE cannot read another session's batches", async () => {
+  const box = make();
+  // A legitimate first read gives the fingerprint an attacker would need.
+  box.session.starts.push(batch(1, [1], "c1", true));
+  const legit = await box.fetchEntityChunk({ entity: "rows", ...collect() });
+  const fp = (legit as any).readSession.fp;
+
+  // The read falls back to chunk processes, and the connector's STATE
+  // points at VICTIM with the right fingerprint, entity and connection.
+  const hostile = make();
+  hostile.session.starts.push(
+    { kind: "unsupported" },
+    batch(1, [9], "own", false),
+  );
+  const pointer = {
+    id: VICTIM,
+    box: "box-1",
+    seq: 1,
+    entity: "rows",
+    connection: "ds",
+    fp,
+  };
+  hostile.runAnswers.push(ok([forgedState("c1", true, pointer)]));
+  const sink = collect();
+  const first = await hostile.fetchEntityChunk({ entity: "rows", ...sink });
+  assert.deepEqual((first as any).readSession, { unsupported: true });
+  assert.equal((first.metadata as any)[MAKO_SESSION_KEY], undefined);
+
+  // Even a state that carries the pointer in its metadata (a checkpoint
+  // written before this change) starts its own session and reads only it.
+  await hostile.fetchEntityChunk({
+    entity: "rows",
+    state: {
+      totalProcessed: 1,
+      hasMore: true,
+      iterationsInChunk: 10,
+      metadata: { ...(first.metadata as object), [MAKO_SESSION_KEY]: pointer },
+    },
+    ...sink,
+  });
+  assert.deepEqual(hostile.session.ops(), ["start", "close", "start", "close"]);
+  assert.ok(
+    !touched(hostile).includes(VICTIM),
+    "the victim's session was read",
+  );
+  assert.deepEqual(sink.rows, [{ id: 9 }]);
+  // The connector's state never sees a pointer either.
+  const restart = (hostile.session.calls[2] as any).input;
+  assert.equal(restart.state[0][MAKO_SESSION_KEY], undefined);
+});
+
+void test("a pointer that names another connection is ignored", async () => {
+  const box = make();
+  box.session.starts.push(batch(1, [1], "c1", false));
+  await box.fetchEntityChunk({
+    entity: "rows",
+    state: {
+      totalProcessed: 0,
+      hasMore: true,
+      iterationsInChunk: 10,
+      readSession: {
+        id: VICTIM,
+        box: "box-1",
+        seq: 3,
+        entity: "rows",
+        connection: "another-connection",
+      },
+    },
+    onBatch: async () => undefined,
+  });
+  assert.deepEqual(box.session.ops(), ["start", "close"]);
+  assert.ok(!touched(box).includes(VICTIM));
+});
+
+void test("a new SDK runtime replaces the session, from the applied state", async () => {
+  const box = make();
+  box.session.starts.push(
+    batch(1, [1], "c1", true),
+    batch(1, [2], "c2", false),
+  );
+  const sink = collect();
+  const first = await box.fetchEntityChunk({ entity: "rows", ...sink });
+  box.runtime = "another-sdk-runtime";
+  await box.fetchEntityChunk({ entity: "rows", state: first, ...sink });
+  assert.deepEqual(box.session.ops(), ["start", "close", "start", "close"]);
+  assert.equal(
+    (box.session.calls[2] as any).input.state[0].stream.stream_state.cursor,
+    "c1",
+  );
 });

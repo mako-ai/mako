@@ -40,6 +40,7 @@ import type {
   SandboxExecResult,
   SandboxProvider,
 } from "./provider";
+import { commandToRun } from "./hidden-command";
 
 const logger = loggers.api("apps-e2b");
 
@@ -771,7 +772,8 @@ async function execE2b(
     // Started and awaited in two steps, so a failure can be told apart: one
     // before envd accepted the command (it never ran) from one after (it may
     // still be running). Only the first may be retried; see withSandbox.
-    const handle = await startCommand(sandbox, command, {
+    const run = commandToRun(command, options);
+    const handle = await startCommand(sandbox, run.command, {
       user: userFor(options),
       cwd,
       timeoutMs,
@@ -785,7 +787,7 @@ async function execE2b(
         // There is no human at this end. Without it git blocks on a
         // credential prompt until the timeout and reports nothing.
         GIT_TERMINAL_PROMPT: "0",
-        ...(options.env ?? {}),
+        ...run.env,
       },
       onStdout: d => push("out", d),
       onStderr: d => push("err", d),

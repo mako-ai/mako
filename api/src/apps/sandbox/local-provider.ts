@@ -29,6 +29,7 @@ import type {
   SandboxProvider,
   SandboxTerminal,
 } from "./provider";
+import { commandToRun } from "./hidden-command";
 
 const logger = loggers.api("apps-local-sandbox");
 
@@ -156,17 +157,18 @@ async function execLocal(
     throw new Error(`cwd escapes the local sandbox: ${options.cwd}`);
   }
   await fs.mkdir(cwd, { recursive: true });
+  const run = commandToRun(command, options);
 
   return new Promise(resolve => {
     execFile(
       "bash",
-      ["-lc", command],
+      ["-lc", run.command],
       {
         cwd,
         timeout: options.timeoutMs ?? 120_000,
         maxBuffer: MAX_OUTPUT_BYTES * 4,
         encoding: "utf8",
-        env: sandboxEnv(options.env),
+        env: sandboxEnv(run.env),
       },
       (error, stdout, stderr) => {
         const out = truncate(String(stdout ?? ""));

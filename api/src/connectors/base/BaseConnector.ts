@@ -35,6 +35,13 @@ export interface FetchState {
 
   // Connector-specific state
   metadata?: any;
+
+  /**
+   * Engine-owned: where a boxed connector's read session is (session-read.ts).
+   * Only SandboxedConnector sets it, never from connector output, which
+   * reaches `metadata` alone. Persisted with the rest of the state.
+   */
+  readSession?: unknown;
 }
 
 // Options for fetching data
