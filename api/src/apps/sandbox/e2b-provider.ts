@@ -16,7 +16,7 @@
  */
 import path from "node:path";
 import { ConnectionConfig, Sandbox, SandboxNotFoundError } from "e2b";
-import { recordBoxConnect } from "../box-activity";
+import { clearBoxResume, noteBoxResume } from "../box-activity";
 import {
   APPS_EXEC_DEFAULT_TIMEOUT_MS,
   APPS_EXEC_MAX_OUTPUT_BYTES,
@@ -180,9 +180,11 @@ function connectCaller(): string {
 }
 
 function connectSession(sessionKey: string): Promise<Sandbox> {
-  recordBoxConnect(sessionKey, connectCaller());
   const inflight = connecting.get(sessionKey);
   if (inflight) return inflight;
+  // After the in-flight check, so a burst records once; and only the first
+  // connect after a pause sticks (box-activity.ts noteBoxResume).
+  noteBoxResume(sessionKey, connectCaller);
   const run = connectSessionNow(sessionKey).finally(() => {
     connecting.delete(sessionKey);
     // A connect resumes a paused box: "not running" no longer holds.
@@ -904,8 +906,17 @@ const runningAnswer = new Map<string, { running: boolean; until: number }>();
 const RUNNING_ANSWER_TTL_MS = 10_000;
 
 async function sessionRunning(sessionKey: string): Promise<boolean> {
+  return (await sessionRunState(sessionKey)) === "running";
+}
+
+async function sessionRunState(
+  sessionKey: string,
+  { fresh = false }: { fresh?: boolean } = {},
+): Promise<"running" | "not-running" | "unknown"> {
   const cached = runningAnswer.get(sessionKey);
-  if (cached && cached.until > Date.now()) return cached.running;
+  if (!fresh && cached && cached.until > Date.now()) {
+    return cached.running ? "running" : "not-running";
+  }
   try {
     const paginator = Sandbox.list({
       apiKey: apiKey(),
@@ -921,10 +932,11 @@ async function sessionRunning(sessionKey: string): Promise<boolean> {
       running,
       until: Date.now() + RUNNING_ANSWER_TTL_MS,
     });
-    return running;
+    return running ? "running" : "not-running";
   } catch {
-    // A poll that cannot tell answers "offline"; the next beat asks again.
-    return false;
+    // Could not tell. Polls read this as "offline" (sessionRunning), and the
+    // next beat asks again; callers that must not guess see "unknown".
+    return "unknown";
   }
 }
 
@@ -955,6 +967,7 @@ export function noteSessionPaused(sessionKey: string): void {
   keepAliveUntil.delete(sessionKey);
   sessions.delete(sessionKey);
   knownAlive.delete(sessionKey);
+  clearBoxResume(sessionKey);
   for (const listener of pausedListeners) {
     try {
       listener(sessionKey);
@@ -975,6 +988,7 @@ export const e2bSandboxProvider: SandboxProvider = {
   scratch: () => "/tmp",
   hasSession: ctx => sessionExists(ctx.sessionKey),
   isRunning: ctx => sessionRunning(ctx.sessionKey),
+  runState: (ctx, options) => sessionRunState(ctx.sessionKey, options),
   sessionSandboxIds: async ctx => {
     // Throws on a lookup failure on purpose: callers must tell "E2B said
     // none" apart from "E2B did not answer".

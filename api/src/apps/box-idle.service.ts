@@ -35,7 +35,7 @@ import { loggers } from "../logging";
 import { AppWorktree } from "../database/workspace-schema";
 import {
   getBoxActivity,
-  lastBoxConnect,
+  lastBoxResume,
   parseSessionKey,
   type BoxActivity,
 } from "./box-activity";
@@ -236,6 +236,8 @@ export interface SweepDeps {
 export interface PauseHistory {
   pausedAt: Date[];
   holdUntil: Date | null;
+  /** When the hold was set; real use after this lifts it. */
+  holdSetAt?: Date | null;
 }
 
 /**
@@ -344,15 +346,31 @@ export async function sweepIdleBoxes(
     // Safety valve: a session paused again and again with no real use in
     // between is being resumed by something that is not use. Stop feeding
     // the loop, and name the last resume caller so it can be fixed.
-    const history = await deps.pauseHistory(sessionKey);
-    if (history.holdUntil && history.holdUntil.getTime() > now) {
+    let history: PauseHistory;
+    try {
+      history = await deps.pauseHistory(sessionKey);
+    } catch (error) {
+      // One session's lookup failing must not end the whole tick.
+      result.kept.push({
+        sessionKey,
+        reason: `pause history unavailable: ${message(error)}`,
+      });
+      continue;
+    }
+    const lastUse = fresh?.lastActivityAt?.getTime() ?? 0;
+    // A hold lasts until it expires, or until real use after it was set:
+    // someone came back, so the box is judged afresh by the idle clock.
+    const holdLive =
+      !!history.holdUntil &&
+      history.holdUntil.getTime() > now &&
+      !(history.holdSetAt && lastUse > history.holdSetAt.getTime());
+    if (holdLive && history.holdUntil) {
       result.kept.push({
         sessionKey,
         reason: `safety valve: pausing held until ${history.holdUntil.toISOString()}`,
       });
       continue;
     }
-    const lastUse = fresh?.lastActivityAt?.getTime() ?? 0;
     const recent = history.pausedAt
       .map(d => d.getTime())
       .filter(t => now - t < SAFETY_VALVE_WINDOW_MS && t > lastUse);
@@ -364,10 +382,14 @@ export async function sweepIdleBoxes(
         windowMinutes: SAFETY_VALVE_WINDOW_MS / 60_000,
         lastResumeCaller: caller ?? "unknown",
       });
-      await deps.holdPausing(
-        sessionKey,
-        new Date(now + SAFETY_VALVE_WINDOW_MS),
-      );
+      await deps
+        .holdPausing(sessionKey, new Date(now + SAFETY_VALVE_WINDOW_MS))
+        .catch(error =>
+          logger.warn("Could not store the safety-valve hold", {
+            sessionKey,
+            error: message(error),
+          }),
+        );
       result.kept.push({
         sessionKey,
         reason: `safety valve: ${recent.length} pauses in 30 min without use; last resume by ${caller ?? "unknown"}`,
@@ -381,10 +403,14 @@ export async function sweepIdleBoxes(
     // that was just paused. Announced first, it shows "off" and waits.
     await deps.announceAsleep(sessionKey).catch(() => undefined);
     const idleMinutes = Math.round((now - lastUseOf(fresh, since)) / 60_000);
-    await deps.recordPause(sessionKey, new Date(now)).catch(() => undefined);
+    let pausedAny = false;
     for (const box of list) {
       try {
-        await deps.pause(box.sandboxId);
+        if (!(await deps.pause(box.sandboxId))) {
+          // E2B said it was not running (already paused): nothing happened.
+          continue;
+        }
+        pausedAny = true;
         result.pausedNow.push({
           sessionKey,
           sandboxId: box.sandboxId,
@@ -397,6 +423,11 @@ export async function sweepIdleBoxes(
           reason: `pause failed: ${message(error)}`,
         });
       }
+    }
+    // Only a pause that happened counts toward the safety valve: failed
+    // pauses must not read as "resumed without use".
+    if (pausedAny) {
+      await deps.recordPause(sessionKey, new Date(now)).catch(() => undefined);
     }
   }
   return result;
@@ -718,10 +749,12 @@ async function pauseHistory(sessionKey: string): Promise<PauseHistory> {
   const doc = await AppWorktree.findOne(filter, {
     idlePausedAt: 1,
     idlePauseHoldUntil: 1,
+    idlePauseHoldSetAt: 1,
   }).lean();
   return {
     pausedAt: doc?.idlePausedAt ?? [],
     holdUntil: doc?.idlePauseHoldUntil ?? null,
+    holdSetAt: doc?.idlePauseHoldSetAt ?? null,
   };
 }
 
@@ -740,7 +773,7 @@ async function holdPausing(sessionKey: string, until: Date): Promise<void> {
   if (!filter) return;
   await AppWorktree.updateOne(
     filter,
-    { $set: { idlePauseHoldUntil: until } },
+    { $set: { idlePauseHoldUntil: until, idlePauseHoldSetAt: new Date() } },
     { timestamps: false },
   );
 }
@@ -756,7 +789,7 @@ export function realSweepDeps(): SweepDeps {
     pauseHistory,
     recordPause,
     holdPausing,
-    lastResumeCaller: lastBoxConnect,
+    lastResumeCaller: lastBoxResume,
     now: Date.now,
   };
 }

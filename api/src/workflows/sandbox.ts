@@ -18,7 +18,7 @@ import { Types } from "mongoose";
 import type { RunWrites } from "./runs";
 
 import { appsGitOriginBase } from "../apps/config";
-import { boxIsRunning, getSandboxProvider } from "../apps/sandbox/provider";
+import { boxRunState, getSandboxProvider } from "../apps/sandbox/provider";
 import {
   boxCtx,
   ensureWorkspaceWorktree,
@@ -242,7 +242,13 @@ export async function readSandboxRun(
   // answers PAUSED (not an active status, so the polling stops); any real
   // use of the box (opening the app, a command) resumes it, and the next
   // read gives the result.
-  if (!(await boxIsRunning(ctx))) {
+  // Fresh, and tri-state: a failed lookup or a stale cache must never turn
+  // a live run into PAUSED, because PAUSED stops the run view's polling.
+  const state = await boxRunState(ctx, { fresh: true });
+  if (state === "unknown") {
+    return { runId, sandbox: true as const, status: "RUNNING", steps: [] };
+  }
+  if (state === "not-running") {
     if (await provider.hasSession(ctx)) {
       return {
         runId,

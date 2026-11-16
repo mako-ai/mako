@@ -35,7 +35,7 @@ import { APP_MANIFEST, parseAppManifest } from "../app-paths";
 
 import { ensureCommitLocally } from "../cloud-repo.service";
 import {
-  boxIsRunning,
+  boxRunState,
   getSandboxProvider,
   type SandboxExecContext,
   type SandboxExecOptions,
@@ -330,11 +330,15 @@ async function readSource(
     appRoot: appRootFor(project),
   };
   const ctx = boxCtx(handle);
-  const live = await (
-    liveness === "running"
-      ? boxIsRunning(ctx)
-      : getSandboxProvider().hasSession(ctx)
-  ).catch(() => false);
+  const present = () => getSandboxProvider().hasSession(ctx);
+  const live = await (async () => {
+    if (liveness !== "running") return present();
+    // Fresh: a cached "not running" can be 10 s stale on this instance. And
+    // a failed lookup is not "paused": fall back to the old answer rather
+    // than flip the listing to the last commit for one poll.
+    const state = await boxRunState(ctx, { fresh: true });
+    return state === "unknown" ? present() : state === "running";
+  })().catch(() => false);
   if (live && (await boxHasRepo(ctx).catch(() => false))) {
     await syncBranchFromBox(handle);
     // The box's checkout may predate a move of this app (or its creation

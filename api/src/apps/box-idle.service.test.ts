@@ -350,6 +350,76 @@ describe("sweepIdleBoxes: safety valve", () => {
     expect((await sweepIdleBoxes(deps, config)).pausedNow).toHaveLength(1);
   });
 
+  it("a failed or no-op pause is not recorded, so it cannot trip the valve", async () => {
+    for (const pause of [
+      vi.fn(async () => {
+        throw new Error("E2B 500");
+      }),
+      vi.fn(async () => false),
+    ]) {
+      const { deps } = sweepDeps(
+        [appBox()],
+        { [KEY]: activity(30) },
+        { pause },
+      );
+      await sweepIdleBoxes(deps, config);
+      expect(deps.recordPause).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a pause-history error keeps that session and the tick goes on", async () => {
+    const other = `${WS}:${BASE36_USER}`;
+    const { deps } = sweepDeps(
+      [appBox(), appBox({ sessionKey: other, sandboxId: "sbx-2" })],
+      { [KEY]: activity(30), [other]: activity(30) },
+      {
+        pauseHistory: vi.fn(async (key: string) => {
+          if (key === KEY) throw new Error("mongo timeout");
+          return { pausedAt: [], holdUntil: null };
+        }),
+      },
+    );
+    const result = await sweepIdleBoxes(deps, config);
+    expect(result.kept).toEqual([
+      { sessionKey: KEY, reason: "pause history unavailable: mongo timeout" },
+    ]);
+    expect(result.pausedNow.map(p => p.sessionKey)).toEqual([other]);
+  });
+
+  it("a failed hold write does not throw out of the tick", async () => {
+    const { deps } = sweepDeps(
+      [appBox()],
+      { [KEY]: activity(60) },
+      {
+        pauseHistory: vi.fn(async () => ({
+          pausedAt: pausesAgo(25, 14, 3),
+          holdUntil: null,
+        })),
+        holdPausing: vi.fn(async () => {
+          throw new Error("mongo down");
+        }),
+      },
+    );
+    const result = await sweepIdleBoxes(deps, config);
+    expect(result.kept[0].reason).toMatch(/^safety valve: 3 pauses/);
+  });
+
+  it("real use after the hold was set lifts it", async () => {
+    // Hold set 20 min ago until 10 min from now; used 15 min ago; idle since.
+    const { deps } = sweepDeps(
+      [appBox()],
+      { [KEY]: activity(15) },
+      {
+        pauseHistory: vi.fn(async () => ({
+          pausedAt: [],
+          holdUntil: new Date(NOW + 10 * MIN),
+          holdSetAt: new Date(NOW - 20 * MIN),
+        })),
+      },
+    );
+    expect((await sweepIdleBoxes(deps, config)).pausedNow).toHaveLength(1);
+  });
+
   it("while held, the session is kept", async () => {
     const { deps } = sweepDeps(
       [appBox()],

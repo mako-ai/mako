@@ -15,6 +15,7 @@ const APP_ID = "6846e6a01b05af0948070aaa";
 
 const sdk = vi.hoisted(() => ({
   state: "paused" as "paused" | "running",
+  failRunningList: false,
   list: vi.fn(),
   connect: vi.fn(),
   commands: vi.fn(),
@@ -32,6 +33,9 @@ vi.mock("e2b", () => {
     list: (opts: { query?: { state?: string[] } }) => {
       sdk.list(opts);
       const wanted = opts.query?.state;
+      if (sdk.failRunningList && wanted?.includes("running")) {
+        throw new Error("E2B 429");
+      }
       const items =
         !wanted || wanted.includes(sdk.state)
           ? [
@@ -178,6 +182,45 @@ describe("a paused box and an open workbench", () => {
     }
     expect(sdk.connect).not.toHaveBeenCalled();
     expect(sdk.commands).not.toHaveBeenCalled();
+  });
+
+  it("a failed E2B lookup never turns a live run into PAUSED", async () => {
+    sdk.state = "running";
+    sdk.failRunningList = true;
+    try {
+      const run = await readSandboxRun(
+        WS,
+        USER,
+        "sandbox-00000000-0000-4000-8000-000000000001",
+      );
+      // Still active, so the run view keeps polling.
+      expect(run).toMatchObject({ status: "RUNNING" });
+    } finally {
+      sdk.failRunningList = false;
+    }
+  });
+
+  it("runState is fresh on request and says unknown on a failed lookup", async () => {
+    sdk.state = "paused";
+    expect(await e2bSandboxProvider.runState?.({ sessionKey: KEY })).toBe(
+      "not-running",
+    );
+    sdk.state = "running";
+    // The cached "not running" would still answer for 10 s; fresh asks E2B.
+    expect(
+      await e2bSandboxProvider.runState?.({ sessionKey: KEY }, { fresh: true }),
+    ).toBe("running");
+    sdk.failRunningList = true;
+    try {
+      expect(
+        await e2bSandboxProvider.runState?.(
+          { sessionKey: KEY },
+          { fresh: true },
+        ),
+      ).toBe("unknown");
+    } finally {
+      sdk.failRunningList = false;
+    }
   });
 
   it("a paused box's status reads as not serving", async () => {
