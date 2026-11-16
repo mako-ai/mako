@@ -176,7 +176,8 @@ export async function listConnectorFoldersAtMain(workspaceId: string): Promise<{
   oversized: Map<string, string>;
   /**
    * Slugs whose tree holds a `node_modules/` path, with the first such path.
-   * Read from the tree listing only; the bundle path refuses these folders.
+   * Read from the tree listing only; the push reconciler refuses these
+   * folders, with bundles on or off.
    */
   nodeModules: Map<string, string>;
 }> {

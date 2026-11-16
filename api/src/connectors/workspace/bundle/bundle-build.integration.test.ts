@@ -94,12 +94,12 @@ before(async () => {
 after(async () => {
   if (!ENABLED) return;
   const { getSandboxProvider } = await import("../../../apps/sandbox/provider");
-  const { buildBoxContext } = await import("./build-box");
   const { syncBoxContext } = await import("../sync-box");
   const provider = getSandboxProvider();
-  for (const ctx of [buildBoxContext(WS), syncBoxContext(WS)]) {
-    await provider.destroySession?.(ctx.sessionKey).catch(() => undefined);
-  }
+  // Build boxes destroy themselves; only the sync box is left.
+  await provider
+    .destroySession?.(syncBoxContext(WS).sessionKey)
+    .catch(() => undefined);
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
@@ -138,6 +138,14 @@ void test(
       files,
     });
     assert.ok(built.ok, built.ok ? "" : built.reason);
+    if (MODE === "local") {
+      // The build's box is gone once the build is over.
+      const scratch = path.join(os.tmpdir(), "mako-local-sandbox");
+      const left = (await fs.readdir(scratch).catch(() => [])).filter(name =>
+        name.includes(WS),
+      );
+      assert.deepEqual(left, []);
+    }
     const text = new TextDecoder().decode(built.bytes);
     // date-fns is inlined; the SDK stays an import the runtime resolves.
     assert.doesNotMatch(text, /from\s+["']date-fns["']/);
