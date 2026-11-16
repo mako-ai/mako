@@ -14,12 +14,15 @@ import { resolveReference } from "./registry.service";
 import {
   authTypeOf,
   changelogFor,
+  collectPublishedFiles,
+  readExpectedRelease,
   readReleaseDir,
   uploadRelease,
   withVersion,
   writeReleaseDir,
 } from "./publish";
 import { bundleSourceHash } from "../bundle/source-hash";
+import { connectorSdkVersion } from "../resolver";
 import {
   CatalogConflictError,
   catalogGeneration,
@@ -544,6 +547,95 @@ describe("the release directory between the two jobs", () => {
       );
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the publish job accepts only the tagged release", () => {
+  it("refuses another connector, a second directory, and a source that is not the folder's", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "expected-release-"));
+    try {
+      const folder = path.join(tmp, "connectors", "stripe");
+      await fs.mkdir(folder, { recursive: true });
+      await fs.writeFile(path.join(folder, "connector.ts"), "x");
+      const files = await collectPublishedFiles(folder);
+      const sdkVersion = await connectorSdkVersion();
+      const write = async (
+        root: string,
+        slug: string,
+        sourceFiles: Map<string, Uint8Array>,
+      ) => {
+        const hash = bundleSourceHash({ files: sourceFiles, sdkVersion });
+        const bytes = new TextEncoder().encode("export default 1;");
+        const record = {
+          ...version("1.0.0", hash),
+          sha256: sha256Hex(bytes),
+          bytes: bytes.byteLength,
+          sdkVersion,
+          commit: "a".repeat(40),
+        };
+        await writeReleaseDir(root, {
+          record,
+          bundle: bytes,
+          entry: { slug, name: slug, versions: [record] },
+          source: {
+            slug,
+            version: "1.0.0",
+            hash,
+            entry: "connector.ts",
+            files: Object.fromEntries(
+              [...sourceFiles].map(([n, b]) => [
+                n,
+                Buffer.from(b).toString("base64"),
+              ]),
+            ),
+          },
+        });
+      };
+      const expect_ = (root: string) =>
+        readExpectedRelease({
+          root,
+          slug: "stripe",
+          version: "1.0.0",
+          commit: "a".repeat(40),
+          folder,
+        });
+
+      const good = path.join(tmp, "good");
+      await write(good, "stripe", files);
+      expect((await expect_(good)).entry.slug).toBe("stripe");
+
+      // A build of connector-foo that slips in a stripe release.
+      const smuggled = path.join(tmp, "smuggled");
+      await write(smuggled, "stripe", files);
+      await write(smuggled, "foo", files);
+      await expect(expect_(smuggled)).rejects.toThrow("exactly stripe-1.0.0/");
+
+      const other = path.join(tmp, "other");
+      await write(other, "foo", files);
+      await expect(expect_(other)).rejects.toThrow("exactly stripe-1.0.0/");
+
+      const altered = path.join(tmp, "altered");
+      await write(
+        altered,
+        "stripe",
+        new Map([["connector.ts", new TextEncoder().encode("evil")]]),
+      );
+      await expect(expect_(altered)).rejects.toThrow(
+        "differs from connectors/stripe/",
+      );
+
+      await expect(
+        readExpectedRelease({
+          root: good,
+          slug: "stripe",
+          version: "1.0.0",
+          commit: "b".repeat(40),
+          folder,
+        }),
+      ).rejects.toThrow("not the tagged");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
     }
   });
 });

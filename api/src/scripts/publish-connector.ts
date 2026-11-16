@@ -16,10 +16,12 @@
  *   (the connector's own code), then writes bundle.mjs, source.json and
  *   manifest.json (with sha256s) under <dir>/<slug>-<version>/. It reads and
  *   writes no storage. The workflow runs it with no credential.
- * - `--upload <dir>` PUBLISHES every release directory under <dir>: it
- *   re-verifies the sha256s and the source hash, creates the bundle and the
- *   source once, and adds the version to the catalog. It runs no connector
- *   code. The workflow runs it with CONNECTOR_REGISTRY_WRITER_SA.
+ * - `--upload <dir> --tag <tag> [--commit <sha>]` PUBLISHES the one release the
+ *   tag names. It requires <dir> to hold exactly <slug>-<version>/, matching
+ *   the tag; re-verifies the sha256s; requires every source file to equal the
+ *   checked-out folder's; recomputes the source hash; then creates the bundle
+ *   and the source once and adds the version to the catalog. It runs no
+ *   connector code. The workflow runs it with CONNECTOR_REGISTRY_WRITER_SA.
  *
  * `--all` takes every top-level `connectors/<slug>/` at the version its
  * package.json declares. `--dry-run` builds and prints, and writes nothing.
@@ -121,24 +123,26 @@ async function main(): Promise<number> {
   );
 
   const registry = await import("../connectors/workspace/registry/publish");
-  const { buildRelease, cleanupPublishBoxes, readReleaseDir, uploadRelease } =
-    registry;
+  const { buildRelease, cleanupPublishBoxes, uploadRelease } = registry;
 
   if (typeof flags.upload === "string") {
-    const uploadRoot = path.resolve(flags.upload);
-    const dirs = fs
-      .readdirSync(uploadRoot, { withFileTypes: true })
-      .filter(entry => entry.isDirectory())
-      .map(entry => path.join(uploadRoot, entry.name));
-    if (dirs.length === 0) throw new Error(`No release under ${uploadRoot}.`);
-    for (const dir of dirs) {
-      const release = await readReleaseDir(dir);
-      const result = await uploadRelease(release);
-      console.log(
-        `mako/${result.slug}@${result.version}: ${result.alreadyPublished ? "already published" : "published"} ` +
-          `(hash ${result.hash.slice(0, 12)}, sha256 ${release.record.sha256.slice(0, 12)})`,
-      );
+    // Only the tagged release, checked against this checkout's folder.
+    if (typeof flags.tag !== "string") {
+      throw new Error("--upload needs --tag: it publishes only that release.");
     }
+    const [target] = targets({ tag: flags.tag }, root);
+    const release = await registry.readExpectedRelease({
+      root: path.resolve(flags.upload),
+      slug: target.slug,
+      version: target.version,
+      commit: typeof flags.commit === "string" ? flags.commit : undefined,
+      folder: path.join(root, "connectors", target.slug),
+    });
+    const result = await uploadRelease(release);
+    console.log(
+      `mako/${result.slug}@${result.version}: ${result.alreadyPublished ? "already published" : "published"} ` +
+        `(hash ${result.hash.slice(0, 12)}, sha256 ${release.record.sha256.slice(0, 12)})`,
+    );
     return 0;
   }
   const out = typeof flags.out === "string" ? path.resolve(flags.out) : null;

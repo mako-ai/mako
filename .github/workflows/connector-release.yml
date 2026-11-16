@@ -167,11 +167,22 @@ jobs:
             echo "::error::Set CONNECTOR_REGISTRY_BUCKET on the connector-registry-${{ matrix.target }} environment."
             exit 1
           fi
-      # Mako's publish script at the released commit; not the connector.
+      # Mako's publish script and the connector folder at the tagged commit,
+      # resolved here rather than taken from the build job, which ran
+      # connector code.
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.build.outputs.commit }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Resolve the tagged master commit
+        env:
+          TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-list -n 1 "$TAG")"
+          git merge-base --is-ancestor "$commit" origin/master
+          echo "RELEASE_COMMIT=$commit" >> "$GITHUB_ENV"
+          git checkout --quiet "$commit"
       - uses: pnpm/action-setup@v5
       - uses: actions/setup-node@v5
         with:
@@ -192,4 +203,8 @@ jobs:
         with:
           credentials_json: ${{ secrets.CONNECTOR_REGISTRY_WRITER_SA }}
       - name: Verify and publish
-        run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --upload "$RUNNER_TEMP/release"
+        env:
+          TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        # Only the tagged release, and only if its source equals this
+        # checkout's folder at the tagged commit.
+        run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --upload "$RUNNER_TEMP/release" --tag "$TAG" --commit "$RELEASE_COMMIT"

@@ -356,6 +356,76 @@ export async function readReleaseDir(dir: string): Promise<Release> {
 }
 
 /**
+ * Tie an artifact to the release that was asked for. The build job ran
+ * connector code, so nothing in its artifact is trusted beyond the bundle
+ * bytes themselves:
+ *
+ * - exactly one release directory, named for the tag's slug and version;
+ * - the manifest's slug, version and commit are the tag's;
+ * - every source file equals the file in the checked-out folder at the
+ *   tagged commit, byte for byte, and no file is added or missing;
+ * - the SDK version is this checkout's, so the recomputed source hash is the
+ *   hash of the repository's own folder.
+ *
+ * A dependency that tampers with the build can therefore change at most the
+ * bundle of the connector being released, never another connector, version
+ * or source.
+ */
+export async function readExpectedRelease(input: {
+  root: string;
+  slug: string;
+  version: string;
+  commit?: string;
+  folder: string;
+}): Promise<Release> {
+  const { root, slug, version, commit, folder } = input;
+  const entries = (await fs.readdir(root, { withFileTypes: true })).map(
+    entry => entry.name,
+  );
+  const expectedDir = `${slug}-${version}`;
+  if (entries.length !== 1 || entries[0] !== expectedDir) {
+    throw new Error(
+      `The release artifact must hold exactly ${expectedDir}/; it holds ${entries.join(", ") || "nothing"}.`,
+    );
+  }
+  const release = await readReleaseDir(path.join(root, expectedDir));
+  if (release.entry.slug !== slug || release.record.version !== version) {
+    throw new Error(
+      `The artifact is mako/${release.entry.slug}@${release.record.version}, not the tagged mako/${slug}@${version}.`,
+    );
+  }
+  if (commit && release.record.commit !== commit) {
+    throw new Error(
+      `The artifact was built from ${release.record.commit ?? "an unknown commit"}, not the tagged ${commit}.`,
+    );
+  }
+  const sdkVersion = await connectorSdkVersion();
+  if (release.record.sdkVersion !== sdkVersion) {
+    throw new Error(
+      `The artifact names @makoai/connector-sdk ${release.record.sdkVersion}; the tagged commit ships ${sdkVersion}.`,
+    );
+  }
+  const expected = await collectPublishedFiles(folder);
+  const shipped = release.source.files;
+  const names = new Set([...expected.keys(), ...Object.keys(shipped)]);
+  for (const name of names) {
+    const want = expected.get(name);
+    const got = Object.hasOwn(shipped, name)
+      ? Buffer.from(shipped[name], "base64")
+      : undefined;
+    if (!want || !got || !Buffer.from(want).equals(got)) {
+      throw new Error(
+        `The artifact's source differs from connectors/${slug}/ at the tagged commit: ${name}.`,
+      );
+    }
+  }
+  if (release.source.entry !== release.record.entry) {
+    throw new Error("The artifact's source and record name different entries.");
+  }
+  return release;
+}
+
+/**
  * Store a verified release: the bundle and source created once, then the
  * version added to the catalog. Runs no connector code; this is all the
  * publish job's credential is used for.
