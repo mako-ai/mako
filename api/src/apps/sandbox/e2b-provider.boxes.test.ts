@@ -165,6 +165,30 @@ describe("a pinned call whose connect fails", () => {
     expect((failure as Error).name).not.toBe("SandboxNotFoundError");
   });
 
+  it("rethrows a transient error when the pinned id is this process's cached session too", async () => {
+    // Create the session through the scheduler path so the id is cached.
+    e2b.Sandbox.create.mockResolvedValueOnce({
+      ...e2b.sandbox,
+      sandboxId: "sbx_cached",
+    });
+    e2b.page.items = [];
+    await e2bSandboxProvider.boxLifecycle?.create(
+      "connector-box:cbx_cached",
+      {},
+    );
+    e2b.page.items = [{ sandboxId: "sbx_cached" }];
+    e2b.Sandbox.connect.mockImplementation(async () => {
+      throw new Error("503 Service Unavailable");
+    });
+    const failure = await e2bSandboxProvider
+      .exec({ sessionKey: "connector-box:cbx_cached" }, "true", {
+        expectSandboxId: "sbx_cached",
+      })
+      .catch((error: unknown) => error);
+    expect(String(failure)).toContain("503 Service Unavailable");
+    expect((failure as Error).name).not.toBe("SandboxNotFoundError");
+  });
+
   it("labels a not-found answer as gone", async () => {
     e2b.Sandbox.connect.mockImplementation(async () => {
       throw new e2b.SandboxNotFoundError(

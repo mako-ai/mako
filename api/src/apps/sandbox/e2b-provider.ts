@@ -175,30 +175,20 @@ async function connectPinned(
   expectSandboxId: string | undefined,
 ): Promise<Sandbox> {
   if (!expectSandboxId) return connectSession(sessionKey);
-  if (sessions.get(sessionKey) !== expectSandboxId) {
-    try {
-      const sandbox = await Sandbox.connect(expectSandboxId, {
-        apiKey: apiKey(),
-      });
-      return sandbox;
-    } catch (error) {
-      // Only a box E2B says is gone is gone. A timeout or a 5xx is not an
-      // answer: rethrown as-is, so a run's cleanup fails (and the box is
-      // retired) rather than counting a box that may still hold the run's
-      // credential as cleaned.
-      if (!isSandboxGone(error)) throw error;
-      throw new SandboxNotFoundError(
-        `Sandbox ${expectSandboxId} for ${sessionKey} was replaced or is gone.`,
-      );
-    }
-  }
-  const sandbox = await connectSession(sessionKey);
-  if (sandbox.sandboxId !== expectSandboxId) {
+  // Always straight to the pinned sandbox, never through connectSession:
+  // that path swallows connect errors, lists, and may create or converge to
+  // another box, so a 503 there could surface as "gone" and let a run's
+  // cleanup count a live box (and its credential) as cleaned.
+  try {
+    return await Sandbox.connect(expectSandboxId, { apiKey: apiKey() });
+  } catch (error) {
+    // Only a box E2B says is gone is gone. A timeout or a 5xx is not an
+    // answer: rethrown as-is, so the cleanup fails and the box is retired.
+    if (!isSandboxGone(error)) throw error;
     throw new SandboxNotFoundError(
-      `Sandbox ${expectSandboxId} for ${sessionKey} was replaced by ${sandbox.sandboxId}.`,
+      `Sandbox ${expectSandboxId} for ${sessionKey} was replaced or is gone.`,
     );
   }
-  return sandbox;
 }
 
 /** Keys boxLifecycle.create is creating right now: the only ones allowed to. */
