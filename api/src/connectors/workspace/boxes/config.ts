@@ -40,6 +40,12 @@ export interface BoxLeaseConfig {
   /** Ping timeout before a lease. */
   pingTimeoutMs: number;
   /**
+   * An idle box whose last run succeeded this recently is leased without a
+   * ping: that run was the liveness check. New, resumed and longer-idle
+   * boxes are still pinged. Keep it well under E2B's own idle timeout.
+   */
+  livenessTtlMs: number;
+  /**
    * The provider account's limit on running boxes. E2B counts app sessions,
    * workspace sync boxes and connector boxes against one limit.
    */
@@ -74,6 +80,7 @@ export const BOX_LEASE_DEFAULTS: Readonly<BoxLeaseConfig> = {
   snapshots: true,
   templateTtlMs: 7 * DAY,
   pingTimeoutMs: 10 * SECOND,
+  livenessTtlMs: 30 * SECOND,
   accountCeiling: 20,
   appReserve: 2,
   accountCountTtlMs: 5 * SECOND,
@@ -95,6 +102,7 @@ export const BOX_LEASE_ENV: Readonly<Record<keyof BoxLeaseConfig, string>> = {
   snapshots: "CONNECTOR_BOX_SNAPSHOTS",
   templateTtlMs: "CONNECTOR_BOX_TEMPLATE_TTL_MS",
   pingTimeoutMs: "CONNECTOR_BOX_PING_TIMEOUT_MS",
+  livenessTtlMs: "CONNECTOR_BOX_LIVENESS_TTL_MS",
   accountCeiling: "CONNECTOR_BOX_ACCOUNT_CEILING",
   appReserve: "CONNECTOR_BOX_APP_RESERVE",
   accountCountTtlMs: "CONNECTOR_BOX_ACCOUNT_COUNT_TTL_MS",

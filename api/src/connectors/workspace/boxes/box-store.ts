@@ -40,6 +40,8 @@ export interface BoxRecord {
   lastUsedAt: Date;
   /** The connection's previous run before `lastUsedAt`; picks the TTL. */
   priorUseAt: Date | null;
+  /** When a run in this box last ended without failing: its liveness. */
+  lastOkAt?: Date | null;
   failures: number;
   runs: number;
   /** Seconds this box spent leased, for cost per workspace and connection. */
@@ -149,6 +151,7 @@ const ConnectorBoxSchema = new Schema<BoxRecord>(
     createdAt: { type: Date, required: true },
     lastUsedAt: { type: Date, required: true },
     priorUseAt: { type: Date, default: null },
+    lastOkAt: { type: Date, default: null },
     failures: { type: Number, default: 0 },
     runs: { type: Number, default: 0 },
     boxSeconds: { type: Number, default: 0 },
