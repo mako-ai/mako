@@ -120,8 +120,13 @@ async function reconcile(
     // A committed node_modules/ is refused before anything else, and before
     // the size cap: it is usually also over the cap, and "too big" would hide
     // the actual fix, which is to stop committing it. Always on, flag or not:
-    // Mako never runs dependencies a folder brought along itself.
-    const committedModules = nodeModules?.get(slug);
+    // Mako never runs dependencies a folder brought along itself. Only for a
+    // folder that claims to be a connector (a valid slug with connector.yaml,
+    // or too big to read): a helper folder stays skipped, as before.
+    const committedModules =
+      nodeModules?.get(slug) &&
+      isValidSlug(slug) &&
+      (files.has("connector.yaml") || oversized.has(slug));
     if (committedModules) {
       seen.add(slug);
       await block(

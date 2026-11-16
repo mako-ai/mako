@@ -402,6 +402,28 @@ describe("the push reconciler with bundles off", () => {
     expect((await row())?.status).toBe("blocked");
   });
 
+  it("leaves a folder that is not a connector skipped, node_modules/ or not", async () => {
+    // A helper folder (no connector.yaml) and an invalid slug were skipped
+    // before the guard existed, and still are.
+    repo.files.set(
+      "shared",
+      new Map([["index.ts", new TextEncoder().encode("export {};\n")]]),
+    );
+    repo.nodeModules.set("shared", "connectors/shared/node_modules/x/index.js");
+    repo.files.set("My_Lib", folder());
+    repo.nodeModules.set("My_Lib", "connectors/My_Lib/node_modules/x/index.js");
+
+    const result = await syncConnectorsFromRepo(WS);
+    expect(result.blocked).toBe(0);
+    expect(result.skipped?.map(skip => skip.slug).sort()).toEqual([
+      "My_Lib",
+      "shared",
+    ]);
+    expect(await ConnectorDefinition.countDocuments({ workspaceId: WS })).toBe(
+      0,
+    );
+  });
+
   it("does not check the lockfile: package.json is an ordinary file", async () => {
     repo.files.set(
       "acme",

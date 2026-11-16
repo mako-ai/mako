@@ -196,8 +196,8 @@ connectors/acme/
   `package-lock.json` is refused with that message.
 - **Registry packages only.** Every package in `package-lock.json` must come
   from `https://registry.npmjs.org/`. A git dependency, a tarball from another
-  host, or a `file:` or `link:` path is refused, and so is a `.npmrc` in the
-  folder.
+  host, or a `file:` or `link:` path is refused. So is a `.npmrc` or an
+  `npm-shrinkwrap.json` in the folder.
 - **Mako builds; you deploy nothing.** On push to main, Mako hashes the folder,
   its lockfile and the `@makoai/connector-sdk` version, installs the lockfile
   with `npm ci --ignore-scripts` in a build sandbox (network, no credentials,

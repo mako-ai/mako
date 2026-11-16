@@ -233,7 +233,8 @@ async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
     // which is how "why did my dev server restart overnight" happened).
     // Resume is explicit via Sandbox.connect() in connectSession; a sandbox
     // that is fully dead still falls through to a fresh create + hydrate.
-    lifecycle: { onTimeout: { action: "pause", keepMemory: true } },
+    // One-shot boxes (connector builds) are killed instead: see below.
+    lifecycle: { onTimeout: onTimeoutFor(sessionKey) },
   });
   await sandbox.commands.run(`mkdir -p ${REMOTE_ROOT}`, {
     user: SANDBOX_USER,
@@ -522,6 +523,24 @@ async function keepAliveE2b(
  */
 const SANDBOX_GONE_MESSAGE =
   /sandbox (?:was not found|is (?:probably )?not running)|not found: This error/i;
+
+/**
+ * Session keys of boxes that live for one job and are never resumed.
+ *
+ * A connector build box has a key of its own per build and is destroyed when
+ * the build ends. If that never happens (the API restarts mid-build, a kill
+ * fails), pausing it on idle would keep it forever: no later build reuses
+ * the key. Killed on idle, it goes away by itself.
+ */
+const ONE_SHOT_SESSION_PREFIXES = ["connector-build:"];
+
+export function onTimeoutFor(
+  sessionKey: string,
+): "kill" | { action: "pause"; keepMemory: true } {
+  return ONE_SHOT_SESSION_PREFIXES.some(prefix => sessionKey.startsWith(prefix))
+    ? "kill"
+    : { action: "pause", keepMemory: true };
+}
 
 export function isSandboxGone(error: unknown): boolean {
   let current: unknown = error;
@@ -863,7 +882,13 @@ export const e2bSandboxProvider: SandboxProvider = {
     }
     await Promise.all(
       [...ids].map(id =>
-        Sandbox.kill(id, { apiKey: apiKey() }).catch(() => undefined),
+        Sandbox.kill(id, { apiKey: apiKey() }).catch(error =>
+          logger.warn("Could not kill a sandbox on destroy", {
+            sessionKey,
+            sandboxId: id,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        ),
       ),
     );
   },

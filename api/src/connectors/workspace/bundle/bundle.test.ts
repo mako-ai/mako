@@ -62,7 +62,12 @@ import {
 } from "./manifest";
 import { bundleSourceHash } from "./source-hash";
 import { bundleKey, MAX_BUNDLE_BYTES } from "./store";
-import { buildBundleInBox, esbuildEntryArg } from "./build-box";
+import {
+  buildBoxContext,
+  buildBundleInBox,
+  esbuildEntryArg,
+} from "./build-box";
+import { onTimeoutFor } from "../../../apps/sandbox/e2b-provider";
 import { BundleBuildError, ensureBundle, shouldBundle } from "./bundle.service";
 import { CONNECTOR_BUNDLES_FLAG, connectorBundlesEnabled } from "./flag";
 
@@ -212,6 +217,14 @@ describe("the dependency plan", () => {
     expect(plan.kind).toBe("invalid");
   });
 
+  it("refuses an npm-shrinkwrap.json, which npm would read first", () => {
+    const plan = dependencyPlan(folder({ "npm-shrinkwrap.json": LOCK }));
+    expect(plan.kind).toBe("invalid");
+    if (plan.kind === "invalid") {
+      expect(plan.reason).toContain("npm-shrinkwrap.json");
+    }
+  });
+
   it("refuses a .npmrc in the folder, which npm ci would read", () => {
     const plan = dependencyPlan(
       folder({ ".npmrc": "registry=https://evil.example/\n" }),
@@ -310,6 +323,74 @@ describe("the lockfile check", () => {
         }),
       ),
     ).toContain("file:../../x.tgz");
+  });
+
+  it("refuses inBundle on a top-level package, or with a URL of its own", () => {
+    // npm fetches a top-level "bundled" package from its resolved URL.
+    expect(
+      lockfileProblem(
+        lock({
+          "node_modules/evil": {
+            version: "1.0.0",
+            resolved: "https://evil.example/x.tgz",
+            inBundle: true,
+          },
+        }),
+      ),
+    ).toContain("bundled");
+    expect(
+      lockfileProblem(
+        lock({
+          "node_modules/@scope/evil": { version: "1.0.0", inBundle: true },
+        }),
+      ),
+    ).toContain("bundled");
+    expect(
+      lockfileProblem(
+        lock({
+          "node_modules/a": registry("a"),
+          "node_modules/a/node_modules/b": {
+            version: "1.0.0",
+            resolved: "https://evil.example/b.tgz",
+            inBundle: true,
+          },
+        }),
+      ),
+    ).toContain("bundled");
+  });
+
+  it("refuses an entry with no resolved URL", () => {
+    // npm would fetch <name>@<version> instead; checked below for the
+    // version, refused here outright.
+    expect(
+      lockfileProblem(
+        lock({ "node_modules/a": { version: "1.0.0", integrity: "sha512-a" } }),
+      ),
+    ).toContain("no URL");
+  });
+
+  it("refuses a version that is not plain semver", () => {
+    // `x@https://...` parses as a remote spec: npm would download it.
+    for (const version of [
+      "https://evil.example/x.tgz",
+      "git+https://github.com/evil/x.git",
+      "file:../x",
+      "^1.0.0",
+      undefined,
+    ]) {
+      expect(
+        lockfileProblem(
+          lock({ "node_modules/x": { ...registry("x"), version } }),
+        ),
+      ).toContain("not a published version");
+    }
+    expect(
+      lockfileProblem(
+        lock({
+          "node_modules/x": { ...registry("x"), version: "1.0.0-beta.1+b7" },
+        }),
+      ),
+    ).toBeNull();
   });
 
   it("refuses a package with no integrity hash", () => {
@@ -495,6 +576,51 @@ describe("the build box", () => {
     expect(result.ok).toBe(false);
     expect(sandbox.exec).not.toHaveBeenCalled();
     expect(sandbox.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("refuses an npm-shrinkwrap.json before it reaches a box", async () => {
+    const result = await buildBundleInBox({
+      workspaceId: WS,
+      slug: "acme",
+      hash: "a".repeat(64),
+      entry: "connector.ts",
+      files: folder({ "npm-shrinkwrap.json": LOCK }),
+    });
+    expect(result.ok).toBe(false);
+    expect(sandbox.exec).not.toHaveBeenCalled();
+  });
+
+  it("refuses git, remote and file fetches in npm ci itself", async () => {
+    sandbox.exec.mockImplementation(async (_ctx, command: string) =>
+      command.includes("--bundle") ? ok("42\n") : ok(),
+    );
+    sandbox.readFile.mockResolvedValue(enc("export default 1;\n"));
+    await buildBundleInBox({
+      workspaceId: WS,
+      slug: "acme",
+      hash: "9".repeat(64),
+      entry: "connector.ts",
+      files: folder(),
+    });
+    const install = sandbox.exec.mock.calls
+      .map(([, command]) => String(command))
+      .find(command => command.includes("npm ci"));
+    expect(install).toContain("--allow-git=none");
+    expect(install).toContain("--allow-remote=none");
+    expect(install).toContain("--allow-file=none");
+  });
+
+  it("is killed, never paused, when E2B times it out", () => {
+    // A build box that misses its own destroy must not stay paused forever.
+    expect(onTimeoutFor(buildBoxContext(WS, "x").sessionKey)).toBe("kill");
+    expect(onTimeoutFor(`connector-sync:${WS}`)).toEqual({
+      action: "pause",
+      keepMemory: true,
+    });
+    expect(onTimeoutFor("worktree-123")).toEqual({
+      action: "pause",
+      keepMemory: true,
+    });
   });
 
   it("passes the entry to esbuild as a path, never as a flag", () => {

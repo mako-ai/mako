@@ -17,10 +17,12 @@
  *
  * `npm ci --ignore-scripts` installs exactly the lockfile, from the npm
  * registry only (the folder's lockfile is checked for that before a build, and
- * the registry is passed to npm), and runs no package lifecycle scripts. The
- * bundler is installed with `--ignore-scripts` too. esbuild bundles the entry
- * with every dependency inlined, except `@makoai/connector-sdk`, which the sync runtime provides at the
- * version the hash was computed with.
+ * the registry is passed to npm), and runs no package lifecycle scripts.
+ * `--allow-git/remote/file=none` refuses those fetches on an npm that knows
+ * the flags; an older npm ignores them, and the lockfile check still holds.
+ * The bundler is installed with `--ignore-scripts` too. esbuild bundles the
+ * entry with every dependency inlined, except `@makoai/connector-sdk`, which
+ * the sync runtime provides at the version the hash was computed with.
  */
 import path from "node:path";
 import {
@@ -30,7 +32,7 @@ import {
 import { loggers } from "../../../logging";
 import { connectorRuntimeNodePath } from "../sync-box";
 import { ensureConnectorRuntime } from "../resolver";
-import { NPM_REGISTRY, NPMRC } from "./manifest";
+import { NPM_REGISTRY, NPMRC, SHRINKWRAP } from "./manifest";
 import { BUNDLE_ESBUILD_VERSION } from "./source-hash";
 import { MAX_BUNDLE_BYTES } from "./store";
 
@@ -85,11 +87,13 @@ export async function buildBundleInBox(input: {
 
   try {
     // The manifest check refuses these first; this is the last line.
-    if (files.has(NPMRC)) {
-      return {
-        ok: false,
-        reason: `Refusing to build: ${NPMRC} is not allowed in a connector folder.`,
-      };
+    for (const refused of [NPMRC, SHRINKWRAP]) {
+      if (files.has(refused)) {
+        return {
+          ok: false,
+          reason: `Refusing to build: ${refused} is not allowed in a connector folder.`,
+        };
+      }
     }
 
     // The runtime root brings the pinned Node, and with it npm.
@@ -152,7 +156,7 @@ test -x "$tools/node_modules/.bin/esbuild"`,
       `set -eu
 ${env}
 cd ${q(srcDir)}
-npm ci --ignore-scripts --registry=${q(NPM_REGISTRY)} --no-audit --no-fund >&2`,
+npm ci --ignore-scripts --registry=${q(NPM_REGISTRY)} --allow-git=none --allow-remote=none --allow-file=none --no-audit --no-fund >&2`,
       { timeoutMs: INSTALL_DEPS_TIMEOUT_MS },
     );
     if (install.timedOut) {
