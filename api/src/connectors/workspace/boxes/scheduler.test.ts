@@ -152,7 +152,7 @@ describe("lease acquire and release", () => {
     );
   });
 
-  it("reuses the idle box for the next run of the same key, after a ping", async () => {
+  it("reuses the idle box for the next run of the same key, without a ping while it is warm", async () => {
     const s = scheduler();
     const first = await s.withLease(run(), async lease => lease.boxId);
     provider.ping.mockClear();
@@ -163,8 +163,93 @@ describe("lease acquire and release", () => {
 
     expect(second).toBe(first);
     expect(provider.lease).toHaveBeenCalledTimes(1);
-    expect(provider.ping).toHaveBeenCalledTimes(1);
+    // The previous run ended well moments ago: that was the liveness check.
+    expect(provider.ping).not.toHaveBeenCalled();
     expect(box(first).runs).toBe(2);
+  });
+
+  it("pings an idle box again once its last good run is older than the liveness TTL", async () => {
+    const s = scheduler({ livenessTtlMs: 10 * SECOND, idlePauseMs: HOUR });
+    await s.withLease(run(), async lease => lease.boxId);
+    provider.ping.mockClear();
+    vi.setSystemTime(Date.now() + 11 * SECOND);
+    await s.withLease(run(), async lease => lease.boxId);
+    expect(provider.ping).toHaveBeenCalledTimes(1);
+  });
+
+  it("pings an idle box whose last run failed", async () => {
+    const s = scheduler();
+    await s
+      .withLease(run(), async () => {
+        throw new Error("vendor said 500");
+      })
+      .catch(() => undefined);
+    provider.ping.mockClear();
+    await s.withLease(run(), async lease => lease.boxId);
+    expect(provider.ping).toHaveBeenCalledTimes(1);
+  });
+
+  it("pings a paused box, which a lease resumes", async () => {
+    const s = scheduler();
+    const id = await s.withLease(run(), async lease => lease.boxId);
+    await vi.advanceTimersByTimeAsync(BOX_LEASE_DEFAULTS.idlePauseMs + SECOND);
+    expect(box(id).state).toBe("paused");
+    provider.ping.mockClear();
+    await s.withLease(run(), async lease => lease.boxId);
+    expect(provider.ping).toHaveBeenCalledTimes(1);
+  });
+
+  it("kills a warm box that turns out to be gone at its first command, so no run gets it again", async () => {
+    const s = scheduler();
+    const first = await s.withLease(run(), async lease => lease.boxId);
+    const gone = Object.assign(
+      new Error("Sandbox is probably not running anymore"),
+      {
+        name: "SandboxNotFoundError",
+      },
+    );
+    await expect(
+      s.withLease(run(), async () => {
+        throw gone;
+      }),
+    ).rejects.toThrow("not running");
+    expect(box(first).state).toBe("killed");
+    expect(box(first).killReason).toBe("unhealthy: box gone");
+    const next = await s.withLease(run(), async lease => lease.boxId);
+    expect(next).not.toBe(first);
+  });
+
+  it("memoises per box: computed once while warm, again after a resume or a failure", async () => {
+    const s = scheduler();
+    const compute = vi.fn(async () => "installed");
+    const id = await s.withLease(run(), async lease => {
+      await lease.memo("bundle", compute);
+      return lease.boxId;
+    });
+    await s.withLease(run(), lease => lease.memo("bundle", compute));
+    expect(compute).toHaveBeenCalledTimes(1);
+
+    // A run that fails forgets what the box holds.
+    await s
+      .withLease(run(), async () => {
+        throw new Error("vendor said 500");
+      })
+      .catch(() => undefined);
+    await s.withLease(run(), lease => lease.memo("bundle", compute));
+    expect(compute).toHaveBeenCalledTimes(2);
+
+    // So does a resume from paused.
+    await vi.advanceTimersByTimeAsync(BOX_LEASE_DEFAULTS.idlePauseMs + SECOND);
+    expect(box(id).state).toBe("paused");
+    await s.withLease(run(), lease => lease.memo("bundle", compute));
+    expect(compute).toHaveBeenCalledTimes(3);
+
+    // And an explicit forget.
+    await s.withLease(run(), async lease => {
+      lease.forgetMemo();
+      await lease.memo("bundle", compute);
+    });
+    expect(compute).toHaveBeenCalledTimes(4);
   });
 
   it("releases the lease when the run throws, and counts the failure", async () => {
@@ -503,8 +588,10 @@ describe("idle, pause and TTL", () => {
 
 describe("health", () => {
   it("kills a box that fails its ping and replaces it", async () => {
-    const s = scheduler();
+    // Past the liveness TTL, so the idle box is pinged.
+    const s = scheduler({ livenessTtlMs: SECOND });
     const first = await s.withLease(run(), async l => l.boxId);
+    vi.setSystemTime(Date.now() + 2 * SECOND);
     provider.failPing.add(first);
 
     const second = await s.withLease(run(), async l => l.boxId);

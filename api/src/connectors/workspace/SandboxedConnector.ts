@@ -470,18 +470,24 @@ export class SandboxedConnector extends BaseConnector {
         oneOff: saved === null,
       },
       async lease => {
-        const { dir, runtimeId, entry } = await ensureBundle({
-          ctx: lease.ctx,
-          hash: definition.sourceSha,
-          slug: definition.slug,
-          entry: definition.entry,
-          files: () => this.folder(definition),
-          ensureRuntime: ensureConnectorRuntime,
-          bundle: async ({ ctx, runtimeId, files }) =>
-            shouldBundle(definition.runtime, files)
-              ? this.prepareBundle({ ctx, runtimeId, definition, files })
-              : null,
-        });
+        // Checked once per box incarnation, not per chunk: on a warm box the
+        // runtime and the connector are known to be there (BoxLease.memo).
+        const { dir, runtimeId, entry } = await lease.memo(
+          `bundle:${await connectorRuntimeId()}:${definition.sourceSha}`,
+          () =>
+            ensureBundle({
+              ctx: lease.ctx,
+              hash: definition.sourceSha,
+              slug: definition.slug,
+              entry: definition.entry,
+              files: () => this.folder(definition),
+              ensureRuntime: ensureConnectorRuntime,
+              bundle: async ({ ctx, runtimeId, files }) =>
+                shouldBundle(definition.runtime, files)
+                  ? this.prepareBundle({ ctx, runtimeId, definition, files })
+                  : null,
+            }),
+        );
         lease.noteRuntime(runtimeId);
         // Before any credentialed command: the template must hold none.
         await lease.snapshotPristine(runtimeId);
@@ -497,6 +503,9 @@ export class SandboxedConnector extends BaseConnector {
           onCleanupFailure: reason => lease.markUnhealthy(reason),
         });
         if (result.timedOut) lease.markFailed("timed out");
+        // A connector that failed may have failed on a missing file: check
+        // the installs again next time instead of trusting the memo.
+        if (result.exitCode !== 0) lease.forgetMemo();
         return result;
       },
     );

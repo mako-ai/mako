@@ -86,6 +86,8 @@ beforeEach(() => {
       markUnhealthy: vi.fn(),
       noteRuntime: vi.fn(),
       snapshotPristine: mocks.snapshotPristine,
+      memo: (_key: string, compute: () => Promise<unknown>) => compute(),
+      forgetMemo: vi.fn(),
     }),
   );
 });

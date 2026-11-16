@@ -20,7 +20,10 @@
  * it (box-signals.ts `queueScore`).
  */
 import { createHash, randomBytes } from "node:crypto";
-import type { SandboxExecContext } from "../../../apps/sandbox/provider";
+import {
+  isSandboxGone,
+  type SandboxExecContext,
+} from "../../../apps/sandbox/provider";
 import { loggers } from "../../../logging";
 import {
   boxContext,
@@ -93,6 +96,15 @@ export interface BoxLease {
   /** Record the runtime the box now holds, for its snapshot template. */
   noteRuntime(runtimeId: string): void;
   /**
+   * What this box is known to hold, computed once per box incarnation in
+   * this process: the install checks (runtime, connector) a warm box would
+   * otherwise repeat every chunk. Forgotten when the box is resumed, killed,
+   * gone, or a run in it fails; a new or restored box has a new id.
+   */
+  memo<T>(key: string, compute: () => Promise<T>): Promise<T>;
+  /** Drop this box's memo (a run failed in a way a missing file explains). */
+  forgetMemo(): void;
+  /**
    * Snapshot this fresh box as its key's template, once per key. Call it
    * after the bundle is in place and BEFORE any credentialed command, so the
    * template holds code and runtime and never a credential or its residue.
@@ -151,6 +163,23 @@ export class BoxScheduler {
   private readonly metrics: BoxMetrics;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
+  /** Per box: what it is known to hold (BoxLease.memo). */
+  private readonly memos = new Map<string, Map<string, unknown>>();
+
+  private memoFor(boxId: string): Map<string, unknown> {
+    let box = this.memos.get(boxId);
+    if (!box) {
+      // Boxes another process killed never come back; keep this bounded.
+      if (this.memos.size >= 2_000) {
+        const oldest = this.memos.keys().next().value;
+        if (oldest !== undefined) this.memos.delete(oldest);
+      }
+      box = new Map();
+      this.memos.set(boxId, box);
+    }
+    return box;
+  }
+
   private readonly idleTimers = new Map<
     string,
     ReturnType<typeof setTimeout>
@@ -194,11 +223,25 @@ export class BoxScheduler {
         held.runtimeId = runtimeId;
       },
       snapshotPristine: runtimeId => this.snapshotPristine(held, runtimeId),
+      memo: async <T>(key: string, compute: () => Promise<T>) => {
+        const box = this.memoFor(held.box.boxId);
+        if (box.has(key)) return box.get(key) as T;
+        const value = await compute();
+        box.set(key, value);
+        return value;
+      },
+      forgetMemo: () => {
+        this.memos.delete(held.box.boxId);
+      },
     };
     try {
       return await fn(lease);
     } catch (error) {
       failure ??= message(error);
+      this.memos.delete(held.box.boxId);
+      // Leased without a ping, a box can turn out to be gone at the first
+      // command. Never hand it out again: the next run gets a new box.
+      if (isSandboxGone(error)) held.unhealthy ??= "box gone";
       throw error;
     } finally {
       clearInterval(beat);
@@ -344,11 +387,20 @@ export class BoxScheduler {
       if (!claimed) break;
       const { box, from } = claimed;
       this.clearIdleTimer(box.boxId);
+      // A resumed box is a new incarnation as far as this process can tell.
+      if (from === "paused") this.memos.delete(box.boxId);
       const leased = { state: "leased" as const, leasedBy: runId };
       if (this.retireDue(box)) {
         await this.kill(box, "retired", leased);
         continue;
       }
+      // An idle box whose last run succeeded moments ago is alive: that run
+      // was the check. Pinging it again cost a round trip on every chunk.
+      const warm =
+        from === "idle" &&
+        !!box.lastOkAt &&
+        this.now() - box.lastOkAt.getTime() < this.config.livenessTtlMs;
+      if (warm) return { box, source: from, fresh: false };
       if (!(await this.provider.ping(box, this.config.pingTimeoutMs))) {
         this.metrics.failedPing(this.labels(box));
         await this.kill(box, "failed ping", leased);
@@ -562,6 +614,7 @@ export class BoxScheduler {
         heartbeatAt: new Date(at),
         lastUsedAt: new Date(at),
         priorUseAt: held.fresh ? held.box.priorUseAt : held.box.lastUsedAt,
+        ...(failure ? {} : { lastOkAt: new Date(at) }),
         ...(held.runtimeId ? { runtimeId: held.runtimeId } : {}),
       },
       { runs: 1, failures: failure ? 1 : 0, boxSeconds: seconds },
@@ -772,6 +825,7 @@ export class BoxScheduler {
     });
     if (!claimed) return false;
     this.clearIdleTimer(box.boxId);
+    this.memos.delete(box.boxId);
     try {
       await this.provider.kill(box);
     } catch (error) {
