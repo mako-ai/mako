@@ -110,14 +110,9 @@ async function main() {
   process.env.WORKFLOWS_RATE_LIMITS = "model=300/minute";
   process.env.WORKFLOWS_MAX_RUNS = "20";
   asked.replaced.length = 0;
-  apps.listNamespacedDeployment = async () => ({
-    items: [
-      {
-        ...worker("grown", OLD),
-        spec: { ...worker("grown", OLD).spec, replicas: 4 },
-      },
-    ],
-  });
+  const grown = worker("grown", OLD);
+  grown.spec = { ...grown.spec, replicas: 4 } as V1Deployment["spec"];
+  apps.listNamespacedDeployment = async () => ({ items: [grown] });
   assert.deepEqual(await rollWorkersToRuntimeImage(apps as never), ["grown"]);
   assert.equal(asked.replaced[0].spec?.replicas, 4);
   const grownEnv = Object.fromEntries(
