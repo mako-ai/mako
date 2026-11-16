@@ -40,7 +40,7 @@ import { canSeeIndexedApp } from "../../apps/app-authorization";
 import { listArchivedApps } from "../../apps/app-archive.service";
 import { loadAppsIndex } from "../../apps/app-index.service";
 import { boxPushIfAhead } from "../../apps/box";
-import { redactGitSecrets, runGit } from "../../apps/git";
+import { assertSafeRelPath, redactGitSecrets, runGit } from "../../apps/git";
 import { DEFAULT_BRANCH } from "../../apps/repository.service";
 import { getSandboxProvider } from "../../apps/sandbox/provider";
 import {
@@ -364,6 +364,22 @@ async function loadSandboxView(
   }
 }
 
+/**
+ * A path exactly as the file layer will use it (scopedPath runs the same
+ * assertSafeRelPath): slashes collapsed, one leading `./` dropped. Null for
+ * anything it would refuse (`.` or `..` segments, a trailing slash, `.git`,
+ * an absolute path). Every visibility check runs on this form, so a
+ * spelling like `apps//hidden/x` cannot pass as a different path than the
+ * one read or written.
+ */
+export function canonicalRepoPath(path: string): string | null {
+  try {
+    return assertSafeRelPath(path.replace(/^\.\//, ""));
+  } catch {
+    return null;
+  }
+}
+
 export function createSandboxTools({
   workspaceId,
   userId,
@@ -423,14 +439,21 @@ export function createSandboxTools({
   };
 
   /** A path this person may touch, or the refusal. */
-  const refusePath = (view: SandboxView, path: string): string | null => {
-    const normalized = path.replace(/\\/g, "/").replace(/^\.\//, "");
-    if (!view.isVisible(normalized)) return `${path} not found.`;
+  const checkPath = (
+    view: SandboxView,
+    path: string,
+  ): { path: string } | { error: string } => {
+    const normalized = canonicalRepoPath(path);
+    if (!normalized || !view.isVisible(normalized)) {
+      return { error: `${path} not found.` };
+    }
     const base = normalized.split("/").pop() ?? "";
     if (base === ".env" || base.startsWith(".env.")) {
-      return `${path} is an env file. Secrets do not go through the sandbox file tools.`;
+      return {
+        error: `${path} is an env file. Secrets do not go through the sandbox file tools.`,
+      };
     }
-    return null;
+    return { path: normalized };
   };
 
   /**
@@ -443,9 +466,9 @@ export function createSandboxTools({
     view: SandboxView,
     path: string,
   ): Promise<{ path: string } | { error: string }> => {
-    const refused = refusePath(view, path);
-    if (refused) return { error: refused };
-    const quoted = `'${path.replace(/'/g, "'\\''")}'`;
+    const checked = checkPath(view, path);
+    if ("error" in checked) return checked;
+    const quoted = `'${checked.path.replace(/'/g, "'\\''")}'`;
     const out = await execInWorktree(
       handle,
       `realpath -m --relative-to=. -- ${quoted}`,
@@ -462,11 +485,9 @@ export function createSandboxTools({
     ) {
       return { error: `${path} points outside the repo.` };
     }
-    if (resolved !== path.replace(/^\.\//, "")) {
-      const refusedTarget = refusePath(view, resolved);
-      if (refusedTarget) return { error: `${path} not found.` };
-    }
-    return { path: resolved };
+    const target = checkPath(view, resolved);
+    if ("error" in target) return { error: `${path} not found.` };
+    return { path: target.path };
   };
 
   const branchPrefix = async () =>
@@ -583,7 +604,14 @@ export function createSandboxTools({
           LOGGED_COMMAND_CHARS,
         );
         try {
-          if (cwd && (cwd.startsWith("/") || cwd.split("/").includes(".."))) {
+          // "" and "." are the repo root; anything else in the file layer's
+          // own form, so the visibility check sees the folder the shell
+          // starts in.
+          const rootCwd = !cwd || cwd === "." || cwd === "./";
+          const safeCwd = rootCwd
+            ? undefined
+            : (canonicalRepoPath(cwd) ?? null);
+          if (!rootCwd && !safeCwd) {
             return {
               success: false,
               error: `cwd must be a path inside the repo, relative to its root: ${cwd}`,
@@ -598,7 +626,7 @@ export function createSandboxTools({
               error: `sandbox_bash is off in this workspace for you: the repo holds ${view.hiddenApps} app(s) and ${view.hiddenPaths} file(s) under users/ or archive/ you may not see (another member's private apps, consoles or notebooks, or archived ones), and the sandbox holds a full clone a shell could read them from. sandbox_read_file and sandbox_write_file still work on what you may see.`,
             };
           }
-          if (cwd && !view.isVisible(cwd)) {
+          if (safeCwd && !view.isVisible(safeCwd)) {
             return { success: false, error: `${cwd} not found.` };
           }
           const prefix = await branchPrefix();
@@ -623,7 +651,7 @@ export function createSandboxTools({
               let thrown: unknown;
               try {
                 ran = await execInWorktree(handle, command, {
-                  cwd,
+                  cwd: safeCwd ?? undefined,
                   timeoutMs:
                     Math.min(
                       timeoutSeconds ?? defaultTimeoutSeconds,

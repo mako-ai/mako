@@ -791,6 +791,74 @@ describe("second security review", () => {
   });
 });
 
+describe("path spellings", () => {
+  beforeEach(() => {
+    // An app outside users/ that this caller may not see.
+    state.apps.push({
+      appId: "a9",
+      path: "apps/hidden",
+      scope: "private",
+      ownerId: "u2",
+    });
+    state.files.set("apps/hidden/x", "secret");
+  });
+
+  const spellings = [
+    "apps//hidden/x",
+    "apps///hidden//x",
+    "apps/./hidden/x",
+    "apps/hidden/../hidden/x",
+    "apps/hidden/x/",
+    "./apps//hidden/x",
+  ];
+
+  it("refuses every spelling of a hidden path on read, with the not-found text", async () => {
+    for (const path of spellings) {
+      const read = await call("sandbox_read_file", { path });
+      expect(read.success, path).toBe(false);
+      expect(read.error, path).toBe(`${path} not found.`);
+      expect(JSON.stringify(read), path).not.toContain("secret");
+    }
+  });
+
+  it("refuses every spelling of a hidden path on write", async () => {
+    for (const path of spellings) {
+      const write = await call("sandbox_write_file", {
+        path,
+        contents: "overwrite",
+      });
+      expect(write.error, path).toBe(`${path} not found.`);
+    }
+    expect(state.writes).toHaveLength(0);
+    expect(state.files.get("apps/hidden/x")).toBe("secret");
+  });
+
+  it("refuses a symlink whose target is spelled oddly but lands on a hidden path", async () => {
+    state.files.set("apps/sales/a.ts", "ok");
+    state.links.set("apps/sales/link", "apps//hidden/x");
+    const read = await call("sandbox_read_file", { path: "apps/sales/link" });
+    expect(read.error).toMatch(/not found/);
+  });
+
+  it("reads a visible path under its canonical form", async () => {
+    state.files.set("apps/sales/a.ts", "ok");
+    const read = await call("sandbox_read_file", { path: "apps//sales/a.ts" });
+    expect(read).toMatchObject({ success: true, path: "apps/sales/a.ts" });
+  });
+
+  it("runs a command in the canonical cwd, and refuses odd cwd spellings", async () => {
+    state.apps.pop();
+    await call("sandbox_bash", { command: "ls", cwd: "dbt//models" });
+    expect(commandRuns()[0].options.cwd).toBe("dbt/models");
+    for (const cwd of ["dbt/./models", "dbt/models/", "dbt/../dbt"]) {
+      const result = await call("sandbox_bash", { command: "ls", cwd });
+      expect(result.success, cwd).toBe(false);
+    }
+    await call("sandbox_bash", { command: "ls", cwd: "." });
+    expect(commandRuns().pop()?.options.cwd).toBeUndefined();
+  });
+});
+
 describe("settleMainScript against real git", () => {
   let root: string;
   let box: string;
