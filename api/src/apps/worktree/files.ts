@@ -66,7 +66,17 @@ export type ExecOutcome = SandboxExecResult;
 export async function execInWorktree(
   handle: WorktreeHandle,
   command: string,
-  options: SandboxExecOptions = {},
+  {
+    pushIfAhead = true,
+    ...options
+  }: SandboxExecOptions & {
+    /**
+     * Push commits the command left on the checkout's branch (default). The
+     * workspace shell (sandbox-tools.ts) turns it off: it decides itself
+     * where a commit made on main goes, which is never main.
+     */
+    pushIfAhead?: boolean;
+  } = {},
 ): Promise<ExecOutcome> {
   // §10: the session is the whole workspace repo; commands are app-scoped by
   // default (caller cwd is app-relative). posix.join keeps it session-rooted.
@@ -102,7 +112,7 @@ export async function execInWorktree(
   // against the very merge it was promoting. A build machine reports its
   // result; it does not publish it.
   await syncBranchFromBox(handle);
-  if (handle.doc.userId !== PUBLISH_ACTOR) {
+  if (pushIfAhead && handle.doc.userId !== PUBLISH_ACTOR) {
     await boxPushIfAhead(ctx).catch(error =>
       logger.warn("Apps could not push commits made in the shell", {
         error: error instanceof Error ? error.message : String(error),

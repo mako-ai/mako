@@ -14,6 +14,7 @@ import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-t
 import { createFlowTools } from "../flow";
 import { createFlowFileTools } from "../../agent-lib/tools/flow-file-tools";
 import { createWorkflowTools } from "../../agent-lib/tools/workflow-tools";
+import { createSandboxTools } from "../../agent-lib/tools/sandbox-tools";
 import { createConnectorTools } from "../../agent-lib/tools/connector-tools";
 import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
 import { createWebTools } from "../../agent-lib/tools/web-tools";
@@ -72,6 +73,9 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
 
   // Read-only reads of the whole workspace repo, in every mode.
   const repoTools = createRepoTools({ workspaceId, userId });
+  // The person's own sandbox at the repo root (app, transform and workflow
+  // modes; denied to unattended turns in modes/runtime.ts).
+  const sandboxTools = createSandboxTools({ workspaceId, userId });
 
   const {
     list_connections: _flowListConnections,
@@ -85,6 +89,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     ...universalTools,
     ...appsTools,
     ...repoTools,
+    ...sandboxTools,
     ...clientDbtTools,
     ...dbtServerTools,
     ...clientDataSourceTools,

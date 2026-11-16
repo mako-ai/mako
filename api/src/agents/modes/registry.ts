@@ -198,8 +198,17 @@ export const APP_TOOL_NAMES = new Set<string>([
   "app_merge_to_main",
 ]);
 
+/** The person's own sandbox at the repo root (sandbox-tools.ts). */
+const SANDBOX_TOOL_NAMES: string[] = [
+  "sandbox_status",
+  "sandbox_bash",
+  "sandbox_read_file",
+  "sandbox_write_file",
+];
+
 const APP_MODE_TOOL_NAMES: string[] = [
   ...APP_TOOL_NAMES,
+  ...SANDBOX_TOOL_NAMES,
   "browse_version_history",
   "get_version_snapshot",
   // Surface-scoped data-source primitives (app bindings)
@@ -225,6 +234,8 @@ const APP_MODE_TOOL_NAMES: string[] = [
 
 const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   ...DBT_CAPABILITY_NAMES,
+  // dbt parse, scripts and git across the repo.
+  ...SANDBOX_TOOL_NAMES,
   // Discovery: inspect sources before writing staging models; preview built
   // tables after dbt_run_model.
   "list_connections",
@@ -254,6 +265,7 @@ const WORKFLOW_MODE_TOOL_NAMES: string[] = [
   "workflow_status",
   "workflow_commit",
   "workflow_merge_to_main",
+  ...SANDBOX_TOOL_NAMES,
   // Discovery: look at the data before writing a query into a step.
   "list_connections",
   "list_databases",

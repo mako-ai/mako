@@ -89,6 +89,8 @@ const HEADLESS_DENIED_TOOLS = new Set([
   "workflow_commit",
   "workflow_merge_to_main",
   "workflows_triggers",
+  "sandbox_bash",
+  "sandbox_write_file",
 ]);
 
 /** Grants held by the native Chat surface for the current request. */
