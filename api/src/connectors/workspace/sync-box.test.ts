@@ -555,3 +555,41 @@ describe("a box replaced under a run", () => {
     expect(sandbox.readFile).not.toHaveBeenCalled();
   });
 });
+
+describe("box hardening", () => {
+  beforeEach(() => {
+    sandbox.supportsRunUsers = true;
+    sandbox.exec.mockReset();
+    sandbox.readFile.mockReset();
+    sandbox.writeFile.mockReset();
+  });
+  afterEach(() => {
+    sandbox.supportsRunUsers = undefined;
+  });
+
+  it("locks passwordless accounts before the first run, and refuses the box if it cannot", async () => {
+    sandbox.exec.mockImplementation((_ctx, command: string) =>
+      Promise.resolve(
+        command.includes("usermod -p")
+          ? { ...result(), exitCode: 1, stderr: "empty passwords left: root" }
+          : result(),
+      ),
+    );
+
+    await expect(
+      runConnectorCommand({
+        ctx: { sessionKey: "connector-box:soft-root" },
+        runtimeId: "runtime",
+        connectorDir: "/x",
+        command: "spec",
+      }),
+    ).rejects.toThrow("passwordless accounts remain");
+    const harden = sandbox.exec.mock.calls.find(([, c]) =>
+      String(c).includes("usermod -p"),
+    );
+    expect(harden?.[2]).toMatchObject({ asRoot: true });
+    expect(
+      sandbox.exec.mock.calls.some(([, c]) => String(c).includes("useradd -l")),
+    ).toBe(false);
+  });
+});

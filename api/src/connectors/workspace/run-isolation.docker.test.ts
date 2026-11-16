@@ -19,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   ISOLATED_RUNS,
   cleanupScript,
+  hardenScript,
   launchScript,
   runLayout,
   setupScript,
@@ -436,6 +437,39 @@ suite("connector run isolation in e2bdev/base (Docker)", () => {
     expect(cleanup, cleanup.stderr).toMatchObject({ code: 0 });
     expect(await liveThreads(l.uid)).toBe(0);
   }, 180_000);
+
+  it("locks the passwordless root and user E2B templates ship, so no run can su", async () => {
+    // As in E2B's mako-apps template (seen live in mako-dev): root and user
+    // have empty passwords, and pam_unix allows them (nullok).
+    await root("passwd -d root >/dev/null && passwd -d user >/dev/null");
+    expect(
+      (await root("grep -c nullok /etc/pam.d/common-auth")).stdout.trim(),
+    ).not.toBe("0");
+    const before = await open();
+    await connector(
+      before,
+      [],
+      "su -c id root </dev/null 2>&1; su -c id user </dev/null 2>&1",
+    );
+    expect(await bounded(before)).toContain("uid=0(root)");
+    await root(cleanupScript(before));
+
+    const harden = await root(hardenScript());
+    expect(harden, harden.stderr).toMatchObject({ code: 0 });
+    const after = await open();
+    await connector(
+      after,
+      [],
+      "su -c id root </dev/null 2>&1; echo; su -c id user </dev/null 2>&1",
+    );
+    const out = await bounded(after);
+    expect(out).not.toContain("uid=0(root)");
+    expect(out).not.toContain("uid=1000(user)");
+    expect(out).toMatch(/Authentication failure/);
+    expect((await root(cleanupScript(after))).code).toBe(0);
+    // Idempotent: a second pass finds nothing to lock.
+    expect((await root(hardenScript())).code).toBe(0);
+  }, 60_000);
 
   it("refuses to start a run without useradd", async () => {
     await root("mv /usr/sbin/useradd /usr/sbin/useradd.off");

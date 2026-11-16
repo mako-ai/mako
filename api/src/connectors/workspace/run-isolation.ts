@@ -55,6 +55,8 @@ export const REQUIRED_TOOLS = [
   "cat",
   "xargs",
   "mv",
+  "usermod",
+  "groupmod",
 ] as const;
 
 export interface RunLayout {
@@ -113,6 +115,31 @@ for tool in ${REQUIRED_TOOLS.join(" ")}; do
   command -v "$tool" >/dev/null 2>&1 || echo "$tool"
 done
 true`;
+}
+
+/**
+ * Root, once per box before its first run: lock every account and group
+ * whose password is empty, then prove none is left. Fails closed.
+ *
+ * E2B's templates ship `root` and `user` with empty passwords, and Debian's
+ * PAM stack allows them (`pam_unix.so nullok`). Without this, any run user
+ * runs `su root` (or `su user`, then `sudo`) and owns the box. No sync box
+ * workload logs in with a password: envd starts processes directly, and
+ * `user`'s sudo rule is NOPASSWD, so locking changes nothing else.
+ */
+export function hardenScript(): string {
+  return `set -eu
+${PATH_FOR_ROOT}
+for account in $(awk -F: '$2 == "" { print $1 }' /etc/shadow); do
+  usermod -p '!' "$account"
+done
+if [ -r /etc/gshadow ]; then
+  for group in $(awk -F: '$2 == "" { print $1 }' /etc/gshadow); do
+    groupmod -p '!' "$group"
+  done
+fi
+left=$(awk -F: '$2 == "" { print $1 }' /etc/shadow; [ -r /etc/gshadow ] && awk -F: '$2 == "" { print "group:" $1 }' /etc/gshadow || true)
+if [ -n "$left" ]; then echo "empty passwords left: $left" >&2; exit 1; fi`;
 }
 
 /** Root: create the run user and its directories. Fails closed. */
