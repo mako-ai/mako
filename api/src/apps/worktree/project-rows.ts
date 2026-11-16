@@ -14,7 +14,7 @@ import { USERS_DIR, parseAppRepoPath } from "../app-paths";
 import { loadOwnerDirectory } from "../user-handles.service";
 
 import { appRootFor } from "./repo";
-import { isUserActor } from "./worktrees";
+import { isPersonActorId, isUserActor } from "./worktrees";
 
 // ---------------------------------------------------------------------------
 // Apps are folders (§13): the repo is the list, not the database
@@ -53,6 +53,33 @@ export async function listAppFolderPaths(
 }
 
 /**
+ * Env flag that switches the row owner stamp from isUserActor (24-hex ids
+ * only) to isPersonActorId (real 15-character ids too). Off by default: an
+ * ownerless row is claimed by the next person who acts on it, so switching
+ * before scripts/backfill-app-row-owners.ts has given every row its real
+ * owner would hand those rows to whoever touches them first.
+ */
+export const ROW_OWNER_PERSON_IDS_FLAG = "APPS_ROW_OWNER_PERSON_IDS";
+
+function rowOwnerPersonIdsOn(): boolean {
+  const raw = (process.env[ROW_OWNER_PERSON_IDS_FLAG] ?? "")
+    .trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
+}
+
+/**
+ * The acting id when it may own a row, else undefined. System actors
+ * (publish, api-key, scheduler, app-chat, "") never qualify, flag or not.
+ */
+export function rowOwnerActor(actorId: string): string | undefined {
+  const person = rowOwnerPersonIdsOn()
+    ? isPersonActorId(actorId)
+    : isUserActor(actorId);
+  return person ? actorId : undefined;
+}
+
+/**
  * Persist the row for a folder-only app, keeping the DERIVED id so every
  * artifact key and worktree doc stays stable. The three row-creating acts
  * (§13.6: restrict, publish, share) all converge here; everything else keeps
@@ -73,7 +100,7 @@ export async function ensureProjectRow(
   // ownerless; otherwise the auto-deploy of every repo-imported folder would
   // stamp the literal "publish" as owner_id, nobody could ever restrict or
   // share it, and a private access setting would lock out even admins.
-  const actor = isUserActor(actorId) ? actorId : undefined;
+  const actor = rowOwnerActor(actorId);
   // A folder under users/<handle>/apps belongs to its owner (§29). The owner
   // is the handle mapping's answer for the folder, whoever's action creates
   // or first touches the row. A segment the mapping does not know is nobody's:

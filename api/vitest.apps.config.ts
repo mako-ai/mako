@@ -54,6 +54,8 @@ export default defineConfig({
       "src/apps/box-presave.git.test.ts",
       // The drain's key and swap-time guards.
       "src/apps/box-drain.test.ts",
+      // Owner backfill for ownerless app rows + the gated owner stamp.
+      "src/apps/app-row-owners.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",
       // Phase events on the request doing the work (NDJSON), no shared state.
