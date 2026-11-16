@@ -13,6 +13,9 @@ import { createHttp } from "./http.js";
 import { paginate } from "./paginate.js";
 
 const SLUG = /^[a-z][a-z0-9-]*$/;
+// Entity names become table names, and Airbyte's own streams use snake_case
+// (`payment_intents`, `balance_transactions`). Hyphens stay legal too.
+const ENTITY_NAME = /^[a-z][a-z0-9_-]*$/;
 
 export function defineConnector(definition) {
   const problems = validateDefinition(definition);
@@ -120,7 +123,9 @@ function validateDefinition(definition) {
     return problems;
   }
   for (const [name, entity] of Object.entries(entities)) {
-    if (!SLUG.test(name)) problems.push(`entity "${name}" must be a lowercase slug`);
+    if (!ENTITY_NAME.test(name)) {
+      problems.push(`entity "${name}" must be lowercase letters, digits, "_" or "-"`);
+    }
     if (typeof entity?.read !== "function") {
       problems.push(`entity "${name}" needs a read(ctx, state) generator`);
     }

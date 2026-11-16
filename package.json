@@ -65,7 +65,11 @@
     "secrets:diff": "tsx scripts/secrets.ts diff",
     "secrets:salvage-prod": "tsx scripts/secrets.ts salvage-prod",
     "sandbox:tunnel:setup": "bash scripts/sandbox-tunnel-setup.sh",
-    "flows:validate": "pnpm --filter api exec tsx src/services/flow-validate.cli.ts"
+    "flows:validate": "pnpm --filter api exec tsx src/services/flow-validate.cli.ts",
+    "connectors:install": "npm ci --prefix connectors/stripe --no-audit --no-fund --ignore-scripts",
+    "connectors:typecheck": "tsc -p connectors/stripe/tsconfig.json",
+    "connectors:conformance": "node connectors/stripe/fixtures/conformance.mjs",
+    "connectors:parity": "pnpm --filter api exec tsx ../connectors/stripe/fixtures/parity.mjs"
   },
   "keywords": [
     "mako",
@@ -90,6 +94,9 @@
     ],
     "api/**/*.ts": [
       "eslint --fix --report-unused-disable-directives",
+      "prettier --write"
+    ],
+    "connectors/**/*.{ts,mjs,mts}": [
       "prettier --write"
     ],
     "api/src/**/*.test.ts": [

@@ -1,0 +1,4 @@
+[
+{"request":"GET /v1/radar/early_fraud_warnings?limit=100","status":200,"body":{"object":"list","data":[{"id":"issfr_fx0002","object":"radar.early_fraud_warning","created":1771977600,"livemode":false,"actionable":false,"charge":"ch_fx0100","fraud_type":"made_with_stolen_card","payment_intent":"pi_fx0100"},{"id":"issfr_fx0001","object":"radar.early_fraud_warning","created":1753833600,"livemode":false,"actionable":true,"charge":"ch_fx0050","fraud_type":"made_with_stolen_card","payment_intent":"pi_fx0050"}],"has_more":false,"url":"/v1/radar/early_fraud_warnings"}},
+{"request":"GET /v1/radar/early_fraud_warnings?created[gte]=1767225600&limit=100","status":200,"body":{"object":"list","data":[{"id":"issfr_fx0002","object":"radar.early_fraud_warning","created":1771977600,"livemode":false,"actionable":false,"charge":"ch_fx0100","fraud_type":"made_with_stolen_card","payment_intent":"pi_fx0100"}],"has_more":false,"url":"/v1/radar/early_fraud_warnings"}}
+]

@@ -1,0 +1,4 @@
+[
+{"request":"GET /v1/setup_intents?limit=100","status":200,"body":{"object":"list","data":[],"has_more":false,"url":"/v1/setup_intents"}},
+{"request":"GET /v1/setup_intents?created[gte]=1767225600&limit=100","status":200,"body":{"object":"list","data":[],"has_more":false,"url":"/v1/setup_intents"}}
+]

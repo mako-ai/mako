@@ -1,0 +1,22 @@
+{
+  "name": "@makoai/connector-stripe",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Stripe as a Mako connector folder on @makoai/connector-sdk.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "dependencies": {
+    "stripe": "23.0.0"
+  },
+  "peerDependencies": {
+    "@makoai/connector-sdk": ">=0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@makoai/connector-sdk": {
+      "optional": true
+    }
+  }
+}
