@@ -23,6 +23,7 @@ import {
 
 import {
   boxIsRunning,
+  boxRunState,
   getSandboxProvider,
   type SandboxExecContext,
 } from "../sandbox/provider";
@@ -211,9 +212,18 @@ export async function worktreeStatus(
 
   // Running, not present: the sidebar polls this every 30 s, and reading a
   // paused box resumes it. A sleeping box reads as offline (last commit).
-  const live =
-    (await boxIsRunning(ctx).catch(() => false)) &&
-    (await boxHasValidCheckout(ctx).catch(() => false));
+  // Tri-state: a failed lookup is not "asleep". It answers the old way
+  // (present = live) rather than blank the sidebar's changes for one poll.
+  const state = await boxRunState(ctx, { fresh: true }).catch(
+    () => "unknown" as const,
+  );
+  const running =
+    state === "unknown"
+      ? await getSandboxProvider()
+          .hasSession(ctx)
+          .catch(() => false)
+      : state === "running";
+  const live = running && (await boxHasValidCheckout(ctx).catch(() => false));
 
   if (!live) {
     const branchHead = await resolveCommit(repoDir, `refs/heads/${doc.branch}`);

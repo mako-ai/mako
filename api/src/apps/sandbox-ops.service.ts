@@ -150,6 +150,20 @@ export interface SandboxStats {
   sessions: number;
 }
 
+/**
+ * Stats of the session's box if it is RUNNING; null when there is none or
+ * it is paused. A paused box is never exec'd into: reading its stats would
+ * resume it just to show them (Settings → Sandbox).
+ */
+export async function sandboxStatsIfRunning(ctx: SandboxExecContext): Promise<{
+  info: { sandboxId: string; startedAt: string | null };
+  stats: SandboxStats;
+} | null> {
+  const info = (await getSandboxProvider().describe?.(ctx)) ?? null;
+  if (!info || !(await boxIsRunning(ctx))) return null;
+  return { info, stats: await sandboxStats(ctx) };
+}
+
 /** One exec inside the box (with a 1 s CPU sample). */
 export async function sandboxStats(
   ctx: SandboxExecContext,

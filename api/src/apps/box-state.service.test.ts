@@ -27,6 +27,7 @@ import { discoverDevServers } from "./dev-server.service";
 import {
   forgetBoxState,
   getBoxState,
+  markBoxOffline,
   patchBoxState,
   resetBoxStateStoreForTests,
 } from "./box-state.service";
@@ -242,5 +243,52 @@ describe("box-state after an E2B account move", () => {
     });
     expect(ids).toHaveBeenCalledTimes(1);
     expect((await getBoxState(key))?.ahead).toBe(2);
+  });
+});
+
+describe("box reports right after an offline broadcast", () => {
+  beforeEach(() => {
+    delete process.env.REDIS_URL;
+    resetBoxStateStoreForTests();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a heartbeat inside 10 s is ignored: no online flip, nothing stored", async () => {
+    vi.useFakeTimers({
+      now: Date.parse("2026-11-16T18:00:00Z"),
+      toFake: ["Date"],
+    });
+    await markBoxOffline(ws, user);
+    vi.mocked(publishRealtimeEvent).mockClear();
+    vi.setSystemTime(Date.now() + 4_000);
+    const state = await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { branch: "main", sandboxId: "sbx-1" },
+      source: "agent",
+    });
+    expect(state.status).toBe("offline");
+    expect(publishRealtimeEvent).not.toHaveBeenCalled();
+    expect(await getBoxState(key)).toBeNull();
+  });
+
+  it("after 10 s, reports count again", async () => {
+    vi.useFakeTimers({
+      now: Date.parse("2026-11-16T18:00:00Z"),
+      toFake: ["Date"],
+    });
+    await markBoxOffline(ws, user);
+    vi.setSystemTime(Date.now() + 11_000);
+    const state = await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { branch: "main" },
+      source: "agent",
+    });
+    expect(state.status).toBe("online");
+    expect((await getBoxState(key))?.branch).toBe("main");
   });
 });

@@ -6,7 +6,15 @@
  * is not "running") and counts every call that would resume a box:
  * Sandbox.connect, and any command or file call on a connected handle.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 const WS = "6846e6a01b05af0948070582";
 const USER = "2ej8m72pihz87dy";
@@ -16,6 +24,9 @@ const APP_ID = "6846e6a01b05af0948070aaa";
 const sdk = vi.hoisted(() => ({
   state: "paused" as "paused" | "running",
   failRunningList: false,
+  /** null = what announceAsleep leaves: the box state deleted. */
+  snapshot: "with-dev-server" as "with-dev-server" | null,
+  repoDir: "",
   list: vi.fn(),
   connect: vi.fn(),
   commands: vi.fn(),
@@ -86,17 +97,21 @@ vi.mock("e2b", () => {
 // The box last reported a dev server for this app without a resolved url:
 // the exact snapshot that made the 15 s status poll call the old peek.
 vi.mock("./box-state.service", () => ({
-  getBoxState: vi.fn(async () => ({
-    branch: "main",
-    head: null,
-    ahead: 0,
-    changes: [],
-    devServers: [{ slug: APP_ID, port: 5173 }],
-    sandboxId: "sbx-paused",
-    status: "online",
-    terminals: [],
-    updatedAt: 0,
-  })),
+  getBoxState: vi.fn(async () =>
+    sdk.snapshot === null
+      ? null
+      : {
+          branch: "main",
+          head: null,
+          ahead: 0,
+          changes: [],
+          devServers: [{ slug: APP_ID, port: 5173 }],
+          sandboxId: "sbx-paused",
+          status: "online",
+          terminals: [],
+          updatedAt: 0,
+        },
+  ),
   probeReachable: vi.fn(async () => true),
   forgetBoxState: vi.fn(),
   markBoxOffline: vi.fn(),
@@ -114,6 +129,27 @@ vi.mock("../workflows/on-push", () => ({
   removeKey: vi.fn(async () => undefined),
   setKey: vi.fn(async () => undefined),
 }));
+vi.mock("./worktree/repo", async importOriginal => ({
+  ...(await importOriginal<typeof import("./worktree/repo")>()),
+  repoFor: vi.fn(async () => sdk.repoDir),
+  repoForWorkspace: vi.fn(async () => sdk.repoDir),
+}));
+vi.mock("../database/workspace-schema", async importOriginal => ({
+  ...(await importOriginal<typeof import("../database/workspace-schema")>()),
+  AppWorktree: {
+    findOne: vi.fn(async () => ({
+      workspaceId: { toString: () => WS },
+      userId: USER,
+      branch: "main",
+      save: async () => undefined,
+    })),
+  },
+}));
+vi.mock("../workflows/recorded-writes", () => ({
+  withRecordedWrites: vi.fn(
+    async (_ws: string, _id: string, run: unknown) => run,
+  ),
+}));
 vi.mock("./box-agent", () => ({
   ensureBoxAgent: vi.fn(async () => undefined),
   forgetBoxAgent: vi.fn(),
@@ -121,10 +157,18 @@ vi.mock("./box-agent", () => ({
 
 import { getBoxState } from "./box-state.service";
 import { devServerStatus, discoverDevServers } from "./dev-server/status";
-import { tailBoxLog } from "./sandbox-ops.service";
+import { sandboxStatsIfRunning, tailBoxLog } from "./sandbox-ops.service";
 import { e2bSandboxProvider } from "./sandbox/e2b-provider";
 import type { WorktreeHandle } from "./worktree.service";
 import { readSandboxRun } from "../workflows/sandbox";
+import { waitForRun } from "../workflows/status";
+import { listFiles } from "./worktree/files";
+import { worktreeStatus } from "./worktree/status";
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 
 const handle = {
   doc: { workspaceId: WS, userId: USER, branch: "main" },
@@ -132,9 +176,34 @@ const handle = {
   appRoot: "apps/sales",
 } as unknown as WorktreeHandle;
 
+beforeAll(async () => {
+  const run = promisify(execFile);
+  sdk.repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "resume-loop-"));
+  await run("git", ["init", "-q", "-b", "main", sdk.repoDir]);
+  await fs.mkdir(path.join(sdk.repoDir, "apps/sales"), { recursive: true });
+  await fs.writeFile(path.join(sdk.repoDir, "apps/sales/App.tsx"), "x\n");
+  await run("git", ["-C", sdk.repoDir, "add", "-A"]);
+  await run("git", [
+    "-C",
+    sdk.repoDir,
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@t",
+    "commit",
+    "-qm",
+    "init",
+  ]);
+});
+
+afterAll(async () => {
+  await fs.rm(sdk.repoDir, { recursive: true, force: true });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   sdk.state = "paused";
+  sdk.snapshot = "with-dev-server";
   process.env.E2B_API_KEY = "test-key";
   delete process.env.APPS_SANDBOX_PROVIDER;
 });
@@ -184,6 +253,17 @@ describe("a paused box and an open workbench", () => {
     expect(sdk.commands).not.toHaveBeenCalled();
   });
 
+  it("waitForRun treats PAUSED as not final", async () => {
+    const { run, done } = await waitForRun(
+      WS,
+      USER,
+      "sandbox-00000000-0000-4000-8000-000000000002",
+      { wait: 0 },
+    );
+    expect(run).toMatchObject({ status: "PAUSED" });
+    expect(done).toBe(false);
+  });
+
   it("a failed E2B lookup never turns a live run into PAUSED", async () => {
     sdk.state = "running";
     sdk.failRunningList = true;
@@ -221,6 +301,51 @@ describe("a paused box and an open workbench", () => {
     } finally {
       sdk.failRunningList = false;
     }
+  });
+
+  it("10 minutes of the other real polls, box state deleted: 0 resumes", async () => {
+    // What production looks like after a pause: announceAsleep deleted the
+    // box state, so every poll falls through to discovery.
+    sdk.snapshot = null;
+    const project = {
+      _id: { toString: () => APP_ID },
+      workspaceId: { toString: () => WS },
+      path: "apps/sales",
+      defaultBranch: "main",
+    } as never;
+    let clock = Date.parse("2026-11-16T18:00:00Z");
+    vi.useFakeTimers({ now: clock, toFake: ["Date"] });
+    try {
+      for (let t = 0; t <= 10 * 60_000; t += 2_000) {
+        // Sidebar repo status, every 30 s (Sidebar.tsx).
+        if (t % 30_000 === 0) {
+          const status = await worktreeStatus(
+            { workspaceId: WS, root: null, defaultBranch: "main" } as never,
+            USER,
+          );
+          expect(status?.offline).toBe(true);
+        }
+        // Workflows explorer (8 s) and the app file tree: both listFiles.
+        if (t % 8_000 === 0) {
+          const listing = await listFiles(project, USER);
+          expect(listing.entries.map(e => e.path)).toEqual(["App.tsx"]);
+        }
+        // Settings, Sandbox: stats.
+        if (t % 30_000 === 0) {
+          expect(await sandboxStatsIfRunning({ sessionKey: KEY })).toBeNull();
+        }
+        // The dev-server polls too, now with no snapshot at all.
+        if (t % 16_000 === 0) await devServerStatus(handle);
+        clock += 2_000;
+        vi.setSystemTime(clock);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(sdk.commands).not.toHaveBeenCalled();
+    expect(sdk.create).not.toHaveBeenCalled();
+    expect(sdk.state).toBe("paused");
   });
 
   it("a paused box's status reads as not serving", async () => {
