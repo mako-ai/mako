@@ -489,6 +489,7 @@ async function specAt(
   runtimeId: string,
   dir: string,
   entry: string,
+  onCleanupFailure: (reason: string) => void,
 ): Promise<
   { ok: true; spec: Record<string, unknown> } | { ok: false; reason: string }
 > {
@@ -499,6 +500,7 @@ async function specAt(
     command: "spec",
     entry,
     timeoutMs: 60_000,
+    onCleanupFailure,
   });
   return specFrom(result);
 }
@@ -660,13 +662,21 @@ async function runRegistrySpec(
   { ok: true; spec: Record<string, unknown> } | { ok: false; reason: string }
 > {
   const ctx = syncBoxContext(workspaceId);
+  await retireLegacySyncBox(workspaceId);
   const runtimeId = await ensureConnectorRuntime(ctx);
   const { dir, entry } = await prepareRegistryConnector({
     ctx,
     runtimeId,
     registry: resolution,
   });
-  return specAt(ctx, runtimeId, dir, entry);
+  // Same rule as every other run in the workspace box: a run whose cleanup
+  // failed may have left its credential or a thread behind, so the box dies.
+  let cleanupFailure: string | null = null;
+  const spec = await specAt(ctx, runtimeId, dir, entry, reason => {
+    cleanupFailure = reason;
+  });
+  if (cleanupFailure) await retireSyncBox(workspaceId, cleanupFailure);
+  return spec;
 }
 
 /** The flag-off path: the workspace's one sync box, as before leases. */

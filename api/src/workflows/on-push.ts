@@ -28,6 +28,7 @@ import {
   workerSecretExists,
   writeWorkerSecret,
 } from "./kube";
+import { wakeWorker } from "./scale";
 import { WORKER_KEY_SCOPES, workerKeyName } from "./worker-key";
 
 const logger = loggers.api("workflows-on-push");
@@ -277,6 +278,8 @@ async function deployWorkflowsNow(
   if (main) {
     await ensureWorkspaceTenant(workspaceId);
     await ensureWorker(workspaceId, userId ?? workspace.createdBy);
+    // A sleeping worker wakes to build the new commit.
+    await wakeWorker(workspaceId, "deploy");
   }
 
   // The slot follows what the repository holds: `workflows/` deleted on main

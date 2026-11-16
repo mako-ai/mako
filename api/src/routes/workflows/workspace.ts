@@ -31,6 +31,7 @@ import {
 import { readWorkflowCost } from "../../workflows/costs";
 import { isSandboxRunId, startSandboxRun } from "../../workflows/sandbox";
 import { waitForRun } from "../../workflows/status";
+import { wakeWorker } from "../../workflows/scale";
 import { setTriggers } from "../../workflows/webhook";
 import { fail } from "../lib/respond";
 import { onRouteError } from "./shared";
@@ -231,6 +232,7 @@ workflowRoutes.openapi(
     const body = await c.req.json().catch(() => ({}));
     const step = typeof body?.step === "string" ? body.step : undefined;
     const retried = await retryRun(await requireTenant(workspaceId), id, step);
+    await wakeWorker(workspaceId, "retry");
     return c.json({ success: true as const, ...retried }, 200);
   },
 );
@@ -345,6 +347,7 @@ workflowRoutes.openapi(
       startedBy: session ? "person" : "agent",
       ...(dryRun ? { dryRun } : {}),
     });
+    await wakeWorker(workspaceId, "run");
     return c.json({ success: true as const, runId }, 200);
   },
 );

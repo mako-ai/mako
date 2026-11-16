@@ -6,6 +6,7 @@ import { createRouter } from "../../openapi/core";
 import { workspaceService } from "../../services/workspace.service";
 import { readWorkspaceTenant, startRun } from "../../workflows/hatchet";
 import { startSandboxRun } from "../../workflows/sandbox";
+import { wakeWorker } from "../../workflows/scale";
 import { isWebhookSecret } from "../../workflows/webhook";
 import { fail } from "../lib/respond";
 import { onRouteError } from "./shared";
@@ -64,6 +65,7 @@ workflowHookRoutes.post(
       trigger: "webhook",
       startedBy: "trigger",
     });
+    await wakeWorker(workspaceId, "webhook");
     return c.json({ runId }, 202);
   },
 );

@@ -26,7 +26,6 @@ import { createRouter } from "../../openapi/core";
 import { trackUsage } from "../../services/llm-usage.service";
 import { workspaceService } from "../../services/workspace.service";
 import { runStepAgent } from "../../workflows/agent";
-import { workerDemand } from "../../workflows/demand";
 import {
   HatchetError,
   isHatchetId,
@@ -233,21 +232,6 @@ workflowRuntimeRoutes.post(
           },
     );
     return c.json({ ok: true });
-  }),
-);
-
-// What the autoscaler sizes the worker by (workflows/demand.ts), asked with
-// the worker's own key. No answer from Hatchet is a 503, never "no work":
-// the autoscaler then keeps the pods it has.
-workflowRuntimeRoutes.get(
-  "/demand",
-  asSupervisor(async (c, { workspaceId }) => {
-    try {
-      return c.json(await workerDemand(workspaceId));
-    } catch (error) {
-      if (error instanceof HatchetError) return fail(c, 503, error.message);
-      throw error;
-    }
   }),
 );
 
