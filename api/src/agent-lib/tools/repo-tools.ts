@@ -178,6 +178,76 @@ async function openRepoView(
   return { repoDir, ref, branch, isVisible };
 }
 
+/**
+ * Whether `folder` is a folder at the view's ref holding at least one path
+ * the actor may see. False on any git error: the caller then answers as for
+ * a missing path. Lists names only, never contents.
+ */
+export async function folderHasVisiblePath(
+  view: RepoView,
+  folder: string,
+): Promise<boolean> {
+  let stdout: string;
+  try {
+    // -z + core.quotePath=false: raw paths, so a non-ASCII hidden path
+    // reaches the rule as itself, never as a quoted string.
+    ({ stdout } = await runGit(
+      [
+        "-C",
+        view.repoDir,
+        "-c",
+        "core.quotePath=false",
+        "ls-tree",
+        "-r",
+        "-z",
+        "--name-only",
+        view.ref,
+        "--",
+        // The trailing slash lists the folder's contents; a file matches
+        // nothing.
+        `${folder}/`,
+      ],
+      { maxBufferBytes: 64 * 1024 * 1024 },
+    ));
+  } catch {
+    return false;
+  }
+  return stdout
+    .split("\0")
+    .some(path => path.startsWith(`${folder}/`) && view.isVisible(path));
+}
+
+/**
+ * What a repo path is to the actor: a file they may read, a folder holding
+ * at least one path they may see, or missing. A hidden path reads as
+ * missing, so the answer never says a private app exists.
+ */
+export async function pathKind(
+  view: RepoView,
+  relPath: string,
+): Promise<"file" | "folder" | "missing"> {
+  let type: string;
+  try {
+    const { stdout } = await runGit([
+      "-C",
+      view.repoDir,
+      "cat-file",
+      "-t",
+      `${view.ref}:${relPath}`,
+    ]);
+    type = stdout.trim();
+  } catch {
+    return "missing";
+  }
+  if (type === "blob") return view.isVisible(relPath) ? "file" : "missing";
+  // A folder counts by what it holds, not by its own name: `apps/finance`
+  // around one private app passes the rule but holds nothing visible.
+  if (type === "tree") {
+    return (await folderHasVisiblePath(view, relPath)) ? "folder" : "missing";
+  }
+  return "missing";
+}
+
 /** A repo-relative directory or file to search under, validated. */
 export function safePathspec(pathspec: string | undefined): string | undefined {
   if (!pathspec) return undefined;
@@ -234,8 +304,12 @@ export async function grepRepo(
       error: error instanceof Error ? error.message : "Invalid pathspec",
     };
   }
-  // A hidden folder is refused before git runs, so nothing of it is read.
-  if (pathspec && !view.isVisible(pathspec)) {
+  // A pathspec runs when it is a visible file or a folder holding at least
+  // one visible path (`users/bob` with the one app Bob shared). A hidden
+  // app, a folder holding only hidden paths and a missing path are refused
+  // before git greps them, all with the same message. Matches are filtered
+  // per path below, so the hidden apps of an allowed folder stay hidden.
+  if (pathspec && (await pathKind(view, pathspec)) === "missing") {
     return {
       success: false,
       error: `${pathspec} not found on ${view.branch}.`,
@@ -275,7 +349,10 @@ export async function grepRepo(
   };
 }
 
-/** repo_read_file over an opened view. Files only: a folder reads as missing. */
+/**
+ * repo_read_file over an opened view. Files only: a visible folder gets a
+ * folder message, a hidden or missing path reads as missing.
+ */
 export async function readRepoFile(
   view: RepoView,
   input: { path: string; offset?: number; limit?: number },
@@ -289,26 +366,22 @@ export async function readRepoFile(
       error: error instanceof Error ? error.message : "Invalid path",
     };
   }
+  // A hidden path and a missing one read the same, so a private app never
+  // leaks; the hint points at repo_glob either way.
   const missing = {
     success: false as const,
     error: `${relPath} not found on ${view.branch}. Use repo_glob to find the path.`,
   };
-  // A hidden path reads as missing, so a private app never leaks.
-  if (!view.isVisible(relPath)) return missing;
-  // Only a blob: `git show` on a folder lists its children, hidden apps
-  // included.
-  try {
-    const { stdout } = await runGit([
-      "-C",
-      view.repoDir,
-      "cat-file",
-      "-t",
-      `${view.ref}:${relPath}`,
-    ]);
-    if (stdout.trim() !== "blob") return missing;
-  } catch {
-    return missing;
+  // Only a blob is read: `git show` on a folder lists its children, hidden
+  // apps included. The folder message names no child.
+  const kind = await pathKind(view, relPath);
+  if (kind === "folder") {
+    return {
+      success: false as const,
+      error: `${relPath} is a folder, not a file. List it with repo_glob, e.g. "${relPath}/*" for its files or "${relPath}/**" for everything under it.`,
+    };
   }
+  if (kind === "missing") return missing;
   let blob;
   try {
     blob = await readBlob(view.repoDir, view.ref, relPath);
