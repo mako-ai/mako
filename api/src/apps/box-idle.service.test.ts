@@ -488,6 +488,26 @@ describe("sweepIdleBoxes: no pause while active", () => {
     ]);
   });
 
+  it("the kept entry names the pty that held the box", async () => {
+    const { deps } = sweepDeps(
+      [appBox()],
+      { [KEY]: activity(30) },
+      {
+        runningWork: vi.fn(async () => ({
+          reason: "terminal command npm",
+          pty: "pts/1 (mako-term-t1)",
+        })),
+      },
+    );
+    expect((await sweepIdleBoxes(deps, config)).kept).toEqual([
+      {
+        sessionKey: KEY,
+        reason: "terminal command npm",
+        pty: "pts/1 (mako-term-t1)",
+      },
+    ]);
+  });
+
   it("2 h cap: inside the cap, the same command still holds the box", async () => {
     const { deps } = sweepDeps(
       [appBox()],
@@ -577,7 +597,7 @@ describe("sweepIdleBoxes: no pause while active", () => {
 });
 
 describe("terminal work probe", () => {
-  async function probeWith(psOutput: string): Promise<string | null> {
+  async function probeWith(psOutput: string) {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ps-"));
     try {
       const ps = path.join(dir, "ps");
@@ -596,33 +616,84 @@ describe("terminal work probe", () => {
     }
   }
 
-  it("an idle shell is not work", async () => {
-    expect(
-      await probeWith(
-        ["Ss+ pts/1 bash -bash", "S ? node node /tmp/box-agent.js"].join("\n"),
-      ),
-    ).toBeNull();
+  // `ps -eo pid=,ppid=,stat=,tty=,args=` as an E2B app box prints it: the
+  // system's getty on tty1 and on the console (both foreground, `+`), the
+  // box agent, a Mako terminal (dtach > script > bash) and a dev server.
+  const BASE = [
+    "    1     0 Ss   ?        /sbin/init",
+    "  412     1 Ss+  tty1     /sbin/agetty -o -p -- \\u --noclear tty1 linux",
+    "  413     1 Ss+  console  /sbin/agetty -o -p -- \\u --noclear --keep-baud console 115200,38400,9600 vt220",
+    "  420     1 Ss+  ttyS0    /sbin/getty -L ttyS0 115200 vt100",
+    "  610     1 Sl   ?        node /tmp/mako-box-agent.mjs",
+    "  700     1 Ss   ?        dtach -A /tmp/mako-term-t1.sock -r winch script -qf -c bash -l /tmp/mako-hist-t1.raw",
+    "  701   700 Ss+  pts/0    script -qf -c bash -l /tmp/mako-hist-t1.raw",
+    "  702   701 Ss+  pts/1    bash -l",
+    "  800     1 Ss   ?        dtach -n /tmp/mako-term-dev-abc.sock -r winch node /tmp/mako-dev-abc.mjs",
+    "  801   800 Ss   pts/2    sh -c node /tmp/mako-dev-abc.mjs",
+    "  802   801 Sl+  pts/2    node /tmp/mako-dev-abc.mjs",
+  ];
+
+  it("agetty on tty1 and the console, a getty, an idle terminal and a dev server: not work", async () => {
+    expect(await probeWith(BASE.join("\n"))).toBeNull();
   });
 
-  it("a foreground command in a terminal is work", async () => {
-    expect(
-      await probeWith(
-        ["Ss pts/1 bash -bash", "Sl+ pts/1 npm npm run build"].join("\n"),
-      ),
-    ).toBe("terminal command npm");
-  });
-
-  it("Mako's own dev server pty is not a terminal in use", async () => {
+  it("a foreground command in our dtach terminal is work, and names its pty", async () => {
     expect(
       await probeWith(
         [
-          "Ss pts/2 bash bash -c node /tmp/mako-dev-abc.mjs",
-          "Sl+ pts/2 node node /tmp/mako-dev-abc.mjs",
-          "Ss+ pts/3 dtach dtach -a /tmp/mako-term-1.sock",
-          "Ss+ pts/4 tmux: client tmux attach",
+          ...BASE.filter(l => !l.includes(" 702 ")),
+          "  702   701 Ss   pts/1    bash -l",
+          "  730   702 Sl+  pts/1    npm run build",
+        ].join("\n"),
+      ),
+    ).toEqual({
+      reason: "terminal command npm",
+      pty: "pts/1 (mako-term-t1)",
+    });
+  });
+
+  it("a foreground command in a tmux-backed terminal is work", async () => {
+    expect(
+      await probeWith(
+        [
+          ...BASE,
+          "  900     1 Ss   ?        tmux new -A -s mako-t2",
+          "  901   900 Ss   pts/3    -bash",
+          "  902   901 S+   pts/3    vim notes.md",
+        ].join("\n"),
+      ),
+    ).toEqual({ reason: "terminal command vim", pty: "pts/3 (mako-t2)" });
+  });
+
+  it("a foreground process on a tty outside our sessions is not work", async () => {
+    expect(
+      await probeWith(
+        [
+          ...BASE,
+          "  950     1 Ss   pts/5    bash",
+          "  951   950 S+   pts/5    sleep 1000",
         ].join("\n"),
       ),
     ).toBeNull();
+  });
+
+  it("system processes never count, even under our session", async () => {
+    expect(
+      await probeWith(
+        [
+          ...BASE.filter(l => !l.includes(" 702 ")),
+          "  702   701 Ss   pts/1    bash -l",
+          "  740   702 S+   pts/1    /sbin/agetty --noclear tty2",
+          "  741   702 S+   pts/1    login -f user",
+        ].join("\n"),
+      ),
+    ).toBeNull();
+  });
+
+  it("a workflow-run line still parses", () => {
+    expect(parseRunningWork("busy workflow run\n")).toEqual({
+      reason: "workflow run",
+    });
   });
 });
 

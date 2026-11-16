@@ -220,7 +220,7 @@ export interface SweepDeps {
   /** When activity tracking started; the sweep records it on its first run. */
   trackingSince(): Promise<Date>;
   /** Work still going in this box: a workflow run or a terminal command. */
-  runningWork(box: AppBoxInfo): Promise<string | null>;
+  runningWork(box: AppBoxInfo): Promise<RunningWork | string | null>;
   /** Tell open tabs the box is asleep BEFORE pausing it (see below). */
   announceAsleep(sessionKey: string): Promise<void>;
   pause(sandboxId: string): Promise<boolean>;
@@ -258,7 +258,7 @@ export interface SweepResult {
     idleMinutes: number;
     note?: string;
   }>;
-  kept: Array<{ sessionKey: string; reason: string }>;
+  kept: Array<{ sessionKey: string; reason: string; pty?: string }>;
   /** Running sessions the sweep did not act on, and why (logged one each). */
   skipped: Array<{ sessionKey: string; reason: string }>;
   usage: WorkspaceBoxUsage[];
@@ -315,10 +315,16 @@ export async function sweepIdleBoxes(
     }
 
     let busy: string | null = null;
+    let busyPty: string | undefined;
     try {
       for (const box of list) {
-        busy = await deps.runningWork(box);
-        if (busy) break;
+        const found = await deps.runningWork(box);
+        const work = typeof found === "string" ? { reason: found } : found;
+        if (work) {
+          busy = work.reason;
+          busyPty = work.pty;
+          break;
+        }
       }
     } catch (error) {
       // Cannot tell: keep it running this tick rather than pause work.
@@ -326,7 +332,13 @@ export async function sweepIdleBoxes(
     }
     if (busy) {
       if (now - lastUseOf(act, since) < config.maxHoldMs) {
-        result.kept.push({ sessionKey, reason: busy });
+        // The pty (and our session on it) names exactly what held the box,
+        // so a false positive like a system getty is obvious in the logs.
+        result.kept.push({
+          sessionKey,
+          reason: busy,
+          ...(busyPty ? { pty: busyPty } : {}),
+        });
         continue;
       }
       // Past the cap: an editor or a `tail -f` left open is not use.
@@ -609,33 +621,67 @@ export async function reapPausedBoxes(
 // Real dependencies (E2B + the box's git)
 // --------------------------------------------------------------------------
 
+/** What holds an idle box awake, and where it was found. */
+export interface RunningWork {
+  reason: string;
+  /** The tty the foreground command runs on, and Mako's session over it. */
+  pty?: string;
+}
+
 /**
- * Work that must not be paused under itself. Prints `busy <what>` or nothing.
+ * Work that must not be paused under itself. Prints one `busy` line or
+ * nothing.
  *
  * - An unfinished `mako workflow run` (workflows/sandbox.ts writes .pid and,
  *   at the end, .exit).
- * - A terminal whose foreground process group is something other than a
- *   shell (ps `+` flag on a tty): a build, a test run, a REPL. Mako's own
- *   dev-server ptys (`mako-dev-<slug>`) are not terminals someone is using
- *   and are left out, or every box with a preview would never sleep.
+ * - A foreground command in one of OUR terminals. Only a process whose
+ *   ancestors include a shell and then the session Mako's terminal service
+ *   created (`dtach -A /tmp/mako-term-<id>.sock`, or `tmux new -s
+ *   mako-<id>` without dtach) counts. A foreground process on any other tty
+ *   is not a terminal someone is using: in production, the system's
+ *   `agetty` on tty1 and the console held every box awake until the 2 h
+ *   cap. Mako's own dev-server sessions (`mako-term-dev-<slug>`) and system
+ *   processes (getty, agetty, login, systemd, init, sshd, cron) never count,
+ *   whatever their tty.
+ *
+ * Output: `busy\t<reason>\t<tty>\t<session>` for a terminal, `busy
+ * workflow run` for a run.
  */
 export const RUNNING_WORK_PROBE = [
   `for p in /tmp/mako-workflow-runs/*.pid; do [ -e "$p" ] || continue; b="\${p%.pid}"; [ -e "$b.exit" ] && continue; kill -0 "$(cat "$p")" 2>/dev/null && { echo "busy workflow run"; exit 0; }; done`,
-  `ps -eo stat=,tty=,comm=,args= 2>/dev/null | awk '` +
-    `$2=="?" {next} ` +
-    `{ n++; st[n]=$1; tt[n]=$2; cm[n]=$3; if (index($0,"mako-dev-")>0) dev[$2]=1 } ` +
-    `END { for (i=1;i<=n;i++) { if (tt[i] in dev) continue; if (st[i] !~ /\\+/) continue; ` +
-    `if (cm[i] ~ /^-?(bash|sh|zsh|dash|fish)$|^tmux|^dtach$|^script$|^login$|^ps$|^awk$/) continue; ` +
-    `print "busy terminal command " cm[i]; exit } }'`,
+  `ps -eo pid=,ppid=,stat=,tty=,args= 2>/dev/null | awk '` +
+    `{ pid=$1; pp[pid]=$2; st[pid]=$3; tt[pid]=$4; a=$0; ` +
+    `sub(/^[ \\t]*[0-9]+[ \\t]+[0-9]+[ \\t]+[^ \\t]+[ \\t]+[^ \\t]+[ \\t]*/, "", a); args[pid]=a; ` +
+    `split(a, w, " "); nm=w[1]; sub(/.*\\//, "", nm); name[pid]=nm; order[++k]=pid } ` +
+    `END { for (i=1;i<=k;i++) { p=order[i]; ` +
+    `if (tt[p]=="?" || st[p] !~ /\\+/) continue; ` +
+    `if (name[p] ~ /^-?(bash|sh|zsh|dash|fish)$/ || name[p] ~ /^(tmux|tmux:|dtach|script|ps|awk)$/) continue; ` +
+    `if (name[p] ~ /^(a?getty|mingetty|login|systemd.*|init|sshd|cron|crond)$/) continue; ` +
+    `q=pp[p]; shell=0; mark=""; d=0; ` +
+    `while (q != "" && q+0 > 1 && d < 64) { d++; ` +
+    `if (name[q] ~ /^-?(bash|sh|zsh|dash|fish)$/) shell=1; ` +
+    `if (index(args[q], "mako-term-dev-") > 0) { mark=""; break } ` +
+    `if (args[q] ~ /mako-term-[A-Za-z0-9_-]+/ || args[q] ~ /tmux.* -s mako-[A-Za-z0-9_-]+/) { mark=args[q]; break } ` +
+    `q=pp[q] } ` +
+    `if (mark == "" || !shell) continue; ` +
+    `if (match(mark, /mako-term-[A-Za-z0-9_-]+/) == 0) match(mark, /mako-[A-Za-z0-9_-]+/); ` +
+    `sess=substr(mark, RSTART, RLENGTH); sub(/\\.sock$/, "", sess); ` +
+    `printf "busy\\tterminal command %s\\t%s\\t%s\\n", name[p], tt[p], sess; exit } }'`,
   "true",
 ].join("\n");
 
-export function parseRunningWork(stdout: string): string | null {
-  const line = stdout.split("\n").find(l => l.startsWith("busy "));
-  return line ? line.slice(5).trim() : null;
+export function parseRunningWork(stdout: string): RunningWork | null {
+  const line = stdout.split("\n").find(l => l.startsWith("busy"));
+  if (!line) return null;
+  const [, reason, tty, session] = line.split("\t");
+  if (reason === undefined) return { reason: line.slice(5).trim() };
+  return {
+    reason,
+    ...(tty ? { pty: session ? `${tty} (${session})` : tty } : {}),
+  };
 }
 
-async function runningWork(box: AppBoxInfo): Promise<string | null> {
+async function runningWork(box: AppBoxInfo): Promise<RunningWork | null> {
   const run = await openAppBoxById(box.sandboxId);
   const result = await run(RUNNING_WORK_PROBE, { timeoutMs: 15_000 });
   return parseRunningWork(result.stdout);
