@@ -186,12 +186,19 @@ function usePopover(open, setOpen, wrapRef, align) {
  * like a MultiSelect option row, runs the label's activation behaviour: the
  * browser clicks the labelled control, the popover's trigger, which closed
  * the menu. Cancelling the click stops that. Clicks on links, buttons and
- * form fields keep their default, and the label ignores those anyway.
+ * form fields keep their default, and the label ignores those anyway. A label
+ * the app renders inside the popover (a FreshnessBadge action) keeps working.
  */
 const LABEL_SAFE = "a[href],button,input,select,textarea,summary";
 function cancelLabelActivation(e) {
   const t = e.target;
-  if (!(t instanceof Element) || !t.closest(LABEL_SAFE)) e.preventDefault();
+  if (t instanceof Element) {
+    if (t.closest(LABEL_SAFE)) return;
+    // A label inside the popover is the app's own: let it click its control.
+    const own = t.closest("label");
+    if (own && e.currentTarget.contains(own)) return;
+  }
+  e.preventDefault();
 }
 
 // ---------------------------------------------------------------------------

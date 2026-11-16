@@ -584,6 +584,17 @@ test("MultiSelect inside a <label>: two option clicks tick both and the menu sta
   assert.deepEqual(value, ["ES", "IT"]);
   assert.deepEqual(prevented, [true, true], "an option click is cancelled, so the label never re-clicks the trigger");
   await React.act(() => root.unmount());
+
+  // A label the app puts inside a popover still clicks its own control.
+  const root2 = client.createRoot(win.document.getElementById("root"));
+  const action = h("label", { className: "own" }, h("input", { type: "checkbox", className: "auto" }), h("span", null, "Auto-refresh"));
+  await React.act(() => root2.render(h("label", null, h(ui.FreshnessBadge, { headline: "Fresh", title: "Data", action }))));
+  await React.act(() => win.document.querySelector(".mk-fresh-trigger").click());
+  const span = win.document.querySelector(".own span");
+  await React.act(() => span.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })));
+  assert.equal(win.document.querySelector(".auto").checked, true, "the inner label ticks its checkbox");
+  assert.ok(win.document.querySelector(".mk-fresh-pop"), "the panel stays open");
+  await React.act(() => root2.unmount());
 });
 
 test("ui.css: ticks in --brand (fallback --primary); a pointer on buttons, Radix menu items and options", () => {
