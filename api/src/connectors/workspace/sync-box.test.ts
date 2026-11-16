@@ -873,13 +873,16 @@ describe("cleanup that cannot reach the box", () => {
     sandbox.supportsRunUsers = undefined;
   });
 
+  // The chunk command is cut off by a lost connection, so the run falls back
+  // to the separate cleanup (abandonScript), which then meets `cleanupError`.
   const runWith = async (cleanupError: Error) => {
     sandbox.exec.mockImplementation((_ctx, command: string) => {
+      if (command.includes("MAKO_CHUNK")) {
+        return Promise.reject(new Error("connection reset by peer"));
+      }
       if (command.includes("kill -9 -1")) return Promise.reject(cleanupError);
-      if (command.includes("head -c")) return Promise.resolve(result("0\n"));
       return Promise.resolve(result());
     });
-    sandbox.readFile.mockResolvedValue(new Uint8Array());
     const onCleanupFailure = vi.fn();
     await runConnectorCommand({
       ctx: { sessionKey: "connector-sync:v2:ws1" },
@@ -887,7 +890,7 @@ describe("cleanup that cannot reach the box", () => {
       connectorDir: "/x",
       command: "spec",
       onCleanupFailure,
-    });
+    }).catch(() => undefined);
     return onCleanupFailure;
   };
 
@@ -901,9 +904,7 @@ describe("cleanup that cannot reach the box", () => {
   it("counts a box that is really gone as cleaned", async () => {
     const gone = Object.assign(
       new Error("Sandbox is probably not running anymore"),
-      {
-        name: "SandboxNotFoundError",
-      },
+      { name: "SandboxNotFoundError" },
     );
     const onCleanupFailure = await runWith(gone);
     expect(onCleanupFailure).not.toHaveBeenCalled();

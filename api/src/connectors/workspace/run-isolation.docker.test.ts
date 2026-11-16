@@ -664,6 +664,32 @@ suite("connector run isolation in e2bdev/base (Docker)", () => {
       await root(`rm -f ${shellQuote(resultPath(l.runId))}`);
     }, 120_000);
 
+    it("locks a password kept in /etc/passwd or /etc/group in the same command, before the connector runs", async () => {
+      // A password in /etc/passwd and /etc/group themselves, no shadow line.
+      await root(
+        "grep -q '^chunklegacy:' /etc/passwd || { echo 'chunklegacy::2002:2002::/nonexistent:/bin/sh' >> /etc/passwd && echo 'chunklegacy::2002:' >> /etc/group; }",
+      );
+      const l = fresh();
+      const res = await root(
+        chunkScript(
+          l,
+          [],
+          `sh -c ${shellQuote("su -c id chunklegacy </dev/null 2>&1; true")}`,
+          1024 * 1024,
+        ),
+      );
+      const [, cleanup] = marker(res.stdout) ?? [];
+      expect(cleanup).toBe("0");
+      const out = (await root(`cat ${shellQuote(resultPath(l.runId))}`)).stdout;
+      expect(out).not.toContain("uid=2002(chunklegacy)");
+      expect(out).toMatch(/Authentication failure/);
+      const fields = await root(
+        "awk -F: '$2 != \"x\"' /etc/passwd /etc/group | wc -l; grep '^chunklegacy:' /etc/shadow | cut -d: -f2",
+      );
+      expect(fields.stdout.trim()).toBe("0\n!");
+      await root(`rm -f ${shellQuote(resultPath(l.runId))}`);
+    }, 120_000);
+
     it("removes the inbox when the chunk never started, with exit 0 for a user that never existed", async () => {
       const l = fresh();
       const secret = `sk_a_${randomBytes(8).toString("hex")}`;
