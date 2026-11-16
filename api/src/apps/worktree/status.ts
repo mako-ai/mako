@@ -22,6 +22,7 @@ import {
 } from "../repository.service";
 
 import {
+  boxIsRunning,
   getSandboxProvider,
   type SandboxExecContext,
 } from "../sandbox/provider";
@@ -93,7 +94,10 @@ export async function afterTerminalSession(
     const ctx: SandboxExecContext = {
       sessionKey: sessionKeyFor(doc.workspaceId, doc.userId),
     };
-    if (!(await getSandboxProvider().hasSession(ctx))) return;
+    // A pty that died because the box paused must not resume it to settle.
+    // Commits typed before the pause are pushed on the next real use, or by
+    // the paused-box reaper before it deletes the box.
+    if (!(await boxIsRunning(ctx))) return;
     if (!(await boxHasRepo(ctx))) return;
 
     const { branch } = await boxHead(ctx);
@@ -205,10 +209,10 @@ export async function worktreeStatus(
     };
   }
 
+  // Running, not present: the sidebar polls this every 30 s, and reading a
+  // paused box resumes it. A sleeping box reads as offline (last commit).
   const live =
-    (await getSandboxProvider()
-      .hasSession(ctx)
-      .catch(() => false)) &&
+    (await boxIsRunning(ctx).catch(() => false)) &&
     (await boxHasValidCheckout(ctx).catch(() => false));
 
   if (!live) {

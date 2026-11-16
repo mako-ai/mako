@@ -24,8 +24,14 @@ import { sh } from "../box";
 const DEV_PORT_BASE = 5173;
 export const PORTS_REGISTRY = "/tmp/mako-dev-ports.json";
 
-/** How long to hold the sandbox open past the last preview request. */
-export const DEV_SESSION_KEEPALIVE_MS = 30 * 60 * 1000;
+/**
+ * E2B's own backstop timeout after a preview request. It used to be 30
+ * minutes, which held every box open half an hour past the last look at a
+ * preview. A pause keeps memory, so the dev server survives it and the next
+ * look resumes the same vite; the idle sweep (box-idle.service.ts) decides
+ * the real pause from real activity. Equal to the sweep's default window.
+ */
+export const DEV_SESSION_KEEPALIVE_MS = 10 * 60 * 1000;
 
 /**
  * At most this many dev servers run at once per box (apps.md §13.9).

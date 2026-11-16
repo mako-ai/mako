@@ -8,6 +8,7 @@ import {
 } from "@mui/material";
 import { useAppsStore } from "../../store/appsStore";
 import { TAB_KIND_ICONS } from "../../lib/entity-icons";
+import { usePreviewActivity } from "./usePreviewActivity";
 
 /** Streams the dev boot log (npm install → vite) while a server starts. */
 export function DevBootLog({
@@ -177,6 +178,8 @@ export function DevPreviewPane({
   hiddenPaused: boolean;
   previewNonce: number;
 }) {
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const previewActivity = usePreviewActivity(workspaceId, appId, frameRef);
   return preview?.building && preview.publishing ? (
     <BuildLogPanel text={preview.buildOutput ?? ""} />
   ) : preview?.building ? (
@@ -201,6 +204,9 @@ export function DevPreviewPane({
   ) : preview?.url ? (
     <iframe
       key={`dev-${previewNonce}`}
+      ref={frameRef}
+      // Pointing into or clicking the preview is real use of the sandbox.
+      onPointerEnter={previewActivity.onPointerEnter}
       title="App preview"
       src={preview.url}
       // The two preview tiers need DIFFERENT sandboxes.

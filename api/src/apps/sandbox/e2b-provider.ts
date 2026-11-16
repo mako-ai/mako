@@ -148,9 +148,11 @@ const connecting = new Map<string, Promise<Sandbox>>();
 function connectSession(sessionKey: string): Promise<Sandbox> {
   const inflight = connecting.get(sessionKey);
   if (inflight) return inflight;
-  const run = connectSessionNow(sessionKey).finally(() =>
-    connecting.delete(sessionKey),
-  );
+  const run = connectSessionNow(sessionKey).finally(() => {
+    connecting.delete(sessionKey);
+    // A connect resumes a paused box: "not running" no longer holds.
+    runningAnswer.delete(sessionKey);
+  });
   connecting.set(sessionKey, run);
   return run;
 }
@@ -796,6 +798,54 @@ async function sessionExists(sessionKey: string): Promise<boolean> {
   }
 }
 
+/**
+ * "Running?" answers, briefly, for background polls (provider.ts isRunning).
+ *
+ * Unlike sessionExists this never trusts the in-process `sessions` map: that
+ * map still names a box after E2B paused it, and the exec that followed a
+ * stale yes is exactly what resumed it. Both answers are cached for a beat
+ * so a poll burst is one list call.
+ */
+const runningAnswer = new Map<string, { running: boolean; until: number }>();
+const RUNNING_ANSWER_TTL_MS = 10_000;
+
+async function sessionRunning(sessionKey: string): Promise<boolean> {
+  const cached = runningAnswer.get(sessionKey);
+  if (cached && cached.until > Date.now()) return cached.running;
+  try {
+    const paginator = Sandbox.list({
+      apiKey: apiKey(),
+      query: {
+        metadata: { makoAppsSessionKey: sessionKey },
+        state: ["running"],
+      },
+      limit: 1,
+    });
+    const running =
+      paginator.hasNext && (await paginator.nextItems()).length > 0;
+    runningAnswer.set(sessionKey, {
+      running,
+      until: Date.now() + RUNNING_ANSWER_TTL_MS,
+    });
+    return running;
+  } catch {
+    // A poll that cannot tell answers "offline"; the next beat asks again.
+    return false;
+  }
+}
+
+/**
+ * The idle sweep paused this session's box: drop what this process believed
+ * about it, so its own polls stop answering "running" from memory.
+ */
+export function noteSessionPaused(sessionKey: string): void {
+  runningAnswer.set(sessionKey, {
+    running: false,
+    until: Date.now() + RUNNING_ANSWER_TTL_MS,
+  });
+  keepAliveUntil.delete(sessionKey);
+}
+
 export const e2bSandboxProvider: SandboxProvider = {
   id: "e2b",
   exec: execE2b,
@@ -803,6 +853,7 @@ export const e2bSandboxProvider: SandboxProvider = {
   root: () => REMOTE_ROOT,
   scratch: () => "/tmp",
   hasSession: ctx => sessionExists(ctx.sessionKey),
+  isRunning: ctx => sessionRunning(ctx.sessionKey),
   describe: async ctx => {
     try {
       const paginator = Sandbox.list({
