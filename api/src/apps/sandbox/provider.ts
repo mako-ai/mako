@@ -55,12 +55,21 @@ export interface SandboxExecOptions {
    * Ignored by providers without real users (see `supportsRunUsers`).
    */
   asRoot?: boolean;
+  /**
+   * Fail with a "sandbox gone" error unless the session is still this exact
+   * sandbox. A connector run pins the box it started in: if that box was
+   * killed and the key now names a new one, the run must fail, never carry
+   * on in a box that holds none of its state.
+   */
+  expectSandboxId?: string;
 }
 
 /** Options for a single file transfer. */
 export interface SandboxFileOptions {
   /** Read or write as root; see {@link SandboxExecOptions.asRoot}. */
   asRoot?: boolean;
+  /** See {@link SandboxExecOptions.expectSandboxId}. */
+  expectSandboxId?: string;
 }
 
 /** Identity of the sandbox a command runs against. */
@@ -77,6 +86,8 @@ export interface SandboxExecResult {
   durationMs: number;
   /** True when stdout/stderr were truncated to the output cap. */
   truncated: boolean;
+  /** The sandbox that ran it, where the provider has such ids (E2B). */
+  sandboxId?: string;
 }
 
 /** Lifecycle calls the connector box scheduler makes on a session. */

@@ -29,7 +29,7 @@ const e2b = vi.hoisted(() => {
       hasNext: true,
       nextItems: vi.fn(async () => page.items),
     })),
-    connect: vi.fn(async () => {
+    connect: vi.fn(async (_id: string): Promise<typeof sandbox> => {
       throw new SandboxNotFoundError("Sandbox is probably not running anymore");
     }),
     create: vi.fn(async () => sandbox),
@@ -123,5 +123,29 @@ describe("legacy sync box kills", () => {
     await expect(
       e2bSandboxProvider.destroySession?.("worktree-1"),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("a run pinned to its sandbox", () => {
+  it("refuses a sync box that was replaced under the run", async () => {
+    // The key now resolves to a new box; the run started in sbx_old, gone.
+    e2b.page.items = [{ sandboxId: "sbx_new" }];
+    e2b.Sandbox.connect.mockImplementation(async (id: string) => {
+      if (id === "sbx_old") {
+        throw new e2b.SandboxNotFoundError(
+          "Sandbox is probably not running anymore",
+        );
+      }
+      return { ...e2b.sandbox, sandboxId: id };
+    });
+    const ctx = { sessionKey: "connector-sync:v2:ws-pinned" };
+
+    await expect(
+      e2bSandboxProvider.exec(ctx, "true", { expectSandboxId: "sbx_old" }),
+    ).rejects.toThrow(/was replaced or is gone/);
+    await expect(
+      e2bSandboxProvider.readFile(ctx, "/x", { expectSandboxId: "sbx_old" }),
+    ).rejects.toThrow(/was replaced or is gone/);
+    expect(e2b.Sandbox.create).not.toHaveBeenCalled();
   });
 });

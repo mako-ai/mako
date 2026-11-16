@@ -160,6 +160,36 @@ const connecting = new Map<string, Promise<Sandbox>>();
  */
 const templateOverrides = new Map<string, string>();
 
+/**
+ * Connect, and refuse a sandbox other than the one the caller pinned.
+ * Never creates a box for a pinned call: a pinned box that is gone is gone.
+ */
+async function connectPinned(
+  sessionKey: string,
+  expectSandboxId: string | undefined,
+): Promise<Sandbox> {
+  if (!expectSandboxId) return connectSession(sessionKey);
+  if (sessions.get(sessionKey) !== expectSandboxId) {
+    try {
+      const sandbox = await Sandbox.connect(expectSandboxId, {
+        apiKey: apiKey(),
+      });
+      return sandbox;
+    } catch {
+      throw new SandboxNotFoundError(
+        `Sandbox ${expectSandboxId} for ${sessionKey} was replaced or is gone.`,
+      );
+    }
+  }
+  const sandbox = await connectSession(sessionKey);
+  if (sandbox.sandboxId !== expectSandboxId) {
+    throw new SandboxNotFoundError(
+      `Sandbox ${expectSandboxId} for ${sessionKey} was replaced by ${sandbox.sandboxId}.`,
+    );
+  }
+  return sandbox;
+}
+
 /** Keys boxLifecycle.create is creating right now: the only ones allowed to. */
 const creatingBoxes = new Set<string>();
 
@@ -302,7 +332,7 @@ async function execE2b(
     APPS_EXEC_MAX_TIMEOUT_MS,
   );
   const startedAt = Date.now();
-  const sandbox = await connectSession(ctx.sessionKey);
+  const sandbox = await connectPinned(ctx.sessionKey, options.expectSandboxId);
   // Keep the sandbox alive long enough for this command + sync overhead —
   // without clobbering a longer hold someone asked keepAlive() for.
   await sandbox.setTimeout(
@@ -390,6 +420,7 @@ async function execE2b(
     timedOut,
     durationMs: Date.now() - startedAt,
     truncated,
+    sandboxId: sandbox.sandboxId,
   };
 }
 
@@ -440,7 +471,7 @@ async function readFileE2b(
   remotePath: string,
   options?: SandboxFileOptions,
 ): Promise<Uint8Array> {
-  const sandbox = await connectSession(ctx.sessionKey);
+  const sandbox = await connectPinned(ctx.sessionKey, options?.expectSandboxId);
   const data = await sandbox.files.read(remotePath, {
     format: "bytes",
     user: userFor(options),
@@ -454,7 +485,7 @@ async function writeFileE2b(
   bytes: Uint8Array,
   options?: SandboxFileOptions,
 ): Promise<void> {
-  const sandbox = await connectSession(ctx.sessionKey);
+  const sandbox = await connectPinned(ctx.sessionKey, options?.expectSandboxId);
   await sandbox.files.write(remotePath, bytes.buffer as ArrayBuffer, {
     user: userFor(options),
   });

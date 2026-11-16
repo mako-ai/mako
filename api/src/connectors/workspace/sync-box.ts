@@ -442,8 +442,11 @@ export interface OpenRun {
   dir: string;
   /** The run's Unix user, or null where the provider has no real users. */
   user: string | null;
-  /** Options for the API's own file and exec calls for this run. */
-  owner: { asRoot: true } | undefined;
+  /**
+   * Options for the API's own file and exec calls for this run: as root,
+   * and pinned to the sandbox the run was set up in.
+   */
+  owner: { asRoot: true; expectSandboxId?: string } | undefined;
   outputFile: string;
   boundedFile: string;
   /** Where to write the input whose final path is `input` (isolated: the root-only stage). */
@@ -554,6 +557,7 @@ export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
 
   await preflight(ctx);
   let layout: RunLayout | null = null;
+  let pinned: string | undefined;
   let lastError = "";
   // A random UID can collide with one in use; a fresh name and UID fixes it.
   for (let attempt = 0; attempt < 3 && !layout; attempt++) {
@@ -567,8 +571,10 @@ export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
       timeoutMs: 30_000,
       asRoot: true,
     });
-    if (setup.exitCode === 0) layout = candidate;
-    else lastError = (setup.stderr || setup.stdout).trim().slice(0, 2000);
+    if (setup.exitCode === 0) {
+      layout = candidate;
+      pinned = setup.sandboxId;
+    } else lastError = (setup.stderr || setup.stdout).trim().slice(0, 2000);
   }
   if (!layout) {
     throw new Error(
@@ -580,7 +586,7 @@ export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
   return {
     dir: l.dir,
     user: l.user,
-    owner: { asRoot: true },
+    owner: { asRoot: true, expectSandboxId: pinned },
     outputFile: l.outputFile,
     boundedFile: l.boundedFile,
     stagePath: input => stagedPath(l, input),
@@ -592,6 +598,7 @@ export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
         const result = await provider.exec(ctx, cleanupScript(l), {
           timeoutMs: 60_000,
           asRoot: true,
+          expectSandboxId: pinned,
         });
         if (result.exitCode === 0 && !result.timedOut) return;
         detail = result.timedOut
@@ -775,6 +782,14 @@ export async function runConnectorCommand(input: {
       { ...run.owner, timeoutMs: 30_000 },
     );
     const sizeText = snapshot.stdout.trim();
+    // Root opens the output file before an isolated connector starts, so it
+    // exists whatever the connector did. Missing means the box under the run
+    // was replaced: fail the chunk rather than report a short, empty success.
+    if (sizeText === "missing" && run.user) {
+      throw new Error(
+        "The connector's output is missing: its box was replaced during the run.",
+      );
+    }
     if (sizeText !== "missing") {
       const outputBytes = Number(sizeText);
       if (!Number.isSafeInteger(outputBytes) || outputBytes < 0) {

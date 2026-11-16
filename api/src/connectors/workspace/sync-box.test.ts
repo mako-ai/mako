@@ -483,3 +483,75 @@ describe("isolation preflight", () => {
     ).toBe(false);
   });
 });
+
+describe("a box replaced under a run", () => {
+  const ctx = { sessionKey: "connector-sync:v2:ws1" };
+  beforeEach(() => {
+    sandbox.supportsRunUsers = true;
+    sandbox.exec.mockReset();
+    sandbox.readFile.mockReset();
+    sandbox.writeFile.mockReset();
+  });
+  afterEach(() => {
+    sandbox.supportsRunUsers = undefined;
+  });
+
+  it("pins every call after setup to the sandbox the run started in", async () => {
+    const protocol = `${JSON.stringify({ type: "STATE", state: {} })}\n`;
+    sandbox.exec.mockImplementation((_ctx, command: string) => {
+      if (command.includes("useradd -l")) {
+        return Promise.resolve({ ...result(), sandboxId: "sbx_1" });
+      }
+      if (command.includes("head -c")) {
+        return Promise.resolve(result(`${Buffer.byteLength(protocol)}\n`));
+      }
+      return Promise.resolve(result());
+    });
+    sandbox.readFile.mockResolvedValue(new TextEncoder().encode(protocol));
+
+    await runConnectorCommand({
+      ctx,
+      runtimeId: "runtime",
+      connectorDir: "/x",
+      command: "read",
+      config: { apiKey: "secret" },
+    });
+
+    const after = sandbox.exec.mock.calls.filter(
+      ([, command]) =>
+        String(command).includes("mako-connector.js") ||
+        String(command).includes("head -c") ||
+        String(command).includes("kill -9 -1"),
+    );
+    expect(after).toHaveLength(3);
+    for (const [, , options] of after) {
+      expect(options).toMatchObject({ asRoot: true, expectSandboxId: "sbx_1" });
+    }
+    const config = sandbox.writeFile.mock.calls.find(([, file]) =>
+      String(file).endsWith("/config.json"),
+    );
+    expect(config?.[3]).toEqual({ asRoot: true, expectSandboxId: "sbx_1" });
+    expect(sandbox.readFile.mock.calls[0]?.[2]).toEqual({
+      asRoot: true,
+      expectSandboxId: "sbx_1",
+    });
+  });
+
+  it("fails the chunk when the output file is missing after a clean exit", async () => {
+    sandbox.exec.mockImplementation((_ctx, command: string) =>
+      Promise.resolve(
+        command.includes("head -c") ? result("missing\n") : result(),
+      ),
+    );
+
+    await expect(
+      runConnectorCommand({
+        ctx,
+        runtimeId: "runtime",
+        connectorDir: "/x",
+        command: "read",
+      }),
+    ).rejects.toThrow(/box was replaced/);
+    expect(sandbox.readFile).not.toHaveBeenCalled();
+  });
+});
