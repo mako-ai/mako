@@ -7,7 +7,13 @@
  */
 import assert from "node:assert/strict";
 
-import { listWorkflowRuns, readWorkflowFlow, retryRun, shapeRun } from "./runs";
+import {
+  endedStatusOf,
+  listWorkflowRuns,
+  readWorkflowFlow,
+  retryRun,
+  shapeRun,
+} from "./runs";
 
 const RUN = "22222222-2222-2222-2222-222222222222";
 const WORKFLOW = "33333333-3333-3333-3333-333333333333";
@@ -51,6 +57,8 @@ const detail = {
 // of earlier commits come first), one that runs all the time, and `flow`,
 // whose only run is older than a list's worth of the busy one's.
 const BUSY = "44444444-4444-4444-4444-444444444444";
+const GHOST = "55555555-5555-5555-5555-555555555555";
+const GHOST_RUN = "66666666-6666-6666-6666-666666666666";
 const tenantWorkflows = [
   ...Array.from({ length: 60 }, (_, i) => ({
     name: `gone-${i}`,
@@ -58,8 +66,23 @@ const tenantWorkflows = [
   })),
   { name: "busy", metadata: { id: BUSY } },
   { name: "flow", metadata: { id: WORKFLOW } },
+  { name: "ghost", metadata: { id: GHOST } },
 ];
-const tenantRuns = [
+const tenantRuns: Array<Record<string, unknown> & { workflowId: string }> = [
+  {
+    metadata: { id: GHOST_RUN },
+    workflowId: GHOST,
+    workflowName: "ghost",
+    status: "RUNNING",
+    startedAt: "2026-11-16T16:30:00Z",
+  },
+  {
+    metadata: { id: "77777777-7777-7777-7777-777777777777" },
+    workflowId: GHOST,
+    workflowName: "ghost",
+    status: "COMPLETED",
+    startedAt: "2026-11-16T16:00:00Z",
+  },
   ...Array.from({ length: 150 }, (_, i) => ({
     metadata: { id: `88888888-8888-8888-8888-${String(i).padStart(12, "0")}` },
     workflowId: BUSY,
@@ -103,6 +126,45 @@ assert.deepEqual(
   [[], [], []],
 );
 
+// A run Hatchet left open: its status says RUNNING, every step of it ended.
+// Mako reads how it ended from the steps, once they have been still for ten
+// minutes; a run between two steps, or with a step under way, stays open.
+const NOW = Date.parse("2026-11-16T20:00:00Z");
+const ended = (status: string, at = "2026-11-16T16:40:00Z", stepId = "s1") => ({
+  status,
+  stepId,
+  finishedAt: at,
+});
+const open = (tasks: Array<Record<string, unknown>>, shape = detail.shape) =>
+  endedStatusOf({ run: { status: "RUNNING" }, tasks, shape }, NOW);
+assert.equal(open([ended("COMPLETED"), ended("FAILED")]), "FAILED");
+assert.equal(open([ended("COMPLETED"), ended("CANCELLED")]), "CANCELLED");
+// Every step ran and completed: the run did.
+assert.equal(
+  open([
+    ended("COMPLETED", undefined, "s1"),
+    ended("COMPLETED", undefined, "s2"),
+    ended("COMPLETED", undefined, "s3"),
+  ]),
+  "COMPLETED",
+);
+// Steps that never started: the run did not complete.
+assert.equal(open([ended("COMPLETED")]), "CANCELLED");
+// Still open: a step under way, a step that ended a moment ago (the next
+// one is about to be queued), no step yet (waiting its turn), no time known.
+assert.equal(open([ended("COMPLETED"), { status: "RUNNING" }]), null);
+assert.equal(open([ended("FAILED", "2026-11-16T19:55:00Z")]), null);
+assert.equal(open([]), null);
+assert.equal(open([{ status: "FAILED", stepId: "s1" }]), null);
+// A run Hatchet closed is left as Hatchet says.
+assert.equal(
+  endedStatusOf(
+    { run: { status: "COMPLETED" }, tasks: [ended("FAILED")] },
+    NOW,
+  ),
+  null,
+);
+
 void (async () => {
   // Retry: from a step replays that step's task; without, the run itself.
   const sent: Array<{ url: string; body?: unknown }> = [];
@@ -115,28 +177,33 @@ void (async () => {
     const page = <T>(rows: T[]) => ({
       rows: rows.slice(0, Number(searchParams.get("limit") ?? 50)),
     });
-    const body = String(url).includes("/workflow-runs/")
-      ? detail
-      : pathname.endsWith("/workflow-runs")
-        ? // As Hatchet lists them: newest first, of the workflows asked for.
-          page(
-            tenantRuns.filter(run =>
-              searchParams.getAll("workflow_ids").includes(run.workflowId),
-            ),
-          )
-        : pathname.endsWith(`/tenants/${tenant.tenantId}/workflows`)
-          ? // As Hatchet pages them: 50 unless asked for more.
-            page(tenantWorkflows)
-          : String(url).endsWith(`/workflows/${WORKFLOW}/versions`)
-            ? {
-                workflowConfig: {
-                  Tasks: [
-                    { ReadableId: "select", Parents: [], Timeout: "60s" },
-                    { ReadableId: "write", Parents: ["select"], Retries: 2 },
-                  ],
-                },
-              }
-            : {};
+    const body = String(url).includes(`/workflow-runs/${GHOST_RUN}`)
+      ? {
+          run: { metadata: { id: GHOST_RUN }, status: "RUNNING" },
+          tasks: [ended("COMPLETED"), ended("FAILED")],
+        }
+      : String(url).includes("/workflow-runs/")
+        ? detail
+        : pathname.endsWith("/workflow-runs")
+          ? // As Hatchet lists them: newest first, of the workflows asked for.
+            page(
+              tenantRuns.filter(run =>
+                searchParams.getAll("workflow_ids").includes(run.workflowId),
+              ),
+            )
+          : pathname.endsWith(`/tenants/${tenant.tenantId}/workflows`)
+            ? // As Hatchet pages them: 50 unless asked for more.
+              page(tenantWorkflows)
+            : String(url).endsWith(`/workflows/${WORKFLOW}/versions`)
+              ? {
+                  workflowConfig: {
+                    Tasks: [
+                      { ReadableId: "select", Parents: [], Timeout: "60s" },
+                      { ReadableId: "write", Parents: ["select"], Retries: 2 },
+                    ],
+                  },
+                }
+              : {};
     return new Response(JSON.stringify(body), { status: 200 });
   }) as typeof fetch;
 
@@ -171,6 +238,18 @@ void (async () => {
     [[RUN, "flow", "COMPLETED"]],
   );
   assert.equal((await listWorkflowRuns(tenant, "busy", 100)).length, 100);
+  // A run Hatchet left open is listed as it ended; it is read once.
+  const before = sent.length;
+  assert.deepEqual(
+    (await listWorkflowRuns(tenant, "ghost", 100)).map(run => run.status),
+    ["FAILED", "COMPLETED"],
+  );
+  await listWorkflowRuns(tenant, "ghost", 100);
+  assert.equal(
+    sent.slice(before).filter(s => s.url.includes(GHOST_RUN)).length,
+    1,
+  );
+
   // A workflow Hatchet does not know has none, and is not asked about.
   const asked = sent.length;
   assert.deepEqual(await listWorkflowRuns(tenant, "never-deployed", 100), []);
