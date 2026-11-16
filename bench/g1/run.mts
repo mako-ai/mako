@@ -81,16 +81,48 @@ const created = new Set<string>();
 const killed = new Set<string>();
 const snapshots = new Set<string>();
 
+/**
+ * Kill a box, and count it as killed only when E2B confirms it is gone.
+ * A failed kill stays out of `killed`, so `boxes.leftRunning` shows the leak.
+ */
 async function kill(id: string): Promise<void> {
   try {
+    // Resolves false when the box was already gone; either way it no longer holds a slot.
     await Sandbox.kill(id, { apiKey });
-  } catch {
-    /* already gone */
+    killed.add(id);
+  } catch (error) {
+    if (error instanceof e2b.SandboxNotFoundError) killed.add(id);
+    else log(`kill ${id} failed:`, error instanceof Error ? error.message : String(error));
   }
-  killed.add(id);
+}
+
+// ---------------------------------------------------------------------------
+// Headroom. The key's E2B account is shared with live app sessions: on
+// 2026-11-16 it capped concurrent sandboxes at 20, and apps held 17-19. Every
+// box this script starts takes a slot an app preview may need, so the free
+// slots are counted before EVERY box, not once at startup.
+// ---------------------------------------------------------------------------
+const ACCOUNT_CAP = Number(arg("account-cap", "20"));
+/** Never leave fewer free slots than this for app sessions. */
+const FLOOR = Number(arg("floor", "3"));
+
+async function runningCount(): Promise<number> {
+  let running = 0;
+  const paginator = Sandbox.list({ apiKey, query: { state: ["running"] }, limit: 100 });
+  while (paginator.hasNext) running += (await paginator.nextItems()).length;
+  return running;
+}
+
+/** Throw (ending the phase) unless `need` more boxes leave at least FLOOR slots free. */
+async function ensureHeadroom(need = 1): Promise<void> {
+  const free = ACCOUNT_CAP - (await runningCount());
+  if (free - need < FLOOR) {
+    throw new Error(`Stopped: ${free} free sandbox slots of ${ACCOUNT_CAP}; starting ${need} more would leave fewer than ${FLOOR} for app sessions.`);
+  }
 }
 
 async function createBox(template = TEMPLATE): Promise<{ box: any; ms: number }> {
+  await ensureHeadroom();
   const t0 = performance.now();
   const box = await Sandbox.create(template, {
     apiKey,
@@ -193,6 +225,8 @@ const SOURCE_SHA = (await import("node:crypto"))
 /** Prepare a sync box (provider-managed, keyed like production) and return its ctx. */
 async function prepareSyncBox(key: string) {
   const ctx = { sessionKey: `connector-sync:${RUN_ID}-${key}` };
+  // The provider creates the box on first use; check room before it does.
+  if (!(await provider.hasSession(ctx))) await ensureHeadroom();
   const runtimeId: string = await resolver.ensureConnectorRuntime(ctx);
   const dir: string = await syncBox.materializeConnector({
     ctx,
@@ -354,6 +388,7 @@ async function phaseSnapshot() {
     let forkError: string | null = null;
     for (let i = 0; i < Math.min(N, 10); i++) {
       try {
+        await ensureHeadroom();
         t0 = performance.now();
         const [fork] = await (source as any).fork({ count: 1, timeoutMs: 5 * 60_000 });
         const ms = performance.now() - t0;
@@ -430,6 +465,16 @@ async function phaseExec() {
 async function phaseChunk() {
   const W = await warmBox();
   // Local subprocess baseline: same adapter, same runConnectorCommand, local provider.
+  // getSandboxProvider() reads this variable on every call, so it is put back
+  // in a `finally`: a throw here must not leave later phases on the laptop.
+  try {
+    await chunkBody(W);
+  } finally {
+    process.env.APPS_SANDBOX_PROVIDER = "e2b";
+  }
+}
+
+async function chunkBody(W: Awaited<ReturnType<typeof prepareSyncBox>>) {
   process.env.APPS_SANDBOX_PROVIDER = "local";
   const localCtx = { sessionKey: `connector-sync:${RUN_ID}-local` };
   const localRuntime: string = await resolver.ensureConnectorRuntime(localCtx);
@@ -496,7 +541,6 @@ async function phaseChunk() {
     results.chunk = out;
     save();
   }
-  process.env.APPS_SANDBOX_PROVIDER = "e2b";
   results.chunk = out;
 }
 
@@ -697,23 +741,41 @@ const PHASE_FNS: Record<string, () => Promise<void>> = {
 };
 
 log(`G1 run ${RUN_ID}: e2b ${E2B_VERSION}, template ${TEMPLATE}, phases ${PHASES.join(",")}`);
+const started = performance.now();
 
 // The key's E2B account is shared with live app sessions. On 2026-11-16 it
 // capped concurrent sandboxes at 20, and 17-19 were in use by apps. This run
 // holds up to 2 boxes (5 with `parallel`), so refuse to start without room.
 {
-  const cap = Number(arg("account-cap", "20"));
   const minFree = Number(arg("min-free", PHASES.includes("parallel") ? "10" : "6"));
-  let running = 0;
-  const paginator = Sandbox.list({ apiKey, query: { state: ["running"] }, limit: 100 });
-  while (paginator.hasNext) running += (await paginator.nextItems()).length;
-  log(`account: ${running} running sandboxes of a ${cap} cap`);
-  if (cap - running < minFree) {
-    console.error(`Refusing to run: ${cap - running} free slots, need ${minFree}. Use an E2B team that serves no app sessions.`);
+  const running = await runningCount();
+  log(`account: ${running} running sandboxes of a ${ACCOUNT_CAP} cap`);
+  if (ACCOUNT_CAP - running < minFree) {
+    console.error(`Refusing to run: ${ACCOUNT_CAP - running} free slots, need ${minFree}. Use an E2B team that serves no app sessions.`);
     process.exit(3);
   }
 }
-const started = performance.now();
+
+// Ctrl-C and SIGTERM skip a `finally`. Without these, createBox boxes hold a
+// slot for up to 10 minutes and provider-made boxes pause with memory forever.
+let finishing: Promise<void> | null = null;
+async function finish(code: number): Promise<never> {
+  finishing ??= (async () => {
+    await sweep();
+    results.boxes = { created: created.size, killed: killed.size, leftRunning: [...created].filter(id => !killed.has(id)) };
+    results.totalSeconds = Math.round((performance.now() - started) / 1000);
+    save();
+    log(`boxes created ${created.size}, killed ${killed.size}; results in ${OUT}`);
+  })();
+  await finishing;
+  process.exit(code);
+}
+for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
+  process.once(signal, () => {
+    log(`${signal}: killing this run's boxes before exiting`);
+    void finish(code);
+  });
+}
 try {
   for (const phase of PHASES) {
     const t0 = performance.now();
@@ -727,10 +789,5 @@ try {
     save();
   }
 } finally {
-  await sweep();
-  results.boxes = { created: created.size, killed: killed.size, leftRunning: [...created].filter(id => !killed.has(id)) };
-  results.totalSeconds = Math.round((performance.now() - started) / 1000);
-  save();
-  log(`boxes created ${created.size}, killed ${killed.size}; results in ${OUT}`);
-  process.exit(0);
+  await finish(0);
 }

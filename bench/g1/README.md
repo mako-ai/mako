@@ -23,8 +23,9 @@ reaches the team that runs live app sessions. On 16 Nov 2026 that team capped
 concurrent sandboxes at 20, and apps held 17–19 of them. Every box this script
 starts takes a slot an app preview may need. The script counts running
 sandboxes first and refuses to start with fewer than 6 free slots (10 with
-`parallel`). Override with `--account-cap` and `--min-free` only on a team of
-your own.
+`parallel`). It counts again before every box it creates, and stops the phase
+when a new box would leave fewer than 3 free slots (`--floor`). Override
+`--account-cap`, `--min-free` and `--floor` only on a team of your own.
 
 You need Node 24, `pnpm install` at the repo root, and an `E2B_API_KEY` for
 local development (`pnpm secrets:pull` writes it into `.env`). The script reads
@@ -44,8 +45,10 @@ A full run takes about 30 minutes and creates about 60 short-lived boxes. It
 holds at most 2 boxes at once, or 5 during `parallel`.
 Every box carries the run's tag (`benchG1` metadata, or a
 `connector-sync:g1-…` session key). The script kills every box it made in a
-`finally`, sweeps the account for anything left with its tag, and deletes the
-snapshot it took. The results file records `boxes.created` and `boxes.killed`.
+`finally`, and also on Ctrl-C or SIGTERM. It then sweeps the account for
+anything left with its tag and deletes the snapshot it took. The results file
+records `boxes.created`, `boxes.killed` and `boxes.leftRunning`. A box counts as
+killed only when E2B confirms it.
 
 ## What each phase measures
 
