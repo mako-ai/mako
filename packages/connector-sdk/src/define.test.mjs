@@ -13,6 +13,54 @@ test("entity names may be snake_case, as Airbyte stream names are", () => {
   assert.deepEqual(connector.entityNames(), ["payment_intents", "web-hooks"]);
 });
 
+test("a sub-entity is parent:Type, as Close activities are", () => {
+  const connector = defineConnector({
+    name: "close",
+    version: "1.0.0",
+    entities: { "activities:Call": entity, "activities:EmailThread": entity },
+  });
+  assert.deepEqual(connector.entityNames(), [
+    "activities:Call",
+    "activities:EmailThread",
+  ]);
+  for (const bad of [
+    "Activities:Call",
+    "activities:",
+    "activities:Call:x",
+    ":Call",
+  ]) {
+    assert.throws(
+      () =>
+        defineConnector({
+          name: "close",
+          version: "1",
+          entities: { [bad]: entity },
+        }),
+      /must be lowercase/,
+      bad,
+    );
+  }
+});
+
+test("two entities that land on one table are refused", () => {
+  for (const pair of [
+    ["activities:Call", "call_activities"],
+    ["activities:Call", "activities:call"],
+    ["x:ABC", "x:Abc"],
+  ]) {
+    assert.throws(
+      () =>
+        defineConnector({
+          name: "close",
+          version: "1",
+          entities: Object.fromEntries(pair.map(name => [name, entity])),
+        }),
+      /would both write to table/,
+      pair.join(" + "),
+    );
+  }
+});
+
 test("entity names stay lowercase, and the connector name stays a slug", () => {
   assert.throws(
     () =>

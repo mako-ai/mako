@@ -1,0 +1,11 @@
+# Close CRM, as a connector folder (RFC connector-runtime, iteration 5).
+#
+# Production still runs the in-process connector in api/src/connectors/close.
+# No flow uses this folder. The parity harness in fixtures/ holds the two to
+# the same output.
+runtime: node
+entry: connector.ts
+page:
+  vendor: Close
+  category: crm
+  docs: https://developer.close.com/

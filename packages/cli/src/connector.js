@@ -715,7 +715,11 @@ export async function connector(ctx, positional, flags, io) {
         const types = declaredTypes(declared[field]);
         if (types.length === 0) continue;
         const seen = observedType(value);
-        if (seen && !types.includes(seen)) {
+        // JSON Schema's `number` includes integers: 7 is a valid number.
+        const accepted =
+          types.includes(seen) ||
+          (seen === "integer" && types.includes("number"));
+        if (seen && !accepted) {
           mismatches.push(
             `${field} declared ${types.join("|")} but emitted ${seen}`,
           );

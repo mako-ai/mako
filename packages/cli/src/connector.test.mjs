@@ -114,6 +114,32 @@ test("a declared type the records contradict fails", async () => {
   assert.match(output, /count declared string but emitted integer/);
 });
 
+test("a whole number in a number field is a number", async () => {
+  const dir = scratch({
+    "connector.yaml": "runtime: node\n",
+    "config.json": JSON.stringify({}),
+    "connector.ts": `
+      import { defineConnector } from ${JSON.stringify(SDK)};
+      export default defineConnector({
+        name: "counts", version: "1.0.0",
+        config: { properties: {} },
+        entities: {
+          rows: {
+            primaryKey: ["id"],
+            schema: { id: "string", duration: "number" },
+            async *read() { yield { records: [{ id: "a", duration: 60 }], hasMore: false }; },
+          },
+        },
+      });
+    `,
+  });
+  const { code, output } = await runTest(dir, {
+    config: path.join(dir, "config.json"),
+  });
+  assert.doesNotMatch(output, /declared number but emitted integer/);
+  assert.equal(code, 0, output);
+});
+
 test("a folder without connector.yaml is refused, since Mako would never find it", async () => {
   const dir = scratch({ "connector.ts": "export default {};\n" });
   const { code, output } = await runTest(dir);

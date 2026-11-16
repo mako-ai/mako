@@ -14,15 +14,19 @@ import { paginate } from "./paginate.js";
 
 const SLUG = /^[a-z][a-z0-9-]*$/;
 // Entity names become table names, and Airbyte's own streams use snake_case
-// (`payment_intents`, `balance_transactions`). Hyphens stay legal too.
-const ENTITY_NAME = /^[a-z][a-z0-9_-]*$/;
+// (`payment_intents`, `balance_transactions`). Hyphens stay legal too. A
+// sub-entity is `parent:Type`, the form Mako's engine already uses for Close
+// activities (`activities:Call`, table `call_activities`).
+const ENTITY_NAME = /^[a-z][a-z0-9_-]*(:[A-Za-z][A-Za-z0-9]*)?$/;
 // What a read does with `state.mako.since`, in Mako's words (IncrementalMode).
 const INCREMENTAL_MODES = ["native", "client-filter", "created-anchor"];
 
 export function defineConnector(definition) {
   const problems = validateDefinition(definition);
   if (problems.length > 0) {
-    throw new Error(`Invalid connector definition:\n  - ${problems.join("\n  - ")}`);
+    throw new Error(
+      `Invalid connector definition:\n  - ${problems.join("\n  - ")}`,
+    );
   }
 
   const entities = definition.entities;
@@ -76,7 +80,8 @@ export function defineConnector(definition) {
     async check(ctx) {
       if (!definition.check) return { status: "SUCCEEDED" };
       const result = await definition.check(ctx);
-      if (result === false) return { status: "FAILED", message: "Connection test returned false" };
+      if (result === false)
+        return { status: "FAILED", message: "Connection test returned false" };
       return { status: "SUCCEEDED" };
     },
 
@@ -90,13 +95,18 @@ export function defineConnector(definition) {
     async discover(ctx) {
       const streams = [];
       for (const [name, entity] of Object.entries(entities)) {
-        const schema = entity.discoverSchema ? await entity.discoverSchema(ctx) : entity.schema;
+        const schema = entity.discoverSchema
+          ? await entity.discoverSchema(ctx)
+          : entity.schema;
         const stream = {
           name,
           json_schema: schemaToJsonSchema(schema),
-          supported_sync_modes: entity.cursorField ? ["full_refresh", "incremental"] : ["full_refresh"],
+          supported_sync_modes: entity.cursorField
+            ? ["full_refresh", "incremental"]
+            : ["full_refresh"],
         };
-        if (entity.primaryKey) stream.source_defined_primary_key = entity.primaryKey.map(k => [k]);
+        if (entity.primaryKey)
+          stream.source_defined_primary_key = entity.primaryKey.map(k => [k]);
         if (entity.cursorField) {
           stream.source_defined_cursor = true;
           stream.default_cursor_field = [entity.cursorField];
@@ -111,30 +121,63 @@ export function defineConnector(definition) {
   };
 }
 
+/** The engine's table name for an entity (`activities:Call` -> `call_activities`). */
+export function tableNameOf(name) {
+  if (!name.includes(":")) return name;
+  const [parent, type] = name.split(":");
+  return `${type.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()}_${parent}`;
+}
+
 function validateDefinition(definition) {
   const problems = [];
-  if (!definition || typeof definition !== "object") return ["the definition must be an object"];
+  if (!definition || typeof definition !== "object")
+    return ["the definition must be an object"];
   if (!definition.name || !SLUG.test(definition.name)) {
-    problems.push(`name must be a lowercase slug like "acme-crm" (got ${JSON.stringify(definition.name)})`);
+    problems.push(
+      `name must be a lowercase slug like "acme-crm" (got ${JSON.stringify(definition.name)})`,
+    );
   }
-  if (!definition.version) problems.push("version is required, e.g. \"1.0.0\"");
+  if (!definition.version) problems.push('version is required, e.g. "1.0.0"');
 
   const properties = definition.config?.properties;
-  if (properties && typeof properties !== "object") problems.push("config.properties must be an object");
+  if (properties && typeof properties !== "object")
+    problems.push("config.properties must be an object");
   for (const required of definition.config?.required ?? []) {
     if (!properties?.[required]) {
-      problems.push(`config.required lists "${required}" but config.properties has no such field`);
+      problems.push(
+        `config.required lists "${required}" but config.properties has no such field`,
+      );
     }
   }
 
   const entities = definition.entities;
-  if (!entities || typeof entities !== "object" || Object.keys(entities).length === 0) {
+  if (
+    !entities ||
+    typeof entities !== "object" ||
+    Object.keys(entities).length === 0
+  ) {
     problems.push("at least one entity is required");
     return problems;
   }
+  // The engine names a table `parent:Type` -> `type_parent` (snake_case,
+  // lowercase; `getEntityTableName`). Two entities that land on one table
+  // would overwrite each other, so they are refused here.
+  const tables = new Map();
+  for (const name of Object.keys(entities)) {
+    const table = tableNameOf(name);
+    if (tables.has(table)) {
+      problems.push(
+        `entities "${tables.get(table)}" and "${name}" would both write to table "${table}"`,
+      );
+    } else {
+      tables.set(table, name);
+    }
+  }
   for (const [name, entity] of Object.entries(entities)) {
     if (!ENTITY_NAME.test(name)) {
-      problems.push(`entity "${name}" must be lowercase letters, digits, "_" or "-"`);
+      problems.push(
+        `entity "${name}" must be lowercase letters, digits, "_" or "-", optionally followed by ":SubType"`,
+      );
     }
     if (typeof entity?.read !== "function") {
       problems.push(`entity "${name}" needs a read(ctx, state) generator`);
@@ -145,12 +188,18 @@ function validateDefinition(definition) {
       );
     }
     if (entity?.primaryKey && !Array.isArray(entity.primaryKey)) {
-      problems.push(`entity "${name}": primaryKey must be an array of field names`);
+      problems.push(
+        `entity "${name}": primaryKey must be an array of field names`,
+      );
     }
     // A declared cursor that is not in the declared schema is a typo that
     // otherwise surfaces as an incremental sync that silently re-reads
     // everything, forever.
-    if (entity?.cursorField && entity.schema && !entity.schema[entity.cursorField]) {
+    if (
+      entity?.cursorField &&
+      entity.schema &&
+      !entity.schema[entity.cursorField]
+    ) {
       problems.push(
         `entity "${name}": cursorField "${entity.cursorField}" is not a field in its schema`,
       );
@@ -171,7 +220,12 @@ export function createContext({ config, state, log, entity }) {
     entity,
     http,
     paginate,
-    log: message => log("INFO", typeof message === "string" ? message : JSON.stringify(message)),
-    createHttp: options => createHttp({ log: message => log("INFO", message), ...options }),
+    log: message =>
+      log(
+        "INFO",
+        typeof message === "string" ? message : JSON.stringify(message),
+      ),
+    createHttp: options =>
+      createHttp({ log: message => log("INFO", message), ...options }),
   };
 }
