@@ -38,8 +38,10 @@ export default defineConnector({
           // Test knobs: a log line per page, and a connector that never
           // says whether another page exists.
           if (ctx.config.logEveryPage) ctx.log(ctx.config.logEveryPage);
+          // frozenState: a connector that reports the same state every page.
+          const pageState = ctx.config.frozenState ? { offset: 10 } : { offset };
           yield ctx.config.omitHasMore
-            ? { records, state: { offset } }
+            ? { records, state: pageState }
             : { records, state: { offset }, hasMore: offset < PEOPLE.length };
         }
       },

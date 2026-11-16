@@ -38,6 +38,7 @@ vi.mock("e2b", async importOriginal => ({
 }));
 
 import {
+  FileNotFoundError,
   SandboxNotFoundError,
   SandboxNotRunningError,
   SandboxUnreachableError,
@@ -333,6 +334,21 @@ describe("held E2B handles", () => {
     expect(box.files.read).toHaveBeenCalledTimes(1);
     await provider.readFile(ctx, "/tmp/x");
     expect(e2b.Sandbox.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the handle when a file is simply missing", async () => {
+    const box = oneBox();
+    await provider.exec(ctx, "true", { timeoutMs: 30_000 });
+    box.files.read.mockRejectedValueOnce(
+      new FileNotFoundError("/tmp/x was not found"),
+    );
+    await expect(provider.readFile(ctx, "/tmp/x")).rejects.toBeInstanceOf(
+      FileNotFoundError,
+    );
+    expect(box.files.read).toHaveBeenCalledTimes(1);
+    expect(heldSandboxCountForTests()).toBe(1);
+    await provider.readFile(ctx, "/tmp/x");
+    expect(e2b.Sandbox.connect).toHaveBeenCalledTimes(1);
   });
 
   it("does not retry a gone box it has only just connected to", async () => {

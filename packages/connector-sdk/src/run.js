@@ -169,11 +169,17 @@ export async function run(argv = process.argv.slice(2)) {
           // budget, which it never asked for. It stops at this page with
           // "more may follow" when its state moved, so the next chunk resumes
           // there; with no state to resume from it reads on, as it always did.
-          if (latest !== ctx.state) {
-            exhausted = false;
-            break;
+          if (latest === ctx.state) continue;
+          // A state that came back unchanged would make the next chunk read
+          // these same pages, and the one after it too, forever.
+          if (JSON.stringify(latest) === JSON.stringify(ctx.state)) {
+            throw new Error(
+              `Entity "${name}" hit the chunk byte budget with its state unchanged, so the next chunk would re-read the same pages. ` +
+                "Advance the state with every read batch, or yield hasMore.",
+            );
           }
-          continue;
+          exhausted = false;
+          break;
         }
         if (iterations >= maxIterations || overBytes) {
           if (batch.hasMore !== true) {

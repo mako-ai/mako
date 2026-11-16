@@ -16,6 +16,7 @@
  */
 import path from "node:path";
 import {
+  FileNotFoundError,
   Sandbox,
   SandboxNotFoundError,
   SandboxNotRunningError,
@@ -410,6 +411,14 @@ function someInChain(
   return false;
 }
 
+/** The SDK's "no such file": an answer from a live box, not a box failure. */
+function isFileNotFound(error: unknown): boolean {
+  return (
+    error instanceof FileNotFoundError ||
+    (error as { name?: unknown } | null)?.name === "FileNotFoundError"
+  );
+}
+
 /** Any error that says the box, not the call, is the problem. */
 export function isBoxConnectionError(error: unknown): boolean {
   return (
@@ -485,7 +494,11 @@ async function withSandbox<T>(
     phase = "call";
     return await fn(entry.sandbox);
   } catch (error) {
-    if (reused) dropHandle(sessionKey, entry.sandbox);
+    // A missing file says nothing about the box: keep the handle, and spare
+    // the next call a connect (about 176 ms).
+    if (reused && !isFileNotFound(unwrapNotStarted(error))) {
+      dropHandle(sessionKey, entry.sandbox);
+    }
     if (isSandboxGone(unwrapNotStarted(error))) forgetSession(sessionKey);
     const retry =
       reused &&

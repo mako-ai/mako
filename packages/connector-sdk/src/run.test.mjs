@@ -200,6 +200,20 @@ test("a connector that omits hasMore is not failed by the byte budget", async ()
   assert.deepEqual(state.stream.stream_state, { offset: 10 });
 });
 
+test("a connector without hasMore whose state does not move fails instead of looping", async () => {
+  const dir = tmp();
+  const config = writeJson(dir, "config.json", { apiKey: "good-key", omitHasMore: true, frozenState: true });
+  const first = await protocol(["read", "--config", config, "--max-bytes", "1"]);
+  // Chunk 1 stops with its state, as any capped chunk does.
+  const state = writeJson(dir, "state.json", first.at(-1).state);
+  // Chunk 2 starts there and gets the same state back: it fails loudly.
+  const second = await protocol(["read", "--config", config, "--state", state, "--max-bytes", "1"], {
+    expectFailure: true,
+  });
+  const trace = second.find(m => m.type === "TRACE");
+  assert.match(trace.trace.error.message, /state unchanged/);
+});
+
 test("a catalog restricts which streams are read", async () => {
   const dir = tmp();
   const config = writeJson(dir, "config.json", { apiKey: "good-key" });
