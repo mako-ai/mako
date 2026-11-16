@@ -50,6 +50,8 @@ import {
   recordRunBuild,
   shouldBundle,
 } from "./bundle/bundle.service";
+import { connectorRegistryEnabled } from "./registry/flag";
+import { prepareRegistryConnector } from "./registry/registry.service";
 import {
   connectorRuntimeId,
   ensureConnectorRuntime,
@@ -325,6 +327,25 @@ export class SandboxedConnector extends BaseConnector {
     await retireLegacySyncBox(this.workspaceId);
     if (!this.materializedDir || !this.runtimeId) {
       const runtimeId = await ensureConnectorRuntime(ctx);
+      if (definition.registry) {
+        // Installed by reference: the folder holds no code. Run the registry
+        // version the push resolved, never whatever is newest now.
+        if (!connectorRegistryEnabled()) {
+          throw new Error(
+            `The connector "${definition.slug}" is installed by reference (${definition.registry.ref}), ` +
+              `and install by reference is off on this Mako (CONNECTOR_REGISTRY_ENABLED).`,
+          );
+        }
+        const installed = await prepareRegistryConnector({
+          ctx,
+          runtimeId,
+          registry: definition.registry,
+        });
+        this.materializedDir = installed.dir;
+        this.runEntry = installed.entry;
+        this.runtimeId = runtimeId;
+        return { dir: installed.dir, runtimeId, entry: installed.entry, ctx };
+      }
       const files = await readConnectorFolder(
         this.workspaceId,
         definition.slug,
@@ -864,7 +885,9 @@ export class SandboxedConnector extends BaseConnector {
     return {
       name: mako.name ?? this.slug,
       version: mako.version ?? "0.0.0",
-      description: `${this.slug} (workspace connector)`,
+      description: this.loaded?.registry
+        ? `${this.slug} (${this.loaded.registry.ref}, version ${this.loaded.registry.version})`
+        : `${this.slug} (workspace connector)`,
       supportedEntities: this.getAvailableEntities(),
     };
   }

@@ -54,8 +54,13 @@ const ROOT_USER = "root";
 const userFor = (options?: { asRoot?: boolean }): string =>
   options?.asRoot ? ROOT_USER : SANDBOX_USER;
 const REMOTE_ROOT = "/home/user/app";
-/** Idle window before E2B auto-pauses the sandbox (resets on activity). */
-const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * E2B's own idle timeout: the BACKSTOP, not the policy. The idle sweep
+ * (box-idle.service.ts) pauses after 10 minutes of real use; this sits above
+ * it (15) so E2B pausing on its own never races the sweep, and a box that
+ * escaped the sweep (cron down) still sleeps.
+ */
+const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 
 function apiKey(): string {
   const key = process.env.E2B_API_KEY;
@@ -207,9 +212,11 @@ export function isConnectorBoxKey(sessionKey: string): boolean {
 function connectSession(sessionKey: string): Promise<Sandbox> {
   const inflight = connecting.get(sessionKey);
   if (inflight) return inflight;
-  const run = connectSessionNow(sessionKey).finally(() =>
-    connecting.delete(sessionKey),
-  );
+  const run = connectSessionNow(sessionKey).finally(() => {
+    connecting.delete(sessionKey);
+    // A connect resumes a paused box: "not running" no longer holds.
+    runningAnswer.delete(sessionKey);
+  });
   connecting.set(sessionKey, run);
   return run;
 }
@@ -609,16 +616,6 @@ async function withSandbox<T>(
       throw unwrapNotStarted(again);
     }
   }
-}
-
-/**
- * The PR 1283 idle sweep (and anything else that pauses a box) tells the
- * provider here, so the next call connects and resumes rather than using a
- * handle to a paused box.
- */
-export function noteSessionPaused(sessionKey: string): void {
-  held.delete(sessionKey);
-  knownAlive.delete(sessionKey);
 }
 
 /** Test hook: how many handles this process holds. */
@@ -1382,6 +1379,88 @@ const boxLifecycleE2b: SandboxBoxLifecycle = {
   },
 };
 
+/**
+ * "Running?" answers, briefly, for background polls (provider.ts isRunning).
+ *
+ * Unlike sessionExists this never trusts the in-process `sessions` map: that
+ * map still names a box after E2B paused it, and the exec that followed a
+ * stale yes is exactly what resumed it. Both answers are cached for a beat
+ * so a poll burst is one list call.
+ */
+const runningAnswer = new Map<string, { running: boolean; until: number }>();
+const RUNNING_ANSWER_TTL_MS = 10_000;
+
+async function sessionRunning(sessionKey: string): Promise<boolean> {
+  const cached = runningAnswer.get(sessionKey);
+  if (cached && cached.until > Date.now()) return cached.running;
+  try {
+    const paginator = Sandbox.list({
+      apiKey: apiKey(),
+      query: {
+        metadata: { makoAppsSessionKey: sessionKey },
+        state: ["running"],
+      },
+      limit: 1,
+    });
+    const running =
+      paginator.hasNext && (await paginator.nextItems()).length > 0;
+    runningAnswer.set(sessionKey, {
+      running,
+      until: Date.now() + RUNNING_ANSWER_TTL_MS,
+    });
+    return running;
+  } catch {
+    // A poll that cannot tell answers "offline"; the next beat asks again.
+    return false;
+  }
+}
+
+const pausedListeners = new Set<(sessionKey: string) => void>();
+
+/**
+ * Run `listener` whenever this process learns a session's box was paused.
+ * For per-session state held outside this module (a cached Sandbox handle,
+ * PR 1284), which must not outlive the pause. Returns an unsubscribe.
+ */
+export function onSessionPaused(
+  listener: (sessionKey: string) => void,
+): () => void {
+  pausedListeners.add(listener);
+  return () => pausedListeners.delete(listener);
+}
+
+/**
+ * The idle sweep paused this session's box: drop everything this process
+ * cached about it, so its polls stop answering "running" from memory and
+ * the next real use reconnects (and resumes) from scratch.
+ */
+export function noteSessionPaused(sessionKey: string): void {
+  runningAnswer.set(sessionKey, {
+    running: false,
+    until: Date.now() + RUNNING_ANSWER_TTL_MS,
+  });
+  keepAliveUntil.delete(sessionKey);
+  sessions.delete(sessionKey);
+  knownAlive.delete(sessionKey);
+  for (const listener of pausedListeners) {
+    try {
+      listener(sessionKey);
+    } catch (error) {
+      logger.warn("A session-paused listener threw", {
+        sessionKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+// A paused box makes its held handle stale: the next call must connect (and
+// resume) instead of failing on the handle first. noteSessionPaused (the
+// idle sweep, boxLifecycle.pause) tells every listener.
+onSessionPaused(sessionKey => {
+  held.delete(sessionKey);
+});
+
 export const e2bSandboxProvider: SandboxProvider = {
   id: "e2b",
   supportsRunUsers: true,
@@ -1391,6 +1470,7 @@ export const e2bSandboxProvider: SandboxProvider = {
   root: () => REMOTE_ROOT,
   scratch: () => "/tmp",
   hasSession: ctx => sessionExists(ctx.sessionKey),
+  isRunning: ctx => sessionRunning(ctx.sessionKey),
   describe: async ctx => {
     try {
       const paginator = Sandbox.list({
@@ -1414,7 +1494,6 @@ export const e2bSandboxProvider: SandboxProvider = {
       return null;
     }
   },
-  noteSessionPaused,
   writeFile: writeFileE2b,
   writeFiles: writeFilesE2b,
   readFile: readFileE2b,

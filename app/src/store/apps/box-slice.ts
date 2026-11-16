@@ -24,6 +24,7 @@ type Keys =
   | "setCurrentUserId"
   | "applyBoxState"
   | "fetchDevLog"
+  | "reportBoxActivity"
   | "clearError";
 
 export const createAppsBoxSlice: AppsSlice<Keys> = (set, get) => ({
@@ -34,6 +35,17 @@ export const createAppsBoxSlice: AppsSlice<Keys> = (set, get) => ({
       }),
     );
     return (body ?? null) as Record<string, unknown> | null;
+  },
+
+  reportBoxActivity: async (workspaceId, appId) => {
+    try {
+      await api.POST("/api/workspaces/{workspaceId}/apps/{id}/activity", {
+        params: { path: { workspaceId, id: appId } },
+      });
+    } catch {
+      // Best effort: a missed report costs at most an early pause, and the
+      // next action resumes the box from memory.
+    }
   },
 
   recycleSandbox: async (workspaceId, appId) => {

@@ -42,6 +42,17 @@ export interface WorkspaceConnectorSummary {
     bytes?: number;
     builtAt?: string;
   };
+  /**
+   * For a folder installed by reference (`source:` in connector.yaml,
+   * CONNECTOR_REGISTRY_ENABLED): the reference, the version it resolved to,
+   * the newest published one, and a newer major outside the range.
+   */
+  registry?: {
+    ref: string;
+    version: string;
+    latest: string;
+    upgradeAvailable?: string;
+  };
   hasIcon: boolean;
   source: "workspace";
 }
@@ -62,7 +73,9 @@ export async function listWorkspaceConnectors(
       description:
         row.status === "blocked"
           ? `Blocked: ${row.blockedReason ?? "this connector failed its last check"}`
-          : `${row.slug} — from this workspace's repository`,
+          : row.registry
+            ? `${row.slug} — ${row.registry.ref}, version ${row.registry.version}`
+            : `${row.slug} — from this workspace's repository`,
       supportedEntities: row.entities ?? [],
       usable: row.status !== "blocked",
       status: row.status,
@@ -79,6 +92,18 @@ export async function listWorkspaceConnectors(
                 : {}),
               ...(row.build.builtAt
                 ? { builtAt: new Date(row.build.builtAt).toISOString() }
+                : {}),
+            },
+          }
+        : {}),
+      ...(row.registry
+        ? {
+            registry: {
+              ref: row.registry.ref,
+              version: row.registry.version,
+              latest: row.registry.latest,
+              ...(row.registry.upgradeAvailable
+                ? { upgradeAvailable: row.registry.upgradeAvailable }
                 : {}),
             },
           }

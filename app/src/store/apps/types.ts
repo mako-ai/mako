@@ -612,6 +612,12 @@ export interface AppsStore {
     appId: string,
     termId: string,
   ) => Promise<void>;
+  /**
+   * Report real use of the live preview (pointer into it, click into it), so
+   * the sandbox is not paused for idleness under someone using it.
+   * Best effort.
+   */
+  reportBoxActivity: (workspaceId: string, appId: string) => Promise<void>;
   fetchDevLog: (
     workspaceId: string,
     appId: string,

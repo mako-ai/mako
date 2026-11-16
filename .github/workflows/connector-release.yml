@@ -1,0 +1,213 @@
+name: Connector release
+
+# Builds Mako's own connector folders (connectors/<slug>/) into versioned
+# bundles and publishes them to the connector registry (RFC connector-runtime
+# §7, iteration 4). A workspace then installs one by reference:
+# `source: mako/<slug>@<range>` in its connector.yaml.
+#
+#  - Pull requests: a dry run of every folder. Each is built with the
+#    iteration-1 bundler, its bundle runs `spec` and `discover`, and the
+#    catalog entry is printed. Nothing is written.
+#  - A tag `connector-<slug>-v<MAJOR.MINOR.PATCH>` on a master commit: job
+#    `build` builds once, with no credential, and uploads the bytes as an
+#    artifact. Job `publish` verifies them and writes the same bytes to the
+#    dev registry, then the production one, with CONNECTOR_REGISTRY_WRITER_SA.
+#    A version is immutable: re-tagging the same content is a no-op,
+#    different content under a published version fails.
+#  - workflow_dispatch: either of the above for one tag, dry run by default.
+#
+# Reading the registry is behind CONNECTOR_REGISTRY_ENABLED in the API; with
+# it off, a published bundle is inert.
+
+on:
+  push:
+    tags:
+      - "connector-*-v*"
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "connectors/**"
+      - "packages/connector-sdk/**"
+      - "api/src/connectors/workspace/**"
+      - "api/src/scripts/publish-connector.ts"
+      - ".github/workflows/connector-release.yml"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. connector-stripe-v1.0.0"
+        required: true
+        type: string
+      dry_run:
+        description: "Build and describe only; write nothing"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+# Dry runs write nothing. A PR's new push cancels its own older dry run; a
+# dispatched dry run gets a group of its own. Publishes get one group per tag, so a queued release is
+# never cancelled by another one: GitHub keeps one pending run per group and
+# drops the rest. Two releases may therefore run at once; the catalog write
+# is a generation-checked GCS write that merges again on a conflict
+# (registry/store.ts writeCatalogIfUnchanged).
+concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request' && format('connector-release-dry-{0}', github.ref)
+    || (github.event_name == 'workflow_dispatch' && inputs.dry_run) && format('connector-release-dry-run-{0}', github.run_id)
+    || format('connector-release-publish-{0}', github.event_name == 'push' && github.ref_name || inputs.tag) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  dry-run:
+    name: Connector release (dry run)
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build workspace packages the api imports
+        run: |
+          pnpm --filter @mako/schemas run build
+          pnpm --filter @mako/agent-tools run build
+      - name: Build, spec and discover every connector folder
+        if: github.event_name == 'pull_request'
+        run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --all --dry-run
+      - name: Build, spec and discover the tagged connector
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --tag "$TAG" --dry-run
+
+  # Job A: builds and describes with the connector's own code (npm ci, spec,
+  # discover) and holds NO credential. Its only output is an artifact: the
+  # bundle, the source and a manifest with their sha256s.
+  build:
+    name: Build release
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+    outputs:
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tag must point at a master commit
+        id: commit
+        run: |
+          set -euo pipefail
+          commit="$(git rev-list -n 1 "$TAG")"
+          if ! git merge-base --is-ancestor "$commit" origin/master; then
+            echo "::error::$TAG points at $commit, which is not on master. Tag a merged commit."
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          git checkout --quiet "$commit"
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build workspace packages the api imports
+        run: |
+          pnpm --filter @mako/schemas run build
+          pnpm --filter @mako/agent-tools run build
+      - name: Build and describe (no credentials)
+        env:
+          COMMIT: ${{ steps.commit.outputs.commit }}
+        run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --tag "$TAG" --commit "$COMMIT" --out "$RUNNER_TEMP/release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: connector-release
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          retention-days: 7
+
+  # Job B: publishes the SAME bytes, dev first, then production. It
+  # re-verifies the sha256s and the source hash and runs no connector code.
+  # Its credential, CONNECTOR_REGISTRY_WRITER_SA, may only create objects in
+  # the registry (see docs/src/content/docs/guides/building-connectors.md,
+  # "Publishing Mako's connectors"). It never uses the `production`
+  # environment or the deploy service account.
+  publish:
+    name: Publish to ${{ matrix.target }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      # Dev first: a release that fails there never reaches production.
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        target: [dev, prod]
+    environment:
+      name: connector-registry-${{ matrix.target }}
+    env:
+      # Set per environment. CONNECTOR_REGISTRY_BUCKET is the dedicated
+      # registry bucket the API reads (CONNECTOR_REGISTRY_BUCKET there too).
+      CONNECTOR_REGISTRY_BUCKET: ${{ vars.CONNECTOR_REGISTRY_BUCKET }}
+      CONNECTOR_REGISTRY_PREFIX: connector-registry
+    steps:
+      - name: Require the registry bucket
+        run: |
+          if [ -z "$CONNECTOR_REGISTRY_BUCKET" ]; then
+            echo "::error::Set CONNECTOR_REGISTRY_BUCKET on the connector-registry-${{ matrix.target }} environment."
+            exit 1
+          fi
+      # Mako's publish script and the connector folder at the tagged commit,
+      # resolved here rather than taken from the build job, which ran
+      # connector code.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve the tagged master commit
+        env:
+          TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-list -n 1 "$TAG")"
+          git merge-base --is-ancestor "$commit" origin/master
+          echo "RELEASE_COMMIT=$commit" >> "$GITHUB_ENV"
+          git checkout --quiet "$commit"
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      # Only the api and its workspace dependencies, with no install scripts
+      # (no esbuild, electron or ssh2 postinstall), before the key exists.
+      - run: pnpm install --frozen-lockfile --ignore-scripts --filter "api..."
+      # Mako's own packages, also before the key exists, so a CommonJS
+      # resolution of @mako/schemas finds its dist/.
+      - name: Build workspace packages the api imports
+        run: |
+          pnpm --filter @mako/schemas run build
+          pnpm --filter @mako/agent-tools run build
+      - uses: actions/download-artifact@v4
+        with:
+          name: connector-release
+          path: ${{ runner.temp }}/release
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.CONNECTOR_REGISTRY_WRITER_SA }}
+      - name: Verify and publish
+        env:
+          TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        # Only the tagged release, and only if its source equals this
+        # checkout's folder at the tagged commit.
+        run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --upload "$RUNNER_TEMP/release" --tag "$TAG" --commit "$RELEASE_COMMIT"

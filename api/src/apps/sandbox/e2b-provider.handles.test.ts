@@ -91,6 +91,8 @@ function destroySession(sessionKey: string): Promise<void> {
   return provider.destroySession(sessionKey);
 }
 const MINUTE = 60_000;
+/** E2B's idle backstop in e2b-provider.ts (IDLE_TIMEOUT_MS, 15 min since PR 1283). */
+const IDLE = 15 * MINUTE;
 
 /** The one box the session lists, connects to and runs on. */
 function oneBox(id = "sbx-1") {
@@ -150,7 +152,7 @@ describe("held E2B handles", () => {
 
     expect(e2b.Sandbox.connect).toHaveBeenCalledTimes(1);
     expect(box.setTimeout).toHaveBeenCalledTimes(1);
-    expect(box.setTimeout).toHaveBeenCalledWith(10 * MINUTE);
+    expect(box.setTimeout).toHaveBeenCalledWith(IDLE);
     // 15 calls, 15 requests: one write, one command, one read per "chunk".
     expect(box.files.write).toHaveBeenCalledTimes(5);
     expect(box.commands.run).toHaveBeenCalledTimes(5);
@@ -188,10 +190,15 @@ describe("held E2B handles", () => {
     expect(box.setTimeout).toHaveBeenCalledTimes(2);
 
     // A command that may run 10 minutes needs the box for 10 minutes at
-    // least, whatever the slack says: it is granted at once.
+    // least: 15 minutes are left, so no call is needed.
+    await provider.exec(ctx, "long", { timeoutMs: 10 * MINUTE });
+    expect(box.setTimeout).toHaveBeenCalledTimes(2);
+    // Minutes later the cached deadline is stale, so the lifetime is set
+    // again before the command runs.
+    vi.setSystemTime(Date.now() + 5.5 * MINUTE);
     await provider.exec(ctx, "long", { timeoutMs: 10 * MINUTE });
     expect(box.setTimeout).toHaveBeenCalledTimes(3);
-    expect(box.setTimeout).toHaveBeenLastCalledWith(11 * MINUTE);
+    expect(box.setTimeout).toHaveBeenLastCalledWith(IDLE);
     // A chunk loop of such commands refreshes about once a minute.
     for (let s = 0; s < 120; s++) {
       vi.setSystemTime(Date.now() + 1_000);
@@ -213,7 +220,7 @@ describe("held E2B handles", () => {
     expect(box.setTimeout).toHaveBeenLastCalledWith(25 * MINUTE);
     vi.setSystemTime(Date.now() + 25 * MINUTE);
     await provider.exec(ctx, "true", { timeoutMs: 30_000 });
-    expect(box.setTimeout).toHaveBeenLastCalledWith(10 * MINUTE);
+    expect(box.setTimeout).toHaveBeenLastCalledWith(IDLE);
   });
 
   it("trusts its own cached deadline for one minute at most", async () => {
@@ -230,7 +237,7 @@ describe("held E2B handles", () => {
     const box = oneBox();
     await provider.exec(ctx, "true", { timeoutMs: 30_000 });
     // Past the known pause time: the handle is not trusted.
-    vi.setSystemTime(Date.now() + 11 * MINUTE);
+    vi.setSystemTime(Date.now() + IDLE + MINUTE);
     await provider.readFile(ctx, "/tmp/x");
     expect(e2b.Sandbox.connect).toHaveBeenCalledTimes(2);
     expect(box.files.read).toHaveBeenCalledTimes(1);

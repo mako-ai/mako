@@ -57,6 +57,28 @@ export interface LoadedConnector {
   spec?: Record<string, unknown>;
   entities: string[];
   status: IConnectorDefinition["status"];
+  /** Set when connector.yaml installs a registry connector by reference. */
+  registry?: {
+    ref: string;
+    slug: string;
+    version: string;
+    hash: string;
+    sha256: string;
+  };
+}
+
+function registryOf(
+  row: Pick<IConnectorDefinition, "registry">,
+): LoadedConnector["registry"] {
+  const registry = row.registry;
+  if (!registry) return undefined;
+  return {
+    ref: registry.ref,
+    slug: registry.slug,
+    version: registry.version,
+    hash: registry.hash,
+    sha256: registry.sha256,
+  };
 }
 
 /**
@@ -90,6 +112,7 @@ export async function loadConnectorDefinition(
     spec: row.spec as Record<string, unknown> | undefined,
     entities: row.entities ?? [],
     status: row.status,
+    ...(row.registry ? { registry: registryOf(row) } : {}),
   };
 }
 
@@ -109,6 +132,7 @@ export async function listConnectorDefinitions(
     spec: row.spec as Record<string, unknown> | undefined,
     entities: row.entities ?? [],
     status: row.status,
+    ...(row.registry ? { registry: registryOf(row) } : {}),
   }));
 }
 

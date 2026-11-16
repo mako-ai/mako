@@ -8,6 +8,7 @@ import {
 } from "@mui/material";
 import { useAppsStore } from "../../store/appsStore";
 import { TAB_KIND_ICONS } from "../../lib/entity-icons";
+import { usePreviewActivity } from "./usePreviewActivity";
 
 /** Streams the dev boot log (npm install → vite) while a server starts. */
 export function DevBootLog({
@@ -177,6 +178,8 @@ export function DevPreviewPane({
   hiddenPaused: boolean;
   previewNonce: number;
 }) {
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const previewActivity = usePreviewActivity(workspaceId, appId, frameRef);
   return preview?.building && preview.publishing ? (
     <BuildLogPanel text={preview.buildOutput ?? ""} />
   ) : preview?.building ? (
@@ -199,31 +202,40 @@ export function DevPreviewPane({
       released so the sandbox can sleep. It resumes when you come back.
     </Alert>
   ) : preview?.url ? (
-    <iframe
-      key={`dev-${previewNonce}`}
-      title="App preview"
-      src={preview.url}
-      // The two preview tiers need DIFFERENT sandboxes.
-      //
-      // Static builds are served by Mako from Mako's own origin, so
-      // `allow-same-origin` would hand app code our origin and let
-      // it escape the sandbox entirely — it stays off, and the
-      // opaque origin is why those assets are served with
-      // `Access-Control-Allow-Origin: *`.
-      //
-      // The live dev server (§12.4) is a genuinely foreign origin
-      // (`<port>-<sandbox>.e2b.app`), so `allow-same-origin` grants
-      // it only ITS OWN origin, never ours. It is required there:
-      // with an opaque origin, Vite's HMR socket and its
-      // cross-origin module scripts do not work.
-      // External record links open normal tabs. Keep the app itself isolated.
-      sandbox={
-        preview.mode === "dev"
-          ? "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-same-origin"
-          : "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
-      }
-      style={{ border: 0, width: "100%", height: "100%" }}
-    />
+    // Pointing at, moving over or clicking into the preview is real use of
+    // the sandbox (usePreviewActivity); an open but untouched tab is not.
+    <Box
+      sx={{ width: "100%", height: "100%", display: "flex" }}
+      onPointerEnter={previewActivity.onPointerEnter}
+      onPointerMove={previewActivity.onPointerMove}
+    >
+      <iframe
+        key={`dev-${previewNonce}`}
+        ref={frameRef}
+        title="App preview"
+        src={preview.url}
+        // The two preview tiers need DIFFERENT sandboxes.
+        //
+        // Static builds are served by Mako from Mako's own origin, so
+        // `allow-same-origin` would hand app code our origin and let
+        // it escape the sandbox entirely — it stays off, and the
+        // opaque origin is why those assets are served with
+        // `Access-Control-Allow-Origin: *`.
+        //
+        // The live dev server (§12.4) is a genuinely foreign origin
+        // (`<port>-<sandbox>.e2b.app`), so `allow-same-origin` grants
+        // it only ITS OWN origin, never ours. It is required there:
+        // with an opaque origin, Vite's HMR socket and its
+        // cross-origin module scripts do not work.
+        // External record links open normal tabs. Keep the app itself isolated.
+        sandbox={
+          preview.mode === "dev"
+            ? "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-same-origin"
+            : "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
+        }
+        style={{ border: 0, width: "100%", height: "100%" }}
+      />
+    </Box>
   ) : (
     <Box sx={{ p: 3, maxWidth: 560 }}>
       <Typography variant="subtitle1" gutterBottom>

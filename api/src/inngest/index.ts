@@ -19,6 +19,10 @@ import {
 } from "./functions/apps-binding-refresh";
 import { appsLifecycleFunction } from "./functions/apps-lifecycle";
 import {
+  appsBoxIdleSweepFunction,
+  appsBoxPausedReaperFunction,
+} from "./functions/apps-box-idle";
+import {
   appsBindingJobFunction,
   appsBindingJobSweeperFunction,
 } from "./functions/apps-binding-job";
@@ -116,6 +120,8 @@ export function getFunctions() {
         appsBindingSchedulerFunction,
         appsBindingJobSweeperFunction,
         appsLifecycleFunction,
+        appsBoxIdleSweepFunction,
+        appsBoxPausedReaperFunction,
         appsDeployReconcileFunction,
         workflowsDeployReconcileFunction,
         kernelPoolReaperFunction,
@@ -170,6 +176,8 @@ export {
   appsBindingJobSweeperFunction,
   appsBindingSchedulerFunction,
   appsLifecycleFunction,
+  appsBoxIdleSweepFunction,
+  appsBoxPausedReaperFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,

@@ -154,6 +154,9 @@ jobs:
       GCP_ARTIFACT_REPOSITORY: ${{ vars.GCP_DEV_ARTIFACT_REPOSITORY }}
       GCS_DASHBOARD_BUCKET: ${{ vars.GCS_DEV_DASHBOARD_BUCKET }}
       # The cloned DB references immutable deployments published in prod.
+      # Connector registry (connector-release.yml): the dev registry bucket.
+      # Unset: the service gets no CONNECTOR_REGISTRY_BUCKET, as before.
+      CONNECTOR_REGISTRY_BUCKET: ${{ vars.CONNECTOR_REGISTRY_DEV_BUCKET }}
       # Preview writes remain in GCS_DASHBOARD_BUCKET; this source is read-only.
       APPS_ARTIFACT_SOURCE_BUCKET: ${{ vars.APPS_ARTIFACT_SOURCE_BUCKET }}
       PR_NUMBER: ${{ needs.detect-changes.outputs.pr_number }}
@@ -673,9 +676,14 @@ jobs:
 
           # Kernel pods reach the API via the DIRECT run.app URL (not the
           # Cloudflare-fronted pr-N.mako.ai, which 1010-blocks the pods).
+          # The connector registry bucket rides along only when it is set.
+          REGISTRY_ENV=""
+          if [ -n "${CONNECTOR_REGISTRY_BUCKET}" ]; then
+            REGISTRY_ENV=",CONNECTOR_REGISTRY_BUCKET=${CONNECTOR_REGISTRY_BUCKET}"
+          fi
           gcloud run services update ${SERVICE_NAME} \
             --project ${GCP_PROJECT_ID} --region ${GCP_REGION} \
-            --update-env-vars="NOTEBOOK_KERNEL_API_URL=${CLOUD_RUN_URL}" --quiet
+            --update-env-vars="NOTEBOOK_KERNEL_API_URL=${CLOUD_RUN_URL}${REGISTRY_ENV}" --quiet
 
       - name: Sync Inngest branch environment
         continue-on-error: true
@@ -912,6 +920,9 @@ jobs:
       STRIPE_OVERAGE_PRICE_ID: ${{ secrets.STRIPE_OVERAGE_PRICE_ID }}
       STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/prod
+      # Connector registry (connector-release.yml): the prod registry bucket.
+      # Unset: the service gets no CONNECTOR_REGISTRY_BUCKET, as before.
+      CONNECTOR_REGISTRY_BUCKET: ${{ vars.CONNECTOR_REGISTRY_PROD_BUCKET }}
       # Durable notebook document store (GCS).
       NOTEBOOK_GCS_BUCKET: ${{ vars.NOTEBOOK_GCS_BUCKET }}
       NOTEBOOK_GCS_PREFIX: notebooks/prod
@@ -1150,6 +1161,10 @@ jobs:
           EXTRA_ENV=""
           if [ -z "${{ steps.cloud-run-before.outputs.url }}" ]; then
             EXTRA_ENV=",INNGEST_SERVE_ORIGIN=${CLOUD_RUN_URL},INNGEST_SERVE_PATH=/api/inngest"
+          fi
+          # The connector registry bucket rides along only when it is set.
+          if [ -n "${CONNECTOR_REGISTRY_BUCKET}" ]; then
+            EXTRA_ENV="${EXTRA_ENV},CONNECTOR_REGISTRY_BUCKET=${CONNECTOR_REGISTRY_BUCKET}"
           fi
           gcloud run services update "${SERVICE_NAME}" \
             --project="${GCP_PROJECT_ID}" \

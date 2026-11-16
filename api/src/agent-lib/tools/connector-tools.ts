@@ -47,6 +47,16 @@ import { connectorRegistry } from "../../connectors/registry";
 import { isSecretField } from "../../connectors/source-connection-create.service";
 import { listWorkspaceConnectors } from "../../connectors/workspace/catalog";
 import { isWorkspaceConnectorType } from "../../connectors/workspace/SandboxedConnector";
+import { connectorRegistryEnabled } from "../../connectors/workspace/registry/flag";
+import { getRegistryCatalog } from "../../connectors/workspace/registry/registry.service";
+import {
+  readRegistrySource,
+  type RegistryEntry,
+} from "../../connectors/workspace/registry/store";
+import {
+  parseVersion,
+  sortVersionsDescending,
+} from "../../connectors/workspace/registry/semver";
 import {
   SourceConnection,
   DatabaseConnection,
@@ -333,6 +343,48 @@ async function describeSourceConnection(
   };
 }
 
+/** `mako/stripe` -> `stripe`; null for any other type. */
+function registrySlugOf(type: string): string | null {
+  return type.startsWith("mako/") ? type.slice("mako/".length) : null;
+}
+
+/** An entry's versions, newest first. */
+function newestFirst(entry: RegistryEntry): RegistryEntry["versions"] {
+  return sortVersionsDescending(entry.versions.map(v => v.version)).flatMap(
+    version => entry.versions.filter(v => v.version === version).slice(0, 1),
+  );
+}
+
+/** One registry entry as the catalog lists it, versions newest first. */
+function describeRegistryEntry(
+  entry: RegistryEntry,
+  installedAs: string[],
+): Record<string, unknown> & { connector: string } {
+  const versions = newestFirst(entry);
+  const latest = versions[0];
+  const major = latest ? (parseVersion(latest.version)?.major ?? 0) : 0;
+  return {
+    connector: `mako/${entry.slug}`,
+    name: entry.title ?? entry.name,
+    version: latest?.version ?? "",
+    description: `Mako's ${entry.title ?? entry.name} connector, from the registry.`,
+    source: "registry" as const,
+    publisher: "mako",
+    usable: Boolean(latest),
+    entities: latest?.entities ?? [],
+    authType: latest?.authType,
+    ...(latest?.changelog ? { changelog: latest.changelog } : {}),
+    versions: versions.map(v => ({
+      version: v.version,
+      publishedAt: v.publishedAt,
+      ...(v.changelog ? { changelog: v.changelog } : {}),
+    })),
+    install: `Commit connectors/${entry.slug}/connector.yaml containing \`source: mako/${entry.slug}@${major}\` to main. Patch and minor releases then apply on the next push; a new major is reported as upgradeAvailable.`,
+    installedAs,
+    connections: [],
+  };
+}
+
 /** The catalog: every connector this workspace can configure a connection with. */
 async function listConnectorCatalog(workspaceId: string) {
   await connectorRegistry.ready();
@@ -385,15 +437,106 @@ async function listConnectorCatalog(workspaceId: string) {
     ...(entry.lastCheckError ? { lastCheckError: entry.lastCheckError } : {}),
     // Next to `status`: how a folder with dependencies was last built.
     ...(entry.build ? { build: entry.build } : {}),
+    // Installed by reference: the version it runs and what is newer.
+    ...(entry.registry ? { registry: entry.registry } : {}),
     entities: entry.supportedEntities,
     connections: connectionsByType.get(entry.type) ?? [],
   }));
 
+  // The Mako registry (CONNECTOR_REGISTRY_ENABLED): what can be installed by
+  // reference. A storage outage drops these entries, not the whole list.
+  const registry: Array<Record<string, unknown> & { connector: string }> = [];
+  let registryError: string | undefined;
+  if (connectorRegistryEnabled()) {
+    try {
+      const catalog = await getRegistryCatalog();
+      for (const entry of Object.values(catalog.connectors)) {
+        const installedAs = workspace
+          .filter(ws => ws.registry?.ref.startsWith(`mako/${entry.slug}@`))
+          .map(ws => ws.connector);
+        registry.push(describeRegistryEntry(entry, installedAs));
+      }
+    } catch (error) {
+      registryError = error instanceof Error ? error.message : String(error);
+      logger.warn("Connector registry unavailable", {
+        workspaceId,
+        error: registryError,
+      });
+    }
+  }
+
   return {
-    connectors: [...builtin, ...workspace].sort((a, b) =>
-      a.connector.localeCompare(b.connector),
-    ),
+    connectors: [
+      ...builtin,
+      ...workspace,
+      ...(registry as unknown as typeof workspace),
+    ].sort((a, b) => a.connector.localeCompare(b.connector)),
+    ...(registryError
+      ? {
+          registryError: `The connector registry could not be read: ${registryError}`,
+        }
+      : {}),
   };
+}
+
+/**
+ * One registry connector: every version, and on request the source of one
+ * version (what `mako connector eject` writes into the workspace folder).
+ */
+async function inspectRegistryConnector(input: {
+  slug: string;
+  version?: string;
+  includeSource?: boolean;
+}): Promise<Record<string, unknown>> {
+  const catalog = await getRegistryCatalog();
+  const entry = Object.hasOwn(catalog.connectors, input.slug)
+    ? catalog.connectors[input.slug]
+    : undefined;
+  if (!entry) {
+    return {
+      error: `The registry has no connector mako/${input.slug}. Call list_connectors for the catalog.`,
+    };
+  }
+  const described = describeRegistryEntry(entry, []);
+  const versions = newestFirst(entry).map(v => ({
+    version: v.version,
+    hash: v.hash,
+    publishedAt: v.publishedAt,
+    sdkVersion: v.sdkVersion,
+    entities: v.entities,
+    authType: v.authType,
+    ...(v.changelog ? { changelog: v.changelog } : {}),
+  }));
+  const {
+    installedAs: _installedAs,
+    connections: _connections,
+    ...rest
+  } = described;
+  const result: Record<string, unknown> = { ...rest, versions };
+  if (!input.includeSource) return result;
+
+  const wanted = input.version ?? versions[0]?.version;
+  const version = entry.versions.find(v => v.version === wanted);
+  if (!version) {
+    return {
+      error: `mako/${input.slug} has no version ${wanted}. Published: ${versions.map(v => v.version).join(", ")}.`,
+    };
+  }
+  const source = await readRegistrySource(input.slug, version.hash);
+  if (!source) {
+    return {
+      error: `The registry holds no source for mako/${input.slug}@${version.version}.`,
+    };
+  }
+  result.release = {
+    version: version.version,
+    entry: source.entry,
+    // Base64, as stored: a connector folder may hold binary files (an icon,
+    // a fixture), and a UTF-8 round trip would corrupt them.
+    encoding: "base64",
+    files: source.files,
+  };
+  return result;
 }
 
 export function createConnectorTools(workspaceId: string) {
@@ -402,6 +545,7 @@ export function createConnectorTools(workspaceId: string) {
       description: [
         "List the CONNECTORS available to this workspace — the code a connection is configured with: built-in ones (Stripe, Close, PostHog, GCS, …) and the workspace's own (`ws:<slug>`, from `connectors/<slug>/` in its repo).",
         "Each entry carries the entities it can sync, whether incremental pulls are honest, and the `connections` already configured with it (id + name — never a credential). A workspace connector also carries `status` (indexed, verified or blocked, with `blockedReason`) and, when its folder has a package.json, `build` (built or failed, with npm's or esbuild's `error`).",
+        "When the connector registry is on, Mako's own connectors also appear as `mako/<slug>` (`source: registry`) with their `versions`, `authType`, `changelog` and `install` line; a workspace connector installed from one (`source: mako/<slug>@<range>` in its connector.yaml) carries `registry` with the version it runs and any `upgradeAvailable`.",
         "This is the catalog of what CAN be connected. For what IS connected, call list_connections (databases and sources), and inspect_connection / probe_connection for one of them.",
       ].join("\n"),
       inputSchema: z.object({}),
@@ -422,7 +566,7 @@ export function createConnectorTools(workspaceId: string) {
 
     inspect_connector: tool({
       description: [
-        "Inspect one CONNECTOR type from list_connectors (`stripe`, `ws:vercel-ai-gateway`, …): the entities it can sync, whether incremental is valid for it, and the config fields a connection with it needs (names and whether each is a secret; values never).",
+        "Inspect one CONNECTOR type from list_connectors (`stripe`, `ws:vercel-ai-gateway`, `mako/stripe`, …): the entities it can sync, whether incremental is valid for it, and the config fields a connection with it needs (names and whether each is a secret; values never). A registry connector (`mako/<slug>`) answers with every published version, its entities, auth type and changelog.",
         "Use it before asking a user to configure a connection, or to know what a flow can select. For a connection that already exists, call inspect_connection with its id.",
       ].join("\n"),
       inputSchema: z.object({
@@ -438,13 +582,29 @@ export function createConnectorTools(workspaceId: string) {
           .describe(
             "Deprecated: a CONNECTION id. Use inspect_connection({ connectionId }) instead; accepted here so older callers keep working.",
           ),
+        version: z
+          .string()
+          .optional()
+          .describe(
+            "Registry connectors (`mako/<slug>`) only: the version whose source to return with includeSource. Default: the newest.",
+          ),
+        includeSource: z
+          .boolean()
+          .optional()
+          .describe(
+            "Registry connectors only: also return that version's source files, base64-encoded, as `release.files`. Used by `mako connector eject`; large.",
+          ),
       }),
       execute: async ({
         connector,
         connectorId,
+        version,
+        includeSource,
       }: {
         connector?: string;
         connectorId?: string;
+        version?: string;
+        includeSource?: boolean;
       }) => {
         try {
           // The old contract took a connection id under the connector's
@@ -468,6 +628,21 @@ export function createConnectorTools(workspaceId: string) {
               error:
                 "Pass `connector` (a type from list_connectors) — or inspect_connection({ connectionId }) for a configured connection.",
             };
+          }
+
+          const registrySlug = registrySlugOf(connector);
+          if (registrySlug !== null) {
+            if (!connectorRegistryEnabled()) {
+              return {
+                error:
+                  "The connector registry is off on this Mako, so `mako/` connectors cannot be inspected.",
+              };
+            }
+            return await inspectRegistryConnector({
+              slug: registrySlug,
+              version,
+              includeSource,
+            });
           }
 
           await connectorRegistry.ready();

@@ -15,6 +15,7 @@ import {
 import { loggers } from "../../logging";
 import { boxEnvPath, sh } from "../box";
 import { probeReachable } from "../box-state.service";
+import { noteBoxActivity } from "../box-activity";
 import { resolveAppEnv } from "../env.service";
 
 import {
@@ -113,6 +114,9 @@ async function ensureDevServerLaunch(
   // imported vite from a directory that only exists in a microVM.
   const appDir = `${provider.root(ctx)}/${handle.appRoot}`;
 
+  // Opening (or restarting) a preview is real use; the idle sweep counts
+  // from here. The keepAlive below is only E2B's own backstop timeout.
+  noteBoxActivity(ctx.sessionKey, "preview");
   await provider.keepAlive(ctx, DEV_SESSION_KEEPALIVE_MS);
 
   // A requested RESTART must not be short-circuited by the idempotent
