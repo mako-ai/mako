@@ -27,6 +27,7 @@ import type {
   SandboxTerminal,
   SandboxExecContext,
   SandboxExecOptions,
+  SandboxFileOptions,
   SandboxExecResult,
   SandboxProvider,
 } from "./provider";
@@ -38,6 +39,13 @@ function templateId(): string {
   return appsE2BTemplateEnv()?.trim() || "base";
 }
 const SANDBOX_USER = "user";
+/**
+ * Root, for the connector sync box's own setup commands only (per-run Unix
+ * users and their run directories). See SandboxExecOptions.asRoot.
+ */
+const ROOT_USER = "root";
+const userFor = (options?: { asRoot?: boolean }): string =>
+  options?.asRoot ? ROOT_USER : SANDBOX_USER;
 const REMOTE_ROOT = "/home/user/app";
 /** Idle window before E2B auto-pauses the sandbox (resets on activity). */
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -301,7 +309,7 @@ async function execE2b(
 
   try {
     const result = await sandbox.commands.run(command, {
-      user: SANDBOX_USER,
+      user: userFor(options),
       cwd,
       timeoutMs,
       envs: {
@@ -403,11 +411,12 @@ async function execDetachedE2b(
 async function readFileE2b(
   ctx: SandboxExecContext,
   remotePath: string,
+  options?: SandboxFileOptions,
 ): Promise<Uint8Array> {
   const sandbox = await connectSession(ctx.sessionKey);
   const data = await sandbox.files.read(remotePath, {
     format: "bytes",
-    user: SANDBOX_USER,
+    user: userFor(options),
   });
   return new Uint8Array(data as Uint8Array);
 }
@@ -416,10 +425,11 @@ async function writeFileE2b(
   ctx: SandboxExecContext,
   remotePath: string,
   bytes: Uint8Array,
+  options?: SandboxFileOptions,
 ): Promise<void> {
   const sandbox = await connectSession(ctx.sessionKey);
   await sandbox.files.write(remotePath, bytes.buffer as ArrayBuffer, {
-    user: SANDBOX_USER,
+    user: userFor(options),
   });
 }
 
@@ -798,6 +808,7 @@ async function sessionExists(sessionKey: string): Promise<boolean> {
 
 export const e2bSandboxProvider: SandboxProvider = {
   id: "e2b",
+  supportsRunUsers: true,
   exec: execE2b,
   execDetached: execDetachedE2b,
   root: () => REMOTE_ROOT,

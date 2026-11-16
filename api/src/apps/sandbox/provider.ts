@@ -45,6 +45,22 @@ export interface SandboxExecOptions {
    * token file, and per-app env vars from env.service).
    */
   env?: Record<string, string>;
+  /**
+   * Run as the box's root instead of the unprivileged template user.
+   *
+   * Only the connector sync box uses this, and only for commands Mako writes
+   * itself: creating a per-run Unix user, handing it a 0700 run directory,
+   * and dropping to that user with `runuser` before any connector code runs
+   * (connectors/workspace/sync-box.ts). Tenant code never runs as root.
+   * Ignored by providers without real users (see `supportsRunUsers`).
+   */
+  asRoot?: boolean;
+}
+
+/** Options for a single file transfer. */
+export interface SandboxFileOptions {
+  /** Read or write as root; see {@link SandboxExecOptions.asRoot}. */
+  asRoot?: boolean;
 }
 
 /** Identity of the sandbox a command runs against. */
@@ -86,6 +102,15 @@ export interface SandboxTerminal {
 
 export interface SandboxProvider {
   readonly id: AppsSandboxProviderId;
+  /**
+   * The box has real Unix users, and `asRoot` really runs as root.
+   *
+   * True for E2B. The connector sync box then gives every run its own Unix
+   * user, so two runs in one box cannot read each other's credential files.
+   * A local sandbox is a directory on this machine with one user, so it
+   * cannot offer that, and it never runs in production.
+   */
+  readonly supportsRunUsers?: boolean;
   /**
    * Absolute path of the working copy inside this sandbox.
    *
@@ -153,6 +178,7 @@ export interface SandboxProvider {
     ctx: SandboxExecContext,
     remotePath: string,
     bytes: Uint8Array,
+    options?: SandboxFileOptions,
   ): Promise<void>;
   /**
    * Read raw bytes back out of the sandbox.
@@ -160,7 +186,11 @@ export interface SandboxProvider {
    * The counterpart to writeFile: raw bytes out of the sandbox, used for
    * reading a file the working copy holds.
    */
-  readFile(ctx: SandboxExecContext, remotePath: string): Promise<Uint8Array>;
+  readFile(
+    ctx: SandboxExecContext,
+    remotePath: string,
+    options?: SandboxFileOptions,
+  ): Promise<Uint8Array>;
   /**
    * Keep the session alive for at least this long. Dev servers outlive the
    * command that started them, so the idle timeout has to be pushed out

@@ -11,18 +11,24 @@
  *    the dbt models and every other connector. Cloning would silently turn
  *    "runs tenant connector code" into "can rewrite the workspace". The folder
  *    is copied in instead, so the box holds no Mako token at all.
- * 2. A CREDENTIAL LIVES ONLY AS LONG AS THE COMMAND. It is written to a
- *    per-run directory and deleted in a `finally`, because an E2B box that
- *    pauses snapshots its disk.
+ * 2. A CREDENTIAL LIVES ONLY AS LONG AS THE COMMAND, AND ONLY ITS RUN CAN READ
+ *    IT. It is written to a per-run directory and deleted in a `finally`,
+ *    because an E2B box that pauses snapshots its disk. On E2B every run also
+ *    gets its own Unix user and a 0700 directory owned by that user, so two
+ *    runs sharing a box cannot read each other's credential files, and the
+ *    runtime they execute is owned by root, so no run can plant code for the
+ *    next one. See `openRun`.
  * 3. NOTHING BUT A BOUNDED PROTOCOL COMES BACK. stdout is redirected to a file
  *    because `exec`'s output cap would truncate legitimate records. A bounded
  *    snapshot is made before that file crosses into the API process, so tenant
  *    code still cannot turn a large batch into an API heap exhaustion.
  */
+import { randomBytes, randomInt } from "node:crypto";
 import path from "node:path";
 import {
   getSandboxProvider,
   type SandboxExecContext,
+  type SandboxExecOptions,
 } from "../../apps/sandbox/provider";
 import { loggers } from "../../logging";
 
@@ -99,9 +105,52 @@ function runtimeRoot(ctx: SandboxExecContext, runtimeId: string): string {
   return path.posix.join(
     getSandboxProvider().scratch(ctx),
     "connector-runtime",
+    // A root-owned tree lives apart from the old user-owned one. A box that
+    // ran connectors before per-run users existed may hold a runtime a
+    // connector could have rewritten; its marker would still match, so the
+    // isolated layout never trusts it and installs afresh.
+    ...(runsIsolated() ? ["isolated"] : []),
     "versions",
     runtimeId,
   );
+}
+
+/**
+ * Does this box give each run its own Unix user?
+ *
+ * True on E2B. Then every file the API writes into the box is written as
+ * root (so connector code, which never runs as root or as the template user,
+ * cannot modify the runtime or another connector's folder), and every run
+ * drops to a fresh Unix user that owns a 0700 run directory. The local
+ * provider is one user on a developer machine, never production, and keeps
+ * the original behaviour.
+ */
+function runsIsolated(): boolean {
+  return getSandboxProvider().supportsRunUsers === true;
+}
+
+/** File options for the API's own writes into the sync box. */
+function boxOwner(): { asRoot: true } | undefined {
+  return runsIsolated() ? { asRoot: true } : undefined;
+}
+
+/** Write a file the way the box expects: as root when runs are isolated. */
+function writeBoxFile(
+  ctx: SandboxExecContext,
+  remotePath: string,
+  bytes: Uint8Array,
+  owner: { asRoot: true } | undefined = boxOwner(),
+): Promise<void> {
+  const provider = getSandboxProvider();
+  return owner
+    ? provider.writeFile(ctx, remotePath, bytes, owner)
+    : provider.writeFile(ctx, remotePath, bytes);
+}
+
+function execOptions(
+  options: Omit<SandboxExecOptions, "asRoot">,
+): SandboxExecOptions {
+  return { ...options, ...boxOwner() };
 }
 
 function runtimeNode(ctx: SandboxExecContext, runtimeId: string): string {
@@ -133,9 +182,7 @@ export async function materializeConnector(input: {
   const check = await provider.exec(
     ctx,
     `test -f ${shellQuote(marker)} && echo yes || echo no`,
-    {
-      timeoutMs: 30_000,
-    },
+    execOptions({ timeoutMs: 30_000 }),
   );
   if (check.stdout.trim() === "yes") return dir;
 
@@ -149,9 +196,21 @@ export async function materializeConnector(input: {
         `Refusing to write ${relative}: it escapes the connector directory`,
       );
     }
-    await provider.writeFile(ctx, target, bytes);
+    await writeBoxFile(ctx, target, bytes);
   }
-  await provider.writeFile(ctx, marker, new TextEncoder().encode(sourceSha));
+  if (runsIsolated()) {
+    // Root wrote these; every run user must read them and none may change
+    // them. The parents are opened for traversal only.
+    await mustSucceed(
+      provider.exec(
+        ctx,
+        `chmod a+rX,go-w ${shellQuote(path.posix.dirname(dir))} ${shellQuote(path.posix.dirname(path.posix.dirname(dir)))} && chmod -R a+rX,go-w ${shellQuote(dir)}`,
+        execOptions({ timeoutMs: 30_000 }),
+      ),
+      "open the connector folder to run users",
+    );
+  }
+  await writeBoxFile(ctx, marker, new TextEncoder().encode(sourceSha));
   return dir;
 }
 
@@ -167,7 +226,7 @@ export async function hasConnectorRuntime(
   const result = await provider.exec(
     ctx,
     `test -f ${shellQuote(marker)} && grep -Fqx ${shellQuote(runtimeId)} ${shellQuote(marker)} && echo yes || echo no`,
-    { timeoutMs: 30_000 },
+    execOptions({ timeoutMs: 30_000 }),
   );
   return result.stdout.trim() === "yes";
 }
@@ -187,7 +246,7 @@ export async function installConnectorRuntime(
     "connector-sdk",
   );
   for (const [relative, bytes] of files) {
-    await provider.writeFile(ctx, path.posix.join(base, relative), bytes);
+    await writeBoxFile(ctx, path.posix.join(base, relative), bytes);
   }
 
   // E2B templates are independently versioned and cannot be assumed to carry
@@ -223,8 +282,15 @@ else
   mkdir -p "$(dirname "$runtime_node")"
   ln -sf "$system_node" "$runtime_node"
 fi
-"$runtime_node" -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 6)) process.exit(1)'`,
-    { timeoutMs: 120_000 },
+"$runtime_node" -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 6)) process.exit(1)'${
+      runsIsolated()
+        ? `
+# Run users read and execute this tree; none of them may change it.
+chmod -R a+rX,go-w "$runtime_root"
+chmod a+rX "$(dirname "$runtime_root")" "$(dirname "$(dirname "$runtime_root")")"`
+        : ""
+    }`,
+    execOptions({ timeoutMs: 120_000 }),
   );
   if (installNode.timedOut) {
     throw new Error("Timed out while installing the connector Node runtime.");
@@ -237,11 +303,178 @@ fi
   }
   // Written last: a killed or failed upload is retried rather than mistaken for
   // a complete runtime on the next invocation.
-  await provider.writeFile(
+  await writeBoxFile(
     ctx,
     path.posix.join(root, ".materialized"),
     new TextEncoder().encode(runtimeId),
   );
+}
+
+async function mustSucceed(
+  pending: Promise<{ exitCode: number; stderr: string; stdout: string }>,
+  what: string,
+): Promise<void> {
+  const result = await pending;
+  if (result.exitCode !== 0) {
+    const detail = (result.stderr || result.stdout).trim().slice(0, 2000);
+    throw new Error(`Could not ${what}${detail ? `: ${detail}` : "."}`);
+  }
+}
+
+/**
+ * One run's private corner of the box.
+ *
+ * `dir` holds the run's config, catalog, state and output. `wrap` turns a
+ * command line into one that runs the connector as the run's own user.
+ * `close` deletes everything the run left behind; it never throws.
+ */
+export interface OpenRun {
+  dir: string;
+  /** The run's Unix user, or null where the provider has no real users. */
+  user: string | null;
+  /** Options for the API's own file and exec calls inside `dir`. */
+  owner: { asRoot: true } | undefined;
+  wrap(command: string): string;
+  /** Hand files root wrote into `dir` to the run user, read-only. */
+  handOver(files: string[]): string;
+  close(): Promise<void>;
+}
+
+const PATH_FOR_ROOT =
+  "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/**
+ * Create a run directory, and on E2B a Unix user that alone can read it.
+ *
+ * Why a user and not just 0700: every command in the box used to run as the
+ * template user, so a 0700 directory was still readable by every other run in
+ * the same box. A connector could list `connector-runs/`, read a concurrent
+ * run's `config.json` (another connection's credential), or leave a process
+ * behind that read every later run's. Now:
+ *
+ * - `connector-runs/` is root-owned 0711: runs can enter their own directory
+ *   but cannot list anyone else's;
+ * - each run directory is 0700 and owned by a user created for the run, with
+ *   a random UID so a deleted user's leftover files never belong to a later
+ *   run;
+ * - the connector is started with `runuser`, so it has no rights over other
+ *   runs' files or processes;
+ * - `close` kills every process of that user, deletes its files in the
+ *   world-writable directories, and deletes the user.
+ */
+export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
+  const provider = getSandboxProvider();
+  const runsRoot = path.posix.join(provider.scratch(ctx), "connector-runs");
+  const runId = randomBytes(8).toString("hex");
+  const dir = path.posix.join(runsRoot, runId);
+
+  if (!runsIsolated()) {
+    await provider.exec(ctx, `mkdir -p ${shellQuote(dir)}`, {
+      timeoutMs: 30_000,
+    });
+    return {
+      dir,
+      user: null,
+      owner: undefined,
+      wrap: command => command,
+      handOver: () => "true",
+      close: async () => {
+        await provider
+          .exec(ctx, `rm -rf ${shellQuote(dir)}`, { timeoutMs: 30_000 })
+          .catch(error =>
+            logger.error("Failed to clean a connector run directory", {
+              error,
+              runDir: dir,
+            }),
+          );
+      },
+    };
+  }
+
+  let user = "";
+  let lastError: unknown;
+  // A random UID can collide with one in use; a fresh name and UID fixes it.
+  for (let attempt = 0; attempt < 3 && !user; attempt++) {
+    const candidate = `mkc${randomBytes(6).toString("hex")}`;
+    const uid = randomInt(200_000, 2_000_000_000);
+    const setup = await provider.exec(
+      ctx,
+      `set -eu
+${PATH_FOR_ROOT}
+runs=${shellQuote(runsRoot)}
+dir=${shellQuote(dir)}
+user=${shellQuote(candidate)}
+command -v runuser >/dev/null
+command -v useradd >/dev/null
+# Only a root-owned directory may hold run directories. Anything else here was
+# made before runs were isolated, or by a connector, and is not trusted.
+if [ -L "$runs" ] || { [ -e "$runs" ] && [ "$(stat -c %u "$runs")" != 0 ]; }; then rm -rf "$runs"; fi
+mkdir -p "$runs"
+chown root:root "$runs"
+chmod 0711 "$runs"
+# useradd takes a lock on /etc/passwd; concurrent runs retry it.
+n=0
+until err=$(useradd -M -U -u ${uid} -d "$dir" -s /usr/sbin/nologin "$user" 2>&1); do
+  n=$((n + 1))
+  if [ "$n" -ge 20 ]; then echo "$err" >&2; exit 1; fi
+  sleep 0.2
+done
+if ! { mkdir -m 0700 "$dir" && chown "$user:$user" "$dir"; }; then
+  userdel "$user" 2>/dev/null || true
+  exit 1
+fi`,
+      { timeoutMs: 30_000, asRoot: true },
+    );
+    if (setup.exitCode === 0) user = candidate;
+    else lastError = (setup.stderr || setup.stdout).trim().slice(0, 2000);
+  }
+  if (!user) {
+    throw new Error(
+      `Could not create an isolated user for the connector run${lastError ? `: ${String(lastError)}` : "."}`,
+    );
+  }
+
+  const owner = { asRoot: true } as const;
+  return {
+    dir,
+    user,
+    owner,
+    wrap: command =>
+      `cd ${shellQuote(dir)} && runuser -u ${shellQuote(user)} -- env HOME=${shellQuote(dir)} TMPDIR=${shellQuote(dir)} ${command}`,
+    handOver: files =>
+      files.length === 0
+        ? "true"
+        : `chown ${shellQuote(`${user}:${user}`)} ${files.map(shellQuote).join(" ")} && chmod 0400 ${files.map(shellQuote).join(" ")}`,
+    close: async () => {
+      await provider
+        .exec(
+          ctx,
+          `${PATH_FOR_ROOT}
+user=${shellQuote(user)}
+pkill -KILL -u "$user" 2>/dev/null || true
+rm -rf ${shellQuote(dir)}
+find /tmp /var/tmp /dev/shm -xdev -user "$user" -exec rm -rf {} + 2>/dev/null || true
+userdel "$user" 2>/dev/null || { sleep 0.5; pkill -KILL -u "$user" 2>/dev/null || true; userdel -f "$user"; }`,
+          { timeoutMs: 30_000, asRoot: true },
+        )
+        .then(result => {
+          if (result.exitCode !== 0) {
+            logger.error("Failed to remove a connector run user", {
+              runDir: dir,
+              user,
+              stderr: result.stderr.slice(0, 500),
+            });
+          }
+        })
+        .catch(error =>
+          logger.error("Failed to clean a connector run directory", {
+            error,
+            runDir: dir,
+            user,
+          }),
+        );
+    },
+  };
 }
 
 /**
@@ -265,12 +498,8 @@ export async function runConnectorCommand(input: {
 }): Promise<RunResult> {
   const provider = getSandboxProvider();
   const { ctx, command } = input;
-  const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const runDir = path.posix.join(
-    getSandboxProvider().scratch(ctx),
-    "connector-runs",
-    runId,
-  );
+  const run = await openRun(ctx);
+  const runDir = run.dir;
   const outputPath = path.posix.join(runDir, "out.jsonl");
   const boundedOutputPath = path.posix.join(runDir, "out.bounded.jsonl");
   const encoder = new TextEncoder();
@@ -282,10 +511,7 @@ export async function runConnectorCommand(input: {
   ];
 
   try {
-    await provider.exec(ctx, `mkdir -p ${shellQuote(runDir)}`, {
-      timeoutMs: 30_000,
-    });
-
+    const inputs: string[] = [];
     for (const [name, value] of [
       ["config", input.config],
       ["catalog", input.catalog],
@@ -293,11 +519,13 @@ export async function runConnectorCommand(input: {
     ] as const) {
       if (value === undefined) continue;
       const file = path.posix.join(runDir, `${name}.json`);
-      await provider.writeFile(
+      await writeBoxFile(
         ctx,
         file,
         encoder.encode(JSON.stringify(value)),
+        run.owner,
       );
+      inputs.push(file);
       args.push(`--${name}`, file);
     }
     if (input.maxIterations !== undefined) {
@@ -312,9 +540,17 @@ export async function runConnectorCommand(input: {
       "bin",
       "mako-connector.js",
     );
-    const command_ = `${shellQuote(runtimeNode(ctx, input.runtimeId))} ${shellQuote(bin)} ${args.map(shellQuote).join(" ")} > ${shellQuote(outputPath)}`;
+    const connectorCommand = run.wrap(
+      `${shellQuote(runtimeNode(ctx, input.runtimeId))} ${shellQuote(bin)} ${args.map(shellQuote).join(" ")}`,
+    );
+    // The redirect is opened by the API's own shell (root on E2B), so the
+    // output file sits in the run directory whoever the connector runs as.
+    const command_ = run.user
+      ? `${run.handOver(inputs)} && ${connectorCommand} > ${shellQuote(outputPath)}`
+      : `${connectorCommand} > ${shellQuote(outputPath)}`;
 
     const result = await provider.exec(ctx, command_, {
+      ...run.owner,
       timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       // Nothing is ADDED to the environment on purpose: a connector has no
       // business reading even what an app may read. What it does see is the
@@ -330,7 +566,7 @@ export async function runConnectorCommand(input: {
     const snapshot = await provider.exec(
       ctx,
       `if test -f ${shellQuote(outputPath)}; then head -c ${MAX_CONNECTOR_PROTOCOL_BYTES + 1} ${shellQuote(outputPath)} > ${shellQuote(boundedOutputPath)} && wc -c < ${shellQuote(boundedOutputPath)}; else echo missing; fi`,
-      { timeoutMs: 30_000 },
+      { ...run.owner, timeoutMs: 30_000 },
     );
     const sizeText = snapshot.stdout.trim();
     if (sizeText !== "missing") {
@@ -351,7 +587,9 @@ export async function runConnectorCommand(input: {
       sizeText === "missing"
         ? ""
         : new TextDecoder().decode(
-            await provider.readFile(ctx, boundedOutputPath),
+            await (run.owner
+              ? provider.readFile(ctx, boundedOutputPath, run.owner)
+              : provider.readFile(ctx, boundedOutputPath)),
           );
 
     const messages: ProtocolMessage[] = [];
@@ -404,14 +642,7 @@ export async function runConnectorCommand(input: {
   } finally {
     // The credential was in this directory. A paused box snapshots its disk,
     // so leaving it would mean the key outlives the run inside a suspended VM.
-    await provider
-      .exec(ctx, `rm -rf ${shellQuote(runDir)}`, { timeoutMs: 30_000 })
-      .catch(error =>
-        logger.error("Failed to clean a connector run directory", {
-          error,
-          runDir,
-        }),
-      );
+    await run.close();
   }
 }
 
