@@ -177,6 +177,7 @@ The existing chunk caps give natural pre-emption points: 32 MB or 50,000 protoco
 
 - **Chunks are idempotent.** A chunk keyed by run, entity and cursor can retry in any box. A box dying mid-chunk loses at most one chunk; the destination's key columns absorb the overlap, as RFC #947 §6.2 already relies on.
 - **Long foreign processes.** Airbyte `read` that cannot stop early (RFC #947 §6.2) holds its lease through heartbeats. On box loss it restarts from the last `STATE`.
+- **Read sessions (`CONNECTOR_SESSION_READS`, off by default).** One connector process reads a whole entity instead of one process per chunk, which removes the Node boot, SDK import and bundle load from every chunk after the first. A root supervisor in the box cuts its output into one file per chunk. The API pulls batch N with one `readFile` and acknowledges batch N − 1. The engine's chunk metadata names the session and the last applied batch, so a retried chunk re-reads the same batch, and a lost session restarts from the last applied `STATE`. The run user and its credential live for the read, capped at 1 hour, and die after 5 minutes without an acknowledgement. Sessions run in the workspace sync box; with leases on, reads stay one process per chunk until a lease can hold a box across Inngest steps.
 
 ### 6.8 Where it lives
 

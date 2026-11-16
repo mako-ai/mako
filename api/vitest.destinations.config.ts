@@ -38,6 +38,7 @@ export default defineConfig({
       "src/utils/bigquery-emulator.test.ts",
       // Per-run Unix users in e2bdev/base under Docker; RUN_DB_INTEGRATION=1.
       "src/connectors/workspace/run-isolation.docker.test.ts",
+      "src/connectors/workspace/session-isolation.docker.test.ts",
     ],
     exclude: [
       "**/node_modules/**",

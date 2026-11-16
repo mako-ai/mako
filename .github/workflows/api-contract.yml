@@ -154,10 +154,12 @@ jobs:
         # The per-run Unix user scripts the API sends to E2B, run as-is in
         # E2B's own e2bdev/base image: concurrent runs, symlink attacks,
         # pthread_exit and non-dumpable survivors, a failed kill, the next
-        # run's credential. GitHub's ubuntu runners have Docker.
+        # run's credential. Read sessions too: a concurrent thief, leftovers
+        # after the read, an API that dies mid-read, a dead supervisor reaped.
+        # GitHub's ubuntu runners have Docker.
         env:
           RUN_CONNECTOR_ISOLATION_DOCKER: "1"
-        run: pnpm --filter api exec vitest run --config vitest.destinations.config.ts src/connectors/workspace/run-isolation.docker.test.ts
+        run: pnpm --filter api exec vitest run --config vitest.destinations.config.ts src/connectors/workspace/run-isolation.docker.test.ts src/connectors/workspace/session-isolation.docker.test.ts
 
       - name: Agent tools tests
         run: pnpm --filter @mako/agent-tools run test

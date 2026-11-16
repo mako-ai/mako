@@ -61,6 +61,13 @@ import {
 } from "./resolver";
 import { connectorBoxLeasesEnabled } from "./boxes/config";
 import { getBoxScheduler } from "./boxes/scheduler";
+import { connectorSessionReadsEnabled } from "./session-config";
+import {
+  boxSessionTransport,
+  sessionReadsSupported,
+  type ReadSessionTransport,
+  type SessionHandle,
+} from "./session-read";
 
 const logger = loggers.connector();
 
@@ -266,6 +273,57 @@ function withMakoSince(
     ...own,
     mako: { ...((mako as Record<string, unknown>) ?? {}), since },
   };
+}
+
+/**
+ * Where a read session is, in the chunk metadata the engine keeps between
+ * chunks: its id, its box and the last batch this read applied (`seq`). The
+ * next chunk pulls `seq + 1` from it, and a retry of this chunk pulls `seq`
+ * again, never a later one. `unsupported` means the runner cannot do
+ * sessions, so the rest of the read goes chunk by chunk.
+ */
+export const MAKO_SESSION_KEY = "makoSession";
+
+type SessionMeta =
+  | { id: string; box?: string; seq: number; entity: string }
+  | { unsupported: true };
+
+function sessionMeta(metadata: unknown): SessionMeta | undefined {
+  const value =
+    metadata && typeof metadata === "object"
+      ? (metadata as Record<string, unknown>)[MAKO_SESSION_KEY]
+      : undefined;
+  if (!value || typeof value !== "object") return undefined;
+  const meta = value as Record<string, unknown>;
+  if (meta.unsupported === true) return { unsupported: true };
+  if (
+    typeof meta.id === "string" &&
+    /^[a-f0-9]{16}$/.test(meta.id) &&
+    typeof meta.entity === "string" &&
+    Number.isSafeInteger(meta.seq) &&
+    (meta.seq as number) >= 1
+  ) {
+    return {
+      id: meta.id,
+      box: typeof meta.box === "string" ? meta.box : undefined,
+      seq: meta.seq as number,
+      entity: meta.entity,
+    };
+  }
+  return undefined;
+}
+
+/** The chunk metadata without the session's own key: the read's state. */
+function withoutSession(metadata: unknown): unknown {
+  if (!metadata || typeof metadata !== "object") return metadata;
+  if (!(MAKO_SESSION_KEY in (metadata as Record<string, unknown>))) {
+    return metadata;
+  }
+  const { [MAKO_SESSION_KEY]: _session, ...rest } = metadata as Record<
+    string,
+    unknown
+  >;
+  return rest;
 }
 
 /** Chunk metadata that remembers the run's `since` for the next chunk. */
@@ -718,6 +776,11 @@ export class SandboxedConnector extends BaseConnector {
    * process: nothing is left running between chunks, and there is no detached
    * stream to reattach to. Foreign runtimes whose `read` cannot be told to
    * stop need a different adapter, and they are not this iteration.
+   *
+   * With CONNECTOR_SESSION_READS, a chunk is one batch of a read session
+   * instead: one process reads the whole entity, chunk after chunk, and each
+   * call here takes the next batch (`fetchViaSession`). The batches are the
+   * chunks a chunk process would have read, so rows and states are the same.
    */
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
     // The entity check needs the indexed definition only. The box is taken
@@ -737,17 +800,38 @@ export class SandboxedConnector extends BaseConnector {
     }
 
     const previous = options.state;
+    const session = sessionMeta(previous?.metadata);
     let maxIterations = options.maxIterations ?? 10;
+    let sessionUnsupported = session !== undefined && "unsupported" in session;
+
+    if (!sessionUnsupported) {
+      const transport = await this.sessionTransport();
+      if (transport) {
+        const viaSession = await this.fetchViaSession(
+          transport,
+          options,
+          session && "id" in session ? session : undefined,
+        );
+        if ("state" in viaSession) return viaSession.state;
+        if (viaSession.fallback === "unsupported") sessionUnsupported = true;
+        if (viaSession.fallback === "too-large") {
+          // As the chunk path's own retry below: one page this time.
+          maxIterations = 1;
+          options.onLog?.(
+            "warn",
+            `A batch of "${options.entity}" was over the protocol cap; reading this chunk with one page.`,
+          );
+        }
+      }
+    }
+
+    const base = withoutSession(previous?.metadata);
     const maxBytes = CHUNK_BYTE_BUDGET;
     const read = () =>
       this.run("read", {
         config: this.readConfig(options),
-        catalog: {
-          streams: [
-            { stream: { name: options.entity }, sync_mode: "incremental" },
-          ],
-        },
-        state: readState(options.entity, previous?.metadata, options.since),
+        catalog: this.readCatalog(options.entity),
+        state: readState(options.entity, base, options.since),
         maxIterations,
         maxBytes,
       });
@@ -785,7 +869,33 @@ export class SandboxedConnector extends BaseConnector {
     if (failure) {
       throw new Error(`read failed for "${options.entity}": ${failure}`);
     }
+    const state = await this.applyRead(result, options, maxIterations);
+    if (sessionUnsupported) {
+      state.metadata = {
+        ...((state.metadata as Record<string, unknown>) ?? {}),
+        [MAKO_SESSION_KEY]: { unsupported: true },
+      };
+    }
+    return state;
+  }
 
+  /** The catalog of a one-entity read. */
+  private readCatalog(entity: string): Record<string, unknown> {
+    return {
+      streams: [{ stream: { name: entity }, sync_mode: "incremental" }],
+    };
+  }
+
+  /**
+   * One chunk's messages -> the engine's batches and its next state. The
+   * same for a chunk process and a session batch, so the two cannot drift.
+   */
+  private async applyRead(
+    result: RunResult,
+    options: ResumableFetchOptions,
+    maxIterations: number,
+  ): Promise<FetchState> {
+    const previous = options.state;
     const records: unknown[] = [];
     let stateMessage: ProtocolMessage | undefined;
     for (const message of result.messages) {
@@ -824,10 +934,140 @@ export class SandboxedConnector extends BaseConnector {
       hasMore,
       iterationsInChunk: maxIterations,
       metadata: withSince(
-        stateMessage?.state ?? previous?.metadata,
+        stateMessage?.state ?? withoutSession(previous?.metadata),
         chunkSince(options.since, previous?.metadata),
       ),
     };
+  }
+
+  /**
+   * The read session this chunk reads through, or null for chunk processes.
+   *
+   * Sessions need CONNECTOR_SESSION_READS, a box with real Unix users, and
+   * the workspace's sync box (CONNECTOR_BOX_LEASES off). A lease holds a box
+   * for one command and is released when it ends; a session needs its box
+   * for the whole read, across Inngest steps, which leases do not offer yet.
+   *
+   * The seam tests replace.
+   */
+  protected async sessionTransport(): Promise<ReadSessionTransport | null> {
+    if (!connectorSessionReadsEnabled()) return null;
+    if (connectorBoxLeasesEnabled() || !sessionReadsSupported()) return null;
+    const { dir, runtimeId, entry, ctx } = await this.ready();
+    return boxSessionTransport({
+      ctx,
+      runtimeId,
+      connectorDir: dir,
+      entry,
+      onCleanupFailure: async reason => {
+        // The box may hold a credential or a live thread of the run: kill
+        // it, and make the next command rebuild a fresh one.
+        this.materializedDir = null;
+        this.runtimeId = null;
+        await retireSyncBox(this.workspaceId, reason);
+      },
+    });
+  }
+
+  /**
+   * One chunk through a read session: batch `seq + 1` of the session the
+   * metadata names, or batch 1 of a new one started from the last applied
+   * state. Returns the chunk's state, or says why this chunk must be read
+   * as a chunk process instead.
+   *
+   * - A retry of a chunk carries the same metadata, so it asks for the same
+   *   batch, which is still there: it was not acknowledged. A batch is
+   *   acknowledged only by the pull of the next one.
+   * - A session that is gone (its box replaced or killed, reaped after the
+   *   API stopped asking, past its deadline) is started again from the last
+   *   applied state, which is exactly where a chunk process would resume.
+   * - A read that fails closes its session; the retry starts a new one.
+   */
+  private async fetchViaSession(
+    transport: ReadSessionTransport,
+    options: ResumableFetchOptions,
+    meta: { id: string; box?: string; seq: number; entity: string } | undefined,
+  ): Promise<
+    { state: FetchState } | { fallback: "unsupported" | "too-large" }
+  > {
+    const previous = options.state;
+    const maxIterations = options.maxIterations ?? 10;
+    let handle: SessionHandle | undefined;
+    let seq = 1;
+    let outcome: Awaited<ReturnType<ReadSessionTransport["pull"]>> | undefined;
+
+    if (meta && meta.entity === options.entity) {
+      handle = { id: meta.id, box: meta.box };
+      seq = meta.seq + 1;
+      outcome = await transport.pull(handle, seq);
+      if (outcome.kind === "lost") {
+        logger.info("Read session lost; resuming from the last applied state", {
+          type: this.sourceConnection.type,
+          entity: options.entity,
+          sessionId: meta.id,
+          reason: outcome.reason,
+        });
+        outcome = undefined;
+      }
+    }
+    if (!outcome) {
+      const started = await transport.start({
+        config: this.readConfig(options),
+        catalog: this.readCatalog(options.entity),
+        state: readState(
+          options.entity,
+          withoutSession(previous?.metadata),
+          options.since,
+        ),
+        maxIterations,
+        maxBytes: CHUNK_BYTE_BUDGET,
+        since: chunkSince(options.since, previous?.metadata),
+      });
+      handle = started.handle;
+      seq = 1;
+      outcome = started.outcome;
+    }
+    const current = handle as SessionHandle;
+    if (outcome.kind === "lost") {
+      // Only a fresh session gets here: a lost one was started again above.
+      await transport.close(current);
+      throw new Error(
+        `read failed for "${options.entity}": its session ended before its first batch (${outcome.reason}).`,
+      );
+    }
+
+    if (outcome.kind !== "batch") {
+      await transport.close(current);
+      return { fallback: outcome.kind };
+    }
+    if (outcome.seq !== seq) {
+      await transport.close(current);
+      throw new Error(
+        `read session for "${options.entity}" returned batch ${outcome.seq} for ${seq}.`,
+      );
+    }
+    const failure = failureMessage(outcome.result);
+    if (failure) {
+      await transport.close(current);
+      throw new Error(`read failed for "${options.entity}": ${failure}`);
+    }
+    // A failed write leaves the session as it is: the retry asks for this
+    // same batch, which stays until the next one is pulled.
+    const state = await this.applyRead(outcome.result, options, maxIterations);
+    if (!state.hasMore) {
+      await transport.close(current);
+      return { state };
+    }
+    state.metadata = {
+      ...((state.metadata as Record<string, unknown>) ?? {}),
+      [MAKO_SESSION_KEY]: {
+        id: current.id,
+        ...(current.box ? { box: current.box } : {}),
+        seq,
+        entity: options.entity,
+      },
+    };
+    return { state };
   }
 
   supportsResumableFetching(): boolean {
