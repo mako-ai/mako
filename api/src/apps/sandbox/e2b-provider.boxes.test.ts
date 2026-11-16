@@ -20,7 +20,11 @@ const e2b = vi.hoisted(() => {
     sandboxId: "sbx_new",
     setTimeout: vi.fn(async () => undefined),
     commands: {
-      run: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" })),
+      // Started in the background, then awaited (e2b-provider startCommand).
+      run: vi.fn(async () => ({
+        pid: 1,
+        wait: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+      })),
     },
   };
   const page: { items: Array<{ sandboxId: string }> } = { items: [] };
@@ -38,7 +42,8 @@ const e2b = vi.hoisted(() => {
   return { Sandbox, SandboxNotFoundError, sandbox, page };
 });
 
-vi.mock("e2b", () => ({
+vi.mock("e2b", async importOriginal => ({
+  ...(await importOriginal<typeof import("e2b")>()),
   Sandbox: e2b.Sandbox,
   SandboxNotFoundError: e2b.SandboxNotFoundError,
 }));

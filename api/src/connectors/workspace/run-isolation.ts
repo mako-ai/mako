@@ -307,6 +307,139 @@ if [ -n "$(awk -v n="$uid" 'NR > 1 && $0 ~ (" " n " ")' /proc/sysvipc/shm /proc/
   echo "IPC objects of $user survived" >&2
   exit 1
 fi
-userdel "$user" || exit 1
+# A user that was never created (a run whose setup never ran) is not a
+# failure: every check above already proved nothing of its uid is left.
+if id -u -- "$user" >/dev/null 2>&1; then userdel "$user" || exit 1; fi
 groupdel "$user" 2>/dev/null || true`;
+}
+
+// ---------------------------------------------------------------------------
+// One chunk in one command
+// ---------------------------------------------------------------------------
+
+/**
+ * Root-only (0700) inbox for a run's inputs before its user exists. The API
+ * writes every input here in ONE request, before the chunk's single command
+ * creates the run user, so setup, launch and cleanup can share that command.
+ * Only root can enter it, so an input is never readable by any run between
+ * the write and the hand-over (see the "gap" Docker case).
+ */
+export const ISOLATED_INCOMING = path.posix.join(ISOLATED_ROOT, "incoming");
+/**
+ * Root-only (0700) home of each run's bounded output, which must outlive the
+ * run directory the cleanup removes so the API can read it after.
+ */
+export const ISOLATED_RESULTS = path.posix.join(ISOLATED_ROOT, "results");
+
+/** Where the API writes an input named `name` for run `runId`. */
+export function incomingPath(runId: string, name: string): string {
+  return path.posix.join(ISOLATED_INCOMING, runId, name);
+}
+
+/** The run's bounded output, after the run directory is gone. */
+export function resultPath(runId: string): string {
+  return path.posix.join(ISOLATED_RESULTS, `${runId}.jsonl`);
+}
+
+/** The line the chunk script prints last: `<size|missing|error> <cleanup exit>`. */
+export const CHUNK_MARKER = "MAKO_CHUNK";
+/** Chunk script exit when the run user could not be created. */
+export const SETUP_FAILED_EXIT = 97;
+/** Chunk script exit when the inputs were not in the inbox (box replaced). */
+export const INPUTS_MISSING_EXIT = 98;
+
+/**
+ * Root, once per box: the tool preflight, then the root-only inbox and
+ * results directories. Prints missing tools one per line, as preflightScript.
+ */
+export function prepareBoxScript(): string {
+  return `${preflightScript()}
+install -d -o root -g root -m 0755 ${shellQuote(ISOLATED_ROOT)} \\
+  && install -d -o root -g root -m 0711 ${shellQuote(ISOLATED_RUNS)} \\
+  && install -d -o root -g root -m 0700 ${shellQuote(ISOLATED_INCOMING)} ${shellQuote(ISOLATED_RESULTS)}`;
+}
+
+/**
+ * Root: one whole connector run, the per-run isolation folded into it.
+ *
+ * 1. `setupScript` creates the run user and its directories (fails closed).
+ * 2. The inputs move from the root-only inbox into the root-only stage.
+ * 3. `launchScript` hands them to the run user and runs `command` as it.
+ * 4. At most `maxBytes + 1` of the output is copied to the root-only result.
+ * 5. `cleanupScript` kills every thread of the run user and removes the run.
+ *
+ * Steps 1, 3 and 5 are the same strings the API sent as separate commands,
+ * each in its own subshell, so their `set -e` and `exit` stay local. The last
+ * line is `MAKO_CHUNK <size> <cleanup exit>`; the exit code is the
+ * connector's. Cleanup runs whatever the connector did, so a credential never
+ * outlives the command unless the command itself is killed (the API then
+ * runs `cleanupScript` on its own).
+ */
+export function chunkScript(
+  l: RunLayout,
+  inputs: string[],
+  command: string,
+  maxBytes: number,
+): string {
+  const inbox = shellQuote(path.posix.join(ISOLATED_INCOMING, l.runId));
+  const result = shellQuote(resultPath(l.runId));
+  const out = shellQuote(l.outputFile);
+  const moves = inputs
+    .map(input => {
+      const name = path.posix.basename(input);
+      return `mv -- ${shellQuote(incomingPath(l.runId, name))} ${shellQuote(stagedPath(l, input))} || staged=0`;
+    })
+    .join("\n");
+  return `${PATH_FOR_ROOT}
+if ! (
+${setupScript(l)}
+); then
+  rm -rf ${inbox}
+  echo "${CHUNK_MARKER} setup-failed"
+  exit ${SETUP_FAILED_EXIT}
+fi
+staged=1
+${moves}
+rm -rf ${inbox}
+status=125
+if [ "$staged" = 1 ]; then
+  (
+${launchScript(l, inputs, command)}
+  )
+  status=$?
+fi
+size=missing
+if [ "$staged" = 1 ] && [ -f ${out} ]; then
+  if head -c ${maxBytes + 1} ${out} > ${result}; then size=$(wc -c < ${result}); else size=error; fi
+fi
+(
+${cleanupScript(l)}
+)
+cleanup=$?
+if [ "$staged" != 1 ]; then
+  echo "${CHUNK_MARKER} inputs-missing $cleanup"
+  exit ${INPUTS_MISSING_EXIT}
+fi
+echo "${CHUNK_MARKER} $size $cleanup"
+exit $status`;
+}
+
+/**
+ * Root: the fallback cleanup when the chunk command itself was cut off, or
+ * never started. `cleanupScript` runs in a subshell, so its own `exit` on a
+ * failure cannot skip the rest: the inbox (which may still hold the
+ * credential) and the result file are removed whatever it reports.
+ */
+export function abandonScript(l: RunLayout): string {
+  return `${PATH_FOR_ROOT}
+(
+${cleanupScript(l)}
+)
+code=$?
+rm -rf ${shellQuote(path.posix.join(ISOLATED_INCOMING, l.runId))} ${shellQuote(resultPath(l.runId))}
+if [ -e ${shellQuote(path.posix.join(ISOLATED_INCOMING, l.runId))} ] || [ -e ${shellQuote(resultPath(l.runId))} ]; then
+  echo "inbox or result of ${l.runId} survived" >&2
+  exit 1
+fi
+exit $code`;
 }

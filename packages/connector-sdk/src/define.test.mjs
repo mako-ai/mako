@@ -33,3 +33,27 @@ test("entity names stay lowercase, and the connector name stays a slug", () => {
     /name must be a lowercase slug/,
   );
 });
+
+test("spec carries each entity's layout and incremental mode for Mako to index", () => {
+  const layout = { partitionField: "_syncedAt", partitionGranularity: "day", clusterFields: ["_dataSourceId", "id"] };
+  const spec = defineConnector({
+    name: "acme",
+    version: "1",
+    entities: {
+      rows: { ...entity, label: "Rows", layout, incremental: "created-anchor" },
+      plain: { ...entity, label: "Plain" },
+    },
+  }).spec();
+  assert.deepEqual(spec.mako.entities.rows, {
+    label: "Rows",
+    description: undefined,
+    layout,
+    incremental: "created-anchor",
+  });
+  assert.equal("layout" in spec.mako.entities.plain, false);
+  assert.equal("incremental" in spec.mako.entities.plain, false);
+  assert.throws(
+    () => defineConnector({ name: "acme", version: "1", entities: { rows: { ...entity, incremental: "sometimes" } } }),
+    /incremental must be one of/,
+  );
+});

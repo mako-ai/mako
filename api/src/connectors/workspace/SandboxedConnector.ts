@@ -16,6 +16,7 @@
  */
 import {
   BaseConnector,
+  type NormalizedCdcRecord,
   type ConnectionTestResult,
   type ConnectorEntitySchema,
   type EntityMetadata,
@@ -25,9 +26,12 @@ import {
   type ResumableFetchOptions,
 } from "../base/BaseConnector";
 import { randomBytes } from "node:crypto";
+import { NonRetriableError } from "inngest";
 import { loggers } from "../../logging";
 import {
   ensureBundle,
+  ConnectorOutputTooLargeError,
+  MAX_CONNECTOR_PROTOCOL_BYTES,
   failureMessage,
   firstOfType,
   materializeConnector,
@@ -60,6 +64,97 @@ import { getBoxScheduler } from "./boxes/scheduler";
 
 const logger = loggers.connector();
 
+/**
+ * A chunk's byte budget (`--max-bytes`): half the protocol cap, so the page
+ * that crosses it still fits. 10 pages of large emails measured 33 MB in
+ * bench G1 and broke the 32 MiB cap on 4 of 30 chunks.
+ */
+/** The settings every connection gets at create time when none are given. */
+const CREATE_DEFAULT_BATCH_SIZE = 100;
+const CREATE_DEFAULT_RATE_LIMIT_MS = 200;
+
+export const CHUNK_BYTE_BUDGET = Math.floor(MAX_CONNECTOR_PROTOCOL_BYTES / 2);
+
+/**
+ * A record's own time, from its declared cursor field first, then from the
+ * update and creation fields APIs commonly use. Unix epochs count, in seconds
+ * or milliseconds: Stripe sends `created` as seconds, and the base resolver
+ * reads ISO strings only, which gave every boxed Stripe row "now".
+ */
+const UPDATED_FIELDS = [
+  "date_updated",
+  "updated_at",
+  "updatedAt",
+  "date_modified",
+  "updated",
+];
+const CREATED_FIELDS = [
+  "date_created",
+  "created_at",
+  "createdAt",
+  "created",
+  "start_date",
+  "timestamp",
+];
+
+export function recordTimestamp(
+  payload: Record<string, unknown> | undefined,
+  cursorField?: string,
+): Date | null {
+  const names = [
+    ...(cursorField ? [cursorField] : []),
+    ...UPDATED_FIELDS,
+    ...CREATED_FIELDS,
+  ];
+  for (const name of names) {
+    const date = toDate(payload?.[name]);
+    if (date) return date;
+  }
+  return null;
+}
+
+/** Outside this window a "timestamp" is a misread number, not a time. */
+const EARLIEST_SOURCE_TS = Date.UTC(1990, 0, 1);
+const LATEST_SOURCE_TS = Date.UTC(2100, 0, 1);
+
+/** An epoch in seconds, milliseconds or microseconds, by its size. */
+function fromEpoch(value: number): Date | null {
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const ms = value > 1e14 ? value / 1000 : value > 1e12 ? value : value * 1000;
+  return new Date(ms);
+}
+
+function toDate(value: unknown): Date | null {
+  if (value === null || value === undefined || value === "") return null;
+  let date: Date | null;
+  if (value instanceof Date) {
+    date = value;
+  } else if (typeof value === "number") {
+    date = fromEpoch(value);
+  } else if (typeof value === "string") {
+    const text = value.trim();
+    if (/^\d+$/.test(text)) {
+      // A digit string is an epoch or nothing. `new Date("2024")` would read
+      // a year, and `new Date("7")` a July 2001.
+      date = text.length >= 9 ? fromEpoch(Number(text)) : null;
+    } else if (/^\d{4}-\d{2}-\d{2}/.test(text) || /[a-z]{3}/i.test(text)) {
+      // ISO 8601, or a written date such as an RFC 2822 header.
+      date = new Date(text);
+    } else {
+      date = null;
+    }
+  } else {
+    return null;
+  }
+  if (!date) return null;
+  const time = date.getTime();
+  return Number.isNaN(time) ||
+    time < EARLIEST_SOURCE_TS ||
+    time >= LATEST_SOURCE_TS
+    ? null
+    : date;
+}
+
 /** `ws:acme` -> `acme`. */
 export const WORKSPACE_TYPE_PREFIX = "ws:";
 
@@ -89,8 +184,102 @@ function mapLogLevel(
   }
 }
 
+/**
+ * The `--state` of one chunk: the last STATE the connector emitted, with the
+ * engine's `since` in its stream state.
+ *
+ * The engine passes `since` as `options.since`, the in-process connectors read
+ * it there, and a boxed connector can only read its files, so it goes into
+ * the stream state as ISO 8601 (`state.mako.since`). Without this every boxed read
+ * was a full read.
+ *
+ * A backfill passes `options.since` on every chunk, but a scheduled
+ * incremental sync passes it on the first chunk only. So the anchor is also
+ * kept in the chunk's own metadata (`MAKO_SINCE_KEY`) and re-injected from
+ * there: a connector that does not copy `since` into its state must still see
+ * it on chunk 2, or it walks the whole history from its cursor.
+ */
+export const MAKO_SINCE_KEY = "makoSince";
+
+export function chunkSince(
+  since: Date | undefined,
+  previous: unknown,
+): string | undefined {
+  if (since instanceof Date && !Number.isNaN(since.getTime())) {
+    return since.toISOString();
+  }
+  const kept =
+    previous && typeof previous === "object"
+      ? (previous as Record<string, unknown>)[MAKO_SINCE_KEY]
+      : undefined;
+  return typeof kept === "string" && !Number.isNaN(new Date(kept).getTime())
+    ? kept
+    : undefined;
+}
+
+export function readState(
+  entity: string,
+  previous: unknown,
+  since: Date | undefined,
+): unknown[] | undefined {
+  const base =
+    previous && typeof previous === "object"
+      ? (previous as Record<string, any>)
+      : undefined;
+  const anchor = chunkSince(since, previous);
+  if (!anchor) return base ? [base] : undefined;
+  const stream = (base?.stream ?? {}) as Record<string, any>;
+  return [
+    {
+      ...(base ?? { type: "STREAM" }),
+      stream: {
+        ...stream,
+        stream_descriptor: stream.stream_descriptor ?? { name: entity },
+        stream_state: withMakoSince(stream.stream_state, anchor),
+      },
+    },
+  ];
+}
+
+/**
+ * `since` lives under `mako` in the stream state (`state.mako.since`): the
+ * `mako` key is Mako's, so a connector's own `since` (a vendor cursor, say)
+ * is never overwritten. A connector whose state uses `mako` for something
+ * that is not an object fails loudly rather than losing either value.
+ */
+function withMakoSince(
+  streamState: unknown,
+  since: string,
+): Record<string, unknown> {
+  const own =
+    streamState && typeof streamState === "object"
+      ? (streamState as Record<string, unknown>)
+      : {};
+  const mako = own.mako;
+  if (mako !== undefined && (mako === null || typeof mako !== "object")) {
+    throw new Error(
+      "The connector's state uses the reserved key `mako`; Mako keeps " +
+        "`state.mako.since` there. Rename the connector's own key.",
+    );
+  }
+  return {
+    ...own,
+    mako: { ...((mako as Record<string, unknown>) ?? {}), since },
+  };
+}
+
+/** Chunk metadata that remembers the run's `since` for the next chunk. */
+function withSince(metadata: unknown, since: string | undefined): unknown {
+  if (!since) return metadata;
+  const base =
+    metadata && typeof metadata === "object"
+      ? (metadata as Record<string, unknown>)
+      : {};
+  return { ...base, [MAKO_SINCE_KEY]: since };
+}
+
 export class SandboxedConnector extends BaseConnector {
-  private loaded: LoadedConnector | null = null;
+  protected loaded: LoadedConnector | null = null;
   private materializedDir: string | null = null;
   private runtimeId: string | null = null;
   /** The bundle's entry when this connector runs from one; else the definition's. */
@@ -113,7 +302,7 @@ export class SandboxedConnector extends BaseConnector {
   }
 
   /** The indexed definition, loaded once per instance. */
-  private async definition(): Promise<LoadedConnector> {
+  protected async definition(): Promise<LoadedConnector> {
     if (!this.loaded) {
       this.loaded = await loadConnectorDefinition(this.workspaceId, this.slug);
     }
@@ -216,14 +405,18 @@ export class SandboxedConnector extends BaseConnector {
    * Flag off (CONNECTOR_BOX_LEASES unset): exactly the old path, the
    * workspace's one sync box. Flag on: a lease on a box keyed by this
    * connection and the connector's hash, released when the command ends.
+   *
+   * The one seam between this adapter and the box: everything above it
+   * builds inputs and reads messages, and tests replace only this.
    */
-  private async run(
+  protected async run(
     command: ConnectorCommand,
     options: {
       config?: Record<string, unknown>;
       catalog?: Record<string, unknown>;
       state?: Record<string, unknown> | unknown[];
       maxIterations?: number;
+      maxBytes?: number;
       timeoutMs?: number;
     },
   ): Promise<RunResult> {
@@ -351,6 +544,82 @@ export class SandboxedConnector extends BaseConnector {
     return (this.sourceConnection.config ?? {}) as Record<string, unknown>;
   }
 
+  /**
+   * The config a `read` gets: the credential, plus the batch size and rate
+   * limit the engine knows, under the SDK's reserved `__` keys. A box has no
+   * other way to learn them.
+   *
+   * Every saved connection carries `sync_batch_size` 100 and
+   * `rate_limit_delay_ms` 200 whether or not anyone chose them: they are
+   * filled in at create time (source-connection-create.service.ts). Passing
+   * those would override every connector's own defaults. So a setting goes
+   * to the box only when it differs from the create-time default, or when
+   * the caller passes it in `options`; otherwise the connector's default
+   * applies.
+   */
+  private readConfig(options: ResumableFetchOptions): Record<string, unknown> {
+    const settings = (this.sourceConnection.settings ?? {}) as {
+      sync_batch_size?: unknown;
+      rate_limit_delay_ms?: unknown;
+    };
+    const positive = (value: unknown): number | undefined =>
+      typeof value === "number" && Number.isFinite(value) && value > 0
+        ? value
+        : undefined;
+    const chosen = (value: unknown, createDefault: number) => {
+      const number = positive(value);
+      return number === createDefault ? undefined : number;
+    };
+    const pageSize =
+      positive(options.batchSize) ??
+      chosen(settings.sync_batch_size, CREATE_DEFAULT_BATCH_SIZE);
+    const rateLimitDelay =
+      positive(options.rateLimitDelay) ??
+      chosen(settings.rate_limit_delay_ms, CREATE_DEFAULT_RATE_LIMIT_MS);
+    return {
+      ...this.config(),
+      ...(pageSize !== undefined ? { __page_size: pageSize } : {}),
+      ...(rateLimitDelay !== undefined
+        ? { __rate_limit_delay_ms: rateLimitDelay }
+        : {}),
+    };
+  }
+
+  /** An entity's declared cursor field, once `discover` has run. */
+  private cursorField(entity: string): string | undefined {
+    const streams = (this.catalogCache?.catalog as any)?.streams;
+    if (!Array.isArray(streams)) return undefined;
+    const field = streams.find(
+      (s: any) => s?.name === entity,
+    )?.default_cursor_field;
+    return Array.isArray(field) && typeof field.at(-1) === "string"
+      ? field.at(-1)
+      : undefined;
+  }
+
+  /**
+   * The record's own time, never "now" when the record carries one. The
+   * entity's cursor field comes first, then update and creation fields, in
+   * ISO or Unix-epoch form (see `recordTimestamp`).
+   */
+  protected resolveRecordTimestamp(payload?: Record<string, unknown>): Date {
+    return recordTimestamp(payload) ?? super.resolveRecordTimestamp(payload);
+  }
+
+  normalizeBackfillRecord(
+    entity: string,
+    record: Record<string, unknown>,
+  ): NormalizedCdcRecord | null {
+    const normalized = super.normalizeBackfillRecord(entity, record);
+    if (!normalized) return null;
+    return {
+      ...normalized,
+      sourceTs:
+        recordTimestamp(record, this.cursorField(entity)) ??
+        normalized.sourceTs,
+    };
+  }
+
   async testConnection(): Promise<ConnectionTestResult> {
     try {
       const result = await this.run("check", { config: this.config() });
@@ -399,6 +668,11 @@ export class SandboxedConnector extends BaseConnector {
       label:
         declared?.[name]?.label ?? name.charAt(0).toUpperCase() + name.slice(1),
       description: declared?.[name]?.description,
+      // The SDK puts an entity's declared `layout` in its spec; it is the
+      // in-process `layoutSuggestion`, under the name RFC §4 gives it.
+      ...(declared?.[name]?.layout
+        ? { layoutSuggestion: declared[name].layout }
+        : {}),
     }));
   }
 
@@ -446,10 +720,9 @@ export class SandboxedConnector extends BaseConnector {
    * stop need a different adapter, and they are not this iteration.
    */
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
-    // Flag off keeps the old order: the box is readied before the entity
-    // check. With leases the box is taken only for the command itself.
-    if (connectorBoxLeasesEnabled()) await this.definition();
-    else await this.ready();
+    // The entity check needs the indexed definition only. The box is taken
+    // (flag off: readied; flag on: leased) by `run`, for the command itself.
+    await this.definition();
 
     // An entity the connector does not declare is a failure, not an empty
     // sync. The runner's stream selection silently drops an unknown name, so
@@ -463,19 +736,50 @@ export class SandboxedConnector extends BaseConnector {
       );
     }
 
-    const maxIterations = options.maxIterations ?? 10;
     const previous = options.state;
+    let maxIterations = options.maxIterations ?? 10;
+    const maxBytes = CHUNK_BYTE_BUDGET;
+    const read = () =>
+      this.run("read", {
+        config: this.readConfig(options),
+        catalog: {
+          streams: [
+            { stream: { name: options.entity }, sync_mode: "incremental" },
+          ],
+        },
+        state: readState(options.entity, previous?.metadata, options.since),
+        maxIterations,
+        maxBytes,
+      });
 
-    const result = await this.run("read", {
-      config: this.config(),
-      catalog: {
-        streams: [
-          { stream: { name: options.entity }, sync_mode: "incremental" },
-        ],
-      },
-      state: previous?.metadata ? [previous.metadata] : undefined,
-      maxIterations,
-    });
+    // A chunk over the protocol cap fails the same way every time it is
+    // retried as it was: same state, same pages, same bytes. The byte budget
+    // already ends a chunk after the page that crosses half the cap, so an
+    // over-cap chunk means its last page was large. Retry once with a single
+    // page. If one page alone is over the cap, no budget can help: fail at
+    // once, and tell Inngest not to replay the same read.
+    let result: RunResult;
+    for (;;) {
+      try {
+        result = await read();
+        break;
+      } catch (error) {
+        if (!(error instanceof ConnectorOutputTooLargeError)) throw error;
+        if (maxIterations <= 1) {
+          throw new NonRetriableError(
+            `read failed for "${options.entity}": one page of it is over the ` +
+              `${MAX_CONNECTOR_PROTOCOL_BYTES}-byte chunk cap. Lower the ` +
+              `connection's batch size. (${error.message})`,
+            { cause: error },
+          );
+        }
+        maxIterations = 1;
+        options.onLog?.(
+          "warn",
+          `A chunk of "${options.entity}" was over the protocol cap; retrying it with one page.`,
+        );
+      }
+    }
 
     const failure = failureMessage(result);
     if (failure) {
@@ -519,7 +823,10 @@ export class SandboxedConnector extends BaseConnector {
       totalProcessed: (previous?.totalProcessed ?? 0) + records.length,
       hasMore,
       iterationsInChunk: maxIterations,
-      metadata: stateMessage?.state ?? previous?.metadata,
+      metadata: withSince(
+        stateMessage?.state ?? previous?.metadata,
+        chunkSince(options.since, previous?.metadata),
+      ),
     };
   }
 
@@ -543,11 +850,25 @@ export class SandboxedConnector extends BaseConnector {
   }
 
   getIncrementalCapabilities(): IncrementalCapabilities {
-    // Honest by default. A workspace connector declares an incremental cursor
-    // per stream in `discover`, which is not knowable synchronously here, and
-    // claiming "supported" without knowing would let the UI offer an
-    // incremental sync that silently re-reads everything.
-    return { supported: false, mode: "none" };
+    // Honest by default: only entities whose spec declares what they do with
+    // `state.mako.since` (the SDK's `incremental`) are offered incremental. A
+    // connector that declares nothing re-reads everything, and says so.
+    const declared = ((this.loaded?.spec?.mako as any)?.entities ??
+      {}) as Record<string, { incremental?: unknown }>;
+    const modes = new Set(["native", "client-filter", "created-anchor"]);
+    const perEntity: NonNullable<IncrementalCapabilities["perEntity"]> = {};
+    for (const name of this.getAvailableEntities()) {
+      const mode = declared[name]?.incremental;
+      perEntity[name] = {
+        mode:
+          typeof mode === "string" && modes.has(mode)
+            ? (mode as IncrementalCapabilities["mode"])
+            : "none",
+      };
+    }
+    const supported = Object.values(perEntity).some(e => e.mode !== "none");
+    if (!supported) return { supported: false, mode: "none" };
+    return { supported: true, mode: "none", perEntity };
   }
 
   getMetadata(): {
