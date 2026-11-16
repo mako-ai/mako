@@ -1,9 +1,10 @@
 /**
  * Transport-neutral SQL / MongoDB discovery + execution capability metadata.
  *
- * Discovery and inspection are read-only everywhere. Raw execution carries
- * the `query:read` scope envelope; MongoDB execution stays in-product because
- * arbitrary Mongo JavaScript has no reliable per-query read-only mode.
+ * Discovery and inspection are read-only everywhere. Raw execution, SQL and
+ * MongoDB alike, carries the `query:read` scope envelope: a MongoDB query is
+ * interpreted, never evaluated, and a read-only run refuses any write method,
+ * command or $out/$merge stage (api mongo-shell-interpreter.ts).
  */
 import {
   ALL_AGENT_SURFACES,
@@ -107,11 +108,8 @@ export const QUERY_CAPABILITIES = [
     name: "mongo_execute_query",
     pack: "mongo-execute",
     risk: "write",
-    surfaces: IN_CHAT_ONLY_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "data",
-    mcpExclusion: {
-      why: "security",
-      note: "Arbitrary MongoDB JavaScript has no reliable per-query read-only mode.",
-    },
+    requiresQueryAccess: true,
   }),
 ] as const satisfies readonly QueryCapabilityDefinition[];

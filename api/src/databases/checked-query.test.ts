@@ -26,15 +26,66 @@ describe("executeCheckedQuery", () => {
         run,
       ),
     ).toMatchObject({ success: false });
-    for (const type of ["mongodb", "cloudflare-kv"]) {
+    expect(
+      await executeCheckedQuery(
+        connection("cloudflare-kv"),
+        "SELECT 1",
+        { readOnly: true },
+        run,
+      ),
+    ).toMatchObject({ success: false, error: /not supported for/ });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("runs a MongoDB read read-only and refuses a write", async () => {
+    const run = vi.fn(
+      async (_db: unknown, _query: unknown, _options?: unknown) => ({
+        success: true,
+        data: [],
+      }),
+    );
+    for (const query of [
+      "db.users.find({ active: true }).limit(5).toArray()",
+      "db.users.aggregate([{ $group: { _id: '$plan', n: { $sum: 1 } } }]).toArray()",
+      "db.users.countDocuments({})",
+      { collection: "users", operation: "find", filter: {} },
+      { collection: "users", operation: "aggregate", pipeline: [] },
+    ]) {
       expect(
         await executeCheckedQuery(
-          connection(type),
-          "SELECT 1",
+          connection("mongodb"),
+          query,
           { readOnly: true },
           run,
         ),
-      ).toMatchObject({ success: false, error: /not supported for/ });
+      ).toEqual({ success: true, data: [] });
+    }
+    expect(run).toHaveBeenCalledTimes(5);
+    expect(run.mock.calls[0][2]).toMatchObject({ readOnly: true });
+
+    run.mockClear();
+    for (const query of [
+      "db.users.deleteMany({})",
+      "db.users.insertOne({ a: 1 })",
+      "db.users.aggregate([{ $out: 'copy' }]).toArray()",
+      "db.users.aggregate([{ $merge: { into: 'copy' } }]).toArray()",
+      "db.runCommand({ drop: 'users' })",
+      'db.users["deleteMany"]({})',
+      { collection: "users", operation: "deleteMany", filter: {} },
+      {
+        collection: "users",
+        operation: "aggregate",
+        pipeline: [{ $out: "copy" }],
+      },
+    ]) {
+      expect(
+        await executeCheckedQuery(
+          connection("mongodb"),
+          query,
+          { readOnly: true },
+          run,
+        ),
+      ).toMatchObject({ success: false, error: /read-only/ });
     }
     expect(run).not.toHaveBeenCalled();
   });

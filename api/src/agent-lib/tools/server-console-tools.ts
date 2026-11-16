@@ -45,12 +45,14 @@ import {
 import { queryExecutionService } from "../../services/query-execution.service";
 import { queryExecutionSourceLabel } from "../../services/query-execution-source";
 import {
-  MONGO_QUERY_WRITE_SCOPE_REQUIRED,
+  NON_SQL_CONSOLE_READ_ONLY_REFUSAL,
+  mongoReadOnlyAccessError,
   sqlReadOnlyAccessError,
 } from "../../services/read-only-query.service";
 import type { QueryAccess } from "../../auth/api-key-scopes";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import {
+  MCP_QUERY_SOFT_TIMEOUT_MS,
   QUERY_SOFT_TIMEOUT_MS,
   QUERY_HARD_MAX_EXECUTION_MS,
   QUERY_STATUS_POLL_WAIT_MS,
@@ -151,6 +153,9 @@ export function createServerConsoleTools({
 }: ServerConsoleToolsOptions) {
   const agentClientId = `agent:${chatId ?? "unknown"}`;
   const runSource = surface === "mcp" ? ("mcp" as const) : ("agent" as const);
+  // How long run_console waits inline before answering "running".
+  const softTimeoutMs =
+    surface === "mcp" ? MCP_QUERY_SOFT_TIMEOUT_MS : QUERY_SOFT_TIMEOUT_MS;
   // Console runs have not adopted per-connection allowAgentWrites
   // resolution; a query:write ("write-opt-in") credential fails closed to
   // read here. Only sql_execute_query honors the connection opt-in.
@@ -644,13 +649,12 @@ export function createServerConsoleTools({
               error: "Console database connection was not found.",
             };
           }
-          if (connection.type === "mongodb" || doc.language !== "sql") {
-            return {
-              success: false,
-              error: MONGO_QUERY_WRITE_SCOPE_REQUIRED,
-            };
-          }
-          const accessError = sqlReadOnlyAccessError(doc.code, connection.type);
+          const accessError =
+            connection.type === "mongodb"
+              ? mongoReadOnlyAccessError(doc.code)
+              : doc.language !== "sql"
+                ? NON_SQL_CONSOLE_READ_ONLY_REFUSAL
+                : sqlReadOnlyAccessError(doc.code, connection.type);
           if (accessError) {
             return { success: false, error: accessError };
           }
@@ -698,10 +702,7 @@ export function createServerConsoleTools({
         const TIMED_OUT = Symbol("soft-timeout");
         let softTimer: ReturnType<typeof setTimeout> | undefined;
         const softTimeout = new Promise<typeof TIMED_OUT>(resolve => {
-          softTimer = setTimeout(
-            () => resolve(TIMED_OUT),
-            QUERY_SOFT_TIMEOUT_MS,
-          );
+          softTimer = setTimeout(() => resolve(TIMED_OUT), softTimeoutMs);
         });
 
         try {
@@ -713,9 +714,9 @@ export function createServerConsoleTools({
               status: "running" as const,
               executionId,
               consoleId,
-              elapsedMs: QUERY_SOFT_TIMEOUT_MS,
+              elapsedMs: softTimeoutMs,
               message:
-                `Query is still running after ${Math.round(QUERY_SOFT_TIMEOUT_MS / 1000)}s and keeps running server-side. ` +
+                `Query is still running after ${Math.round(softTimeoutMs / 1000)}s and keeps running server-side. ` +
                 `Call check_query_status (consoleId="${consoleId}", executionId="${executionId}") to get the result — it blocks server-side until the query finishes (no need to wait or poll rapidly yourself). Do not re-run the query.`,
             };
           }

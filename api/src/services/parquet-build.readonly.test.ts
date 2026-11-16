@@ -99,7 +99,8 @@ async function main() {
 
   // 4. executeQuery no longer fails closed for BigQuery under `readOnly`; it
   //    validates lexically then executes (reaching the credential error). Writes
-  //    are still rejected, and non-SQL engines still fail closed.
+  //    are still rejected. MongoDB is checked by its own write
+  //    classification: a read reaches the driver, a write is refused.
   const bqRead = await databaseConnectionService.executeQuery(
     bq,
     "SELECT 1 AS a",
@@ -120,23 +121,47 @@ async function main() {
   assert.equal(bqWrite.success, false);
   assert.match(bqWrite.error ?? "", /read-only|forbidden|SELECT or WITH/i);
 
-  const mongo = await databaseConnectionService.executeQuery(
+  const mongoRead = await databaseConnectionService.executeQuery(
     fakeConnection("mongodb"),
+    "db.users.find({}).limit(1).toArray()",
+    { readOnly: true },
+  );
+  assert.equal(mongoRead.success, false);
+  assert.doesNotMatch(
+    mongoRead.error ?? "",
+    /read-only|not supported/i,
+    "a read-only MongoDB read reaches the driver",
+  );
+
+  const mongoWrite = await databaseConnectionService.executeQuery(
+    fakeConnection("mongodb"),
+    "db.users.deleteMany({})",
+    { readOnly: true },
+  );
+  assert.equal(mongoWrite.success, false);
+  assert.match(
+    mongoWrite.error ?? "",
+    /read-only/i,
+    "a read-only MongoDB write is refused before the driver",
+  );
+
+  const kv = await databaseConnectionService.executeQuery(
+    fakeConnection("cloudflare-kv"),
     "SELECT 1",
     { readOnly: true },
   );
-  assert.equal(mongo.success, false);
+  assert.equal(kv.success, false);
   assert.match(
-    mongo.error ?? "",
+    kv.error ?? "",
     /not supported/i,
-    "non-SQL engines must still fail closed under read-only",
+    "other non-SQL engines still fail closed under read-only",
   );
 
   // 5. Regression for MongoDB materialization (broken by PR #688): because
   //    MongoDB fails closed under `readOnly` (test 4 above), the materialization
   //    core must NOT force read-only for Mongo — the binding's JS-shell code
-  //    (e.g. `db.client.db('x').collection('y').aggregate([...])`) can never
-  //    pass the SQL read-only analyzer. Without read-only, the streaming path
+  //    (e.g. `db.client.db('x').collection('y').aggregate([...])`) must
+  //    reach the driver, not the SQL read-only analyzer. Without read-only, the streaming path
   //    reaches the Mongo driver (and fails on the deliberately invalid URI),
   //    rather than being rejected by the SELECT/WITH gate.
   const mongoStream = await databaseConnectionService.executeStreamingQuery(

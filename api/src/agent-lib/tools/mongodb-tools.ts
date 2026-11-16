@@ -10,6 +10,9 @@ import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { queryExecutionService } from "../../services/query-execution.service";
 import type { AgentToolExecutionContext } from "../../agents/types";
+import type { QueryAccess } from "../../auth/api-key-scopes";
+import { mongoReadOnlyAccessError } from "../../services/read-only-query.service";
+import { effectiveSqlQueryAccess } from "./sql-tools";
 import type { ConsoleDataV2 } from "../types";
 import {
   inferBsonType,
@@ -283,8 +286,19 @@ async function executeQueryImpl(
   userId?: string,
   toolExecutionContext?: AgentToolExecutionContext,
   maxRows?: number,
+  /** The caller's query access; omitted in-product (writers list decides). */
+  queryAccess?: QueryAccess,
 ) {
   const startTime = Date.now();
+
+  if (queryAccess === "none") {
+    throw new Error("This API key does not have query access");
+  }
+  if (queryAccess === "read") {
+    // Refused before any lookup: a read-only key never writes.
+    const accessError = mongoReadOnlyAccessError(query);
+    if (accessError) throw new Error(accessError);
+  }
 
   if (
     !Types.ObjectId.isValid(connectionId) ||
@@ -300,6 +314,21 @@ async function executeQueryImpl(
     workspaceId: new Types.ObjectId(workspaceId),
   });
   if (!database) throw new Error("Connection not found or access denied");
+  if (database.type !== "mongodb") {
+    throw new Error(
+      `This tool only runs MongoDB queries; ${database.name} is ${database.type}. Use sql_execute_query.`,
+    );
+  }
+
+  // A key that may write (query:write) writes only where the connection
+  // allows it, as sql_execute_query; any other key runs the query read-only.
+  const readOnly =
+    queryAccess !== undefined &&
+    effectiveSqlQueryAccess(queryAccess, database) !== "write";
+  if (readOnly) {
+    const accessError = mongoReadOnlyAccessError(query);
+    if (accessError) throw new Error(accessError);
+  }
 
   const { executionId, signal, release } = registerAgentExecution(
     toolExecutionContext,
@@ -318,7 +347,12 @@ async function executeQueryImpl(
             typeof databaseConnectionService.executeQuery
           >[0],
           query,
-          { databaseName, executionId: registeredExecutionId, signal },
+          {
+            databaseName,
+            executionId: registeredExecutionId,
+            signal,
+            ...(readOnly ? { readOnly: true } : {}),
+          },
         ),
       { signal },
     );
@@ -461,6 +495,11 @@ export const createMongoToolsV2 = (
   _preferredConsoleId?: string,
   userId?: string,
   toolExecutionContext?: AgentToolExecutionContext,
+  /**
+   * The caller's query access (MCP). Omitted in-product, where the
+   * connection's writers list decides each write.
+   */
+  queryAccess?: QueryAccess,
 ) => {
   return {
     list_connections: tool({
@@ -574,6 +613,7 @@ export const createMongoToolsV2 = (
             userId,
             toolExecutionContext,
             maxRows,
+            queryAccess,
           );
         } catch (error) {
           return {

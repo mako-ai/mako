@@ -20,6 +20,7 @@ import {
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { queryExecutionService } from "../../services/query-execution.service";
 import { sqlReadOnlyAccessError } from "../../services/read-only-query.service";
+import { findTopLevelKeyword } from "../../services/sql-query-utils";
 import { AGENT_BIGQUERY_MAX_BYTES_BILLED } from "../../config/long-running-queries";
 import { describeBytesBilledCap } from "../../databases/drivers/bigquery/errors";
 import type { QueryAccess } from "../../auth/api-key-scopes";
@@ -88,12 +89,25 @@ const needsDefaultLimit = (sql: string): boolean => {
 /** The LIMIT appended to an agent's SELECT that names none. */
 export const AGENT_DEFAULT_ROW_LIMIT = 500;
 
-/** The query as an agent tool runs it: with a default LIMIT when it has none. */
-export const appendLimitIfMissing = (sql: string): string => {
+/** ClickHouse clauses that end a query: a LIMIT must come before them. */
+const CLICKHOUSE_TRAILING_CLAUSE = /^(SETTINGS\s+\w+\s*=|FORMAT\s+\w+\s*$)/i;
+
+/**
+ * The query as an agent tool runs it: with a default LIMIT when it has none.
+ * `dialect` places it before ClickHouse's trailing SETTINGS / FORMAT.
+ */
+export const appendLimitIfMissing = (sql: string, dialect?: string): string => {
   if (!needsDefaultLimit(sql)) return sql;
   if (/\blimit\s+\d+/i.test(sql)) return sql;
 
   const trimmed = sql.trim().replace(/;\s*$/i, "");
+  if (dialect === "clickhouse") {
+    const tail = findTopLevelKeyword(trimmed, CLICKHOUSE_TRAILING_CLAUSE);
+    if (tail > 0) {
+      const head = trimmed.slice(0, tail).trimEnd();
+      return `${head}\nLIMIT ${AGENT_DEFAULT_ROW_LIMIT}\n${trimmed.slice(tail)};`;
+    }
+  }
   return `${trimmed}\nLIMIT ${AGENT_DEFAULT_ROW_LIMIT};`;
 };
 
@@ -1197,7 +1211,7 @@ export async function executeQueryImpl(
   );
   const { database, dialect, databaseName, options } = target;
 
-  const safeQuery = appendLimitIfMissing(query);
+  const safeQuery = appendLimitIfMissing(query, dialect);
   // A read on BigQuery may bill at most the agent's byte cap. A write by
   // someone on the writers list is not capped.
   const bytesCap =

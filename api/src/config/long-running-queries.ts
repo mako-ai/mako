@@ -37,6 +37,16 @@ function envIntList(name: string, fallback: number[]): number[] {
 export const QUERY_SOFT_TIMEOUT_MS = envInt("QUERY_SOFT_TIMEOUT_MS", 90_000);
 
 /**
+ * The same wait for `run_console` over MCP. MCP clients commonly abort a
+ * request at 60s ("The operation timed out."), so the tool must answer
+ * `status: "running"` well before that; check_query_status picks it up.
+ */
+export const MCP_QUERY_SOFT_TIMEOUT_MS = Math.min(
+  QUERY_SOFT_TIMEOUT_MS,
+  envInt("MCP_QUERY_SOFT_TIMEOUT_MS", 45_000),
+);
+
+/**
  * Timeout for the direct, single-shot agent execute tools
  * (`sql_execute_query`, `mongo_execute_query`). These stay short for quick
  * exploration; on timeout the agent is told to run the query via a console for

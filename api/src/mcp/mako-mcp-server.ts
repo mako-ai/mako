@@ -96,7 +96,7 @@ Business numbers first (revenue, MRR, paying customers, churn, renewal rate, …
 1. lookup_term({ query }) and list_metrics({ query }) → the governed term (canonical model.column, grain, variants) and the metric with its group-bys. get_workspace_context (or resource mako://context) lists every term, metric and most-read model in ~4k chars.
 2. A metric exists: query_metric({ metrics, groupBy, where, startTime, endTime }) → the rows (read-only, needs query access). compile_metric(same input) → its SQL only, for a binding, a console or a dbt model. groupBy names look like "metric_time__month" or "customer__region".
 3. No metric: find_models({ query }) → describe_model({ name }) → query the canonical model with sql_execute_query.
-4. list_connections / list_tables / inspect_table only for data outside dbt.
+4. No model either, or data outside dbt: list_connections (kind "database") → list_databases → list_tables → inspect_table, then sql_execute_query (SQL engines) or mongo_execute_query (MongoDB: find/aggregate in shell syntax). Both read only.
 Report the governed value. Never change a metric's scope yourself (a filter, an excluded segment). When asked for another scope, say so and show both numbers.
 Metric limits: query_metric adds LIMIT 500 unless you pass limit (limited: true means more rows exist); dates carry no timezone; where is raw SQL checked read-only; compile and query share 45s. Pass environment (a dbt environment name) to try a metric from that environment's latest run before it is merged.
 
@@ -120,7 +120,7 @@ Business numbers first (revenue, MRR, paying customers, churn, renewal rate, …
 
 Typical loop:
 1. Data outside dbt: list_connections (kind "database" for warehouses, kind "source" for Stripe/Close/… keys), then list_databases / list_tables / inspect_table on a database connection (they dispatch on engine — SQL or MongoDB). A source connection is not queryable: probe_connection reads one live page from its platform.
-2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
+2. Validate queries with sql_execute_query, or mongo_execute_query for MongoDB (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
 3. search_apps first (extend a close match rather than copy it) → app_create_app (lands in the user's personal users/<handle>/apps/ unless they ask for a shared one) → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
 4. For dbt work: read_dbt_project_tree → read/edit files → validate asynchronously, then poll dbt_get_run. Before creating a dbt model or a binding that aggregates a business metric, call lookup_term (the registry's definition and canonical model.column) and find_models (models that already hold the data; describe_model for columns and readers); when a canonical model exists, read it or extend it. Before joining two entities, call find_join_path and join on the columns it returns. A number the dbt project defines as a metric (list_metrics) is computed with query_metric, or compile_metric for a binding's SQL, never re-aggregated by hand. For large or destructive work (warehouse runs, Git mutations, schedules), prefer proposing a plan via mako-desktop submit_plan before acting.
 5. app_open_app opens/refreshes the app tab in Desktop. Verify with app_dev_log (vite + browser console) and app_browse (headless browser inside the sandbox). For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
@@ -213,7 +213,16 @@ export function buildMakoMcpCandidateTools(
     undefined,
     queryAccess,
   );
-  const mongoTools = createMongoToolsV2(workspaceId, [], undefined, userId);
+  // Read-only for a query:read key: a write is refused before it runs and
+  // the shell interpreter refuses any write method on a read.
+  const mongoTools = createMongoToolsV2(
+    workspaceId,
+    [],
+    undefined,
+    userId,
+    undefined,
+    queryAccess,
+  );
   const { list_connections, list_databases, list_tables, inspect_table } =
     createUniversalTools(workspaceId, [], undefined, userId);
   const consoleSearchTools = createConsoleSearchTools(workspaceId);
@@ -267,8 +276,6 @@ export function buildMakoMcpCandidateTools(
     list_tables,
     inspect_table,
     ...sqlTools,
-    // Included in candidates so the policy can deliberately exclude it;
-    // buildMakoMcpToolset will strip it.
     mongo_execute_query: mongoTools.execute_query,
     ...consoleSearchTools,
     ...versionHistoryTools,
