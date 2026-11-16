@@ -1,0 +1,561 @@
+{
+  "runId": "g1-mwjd1w9b",
+  "date": "2026-11-16T14:30:25.734Z",
+  "e2bSdkVersion": "2.55.0",
+  "template": "mako-apps-v2",
+  "host": {
+    "platform": "darwin 27.2.0 arm64",
+    "cpus": "Apple M5 Pro",
+    "node": "v24.22.1"
+  },
+  "params": {
+    "n": 20,
+    "chunks": 30,
+    "pageSize": 100,
+    "maxIterations": 10
+  },
+  "boxSize": {
+    "cpuCount": 2,
+    "memoryMB": 2048,
+    "template": "mako-apps-v2"
+  },
+  "create": {
+    "createMs": {
+      "n": 20,
+      "p50": 595.2,
+      "p95": 1054.6,
+      "p99": 1209.9,
+      "min": 521.8,
+      "max": 1209.9,
+      "mean": 701.9
+    },
+    "firstCommandMs": {
+      "n": 20,
+      "p50": 241.2,
+      "p95": 316.3,
+      "p99": 394.5,
+      "min": 225.8,
+      "max": 394.5,
+      "mean": 258.3
+    },
+    "createToFirstCommandMs": {
+      "n": 20,
+      "p50": 843.8,
+      "p95": 1346.1,
+      "p99": 1478.4,
+      "min": 762,
+      "max": 1478.4,
+      "mean": 960.2
+    }
+  },
+  "phaseSeconds": {
+    "create": 23.9,
+    "pause": 19.7,
+    "snapshot": 78.7,
+    "exec": 70.6,
+    "chunk": 410.2,
+    "parallel": 0.4
+  },
+  "pause": {
+    "pauseMs": {
+      "n": 20,
+      "p50": 359.1,
+      "p95": 639.5,
+      "p99": 843.4,
+      "min": 321.8,
+      "max": 843.4,
+      "mean": 419.3
+    },
+    "resumeMs": {
+      "n": 20,
+      "p50": 297.5,
+      "p95": 355.3,
+      "p99": 456.5,
+      "min": 276.9,
+      "max": 456.5,
+      "mean": 310.9
+    },
+    "firstCommandAfterResumeMs": {
+      "n": 20,
+      "p50": 181.5,
+      "p95": 185.8,
+      "p99": 629.2,
+      "min": 175,
+      "max": 629.2,
+      "mean": 203.5
+    },
+    "resumeToFirstCommandMs": {
+      "n": 20,
+      "p50": 479.5,
+      "p95": 640.6,
+      "p99": 946,
+      "min": 451.9,
+      "max": 946,
+      "mean": 514.5
+    }
+  },
+  "snapshot": {
+    "createSnapshotMs": 747,
+    "restoreCreateMs": {
+      "n": 20,
+      "p50": 723.4,
+      "p95": 1089.6,
+      "p99": 4613.7,
+      "min": 580.1,
+      "max": 4613.7,
+      "mean": 975
+    },
+    "restoreFirstCommandMs": {
+      "n": 20,
+      "p50": 314.3,
+      "p95": 669.2,
+      "p99": 956.2,
+      "min": 178.5,
+      "max": 956.2,
+      "mean": 399.9
+    },
+    "restoreToFirstCommandMs": {
+      "n": 20,
+      "p50": 1163.3,
+      "p95": 1667.7,
+      "p99": 5570,
+      "min": 758.6,
+      "max": 5570,
+      "mean": 1374.9
+    },
+    "oneRowPageReadAfterRestoreMs": {
+      "n": 20,
+      "p50": 741.7,
+      "p95": 1075.9,
+      "p99": 1613.1,
+      "min": 397.2,
+      "max": 1613.1,
+      "mean": 792.2
+    },
+    "fork": {
+      "forkMs": {
+        "n": 10,
+        "p50": 1371.5,
+        "p95": 2215.7,
+        "p99": 2215.7,
+        "min": 729,
+        "max": 2215.7,
+        "mean": 1441.1
+      },
+      "forkToFirstCommandMs": {
+        "n": 10,
+        "p50": 1591.5,
+        "p95": 2454.3,
+        "p99": 2454.3,
+        "min": 936.5,
+        "max": 2454.3,
+        "mean": 1693.2
+      }
+    },
+    "forkError": null
+  },
+  "exec": {
+    "providerExecNoopMs": {
+      "n": 50,
+      "p50": 521.8,
+      "p95": 564.7,
+      "p99": 974.3,
+      "min": 511.3,
+      "max": 974.3,
+      "mean": 537.4
+    },
+    "rawCommandNoopMs": {
+      "n": 50,
+      "p50": 175.8,
+      "p95": 181.4,
+      "p99": 223.1,
+      "min": 172,
+      "max": 223.1,
+      "mean": 177.1
+    },
+    "sandboxConnectMs": {
+      "n": 50,
+      "p50": 168.4,
+      "p95": 229.9,
+      "p99": 319.9,
+      "min": 166.2,
+      "max": 319.9,
+      "mean": 175.8
+    },
+    "rawSmallFileWriteMs": {
+      "n": 50,
+      "p50": 168.9,
+      "p95": 616.8,
+      "p99": 662.1,
+      "min": 164.8,
+      "max": 662.1,
+      "mean": 243.8
+    }
+  },
+  "chunk": {
+    "fixed-1k": {
+      "rowsPerChunk": 1000,
+      "inProcessMs": {
+        "n": 30,
+        "p50": 0.8,
+        "p95": 1,
+        "p99": 1.2,
+        "min": 0.7,
+        "max": 1.2,
+        "mean": 0.9
+      },
+      "localSubprocessMs": {
+        "n": 30,
+        "p50": 130.3,
+        "p95": 136.2,
+        "p99": 140.1,
+        "min": 128.2,
+        "max": 140.1,
+        "mean": 131.7
+      },
+      "boxedMs": {
+        "n": 30,
+        "p50": 3620.5,
+        "p95": 4540.4,
+        "p99": 4839.7,
+        "min": 3567.5,
+        "max": 4839.7,
+        "mean": 3723.5
+      },
+      "boxedReadExecMs": {
+        "n": 30,
+        "p50": 643.3,
+        "p95": 690.3,
+        "p99": 1083.3,
+        "min": 625.8,
+        "max": 1083.3,
+        "mean": 660.1
+      },
+      "boxedOtherRoundTripsMs": {
+        "n": 30,
+        "p50": 2978.5,
+        "p95": 3856.8,
+        "p99": 3878.8,
+        "min": 2934.4,
+        "max": 3878.8,
+        "mean": 3063.3
+      },
+      "overheadVsInProcessMs": {
+        "p50": 3620,
+        "p95": 4539,
+        "p99": 4839
+      },
+      "providerCallsPerChunk": {
+        "exec:mkdir": {
+          "perChunk": 1,
+          "n": 30,
+          "p50": 518.7,
+          "p95": 618.1,
+          "p99": 962.2,
+          "min": 509.5,
+          "max": 962.2,
+          "mean": 539.1
+        },
+        "writeFile": {
+          "perChunk": 3,
+          "n": 89,
+          "p50": 338,
+          "p95": 350.5,
+          "p99": 790.8,
+          "min": 332.5,
+          "max": 790.8,
+          "mean": 344.7
+        },
+        "exec:node": {
+          "perChunk": 1,
+          "n": 30,
+          "p50": 643.3,
+          "p95": 690.3,
+          "p99": 1083.3,
+          "min": 625.8,
+          "max": 1083.3,
+          "mean": 660.1
+        },
+        "exec:if": {
+          "perChunk": 1,
+          "n": 30,
+          "p50": 526.4,
+          "p95": 973,
+          "p99": 988.8,
+          "min": 513.5,
+          "max": 988.8,
+          "mean": 571.1
+        },
+        "readFile": {
+          "perChunk": 1,
+          "n": 30,
+          "p50": 390,
+          "p95": 407.5,
+          "p99": 440.5,
+          "min": 378.2,
+          "max": 440.5,
+          "mean": 392.5
+        },
+        "exec:rm": {
+          "perChunk": 1,
+          "n": 30,
+          "p50": 517.6,
+          "p95": 585.1,
+          "p99": 974.6,
+          "min": 508.7,
+          "max": 974.6,
+          "mean": 535.3
+        }
+      },
+      "boxedRowsPerSecond": 269,
+      "chunksOverByteCap": {
+        "boxed": 0,
+        "local": 0,
+        "of": 30
+      }
+    },
+    "call": {
+      "rowsPerChunk": 1000,
+      "inProcessMs": {
+        "n": 30,
+        "p50": 1,
+        "p95": 1.5,
+        "p99": 1.5,
+        "min": 0.9,
+        "max": 1.5,
+        "mean": 1
+      },
+      "localSubprocessMs": {
+        "n": 30,
+        "p50": 173.4,
+        "p95": 202.1,
+        "p99": 213.6,
+        "min": 160.4,
+        "max": 213.6,
+        "mean": 176.5
+      },
+      "boxedMs": {
+        "n": 30,
+        "p50": 3685,
+        "p95": 4355.6,
+        "p99": 4520.3,
+        "min": 3612.6,
+        "max": 4520.3,
+        "mean": 3778.8
+      },
+      "boxedReadExecMs": {
+        "n": 30,
+        "p50": 667.1,
+        "p95": 719.2,
+        "p99": 809.9,
+        "min": 647.8,
+        "max": 809.9,
+        "mean": 676.3
+      },
+      "boxedOtherRoundTripsMs": {
+        "n": 30,
+        "p50": 3007.9,
+        "p95": 3646.5,
+        "p99": 3870.8,
+        "min": 2957.8,
+        "max": 3870.8,
+        "mean": 3102.4
+      },
+      "overheadVsInProcessMs": {
+        "p50": 3684,
+        "p95": 4354,
+        "p99": 4519
+      },
+      "providerCallsPerChunk": {
+        "exec:mkdir": {
+          "perChunk": 1,
+          "n": 30,
+          "p50": 515.1,
+          "p95": 525.3,
+          "p99": 1082.5,
+          "min": 507.5,
+          "max": 1082.5,
+          "mean": 534.7
+        },
+        "writeFile": {
+          "perChunk": 3,
+          "n": 89,
+          "p50": 336.8,
+          "p95": 343.7,
+          "p99": 788.7,
+          "min": 329.6,
+          "max": 788.7,
+          "mean": 342.4
+        },
+        "exec:node": {
+          "perChunk": 1,
+          "n": 30,
+          "p50": 667.1,
+          "p95": 719.2,
+          "p99": 809.9,
+          "min": 647.8,
+          "max": 809.9,
+          "mean": 676.3
+        },
+        "exec:if": {
+          "perChunk": 1,
+          "n": 30,
+          "p50": 529.3,
+          "p95": 545.8,
+          "p99": 545.8,
+          "min": 517.4,
+          "max": 545.8,
+          "mean": 529.1
+        },
+        "readFile": {
+          "perChunk": 1,
+          "n": 30,
+          "p50": 416,
+          "p95": 639.5,
+          "p99": 987.8,
+          "min": 398,
+          "max": 987.8,
+          "mean": 485.7
+        },
+        "exec:rm": {
+          "perChunk": 1,
+          "n": 30,
+          "p50": 518.2,
+          "p95": 676.7,
+          "p99": 677.8,
+          "min": 509.2,
+          "max": 677.8,
+          "mean": 531.6
+        }
+      },
+      "boxedRowsPerSecond": 265,
+      "chunksOverByteCap": {
+        "boxed": 0,
+        "local": 0,
+        "of": 30
+      }
+    },
+    "email": {
+      "rowsPerChunk": 1000,
+      "inProcessMs": {
+        "n": 30,
+        "p50": 1.1,
+        "p95": 1.6,
+        "p99": 1.9,
+        "min": 1,
+        "max": 1.9,
+        "mean": 1.2
+      },
+      "localSubprocessMs": {
+        "n": 26,
+        "p50": 343.5,
+        "p95": 4038.4,
+        "p99": 32163.7,
+        "min": 221.4,
+        "max": 32163.7,
+        "mean": 1976.6
+      },
+      "boxedMs": {
+        "n": 26,
+        "p50": 3913.7,
+        "p95": 4850.9,
+        "p99": 5286.3,
+        "min": 3829.8,
+        "max": 5286.3,
+        "mean": 4072.8
+      },
+      "boxedReadExecMs": {
+        "n": 26,
+        "p50": 786.3,
+        "p95": 927.2,
+        "p99": 1176.1,
+        "min": 715.5,
+        "max": 1176.1,
+        "mean": 801.6
+      },
+      "boxedOtherRoundTripsMs": {
+        "n": 26,
+        "p50": 3127.9,
+        "p95": 3695.2,
+        "p99": 4478.1,
+        "min": 3074.5,
+        "max": 4478.1,
+        "mean": 3271.2
+      },
+      "overheadVsInProcessMs": {
+        "p50": 3913,
+        "p95": 4849,
+        "p99": 5284
+      },
+      "providerCallsPerChunk": {
+        "exec:mkdir": {
+          "perChunk": 1,
+          "n": 26,
+          "p50": 516.3,
+          "p95": 962.9,
+          "p99": 1944.2,
+          "min": 507.8,
+          "max": 1944.2,
+          "mean": 588.5
+        },
+        "writeFile": {
+          "perChunk": 3,
+          "n": 77,
+          "p50": 337.8,
+          "p95": 485.9,
+          "p99": 519.6,
+          "min": 331.3,
+          "max": 519.6,
+          "mean": 347.7
+        },
+        "exec:node": {
+          "perChunk": 1,
+          "n": 26,
+          "p50": 786.3,
+          "p95": 927.2,
+          "p99": 1176.1,
+          "min": 715.5,
+          "max": 1176.1,
+          "mean": 801.6
+        },
+        "exec:if": {
+          "perChunk": 1,
+          "n": 26,
+          "p50": 548.3,
+          "p95": 576.2,
+          "p99": 702.3,
+          "min": 537.6,
+          "max": 702.3,
+          "mean": 555.8
+        },
+        "readFile": {
+          "perChunk": 1,
+          "n": 26,
+          "p50": 497,
+          "p95": 898.7,
+          "p99": 920.7,
+          "min": 449,
+          "max": 920.7,
+          "mean": 535.9
+        },
+        "exec:rm": {
+          "perChunk": 1,
+          "n": 26,
+          "p50": 525,
+          "p95": 548.2,
+          "p99": 970,
+          "min": 520.4,
+          "max": 970,
+          "mean": 545.8
+        }
+      },
+      "boxedRowsPerSecond": 246,
+      "chunksOverByteCap": {
+        "boxed": 4,
+        "local": 4,
+        "of": 30
+      }
+    }
+  },
+  "parallelError": "Rate limit exceeded, please try again later - you have reached the maximum number of concurrent E2B sandboxes (20). If you need more, please visit 'https://e2b.dev/docs/billing'\n    at apiErrorFromCode (/Users/joanrodriguez/Developer/mako/mako-g1/node_modules/.pnpm/e2b@2.55.0/node_modules/e2b/src/api/index.ts:39:12)\n    at handleApiError (/Users/joanrodriguez/Developer/mako/mako-g1/node_modules/.pnpm/e2b@2.55.0/node_modules/e2b/src/api/index.ts:71:12)\n    at Sandbox.createSandbox (/Users/joanrodriguez/Developer/mako/mako-g1/node_modules/.pnpm/e2b@2.55.0/node_modules/e2b/src/sandbox/sandboxApi.ts:1846:17)"
+}

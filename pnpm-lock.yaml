@@ -565,6 +565,9 @@ importers:
       apache-arrow:
         specifier: 17.0.0
         version: 17.0.0
+      jsdom:
+        specifier: ^30.1.2
+        version: 30.1.2(@noble/hashes@2.4.0)
 
   packages/cli:
     dependencies:
