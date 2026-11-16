@@ -17,6 +17,7 @@ import { randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  abandonScript,
   CHUNK_MARKER,
   INPUTS_MISSING_EXIT,
   ISOLATED_INCOMING,
@@ -634,6 +635,51 @@ suite("connector run isolation in e2bdev/base (Docker)", () => {
       const left = await root(`awk -F: '$2 == "" { print $1 }' /etc/shadow`);
       expect(left.stdout.trim()).toBe("");
       await root(`rm -f ${shellQuote(resultPath(l.runId))}`);
+    }, 120_000);
+
+    it("removes the inbox when the chunk never started, with exit 0 for a user that never existed", async () => {
+      const l = fresh();
+      const secret = `sk_a_${randomBytes(8).toString("hex")}`;
+      await toInbox(l, "config.json", secret);
+      await root(`printf x > ${shellQuote(resultPath(l.runId))}`);
+      // The chunk command never ran: no user, no run directory.
+      expect((await root(`id ${shellQuote(l.user)}`)).code).not.toBe(0);
+      const res = await root(abandonScript(l));
+      expect(res, res.stderr).toMatchObject({ code: 0 });
+      const inbox = `${ISOLATED_INCOMING}/${l.runId}`;
+      expect((await root(`test -e ${shellQuote(inbox)}`)).code).not.toBe(0);
+      expect(
+        (await root(`test -e ${shellQuote(resultPath(l.runId))}`)).code,
+      ).not.toBe(0);
+      const grep = await root(
+        `grep -rl ${shellQuote(secret)} ${shellQuote(ISOLATED_INCOMING)} || true`,
+      );
+      expect(grep.stdout.trim()).toBe("");
+    }, 120_000);
+
+    it("still removes the inbox when the cleanup itself fails", async () => {
+      const l = fresh();
+      await toInbox(l, "config.json", "sk_x");
+      const setup = await root(setupScript(l));
+      expect(setup.code, setup.stderr).toBe(0);
+      // userdel cannot run: cleanup reports a failure, the inbox still goes.
+      await root("mv /usr/sbin/userdel /usr/sbin/userdel.off");
+      try {
+        const res = await root(abandonScript(l));
+        expect(res.code).not.toBe(0);
+        expect(
+          (
+            await root(
+              `test -e ${shellQuote(`${ISOLATED_INCOMING}/${l.runId}`)}`,
+            )
+          ).code,
+        ).not.toBe(0);
+      } finally {
+        await root("mv /usr/sbin/userdel.off /usr/sbin/userdel");
+        await root(
+          `userdel ${shellQuote(l.user)} 2>/dev/null; groupdel ${shellQuote(l.user)} 2>/dev/null; true`,
+        );
+      }
     }, 120_000);
 
     it("refuses to launch when its inputs never reached this box, and still cleans up", async () => {

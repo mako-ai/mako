@@ -292,7 +292,9 @@ if [ -n "$(awk -v n="$uid" 'NR > 1 && $0 ~ (" " n " ")' /proc/sysvipc/shm /proc/
   echo "IPC objects of $user survived" >&2
   exit 1
 fi
-userdel "$user" || exit 1
+# A user that was never created (a run whose setup never ran) is not a
+# failure: every check above already proved nothing of its uid is left.
+if id -u -- "$user" >/dev/null 2>&1; then userdel "$user" || exit 1; fi
 groupdel "$user" 2>/dev/null || true`;
 }
 
@@ -407,10 +409,22 @@ echo "${CHUNK_MARKER} $size $cleanup"
 exit $status`;
 }
 
-/** Root: the fallback cleanup when the chunk command itself was cut off. */
+/**
+ * Root: the fallback cleanup when the chunk command itself was cut off, or
+ * never started. `cleanupScript` runs in a subshell, so its own `exit` on a
+ * failure cannot skip the rest: the inbox (which may still hold the
+ * credential) and the result file are removed whatever it reports.
+ */
 export function abandonScript(l: RunLayout): string {
-  return `${cleanupScript(l)}
+  return `${PATH_FOR_ROOT}
+(
+${cleanupScript(l)}
+)
 code=$?
 rm -rf ${shellQuote(path.posix.join(ISOLATED_INCOMING, l.runId))} ${shellQuote(resultPath(l.runId))}
+if [ -e ${shellQuote(path.posix.join(ISOLATED_INCOMING, l.runId))} ] || [ -e ${shellQuote(resultPath(l.runId))} ]; then
+  echo "inbox or result of ${l.runId} survived" >&2
+  exit 1
+fi
 exit $code`;
 }
